@@ -156,3 +156,79 @@ describe('preprocessMarkdown / bare-URL trailing punctuation', () => {
     expect(hrefs(input)).toEqual([expected])
   })
 })
+
+describe('preprocessMarkdown / CJK bare-URL boundaries', () => {
+  it('leaves CJK punctuation and adjoining prose outside each bare URL', () => {
+    const url = 'https://example.com/release/v2.1.0'
+
+    const tails = [
+      '（private，建库成功）',
+      '，建库成功',
+      '。',
+      '。然后',
+      '、次へ',
+      '；下一项',
+      '：详情',
+      '！完成',
+      '？確認',
+      '）',
+      '「説明」',
+      '『説明』',
+      '【说明】'
+    ]
+
+    for (const tail of tails) {
+      const input = `已建库 ${url}${tail}`
+
+      expect(preprocessMarkdown(input), input).toBe(`已建库 <${url}>${tail}`)
+      expect(hrefs(input), input).toEqual([url])
+    }
+
+    for (const separator of ['。然后 ', '。', '，', '、', '；', '：']) {
+      const input = `https://example.com/a${separator}https://example.com/b`
+
+      expect(preprocessMarkdown(input), input).toBe(`<https://example.com/a>${separator}<https://example.com/b>`)
+      expect(hrefs(input), input).toEqual(['https://example.com/a', 'https://example.com/b'])
+    }
+
+    expect(preprocessMarkdown(`${url}。约1~10项`)).toBe(`<${url}>。约1\\~10项`)
+  })
+
+  it('preserves internationalized URLs and the surrounding Markdown contracts', () => {
+    const urls = [
+      'https://example.com/路径/含中文',
+      'https://example.com/search?q=中文&分类=文档#章节',
+      'https://example.com/ＡＢＣ１２３/ｶﾀｶﾅ/～資料?ｑ=中文',
+      'https://example.com/%EF%BC%88private%EF%BC%89',
+      'https://en.wikipedia.org/wiki/Foo_(bar)',
+      'https://example.com/a,b;c:d!e?f=g'
+    ]
+
+    for (const url of urls) {
+      expect(hrefs(url), url).toEqual([url])
+      expect(hrefs(`${url}。然后`), url).toEqual([url])
+      expect(hrefs(`**资料: ${url}**。`), url).toEqual([url])
+      expect(preprocessMarkdown(`**资料: ${url}**。`), url).toBe(`**资料: <${url}>**。`)
+    }
+
+    const explicitUrl = 'https://example.com/资料（新版），目录'
+
+    const protectedInputs = [
+      `[${explicitUrl}](${explicitUrl})`,
+      `[资料][ref]\n\n[ref]: ${explicitUrl}`,
+      `<${explicitUrl}>`,
+      `\`${explicitUrl}\``,
+      `\`\`\`js\nconst url = '${explicitUrl}'\n\`\`\``
+    ]
+
+    for (const input of protectedInputs) {
+      expect(preprocessMarkdown(input), input).toBe(input)
+    }
+
+    expect(hrefs(protectedInputs[0])).toEqual([explicitUrl])
+    expect(hrefs(protectedInputs[1])).toEqual([explicitUrl])
+    expect(hrefs(protectedInputs[2])).toEqual([explicitUrl])
+    expect(hrefs(protectedInputs[3])).toEqual([])
+    expect(hrefs(protectedInputs[4])).toEqual([])
+  })
+})

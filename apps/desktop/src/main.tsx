@@ -96,7 +96,11 @@ if (winParam === 'overlay') {
   // measured 30-50% of a core across the renderer + GPU helper with the window
   // sitting behind another app. Streamed text still lands (the delta flush is
   // timer-driven, not frame-driven).
-  installRendererAnimationPauseState({ pauseWhenUnfocused: true })
+  // Only the primary window opts in. A popped-out session window
+  // (`?win=secondary`, with or without `&watch=1`) exists so the user can watch
+  // a stream from another display; it is routinely unfocused while being
+  // looked at, so pausing it would freeze the thing it was opened to show.
+  installRendererAnimationPauseState({ pauseWhenUnfocused: winParam !== 'secondary' })
 
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

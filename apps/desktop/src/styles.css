@@ -64,9 +64,9 @@
   }
 }
 
-/* Pause continuous animations only when the window is hidden/minimized, not
-   merely unfocused. main.tsx owns this attribute for the primary window;
-   wake/pet overlays retain their purpose-built visibility behavior. */
+/* Hard pause: hidden or minimized. Every continuous animation stops.
+   main.tsx owns this attribute; overlays that need a different policy simply
+   never install it. */
 :root[data-renderer-animations-paused]
   :is(
     .shimmer,
@@ -82,6 +82,23 @@
   ),
 :root[data-renderer-animations-paused] .arc-border::before,
 :root[data-renderer-animations-paused]
+  [data-slot='aui_assistant-message-content']
+  .aui-md
+  [data-slot='code-card'][data-streaming='true'] {
+  animation-play-state: paused !important;
+}
+
+/* Soft pause: the window is visible but the user's keyboard focus is elsewhere
+   (they clicked another app, or they are watching this window from a second
+   display). Only DECORATION sleeps here. Status cues — the spinner strip and the
+   streaming cursor above are deliberately absent from this list — keep moving,
+   because a spinner frozen mid-frame on a window someone is looking at reads as
+   "hung". What does stop here is the expensive part: the arc bands, the shimmer,
+   the glow, all of which repaint or re-raster for as long as they run. */
+:root[data-renderer-animations-unfocused]
+  :is(.shimmer, .quest-glow, .pet-egg, .pet-egg__glow, .pet-egg-shadow, .pet-wobble, .kanban-arc),
+:root[data-renderer-animations-unfocused] .arc-border::before,
+:root[data-renderer-animations-unfocused]
   [data-slot='aui_assistant-message-content']
   .aui-md
   [data-slot='code-card'][data-streaming='true'] {

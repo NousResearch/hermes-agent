@@ -1,4 +1,4 @@
-"""The autouse live-system guard: no real kills, systemctl writes, gateway spawns or checkout writes.
+"""The autouse live-system guard: no real kills, Hermes-unit systemctl writes, gateway spawns or checkout writes.
 
 Imported into ``tests/conftest.py`` so pytest registers the fixture there;
 ``pytest_plugins`` is not an option because ``tests/conftest.py`` is not the
@@ -29,9 +29,11 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 #    a hard ``RuntimeError`` so the offending test gets a stack trace
 #    instead of silently murdering the real gateway.
 #  • ``subprocess.run`` / ``subprocess.Popen`` / ``call`` / ``check_call`` /
-#    ``check_output`` reject any ``systemctl ... <verb> hermes-gateway``
-#    invocation that would mutate the live unit. Read-only systemctl
-#    calls (``status``, ``show``, ``list-units``) still pass through.
+#    ``check_output`` reject any ``systemctl ... <verb> <unit>`` invocation
+#    that would mutate ANY live Hermes unit — ``hermes-gateway[-<profile>]``,
+#    ``hermes-dashboard[-<profile>]``, ``hermes-serve[-<profile>]`` and every
+#    other ``hermes``/``hermes-*`` unit. Read-only systemctl calls
+#    (``status``, ``show``, ``list-units``, ``is-active``) still pass through.
 #
 # We intentionally do NOT stub ``find_gateway_pids`` / ``_scan_gateway_pids``
 # here — tests of those functions themselves need the real implementation.
@@ -63,8 +65,10 @@ def _live_system_guard(request, monkeypatch):
       • os.system / os.popen
       • pty.spawn
       • asyncio.create_subprocess_exec / create_subprocess_shell
+    A mutating systemctl verb is refused against every Hermes unit
+    (``hermes``/``hermes-*``: gateway, dashboard, serve, any profile).
     Subprocess inspection looks at the WHOLE command string (not just
-    tokens[0]), so ``bash -c "systemctl restart hermes-gateway"``,
+    tokens[0]), so ``bash -c "systemctl restart hermes-dashboard"``,
     ``sudo systemctl ...``, ``env systemctl ...``, ``setsid systemctl ...``
     are all caught. ``pkill``/``killall``/``taskkill`` invocations
     targeting hermes/python patterns are also blocked. Bare ``git``
@@ -76,6 +80,7 @@ def _live_system_guard(request, monkeypatch):
         return
 
     import os as _os
+    import re as _re
     import shlex as _shlex
     import subprocess as _subprocess
 
@@ -119,6 +124,17 @@ def _live_system_guard(request, monkeypatch):
             return False
         return False
 
+    def _is_zombie(pid: int) -> bool:
+        # A zombie cannot be harmed by any signal. A killed descendant whose parent exited is
+        # reparented to init (or a CI subreaper) and stays a zombie with a foreign parent chain
+        # until that reaper collects it, so a test's cleanup kill of it must pass.
+        if _psutil is None or pid <= 0:
+            return False
+        try:
+            return _psutil.Process(pid).status() == _psutil.STATUS_ZOMBIE
+        except Exception:
+            return False
+
     real_kill = _os.kill
 
     def _guarded_kill(pid, sig, *args, **kwargs):
@@ -129,7 +145,7 @@ def _live_system_guard(request, monkeypatch):
         # test_entire_tree_is_sigkilled_not_just_parent.
         if int(sig) == 0:
             return real_kill(pid, sig, *args, **kwargs)
-        if _is_own_subtree(int(pid)):
+        if _is_own_subtree(int(pid)) or _is_zombie(int(pid)):
             return real_kill(pid, sig, *args, **kwargs)
         raise RuntimeError(
             f"tests/conftest.py live-system guard: blocked os.kill("
@@ -218,17 +234,45 @@ def _live_system_guard(request, monkeypatch):
         low = cmd_str.lower()
         return any(tok in low for tok in _HERMES_TOKENS)
 
+    def _shell_words(cmd_str: str, depth: int = 0) -> set[str]:
+        # Split on whitespace AND quoting/shell punctuation so a unit or verb
+        # inside ``bash -c "systemctl restart hermes-dashboard"`` is still a word,
+        # and keep the shell's own reading too: ``rest\\art`` runs ``restart``.
+        words: set[str] = set()
+        for w in _re.split(r"[\s'\"`;&|()<>]+", cmd_str):
+            if w:
+                words.update((w, w.replace("\\", "")))
+        try:
+            tokens = _shlex.split(cmd_str)
+        except ValueError:
+            tokens = []
+        for token in tokens:
+            words.add(token)
+            if depth < 2 and token != cmd_str and _re.search(r"\s", token):
+                words |= _shell_words(token, depth + 1)  # a ``bash -c`` payload
+        return words
+
+    def _is_hermes_unit(word: str) -> bool:
+        # ``hermes`` / ``hermes-<anything>`` once any path and unit suffix are
+        # stripped: hermes-gateway[-<profile>], hermes-dashboard[-<profile>],
+        # hermes-serve[-<profile>], ... — never ``myhermes-dashboard`` or ``nginx``.
+        name = word.rsplit("/", 1)[-1].lower()
+        for suffix in (".service", ".timer", ".socket"):
+            name = name.removesuffix(suffix)
+        return name == "hermes" or name.startswith("hermes-")
+
     def _is_blocked_systemctl(cmd) -> bool:
         cmd_str = _cmd_to_string(cmd)
         if "systemctl" not in cmd_str:
             return False
-        if not _matches_hermes_gateway(cmd_str):
+        words = _shell_words(cmd_str)
+        # A unit the test itself created under a unique name (``request.node.
+        # live_system_guard_owned_units``) may be cleaned up; nothing else is exempt.
+        owned = getattr(request.node, "live_system_guard_owned_units", ())
+        if not (_matches_hermes_gateway(cmd_str)
+                or any(_is_hermes_unit(w) and w not in owned for w in words)):
             return False
-        try:
-            tokens = _shlex.split(cmd_str)
-        except ValueError:
-            tokens = cmd_str.split()
-        return any(verb in tokens for verb in _MUTATING_VERBS)
+        return any(verb in words for verb in _MUTATING_VERBS)
 
     def _is_process_killer(cmd) -> bool:
         cmd_str = _cmd_to_string(cmd)
@@ -265,6 +309,41 @@ def _live_system_guard(request, monkeypatch):
 
     from tests.git_safety import blocked_git_mutation
 
+    def _sandboxed_gateway_child(cmd_str: str, env) -> bool:
+        """The disposable-daemon fixtures (``tests/gateway/fixtures/*``, the socket-path-length
+        probes) launch the bare ``python -m gateway.run`` module entry with an explicit ``env``
+        that re-homes BOTH ``HERMES_HOME`` and ``HOME`` away from the developer's account. Such a
+        child resolves no developer unit or config, holds no live port, and is reaped by its
+        test: the orphan class the guard exists for is the ``hermes gateway run|start|restart``
+        CLI spawn against the real home, which the fixtures never use."""
+        if not isinstance(env, dict):
+            return False
+        try:
+            tokens = _shlex.split(cmd_str)
+        except ValueError:
+            tokens = cmd_str.split()
+        if "-m" not in tokens or tokens[tokens.index("-m") + 1:][:1] != ["gateway.run"]:
+            return False
+        hermes_home, home = env.get("HERMES_HOME"), env.get("HOME")
+        if not hermes_home or not home:
+            return False
+        # The developer's account home from the passwd db: tests re-point ``Path.home`` at their
+        # tmp user dir, which would make a sandboxed child look like it runs against the real one.
+        try:
+            import pwd
+            real_home = Path(pwd.getpwuid(_os.getuid()).pw_dir).resolve()
+        except (ImportError, KeyError):
+            real_home = Path.home().resolve()
+        # The child must not resolve the REAL Hermes root. Comparing HERMES_HOME against the whole
+        # account home refused every Windows sandbox: %TEMP% lives under %USERPROFILE%.
+        from hermes_state_guard import _real_platform_state_root
+        real_root = _real_platform_state_root() or real_home / ".hermes"
+        try:
+            return (Path(home).resolve() != real_home
+                    and not Path(hermes_home).resolve().is_relative_to(real_root))
+        except Exception:
+            return False
+
     def _check_subprocess_cmd(name, cmd, kwargs=None):
         git_verb = blocked_git_mutation(cmd, kwargs, _LIVE_GUARD_PROTECTED_GIT_ROOTS)
         if git_verb is not None:
@@ -277,8 +356,9 @@ def _live_system_guard(request, monkeypatch):
         if _is_blocked_systemctl(cmd):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
-                f"subprocess.{name}({cmd!r}) — would mutate the "
-                "live hermes-gateway systemd unit. Mock "
+                f"subprocess.{name}({cmd!r}) — would mutate a live "
+                "Hermes systemd unit (hermes-gateway*, hermes-dashboard*, "
+                "hermes-serve*, ...). Mock "
                 "subprocess.run / _run_systemctl in the test, or "
                 "mark with @pytest.mark.live_system_guard_bypass."
             )
@@ -342,6 +422,7 @@ def _live_system_guard(request, monkeypatch):
             not lookalike_ok
             and not in_container
             and gateway_spawn_intent_subcommand(cmd_str) in ("run", "start", "restart")
+            and not _sandboxed_gateway_child(cmd_str, (kwargs or {}).get("env"))
         ):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
@@ -383,7 +464,6 @@ def _live_system_guard(request, monkeypatch):
         return _GuardedPopen
 
     real_run = _subprocess.run
-    real_popen = _subprocess.Popen
     real_call = _subprocess.call
     real_check_call = _subprocess.check_call
     real_check_output = _subprocess.check_output

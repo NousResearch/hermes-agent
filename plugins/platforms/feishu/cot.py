@@ -217,7 +217,7 @@ class FeishuCOTClient:
         input_preview: str = "",
         *,
         flush_interval: float = COT_FLUSH_INTERVAL_SECONDS,
-    ) -> "FeishuCOTRun | None":
+    ) -> FeishuCOTRun | None:
         if self._closing or self._closed:
             return None
         body = {"receive_id": chat_id}
@@ -247,7 +247,7 @@ class FeishuCOTClient:
             )
             self._active_runs.add(run)
             return run
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- optional transport failures degrade to final-message delivery; only sanitized type/code may be logged
             self._log_failure("create", exc)
             return None
 
@@ -387,7 +387,7 @@ class FeishuCOTRun:
                         "events": events,
                     },
                 )
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- optional transport failures degrade to final-message delivery; only sanitized type/code may be logged
                 self._client._log_failure("update", exc)
                 with self._event_lock:
                     self._disabled = True
@@ -540,5 +540,5 @@ class FeishuCOTRun:
         )
         try:
             await self._client.request_json("POST", path)
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- optional transport failures degrade to final-message delivery; only sanitized type/code may be logged
             self._client._log_failure("complete", exc)

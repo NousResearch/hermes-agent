@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -106,7 +106,7 @@ def _validate_date_range(from_date: str, to_date: str) -> None:
         raise ValueError(
             f"from_date ({parsed_from.isoformat()}) must be on or before to_date ({parsed_to.isoformat()})"
         )
-    today_utc = datetime.now(timezone.utc).date()
+    today_utc = datetime.now(UTC).date()
     if parsed_from is not None and parsed_from > today_utc:
         raise ValueError(
             f"from_date ({parsed_from.isoformat()}) is in the future; "
@@ -278,8 +278,7 @@ def x_search_tool(
 X_SEARCH_SCHEMA = {
     "name": "x_search",
     "description": (
-        "Search X (Twitter) posts, profiles, and threads using xAI's built-in "
-        "X Search tool. Read-only discovery only: use this for current "
+        "Search X (Twitter) posts, profiles and threads via xAI's built-in X Search. Read-only discovery only: use this for current "
         "discussion, reactions, or claims on public X rather than general web "
         "pages. Do not use it to post, reply, like, DM, upload media, delete, "
         "or inspect the user's authenticated X account — those require a "

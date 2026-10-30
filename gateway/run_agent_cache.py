@@ -257,11 +257,13 @@ class GatewayAgentCacheMixin:
         # ordinary drift and still evicts.
         return getattr(agent, "_nous_model_switch", None) == (config_model, agent.model)
 
-    def _fallback_baseline_model(self, session_key: str, source: Optional[SessionSource], agent: Any) -> str:
+    def _fallback_baseline_model(self, session_key: str, source: Optional[SessionSource], agent: Any,
+                                 *, policy_model: Optional[str] = None) -> str:
         """The model *agent* was built to run, for the post-turn fallback check: what
-        ``_resolve_session_agent_runtime`` chose (session /model, then channel_overrides on the chat,
-        thread or parent, then the global model), canonicalized as ``AIAgent.__init__`` did on the
-        agent's PRIMARY route. The route a fallback moved it to would make that fallback look primary."""
+        ``_resolve_session_agent_runtime`` chose (session /model, then a LOCAL session's frozen launch
+        policy model, then channel_overrides on the chat, thread or parent, then the global model),
+        canonicalized as ``AIAgent.__init__`` did on the agent's PRIMARY route. The route a fallback
+        moved it to would make that fallback look primary."""
         from gateway.run import _resolve_gateway_model
         primary = getattr(agent, "_primary_runtime", None) or {}
         provider = primary.get("provider", getattr(agent, "provider", "")) or ""
@@ -269,6 +271,8 @@ class GatewayAgentCacheMixin:
         override = self._session_model_override(session_key) or {}
         if override.get("model") and override.get("provider") in (None, "", provider):
             model = override["model"]
+        elif policy_model:
+            model = policy_model
         elif source is not None:
             model = self._resolve_model_for_channel(
                 source.platform, str(source.chat_id) if source.chat_id else "",
@@ -303,13 +307,17 @@ class GatewayAgentCacheMixin:
         state = self._peek_session_state(session_key)
         if state is not None:
             if state.turn.lease is not None:
-                try:
-                    state.turn.lease.release()
-                except Exception:
-                    logger.debug("Failed to release active session slot", exc_info=True)
+                from gateway.active_lease_io import release_soon
+                release_soon(state.turn.lease)
             # One structured reset instead of a drifting pop-list. Turn-lease tokens are deliberately NOT
             # cleared here — _release_turn_lease owns them.
             state.turn.clear()
+            retired, state.turn.retired_agents = state.turn.retired_agents, []
+            for agent in retired:
+                # Evicted mid-turn (a one-turn agent): its turn no longer uses it.
+                self._spawn_release_thread(self._release_evicted_agent_soft, (agent,),
+                                           f"agent-retire-{str(session_key)[:24]}", inline_fallback=True,
+                                           session_key=session_key)
         # Turn boundary: a running-agent slot was just released; persist the new (lower) in-flight count
         # so the dashboard readout stays current. Preserves gateway_state (see _persist_active_agents).
         self._persist_active_agents()
@@ -433,11 +441,13 @@ class GatewayAgentCacheMixin:
                 clear(session_key)
             except Exception as e:
                 logger.debug("Failed to clear %s state for session boundary %s: %s", what, session_key, e)
-        # The persisted /yolo copy dies with the in-memory one, or the next turn's restore revives it.
+        # The persisted /yolo copy dies with the in-memory one, or the next turn's restore revives it. None, not
+        # False: the next conversation follows its launch policy again (seeded once per boundary), and a
+        # toggle-less chat stays off.
         store = getattr(self, "session_store", None)
         if store is not None:
             try:
-                store.set_session_yolo(session_key, False)
+                store.set_session_yolo(session_key, None)
             except Exception:
                 # Never fails the boundary itself, but a surviving ON would come back after a restart.
                 logger.warning("Failed to clear persisted yolo for session boundary %s", session_key, exc_info=True)
@@ -643,7 +653,7 @@ class GatewayAgentCacheMixin:
         member/speaking churn can't touch the prompt."""
         if source.platform != Platform.DISCORD:
             return None
-        adapter = self.adapters.get(Platform.DISCORD)
+        adapter = self._delivery_adapter_for(source)
         guild_id = self._get_guild_id(event)
         if not (guild_id and adapter and hasattr(adapter, "get_voice_channel_context")):
             return None
@@ -661,13 +671,13 @@ class GatewayAgentCacheMixin:
         return f"[Voice channel now: {vc_now or 'not connected to a voice channel'}]"
 
     async def _rehydrate_prompt_pins(self, session_key: str, expected_session_id: Optional[str]) -> None:
-        """Adopt the durable pin snapshot for an internal turn when this process holds no pins for
-        *session_key* (a restart). Eviction clears only ``ephemeral_pin`` and keeps ``channel_pin``,
-        so an evicted agent still re-renders instead of reviving the snapshot."""
+        """Adopt the durable pin snapshot for an internal turn when this process holds no context pin
+        for *session_key*: a restart, or an eviction (/stop, /undo, /model), which clears only
+        ``ephemeral_pin``. Without it the wake renders from its origin-only source (no chat or user
+        names) and the next human turn re-keys back, rewriting the system bytes twice. Human turns
+        never call this, so an evicted agent's next human turn still re-renders."""
         state = self._peek_session_state(session_key)
-        if state is not None and (
-            state.conversation.ephemeral_pin is not None or state.conversation.channel_pin is not None
-        ):
+        if state is not None and state.conversation.ephemeral_pin is not None:
             return
         try:
             pin = sanitize_prompt_pin(await self.async_session_store.get_prompt_pin(
@@ -680,7 +690,8 @@ class GatewayAgentCacheMixin:
             return
         conversation = self._session_state(session_key).conversation
         conversation.ephemeral_pin = (pin["context_key"], pin["context_prompt"], pin["redact_pii"])
-        conversation.channel_pin = (pin["channel_prompt"], pin["parent_chat_id"])
+        if conversation.channel_pin is None:
+            conversation.channel_pin = (pin["channel_prompt"], pin["parent_chat_id"])
 
     async def _persist_prompt_pins(self, session_key: Optional[str], expected_session_id: Optional[str]) -> None:
         """Persist this conversation's pins before the agent runs; the store no-ops an unchanged
@@ -713,10 +724,12 @@ class GatewayAgentCacheMixin:
         source rebuilt from the persisted origin, without chat_name/user_name/message_id. Rendering
         from it re-keyed the pin, and the next human turn re-keyed it back (A→B→A), rewriting
         already-sent system bytes each time. An internal event is never a real metadata change, so
-        it reuses an existing pin verbatim (restored by ``_rehydrate_prompt_pins`` after a restart); with
+        it reuses an existing pin verbatim (restored by ``_rehydrate_prompt_pins`` after a restart or an eviction); with
         no pin yet it renders and pins as usual. The pin records the ``privacy.redact_pii`` it was
         rendered under: bytes from another privacy policy are never reused, even by an internal
-        event."""
+        event. Callers pass ``event.internal or event.inherit_channel_pin`` (synthetic
+        goal/heartbeat/resume turns strip ``message_id``) so this pin and ``_pinned_channel_inputs``
+        reuse on the same decision."""
         _pin_state = self._peek_session_state(session_key) if session_key else None
         _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
         if _eph_pin is not None and _eph_pin[2] != redact_pii:
@@ -737,10 +750,12 @@ class GatewayAgentCacheMixin:
         """``(channel_prompt, source)`` for this turn's agent run.
 
         The ephemeral system prompt also appends ``channel_prompt`` and the ``channel_overrides``
-        prompt (looked up by chat/thread/``parent_chat_id``). Internal events carry
-        ``channel_prompt=None`` and a source without ``parent_chat_id``, so they dropped both and
-        toggled the system prompt like the context pin did. Human turns record their inputs;
-        internal turns reuse them (``_rehydrate_prompt_pins`` restores both after a restart)."""
+        prompt (looked up by chat/thread/``parent_chat_id``). Events with no channel inputs of
+        their own (internal events, and synthetic goal/heartbeat/resume turns — see
+        ``MessageEvent.inherit_channel_pin``) carry ``channel_prompt=None`` and a source without
+        ``parent_chat_id``, so they dropped both and toggled the system prompt like the context pin
+        did. Human turns record their inputs; turns that ask to reuse the pin get them back
+        (``_rehydrate_prompt_pins`` restores both after a restart)."""
         if not session_key:
             return channel_prompt, source
         if not internal:
@@ -802,7 +817,8 @@ class GatewayAgentCacheMixin:
         )
         return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()
 
-    def _evict_cached_agent(self, session_key: str) -> None:
+    def _evict_cached_agent(self, session_key: str, *, commit_memory: bool = False,
+                            release_after_turn: bool = False) -> None:
         """Remove a cached agent (/new, /model, ...) and soft-release its LLM client pool (AIAgent
         holds reference cycles; without it RSS grows across /new). Soft = frees clients and child
         subagents but PRESERVES terminal sandbox / browser / bg processes since the session may
@@ -814,6 +830,9 @@ class GatewayAgentCacheMixin:
         reference cycles (callbacks, tool state) that delay refcount collection, so a manual release is
         required to keep gateway RSS flat across many /new, /model, undo and reset operations (#29298, same
         leak class as #25315).
+
+        ``release_after_turn``: an agent still mid-turn is released when that turn's running slot
+        clears (``_release_running_agent_state``) instead of being left to the garbage collector.
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
         # Prompt-stability state rides the agent-cache lifecycle: a fresh agent must re-render its
@@ -835,12 +854,23 @@ class GatewayAgentCacheMixin:
                 evicted = _cache.pop(session_key, None)
         agent = _first_agent(evicted)
         # Never tear down an agent that's mid-turn — its client, sandbox and child subagents are in use.
-        if agent is None or agent is _AGENT_PENDING_SENTINEL or id(agent) in self._running_agent_ids():
+        if agent is None or agent is _AGENT_PENDING_SENTINEL:
             return
-        self._spawn_release_thread(
-            self._release_evicted_agent_soft, (agent,), f"agent-evict-{str(session_key)[:24]}", inline_fallback=True,
-            session_key=session_key,
-        )
+        if id(agent) in self._running_agent_ids():
+            if release_after_turn and state is not None:
+                state.turn.retired_agents.append(agent)
+            return
+        if commit_memory:
+            target, args = self._commit_then_release_soft, (agent, session_key, True)
+        else:
+            target, args = self._release_evicted_agent_soft, (agent,)
+        self._spawn_release_thread(target, args, f"agent-evict-{str(session_key)[:24]}", inline_fallback=True,
+                                   session_key=session_key)
+
+    def _evict_cached_agent_at_boundary(self, session_key: str) -> None:
+        """Reset and compress end the conversation the provider was tracking, so the old agent's
+        transcript is committed (``on_session_end``) before its clients go; a plain evict is not."""
+        self._evict_cached_agent(session_key, commit_memory=True)
 
     def _spawn_release_thread(self, target, args: tuple, name: str, *, inline_fallback: bool,
                               session_key: Optional[str] = None) -> None:
@@ -887,10 +917,14 @@ class GatewayAgentCacheMixin:
         with scope:
             target(*args)
 
-    def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> None:
-        """Commit the live transcript to memory providers before resource-only eviction."""
-        # No external memory provider (``_memory_manager`` None) — nothing to commit.
-        if agent is None or not hasattr(agent, "commit_memory_session") or getattr(agent, "_memory_manager", None) is None:
+    def _commit_memory_before_soft_evict(self, agent: Any, key: str, boundary: bool = False) -> None:
+        """Commit the live transcript to memory providers before resource-only eviction. A session
+        boundary (reset, compress) also ends the context engine's session; that engine can run without a provider."""
+        if agent is None or not hasattr(agent, "commit_memory_session"):
+            return
+        has_provider = getattr(agent, "_memory_manager", None) is not None
+        has_engine = boundary and getattr(agent, "context_compressor", None) is not None
+        if not has_provider and not has_engine:
             return
         try:
             messages = getattr(agent, "_session_messages", None)
@@ -902,10 +936,10 @@ class GatewayAgentCacheMixin:
         except Exception as _e:
             logger.debug("Pre-evict memory commit failed for %s: %s", key, _e)
 
-    def _commit_then_release_soft(self, agent: Any, key: str) -> None:
+    def _commit_then_release_soft(self, agent: Any, key: str, boundary: bool = False) -> None:
         """Commit end-of-session memory (if warranted), then soft-release — on the daemon eviction
         thread. Order matters: commit needs the live memory manager before ``release_clients``."""
-        self._commit_memory_before_soft_evict(agent, key)
+        self._commit_memory_before_soft_evict(agent, key, boundary)
         self._release_evicted_agent_soft(agent)
 
     def _release_evicted_agent_soft(self, agent: Any) -> None:

@@ -69,12 +69,12 @@ def _prepare_connection_retirement():
 # at a new inode (the very replacement this probe detects) the stale fd is RETIRED, never closed
 # — closing it would cancel the live connection's locks.  Replacements are rare and halt writes.
 _HEADER_PROBE_LOCK = threading.Lock()
-_HEADER_PROBE_FDS: "dict[str, tuple[int, int, int]]" = {}  # key -> (fd, dev, ino)
-_RETIRED_HEADER_PROBE_FDS: "list[int]" = []  # intentionally never closed
+_HEADER_PROBE_FDS: dict[str, tuple[int, int, int]] = {}  # key -> (fd, dev, ino)
+_RETIRED_HEADER_PROBE_FDS: list[int] = []  # intentionally never closed
 _FTS_TABLE_NAMES = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
 
 
-def _pread_db_range(db_path: Path, offset: int, length: int) -> "Optional[bytes]":
+def _pread_db_range(db_path: Path, offset: int, length: int) -> Optional[bytes]:
     """Lock-safe raw read of a possibly-live SQLite database: POSIX preads from a cached,
     never-closed fd (rebound when the path names a new inode); Windows reads plainly, since
     advisory-lock cancellation is a POSIX-only hazard."""
@@ -111,12 +111,12 @@ def _pread_db_range(db_path: Path, offset: int, length: int) -> "Optional[bytes]
     return None
 
 
-def _pread_db_header(db_path: Path, length: int) -> "Optional[bytes]":
+def _pread_db_header(db_path: Path, length: int) -> Optional[bytes]:
     """Lock-safe raw header read of a possibly-live SQLite database (see :func:`_pread_db_range`)."""
     return _pread_db_range(db_path, 0, length)
 
 
-def _read_sqlite_application_id(db_path: Path) -> "Optional[int]":
+def _read_sqlite_application_id(db_path: Path) -> Optional[int]:
     """application_id from the SQLite header, via the lock-safe :func:`_pread_db_header`."""
     from hermes_state_errors import _STATE_DB_APPLICATION_ID_OFFSET
     end = _STATE_DB_APPLICATION_ID_OFFSET + 4
@@ -156,7 +156,7 @@ def _watched_sqlite_sidecar_paths(db_path) -> dict[str, str]:
     return watched
 
 
-def _identity_is_truly_unlinked(identity: "tuple[int, int]", watched_path: str) -> bool:
+def _identity_is_truly_unlinked(identity: tuple[int, int], watched_path: str) -> bool:
     """The shared verdict: does ``(st_dev, st_ino)`` name a generation the watched path no longer
     holds?  See :func:`_fd_is_truly_unlinked` for why the test is identity and never link count."""
     try:
@@ -432,7 +432,7 @@ def _fsync_path(path: Path) -> None:
         os.close(fd)
 
 
-def _own_descriptor_for_identity(identity) -> "Optional[int]":
+def _own_descriptor_for_identity(identity) -> Optional[int]:
     """This process's open descriptor for the inode ``(st_dev, st_ino)``, or None.
 
     Exact-generation qualified: pathnames are never consulted. The descriptor stays owned by
@@ -752,7 +752,8 @@ def collect_state_db_stats(db_path: Path) -> dict[str, Any]:
     from hermes_state import _connect_tracked_db
     stats: dict[str, Any] = dict.fromkeys((
         "page_count", "page_size", "freelist_count", "logical_size_bytes", "wal_size_bytes", "journal_mode",
-        "messages", "sessions", "fts_tables", "fts_storage_version", "fts_rebuild_pending",
+        "messages", "sessions", "fts_tables", "fts_storage_version", "fts_storage_upgrade_needed",
+        "fts_teardown_pending", "fts_rebuild_pending",
         "fts_rebuild_high_water", "fts_rebuild_progress", "fts_rebuild_deferral"))
     # WAL sidecar size needs no connection at all.
     with contextlib.suppress(OSError):
@@ -800,6 +801,14 @@ def collect_state_db_stats(db_path: Path) -> dict[str, Any]:
             stats["fts_tables"] = {t: (t in names) for t in _FTS_TABLE_NAMES}
         # Raw state_meta reads — cheap, and independent of SessionDB.
         stats["fts_storage_version"] = _meta_int("fts_storage_version")
+        with contextlib.suppress(Exception):
+            from hermes_state_fts import fts_layout_drift
+            stats["fts_storage_upgrade_needed"] = bool(fts_layout_drift(conn.cursor()))
+        with contextlib.suppress(Exception):
+            # Demoted old-index tables still awaiting teardown: an optimize-storage run stopped after its backfill.
+            stats["fts_teardown_pending"] = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name LIKE 'fts\\_v22\\_trash\\_%' ESCAPE '\\' "
+                "LIMIT 1").fetchone() is not None
         stats["fts_rebuild_high_water"] = high_water = _meta_int("fts_rebuild_high_water")
         stats["fts_rebuild_progress"] = progress = _meta_int("fts_rebuild_progress")
         stats["fts_rebuild_pending"] = False if high_water is None else (progress or 0) < high_water

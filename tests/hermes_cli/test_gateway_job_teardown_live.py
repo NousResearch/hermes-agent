@@ -27,8 +27,8 @@ Three live proofs (no mocks of the code under test):
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
-import os
 import subprocess
 import sys
 import time
@@ -44,7 +44,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800
 JobObjectExtendedLimitInformation = 9
-PROCESS_ALL_ACCESS = 0x001FFFFF
+CREATE_SUSPENDED = 0x00000004
+SYNCHRONIZE = 0x00100000
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+WAIT_OBJECT_0 = 0x0
+WAIT_TIMEOUT = 0x102
 
 
 class IO_COUNTERS(ctypes.Structure):
@@ -83,43 +87,85 @@ class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
     ]
 
 
-def _make_kill_on_close_job(allow_breakaway: bool) -> int:
-    kernel32 = ctypes.windll.kernel32
-    job = kernel32.CreateJobObjectW(None, None)
-    assert job, "CreateJobObjectW failed"
+def _kernel32():
+    # A private WinDLL with typed HANDLE signatures: windll's shared instance
+    # passes Python ints as 32-bit C ints, and argtypes set on it would leak
+    # into every other ctypes user in this process.
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    k.CreateJobObjectW.restype = wintypes.HANDLE
+    k.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    k.SetInformationJobObject.restype = wintypes.BOOL
+    k.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    k.AssignProcessToJobObject.restype = wintypes.BOOL
+    k.IsProcessInJob.argtypes = [
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.BOOL),
+    ]
+    k.IsProcessInJob.restype = wintypes.BOOL
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k.WaitForSingleObject.restype = wintypes.DWORD
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    k.CloseHandle.restype = wintypes.BOOL
+    return k
+
+
+def _make_kill_on_close_job(k, allow_breakaway: bool) -> int:
+    job = k.CreateJobObjectW(None, None)
+    assert job, f"CreateJobObjectW failed (winerror={ctypes.get_last_error()})"
     info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
     flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     if allow_breakaway:
         flags |= JOB_OBJECT_LIMIT_BREAKAWAY_OK
     info.BasicLimitInformation.LimitFlags = flags
-    ok = kernel32.SetInformationJobObject(
+    ok = k.SetInformationJobObject(
         job,
         JobObjectExtendedLimitInformation,
         ctypes.byref(info),
         ctypes.sizeof(info),
     )
-    assert ok, "SetInformationJobObject failed"
+    assert ok, f"SetInformationJobObject failed (winerror={ctypes.get_last_error()})"
     return job
 
 
-def _assign_to_job(job: int, proc: subprocess.Popen) -> None:
-    kernel32 = ctypes.windll.kernel32
-    ok = kernel32.AssignProcessToJobObject(job, int(proc._handle))
-    assert ok, f"AssignProcessToJobObject failed (winerror={ctypes.GetLastError()})"
+def _start_driver_in_job(k, job: int, argv: list[str]) -> subprocess.Popen:
+    """Start ``argv`` inside ``job`` before it runs a single instruction.
+
+    The process is created suspended, assigned, then resumed — the same seam
+    the updater uses (``update_lock.bind_child_to_update_tree`` +
+    ``resume_suspended_child``). Assigning a RUNNING process is racy: a venv's
+    ``Scripts\\python.exe`` is a redirector that starts the real interpreter as
+    its own child, and a child created before ``AssignProcessToJobObject``
+    lands stays outside the job. That interpreter is the one that spawns the
+    grandchild, so the grandchild escaped the job and survived the teardown
+    (~6% of CI runs before this).
+    """
+    from hermes_cli.update_lock import resume_suspended_child
+
+    driver = subprocess.Popen(argv, cwd=str(_REPO_ROOT), creationflags=CREATE_SUSPENDED)
+    if not k.AssignProcessToJobObject(job, int(driver._handle)):
+        error = ctypes.get_last_error()
+        driver.kill()
+        driver.wait(timeout=30)
+        pytest.fail(f"AssignProcessToJobObject failed (winerror={error})")
+    resume_suspended_child(driver)
+    return driver
 
 
-def _pid_alive(pid: int) -> bool:
-    kernel32 = ctypes.windll.kernel32
-    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-    if not h:
-        return False
+def _read_pid(path: Path) -> int | None:
     try:
-        code = wintypes.DWORD()
-        kernel32.GetExitCodeProcess(h, ctypes.byref(code))
-        return code.value == 259  # STILL_ACTIVE
-    finally:
-        kernel32.CloseHandle(h)
+        text = path.read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return None
+    return int(text) if text.isdigit() else None
 
 
 _SLEEPER = "import time; time.sleep(120)"
@@ -137,86 +183,101 @@ def _wait_for(predicate, timeout_s: float = 30.0, interval_s: float = 0.25):
 class TestJobObjectMechanismLive:
     """Real Job Objects, real children — the #48820 kill mechanism."""
 
-    def _driver_source(self, flags_helper: str, pid_file: str) -> str:
+    def _driver_source(self, flags_helper: str, pid_file: Path) -> str:
         # The driver runs INSIDE the job and spawns a grandchild "gateway"
         # with the flag bundle under test, then exits — mirroring the
-        # updater/watcher exiting while its job tears down.
+        # updater/watcher exiting while its job tears down. The pid lands via
+        # an atomic replace, so the file never exists empty.
         return (
-            "import subprocess, sys, pathlib\n"
-            "sys.path.insert(0, r'%s')\n"
+            "import os, subprocess, sys, pathlib\n"
+            f"sys.path.insert(0, r'{_REPO_ROOT!s}')\n"
             "from hermes_cli._subprocess_compat import (\n"
             "    windows_detach_flags, windows_detach_flags_without_breakaway)\n"
-            "flags = %s()\n"
-            "p = subprocess.Popen([sys.executable, '-c', %r],\n"
+            f"flags = {flags_helper}()\n"
+            f"p = subprocess.Popen([sys.executable, '-c', {_SLEEPER!r}],\n"
             "    creationflags=flags, stdin=subprocess.DEVNULL,\n"
             "    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
-            "pathlib.Path(r'%s').write_text(str(p.pid), encoding='utf-8')\n"
-        ) % (str(_REPO_ROOT), flags_helper, _SLEEPER, pid_file)
+            f"tmp = pathlib.Path(r'{pid_file}.tmp')\n"
+            "tmp.write_text(str(p.pid), encoding='utf-8')\n"
+            f"os.replace(tmp, r'{pid_file}')\n"
+        )
 
-    def _run_in_job(self, tmp_path: Path, flags_helper: str) -> int:
+    @contextlib.contextmanager
+    def _grandchild_after_teardown(self, tmp_path: Path, flags_helper: str):
+        """Yield ``(kernel32, grandchild handle, was in the job)`` right after
+        the job's last handle closed.
+
+        The grandchild is watched through a handle opened while it was alive,
+        never by pid: a pid freed by the kill can be reused by another process
+        on a busy runner, and a handle also lets the kill be awaited instead of
+        guessed with a fixed sleep.
+        """
+        k = _kernel32()
         pid_file = tmp_path / f"{flags_helper}.pid"
-        job = _make_kill_on_close_job(allow_breakaway=True)
-        kernel32 = ctypes.windll.kernel32
+        job = _make_kill_on_close_job(k, allow_breakaway=True)
+        gw = None
+        gw_pid = None
         try:
-            driver = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-c",
-                    # Handshake: wait until the test has assigned us to the
-                    # job before spawning the grandchild.
-                    "import pathlib, sys, time\n"
-                    f"go = pathlib.Path(r'{tmp_path / 'go.marker'}')\n"
-                    "deadline = time.monotonic() + 30\n"
-                    "while not go.exists():\n"
-                    "    assert time.monotonic() < deadline, 'no go marker'\n"
-                    "    time.sleep(0.1)\n"
-                    + self._driver_source(flags_helper, str(pid_file)),
-                ],
-                cwd=str(_REPO_ROOT),
+            argv = [sys.executable, "-c", self._driver_source(flags_helper, pid_file)]
+            driver = _start_driver_in_job(k, job, argv)
+            assert _wait_for(lambda: _read_pid(pid_file) is not None), (
+                "driver never wrote the pid file"
             )
-            _assign_to_job(job, driver)
-            (tmp_path / "go.marker").write_text("go", encoding="utf-8")
-            assert _wait_for(pid_file.exists), "driver never wrote the pid file"
-            gw_pid = int(pid_file.read_text(encoding="utf-8"))
-            assert _wait_for(lambda: driver.poll() is not None), (
-                "driver did not exit"
+            gw_pid = _read_pid(pid_file)
+            gw = k.OpenProcess(
+                SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, gw_pid
             )
-            assert _pid_alive(gw_pid), "grandchild died before job teardown"
+            assert gw, (
+                f"OpenProcess({gw_pid}) failed (winerror={ctypes.get_last_error()})"
+            )
+            assert driver.wait(timeout=30) is not None, "driver did not exit"
+            assert k.WaitForSingleObject(gw, 0) == WAIT_TIMEOUT, (
+                "grandchild died before job teardown"
+            )
+            in_job = wintypes.BOOL(False)
+            assert k.IsProcessInJob(gw, job, ctypes.byref(in_job)), (
+                f"IsProcessInJob failed (winerror={ctypes.get_last_error()})"
+            )
             # THE teardown: closing the last job handle fires
             # KILL_ON_JOB_CLOSE against every process still in the job.
-            kernel32.CloseHandle(job)
+            assert k.CloseHandle(job), "CloseHandle(job) failed"
             job = None
-            time.sleep(2.0)
-            return gw_pid
+            yield k, gw, bool(in_job.value)
         finally:
-            (tmp_path / "go.marker").unlink(missing_ok=True)
             if job:
-                kernel32.CloseHandle(job)
+                k.CloseHandle(job)
+            if gw_pid:
+                subprocess.run(
+                    ["taskkill", "/PID", str(gw_pid), "/T", "/F"],
+                    capture_output=True,
+                    check=False,
+                )
+            if gw:
+                k.CloseHandle(gw)
 
     def test_breakaway_child_survives_job_teardown(self, tmp_path):
-        pid = self._run_in_job(tmp_path, "windows_detach_flags")
-        try:
-            assert _pid_alive(pid), (
+        with self._grandchild_after_teardown(
+            tmp_path, "windows_detach_flags"
+        ) as (k, gw, in_job):
+            assert not in_job, "a CREATE_BREAKAWAY_FROM_JOB child must leave the job"
+            assert k.WaitForSingleObject(gw, 2000) == WAIT_TIMEOUT, (
                 "CREATE_BREAKAWAY_FROM_JOB child must survive the parent "
                 "job's kill-on-close teardown"
-            )
-        finally:
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True
             )
 
     def test_non_breakaway_child_killed_by_job_teardown(self, tmp_path):
         """The #48820 kill path, reproduced live: no breakaway → the job's
         teardown reaps the freshly spawned gateway."""
-        pid = self._run_in_job(tmp_path, "windows_detach_flags_without_breakaway")
-        try:
-            assert not _pid_alive(pid), (
+        with self._grandchild_after_teardown(
+            tmp_path, "windows_detach_flags_without_breakaway"
+        ) as (k, gw, in_job):
+            assert in_job, (
+                "precondition: a child spawned from inside the job without "
+                "CREATE_BREAKAWAY_FROM_JOB must be in the job"
+            )
+            assert k.WaitForSingleObject(gw, 30_000) == WAIT_OBJECT_0, (
                 "child without breakaway must be killed by kill-on-close "
                 "job teardown — this is the silent gateway death of #48820"
-            )
-        finally:
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True
             )
 
 
@@ -262,7 +323,7 @@ class TestWatcherRespawnLive:
 
         # (a) Breakaway stamp: on unfixed main the respawn env carried no
         # stamp, so a job-teardown death was undiagnosable.
-        stamp = marker.read_text(encoding="utf-8").strip()
+        stamp = marker.read_text(encoding="utf-8-sig").strip()
         assert stamp in {"1", "0"}, (
             f"respawned gateway must carry the breakaway stamp, got {stamp!r}"
         )
@@ -272,7 +333,7 @@ class TestWatcherRespawnLive:
         assert _wait_for(
             lambda: stdio_log.exists()
             and "stub-gateway-stderr-trace"
-            in stdio_log.read_text(encoding="utf-8", errors="replace"),
+            in stdio_log.read_text(encoding="utf-8-sig", errors="replace"),
             timeout_s=30,
         ), "respawned gateway stderr must land in logs/gateway-stdio.log"
 

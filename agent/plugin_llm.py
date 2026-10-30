@@ -41,7 +41,7 @@ class PluginLlmImageInput:
     type: str = "image"
 
 
-PluginLlmInput = Union[PluginLlmTextInput, PluginLlmImageInput, dict[str, Any]]
+PluginLlmInput = PluginLlmTextInput | PluginLlmImageInput | dict[str, Any]
 """One structured input block: a dataclass above or a plain dict of the same shape."""
 
 

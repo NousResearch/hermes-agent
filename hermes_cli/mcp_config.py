@@ -457,7 +457,7 @@ def _probe_single_server(
             details["initialized"] = False
         try:
             server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # str(TimeoutError()) is '' — printed verbatim it was a blank "Authentication failed:".
             raise TimeoutError(
                 f"Connecting to MCP server '{name}' timed out after {float(connect_timeout):.0f}s "
@@ -802,10 +802,12 @@ def probe_failure_class(exc: BaseException) -> str:
 
     if tagged := tagged_failure_class(exc):
         return tagged
-    from tools.mcp_tool_errors import _is_auth_error, _iter_exception_nodes, _unwrap_exception_group
+    from tools.mcp_tool_errors import InvalidMcpUrlError, _is_auth_error, _iter_exception_nodes, _unwrap_exception_group
     from tools.mcp_tool_node_abi import NodeAbiMismatchError
     try:
         root = _unwrap_exception_group(exc)
+        if isinstance(root, InvalidMcpUrlError):  # the configured URL is not http(s)://host
+            return "config_invalid"
         if _is_auth_error(root) or getattr(getattr(root, "response", None), "status_code", None) in (401, 403):
             return "auth_required"
         # A missing stdio command (FileNotFoundError) or a native module built for another Node.
@@ -1122,7 +1124,6 @@ _MCP_USAGE = (
     "hermes mcp                                    Open the catalog picker (default)",
     "hermes mcp catalog                            List Nous-approved MCPs",
     "hermes mcp install <name>                     Install a catalog MCP",
-    "hermes mcp serve                              Run as MCP server",
     "hermes mcp add <name> --url <endpoint>        Add a custom MCP server",
     "hermes mcp add <name> --command <cmd>         Add a stdio server",
     "hermes mcp add <name> --preset <preset>       Add from a known preset",
@@ -1138,10 +1139,6 @@ _MCP_USAGE = (
 def mcp_command(args):
     """Main dispatcher for ``hermes mcp`` subcommands."""
     action = getattr(args, "mcp_action", None)
-    if action == "serve":
-        from mcp_serve import run_mcp_server
-        run_mcp_server(verbose=getattr(args, "verbose", False))
-        return
     if action in ("picker", "catalog", "install"):
         # Catalog subcommands live in mcp_picker / mcp_catalog; import lazily to keep this module cheap.
         from hermes_cli import mcp_picker

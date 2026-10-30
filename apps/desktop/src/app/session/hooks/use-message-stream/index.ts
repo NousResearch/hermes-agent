@@ -12,6 +12,7 @@ import {
   chatMessageText,
   completeOpenTimelineParts,
   type GatewayEventPayload,
+  hasUnresolvedToolCall,
   mergeFinalAssistantText,
   normalizeWs,
   partsText,
@@ -33,6 +34,7 @@ import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
+import { registerStreamDeltaFlush } from '@/store/stream-delta-flush'
 import { upsertSubagent } from '@/store/subagents'
 import { $todosBySession, setSessionTodos } from '@/store/todos'
 import { broadcastTranscriptChanged } from '@/store/transcript-sync'
@@ -47,8 +49,10 @@ import {
 } from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
-import { extendInterruptedReply } from './interrupted-reply'
+import { bindStoppedTurnReceipt, extendInterruptedReply } from './interrupted-reply'
+import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
+import { admitSegmentDelta, admitSegmentSeal, type SegmentCursor, type SegmentStamp } from './segment-identity'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
 interface MessageStreamOptions {
@@ -204,15 +208,23 @@ export function useMessageStream({
               }
             ]
           } else {
-            nextMessages = prev.map(m =>
-              m.id === streamId
-                ? {
-                    ...m,
-                    parts: transform(m.parts, m),
-                    pending: patchesSealedBubble ? (m.pending ?? false) : opts.pending ? opts.pending(m) : true
-                  }
-                : m
-            )
+            nextMessages = prev.map(m => {
+              if (m.id !== streamId) {
+                return m
+              }
+
+              const patched = { ...m, parts: transform(m.parts, m) }
+
+              // A bubble a steer sealed stays pending only while its own tools run.
+              return {
+                ...patched,
+                pending: patchesSealedBubble
+                  ? Boolean(m.pending) && hasUnresolvedToolCall(patched)
+                  : opts.pending
+                    ? opts.pending(m)
+                    : true
+              }
+            })
           }
 
           if (patchesSealedBubble) {
@@ -289,6 +301,9 @@ export function useMessageStream({
   const nativeSubagentSessionsRef = useRef<Set<string>>(new Set())
   // Turns that auto-compacted: skip post-turn hydrate so live scrollback survives.
   const compactedTurnRef = useRef<Set<string>>(new Set())
+  // Per session: how far the live turn's stamped reply has been applied, so a
+  // re-sent delta or seal upserts instead of painting a second copy.
+  const segmentCursorsRef = useRef<Map<string, SegmentCursor>>(new Map())
   // Last session we applied a session.info cwd for — lets us tell an agent
   // relocating the SAME session (follow it) from a session switch (don't yank).
   const lastCwdInfoSessionRef = useRef<null | string>(null)
@@ -472,6 +487,9 @@ export function useMessageStream({
     [flushQueuedDeltas]
   )
 
+  // A steer seals the live bubble from outside this hook; it flushes our buffer first.
+  useEffect(() => registerStreamDeltaFlush(sessionId => flushQueuedDeltas(sessionId)), [flushQueuedDeltas])
+
   // Page Visibility does not report every Windows/Linux focus transition.
   // Flush queued deltas on both signals so returning to a chat cannot leave a
   // completed chunk waiting for the next throttled timer.
@@ -502,9 +520,15 @@ export function useMessageStream({
   }, [flushQueuedDeltas])
 
   const appendAssistantDelta = useCallback(
-    (sessionId: string, delta: string, occurredAt?: number) => {
+    (sessionId: string, delta: string, occurredAt?: number, stamp?: null | SegmentStamp) => {
       if (!delta) {
         return
+      }
+
+      if (stamp) {
+        const admitted = admitSegmentDelta(segmentCursorsRef.current.get(sessionId), stamp, delta)
+        segmentCursorsRef.current.set(sessionId, admitted.cursor)
+        delta = admitted.text
       }
 
       queueDelta(sessionId, 'assistant', delta, occurredAt)
@@ -613,7 +637,17 @@ export function useMessageStream({
   )
 
   const finalizeInterimAssistantMessage = useCallback(
-    (sessionId: string, text: string, occurredAt = Date.now() / 1000) => {
+    (sessionId: string, text: string, occurredAt = Date.now() / 1000, stamp?: null | SegmentStamp) => {
+      if (stamp) {
+        const admitted = admitSegmentSeal(segmentCursorsRef.current.get(sessionId), stamp)
+        segmentCursorsRef.current.set(sessionId, admitted.cursor)
+
+        // A copy of a seal this turn already applied: its bubble is on screen.
+        if (!admitted.fresh) {
+          return
+        }
+      }
+
       updateSessionState(sessionId, state => {
         if (state.interrupted) {
           return state
@@ -742,8 +776,10 @@ export function useMessageStream({
         if (state.interrupted) {
           return {
             ...state,
-            messages:
+            messages: bindStoppedTurnReceipt(
               status === 'interrupted' ? extendInterruptedReply(state.messages, text, occurredAt) : state.messages,
+              persistedTurn
+            ),
             awaitingResponse: false,
             busy: false,
             needsInput: false,
@@ -871,8 +907,11 @@ export function useMessageStream({
           message => message.role === 'user' && !(hasCurrentResponse && message.id === `user-queued-${sessionId}`)
         )
 
+        // A redirect reserves its correction row below the live stream without
+        // sealing it, so a still-pending stream row above the last user message
+        // is this completion's own reply, not a stale earlier occurrence.
         const streamIndex = streamId
-          ? prev.findIndex((message, index) => index > lastUserIndex && message.id === streamId)
+          ? prev.findIndex((message, index) => message.id === streamId && (index > lastUserIndex || message.pending))
           : -1
 
         const settleAt = (index: number) =>
@@ -1033,7 +1072,12 @@ export function useMessageStream({
         // degraded websocket leaves its tool row spinning forever. The turn is
         // provably done here — nothing can still be running — so seal any
         // tool-call parts that never saw their completion event.
-        nextMessages = sealOpenToolParts(nextMessages)
+        // A bubble a steer sealed while its tool ran stays pending for that tool's
+        // result; the turn is over now, so a lost tool.complete must not keep it spinning.
+        nextMessages = nextMessages.map(message =>
+          message.pending && message.interim ? { ...message, pending: false } : message
+        )
+        nextMessages = bindReceiptUserRows(sealOpenToolParts(nextMessages), persistedTurn)
 
         const hasInlineError = nextMessages.some(
           (m, index) => index > lastUserIndex && m.role === 'assistant' && m.error && !m.hidden

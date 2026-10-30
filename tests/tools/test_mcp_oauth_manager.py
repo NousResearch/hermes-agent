@@ -29,8 +29,7 @@ def test_manager_isolates_same_named_servers_by_profile_home(tmp_path, monkeypat
             storage = HermesTokenStorage("shared")
             storage._tokens_path().parent.mkdir(parents=True, exist_ok=True)
             storage._tokens_path().write_text(
-                '{"access_token":"%s","token_type":"Bearer","expires_in":3600}'
-                % access_token
+                f'{{"access_token":"{access_token}","token_type":"Bearer","expires_in":3600}}'
             , encoding="utf-8")
         finally:
             reset_hermes_home_override(token)
@@ -190,6 +189,8 @@ def _fake_response(status, url, body):
     resp = MagicMock()
     resp.status_code = status
     resp.request = SimpleNamespace(url=url)
+    # Not a redirect: mcp's RedirectAwareAuth follows any truthy next_request.
+    resp.next_request = None
 
     async def _aread():
         return body

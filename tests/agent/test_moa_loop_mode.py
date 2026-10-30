@@ -454,6 +454,54 @@ def test_reference_messages_drops_system_but_renders_tools_as_text():
     assert view[-1]["role"] == "user"
 
 
+def test_reference_view_keeps_the_data_use_requirement_of_a_folded_tool_result():
+    from agent.message_metadata import data_use_requirement
+    from agent.moa_loop import _reference_messages
+
+    messages = [
+        {"role": "user", "content": "read my mail"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "inbox", "data_use": ["no_training"]},
+    ]
+
+    assert data_use_requirement(_reference_messages(messages)) == {"no_training"}
+
+
+def test_max_iterations_summary_keeps_the_data_use_requirement_on_every_moa_slot(monkeypatch, tmp_path):
+    from agent.chat_completion_helpers import handle_max_iterations
+    from agent.message_metadata import data_use_requirement
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "moa:\n  default_preset: review\n  presets:\n    review:\n"
+        "      reference_models:\n        - provider: nous\n          model: ref-model\n"
+        "      aggregator:\n        provider: nous\n        model: agg-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append((kwargs["task"], data_use_requirement(kwargs["messages"])))
+        return _response("summary")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    agent = AIAgent(
+        api_key="moa-virtual-provider", base_url="moa://local", model="review", provider="moa",
+        quiet_mode=True, skip_context_files=True, skip_memory=True, enabled_toolsets=["file"], max_iterations=1,
+    )
+    messages = [
+        {"role": "user", "content": "read my mail"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "inbox", "data_use": ["no_training"]},
+    ]
+
+    assert handle_max_iterations(agent, messages, 1) == "summary"
+    assert calls == [("moa_reference", {"no_training"}), ("moa_aggregator", {"no_training"})]
+
+
 def test_reference_messages_ends_with_user_not_assistant_prefill():
     """Advisory reference views must never end on an assistant turn.
 

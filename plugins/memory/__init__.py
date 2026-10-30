@@ -63,13 +63,14 @@ def _get_project_plugins_dir() -> Optional[Path]:
 
 
 def _is_memory_provider_dir(path: Path) -> bool:
-    """Cheap text heuristic (no import): ``__init__.py`` mentions the memory provider contract."""
+    """Cheap text heuristic (no import): ``__init__.py`` mentions the memory provider contract.
+    A miss in the first 8 KB falls back to parsing, so a long module docstring cannot hide a provider."""
     init_file = path / "__init__.py"
     try:
         if not init_file.exists():
             return False
         source = init_file.read_text(errors="replace", encoding="utf-8-sig")[:8192]
-        return "register_memory_provider" in source or "MemoryProvider" in source
+        return "register_memory_provider" in source or "MemoryProvider" in source or _defines_memory_provider(path)
     except OSError as exc:  # one mode-000 / ACL-denied child must not abort discovery
         logger.warning("Skipping unreadable plugin directory %s: %s", path, exc)
         return False
@@ -211,7 +212,7 @@ def discover_memory_providers() -> list[tuple[str, str, bool]]:
     return results
 
 
-def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -> Optional["MemoryProvider"]:
+def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -> Optional[MemoryProvider]:
     """Load a MemoryProvider by name (bundled, user, project, then pip entry point);
     None if not found or failing to load. Skills register only for the configured
     active provider unless ``register_skills`` is explicit, so inspecting inactive
@@ -225,10 +226,9 @@ def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -
         logger.debug("Memory provider '%s' not found in bundled, user plugins, or entry points", name)
         return None
     if provider_dir is not None and _explicitly_disabled(name, provider_dir):
-        # The Plugins hub / `hermes plugins disable` park a user-installed provider in
-        # ``plugins.disabled``; the loader must honour it or "disabled" is a lie in the UI.
-        logger.warning("Memory provider '%s' is disabled via plugins.disabled; run `hermes plugins enable %s` "
-                       "or change memory.provider.", name, name)
+        # The Plugins hub / `hermes plugins disable` (or an update that could not install it) park a
+        # user-installed provider in ``plugins.disabled``; the loader must honour it or "disabled" is a lie.
+        logger.warning("%s", parked_provider_notice(name))
         return None
 
     def _load(_dir):
@@ -309,7 +309,7 @@ def import_provider_module(name: str, submodule: Optional[str] = None):
     return importlib.import_module(f"{package.__name__}.{submodule}") if submodule else package
 
 
-def _instantiate_subclass(namespace) -> Optional["MemoryProvider"]:
+def _instantiate_subclass(namespace) -> Optional[MemoryProvider]:
     """First instantiable ``MemoryProvider`` subclass found among *namespace*'s attributes."""
     from agent.memory_provider import MemoryProvider
 
@@ -323,7 +323,7 @@ def _instantiate_subclass(namespace) -> Optional["MemoryProvider"]:
     return None
 
 
-def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True) -> Optional["MemoryProvider"]:
+def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True) -> Optional[MemoryProvider]:
     """Import a provider entry point and extract the MemoryProvider instance: an
     instance, a subclass, a module with ``register(ctx)``, a factory / ``register``
     callable, or a namespace holding a subclass — in that order."""
@@ -359,7 +359,7 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
     return provider
 
 
-def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True) -> Optional["MemoryProvider"]:
+def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True) -> Optional[MemoryProvider]:
     """Import a provider module; ``register(ctx)`` first, else a top-level subclass."""
     name = provider_dir.name
     from hermes_cli.plugin_isolation import user_plugin_host
@@ -436,10 +436,11 @@ class _ProviderCollector:
             base_ref="agent.memory_provider:MemoryProvider", ctx=self, before_reload=drop_hooks)
         return self.provider
 
-    def register_hook(self, hook_name, callback):
+    def register_hook(self, hook_name, callback, *, hold_stream=False):
         context = self._plugin_context()
         with context._manager._discovery_lock:
-            return context._manager._register_fallback_hook(context, self._hook_source, hook_name, callback)
+            return context._manager._register_fallback_hook(
+                context, self._hook_source, hook_name, callback, hold_stream=hold_stream)
 
     def register_memory_provider(self, provider):
         self.provider = provider
@@ -503,6 +504,22 @@ def _get_active_memory_provider() -> Optional[str]:
         return None
 
 
+def parked_provider_notice(name: str) -> Optional[str]:
+    """The user-facing reason a configured provider is not loading because ``plugins.disabled`` parks
+    it, naming the update that did so when there was one; None when it is not parked."""
+    provider_dir = find_provider_dir(name)
+    if provider_dir is None or not _explicitly_disabled(name, provider_dir):
+        return None
+    from hermes_cli.config import load_config
+    from pm.plugins_state import RECORD
+    record = cfg_get(load_config(), "plugins", RECORD)
+    recorded = record.get(name) if isinstance(record, dict) else None
+    why = (f" An update turned it off ({recorded.get('reason')}) and a later update retries it."
+           if isinstance(recorded, dict) and recorded.get("reason") else "")
+    return (f"⚠ Memory provider '{name}' is turned off: plugins.disabled lists it, so external memory is off "
+            f"(built-in memory still works).{why} Turn it back on with `hermes plugins enable {name}`.")
+
+
 def _explicitly_disabled(name: str, provider_dir: Path) -> bool:
     """True when a NON-bundled provider is parked in ``plugins.disabled`` under any spelling the
     plugin commands write: the provider name, its directory name or its manifest ``name:``."""
@@ -515,14 +532,9 @@ def _explicitly_disabled(name: str, provider_dir: Path) -> bool:
         return False
     if not isinstance(disabled, list):
         return False
-    names = {name, provider_dir.name}
-    try:
-        import hermes_yaml as yaml
-        with open(provider_dir / "plugin.yaml", encoding="utf-8-sig") as f:
-            names.add(str((yaml.safe_load(f) or {}).get("name") or ""))
-    except Exception:
-        pass
-    return bool(names & {v for v in disabled if isinstance(v, str)})
+    from pm.plugins_state import plugin_spellings
+
+    return bool(plugin_spellings(provider_dir, name) & {v for v in disabled if isinstance(v, str)})
 
 
 def _prune_inactive_memory_provider_skills(active_provider: Optional[str] = None) -> None:

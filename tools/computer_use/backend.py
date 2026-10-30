@@ -5,43 +5,12 @@ registers (see :mod:`plugins.computer_use`); ``computer_use.backend`` selects ex
 
 from __future__ import annotations
 
-import struct
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.provider_base import ProviderBase
-
-_JPEG_SOF_MARKERS = frozenset({0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF})
-
-def image_dimensions_from_bytes(raw: bytes) -> Optional[tuple[int, int]]:
-    """(width, height) for PNG / JPEG bytes, or None when unreadable. PNG: IHDR. JPEG: walk
-    segments (skipping 0xFF fill bytes) to the first SOF marker; stop at SOS. Used by the
-    tool layer's provider min-size guard."""
-    if raw.startswith(b"\x89PNG\r\n\x1a\n") and len(raw) >= 24:
-        width, height = struct.unpack(">II", raw[16:24])  # cannot fail: 8 bytes are guaranteed present
-        return int(width), int(height)
-    if raw.startswith(b"\xff\xd8") and len(raw) > 4:
-        i = 2
-        while i + 9 < len(raw):
-            if raw[i] != 0xFF:
-                i += 1
-                continue
-            marker, i = raw[i + 1], i + 2
-            while marker == 0xFF and i < len(raw):
-                marker, i = raw[i], i + 1
-            if marker in {0xD8, 0xD9}:
-                continue
-            if marker == 0xDA or i + 2 > len(raw):
-                break
-            segment_len = int.from_bytes(raw[i:i + 2], "big")
-            if segment_len < 2 or i + segment_len > len(raw):
-                break
-            if marker in _JPEG_SOF_MARKERS and segment_len >= 7:
-                return int.from_bytes(raw[i + 5:i + 7], "big"), int.from_bytes(raw[i + 3:i + 5], "big")
-            i += segment_len
-    return None
 
 
 @dataclass

@@ -31,7 +31,7 @@ def _write(tmp_path, name: str, text: str, encoding: str) -> str:
 
 class TestUtf16Read:
     def test_utf16le_bom(self, fops, tmp_path):
-        path = _write(tmp_path, "notepad.txt", "hello\nworld\n", "utf-16-le")
+        _write(tmp_path, "notepad.txt", "hello\nworld\n", "utf-16-le")
         # prepend BOM manually via utf-16 (writes native-endian BOM); use explicit
         raw = "\ufefflíne one\nlíne two\n".encode("utf-16-le")
         (tmp_path / "bom-le.txt").write_bytes(raw)

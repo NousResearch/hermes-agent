@@ -116,7 +116,7 @@ def install_packages(*, ask_password: Callable[[], str], on_line: Callable[[str]
 def _sudo_nopasswd() -> bool:
     try:
         return subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=3,
-                              stdin=subprocess.DEVNULL).returncode == 0
+                              stdin=subprocess.DEVNULL, check=False).returncode == 0
     except Exception:
         return False
 
@@ -141,9 +141,10 @@ def _run(cmd: str, *, ask_password: Callable[[], str], on_line: Callable[[str], 
             stdin_payload = password + "\n"
     on_line(f"$ {cmd}")
     env = {"DEBIAN_FRONTEND": "noninteractive", "LC_ALL": "C.UTF-8"}
+    # Short-lived and awaited: the group exists so _kill_group's timeout kill reaches apt/dnf under sudo.
     proc = subprocess.Popen(  # windows-footgun: ok — Linux-only (is_supported_host)
         argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        env={**os.environ, **env}, start_new_session=True)
+        env={**os.environ, **env}, start_new_session=True)  # detached-spawn: ok — awaited, group-killed on timeout
     try:
         if stdin_payload is not None:
             proc.stdin.write(stdin_payload.encode("utf-8"))  # type: ignore[union-attr]

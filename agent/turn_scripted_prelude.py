@@ -1,7 +1,7 @@
 """Scripted prelude: tool calls a prompt built-in plays before the turn's first model call.
 
-A prelude is a generator owned by the built-in (``agent.initiate_setup_prompt.initiate_setup_prelude``
-is the one today). Each step it yields ``(content, tool_name, args)``: the assistant text and the one
+A prelude is a generator owned by the caller that starts the turn (the desktop onboarding opening is the
+intended one). Each step it yields ``(content, tool_name, args)``: the assistant text and the one
 tool call that row carries. The loop runs it through the unchanged ``run_tool_round`` (row persisted
 before the tool runs, interim text and tool events emitted, tool hooks fired) and sends the tool's
 result string back into the generator, so a later step can use an earlier answer.
@@ -21,7 +21,13 @@ from agent.message_sanitization import deterministic_call_id
 from agent.transports.types import NormalizedResponse, build_tool_call
 from agent.turn_tool_round import run_tool_round
 
-Prelude = Generator[tuple[str, str, dict], Optional[str]]
+Prelude = Generator[tuple[str, str, dict], Optional[str], None]
+
+
+def prelude_call_id(session_id: str, name: str, args: dict, index: int) -> str:
+    """Seeded by the session, the call and its place in history: no two chats share an id (a rerun plays
+    the same card at the same place), and it stays byte-stable on replay."""
+    return deterministic_call_id(name, f"{session_id}:{json.dumps(args, sort_keys=True)}", index)
 
 
 def run_scripted_prelude(agent: Any, s: Any, prelude: Prelude) -> Any:
@@ -38,9 +44,7 @@ def run_scripted_prelude(agent: Any, s: Any, prelude: Prelude) -> Any:
         s.finish_reason = "tool_calls"
         s.assistant_message = NormalizedResponse(
             content=content, finish_reason="tool_calls",
-            # Seeded by the card and its place in history: unique within the session, byte-stable on replay.
-            tool_calls=[build_tool_call(deterministic_call_id(name, json.dumps(args, sort_keys=True), len(s.messages)),
-                                        name, args)])
+            tool_calls=[build_tool_call(prelude_call_id(agent.session_id, name, args, len(s.messages)), name, args)])
         verdict = _run_phase(run_tool_round, agent, s)
         if verdict.action != "continue":
             break

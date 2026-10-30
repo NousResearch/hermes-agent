@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { $terminalFontSize, setTerminalFontSize } from '@/store/terminal-font-size'
 
 import { $terminalFontFamily } from '../right-sidebar/terminal/terminal-font'
 
@@ -70,6 +72,7 @@ describe('TerminalFontSetting', () => {
     mocks.save.mockResolvedValue({ ok: true })
     mocks.profileSwitch = null
     $terminalFontFamily.set('')
+    setTerminalFontSize(11)
   })
 
   afterEach(() => {
@@ -96,6 +99,21 @@ describe('TerminalFontSetting', () => {
       display: { skin: 'hermes' },
       terminal: { backend: 'local', cwd: '/workspace', font_family: 'MesloLGS NF' }
     })
+  })
+
+  it('changes the terminal font size locally without writing config', async () => {
+    render(<TerminalFontSetting />)
+    const group = screen.getByRole('group', { name: 'Terminal Font' })
+
+    expect((screen.getByLabelText('Glyph preview') as HTMLElement).style.fontSize).toBe('11px')
+
+    fireEvent.click(within(group).getByRole('button', { name: '14' }))
+
+    expect($terminalFontSize.get()).toBe(14)
+    expect((screen.getByLabelText('Glyph preview') as HTMLElement).style.fontSize).toBe('14px')
+
+    await flushAutosave()
+    expect(mocks.save).not.toHaveBeenCalled()
   })
 
   it('accepts an arbitrary CSS stack and resets to the bundled default', async () => {

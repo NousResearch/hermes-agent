@@ -15,6 +15,7 @@ import time
 from agent.i18n import t
 from agent.pet import render as pet_render
 from hermes_cli.banner import _format_context_length
+from hermes_cli.status_bar_quota import plan_segments
 from typing import Any, Dict, Optional
 
 _SB = "class:status-bar"
@@ -277,6 +278,15 @@ class CLIStatusBarMixin:
             snapshot.update(background_counts())
         except Exception:
             pass
+
+        # Plan allowance (⊛ 5h 71% · ⊛ wk 48%): how much of the provider's plan is LEFT.
+        # Reads the shared account-usage cache; the refresh it needs runs in the
+        # background (never on the repaint path), so a repaint costs one dict lookup.
+        # ``plan_segments`` never raises — an unreadable allowance means no segment.
+        provider = str(getattr(agent, "provider", None) or getattr(self, "provider", None) or "").strip()
+        quota_segments, quota_has_clock = plan_segments(provider, self._get_status_bar_field_set())
+        snapshot["quota_segments"] = quota_segments
+        snapshot["quota_has_clock"] = quota_has_clock
 
         # Standing /goal (Ralph loop): GoalManager is cached on self — no DB hit per repaint.
         # Only an *active* goal earns a segment (paused/done stay out, like the desktop).
@@ -997,7 +1007,7 @@ class CLIStatusBarMixin:
         Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
         bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
         prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
-        (opt-in only). Order is fixed; the config controls visibility only.
+        (opt-in only), quota. Order is fixed; the config controls visibility only.
         """
         from cli import CLI_CONFIG
         if hasattr(self, "_status_bar_field_set_cache"):
@@ -1063,7 +1073,11 @@ class CLIStatusBarMixin:
                 segs.append([(_DIM, context_label)])
             if _ok("context_pct"):
                 bar_style = self._status_bar_context_style(percent)
-                if wide and styled:
+                # The plan allowance's reset clock and the context meter want the same
+                # line. The clock wins: it says when the allowance comes back, while
+                # the meter only repeats the percentage beside it. So when the clock is
+                # there, the meter goes and the percentage stays.
+                if wide and styled and not snapshot.get("quota_has_clock"):
                     segs.append([
                         (bar_style, self._build_context_bar(percent)), (_DIM, " "), (bar_style, percent_label),
                     ])
@@ -1082,6 +1096,10 @@ class CLIStatusBarMixin:
             add_count("bg_tasks", "active_background_tasks", "▶")
             add_count("bg_processes", "active_background_processes", "⚙")
             add_count("bg_subagents", "active_background_subagents", "⛓")
+            # Plan allowance (⊛ 5h 87% · ⊛ wk 44%): how much of the provider's plan is
+            # LEFT. Cache-only, so a repaint never waits on the network; a provider with
+            # no cached allowance contributes nothing.
+            segs.extend(snapshot.get("quota_segments") or [])
         if goal_segment:
             add("goal", _STRONG, goal_segment)
         git_branch = snapshot.get("git_branch") or ""

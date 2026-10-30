@@ -1,6 +1,7 @@
+import re
 import time
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -522,3 +523,86 @@ class TestCacheHitBaselineReset:
         with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}):
             text = cli_obj._build_status_bar_text(width=80)
         assert "weekly-digest" not in text
+
+
+class TestStatusBarPlanAllowance:
+    """The ⊛ plan-allowance segment: how much of the provider's plan is LEFT."""
+
+    def _cli(self, provider: str, windows):
+        from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+        cli_obj = _attach_agent(
+            _make_cli(model="minimax/MiniMax-M3"),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+        )
+        cli_obj.agent.provider = provider
+        snapshot = AccountUsageSnapshot(
+            provider=provider, source="token_plan_api", fetched_at=datetime.now(),
+            windows=tuple(AccountUsageWindow(**w) for w in windows),
+        )
+        return cli_obj, snapshot
+
+    def test_shows_both_windows_remaining(self):
+        cli_obj, snapshot = self._cli("minimax", [
+            {"label": "5h limit", "short_label": "5h", "used_percent": 13.0},
+            {"label": "weekly limit", "short_label": "wk", "used_percent": 56.0},
+        ])
+        with patch("agent.account_usage_cache.cached_account_usage", return_value=snapshot), \
+             patch("agent.account_usage_cache.snapshot_is_stale", return_value=False), \
+             patch("agent.account_usage_cache.refresh_account_usage_async", return_value=[]):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "⊛ 5h 87%" in text
+        assert "⊛ wk 44%" in text
+
+    def test_a_provider_without_an_allowance_shows_no_segment(self):
+        cli_obj, _snapshot = self._cli("anthropic", [])
+        with patch("agent.account_usage_cache.cached_account_usage", return_value=None), \
+             patch("agent.account_usage_cache.refresh_account_usage_async", return_value=[]):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "⊛" not in text
+
+    def test_the_quota_field_can_be_hidden(self):
+        cli_obj, snapshot = self._cli("minimax", [
+            {"label": "5h limit", "short_label": "5h", "used_percent": 13.0},
+        ])
+        config = {"display": {"status_bar": {"fields": ["model", "duration"]}}}
+        with patch("agent.account_usage_cache.cached_account_usage", return_value=snapshot), \
+             patch("agent.account_usage_cache.snapshot_is_stale", return_value=False), \
+             patch("agent.account_usage_cache.refresh_account_usage_async", return_value=[]), \
+             patch.object(cli_mod, "CLI_CONFIG", config):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "⊛" not in text
+
+    def test_the_reset_clock_replaces_the_context_meter(self):
+        """The clock and the meter want the same line; the clock wins, the percent stays."""
+        cli_obj, snapshot = self._cli("minimax", [
+            {"label": "5h limit", "short_label": "5h", "used_percent": 13.0,
+             "reset_at": datetime.now(UTC) + timedelta(hours=1, minutes=43)},
+        ])
+        with patch("agent.account_usage_cache.cached_account_usage", return_value=snapshot), \
+             patch("agent.account_usage_cache.snapshot_is_stale", return_value=False), \
+             patch("agent.account_usage_cache.refresh_account_usage_async", return_value=[]):
+            segments = cli_obj._status_bar_segments(
+                cli_obj._get_status_bar_snapshot(), 200, None, False, styled=True)
+        text = "".join(t for seg in segments for _, t in seg)
+
+        # The meter is gone and the percentage it repeated is still there.
+        assert "[█" not in text
+        assert "%" in text
+        # The clock is on the rolling window.
+        assert re.search(r"⊛ 5h 87% · 1h 4[23]m \(\d{2}\.\d{2}\)", text)
+
+    def test_the_context_meter_stays_when_there_is_no_reset_clock(self):
+        """Without a clock there is nothing to trade the meter for."""
+        cli_obj, snapshot = self._cli("minimax", [
+            {"label": "5h limit", "short_label": "5h", "used_percent": 13.0},
+        ])
+        with patch("agent.account_usage_cache.cached_account_usage", return_value=snapshot), \
+             patch("agent.account_usage_cache.snapshot_is_stale", return_value=False), \
+             patch("agent.account_usage_cache.refresh_account_usage_async", return_value=[]):
+            segments = cli_obj._status_bar_segments(
+                cli_obj._get_status_bar_snapshot(), 200, None, False, styled=True)
+        text = "".join(t for seg in segments for _, t in seg)
+
+        assert "[█" in text

@@ -2391,7 +2391,7 @@ display:
     fields: ["model", "duration", "total_tokens"]   # visibility only; built-in order is preserved
 ```
 
-Supported fields: `model`, `context_detail` (used/total tokens), `context_pct` (percent + meter), `cache_hit` (prompt cache hit ratio — resets on model switch and compression), `latency` (rolling mean API latency, last 10 calls), `tps` (rolling output tokens/sec, last 10 calls), `compressions`, `bg_tasks`, `bg_processes`, `bg_subagents`, `goal`, `git_branch` (⎇ current git branch of the working directory — opt-in only, never shown by default; detached HEAD shows the abbreviated commit), `duration`, `prompt_elapsed`, `idle_since`, `focus`, `yolo`, `stash`, `battery`, `title` (right-aligned session badge), and `total_tokens` (session Σ — opt-in only, never shown by default).
+Supported fields: `model`, `context_detail` (used/total tokens), `context_pct` (percent + meter), `cache_hit` (prompt cache hit ratio — resets on model switch and compression), `latency` (rolling mean API latency, last 10 calls), `tps` (rolling output tokens/sec, last 10 calls), `compressions`, `bg_tasks`, `bg_processes`, `bg_subagents`, `goal`, `git_branch` (⎇ current git branch of the working directory — opt-in only, never shown by default; detached HEAD shows the abbreviated commit), `duration`, `prompt_elapsed`, `idle_since`, `focus`, `yolo`, `stash`, `battery`, `title` (right-aligned session badge), `total_tokens` (session Σ — opt-in only, never shown by default), and `quota` (⊛ how much of the provider's plan is LEFT — e.g. `⊛ 5h 87% · ⊛ wk 44%` on MiniMax).
 
 Notes:
 
@@ -2399,6 +2399,8 @@ Notes:
 - The config controls **visibility, not order**; fields render in their built-in positions.
 - Narrow terminals still drop wide-mode-only fields (`context_detail`, `cache_hit`, `latency`, `tps`, `prompt_elapsed`, `idle_since`) regardless of config (`cache_hit` also shows in the medium ≥52-col tier).
 - `latency`/`tps` stay hidden until API calls have been recorded (e.g. the Codex app-server backend reports no latency).
+- `quota` shows only for a provider that reports a plan allowance (MiniMax, Codex, Anthropic OAuth). It is read from the cached account usage and refreshed in the background, so it never delays a repaint; a provider with no allowance shows nothing. The rolling window also carries its reset countdown and the wall-clock time it resets at (`⊛ 5h 82% · 1h 43m (11.00)`). A reset more than a minute away is the only one shown, so the bar does not tick every second.
+- When the quota segment carries that clock, the **context meter** is dropped and the context percentage stays on its own (`17%` instead of `[██░░░░░░░░] 17%`): the clock says when the allowance comes back, while the meter only repeated the number beside it. The bar gets no longer.
 - `battery` and `title` visibility here compose with their own toggles (`/battery`, `/title`) — both must be on for the segment to show.
 - The same key also filters the **Ink TUI** status rule (`hermes tui`), where `cache_hit`, `latency`, and `tps` render as width-budgeted tail segments (◎ / ◷ / ↑) on terminals ≥96/104/110 columns respectively.
 - Display-only: no effect on prompt caching or request payloads. Changes take effect on the next session start.

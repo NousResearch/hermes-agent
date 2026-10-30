@@ -44,6 +44,9 @@ class AccountUsageWindow:
     # ``model``: the window caps only one model family (Anthropic Opus/Sonnet weekly) and can
     # never imply the account itself is out of quota.
     scope: str = "account"
+    # Compact form of ``label`` for dense surfaces (the CLI status bar): ``5h`` where the
+    # label reads ``5h limit``. None = the surface uses ``label`` as-is.
+    short_label: Optional[str] = None
 
 
 @dataclass(frozen=True)

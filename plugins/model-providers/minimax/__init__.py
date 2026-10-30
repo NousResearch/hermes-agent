@@ -5,11 +5,14 @@ opt MiniMax-M3 into the OpenAI-compatible https://api.minimax.io/v1 route,
 which needs MiniMax-specific reasoning controls in extra_body.
 """
 
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
 from providers import register_provider
 from providers.base import ProviderProfile
+
+from .quota import fetch_quota, quota_origin
 
 
 def _is_minimax_global_openai_base_url(base_url: str | None) -> bool:
@@ -35,6 +38,50 @@ class MiniMaxProfile(ProviderProfile):
         elif reasoning_config is not None:
             extra_body["thinking"] = {"type": "adaptive"}
         return extra_body, {}
+
+    def fetch_account_usage(self, *, base_url: str | None = None, api_key: str | None = None):
+        """MiniMax token-plan windows (the rolling 5-hour limit and the weekly limit).
+
+        The plan API answers at the API root (``/v1/token_plan/remains``), not under the
+        Anthropic-compatible route the profile's base URL points at, so the origin comes
+        from the profile rather than the runtime base URL. Every window is reported as
+        percent USED (the generic contract); the MiniMax wire reports percent REMAINING.
+        """
+        from agent.account_usage import AccountUsageSnapshot
+
+        runtime = self._runtime_credentials(base_url=base_url, api_key=api_key)
+        if not runtime:
+            return None
+        token, origin = runtime
+        windows = fetch_quota(token, origin)
+        if not windows:
+            return None
+        return AccountUsageSnapshot(
+            provider=self.name, source="token_plan_api", fetched_at=datetime.now(UTC),
+            title="MiniMax plan", windows=tuple(windows))
+
+    def _runtime_credentials(self, *, base_url: str | None, api_key: str | None):
+        """``(api key, plan API origin)`` for this session, or None when there is no key.
+
+        The live agent's own key wins over the configured one so the readout describes
+        the account actually being billed. The origin comes from the PROFILE, never the
+        runtime base URL: the plan API answers at MiniMax's API root, which a custom
+        base URL (a proxy, an OpenAI-compatible route) does not carry.
+        """
+        token = str(api_key or "").strip()
+        if not token:
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                runtime = resolve_runtime_provider(
+                    requested=self.name, explicit_base_url=base_url, explicit_api_key=api_key)
+                token = str(runtime.get("api_key") or "").strip()
+            except Exception:  # health: allow BLE001 -- no resolvable credential means no readout, not a crash
+                return None
+        if not token:
+            return None
+        origin = quota_origin(self.base_url)
+        return (token, origin) if origin else None
 
 
 minimax = MiniMaxProfile(

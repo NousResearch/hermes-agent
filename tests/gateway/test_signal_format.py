@@ -247,3 +247,70 @@ class TestTableRealignment:
         assert self._u16_slice(text, mono[0]) == "| Name  | Age |\n|-------|-----|\n| Alice | 30  |"
         assert self._u16_slice(text, mono[1]) == "| a | b |\n|---|---|\n| 1 | 22 |"
         assert "cost | value" == _m2s("cost | value\nnot a table")[0].split("\n")[0]
+
+
+# ===========================================================================
+# Code protection against restyling & command alteration (#146848)
+# ===========================================================================
+
+class TestCodeProtection:
+    """Commands and text inside fenced code blocks and inline code spans must
+    never have formatting markers (*, _, ~, #) stripped or restyled."""
+
+    def test_fenced_code_preserves_wildcards_and_asterisks(self):
+        """rm -rf /srv/*/cache/* in fenced code must not be italicized or stripped."""
+        md = "```\nrm -rf /srv/*/cache/*\n```"
+        text, styles = _m2s(md)
+        assert text == "rm -rf /srv/*/cache/*"
+        assert len(styles) == 1
+        assert styles[0].endswith(":MONOSPACE")
+        assert _find_style(styles, "ITALIC") == []
+
+    def test_fenced_code_preserves_underscores(self):
+        """find . -name *_old_* -delete must not have _ stripped as italic."""
+        md = "```\nfind . -name *_old_* -delete\n```"
+        text, styles = _m2s(md)
+        assert text == "find . -name *_old_* -delete"
+        assert len(styles) == 1
+        assert styles[0].endswith(":MONOSPACE")
+        assert _find_style(styles, "ITALIC") == []
+
+    def test_fenced_code_preserves_tildes(self):
+        """chmod -R 777 ~~/backup~~ must not become strikethrough."""
+        md = "```\nchmod -R 777 ~~/backup~~\n```"
+        text, styles = _m2s(md)
+        assert text == "chmod -R 777 ~~/backup~~"
+        assert len(styles) == 1
+        assert styles[0].endswith(":MONOSPACE")
+        assert _find_style(styles, "STRIKETHROUGH") == []
+
+    def test_fenced_code_preserves_comments(self):
+        """Comments starting with # in code blocks must not become bold headings."""
+        md = "```python\n# This is a comment\nx = 1\n```"
+        text, styles = _m2s(md)
+        assert text == "# This is a comment\nx = 1"
+        assert len(styles) == 1
+        assert styles[0].endswith(":MONOSPACE")
+        assert _find_style(styles, "BOLD") == []
+
+    def test_heading_preceding_code_block_preserves_both_ranges(self):
+        """A heading before a code block must retain both heading BOLD and code block MONOSPACE."""
+        md = "# Heading\n```\nmy_code_block\n```"
+        text, styles = _m2s(md)
+        assert text == "Heading\nmy_code_block"
+        bold = _find_style(styles, "BOLD")
+        mono = _find_style(styles, "MONOSPACE")
+        assert len(bold) == 1
+        assert len(mono) == 1
+        assert bold[0] == "0:7:BOLD"
+        assert mono[0] == "8:13:MONOSPACE"
+
+    def test_inline_code_preserves_wildcards_and_tildes(self):
+        """Inline code spans must not have internal * or ~ restyled."""
+        md = "Execute `rm -rf /srv/*/cache/*` and `chmod -R 777 ~~/backup~~`"
+        text, styles = _m2s(md)
+        assert text == "Execute rm -rf /srv/*/cache/* and chmod -R 777 ~~/backup~~"
+        mono = _find_style(styles, "MONOSPACE")
+        assert len(mono) == 2
+        assert _find_style(styles, "ITALIC") == []
+        assert _find_style(styles, "STRIKETHROUGH") == []

@@ -11,6 +11,7 @@ import { $setupReadyTick, notifySetupReady } from '@/store/live-sync'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import { $desktopOnboarding, refreshOnboarding } from '@/store/onboarding'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
+import { $currentModel } from '@/store/session'
 
 import { deferred } from '../../../test/deferred'
 
@@ -442,6 +443,54 @@ describe('useStatusSnapshot', () => {
 
     expect(result.current.inferenceStatus).toMatchObject({ ready: true })
     expect(notice()).toBeUndefined()
+  })
+
+  it('backs off re-checking a local model server that stays down, and resets on a model switch', async () => {
+    // Enabled but unable to boot (no staged model): every check kicks a boot and blocks for seconds.
+    const requestGatewayMock = vi.fn(
+      async (method: string) =>
+        (method === 'setup.runtime_check'
+          ? { error: 'The local model server is not running.', error_code: 'local_runtime_unavailable', ok: false }
+          : { provider_configured: true }) as never
+    )
+
+    const requestGateway = requestGatewayMock as unknown as GatewayRequester
+    const checks = () => requestGatewayMock.mock.calls.filter(([method]) => method === 'setup.runtime_check').length
+
+    const advance = async (ms: number) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms)
+      })
+    }
+
+    renderHook(() => useStatusSnapshot('open', requestGateway))
+    await flushAsync()
+    expect(checks()).toBe(1)
+
+    await advance(60_000) // first gap: 60 s
+    expect(checks()).toBe(2)
+
+    await advance(60_000) // second gap: 2 min
+    expect(checks()).toBe(2)
+    await advance(60_000)
+    expect(checks()).toBe(3)
+
+    await advance(240_000) // then a 5-minute cap
+    expect(checks()).toBe(3)
+    await advance(60_000)
+    expect(checks()).toBe(4)
+    await advance(240_000)
+    expect(checks()).toBe(4)
+    await advance(60_000)
+    expect(checks()).toBe(5)
+
+    // The status tick itself never slowed down.
+    expect(getStatus).toHaveBeenCalledTimes(14)
+
+    // A model switch asks again on the next tick.
+    $currentModel.set('another/model')
+    await advance(60_000)
+    expect(checks()).toBe(6)
   })
 
   it('re-reads readiness and the free-tier verdict once per setup.ready, off the status tick', async () => {

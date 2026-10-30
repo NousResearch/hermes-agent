@@ -74,6 +74,8 @@ _GEMINI_RATIOS = (
 _MAI_RATIOS = ("1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "auto")
 _KREA_RATIOS = ("1:1", "4:3", "3:2", "16:9", "4:5", "2:3", "9:16")
 _OPENAI_QUALITY = ("auto", "low", "medium", "high")
+# Saved picks whose upstream model OpenAI shuts down 2026-12-01 -> the curated successor.
+_RETIRED_IMAGE_API_MODELS = {"openai/gpt-image-1-mini": "openai/gpt-image-2.5-flare"}
 _NO_KNOBS = {"quality": (), "background": (), "output_format": (), "compression": False, "seed": False}
 
 
@@ -100,7 +102,6 @@ _IMAGE_API_MODELS: dict[str, dict[str, Any]] = {
         aspect_ratios=("1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "auto"),
         quality=_OPENAI_QUALITY, background=("auto", "opaque"), compression=True, max_n=10, max_refs=16,
     ),
-    # Replaces gpt-image-1-mini (OpenAI shutdown 2026-12-01) as the transparent-background pick.
     "openai/gpt-image-2.5-flare": _image_api_model(
         "OpenAI GPT Image 2.5 Flare",
         "The only model here with background=transparent (cut-out PNG); fast everyday tier",
@@ -607,14 +608,17 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
     def _resolve_model_chain(self, explicit: Optional[str] = None) -> list[str]:
         """``model`` kwarg → ``*_IMAGE_MODEL`` env → ``image_gen.<provider>.model`` →
         ``image_gen.model`` → default chain. Only the bare default chain carries a fallback."""
-        for candidate in (explicit, os.environ.get(self._model_env_var)):
-            if isinstance(candidate, str) and candidate.strip():
-                return [candidate.strip()]
-        cfg = _load_image_gen_config()
-        for candidate in (_dict_at(cfg, self._config_key).get("model"), cfg.get("model")):
-            if isinstance(candidate, str) and candidate.strip():
-                return [candidate.strip()]
-        return list(_DEFAULT_MODEL_CHAIN)
+        def _pick(*candidates: Any) -> Optional[list[str]]:
+            for candidate in candidates:
+                if isinstance(candidate, str) and candidate.strip():
+                    return [_RETIRED_IMAGE_API_MODELS.get(candidate.strip(), candidate.strip())]
+            return None
+
+        picked = _pick(explicit, os.environ.get(self._model_env_var))
+        if picked is None:
+            cfg = _load_image_gen_config()
+            picked = _pick(_dict_at(cfg, self._config_key).get("model"), cfg.get("model"))
+        return picked or list(_DEFAULT_MODEL_CHAIN)
 
     def _generate_via_image_api(
         self, *, model_id: str, prompt: str, semantic_aspect: str, references: list[str],

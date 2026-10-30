@@ -148,6 +148,9 @@ class TestRetiredModels:
             assert retired not in image_tool.FAL_MODELS and successor in image_tool.FAL_MODELS
             monkeypatch.setattr(image_tool, "_read_image_gen_key", lambda key, r=retired: r)
             assert image_tool._resolve_fal_model()[0] == successor
+            monkeypatch.setattr(image_tool, "_read_image_gen_key", lambda key: None)
+            monkeypatch.setenv("FAL_IMAGE_MODEL", retired)
+            assert image_tool._resolve_fal_model()[0] == successor
             assert managed_route("nous", retired) == FAL  # never the Portal with a dead id
 
 

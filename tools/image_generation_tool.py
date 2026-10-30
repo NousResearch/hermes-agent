@@ -198,7 +198,8 @@ def _plugin_provider_name() -> Optional[str]:
 def _resolve_fal_model() -> tuple:
     """Return ``(model_id, meta)`` for the configured FAL model, falling back to DEFAULT_MODEL (warned) when unknown."""
     # FAL_IMAGE_MODEL is an undocumented escape hatch (backward-compat for tests/scripts).
-    model_id = _read_configured_image_model() or os.getenv("FAL_IMAGE_MODEL", "").strip()
+    model_id = _read_image_gen_key("model") or os.getenv("FAL_IMAGE_MODEL", "").strip()
+    model_id = RETIRED_FAL_MODELS.get(model_id, model_id)
     if model_id and model_id not in FAL_MODELS:
         logger.warning("Unknown FAL model '%s' in config; falling back to %s", model_id, DEFAULT_MODEL)
         model_id = None

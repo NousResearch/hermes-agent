@@ -109,6 +109,12 @@ class TestProviderClass:
                 "google/gemini-3-pro-image"
             ]
 
+    def test_retired_saved_pick_resolves_to_successor(self):
+        """A saved gpt-image-1-mini pick (shut down 2026-12-01) runs on its curated successor."""
+        cfg = {"openrouter": {"model": "openai/gpt-image-1-mini"}}
+        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
+            assert _openrouter()._resolve_model_chain() == ["openai/gpt-image-2.5-flare"]
+
 
 # ---------------------------------------------------------------------------
 # Live model catalog

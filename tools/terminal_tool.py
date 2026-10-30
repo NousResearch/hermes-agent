@@ -1531,6 +1531,18 @@ def terminal_tool(
             verdict = _run_approval_guards(command, env_type, plan.config, force=force)
 
             pty_disabled = pty and _command_requires_pipe_stdin(command)
+            # Append-only command-execution audit. Recorded after the approval
+            # guards so only commands that will actually run are logged; body is redacted and the
+            # write can never fail this tool (record_exec swallows its own errors).
+            try:
+                from tools.exec_audit import record_exec
+
+                record_exec(
+                    tool="terminal", body=command, profile=_current_session_profile(),
+                    session_key=session_key, task_id=task_id, background=background,
+                )
+            except Exception:
+                pass
             if plan.promoted_from_foreground_timeout is not None:
                 # Promotion implies notify_on_complete; watch_patterns is a background-only flag the
                 # caller could not have meant for a foreground call, and the two are exclusive anyway.

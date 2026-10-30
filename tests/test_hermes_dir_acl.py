@@ -381,5 +381,64 @@ def test_icacls_tree_fallback_walks_the_tree_once(tmp_path, monkeypatch):
     assert failed == [] and granted == len(clean)
 
 
+def test_icacls_fallback_bounds_its_materialised_walk_by_the_deadline(tmp_path, monkeypatch):
+    """#145990 review (@AtlasOmnia): the fallback accepted *deadline* and ignored it — the link map
+    walk ran to completion before the first grant, so a home big enough to eat the whole budget in
+    that walk could still hold the update tail, and the next launch, hostage. It defers now, and
+    nothing has been written at that point so there is nothing to resume wrongly."""
+    seen = []
+
+    def walk(_root, _skipped):
+        for i in range(5000):
+            seen.append(i)
+            yield tmp_path / f"e{i}", False
+
+    monkeypatch.setattr(hermes_dir_acl, "iter_tree_without_reparse_points", walk)
+    monkeypatch.setattr(hermes_dir_acl, "_native_writer_importable", lambda: False)
+    calls = []
+    monkeypatch.setattr(hermes_dir_acl.subprocess, "run", lambda argv, **_k: calls.append(argv))
+
+    with pytest.raises(hermes_dir_acl.AclGrantDeferred) as deferred:
+        hermes_dir_acl.grant_tree_user_access(
+            tmp_path, elevated=True, deadline=time.monotonic() - 1)
+
+    assert len(seen) == 1, "the walk stops at the deadline instead of materialising the whole tree"
+    assert calls == [], "no grant ran, so the deferral has nothing to keep"
+    assert deferred.value.granted == 0
+
+
+def test_icacls_fallback_bounds_its_grants_by_the_deadline(tmp_path, monkeypatch):
+    """The second stage is bounded too: the entries were walked inside the budget, then the budget
+    expires between grants — what was granted stands, the rest defers. Without this the fallback
+    could still spawn one icacls per entry for a 562k-entry home."""
+    home = tmp_path / "home"
+    home.mkdir()
+    for name in ("f1", "f2", "f3"):
+        (home / name).write_text("x")
+    monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", _no_pywin32)
+    monkeypatch.setattr(hermes_dir_acl, "_whoami_sid", lambda: "S-1-5-21-1-2-3-1001")
+    granted_paths = []
+    monkeypatch.setattr(hermes_dir_acl.subprocess, "run",
+                        lambda argv, **_k: granted_paths.append(Path(argv[1])))
+
+    class _Budget:
+        """monotonic() inside the budget for the first *inside* calls, past it from then on."""
+        def __init__(self, inside):
+            self.calls = 0
+            self.inside = inside
+
+        def monotonic(self):
+            self.calls += 1
+            return 0.0 if self.calls <= self.inside else 1_000.0
+
+    entries = list(hermes_dir_acl.iter_tree_without_reparse_points(home, []))
+    monkeypatch.setattr(hermes_dir_acl, "time", _Budget(inside=2))
+
+    with pytest.raises(hermes_dir_acl.AclGrantDeferred) as deferred:
+        hermes_dir_acl._grant_entries(home, str(home), entries, [], deadline=100.0)
+
+    assert deferred.value.granted == 2 and len(granted_paths) == 2
+
+
 def _no_pywin32(*_a, **_k):
     raise ImportError("pywin32 missing")

@@ -354,7 +354,9 @@ def grant_tree_user_access(root: str | Path, *, pin_root: bool = False,
     *deadline* is an absolute :func:`time.monotonic` value for the whole repair. The walk is
     consumed as it yields where the per-entry writer is available, so a large home never
     materialises every entry first — a 562k-entry home cost ~1.6 GB and minutes of silence
-    before the first grant (#143124) — and the deadline can stop it between entries. Grants
+    before the first grant (#143124) — and the deadline can stop it between entries. The icacls
+    fallback cannot stream (it needs the whole-tree link map first), but it is bounded by the
+    same deadline in both of its stages, so neither branch can outlive the budget. Grants
     already made stand (they are idempotent); the rest raises :class:`AclGrantDeferred`.
     *progress*, when given, is called as ``(granted, skipped, failed)`` every
     ``_TREE_GRANT_PROGRESS_EVERY`` grants so a long repair can say it is moving.
@@ -371,9 +373,20 @@ def grant_tree_user_access(root: str | Path, *, pin_root: bool = False,
             root, os.path.realpath(root), skipped, deadline=deadline, progress=progress)
     else:
         # The icacls fallback writes with propagation and refuses a dir holding a link, so it
-        # still needs the whole-tree link map one materialised walk provides.
-        entries = list(iter_tree_without_reparse_points(root, skipped))
-        granted, skipped, failed = _grant_entries(root, os.path.realpath(root), entries, skipped)
+        # still needs the whole-tree link map one materialised walk provides. That walk is the
+        # first thing a large home pays for, so it is bounded like the grants are: running out of
+        # budget here defers the repair with nothing granted (the walk wrote no ACE, and the
+        # entries it collected are dropped) instead of materialising every entry past the deadline
+        # -- which is the wedged launch #143124 reported. The grants below are bounded too, so a
+        # host whose pywin32 extension does not load owes the caller the same promise as the
+        # streaming path rather than an unbounded run.
+        entries: list[tuple[Path, bool]] = []
+        for entry in iter_tree_without_reparse_points(root, skipped):
+            entries.append(entry)
+            if deadline is not None and time.monotonic() >= deadline:
+                raise AclGrantDeferred(0, skipped, [])
+        granted, skipped, failed = _grant_entries(
+            root, os.path.realpath(root), entries, skipped, deadline=deadline)
     if skipped:
         log.warning("Elevated ACL repair skipped %d junction/symlink/hard-link entr%s under %s (never "
                     "granted through): %s", len(skipped), "y" if len(skipped) == 1 else "ies", root,
@@ -446,10 +459,15 @@ def _grant_entries_streaming(root: Path, real_root: str, skipped: list[Path], *,
 
 
 def _grant_entries(root: Path, real_root: str, entries: list[tuple[Path, bool]],
-                   skipped: list[Path]) -> tuple[int, list[Path], list[tuple[Path, str]]]:
+                   skipped: list[Path], *, deadline: float | None = None,
+                   ) -> tuple[int, list[Path], list[tuple[Path, str]]]:
     """Grant each walked entry on its own (the pywin32 write does not propagate). The ONE walk
     that produced *entries* and *skipped* also decides which dirs hold a link, so the icacls
-    fallback never re-walks a subtree per directory (it refuses exactly those dirs, as before)."""
+    fallback never re-walks a subtree per directory (it refuses exactly those dirs, as before).
+
+    Stops between entries at *deadline* and raises :class:`AclGrantDeferred` with the counts it
+    reached, the same contract :func:`_grant_entries_streaming` keeps: the icacls fallback owes
+    the caller the same bound as the streaming path, not an unbounded run."""
     linked = {root, *skipped}  # a skipped link, or the root itself when it was skipped
     linked.update(p for p, is_dir in entries if not is_dir and _hard_linked_file(p))
     holds_link: set[Path] = set()
@@ -459,6 +477,8 @@ def _grant_entries(root: Path, real_root: str, entries: list[tuple[Path, bool]],
         holds_link.add(root)
     granted, failed = 0, []
     for path, is_dir in entries:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise AclGrantDeferred(granted, skipped, failed)
         try:
             _grant(path, is_dir, os.path.join(real_root, *path.relative_to(root).parts),
                    subtree_has_link=is_dir and path in holds_link)

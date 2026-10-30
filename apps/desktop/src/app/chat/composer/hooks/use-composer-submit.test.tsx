@@ -293,8 +293,39 @@ describe('useComposerSubmit external request routing', () => {
       expect(getQueuedPrompts('stored-session').map(({ text, attachments }) => ({ text, attachments }))).toEqual(
         accepted ? [] : [{ text: 'continue', attachments: [] }]
       )
+
+      if (!accepted) {
+        // Same message, same identity: the rejection may follow an uncertain delivery the owner dedupes by id.
+        const [, options] = onSubmit.mock.calls[0] as unknown as [string, { submission_id: string }]
+        expect(getQueuedPrompts('stored-session')[0]?.id).toBe(options.submission_id)
+      }
     }
   )
+
+  it('queues a rejected external request from a new chat under the session it was created in', async () => {
+    const { onSubmit } = renderSubmitHook({ busy: false, sessionKey: '__new__:fresh-draft' })
+
+    const submit = onSubmit as unknown as ReturnType<
+      typeof vi.fn<(text: string, options?: { onComposerScopeAssigned?: (scope: string) => void }) => Promise<boolean>>
+    >
+
+    submit.mockImplementation(async (_text, options) => {
+      options?.onComposerScopeAssigned?.('created-session')
+
+      return false
+    })
+
+    try {
+      await act(async () => {
+        expect(requestComposerSubmit('continue', { target: 'main' })).toBe(true)
+      })
+
+      await waitFor(() => expect(getQueuedPrompts('created-session').map(({ text }) => text)).toEqual(['continue']))
+      expect(getQueuedPrompts('__new__:fresh-draft')).toEqual([])
+    } finally {
+      clearQueuedPrompts('created-session')
+    }
+  })
 
   it('does not fan out a main ship across keep-alives or other projects', async () => {
     const visibleMain = renderSubmitHook({ sessionKey: 'session-a' })

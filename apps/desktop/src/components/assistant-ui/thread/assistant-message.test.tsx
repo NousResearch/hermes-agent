@@ -554,6 +554,37 @@ describe('error card layout (Error System Overhaul)', () => {
     }
   })
 
+  it('never retargets an older card at a later wall from another provider in the same chat', async () => {
+    openExternalLink.mockClear()
+    const { $activeSessionId } = await import('@/store/session')
+    const { clearBillingBlock, setBillingBlock } = await import('@/store/billing-block')
+    $activeSessionId.set('wall-session')
+    setBillingBlock('wall-session', {
+      billing_url: 'https://platform.openai.com/settings/organization/billing',
+      is_nous: false,
+      message: 'out of credits',
+      model: 'gpt-5',
+      provider: 'openai',
+      provider_label: 'OpenAI'
+    })
+
+    try {
+      render(
+        <MemoryRouter>
+          <Harness
+            assistant={failedMessage({ code: 'billing', layer: 'billing', provider: 'nous', retryable: false })}
+          />
+        </MemoryRouter>
+      )
+
+      fireEvent.click(await screen.findByRole('button', { name: en.assistant.thread.errorOpenBillingSettings }))
+      expect(openExternalLink).not.toHaveBeenCalled()
+    } finally {
+      clearBillingBlock()
+      $activeSessionId.set(null)
+    }
+  })
+
   it("never sends a third-party provider's credit failure to Nous billing without its billing link", async () => {
     render(
       <MemoryRouter>

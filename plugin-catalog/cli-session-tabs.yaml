@@ -1,23 +1,26 @@
 name: cli-session-tabs
 title: CLI Session Tabs
 repo: https://github.com/cryptobredda/hermes-cli-tabs
-sha: bb0a6ac0b54a44991f48cdf6df198ca43f0098f8
+sha: 8568381f410535660086e59215ba106de9f0c058
 subdir: ""
-description: "Directory-scoped session tabs across the terminal. Disclosure — Requires OS-installed tmux; starts private, long-running tmux/Hermes clients only when invoked. Stores non-secret workspace metadata in profile plugin-data, filters child environments, and confirms closes. Does not patch Hermes or read conversations/credentials."
+description: "Directory-scoped native TUI tabs when the public core capability contract is advertised, with isolated tmux fallback. Disclosure — Explicit commands probe Hermes and launch TUI/tmux clients; selected-profile and scoped terminal identity are passed through credential/bypass-filtered environments. Native persistence stays in core. Does not patch Hermes or read conversations/credentials."
 maintainer: cryptobredda
 tier: community
 category: tools
 requires_hermes: ">=0.22.2"
-version: "1.0.0"
+version: "1.1.0"
 docs_url: https://github.com/cryptobredda/hermes-cli-tabs#readme
-image: https://raw.githubusercontent.com/cryptobredda/hermes-cli-tabs/bb0a6ac0b54a44991f48cdf6df198ca43f0098f8/docs/tabs-demo.png
+image: https://raw.githubusercontent.com/cryptobredda/hermes-cli-tabs/8568381f410535660086e59215ba106de9f0c058/docs/tabs-demo.png
 screenshots:
-  - https://raw.githubusercontent.com/cryptobredda/hermes-cli-tabs/bb0a6ac0b54a44991f48cdf6df198ca43f0098f8/docs/tabs-demo.png
+  - https://raw.githubusercontent.com/cryptobredda/hermes-cli-tabs/8568381f410535660086e59215ba106de9f0c058/docs/tabs-demo.png
 readme: true
 platforms: [linux, macos]
 known_issues:
-  - Requires tmux 3.2+ and an interactive terminal; launch outside an existing tmux client.
-  - Each tab is a separate normal Hermes client, not an in-process TUI widget. Explicitly closing a client discards its unsent draft; switching or detaching preserves it.
+  - Native support requires the separately proposed core feature (PR 146974); this plugin never installs a core patch. Auto mode retains tmux on stock or unsupported cores.
+  - The tmux backend requires tmux 3.2+ and an interactive terminal outside an existing tmux client; explicit close loses that client's unsent draft, while detach retains live clients.
+  - Native controls run inside the TUI (/new, /tabs, /tabclose); external new/list/close/detach management is for the explicitly selected tmux backend, not private-store native control.
+  - Herdr 0.9.1 does not automatically relaunch the custom native bridge on a whole-Herdr restart; manually relaunch Hermes in the same directory to restore its saved views.
+  - The screenshot is a synthetic tmux compatibility-mode demo, not a native-mode screenshot.
 capabilities:
   provides_tools: []
   provides_hooks: []

@@ -162,8 +162,7 @@ def _resolve_allow_private_urls() -> bool:
     if env_val in {"false", "0", "no"}:
         return False  # explicit false does not fall through to config
     try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config()
+        cfg = _policy_config()
         for section in ("security", "browser"):  # preferred, then legacy
             block = cfg.get(section, {})
             if isinstance(block, dict) and is_truthy_value(block.get("allow_private_urls"), default=False):
@@ -171,6 +170,19 @@ def _resolve_allow_private_urls() -> bool:
     except Exception:
         pass  # config unavailable (tests, early import) — keep default
     return False
+
+
+def _policy_config() -> dict:
+    """config.yaml with managed scope laid on top, as ``load_config()`` lays it.
+
+    ``read_raw_config()`` alone never sees ``/etc/hermes/config.yaml``, so an operator who pinned
+    ``security.fake_ip_ranges`` or ``security.allow_private_urls`` there got the profile's own
+    value. Raises like ``read_raw_config()``; the callers keep their secure defaults on failure.
+    """
+    from hermes_cli.config import read_raw_config
+    from hermes_cli.managed_scope import apply_managed_overlay
+
+    return apply_managed_overlay(read_raw_config())
 
 
 def _reset_allow_private_cache() -> None:
@@ -190,8 +202,7 @@ def _resolve_fake_ip_ranges() -> tuple:
     declares one, and the sentinel range keeps the ordinary private-address verdict otherwise.
     """
     try:
-        from hermes_cli.config import read_raw_config
-        block = read_raw_config().get("security", {})
+        block = _policy_config().get("security", {})
         raw = block.get("fake_ip_ranges") if isinstance(block, dict) else None
     except Exception:
         return ()  # config unavailable (tests, early import) — keep the secure default

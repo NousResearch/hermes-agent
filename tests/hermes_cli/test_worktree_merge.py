@@ -366,6 +366,40 @@ def test_hidden_edit_check_is_not_fooled_by_a_carriage_return_name(repo, capsys)
     assert _git(repo, "rev-parse", "HEAD") == before
 
 
+def test_branch_merge_options_cannot_make_the_merge_write_unchecked_paths(repo, capsys):
+    _child(repo, [("extra.py", "CHILD\n")])
+    _git(repo, "mv", "src", "prefix")
+    _commit(repo, ".gitignore", "prefix/extra.py\n", "move src under prefix/")
+    (repo / "prefix" / "extra.py").write_text("USER WORK\n", encoding="utf-8")
+    _git(repo, "config", "branch.main.mergeOptions", "-Xsubtree=prefix")
+    before = _git(repo, "rev-parse", "HEAD")
+
+    code, result = _merge(repo, capsys, "child", "--gate", "exit 1")
+
+    assert code == 1 and result["error"] == "the gate failed" and result["reset_to"] == before
+    assert (repo / "prefix" / "extra.py").read_text(encoding="utf-8-sig") == "USER WORK\n"
+    _unchanged(repo, before)
+
+
+def test_rollback_does_not_recurse_into_an_unchanged_submodule(repo, capsys, tmp_path):
+    module = tmp_path / "module"
+    _git(tmp_path, "init", "-q", "-b", "main", str(module))
+    _commit(module, "lib.py", "base\n", "module")
+    _git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(module), "vendor")
+    _git(repo, "commit", "-q", "-m", "add submodule")
+    _child(repo, [("src/app.py", "x = 2\n")])
+    _git(repo, "config", "submodule.recurse", "true")
+    _git(repo, "config", "submodule.vendor.ignore", "all")
+    (repo / "vendor" / "lib.py").write_text("USER SUBMODULE WORK\n", encoding="utf-8")
+    before = _git(repo, "rev-parse", "HEAD")
+
+    code, result = _merge(repo, capsys, "child", "--gate", "exit 1")
+
+    assert code == 1 and result["reset_to"] == before
+    assert (repo / "vendor" / "lib.py").read_text(encoding="utf-8-sig") == "USER SUBMODULE WORK\n"
+    assert _git(repo, "rev-parse", "HEAD") == before
+
+
 def test_conflict_aborts_and_lists_the_files(repo, capsys):
     _child(repo, [("src/app.py", "x = 2\n")])
     _commit(repo, "src/app.py", "x = 99\n", "parent moved on")

@@ -61,8 +61,7 @@ def test_idle_preconnect_does_not_delay_the_code(monkeypatch, preconnect_first):
         idle.append(socket.create_connection(("127.0.0.1", port), timeout=5))
 
     if preconnect_first:
-        preconnect()
-        time.sleep(0.2)  # let the server accept it before the real request arrives
+        preconnect()  # the accept queue is FIFO: the server takes this socket ahead of the real request
     sent_at = time.monotonic()
     conn = HTTPConnection("127.0.0.1", port, timeout=5)
     conn.request("GET", "/callback?code=abc&state=xyz")

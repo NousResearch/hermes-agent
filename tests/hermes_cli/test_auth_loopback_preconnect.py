@@ -24,7 +24,7 @@ def test_idle_preconnect_does_not_delay_the_provider_login_code():
     waiter.start()
     idle = socket.create_connection(("127.0.0.1", port), timeout=5)  # the browser's silent speculative socket
     try:
-        time.sleep(0.3)  # let the serve loop accept it before the real redirect arrives
+        # The accept queue is FIFO, so the serve loop takes the idle socket ahead of the redirect.
         sent_at = time.monotonic()
         conn = HTTPConnection("127.0.0.1", port, timeout=10)
         conn.request("GET", "/callback?code=abc&state=xyz")

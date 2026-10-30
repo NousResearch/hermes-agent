@@ -716,10 +716,22 @@ when nothing was started.
   sampling request), and that work would keep neither the fork's tool
   list nor its auto-denied approvals; a plugin's own handler already
   runs the plugin's code.
-* Each named tool must also be advertised to the session, else the call
-  returns `None` and spends the token. The fork still *sees* every
-  session tool (cache parity); calls outside the list are refused at
-  dispatch with a message naming the allowed tools. When the fork
+* Each named tool must also be in the session, else the call returns
+  `None` and spends the token: advertised in its `tools[]`, or deferred
+  behind Tool Search (on by default, and plugin tools defer by default),
+  in which case the session's `tools[]` carry the `tool_call` bridge in
+  its place. The fork still *sees* every session tool, byte for byte
+  (cache parity); calls outside the list are refused at dispatch with a
+  message naming the allowed tools.
+* A deferred tool is called through `tool_call`, and the plugin does not
+  need to know which of its tools are deferred: Hermes appends one line
+  to the prompt telling the model to call the tool through `tool_call`
+  with its name, followed by the tool's parameters. Inside the fork
+  `tool_call` only carries a call to a named tool: a `tool_call` to any
+  other tool (the plugin's own unnamed tools, another plugin's tool, a
+  core tool, a connector) is refused at dispatch, and `tool_search` and
+  `tool_describe` stay refused, since the prompt line already names the
+  tool and its parameters. When the fork
   starts, the allowlist is read again against the live session and a
   tool that stopped being the plugin's own, or that the session now
   serves before the registry, is refused at dispatch too. An empty list
@@ -755,7 +767,8 @@ when nothing was started.
 
 `handle.done`, `handle.cancelled`, `handle.outcome`, `handle.result` (the
 fork's final text, or `None`), `handle.actions` (the whitelisted tool
-names it called, in order), `handle.wait(timeout)` and `handle.cancel()`.
+names it called, in order; a call through `tool_call` lists the tool it
+carried), `handle.wait(timeout)` and `handle.cancel()`.
 `outcome` is one of `deferred`, `running`, `ok`, `cancelled`,
 `superseded`, `timeout`, `budget_exhausted`, `error`, `error:spawn` (the
 fork's worker thread could not start; `fork_session` returns the settled

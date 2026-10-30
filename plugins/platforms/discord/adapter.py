@@ -6783,10 +6783,18 @@ class DiscordAdapter(BasePlatformAdapter):
         without a literal ``<@bot>`` token in ``message.content``. This helper
         intentionally ignores the resolved mentions list so the bot admission
         gate can distinguish an explicit cross-bot address from a reply chip.
+        A literal ``<@&role>`` token for this bot's managed role also counts,
+        since Discord may resolve a typed ``@bot`` to that role.
         """
         if not self._client or not self._client.user:
             return False
-        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+        if str(self._client.user.id) in self._raw_mentioned_user_ids(message):
+            return True
+        content = str(getattr(message, "content", "") or "")
+        return any(
+            f"<@&{role_id}>" in content
+            for role_id in self._self_managed_role_mention_ids(message)
+        )
 
     def _discord_bots_require_inline_mention(self) -> bool:
         """Whether another bot must type an inline @mention to trigger us.

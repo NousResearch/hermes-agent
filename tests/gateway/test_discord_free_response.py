@@ -908,3 +908,21 @@ async def test_discord_reply_in_free_channel_triggers_backfill(adapter, monkeypa
     )
 
 
+
+
+@pytest.mark.asyncio
+async def test_bot_managed_role_reply_ping_without_inline_token_is_ignored(adapter, monkeypatch):
+    """Role mention metadata alone must not bypass the bot inline-mention gate."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter._ready_event.set()
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="reply without an inline mention",
+        role_mentions=[_managed_role(bot_id=adapter._client.user.id)],
+    )
+    message.author.bot = True
+
+    assert await adapter._dispatch_discord_message(message) is False
+    adapter.handle_message.assert_not_awaited()

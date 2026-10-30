@@ -223,7 +223,9 @@ def command_catalog(load_cfg=None, module_loader=import_module, scope=None) -> d
     skills: dict[str, dict] = {}
     # Each loader is a degrade boundary: user config, third-party plugin registration and skill
     # files can raise anything, and one failing source must never blank the whole palette.
-    with scope if scope is not None else contextlib.nullcontext():
+    from tools.skills_tool import shared_scan_signature
+
+    with scope if scope is not None else contextlib.nullcontext(), shared_scan_signature():
         try:
             _catalog_quick_commands(cat, load_cfg)
         except Exception as e:
@@ -261,7 +263,8 @@ def slash_completions(text: str = "", scope=None) -> dict:
     from prompt_toolkit.formatted_text import to_plain_text
     from agent.skill_commands import get_interactive_skill_commands
     from agent.skill_bundles import get_skill_bundles
-    with scope if scope is not None else contextlib.nullcontext():
+    from tools.skills_tool import shared_scan_signature
+    with scope if scope is not None else contextlib.nullcontext(), shared_scan_signature():
         skill_commands, skill_bundles = dict(get_interactive_skill_commands()), dict(get_skill_bundles())
     completer = SlashCommandCompleter(
         skill_commands_provider=lambda: skill_commands, skill_bundles_provider=lambda: skill_bundles)

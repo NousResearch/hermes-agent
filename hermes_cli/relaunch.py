@@ -5,6 +5,7 @@ import os
 import pathlib
 import shutil
 import sys
+from dataclasses import dataclass
 from typing import Optional, Sequence
 
 from hermes_cli._parser import (
@@ -37,22 +38,46 @@ def _build_inherited_flag_table() -> list[tuple[str, bool]]:
 _INHERITED_FLAGS_TABLE = _build_inherited_flag_table()
 
 
-def _extract_inherited_flags(argv: Sequence[str]) -> list[str]:
+@dataclass(frozen=True)
+class SessionRelaunchRequest:
+    """Launch context captured before shutdown; argument construction has no side effects."""
+
+    session_id: str
+    cwd: str
+    original_argv: tuple[str, ...]
+
+    def build_args(self, *, resume: bool) -> list[str]:
+        """Use saved conversation settings when resuming, or launch picks when starting fresh."""
+        # Replaying launch picks would undo later /model or /reasoning changes
+        # or preload skills into the saved conversation again.
+        restored_session_flags = ("-m", "--model", "--provider", "--reasoning", "-s", "--skills")
+        args = _extract_inherited_flags(
+            self.original_argv, exclude=restored_session_flags if resume else (),
+        )
+        args.extend(["--cli", "--in", self.cwd])
+        if resume:
+            args.extend(["--resume", self.session_id])
+        return args
+
+
+def _extract_inherited_flags(argv: Sequence[str], *, exclude: Sequence[str] = ()) -> list[str]:
     """Pull out flags that should carry over into a self-relaunched hermes."""
     flags: list[str] = []
     i = 0
     while i < len(argv):
         arg = argv[i]
         if "=" in arg:
-            if any(arg.split("=", 1)[0] == flag for flag, _ in _INHERITED_FLAGS_TABLE):
+            if any(arg.split("=", 1)[0] == flag and flag not in exclude for flag, _ in _INHERITED_FLAGS_TABLE):
                 flags.append(arg)
             i += 1
             continue
         for flag, takes_value in _INHERITED_FLAGS_TABLE:
             if arg == flag:
-                flags.append(arg)
+                if flag not in exclude:
+                    flags.append(arg)
                 if takes_value and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
-                    flags.append(argv[i + 1])
+                    if flag not in exclude:
+                        flags.append(argv[i + 1])
                     i += 1
                 break
         i += 1

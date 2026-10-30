@@ -15,6 +15,12 @@ from contextlib import suppress
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cli")
+_exit_watchdog_cancelled = threading.Event()
+
+
+def disarm_exit_watchdog() -> None:
+    """Cleanup completed; a replacement process now owns the terminal."""
+    _exit_watchdog_cancelled.set()
 
 
 def _cli():
@@ -75,7 +81,8 @@ def _arm_exit_watchdog(timeout_s: float | None = None, *, from_signal: bool = Fa
         return
 
     def _watchdog():
-        time.sleep(timeout_s)
+        if _exit_watchdog_cancelled.wait(timeout_s):
+            return
         # The signal-armed watchdog yields to cleanup's own timer once cleanup is running.
         if from_signal and _cli()._cleanup_in_progress:
             return

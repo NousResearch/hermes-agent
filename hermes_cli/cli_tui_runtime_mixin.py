@@ -28,6 +28,43 @@ logger = logging.getLogger("cli")
 class CLITuiRuntimeMixin:
     """Classic-TUI run loop phases: input processing, after-turn bookkeeping, startup banner/prewarm/maintenance, prompt_toolkit application build, signal handlers and shutdown."""
 
+    def _handle_relaunch_command(self, command: str) -> bool:
+        """Stage process replacement; the run-loop tail executes it after normal shutdown."""
+        if command.split()[1:]:
+            print("  Usage: /relaunch")
+            return True
+        if self._agent_running:
+            print("  A turn is running. Wait for it to finish before /relaunch.")
+            return True
+        if self._session_db is None:
+            print("  Cannot relaunch while the session store is unavailable.")
+            return True
+        from hermes_cli.relaunch import SessionRelaunchRequest
+        self._pending_session_relaunch = SessionRelaunchRequest(
+            session_id=self.session_id, cwd=os.getcwd(), original_argv=tuple(sys.argv[1:]),
+        )
+        print("  Relaunching this CLI after normal session shutdown…")
+        return False
+
+    def _tui_relaunch(self):
+        """Resume only a row that survived shutdown's empty-session pruning."""
+        request = getattr(self, "_pending_session_relaunch", None)
+        relaunch_args = self._pending_relaunch
+        if request is not None:
+            # --profile was consumed before argparse. Pin the active home even if the
+            # user's sticky active profile changed in another console in the meantime.
+            os.environ["HERMES_HOME"] = str(get_hermes_home())
+            session_exists = self._session_db.get_session(request.session_id) is not None
+            relaunch_args = request.build_args(resume=session_exists)
+        if not relaunch_args:
+            return
+        # On Windows the parent waits for the new CLI. Its shutdown watchdog must
+        # not end that wait and return the terminal to the shell over the child.
+        from hermes_cli.cli_shutdown import disarm_exit_watchdog
+        from hermes_cli.relaunch import relaunch
+        disarm_exit_watchdog()
+        relaunch(relaunch_args, preserve_inherited=False)
+
     def _tui_process_loop(self):
         """REPL worker thread: drain ``_pending_input``, run idle housekeeping, dispatch each input."""
         held = None
@@ -555,7 +592,11 @@ class CLITuiRuntimeMixin:
         # Ask AND apply before _run_cleanup arms the exit watchdog, so a large archive is never cut
         # short; a signal-driven exit never asks.
         import cli as _cli_mod
-        if not _cli_mod._signal_watchdog_armed and _cli_mod._active_worktree:
+        is_session_relaunch = getattr(self, "_pending_session_relaunch", None) is not None
+        should_offer_worktree_exit = (
+            not _cli_mod._signal_watchdog_armed and _cli_mod._active_worktree and not is_session_relaunch
+        )
+        if should_offer_worktree_exit:
             from hermes_cli.worktree_exit import apply_exit_choice, ask_exit_choice
             with suppress(Exception, KeyboardInterrupt):
                 ask_exit_choice(_cli_mod._active_worktree)

@@ -6,6 +6,7 @@ bind mounts.
 """
 
 import datetime
+import functools
 import hashlib
 import json
 import logging
@@ -452,13 +453,20 @@ _storage_opt_ok: Optional[bool] = None  # cached result across instances
 _cgroup_limits_ok: Optional[bool] = None  # cached result across instances
 
 
-def _cgroup_limits_available(image: str) -> bool:
+def _cgroup_limits_available(image: str, probe_args: list[str]) -> bool:
     """Probe once per process whether ``--cpus``/``--memory``/``--pids-limit`` work here, via a
     throwaway ``sleep 0`` container from *image* (no extra pull). Without delegated cgroup
     controllers (unprivileged LXCs, rootless) these flags fail every start with exit 126;
     the result is host-wide, so it is cached. Only DEFINITIVE answers are cached: a probe
     that could not run (auto-pull past the timeout, daemon cold-start, manifest/pull error)
-    says nothing about cgroup support, so it degrades this spawn and is retried on the next."""
+    says nothing about cgroup support, so it degrades this spawn and is retried on the next.
+
+    The probe comes up before the sandbox from the same image, so it carries the sandbox's posture
+    (*probe_args*) and drops what ``sleep 0`` never needs: network and a writable rootfs. ``-w /``: a
+    ``--user`` probe must not hinge on the image WORKDIR's permissions. ``--entrypoint ""``: the
+    verdict is ``docker run``'s own, and an s6 ``/init`` would exit 126 on the noexec /run, costing
+    every spawn its limits. docker_extra_args stay out: they can carry mounts, ports or a second
+    ``--network``, which docker rejects."""
     global _cgroup_limits_ok
     if _cgroup_limits_ok is not None:
         return _cgroup_limits_ok
@@ -469,8 +477,8 @@ def _cgroup_limits_available(image: str) -> bool:
 
     try:
         result = run_capture(
-            [docker_exe, "run", "--rm", "--cpus", "0.5", "--memory", "64m", "--pids-limit", "32",
-             image, "sleep", "0"],
+            [docker_exe, "run", "--rm", "--network=none", "--read-only", "-w", "/", "--entrypoint", "",
+             *probe_args, "--cpus", "0.5", "--memory", "64m", "--pids-limit", "32", image, "sleep", "0"],
             timeout=60)
     except Exception as e:
         logger.warning("Cgroup limit probe failed; containers run without "
@@ -704,7 +712,13 @@ class DockerEnvironment(BaseEnvironment):
 
         _ensure_docker_available()
 
-        resource_args = self._resource_args(image, cpu, memory, disk, network, shm_size, extra_args)
+        # One posture for the cgroup probe below and the sandbox. run_exec is left open until after
+        # the probe: on a first start its docker run is what pulls the image, and an image not
+        # pulled yet has no entrypoint to inspect (#34628).
+        user_args = _host_user_args(run_as_host_user)
+        posture = functools.partial(_build_security_args, bool(user_args), snap_compat=snap_compat)
+        cgroups_ok = _cgroup_limits_available(image, posture() + user_args)
+        resource_args = self._resource_args(cgroups_ok, cpu, memory, disk, network, shm_size, extra_args)
         volume_args, writable_args = self._mount_args(volumes, host_cwd, auto_mount_cwd, task_id)
         mount = getattr(self, "host_cwd_mount", None)
         if mount and cwd_follows_host_mount(cwd, mount):
@@ -717,7 +731,6 @@ class DockerEnvironment(BaseEnvironment):
         egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
             self._egress_and_env_args(extra_args))
         volume_args.extend(egress_volume_args)
-        user_args = _host_user_args(run_as_host_user)
 
         # Resolved once so it works when /usr/local/bin is not in PATH (macOS services).
         self._docker_exe = find_docker() or "docker"
@@ -733,8 +746,7 @@ class DockerEnvironment(BaseEnvironment):
                 "Docker: image %s uses /init (s6-overlay) as entrypoint — "
                 "skipping --init and mounting /run with exec.",
                 image)
-        security_args = _build_security_args(
-            run_as_host_user and bool(user_args), run_exec=image_uses_s6_init, snap_compat=snap_compat)
+        security_args = posture(run_exec=image_uses_s6_init)
         self._snap_compat = snap_compat
         if snap_compat:
             logger.warning(
@@ -814,10 +826,10 @@ class DockerEnvironment(BaseEnvironment):
             check_extra_args_collisions(validated_extra, critical_egress_names, enforce_egress)
         return egress_label, egress_volume_args, egress_host_args, _name_only_env_args(merged_env), validated_extra
 
-    def _resource_args(self, image, cpu, memory, disk, network, shm_size, extra_args) -> list[str]:
+    def _resource_args(self, cgroups_ok, cpu, memory, disk, network, shm_size, extra_args) -> list[str]:
         """cgroup-gated CPU/memory/pids limits, shm size, disk quota and network mode."""
         args: list[str] = []
-        if _cgroup_limits_available(image):
+        if cgroups_ok:
             if cpu > 0:
                 args.extend(["--cpus", str(cpu)])
             if memory > 0:

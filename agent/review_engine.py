@@ -137,7 +137,7 @@ def build_review_task(snapshot: list[dict[str, str]], user_prompt: str = "", loa
 
 
 def _load_review_credentials_cfg() -> Optional[dict[str, Any]]:
-    """``auxiliary.review`` as a delegation-credentials dict, or None when unconfigured (provider auto/empty
+    """``auxiliary.review`` as a delegation-credentials dict (carrying any ``key_env`` pointer), or None when unconfigured (provider auto/empty
     and no model/base_url) so the reviewer inherits the parent's credentials."""
     try:
         from hermes_cli.config import load_config_readonly
@@ -147,7 +147,8 @@ def _load_review_credentials_cfg() -> Optional[dict[str, Any]]:
     if not isinstance(review, dict):
         return None
 
-    cfg = {k: str(review.get(k) or "").strip() for k in ("provider", "model", "base_url", "api_key", "api_mode")}
+    cfg = {k: str(review.get(k) or "").strip()
+           for k in ("provider", "model", "base_url", "api_key", "api_mode", "key_env")}
     if cfg["provider"].lower() == "auto":
         cfg["provider"] = ""
     if not (cfg["provider"] or cfg["model"] or cfg["base_url"]):

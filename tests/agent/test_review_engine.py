@@ -119,7 +119,24 @@ def test_load_review_credentials_cfg_reads_config(monkeypatch):
         "base_url": "",
         "api_key": "",
         "api_mode": "",
+        "key_env": "",
     }
+
+def test_load_review_credentials_cfg_keeps_key_env(monkeypatch):
+    """A key_env pointer on auxiliary.review must survive the /review hop, or the route
+    can only authenticate by inheriting the parent's key (see the 401 regression)."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"auxiliary": {"review": {
+            "provider": "cliproxy",
+            "model": "gemini-4-argon-high",
+            "base_url": "http://127.0.0.1:8317/v1",
+            "key_env": "CLIPROXY_API_KEY",
+        }}},
+    )
+    cfg = re_mod._load_review_credentials_cfg()
+    assert cfg["key_env"] == "CLIPROXY_API_KEY"
+    assert cfg["base_url"] == "http://127.0.0.1:8317/v1"
 
 def test_load_review_credentials_cfg_auto_means_inherit(monkeypatch):
     monkeypatch.setattr(

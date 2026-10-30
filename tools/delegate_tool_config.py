@@ -257,6 +257,41 @@ def _inherit_parent_endpoint(parent_agent, surface_base_url: Optional[str], surf
             return url, (live_key or surface_api_key)
     return (surface_base_url or None), surface_api_key
 
+def _parent_endpoint_url(parent_agent: Any) -> str:
+    """The endpoint the parent is actually calling, normalised; "" when it cannot be proven.
+
+    Reuses ``_inherit_parent_endpoint`` so the live client's URL wins over the surface
+    attribute. Non-string values (a MagicMock parent, an unset attribute) mean "unknown" —
+    the caller must then keep the legacy inherit behaviour rather than guess.
+    """
+    if parent_agent is None:
+        return ""
+    raw, _key = _inherit_parent_endpoint(
+        parent_agent, getattr(parent_agent, "base_url", ""), getattr(parent_agent, "api_key", None),
+    )
+    return _normalized_runtime_url(raw) if isinstance(raw, str) else ""
+
+
+def _refuse_unkeyed_foreign_endpoint(creds: dict, parent_agent: Any) -> None:
+    """Raise when a direct route carries no credential and is not the parent's endpoint.
+
+    ``api_key=None`` on this branch means "inherit the parent's key", which is only valid
+    while the child calls the *same* endpoint. Pairing a foreign endpoint with the parent's
+    credential is a guaranteed 401 at best and a credential hand-off at worst.
+    """
+    if creds.get("api_key"):
+        return
+    child_url = _normalized_runtime_url(creds.get("base_url"))
+    parent_url = _parent_endpoint_url(parent_agent)
+    if not child_url or not parent_url or child_url == parent_url:
+        return
+    raise ValueError(
+        f"Delegation route '{child_url}' is configured without a credential, and the parent's key "
+        f"belongs to '{parent_url}' — refusing to send it to a different host. Add `key_env: <VAR>` "
+        f"(or `api_key`) to this block, or drop `base_url` and set `provider: <name>` so that "
+        f"provider's configured key is used."
+    )
+
 def _loaded_pool(key: Any):
     """``load_pool(key)`` when it holds credentials, else None."""
     from agent.credential_pool import load_pool
@@ -378,6 +413,19 @@ def _credential_bundle(model, provider, base_url, api_key, api_mode, request_ove
         "request_overrides": request_overrides, **extra,
     }
 
+def _route_credential_pointer(v: dict) -> str:
+    """Credential named by ``key_env``/``api_key_env`` on a delegation/auxiliary block, or "".
+
+    Same reader the rest of the credential surface uses (profile ``.env`` first, then the
+    environment), so a pointer that works on a ``providers:`` entry works here too. Imported
+    locally to keep this module's import graph unchanged.
+    """
+    pointer = str(v.get("key_env") or v.get("api_key_env") or "").strip()
+    if not pointer:
+        return ""
+    from hermes_cli.config import get_env_value_prefer_dotenv
+    return (get_env_value_prefer_dotenv(pointer) or "").strip()
+
 def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
     """``delegation.base_url`` branch: provider/api_mode from URL heuristics."""
     # Shared URL-based api_mode detector so Anthropic-compatible direct endpoints (/anthropic suffix: Azure AI
@@ -468,17 +516,23 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
-    endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
+    endpoint; ``key_env``/``api_key_env`` names the credential when ``api_key`` is absent; (``api_key`` None means
+    inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
     ``provider`` set → full bundle via the runtime provider system (same path as CLI/gateway startup); neither →
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""
-    values = {k: str(cfg.get(k) or "").strip() or None for k in ("model", "provider", "base_url", "api_key")}
+    values = {k: str(cfg.get(k) or "").strip() or None
+              for k in ("model", "provider", "base_url", "api_key", "key_env", "api_key_env")}
     values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
+    if not values["api_key"]:
+        values["api_key"] = _route_credential_pointer(values) or None
     explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None
     is_native_sdk_provider = (values["provider"] or "").strip().lower() in _NATIVE_SDK_PROVIDERS
 
     if values["base_url"] and not is_native_sdk_provider:
-        return _direct_endpoint_credentials(values, explicit_request_overrides)
+        creds = _direct_endpoint_credentials(values, explicit_request_overrides)
+        _refuse_unkeyed_foreign_endpoint(creds, parent_agent)
+        return creds
     if not values["provider"]:
         # Pure inherit; explicit request_overrides still merge OVER the parent's.
         return _credential_bundle(

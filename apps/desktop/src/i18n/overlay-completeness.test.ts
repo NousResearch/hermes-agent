@@ -9,6 +9,7 @@ import { deOverrides } from './de'
 import type { TranslationOverrides } from './define-locale'
 import { en } from './en'
 import { esOverrides } from './es'
+import { faOverrides } from './fa'
 import { frOverrides } from './fr'
 import { jaOverrides } from './ja'
 import knownGaps from './overlay-gaps.json'
@@ -27,6 +28,7 @@ const OVERLAYS = {
   ar: arOverrides,
   de: deOverrides,
   es: esOverrides,
+  fa: faOverrides,
   fr: frOverrides,
   ja: jaOverrides,
   ru: ruOverrides,

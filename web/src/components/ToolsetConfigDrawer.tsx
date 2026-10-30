@@ -229,7 +229,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
         <Button
           ghost
           size="xs"
-          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+          className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
           onClick={onClose}
           aria-label="Close"
         >
@@ -238,7 +238,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
 
         {/* Header — toolset identity + enable toggle */}
         <header className="p-5 pb-3 border-b border-border">
-          <div className="flex items-center gap-3 pr-8">
+          <div className="flex items-center gap-3 pe-8">
             <span className="font-mondwest text-display text-base tracking-wider">
               {labelText}
             </span>
@@ -308,7 +308,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                     </div>
                     {isActive ? (
                       <Badge tone="success" className="text-xs shrink-0">
-                        <Check className="h-3 w-3 mr-0.5" /> Selected
+                        <Check className="h-3 w-3 me-0.5" /> Selected
                       </Badge>
                     ) : (
                       <Button
@@ -443,7 +443,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                   post-setup: {postSetupKey}
                 </span>
                 {postSetupRunning && (
-                  <Loader2 className="h-3 w-3 animate-spin ml-auto text-muted-foreground" />
+                  <Loader2 className="h-3 w-3 animate-spin ms-auto text-muted-foreground" />
                 )}
               </div>
               <pre className="max-h-48 overflow-y-auto p-3 text-xs font-mono whitespace-pre-wrap text-text-secondary">

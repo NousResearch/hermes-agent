@@ -52,6 +52,12 @@ export const LOCALE_OPTIONS = [
     configValue: 'ru'
   },
   {
+    id: 'fa',
+    name: LOCALE_ENDONYMS.fa,
+    englishName: 'Persian',
+    configValue: 'fa'
+  },
+  {
     id: 'fr',
     name: LOCALE_ENDONYMS.fr,
     englishName: 'French',
@@ -174,6 +180,14 @@ const LOCALE_ALIASES: Record<string, BundledLocale> = {
   'russian-russian': 'ru',
   русский: 'ru',
   руский: 'ru',
+  fa: 'fa',
+  'fa-ir': 'fa',
+  fa_ir: 'fa',
+  'fa-af': 'fa',
+  fa_af: 'fa',
+  persian: 'fa',
+  farsi: 'fa',
+  فارسی: 'fa',
   fr: 'fr',
   'fr-fr': 'fr',
   fr_fr: 'fr',

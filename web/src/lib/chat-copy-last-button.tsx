@@ -28,8 +28,8 @@ export function CopyLastButton({
         "bg-black/20",
         "opacity-70 hover:opacity-100 hover:border-current/60",
         "transition-opacity duration-150",
-        "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
-        "lg:bottom-4 lg:right-4",
+        "bottom-2 end-2 px-2 py-1 text-xs sm:bottom-3 sm:end-3 sm:px-2.5 sm:py-1.5",
+        "lg:bottom-4 lg:end-4",
       )}
       style={{ color }}
     >

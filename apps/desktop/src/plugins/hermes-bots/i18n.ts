@@ -1789,6 +1789,7 @@ export const BOTS_LOCALES: PluginLocaleBundles = {
   ja,
   zh,
   'zh-hant': zhHant,
+  fa: { canonical: CANONICAL_GROUP_LOCALES.fa },
   ar: { canonical: CANONICAL_GROUP_LOCALES.ar },
   ru: { canonical: CANONICAL_GROUP_LOCALES.ru },
   fr: { canonical: CANONICAL_GROUP_LOCALES.fr },

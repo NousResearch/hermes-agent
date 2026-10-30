@@ -805,7 +805,7 @@ export default function SystemPage() {
               ghost
               size="icon"
               onClick={() => setHookModalOpen(false)}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
               aria-label="Close"
             >
               <X />
@@ -1056,7 +1056,7 @@ export default function SystemPage() {
                 href={portal?.subscription_url || "https://portal.nousresearch.com/manage-subscription"}
                 target="_blank"
                 rel="noreferrer"
-                className="ml-auto text-xs text-primary underline"
+                className="ms-auto text-xs text-primary underline"
               >
                 Manage subscription
               </a>
@@ -1242,7 +1242,7 @@ export default function SystemPage() {
                     <span className="font-mono text-xs text-muted-foreground">{entry.token_preview}</span>
                     <Badge tone="outline">{entry.auth_type}</Badge>
                     {entry.last_status && <Badge tone="secondary">{entry.last_status}</Badge>}
-                    <Button ghost size="icon" className="ml-auto text-destructive" aria-label="Remove credential" onClick={() => credDelete.requestDelete(`${prov.provider}|${entry.index}`)}>
+                    <Button ghost size="icon" className="ms-auto text-destructive" aria-label="Remove credential" onClick={() => credDelete.requestDelete(`${prov.provider}|${entry.index}`)}>
                       <Trash2 />
                     </Button>
                   </div>
@@ -1632,7 +1632,7 @@ function MemorySection({
               <Link to="/plugins" className="underline">
                 Change in Plugins →
               </Link>
-              <span className="ml-auto">
+              <span className="ms-auto">
                 Provider setup:{" "}
                 <Link to="/plugins" className="underline">
                   configure in Plugins
@@ -1655,7 +1655,7 @@ function MemorySection({
                 </span>
                 <span>{t.systemMemory.builtinNote}</span>
               </div>
-              <div className="flex items-center gap-2 ml-auto">
+              <div className="flex items-center gap-2 ms-auto">
                 <Button size="sm" ghost className="text-destructive" onClick={() => onReset("memory")}>
                   Reset MEMORY.md
                 </Button>

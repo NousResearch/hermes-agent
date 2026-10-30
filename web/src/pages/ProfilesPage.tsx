@@ -146,7 +146,7 @@ function ProfileActionsMenu({
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-full z-50 mt-1 min-w-[200px] border border-border bg-card shadow-lg"
+          className="absolute end-0 top-full z-50 mt-1 min-w-[200px] border border-border bg-card shadow-lg"
         >
           {!isActive && (
             <button
@@ -823,7 +823,7 @@ export default function ProfilesPage() {
               ghost
               size="icon"
               onClick={() => setCreateModalOpen(false)}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
               aria-label="Close"
             >
               <X />
@@ -1248,7 +1248,7 @@ export default function ProfilesPage() {
               ghost
               size="icon"
               onClick={closeEditor}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
               aria-label="Close"
             >
               <X />

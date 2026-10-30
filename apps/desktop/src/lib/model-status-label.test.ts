@@ -107,6 +107,16 @@ describe('model-status-label', () => {
     expect(formatModelPillLabel('deepseek-v4.1')).toBe('DeepSeek V4.1')
   })
 
+  it('keeps Fireworks route and region suffixes visible after a variant tag (#138263)', () => {
+    const router = 'accounts/fireworks/routers/deepseek-v4p1-flash-us'
+    const model = 'accounts/fireworks/models/deepseek-v4p1-flash-us'
+
+    expect(modelDisplayParts(router)).toEqual({ name: 'DeepSeek V4p1 (Router)', tag: 'Flash US' })
+    expect(modelDisplayParts(model)).toEqual({ name: 'DeepSeek V4p1 (Model)', tag: 'Flash US' })
+    expect(formatModelPillLabel(router)).toBe('DeepSeek V4p1 (Router) · Flash')
+    expect(formatModelPillLabel(model)).toBe('DeepSeek V4p1 (Model) · Flash')
+  })
+
   it('agrees with the catalog rows on the variant for local ids that carry both a variant and a quant', () => {
     // A local GGUF id can carry the variant and the quant in either order —
     // `…-flash-Q4_K_XL` and `…-Q4_K_XL-flash` are the same model. The row

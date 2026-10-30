@@ -1,8 +1,8 @@
 name: limits-monitor
 repo: https://github.com/zzhan1q/hermes-limits-monitor
-sha: "5d1be9fd52521ec56727c9489dffaadaf31df054"
+sha: "bd6810701442e2b2a91a4be2ea9811a88e1236aa"
 screenshots:
-  - https://raw.githubusercontent.com/zzhan1q/hermes-limits-monitor/5d1be9fd52521ec56727c9489dffaadaf31df054/screenshots/limits-monitor.png
+  - https://raw.githubusercontent.com/zzhan1q/hermes-limits-monitor/bd6810701442e2b2a91a4be2ea9811a88e1236aa/screenshots/limits-monitor.png
 title: Limits
 description: >-
   Read-only Hermes Desktop quota pane showing provider allowance windows exposed by Hermes across reachable profiles. It uses the public Hermes RPC surface and deliberately avoids direct vendor usage endpoints and credential-file access.

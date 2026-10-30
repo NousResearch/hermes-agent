@@ -120,6 +120,18 @@ def _redeemable(lease: Optional[_Lease], prompt: Any, max_prompt_chars: int = MA
     return None
 
 
+def lease_parent(token: Any, home: Any = None) -> Any:
+    """The session agent behind an unexpired ``token`` of ``home``'s profile (the active one when
+    omitted), or None; the lease stays unspent."""
+    from hermes_constants import hermes_home_key
+
+    with _lock:
+        lease = _leases.get(token) if isinstance(token, str) else None
+    if lease is None or lease.home_key != hermes_home_key(home) or time.monotonic() > lease.expires_at:
+        return None
+    return lease.capture.parent_ref()
+
+
 def take_lease(
     token: Any, prompt: Any, *, plugin_id: str, home: Any = None, kind: str = "side_question",
     max_prompt_chars: int = MAX_PROMPT_CHARS,

@@ -301,9 +301,17 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
                     if not description:  # first non-heading body line (a null value stays null)
                         description = next((ln for ln in map(str.strip, body.strip().split("\n"))
                                             if ln and not ln.startswith("#")), description)
+                    # Parse-once: the slash-command map (agent.skill_commands) registers from
+                    # these rows, so it needs the raw (untruncated) name and the exact
+                    # command-map description expression — no second read of the file.
+                    cmd_description = frontmatter.get("description", "") or next(
+                        (line.strip()[:80] for line in body.strip().split("\n")
+                         if line.strip() and not line.strip().startswith("#")), "")
                     scanned.append({
                         "name": frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH],
                         "description": _truncate_description(description),
+                        "_cmd_name": frontmatter.get("name", skill_md.parent.name),
+                        "_cmd_desc": cmd_description,
                         "category": _get_category_from_path(skill_md), "tier": tier, "root": scan_dir,
                         "path": skill_md, "visible": bool(skill_matches_platform(frontmatter)
                                                           and skill_matches_environment(frontmatter)

@@ -1160,7 +1160,7 @@ def _resolve_target_transport(
         # Credentialless satellite: the primary adapter serves THIS target only when an exact
         # primary route maps it to this profile; a miss fails closed below.
         # See #101113.
-        shared = adapters.get(platform, target)
+        shared = adapters.get(platform, target, origin=_resolve_origin(job))
         target_adapters = {platform: shared} if shared is not None else {}
         if shared is not None:
             # The PRIMARY's route authorized this exact native adapter. The satellite's own

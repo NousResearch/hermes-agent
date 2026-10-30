@@ -104,6 +104,65 @@ def test_satellite_routes_exact_target_through_primary_adapter(tmp_path, monkeyp
         reset_hermes_home_override(token)
 
 
+def test_user_scoped_route_uses_captured_origin_identity():
+    from types import SimpleNamespace
+    from cron.scheduler_delivery import _resolve_target_transport
+    from gateway.profile_routing import ProfileRoute
+
+    route = ProfileRoute(name="private", platform="discord", profile="fitness",
+                         chat_id="C1", guild_id="G1", user_id="U1")
+    primary = object()
+    shared = SharedRouteAdapters({Platform.DISCORD: primary}, [route])
+    target = {"platform": "discord", "chat_id": "C1"}
+    origin = dict(target, user_id="U1", scope_id="G1")
+    resolved, error = _resolve_target_transport(
+        {"origin": origin}, Platform.DISCORD, "discord", target, shared,
+        SimpleNamespace(platforms={}))
+    assert error is None
+    assert resolved is not None and resolved[2] is primary
+
+
+def test_user_scoped_route_rejects_missing_wrong_or_unrelated_identity():
+    from types import SimpleNamespace
+    from cron.scheduler_delivery import _resolve_target_transport
+    from gateway.profile_routing import ProfileRoute
+
+    route = ProfileRoute(name="private", platform="discord", profile="fitness",
+                         chat_id="C1", guild_id="G1", user_id="U1")
+    shared = SharedRouteAdapters({Platform.DISCORD: object()}, [route])
+    # Even a target forged with the allowed identity must not authorize a send.
+    target = {"platform": "discord", "chat_id": "C1", "user_id": "U1"}
+    origin = dict(target, scope_id="G1")
+    bad_origins = [None, "user_id=U1", {},
+                   dict(origin, user_id=None), dict(origin, user_id="U2"),
+                   dict(origin, platform="slack"), dict(origin, chat_id="C2"),
+                   dict(origin, thread_id="T2"), dict(origin, scope_id="G2"),
+                   dict(origin, scope_id=None)]
+    for bad in bad_origins:
+        resolved, error = _resolve_target_transport(
+            {"origin": bad, "prompt": "user_id=U1"}, Platform.DISCORD, "discord",
+            target, shared, SimpleNamespace(platforms={}))
+        assert resolved is None, bad
+        assert error == "platform 'discord' not configured/enabled"
+    assert shared.get(Platform.DISCORD, target) is None
+    # A sender captured in one thread cannot authorize another thread or the parent.
+    assert shared.get(Platform.DISCORD, dict(target, thread_id="T1"), origin=origin) is None
+
+
+def test_user_scoped_route_keeps_disabled_and_bot_profile_boundaries():
+    from dataclasses import replace
+    from gateway.profile_routing import ProfileRoute
+
+    route = ProfileRoute(name="private", platform="discord", profile="fitness",
+                         chat_id="C1", guild_id="G1", user_id="U1")
+    target = {"platform": "discord", "chat_id": "C1"}
+    origin = dict(target, user_id="U1", scope_id="G1")
+    for denied_route in (replace(route, enabled=False), replace(route, bot_profile="other"),
+                         replace(route, chat_id=None)):
+        shared = SharedRouteAdapters({Platform.DISCORD: object()}, [denied_route])
+        assert shared.get(Platform.DISCORD, target, origin=origin) is None
+
+
 def test_shared_view_is_falsy_without_routes_or_primary_adapters():
     assert not SharedRouteAdapters({}, [])
     assert SharedRouteAdapters({Platform.DISCORD: object()}, []).get(Platform.DISCORD) is None

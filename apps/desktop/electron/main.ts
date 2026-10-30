@@ -20,6 +20,7 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  contentTracing,
   crashReporter,
   dialog,
   net as electronNet,
@@ -419,6 +420,7 @@ import {
   payloadTicketRuntime,
   requireBundledPayload
 } from './payload-backend'
+import { captureTraceOnce, traceDurationMs } from './perf-capture'
 import { petOverlayClickThrough, shouldPopInOnOverlayClosed } from './pet-overlay'
 import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
@@ -14035,7 +14037,37 @@ function createWindow() {
     // windows); no need to reapply it here.
     broadcastBootProgress()
     sendWindowStateChanged()
+    installPerfCaptureHooks(mainWindow)
   })
+}
+
+// Dev-only perf hooks (see electron/perf-capture.ts). Both are inert unless
+// their env var is set, so a normal launch pays no tracer, no extra CSS and no
+// timers. They exist because the packaged app has no devtools port: this is the
+// only way to ask a live install where its renderer/GPU time actually goes.
+function installPerfCaptureHooks(window: BrowserWindow): void {
+  if (process.env.HERMES_DESKTOP_ABLATE_ANIMATIONS === '1') {
+    void window.webContents
+      .insertCSS('*, *::before, *::after { animation: none !important; transition: none !important; }')
+      .then(() => rememberLog('[perf] animations ablated (HERMES_DESKTOP_ABLATE_ANIMATIONS)'))
+      .catch(error => rememberLog(`[perf] animation ablation failed: ${error?.message ?? error}`))
+  }
+
+  const durationMs = traceDurationMs(process.env.HERMES_DESKTOP_TRACE_MS)
+
+  if (durationMs === null) {
+    return
+  }
+
+  const outFile =
+    process.env.HERMES_DESKTOP_TRACE_OUT || path.join(app.getPath('userData'), `trace-${Date.now()}.json`)
+
+  void captureTraceOnce({
+    tracer: contentTracing,
+    durationMs,
+    outFile,
+    write: (file, data) => fs.promises.writeFile(file, data, 'utf8')
+  }).then(written => rememberLog(written ? `[perf] trace written to ${written}` : '[perf] trace capture refused'))
 }
 
 ipcMain.handle('hermes:connection', async (event, profile) => {

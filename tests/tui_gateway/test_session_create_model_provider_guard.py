@@ -31,6 +31,8 @@ def _create(monkeypatch, tmp_path):
     {"model": "gpt-5.5", "provider": "anthropic"},
     {"model": "gpt-5.5"},  # provider implied by the profile config
     {"model": "deepseek/deepseek-v4-flash-0731", "provider": "openai-codex"},  # the incident pair
+    {"model": "gpt-6.1-terra", "source": "gui"},  # unlisted foreign family, provider implied by the profile
+    {"model": "gpt-6.1-terra", "provider": "anthropic"},
 ])
 def test_session_create_rejects_incoherent_model_provider_pair_before_any_state(_create, params):
     response, sessions = _create(params)
@@ -50,6 +52,10 @@ def test_session_create_rejects_incoherent_model_provider_pair_before_any_state(
     {"model": "claude-opus-5-20261001", "provider": "anthropic"},  # same family, not (yet) listed
     {"model": "gpt-5.5", "provider": "custom:local"},  # custom endpoint: Hermes cannot know its models
     {"model": "gpt-5.5", "provider": "openrouter"},  # aggregator
+    {"model": "opus", "provider": "anthropic"},  # alias, not a family any vendor lists
+    {"model": "anthropic/claude-opus-5", "provider": "anthropic"},  # vendor-qualified spelling
+    {"model": "my-private-slug", "provider": "anthropic"},  # no vendor claims it
+    {"model": "gpt-6.1-terra", "provider": "openai-codex"},  # the provider's own family
 ])
 def test_session_create_keeps_coherent_unlisted_and_custom_pairs(_create, params):
     response, sessions = _create(params)
@@ -57,6 +63,27 @@ def test_session_create_keeps_coherent_unlisted_and_custom_pairs(_create, params
     assert "error" not in response, response
     session = sessions[response["result"]["session_id"]]
     assert session["model_override"] == {"model": params["model"], "provider": params["provider"]}
+
+
+def test_session_create_keeps_foreign_family_on_a_redirected_anthropic_endpoint(_create, tmp_path):
+    """An Anthropic-protocol proxy at a custom base URL can serve any family, and Hermes cannot know which."""
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  default: claude-opus-5\n  provider: anthropic\n  base_url: https://proxy.example/anthropic\n",
+        encoding="utf-8",
+    )
+
+    response, sessions = _create({"model": "gpt-6.1-terra"})
+
+    assert "error" not in response, response
+    assert sessions[response["result"]["session_id"]]["model_override"] == {"model": "gpt-6.1-terra", "provider": None}
+
+
+def test_session_create_keeps_foreign_family_when_the_env_redirects_anthropic(_create, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.example/anthropic")
+
+    response, _ = _create({"model": "gpt-6.1-terra", "provider": "anthropic"})
+
+    assert "error" not in response, response
 
 
 def test_session_create_logs_when_a_client_override_beats_the_profile_default(_create, caplog, monkeypatch):

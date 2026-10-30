@@ -20,13 +20,24 @@ def model_override_conflict(params: dict, build_scope) -> dict | None:
     if not model:
         return None
     from hermes_cli.models_validate import static_model_provider_conflict
-    from hermes_cli.runtime_provider import resolve_requested_provider
+    from hermes_cli.runtime_provider import _get_model_config, resolve_requested_provider
 
     provider = str(params.get("provider") or "").strip()
-    if not provider:
-        with build_scope:
+    with build_scope:
+        if not provider:
             provider = resolve_requested_provider()
-    return static_model_provider_conflict(model, provider)
+        cfg = _get_model_config()
+    return static_model_provider_conflict(model, provider, native_endpoint=not _endpoint_redirected(provider, cfg))
+
+
+def _endpoint_redirected(provider: str, model_config: dict) -> bool:
+    """A base URL set for this provider, in config or its env var, is a proxy that may serve any family."""
+    from hermes_cli.auth import PROVIDER_REGISTRY, _provider_env_base_url
+
+    if str(model_config.get("provider") or "").strip().lower() == provider.lower() and str(model_config.get("base_url") or "").strip():
+        return True
+    pconfig = PROVIDER_REGISTRY.get(provider.lower())
+    return bool(pconfig and _provider_env_base_url(pconfig))
 
 
 def create_overrides(params: dict) -> tuple:

@@ -420,13 +420,34 @@ def _family_head(model_id: str) -> str:
     return re.split(r"[-./:]", model_id.strip().lower(), maxsplit=1)[0]
 
 
-def static_model_provider_conflict(model_name: str, provider: Optional[str], *, limit: int = 5) -> Optional[dict[str, Any]]:
+# A native API that serves one vendor's models, so a newer name from another vendor's family cannot be
+# one of its hidden slugs. Judged against first-party catalogs only: an unknown head (`opus`, a private
+# slug) names no vendor and stays undecidable.
+_SINGLE_VENDOR_PROVIDERS = frozenset({"anthropic"})
+_FIRST_PARTY_CATALOGS = ("openai-codex", "xai-oauth", "gemini", "deepseek")
+
+
+def _names_another_vendors_family(model_name: str, normalized_provider: str) -> bool:
+    from hermes_cli import models as _m
+
+    head = _family_head(model_name)
+    return any(
+        head in {_family_head(m) for m in _m._PROVIDER_MODELS.get(vendor, ())}
+        for vendor in _FIRST_PARTY_CATALOGS if vendor != normalized_provider
+    )
+
+
+def static_model_provider_conflict(
+    model_name: str, provider: Optional[str], *, limit: int = 5, native_endpoint: bool = True
+) -> Optional[dict[str, Any]]:
     """Offline model×provider coherence from the curated catalogs only (no network: this runs on
     ``session.create``). ``None`` = coherent or undecidable — custom / aggregator / catalog-less
     providers, names in the provider's own family (a newer ``gpt-*`` the curated list lacks) and
     names no vendor lists (hidden or preview slugs) stay permissive. A conflict is a name outside
     the provider's family that another native vendor's catalog lists — or any foreign-family name
-    on the OAuth catalogs with a strict family gate (``_STATIC_FAMILY_PREFIXES``) (#96817)."""
+    on the OAuth catalogs with a strict family gate (``_STATIC_FAMILY_PREFIXES``) (#96817) — or an
+    unlisted name in another vendor's family on a single-vendor API. ``native_endpoint=False`` (the
+    provider's base URL is redirected to a proxy) keeps that last case undecidable."""
     from hermes_cli import models as _m
 
     requested = (model_name or "").strip()
@@ -438,7 +459,9 @@ def static_model_provider_conflict(model_name: str, provider: Optional[str], *, 
         return None
     if _family_head(requested) in {_family_head(m) for m in catalog}:
         return None
-    strict = normalized in _STATIC_FAMILY_PREFIXES
+    strict = normalized in _STATIC_FAMILY_PREFIXES or (
+        native_endpoint and normalized in _SINGLE_VENDOR_PROVIDERS and _names_another_vendors_family(requested, normalized)
+    )
     if not strict and next(_m._static_catalog_matches(requested, normalized), None) is None:
         return None
     suggestions = get_close_matches(requested, catalog, n=limit, cutoff=0.4) or catalog[:limit]

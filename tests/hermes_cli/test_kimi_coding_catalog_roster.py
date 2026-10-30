@@ -45,8 +45,8 @@ def test_curated_catalog_covers_every_live_kimi_code_id():
     curated = _PROVIDER_MODELS["kimi-coding"]
     missing = [m for m in KIMI_CODE_LIVE_IDS if m not in curated]
     assert not missing, (
-        "kimi-coding curated catalog is missing live Kimi Code ids: %s (curated: %s)"
-        % (missing, curated)
+        f"kimi-coding curated catalog is missing live Kimi Code ids: {missing} "
+        f"(curated: {curated})"
     )
 
 
@@ -55,11 +55,11 @@ def test_k3_is_reachable_under_exactly_one_spelling():
     present = [m for m in K3_ALIASES if m in curated]
     assert present, (
         "kimi-coding curated catalog carries neither 'k3' nor its 'kimi-k3' alias "
-        "(curated: %s)" % (curated,)
+        f"(curated: {curated})"
     )
     assert len(present) == 1, (
-        "kimi-coding curated catalog lists k3 under both spellings (%s) — the "
-        "picker would show the same model twice" % (present,)
+        f"kimi-coding curated catalog lists k3 under both spellings ({present}) — the "
+        "picker would show the same model twice"
     )
 
 
@@ -67,6 +67,6 @@ def test_moonshot_platform_ids_are_preserved():
     curated = _PROVIDER_MODELS["kimi-coding"]
     missing = [m for m in MOONSHOT_PLATFORM_IDS if m not in curated]
     assert not missing, (
-        "kimi-coding curated catalog dropped Moonshot platform ids: %s (curated: %s)"
-        % (missing, curated)
+        f"kimi-coding curated catalog dropped Moonshot platform ids: {missing} "
+        f"(curated: {curated})"
     )

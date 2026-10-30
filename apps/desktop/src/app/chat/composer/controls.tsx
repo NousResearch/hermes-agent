@@ -6,7 +6,7 @@ import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { hostHas } from '@/lib/host-capabilities'
-import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
+import { Ear, EarOff, iconSize, Layers3, Loader2, MicOff, Square } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
@@ -332,7 +332,9 @@ function ConversationPill({
           type="button"
           variant="ghost"
         >
-          <Codicon name={muted ? 'mic-off' : 'mic'} size="1rem" />
+          {/* Codicons ships no `mic-off` glyph, so the muted state uses the
+              Tabler icon (same family as the ear beside it). */}
+          {muted ? <MicOff className={iconSize.md} /> : <Codicon name="mic" size="1rem" />}
         </Button>
       </Tip>
       {listening && (

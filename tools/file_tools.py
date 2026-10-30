@@ -1588,15 +1588,6 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
             return tool_error(cross_warning)
-    if os.environ.get("HERMES_PROTECTED_GIT_ROOTS", "").strip():
-        try:
-            protected_error = check_protected_root_write_guard(
-                f"tee -- {path}", os.environ.get("TERMINAL_CWD") or os.getcwd()
-            )
-            if protected_error:
-                return tool_error(protected_error["message"])
-        except Exception:
-            pass
     if _is_internal_file_tool_content(content):
         return tool_error(
             "Refusing to write internal read_file display text as file content. "
@@ -1611,6 +1602,24 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             _resolved = str(_resolve_path_for_task(path, task_id))
         except Exception:
             _resolved = None
+
+        # Protected-root write guard: check the *actual* resolved target, not
+        # the raw relative path, so a task whose workspace IS the protected root
+        # cannot bypass the guard by relying on a wrong cwd.
+        if os.environ.get("HERMES_PROTECTED_GIT_ROOTS", "").strip():
+            _guard_target = _resolved if _resolved else path
+            _guard_cwd = os.environ.get("TERMINAL_CWD") or os.getcwd()
+            try:
+                _protected_error = check_protected_root_write_guard(
+                    f"tee -- {_guard_target}", _guard_cwd
+                )
+            except Exception as _guard_exc:
+                return tool_error(json.dumps({
+                    "type": "protected_root_guard_error",
+                    "message": str(_guard_exc),
+                }))
+            if _protected_error:
+                return tool_error(_protected_error["message"])
 
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
@@ -1725,15 +1734,6 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:
                 return tool_error(cross_warning)
-        if os.environ.get("HERMES_PROTECTED_GIT_ROOTS", "").strip():
-            try:
-                protected_error = check_protected_root_write_guard(
-                    f"tee -- {_p}", os.environ.get("TERMINAL_CWD") or os.getcwd()
-                )
-                if protected_error:
-                    return tool_error(protected_error["message"])
-            except Exception:
-                pass
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping
@@ -1749,6 +1749,30 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 _resolved_paths.append(_r)
                 _seen.add(_r)
         _resolved_paths.sort()
+
+        # Protected-root write guard: check every *resolved* target, not the
+        # raw relative paths, so a task whose workspace IS the protected root
+        # cannot bypass the guard through a cwd mismatch.  Fall back to the
+        # raw path (checked against session cwd) for targets that failed to
+        # resolve.  A single protected hit refuses the entire patch atomically
+        # so no partial write can occur.
+        if os.environ.get("HERMES_PROTECTED_GIT_ROOTS", "").strip():
+            _guard_cwd = os.environ.get("TERMINAL_CWD") or os.getcwd()
+            # Build a deduplicated list of (resolved or raw) check targets.
+            _guard_resolved: set[str] = set(_resolved_paths)
+            _guard_targets = list(_guard_resolved) or list(_paths_to_check)
+            for _gt in _guard_targets:
+                try:
+                    _protected_error = check_protected_root_write_guard(
+                        f"tee -- {_gt}", _guard_cwd
+                    )
+                except Exception as _guard_exc:
+                    return tool_error(json.dumps({
+                        "type": "protected_root_guard_error",
+                        "message": str(_guard_exc),
+                    }))
+                if _protected_error:
+                    return tool_error(_protected_error["message"])
 
         # Acquire per-path locks in sorted order via ExitStack.  On single
         # path this degenerates to one lock; on empty list (unresolvable)

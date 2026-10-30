@@ -208,7 +208,8 @@ def _extract_bare_tool_calls(text: str) -> list[tuple[int, int, str]]:
             return found
         end = _find_matching_brace(text, start)
         if end < 0:
-            return found
+            cursor = start + 1
+            continue
         raw = text[start:end + 1]
         try:
             obj = json.loads(raw)

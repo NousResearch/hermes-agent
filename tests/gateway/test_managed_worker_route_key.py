@@ -327,3 +327,16 @@ def test_keyless_worker_gets_its_routes_credential_pool(monkeypatch):
     assert swc.worker_route(policy, {'api_key': None})['credential_pool'] is pool
     # A bound launch key is the credential itself: no pool rides along.
     assert 'credential_pool' not in swc.worker_route(policy, {'api_key': 'fake-launch'})
+
+
+def test_keyless_kanban_worker_constructs_its_agent_with_the_pool(tmp_path, monkeypatch):
+    """End to end through ``execute``: the pool reaches the AIAgent the Kanban worker builds, so the
+    agent's 429/402 recovery has entries to rotate to (not just ``worker_route``'s return value)."""
+    from gateway import session_worker_construct as swc
+    pool = object()
+    runtime = {'api_key': 'fake-pool-entry', 'base_url': 'https://api.anthropic.com',
+               'api_mode': 'anthropic_messages', 'provider': 'anthropic', 'credential_pool': pool}
+    monkeypatch.setattr(swc, 'route_runtime', lambda *a, **k: (runtime, None))
+    frame = _routed_frame(tmp_path, monkeypatch, 'claude-opus-4-1', {'provider': 'anthropic'})
+    built = _execute(frame, monkeypatch)
+    assert built['credential_pool'] is pool and built['api_key'] == 'fake-pool-entry'

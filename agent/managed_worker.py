@@ -450,6 +450,11 @@ def hello():
 
 
 def main():
+    # One TLS authority, as every other entry point: trust the OS store before the
+    # first outbound connection. MCP discovery connects before run_agent is imported,
+    # so nothing later in this process would install it in time (agent/ssl_verify.py).
+    from agent.ssl_verify import install_truststore
+    install_truststore()
     channel = WorkerChannel(os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0))  # windows-footgun: ok — binary frames
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     # This process's own stderr only, never the channel. The owner drains it into the profile's

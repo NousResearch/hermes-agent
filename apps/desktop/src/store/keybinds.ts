@@ -186,14 +186,16 @@ export function resetAllBindings(): void {
 
 // Other actions that already use `combo` (excluding `actionId` itself). A
 // `passthrough` action layered over a later one shares the chord by design,
-// so that pair is not reported from either side.
+// so that pair is not reported from either side. Combos compare the way
+// dispatch keys them, so `mod+tab` meets an app window's `ctrl+tab`.
 export function conflictsFor(actionId: string, combo: string, bindings = $bindings.get()): string[] {
   const actions = allKeybindActions()
   const self = actions.findIndex(action => action.id === actionId)
+  const key = canonicalizeCombo(combo)
 
   return actions
     .filter((action, index) => {
-      if (index === self || !bindingsFor(action.id, bindings).includes(combo)) {
+      if (index === self || !bindingsFor(action.id, bindings).some(other => canonicalizeCombo(other) === key)) {
         return false
       }
 

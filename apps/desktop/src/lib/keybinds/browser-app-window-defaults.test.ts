@@ -155,3 +155,23 @@ it('a non-Chromium web-app window keeps the browser-tab defaults', async () => {
     expect(bindingsFor(shortcut.id)).toEqual([shortcut.tab])
   }
 })
+
+it('a user Alt binding still fires from the composer inside an app window', async () => {
+  setPlatform('Win32')
+  const moveTo = stubDisplayMode('browser')
+  const { setBinding } = await import('@/store/keybinds')
+  const { actionAllowedInInput } = await import('./combo')
+
+  setBinding('view.closeTab', ['alt+shift+q'])
+  moveTo('standalone')
+
+  expect(actionAllowedInInput('view.closeTab', 'alt+shift+q')).toBe(true)
+})
+
+it('reports an app-window Ctrl default as a conflict for the same chord spelled mod', async () => {
+  setPlatform('Win32')
+  stubDisplayMode('standalone')
+  const { conflictsFor } = await import('@/store/keybinds')
+
+  expect(conflictsFor('session.focusSearch', 'mod+tab')).toEqual(['session.next'])
+})

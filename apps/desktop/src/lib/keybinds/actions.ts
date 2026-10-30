@@ -60,10 +60,10 @@ function hostAction(
       return inChromiumAppWindow() ? native : tab
     },
     // Alt+letter has no Cmd/Ctrl, so it needs the editable-target opt-in to
-    // fire from the composer the way the native ⌘/Ctrl chord does.
-    get editableTargetPolicy() {
-      return inChromiumAppWindow() ? undefined : 'modified'
-    }
+    // fire from the composer the way the native ⌘/Ctrl chord does. Fixed, not
+    // keyed on the window kind: a user's Alt rebind outlives a move into an
+    // app window, and the Ctrl defaults there pass the input gate anyway.
+    editableTargetPolicy: 'modified'
   }
 }
 

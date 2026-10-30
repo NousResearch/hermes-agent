@@ -6,7 +6,6 @@ import {
   type KeyboardEvent,
   useCallback,
   useEffect,
-  useId,
   useMemo,
   useRef
 } from 'react'
@@ -25,7 +24,7 @@ import { chatMessageText } from '@/lib/chat-messages'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
-import { isMacPlatform } from '@/lib/platform'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { sessionCompacting } from '@/store/compaction'
@@ -106,6 +105,7 @@ import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { StatusDrawerContent, StatusDrawerToggle } from './status-stack/drawer'
 import { extractClipboardImageBlobs, openDirectiveScope } from './text-utils'
+import { composerTextEntryProps, touchTapFocusHandlers } from './touch-text-entry'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { isRedoShortcut, isUndoShortcut } from './undo-history'
@@ -161,6 +161,8 @@ export function ChatBar({
   onTranscribeAudio
 }: ChatBarProps) {
   const hudMode = useStore($hudMode)
+  const touchPointer = useStore($touchPointer)
+  const tapFocus = useMemo(() => (touchPointer ? touchTapFocusHandlers() : undefined), [touchPointer])
   const hudWindowing = window.hermesDesktop?.hud?.windowing
   const hudNativeDrag = hudMode && hudWindowing?.nativeDrag === true
 
@@ -197,9 +199,8 @@ export function ChatBar({
   // Coding workspace drafts stay on the shared pre-session key: submit and
   // session.create resolve a fresh chat's scope as null ('__new__').
   const codingWorkspace = useCodingWorkspace(queueSessionKey || sessionId || null, !sessionId && !storedSessionId)
-  const { collapsed: statusDrawerCollapsed, toggle: toggleStatusDrawer } = useStatusDrawer(activeQueueSessionKey)
-  const statusDrawerId = useId()
-  const codingDrawerId = useId()
+  const statusDrawer = useStatusDrawer(activeQueueSessionKey)
+  const { codingDrawerId, collapsed: statusDrawerCollapsed, statusDrawerId, toggle: toggleStatusDrawer } = statusDrawer
 
   const requestBusyConfig = useCallback<GatewayRequester>(
     (method, params) => (gateway ? gateway.request(method, params) : Promise.reject(new Error('Gateway unavailable'))),
@@ -1175,10 +1176,8 @@ export function ChatBar({
       <div
         aria-disabled={inputDisabled ? true : undefined}
         aria-label={t.composer.message}
-        autoCapitalize="off"
-        // Chromium's macOS text-replacement path shares the autocorrect gate.
-        // Keeping spellcheck off below still excludes smart quotes and dashes.
-        autoCorrect={isMacPlatform() ? 'on' : 'off'}
+        {...composerTextEntryProps(touchPointer)}
+        {...tapFocus}
         className={cn(
           'min-h-[1.625rem] min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) cursor-text overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           '**:data-ref-text:cursor-default',
@@ -1242,7 +1241,6 @@ export function ChatBar({
         onPaste={handlePaste}
         ref={editorRef}
         role="textbox"
-        spellCheck={false}
         suppressContentEditableWarning
       />
       <ComposerDirectiveActions editorRef={editorRef} />

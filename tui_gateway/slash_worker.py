@@ -25,37 +25,43 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
-from tui_gateway._env import env_float
 from tui_gateway._stdin_recovery import handle_spurious_eof
 
 if TYPE_CHECKING:
     from cli import HermesCLI
 
-# Env-overridable so the integration test can drive sub-second timing.
-_WATCHDOG_POLL_S = max(0.05, env_float("HERMES_SLASH_WATCHDOG_POLL_S", 2.0))
-_ORPHAN_GRACE_S = max(0.0, env_float("HERMES_SLASH_WATCHDOG_GRACE_S", 5.0))
-_in_flight = threading.Event()  # set while a command is executing
 logger = logging.getLogger(__name__)
 
 
-def _is_orphaned(original_ppid, getppid=os.getppid) -> bool:
-    """Return whether this worker no longer has its original POSIX parent."""
-    return getppid() != original_ppid
+_in_flight = threading.Event()  # set while a command executes (the legacy watchdog's grace)
 
 
-def _watchdog_parent(parent_pid: int, *, is_windows: bool, getppid=os.getppid) -> int:
-    """Return the PID the parent-death watchdog should treat as our parent.
+def _start_legacy_parent_watchdog(parent_pid: int, *, poll_s: float = 2.0, grace_s: float = 5.0) -> None:
+    """Keep the old death guard for a worker launched by a pre-update gateway.
 
-    The gateway passes its PID at spawn so a fast exit cannot make this child
-    mistake a subreaper for its original parent before the watchdog starts.
-    The watchdog compares the kernel's live PPID against it, so a reused PID
-    can never pass for the parent. Windows never reparents, and a venv
-    python.exe redirector makes the launcher (not the gateway) our direct
-    parent there, so keep the observed PPID or the worker would exit at once.
+    A gateway started before the owned-child change still runs its old code. That code starts this
+    (updated) worker with a plain Popen and ``--parent-pid`` and never registers it with an
+    owner-death supervisor. If that gateway dies while the worker is inside a command, stdin EOF is
+    never read and nothing stops the worker. The watchdog compares the kernel's live ppid with the
+    pid passed at spawn, so a reused pid can never pass for the parent. An in-flight command gets
+    ``grace_s`` to finish. POSIX only: Windows never reparents, so the check could not fire there.
+    Current gateways don't pass ``--parent-pid`` (spawn_owned covers the worker), so it never starts.
     """
-    if is_windows or not parent_pid:
-        return getppid()
-    return parent_pid
+    if not parent_pid or os.name != "posix":
+        return
+
+    def _loop():
+        while os.getppid() == parent_pid:
+            time.sleep(poll_s)
+        deadline = time.monotonic() + grace_s
+        while _in_flight.is_set() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
+        flush_before_hard_exit()  # os._exit skips the opt-in metrics runtimes' atexit flush (bounded)
+        os._exit(0)
+
+    # health: allow HX012 -- the loop reads getppid(), flushes the opt-in metrics and calls os._exit
+    threading.Thread(target=_loop, daemon=True, name="slash-legacy-parent-watchdog").start()
 
 
 def _prepare_slash_worker_runtime() -> None:
@@ -67,19 +73,6 @@ def _prepare_slash_worker_runtime() -> None:
     from hermes_cli.mcp_startup import start_background_mcp_discovery, wait_for_mcp_discovery
     start_background_mcp_discovery(logger=logger, thread_name="slash-worker-mcp-discovery")
     wait_for_mcp_discovery()
-
-
-def _start_parent_death_watchdog(original_ppid) -> None:
-    def _loop():
-        while not _is_orphaned(original_ppid):
-            time.sleep(_WATCHDOG_POLL_S)
-        deadline = time.monotonic() + _ORPHAN_GRACE_S
-        while _in_flight.is_set() and time.monotonic() < deadline:
-            time.sleep(0.05)  # let an in-flight command finish/flush
-        from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
-        flush_before_hard_exit()  # os._exit skips the opt-in metrics runtimes' atexit flush (bounded)
-        os._exit(0)
-    threading.Thread(target=_loop, daemon=True).start()
 
 
 def _slash_base(command: str) -> str:
@@ -165,14 +158,14 @@ def main():
     p.add_argument("--session-key", required=True)
     p.add_argument("--model", default="")
     p.add_argument("--provider", default="")
-    p.add_argument("--parent-pid", type=int, default=0)
+    # Passed only by a gateway started before the owned-child update (see the legacy watchdog).
+    p.add_argument("--parent-pid", type=int, default=0, help=argparse.SUPPRESS)
     args = p.parse_args()
     os.environ["HERMES_SESSION_KEY"] = args.session_key
     os.environ["HERMES_INTERACTIVE"] = "1"
-    _start_parent_death_watchdog(_watchdog_parent(args.parent_pid, is_windows=sys.platform == "win32"))
-    # Keep the heavyweight CLI import behind the watchdog (importing it at module
-    # load left a reparenting window before main() could snapshot PPID), but ahead
-    # of MCP discovery: importing cli loads ~/.hermes/.env and sets HERMES_QUIET,
+    # Before the heavy cli import, so a legacy parent dying during startup is still noticed.
+    _start_legacy_parent_watchdog(args.parent_pid)
+    # Import cli ahead of MCP discovery: importing it loads ~/.hermes/.env and sets HERMES_QUIET,
     # which MCP ``${VAR}`` interpolation in the runtime prep depends on.
     from cli import HermesCLI
     _prepare_slash_worker_runtime()

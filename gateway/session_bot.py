@@ -423,9 +423,9 @@ def _admission_outcome(authority, admission_id, fallback=None):
         # A successful bare silence marker is a delivery decision (same rule as the gateway and
         # the live Bot Chat completion): the turn stays in the target's transcript, the sender
         # never sees the marker as prose.
-        from gateway.response_filters import is_intentional_silence_response
-        if status == 'settled' and is_intentional_silence_response(reply):
-            reply = ''
+        from gateway.response_filters import is_intentional_silence_response, strip_trailing_silence_marker
+        if status == 'settled':
+            reply = '' if is_intentional_silence_response(reply) else strip_trailing_silence_marker(reply)
     elif fallback is not None and fallback.get('status') in {'settled', 'failed'}:
         status = fallback['status']
     return status, reply
@@ -773,7 +773,8 @@ async def deliver(connection, params):
 def _require_same_delivery(record, actor, message, author, category):
     """A delivery id names one delivery: the same message, principal, author and category (the
     mailbox writer's identity), whether its receipt is admission-backed or refused."""
-    if (record['message'] != message or record['principal_id'] != actor.subject
+    from gateway.owner_identity import same_owner
+    if (record['message'] != message or not same_owner(record['principal_id'], actor.subject)
             or record.get('author') != author
             or record.get('notification_category', 'result') != category):
         raise RuntimeStoreError('admission_conflict')

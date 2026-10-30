@@ -606,7 +606,8 @@ parent in the same turn. Batch children still run in parallel, subject to
 final response before the CLI exits.
 
 - **Automatic joining:** no opt-in or background-mode override is needed.
-  Interactive TTY chat and messaging sessions keep background delegation.
+  Interactive TTY chat keeps background delegation; messaging sessions follow
+  `delegation.gateway_mode` (see below).
 - **Per-input policy:** the CLI records finite consumption with the admitted prompt,
   including when resuming an interactive session. It does not change that session's
   creation policy, sibling viewers, or the daemon environment.
@@ -622,6 +623,61 @@ final response before the CLI exits.
 Closing the CLI detaches rather than terminating its gateway-owned turn. Child
 execution is still process-local to that owner: use a durable scheduler for work
 that must survive an owner restart.
+
+## Messaging chats without interim messages
+
+On a messaging platform, a background delegation tells the parent to send a one-line
+status and end its turn. When `display.interim_assistant_messages` is off for that
+platform, that status is the turn's final answer, so the chat would receive a "working
+on it" message and then the real answer as a second message. `delegation.gateway_mode`
+controls this:
+
+```yaml
+delegation:
+  gateway_mode: auto   # auto (default) | inline | background
+```
+
+- **`auto`:** a messaging chat whose resolved `display.interim_assistant_messages` is off
+  (global value, `display.platforms.<platform>` override or the platform's default) joins
+  its children inside the turn. The parent waits in the `delegate_task` call, gets the
+  results there, and sends one completed answer. Chats with interim messages on, the API
+  server, local sessions and webhooks keep background delegation.
+- **`inline`:** every gateway session joins its children inside the turn.
+- **`background`** (alias `async`): every gateway session keeps background delegation.
+
+An inline session's `delegate_task` says results return in the call and leaves out the
+live-control parameters (`action` list/steer/stop, `subagent_id`, `message`), the same
+schema as a one-shot run. While it waits, the typing indicator stays on and the turn
+behaves like any long tool call. `/stop` stops the children, and so does a follow-up
+message under the default `busy_input_mode: interrupt` (each child returns an interrupted
+result with its partial output); under `queue` the follow-up waits for the turn.
+Nested delegation is unchanged.
+
+Inline turns that run past `agent.gateway_notify_interval` (180 seconds by default) still
+get the periodic "still working" notice, which `display.long_running_notifications`
+controls separately and which is on by default for Telegram, Slack, Discord and WhatsApp.
+For a single message per turn, also set it to `off` for that platform (`generic` only
+changes the notice's wording):
+
+```yaml
+display:
+  interim_assistant_messages: false
+  platforms:
+    telegram:
+      long_running_notifications: false
+```
+
+The mode is part of a session's tool schema, which is pinned with the conversation. A
+change to `gateway_mode` or to `interim_assistant_messages` applies from the next session
+(`/new`). A running chat keeps the mode it started with across gateway restarts, agent
+cache evictions, context compaction and `/reload-mcp`. A scheduled heartbeat turn mutes
+interim messages only for itself and does not change the chat's mode. One exception: the
+first turn after a Hermes update rebuilds the session's tool definitions from the new
+code, so the chat adopts the current setting at that turn.
+
+Listing `delegate_task` in `tools.tool_search.defer` turns inline off for that session:
+the model loads the regular (background) `delegate_task` schema through `tool_describe`,
+and delegation follows the schema the model sees.
 
 ## Lifetime and Durability
 
@@ -709,6 +765,7 @@ delegation:
   max_iterations: 250                       # Max turns per child (default: 250)
   # max_concurrent_children: 10             # Parallel children per batch (default: 10)
   # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
+  # gateway_mode: auto                      # auto | inline | background (see Messaging chats without interim messages)
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.

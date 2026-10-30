@@ -31,6 +31,9 @@ _TURN_ERROR_CODE_COPY: dict[str, tuple[str, str]] = {
     "content_policy_blocked": ("The model provider refused this request (content policy)", "Rephrase and send again."),
     "provider_policy_blocked": ("The model provider refused this request (account policy)", "Switch with /model."),
     "format_error": ("The model provider rejected the request format", "Try /retry; if it persists, switch with /model."),
+    # The managed local model server (llama.cpp) is down: starting, or switched off.
+    "local_runtime_unavailable": ("The local model server is not running",
+                                  "Try /retry once it is up, or switch with /model."),
     "ssl_cert_verification": ("The connection to the model provider could not be verified (TLS)",
                               "Check the endpoint's certificate, then /retry."),
 }
@@ -43,6 +46,14 @@ _TURN_ERROR_LAYER_COPY: dict[str, tuple[str, str]] = {
     "disk": ("The disk is full, so Hermes could not save the turn", "Free some space, then /retry."),
     "gateway": ("Hermes hit an internal error while running this turn", "Send /retry; type /logs for the trace."),
     "provider": ("The model provider returned an error", "Send /retry, or switch with /model."),
+}
+
+# Next step when the failure is not worth a retry (``recoverable`` false, or the surface says
+# ``retryable: false``), for codes whose retry hint cannot be reworded mechanically.
+_TURN_ERROR_NO_RETRY_HINT: dict[str, str] = {
+    # Switched off: nothing comes up on its own, so the user starts it or picks another model.
+    "local_runtime_unavailable": ("Start the local model server (Hermes desktop app, or `hermes model` → "
+                                  "Local models), or switch with /model."),
 }
 
 _TURN_ERROR_DEFAULT = ("The request failed", "Send /retry, or switch with /model.")
@@ -65,8 +76,11 @@ def turn_error_title(surface: dict | None) -> str:
 
 def turn_error_hint(surface: dict | None, recoverable: bool = True) -> str:
     surface = surface if isinstance(surface, dict) else {}
-    _, hint = _TURN_ERROR_CODE_COPY.get(str(surface.get("code") or "")) \
+    code = str(surface.get("code") or "")
+    _, hint = _TURN_ERROR_CODE_COPY.get(code) \
         or _TURN_ERROR_LAYER_COPY.get(str(surface.get("layer") or "")) or _TURN_ERROR_DEFAULT
+    if code in _TURN_ERROR_NO_RETRY_HINT and (not recoverable or surface.get("retryable") is False):
+        return _TURN_ERROR_NO_RETRY_HINT[code]
     return hint if recoverable else hint.replace("Send /retry", "Pick another model with /model")
 
 

@@ -28,6 +28,16 @@ def local_adapter_map(authority):
     return profile_adapters.setdefault(name, {})
 
 
+def local_adapter(authority):
+    """The LOCAL adapter *authority*'s local sessions, and the conversations its chats moved past
+    (gateway/session_detached.py), deliver through: created on first use."""
+    adapters = local_adapter_map(authority)
+    if (adapter := adapters.get(Platform.LOCAL)) is None:
+        from gateway.session_local import LocalSessionAdapter
+        adapter = adapters[Platform.LOCAL] = LocalSessionAdapter(authority)
+    return adapter
+
+
 def local_source(authority, chat_id, user_id):
     """LOCAL SessionSource for a session owned by *authority*. A served secondary's local sessions
     carry its profile so ``build_session_key`` namespaces them (``agent:<name>:local:...``) and the
@@ -164,11 +174,7 @@ def restore_local_session(authority, sid):
         if isinstance(exc, RuntimeStoreError):
             raise _ReceiptRefused(exc.reason, field=exc.field, detail=exc.detail) from exc
         raise _ReceiptRefused('storage_unavailable') from exc
-    adapters = local_adapter_map(authority)
-    adapter = adapters.get(Platform.LOCAL)
-    if adapter is None:
-        adapter = LocalSessionAdapter(authority)
-        adapters[Platform.LOCAL] = adapter
+    adapter = local_adapter(authority)
     if not isinstance(adapter, LocalSessionAdapter) or adapter.authority is not authority:
         raise RuntimeStoreError('runtime_draining')
     live = authority.sessions.get(sid)

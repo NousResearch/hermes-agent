@@ -12,7 +12,7 @@ import {
   connectionScopeSuffix,
   rescopeConnectionScopedStores
 } from '@/lib/connection-scoped'
-import { isBrowserHostedDesktop } from '@/lib/platform'
+import { hostHas } from '@/lib/host-capabilities'
 import { isMessagingSource } from '@/lib/session-source'
 import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
@@ -1881,7 +1881,7 @@ export const workspaceCwdForNewSession = (profile?: string): string => {
   // chat reads its own profile's key and stays detached when it never chose one.
   const owner = profile?.trim()
 
-  if (owner && isBrowserHostedDesktop()) {
+  if (owner && hostHas('originScopedPrefs')) {
     return readBrowserDefaultProjectDir(browserPageBasePath(), owner)
   }
 

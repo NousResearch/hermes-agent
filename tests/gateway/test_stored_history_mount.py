@@ -179,7 +179,7 @@ async def test_an_api_chat_opened_read_only_still_continues_through_the_api(tmp_
     assert bind_api_session(conn.authority, 'api-1', caller_key='agent:main:api_server:dm:api-1') == ref
 
     live = conn.authority.sessions['api-1']
-    assert live.source.platform == Platform.API_SERVER and not live.superseded
+    assert live.source.platform == Platform.API_SERVER and not live.detached
     live.event_stream.publish('api-1', {'text': 'bound'})
     frame = await asyncio.to_thread(frames.get, True, 5)
     assert frame['params']['payload'] == {'text': 'bound'}

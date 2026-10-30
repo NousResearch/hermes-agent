@@ -105,7 +105,12 @@ def _load_managed_file(name: str, cache: dict[str, tuple], parse) -> dict:
 
 
 def load_managed_config() -> dict:
-    """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
+    """Parsed managed config.yaml, or {} when absent/malformed (fail-open). Always {} under a config
+    backend that takes config and locks from elsewhere (remote mode, D18; boot warns about the file)."""
+    from hermes_cli.config_backend import get_config_backend
+
+    if not get_config_backend().honors_managed_config():
+        return {}
     return _load_managed_file("config.yaml", _CONFIG_CACHE, lambda p: fast_safe_load(p.read_text(encoding="utf-8-sig")) or {})
 
 
@@ -173,3 +178,11 @@ def is_key_managed(dotted_key: str) -> bool:
 def is_env_managed(name: str) -> bool:
     """True if the env var name is pinned by the managed .env layer."""
     return name in load_managed_env()
+
+
+def pinned_terminal_backend() -> Optional[str]:
+    """The non-empty ``terminal.backend`` the managed config pins, or None. An empty or null value
+    names no backend to run, so it pins nothing."""
+    terminal = apply_managed_overlay({}).get("terminal")
+    backend = terminal.get("backend") if isinstance(terminal, dict) else None
+    return (backend.strip() or None) if isinstance(backend, str) else None

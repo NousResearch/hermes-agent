@@ -8,7 +8,9 @@ The routes answer only what the loader reads: the root, its plugin folders, and 
 ``plugin.js`` and ``.hermes-package.json``. Containment is checked on the path as written, then
 symlinks are followed as Electron's ``readDir`` does, so ``desktop-plugins/foo -> ~/src/foo`` loads
 here too. They never go through ``/api/fs``, which follows the profile's SSH workspace and truncates
-at the preview cap. Webapp only (``SurfacePolicy.desktop_plugins``; 404 elsewhere).
+at the preview cap. Like Electron, resolving the root first copies agent+desktop packages' desktop
+halves into it (``desktop_plugin_halves.py``), the one write these routes make. Webapp only
+(``SurfacePolicy.desktop_plugins``; 404 elsewhere).
 """
 
 from __future__ import annotations
@@ -20,25 +22,18 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
+from hermes_cli.desktop_plugin_halves import reconcile_desktop_halves
+from hermes_cli.desktop_plugin_install import DESKTOP_PLUGINS_DIR, desktop_plugins_root
 from hermes_constants import get_default_hermes_root
 
 router = APIRouter()
 
-DESKTOP_PLUGINS_DIR = "desktop-plugins"
 #: The files the loader reads in a plugin folder: its entry and the unified-package marker.
 _READABLE_FILES = frozenset({"plugin.js", ".hermes-package.json"})
 #: Electron's ``PLUGIN_SOURCE_MAX_BYTES``: a plugin loads whole or not at all, never truncated.
 PLUGIN_SOURCE_MAX_BYTES = 16 * 1024 * 1024
 #: Never follow a final link where the OS can refuse one, and never block on a FIFO.
 _OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
-
-
-def desktop_plugins_root() -> Path:
-    """App-level, like Electron's: the Hermes root's folder, whichever profile the request names.
-    Created on demand as Electron does, and resolved, so it prefixes every path the routes return."""
-    root = get_default_hermes_root() / DESKTOP_PLUGINS_DIR
-    root.mkdir(parents=True, exist_ok=True)
-    return root.resolve()
 
 
 def _inside_root(raw: str) -> tuple[Path, tuple[str, ...]]:
@@ -102,9 +97,24 @@ def _read(raw: str) -> dict:
     return {"byteSize": st.st_size, "path": str(target), "text": text, "truncated": False}
 
 
+def _root_reconciled() -> str:
+    """The root, after copying unified packages' desktop halves into it: what Electron's
+    ``desktopPluginsRoot`` does before every scan. On a host native Desktop only reaches over SSH,
+    nothing else ever makes that copy."""
+    root = desktop_plugins_root()
+    reconcile_desktop_halves(get_default_hermes_root(), root)
+    return str(root)
+
+
 @router.get("/api/desktop-plugins/root")
 async def desktop_plugins_root_route() -> dict:
-    return {"root": str(await asyncio.to_thread(desktop_plugins_root))}
+    return {"root": await asyncio.to_thread(_root_reconciled)}
+
+
+@router.post("/api/desktop-plugins/reconcile")
+async def reconcile_desktop_plugins() -> dict:
+    """Electron's ``reconcileDesktopPlugins``: re-run the copy after an install, update or removal."""
+    return {"touched": await asyncio.to_thread(reconcile_desktop_halves, get_default_hermes_root(), desktop_plugins_root())}
 
 
 @router.get("/api/desktop-plugins/list")

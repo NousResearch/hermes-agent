@@ -21,7 +21,8 @@ Lanes:
   touches (``_E2E_LANES``, the ``run-e2e`` label), but ci.yaml's ``detect``
   gate forces these lanes off on pull requests and pushes to main: the E2E
   suites run only on a release run or a manual dispatch.
-* ``frontend``    — TS typecheck matrix + desktop build.
+* ``frontend``    — TS typecheck matrix + desktop build, and the WhatsApp
+  bridge's ``node --test`` suites.
 * ``site``        — Docusaurus + generated skill docs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
 * ``deps``        — pyproject.toml dependency bounds check.
@@ -80,7 +81,8 @@ must never skip one a change could break:
   ``tests/website/test_generate_llms_txt.py`` asserts every page reaches it.
 * A cross-language fixture (``_SHARED_FIXTURE_CONSUMERS``) selects the test
   lanes of every consumer that reads it: the update-marker corpus runs pytest,
-  cargo, vitest and the Windows hand-off tests, not only ``python``.
+  cargo, vitest and the Windows hand-off tests, not only ``python``; the plugin
+  component-detection cases run pytest and vitest.
 """
 
 from __future__ import annotations
@@ -93,6 +95,10 @@ import sys
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
 # Shipped page outside those packages, exercised by the desktop Electron suite.
 _FRONTEND_FILES = {"scripts/desktop-update/ui.html"}
+# The WhatsApp bridge's ``node --test`` suites run in the JS & TS job, so a
+# change to the bridge or to the Python adapter that speaks its protocol
+# selects ``frontend``.
+_WHATSAPP_BRIDGE = ("scripts/whatsapp-bridge/", "plugins/platforms/whatsapp/")
 _ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
 _DOCKER_META = ("docker/", ".hadolint.yaml", "Dockerfile", ".dockerignore") # docker setup
 _NIX_PATHS = ("nix/",) # nix files
@@ -185,6 +191,11 @@ _SHARED_FIXTURE_CONSUMERS: dict[str, tuple[str, ...]] = {
         "tests/scripts/desktop_update/test_desktop_update_windows_marker_corpus.py",  # marker.ps1
         "apps/desktop/electron/remote-update-marker-programs.test.ts",  # SSH remote judge
         "apps/desktop/electron/remote-lifecycle-v2-marker.test.ts",  # SSH relaunch/spawn gate
+    ),
+    # Which halves a plugin folder ships: the gateway's and native Desktop's inspectors.
+    "tests/fixtures/plugin_component_detection.json": (
+        "tests/hermes_cli/test_plugins_cmd_inspect.py",  # Python: detect_components
+        "apps/desktop/electron/desktop-plugin-install.test.ts",  # Electron: detectPluginComponents
     ),
 }
 # What a fixture inherits from its consumers: the lanes that run them as tests.
@@ -622,7 +633,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
     python_prod = any(not _py_irrelevant(f) and not _py_test_only(f) for f in code)
     frontend = any(
         f.startswith(_FRONTEND) or f in _ROOT_NPM or f in _FRONTEND_FILES
-        or f.startswith("tests-js/")
+        or f.startswith(("tests-js/",) + _WHATSAPP_BRIDGE)
         or (f.startswith("scripts/build/") and f.endswith((".mjs", ".js", ".ts")))
         for f in files
     )

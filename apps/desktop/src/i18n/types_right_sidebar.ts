@@ -18,6 +18,16 @@ export interface RightSidebarTranslations {
   openFolder: string
   refreshTree: string
   collapseAll: string
+  filesSort: {
+    ariaLabel: (current: string) => string
+    mtimeAsc: string
+    mtimeDesc: string
+    nameAsc: string
+    nameDesc: string
+    sizeAsc: string
+    sizeDesc: string
+    title: string
+  }
   showIgnored: string
   hideIgnored: string
   previewUnavailable: string

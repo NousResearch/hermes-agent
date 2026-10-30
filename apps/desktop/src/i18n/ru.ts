@@ -3314,6 +3314,16 @@ export const ruOverrides = {
     openFolder: 'Открыть папку',
     refreshTree: 'Обновить дерево',
     collapseAll: 'Свернуть все папки',
+    filesSort: {
+      title: 'Сортировать по',
+      ariaLabel: current => `Сортировка файлов: ${current}`,
+      nameAsc: 'Имя (А → Я)',
+      nameDesc: 'Имя (Я → А)',
+      mtimeDesc: 'Дата изменения (сначала новые)',
+      mtimeAsc: 'Дата изменения (сначала старые)',
+      sizeDesc: 'Размер (сначала большие)',
+      sizeAsc: 'Размер (сначала маленькие)'
+    },
     showIgnored: 'Показать файлы из gitignore',
     hideIgnored: 'Скрыть файлы из gitignore',
     previewUnavailable: 'Предпросмотр недоступен',

@@ -498,6 +498,16 @@ export const arChrome = {
     openFolder: 'فتح مجلد',
     refreshTree: 'تحديث الشجرة',
     collapseAll: 'طي الكل',
+    filesSort: {
+      title: 'ترتيب حسب',
+      ariaLabel: current => `ترتيب الملفات: ${current}`,
+      nameAsc: 'الاسم (أ → ي)',
+      nameDesc: 'الاسم (ي → أ)',
+      mtimeDesc: 'تاريخ التعديل (الأحدث أولاً)',
+      mtimeAsc: 'تاريخ التعديل (الأقدم أولاً)',
+      sizeDesc: 'الحجم (الأكبر أولاً)',
+      sizeAsc: 'الحجم (الأصغر أولاً)'
+    },
     showIgnored: 'إظهار الملفات المتجاهلة في git',
     hideIgnored: 'إخفاء الملفات المتجاهلة في git',
     previewUnavailable: 'المعاينة غير متاحة',

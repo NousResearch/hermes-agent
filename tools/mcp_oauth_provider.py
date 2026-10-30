@@ -72,6 +72,11 @@ def _with_discovery_context(exc: Exception, failures: list[str]):
 class _RefreshCompletedByPeer(Exception):
     """Restart the SDK auth flow: a peer rotated the grant we were about to present."""
 
+def _drop_resource_param(protocol_version: str | None = None) -> bool:
+    """Context-level answer for ``oauth.resource_param: false`` (see HermesProviderMixin.__init__)."""
+    return False
+
+
 class HermesProviderMixin:
     """Token-endpoint fixes layered over the SDK's ``OAuthClientProvider`` (must precede it in
     the MRO; subclasses set ``_hermes_logger`` to keep their own logger name).
@@ -87,12 +92,33 @@ class HermesProviderMixin:
 
     _hermes_logger: logging.Logger = logger
 
-    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser", **kwargs: Any):
+    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser",
+                 resource_param: bool = True, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._hermes_oauth_flow = oauth_flow
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
         # reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
+        # oauth.resource_param — RFC 8707 resource indicators are optional, and some servers advertise
+        # protected-resource metadata yet answer `invalid_target` to every `resource` value (Semgrep,
+        # measured 2026-10-26). ``oauth.resource_param: false`` drops the parameter for that server.
+        self._hermes_resource_param = resource_param
+        if not resource_param:
+            # The SDK decides whether to send RFC 8707 `resource` by calling the *context* — not the
+            # provider — so the opt-out has to land on the context instance.
+            context = getattr(self, "context", None)
+            if context is not None:
+                try:
+                    context.should_include_resource_param = _drop_resource_param
+                except Exception:  # pragma: no cover — a future SDK may freeze or slot the context
+                    pass
+
+    def should_include_resource_param(self, protocol_version: str | None = None) -> bool:
+        """Honor ``oauth.resource_param: false`` before the SDK's own rule (PRM present ⇒ send it)."""
+        if not getattr(self, "_hermes_resource_param", True):
+            return False
+        parent = getattr(super(), "should_include_resource_param", None)
+        return bool(parent(protocol_version)) if parent else False
 
     async def _perform_authorization(self):
         info = self.context.client_info
@@ -522,9 +548,38 @@ def _metadata_issuer(context: Any) -> str | None:
     return (str(issuer).rstrip("/") or None) if issuer else None
 
 
+def normalize_advertised_auth_server_url(url: str | None) -> str | None:
+    """Drop the bare root path that ``str(AnyHttpUrl(...))`` adds to a host-only URL.
+
+    The protected-resource document advertises its authorization servers, and pydantic renders a
+    host-only URL as ``"https://id.example.com/"``, while that authorization server's own document
+    publishes ``issuer: "https://id.example.com"``. RFC 8414 §3.3 compares issuer strings exactly,
+    so the advertised form has to be normalized *before* the SDK sees it, otherwise a server that
+    publishes a slashless issuer can never be authorized at all (Semgrep, measured 2026-10-26: the
+    browser flow died on ``… → issuer mismatch`` and no token could be stored).
+
+    Only a bare root path is stripped: a path-scoped authorization server keeps its path, and a URL
+    carrying userinfo, a query or a fragment is returned untouched so the exact-match rule still
+    rejects anything unusual.
+    """
+    if not url:
+        return url
+    from urllib.parse import urlsplit
+    parts = urlsplit(url)
+    if (parts.path == "/" and not parts.query and not parts.fragment and parts.netloc
+            and parts.username is None and parts.password is None):
+        return f"{parts.scheme}://{parts.netloc}"
+    return url
+
+
 def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, response: Any) -> bool:
     """Whether *metadata* may stand in for the exact-issuer match of RFC 8414 §3.3 because it is the
     document of the path-scoped authorization server *auth_server_url* and names that server's origin.
+
+    A root-advertised server (``authorization_servers: ["https://id.example.com/"]``) takes the same
+    path with an empty suffix: ``str(AnyHttpUrl)`` renders the bare root as ``"/"`` while the document
+    publishes the slashless ``issuer``, and the SDK's byte-for-byte comparison then rejects a pair that
+    is in fact one identifier (Semgrep, measured 2026-10-26 — the browser flow could never complete).
 
     The issuer check stops a party controlling a path or a sibling host from making the client accept
     endpoints of a different authorization server (RFC 8414 §3.3, RFC 9728 §3.3). This narrow shape keeps
@@ -543,7 +598,7 @@ def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, respon
         return False
     parts = urlsplit(auth_server_url)
     path = parts.path.rstrip("/")
-    if (not path or ".." in path.split("/") or parts.username is not None or parts.query or parts.fragment
+    if (".." in path.split("/") or parts.username is not None or parts.query or parts.fragment
             or response.status_code != 200):
         return False
     origin = f"{parts.scheme}://{parts.netloc}"
@@ -632,4 +687,5 @@ def build_provider_kwargs(cfg: dict, storage: HermesTokenStorage, *, ssh_proxy_h
         "callback_handler": mo._make_callback_waiter(port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))),
         "token_user_agent": mo.token_request_user_agent(cfg),
         "oauth_flow": cfg.get("flow", "browser"),
+        "resource_param": cfg.get("resource_param", True),
         **mo.cimd_provider_kwargs(cfg)}

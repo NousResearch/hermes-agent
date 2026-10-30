@@ -14041,7 +14041,7 @@ function createWindow() {
   })
 }
 
-// Dev-only perf hooks (see electron/perf-capture.ts). Both are inert unless
+// Diagnostic hooks (see electron/perf-capture.ts). Both are inert unless
 // their env var is set, so a normal launch pays no tracer, no extra CSS and no
 // timers. They exist because the packaged app has no devtools port: this is the
 // only way to ask a live install where its renderer/GPU time actually goes.
@@ -14059,16 +14059,27 @@ function installPerfCaptureHooks(window: BrowserWindow): void {
     return
   }
 
-  const outFile =
-    process.env.HERMES_DESKTOP_TRACE_OUT || path.join(app.getPath('userData'), `trace-${Date.now()}.json`)
+  const outFile = process.env.HERMES_DESKTOP_TRACE_OUT
+
+  // No default destination on purpose: a trace is 50-120MB of one session's
+  // URLs and script symbols, and an env var that quietly writes that into the
+  // user's profile is worse than a refused capture.
+  if (!outFile) {
+    rememberLog('[perf] HERMES_DESKTOP_TRACE_MS is set but HERMES_DESKTOP_TRACE_OUT is not; no capture')
+
+    return
+  }
 
   void captureTraceOnce({
     tracer: contentTracing,
     durationMs,
     outFile,
-    write: (file, data) => fs.promises.writeFile(file, data, 'utf8'),
-    read: file => fs.promises.readFile(file, 'utf8')
-  }).then(written => rememberLog(written ? `[perf] trace written to ${written}` : '[perf] trace capture refused'))
+    write: (file, data) => fs.promises.writeFile(file, data, { encoding: 'utf8', mode: 0o600 }),
+    read: file => fs.promises.readFile(file, 'utf8'),
+    remove: file => fs.promises.rm(file, { force: true })
+  }).then(result =>
+    rememberLog(result.ok ? `[perf] trace written to ${result.path}` : `[perf] trace capture failed: ${result.reason}`)
+  )
 }
 
 ipcMain.handle('hermes:connection', async (event, profile) => {

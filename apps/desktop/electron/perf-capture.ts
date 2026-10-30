@@ -5,19 +5,25 @@
  * so a developer asking "where is the renderer/GPU time actually going" on an
  * installed build has no way in. This module is the way in: with an env var set
  * the main process records a Chromium trace of the window and writes it to
- * disk, and (separately) can ablate every CSS animation to measure what the
- * decorative layer costs.
+ * disk. A second hook can ablate every CSS animation, which is how the
+ * decorative layer's cost was attributed.
  *
- * Both hooks are inert unless their env var is set, so a normal launch pays
+ * All hooks are inert unless their env var is set, so a normal launch pays
  * nothing: no tracer, no inserted stylesheet, no timers.
  *
  *   HERMES_DESKTOP_TRACE_MS=8000        record a trace for 8s after load
- *   HERMES_DESKTOP_TRACE_OUT=/path      where to write it (default: userData)
+ *   HERMES_DESKTOP_TRACE_OUT=/path      where to write it (REQUIRED)
  *   HERMES_DESKTOP_ABLATE_ANIMATIONS=1  insert `animation: none` for every node
  *
- * Categories are the ones that answer the questions we keep asking: how many
- * frames the compositor actually produced, whether paint/raster runs without a
- * commit (non-compositor animation), and where the main thread spent its time.
+ * PRIVACY: a Chromium trace is not a neutral artefact. `devtools.timeline`
+ * records every resource URL the renderer requested (query strings included,
+ * and those can carry tokens), `v8.cpu_profiler` records script URLs and sampled
+ * function names, and `blink.user_timing` records app marks. It does not
+ * generally contain DOM text or keystrokes, but it is still diagnostic data
+ * about one person's session: write it somewhere private, never attach it to a
+ * public issue, and delete it once the question is answered. There is
+ * deliberately no default destination — a capture needs an explicit path, so a
+ * stray env var cannot litter a user's profile with 100MB files.
  */
 
 export const TRACE_CATEGORIES = [
@@ -40,6 +46,15 @@ export const TRACE_CATEGORIES = [
 export const MIN_TRACE_MS = 500
 export const MAX_TRACE_MS = 30_000
 
+/** `stopRecording` flushes the whole trace before it resolves. If it never
+ *  settles, the trace buffer stays pinned for the life of the process, so the
+ *  wait is bounded and the failure is reported rather than swallowed. */
+export const STOP_TIMEOUT_MS = 30_000
+
+export type TraceFailure = 'start-refused' | 'stop-failed' | 'stop-timeout' | 'empty' | 'read-failed' | 'write-failed'
+
+export type TraceResult = { ok: true; path: string } | { ok: false; reason: TraceFailure }
+
 export type TracerLike = {
   startRecording(options: { recordMode?: string; categories: string[]; traceBufferSizeInKb?: number }): Promise<void> | void
   stopRecording(): Promise<string> | string
@@ -52,9 +67,12 @@ export interface CaptureTraceOptions {
   write: (file: string, data: string) => Promise<void>
   /** Electron's `stopRecording` resolves to the PATH of the trace file, while
    *  other implementations resolve to the JSON itself. Supply `read` so a path
-   *  result can be pulled in and written to `outFile` under our own name. */
+   *  result can be pulled in, and `remove` so the tracer's copy is deleted
+   *  afterwards — two 100MB copies per capture is not a diagnostic aid. */
   read?: (file: string) => Promise<string>
+  remove?: (file: string) => Promise<void>
   sleep?: (ms: number) => Promise<void>
+  stopTimeoutMs?: number
   categories?: readonly string[]
 }
 
@@ -70,9 +88,10 @@ export function traceDurationMs(raw: string | undefined): number | null {
 }
 
 /**
- * Record one trace of `durationMs` and write it to `outFile`. Returns the path,
- * or null when the tracer refused (already tracing) — a dev hook must never
- * take the app down, so every failure is swallowed after the tracer is stopped.
+ * Record one trace of `durationMs` and write it to `outFile`. Never throws: a
+ * diagnostic hook must not take the app down. It also never claims a capture
+ * that did not happen — every failure names itself, because the one line this
+ * tool prints is the only evidence the developer has.
  */
 export async function captureTraceOnce({
   tracer,
@@ -80,9 +99,11 @@ export async function captureTraceOnce({
   outFile,
   write,
   read,
+  remove,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  stopTimeoutMs = STOP_TIMEOUT_MS,
   categories = TRACE_CATEGORIES
-}: CaptureTraceOptions): Promise<string | null> {
+}: CaptureTraceOptions): Promise<TraceResult> {
   let started = false
 
   try {
@@ -92,30 +113,74 @@ export async function captureTraceOnce({
       traceBufferSizeInKb: 100_000
     })
     started = true
+  } catch {
+    return { ok: false, reason: 'start-refused' }
+  }
+
+  try {
     await sleep(durationMs)
-    // Stop is claimed before it is awaited: a stop that throws means the tracer
-    // is already done with us, and retrying it in `finally` only stacks another
+
+    // Claim the stop before awaiting it: a stop that rejects means the tracer is
+    // already done with us, and retrying in `finally` only stacks another
     // rejected promise on top of the real failure.
     started = false
-    const result = await tracer.stopRecording()
+
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let result: string
+
+    try {
+      result = await Promise.race([
+        Promise.resolve(tracer.stopRecording()),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('stopRecording timed out')), stopTimeoutMs)
+        })
+      ])
+    } catch (error) {
+      const timedOut = error instanceof Error && error.message === 'stopRecording timed out'
+
+      return { ok: false, reason: timedOut ? 'stop-timeout' : 'stop-failed' }
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer)
+      }
+    }
 
     if (!result) {
-      return null
+      return { ok: false, reason: 'empty' }
     }
 
     // Electron hands back the trace FILE path; some tracers hand back the JSON
-    // itself. Normalise both into one payload written under our own name.
-    const json = result.trimStart().startsWith('{') ? result : read ? await read(result) : null
+    // itself. Normalise both into one payload written under our own name, then
+    // drop the tracer's copy so a capture leaves exactly one file behind.
+    let json: string | null = null
 
-    if (!json) {
-      return null
+    if (result.trimStart().startsWith('{')) {
+      json = result
+    } else if (read) {
+      try {
+        json = await read(result)
+      } catch {
+        return { ok: false, reason: 'read-failed' }
+      } finally {
+        try {
+          await remove?.(result)
+        } catch {
+          // A leftover tracer copy is untidy, not fatal.
+        }
+      }
     }
 
-    await write(outFile, json)
+    if (!json) {
+      return { ok: false, reason: 'empty' }
+    }
 
-    return outFile
-  } catch {
-    return null
+    try {
+      await write(outFile, json)
+    } catch {
+      return { ok: false, reason: 'write-failed' }
+    }
+
+    return { ok: true, path: outFile }
   } finally {
     if (started) {
       try {

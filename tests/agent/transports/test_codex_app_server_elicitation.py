@@ -1,6 +1,6 @@
 import pytest
 
-from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
+from agent.transports.codex_app_server_session import CodexAppServerSession
 from gateway.session_context import clear_session_vars, set_session_vars
 from tools import approval
 from tools.approval_context import reset_current_session_key, set_current_session_key
@@ -66,10 +66,35 @@ def test_session_approval_covers_later_calls_to_the_same_tool(gateway_session):
 
 def test_approval_bypass_accepts_without_prompting(gateway_session):
     _, seen = gateway_session
-    session = CodexAppServerSession(request_routing=_ServerRequestRouting(auto_approve_mcp_tool_call=True))
+    session = CodexAppServerSession()
+    approval.enable_session_yolo(SESSION_KEY)
 
     assert session._respond_elicitation(_tool_call())["action"] == "accept"
     assert seen == []
+
+
+def test_turning_yolo_off_mid_session_prompts_again(gateway_session):
+    choices, seen = gateway_session
+    approval.enable_session_yolo(SESSION_KEY)
+    session = CodexAppServerSession()
+    assert session._respond_elicitation(_tool_call())["action"] == "accept"
+
+    approval.disable_session_yolo(SESSION_KEY)
+    choices.append("deny")
+    assert session._respond_elicitation(_tool_call())["action"] == "decline"
+    assert len(seen) == 1
+
+
+def test_prompt_masks_secret_arguments(gateway_session):
+    choices, seen = gateway_session
+    choices.append("deny")
+    call = _tool_call()
+    call["_meta"]["tool_params"] = {"title": "Walk", "api_key": "sk-live-abcdef0123456789abcdef"}
+
+    CodexAppServerSession()._respond_elicitation(call)
+
+    assert "Walk" in seen[0]["description"]
+    assert "sk-live-abcdef0123456789abcdef" not in seen[0]["description"]
 
 
 def test_unsupported_elicitation_is_declined():

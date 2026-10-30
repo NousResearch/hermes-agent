@@ -25,6 +25,30 @@ _installed: dict[str, _ThreadRoutingStream] = {}
 _sinks: dict[str, TextIO] = {}
 _routing_states: dict[str, _RoutingState] = {}
 
+# Re-entrancy guard for attribute delegation. A proxy chain that points back on itself --
+# a global redirect restoring an older proxy around the writer that wraps it, or two
+# proxies wrapping each other -- delegates forever otherwise. Measured 2026-10-12: the
+# gateway died with "RecursionError: Stack overflow (used 1954 kB)" in alternating
+# __getattr__ frames of this module and process_bootstrap, aborting three agent turns.
+_delegating = threading.local()
+
+
+def _enter_delegation(obj: object, name: str):
+    """Claim ``(obj, name)`` for this thread; None when it is already being resolved."""
+    seen = getattr(_delegating, "seen", None)
+    if seen is None:
+        seen = _delegating.seen = set()
+    key = (id(obj), name)
+    if key in seen:
+        return None
+    seen.add(key)
+    return key
+
+
+def _leave_delegation(key) -> None:
+    if key is not None:
+        _delegating.seen.discard(key)
+
 
 class _RoutingState:
     """Silencing registry shared by every proxy generation for one stream."""
@@ -84,7 +108,13 @@ class _ThreadRoutingStream:
         return self._target().fileno()
 
     def __getattr__(self, name):  # type: ignore[no-untyped-def]
-        return getattr(self._target(), name)
+        key = _enter_delegation(self, name)
+        if key is None:
+            raise AttributeError(name)
+        try:
+            return getattr(self._target(), name)
+        finally:
+            _leave_delegation(key)
 
 
 def _ensure_installed(attr: str, passthrough: TextIO) -> _ThreadRoutingStream:

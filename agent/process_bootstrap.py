@@ -131,6 +131,30 @@ class _OpenAIProxy:
         return "<lazy openai.OpenAI proxy>"
 
 
+# Re-entrancy guard for ``_SafeWriter`` attribute delegation: a writer that ends up wrapped
+# around itself (a redirect restoring an older stream around its own writer) delegates
+# forever. Measured 2026-10-12: alternating __getattr__ frames of this class and
+# agent.thread_scoped_output crashed the gateway with "RecursionError: Stack overflow".
+_writer_delegating = threading.local()
+
+
+def _enter_writer_delegation(obj: object, name: str):
+    """Claim ``(obj, name)`` for this thread; None when it is already being resolved."""
+    seen = getattr(_writer_delegating, "seen", None)
+    if seen is None:
+        seen = _writer_delegating.seen = set()
+    key = (id(obj), name)
+    if key in seen:
+        return None
+    seen.add(key)
+    return key
+
+
+def _leave_writer_delegation(key) -> None:
+    if key is not None:
+        _writer_delegating.seen.discard(key)
+
+
 class _SafeWriter:
     """Transparent stdio wrapper swallowing OSError/ValueError from broken pipes.
 
@@ -166,7 +190,13 @@ class _SafeWriter:
             return False
 
     def __getattr__(self, name):
-        return getattr(self._inner, name)
+        key = _enter_writer_delegation(self, name)
+        if key is None:
+            raise AttributeError(name)
+        try:
+            return getattr(self._inner, name)
+        finally:
+            _leave_writer_delegation(key)
 
 
 def _get_proxy_from_env() -> Optional[str]:

@@ -13,7 +13,10 @@ import sys
 import threading
 import time
 
+import pytest
+
 import agent.thread_scoped_output as thread_output
+from agent.process_bootstrap import _SafeWriter
 from agent.thread_scoped_output import thread_scoped_silence
 
 
@@ -185,3 +188,25 @@ def test_silence_survives_redirect_restoring_an_older_proxy(monkeypatch):
     finally:
         release.set()
         sys.stdout, sys.stderr = original_stdout, original_stderr
+
+
+def test_mutually_wrapped_streams_do_not_recurse():
+    """A proxy and a writer wrapped around each other must not delegate forever.
+
+    Measured 2026-10-12: the gateway logged ``RecursionError: Stack overflow (used
+    1954 kB)`` in alternating ``__getattr__`` frames of agent.thread_scoped_output and
+    agent.process_bootstrap and aborted three agent turns. Delegation now stops at the
+    wrapper that is already resolving this attribute.
+    """
+    state = thread_output._RoutingState(io.StringIO())
+    proxy = thread_output._ThreadRoutingStream(io.StringIO(), state)
+    writer = _SafeWriter(proxy)
+    proxy._passthrough = writer  # back-edge: proxy -> writer -> proxy -> ...
+
+    with pytest.raises(AttributeError):
+        proxy.buffer
+
+    # Without a back-edge, delegation stays as it was.
+    plain = thread_output._ThreadRoutingStream(io.StringIO(), thread_output._RoutingState(io.StringIO()))
+    assert plain.writable() is True
+

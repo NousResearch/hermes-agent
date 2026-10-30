@@ -27,6 +27,10 @@ class DiscordSlashAuthMixin:
         Shared with side-effect-free callers (``/skill`` autocomplete returns [] per keystroke).
         Fail closed on malformed payloads: with an allowlist, a missing channel id/user REJECTS.
         """
+        # The facade's binding: this module's import-time ``discord`` stays None when discord.py
+        # was lazy-installed after the gateway imported it (check_discord_requirements rebinds the facade only).
+        from plugins.platforms.discord.adapter import discord
+
         chan_obj = getattr(interaction, "channel", None)
         in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
         channel_ids: set = set()

@@ -20,7 +20,7 @@ set -u
 # hygiene can't break the locked sync the way it used to before pm owned it.
 export UV_NO_CONFIG=1
 
-REPO_URL="${HERMES_REPO_URL:-https://github.com/NousResearch/hermes-agent.git}"
+REPO_URL="${HERMES_REPO_URL:-https://github.com/chaorenex1/My-H.git}"
 BRANCH="main"
 INSTALL_COMMIT=""
 # The update channel to install: stable (the latest published release, the default for the
@@ -78,9 +78,9 @@ while [ $# -gt 0 ]; do
             echo "  --channel       stable (default): the latest published release, then release"
             echo "                  to release. main: every commit. Also HERMES_INSTALL_CHANNEL;"
             echo "                  an explicit choice is saved like 'hermes update --set-channel'."
-            echo "  --skip-browser  Do not install the browser (Chromium). Alias: --no-playwright."
-            echo "                  Remembered by later installs and 'hermes update';"
-            echo "                  undo with 'hermes pm install chromium'."
+            echo "  --skip-browser  Do not install the browser tools (agent-browser + Chromium)."
+            echo "                  Alias: --no-playwright. Remembered by later"
+            echo "                  installs and 'hermes update'; undo with 'hermes pm install agent-browser'."
             echo "  --skip-computer-use"
             echo "                  Do not install the computer-use driver (cua-driver). Remembered"
             echo "                  the same way; undo with 'hermes pm install cua-driver'."
@@ -646,9 +646,14 @@ chosen_channel() {
 
 # Forks and mirrors publish no official releases; they keep following their branch, as
 # hermes_cli.update_channel.default_channel decides.
+repo_slug() {
+    printf '%s' "$1" | sed -E 's#^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)##; s#\.git$##; s#/$##'
+}
+
+# The origin names its own release line: this fork publishes the stable tags the installer
+# pins, so the slug is compared against the fork instead of upstream.
 is_official_repo() {
-    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
-        | grep -Eq '^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)nousresearch/hermes-agent(\.git)?/?$'
+    printf '%s' "$(repo_slug "$1")" | tr '[:upper:]' '[:lower:]' | grep -Eq '^chaorenex1/my-h$'
 }
 
 # The latest published stable release (vX.Y.Z), the release `hermes update` resolves for the
@@ -656,13 +661,15 @@ is_official_repo() {
 # origin's highest vX.Y.Z tag (final tags are pushed by the publication run) when github.com's web
 # endpoints are unreachable but git is not. $1 is the origin URL. Prints nothing when none answers.
 latest_stable_release() {
-    local tag
+    local tag slug
+    slug="$(repo_slug "$1")"
+    [ -n "$slug" ] || return 0
     tag="$(curl -fsSL --connect-timeout 5 --max-time 20 -H 'Accept: application/vnd.github+json' \
-        https://api.github.com/repos/NousResearch/hermes-agent/releases/latest 2>/dev/null \
+        "https://api.github.com/repos/$slug/releases/latest" 2>/dev/null \
         | sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
     if ! valid_stable_tag "$tag"; then
         tag="$(curl -fsSI --connect-timeout 5 --max-time 20 \
-            https://github.com/NousResearch/hermes-agent/releases/latest 2>/dev/null \
+            "https://github.com/$slug/releases/latest" 2>/dev/null \
             | tr -d '\r' | sed -n 's#^[Ll]ocation:.*/releases/tag/\([^/]*\)$#\1#p' | tail -n 1)"
     fi
     if ! valid_stable_tag "$tag"; then
@@ -1024,8 +1031,6 @@ bootstrap_pm() {
     local pm_args=(install)
     # PM records the opt-outs, so later installs and `hermes update` keep the
     # tools off until `hermes pm install <name>` opts back in.
-    # Legacy spelling on purpose: the stable PM this script installs by default
-    # rejects `chromium`, and newer PMs read `agent-browser` as `chromium`.
     [ "$SKIP_BROWSER" = true ] && pm_args+=(--without agent-browser)
     [ "$SKIP_COMPUTER_USE" = true ] && pm_args+=(--without cua-driver)
     bootstrap_python

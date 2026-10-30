@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
+from hermes_cli.artwork_myh import MYH_GLYPH, MYH_HERO, MYH_LOGO
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,43 @@ _BUILTIN_SKINS: dict[str, dict[str, Any]] = {
             "selection_bg": "#D4E4F7", "status_bar_bg": "#F5F5F5", "voice_status_bg": "#F5F5F5"},
         "spinner": {},  # empty = hardcoded defaults in display.py
         "branding": _HERMES_BRANDING,
+        "tool_prefix": "┊"},
+    "my-h": {
+        # My-H identity: the fork's own wordmark, portrait and violet palette. Strings are
+        # branding data (agent_name/welcome/response_label), so no code path changes with it.
+        "name": "my-h", "description": "My-H — violet wordmark and the My-H woman",
+        "colors": {
+            "banner_border": "#5B4BD6", "banner_title": "#B48CFF", "banner_accent": "#8A63FF",
+            "banner_dim": "#6E5AA8", "banner_text": "#EDE9FF", "ui_accent": "#8A63FF",
+            "ui_label": "#B48CFF", "ui_ok": "#7BD88F", "ui_error": "#FF6B6B", "ui_warn": "#FFC857",
+            "prompt": "#EDE9FF", "input_rule": "#5B4BD6", "response_border": "#9B6BFF",
+            "status_bar_bg": "#12101F", "status_bar_text": "#C9C4E0",
+            "status_bar_strong": "#B48CFF", "status_bar_dim": "#6E5AA8",
+            "status_bar_good": "#7BD88F", "status_bar_warn": "#FFC857", "status_bar_bad": "#FF8B5E",
+            "status_bar_critical": "#FF6B6B", "session_label": "#B48CFF",
+            "session_border": "#6B5E8C", "completion_menu_bg": "#12101F",
+            "completion_menu_current_bg": "#2A2340", "selection_bg": "#332A52",
+            "shell_dollar": "#8A63FF", "voice_status_bg": "#12101F"},
+        "light_colors": {
+            "banner_title": "#5B3BC4", "banner_accent": "#6C46D8", "banner_dim": "#7A6BA8",
+            "banner_text": "#2C2550", "ui_accent": "#6C46D8", "ui_label": "#5B3BC4",
+            "ui_ok": "#2E7D32", "ui_error": "#C62828", "ui_warn": "#B26A00", "prompt": "#2C2550",
+            "response_border": "#5B3BC4", "session_label": "#5B3BC4", "status_bar_text": "#5F5A72",
+            "status_bar_strong": "#5B3BC4", "status_bar_dim": "#8C86A6",
+            "status_bar_good": "#2E7D32", "status_bar_warn": "#B26A00", "status_bar_bad": "#C2410C",
+            "status_bar_critical": "#B91C1C", "shell_dollar": "#4B35C0",
+            "completion_menu_bg": "#F6F4FF", "completion_menu_current_bg": "#DCD4FF",
+            "selection_bg": "#E4DEFF", "status_bar_bg": "#F6F4FF", "voice_status_bg": "#F6F4FF"},
+        "spinner": {"waiting_faces": ["(✿)", "(❀)", "(⋆)", "(·)", "(✧)"],
+                    "thinking_faces": ["(✿)", "(❀)", "(⋆)", "(✧)", "(·)"],
+                    "thinking_verbs": ["sketching", "composing", "shaping the line", "mixing violet",
+                                       "framing the shot", "tuning the hue", "drafting", "polishing"],
+                    "wings": _wings("✿", "❀", (("╸", "╺")), "✧")},
+        "branding": _branding(
+            "My-H", MYH_GLYPH, "See you soon! ✿", prompt="❯",
+            help_header="(✿) Available Commands"),
+        "banner_logo": MYH_LOGO,
+        "banner_hero": MYH_HERO,
         "tool_prefix": "┊"},
     "ares": {
         "name": "ares", "description": "War-god theme — crimson and bronze",

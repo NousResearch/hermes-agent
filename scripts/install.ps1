@@ -7,9 +7,10 @@
 #   -SkipSetup            deprecated alias for -NonInteractive
 #   -IncludeDesktop       add the desktop build stage
 #   -ProtocolVersion      print the stage protocol version
-#   -SkipBrowser          do not install the browser (Chromium); remembered by
-#                         later installs and `hermes update`, undone by
-#                         `hermes pm install chromium`
+#   -SkipBrowser          do not install the browser tools (agent-browser +
+#                         Chromium); remembered by later
+#                         installs and `hermes update`, undone by
+#                         `hermes pm install agent-browser`
 #   -SkipComputerUse      do not install the computer-use driver (cua-driver);
 #                         remembered the same way, undone by
 #                         `hermes pm install cua-driver`
@@ -37,8 +38,8 @@ param(
     [switch]$Json,
     [switch]$IncludeDesktop,
     # Same opt-out as install.sh --skip-browser: PM records it, so later
-    # installs and `hermes update` keep the browser off until
-    # `hermes pm install chromium` opts back in.
+    # installs and `hermes update` keep the browser tools off until
+    # `hermes pm install agent-browser` opts back in.
     [switch]$SkipBrowser,
     [switch]$SkipComputerUse,
     # Print the paths this install would use, as JSON on stdout, and exit
@@ -76,7 +77,7 @@ $script:BoundParams = $PSBoundParameters
 # Under iex, script scope is the caller's session and outlives a run; start
 # each run without the previous run's answer (see Set-LauncherUserPath).
 $script:BinDirOnCallerPath = $null
-$RepoUrl = if ($env:HERMES_REPO_URL) { $env:HERMES_REPO_URL } else { "https://github.com/NousResearch/hermes-agent.git" }
+$RepoUrl = if ($env:HERMES_REPO_URL) { $env:HERMES_REPO_URL } else { "https://github.com/chaorenex1/My-H.git" }
 
 # --- BEGIN GENERATED: bootstrap pins (scripts/gen-bootstrap-pins.py) ---
 # Derived from pm/lock.json. DO NOT EDIT BY HAND:
@@ -901,15 +902,17 @@ function Get-ChosenChannel {
 # endpoints are unreachable but git is not. Returns '' when none answers.
 function Get-LatestStableRelease([string]$Origin) {
     $pattern = '^v(0|[1-9]\d{0,2})\.(0|[1-9]\d*)\.(0|[1-9]\d*)$'  # update_channel.STABLE_TAG_RE
+    $slug = Get-RepoSlug $Origin
+    if (-not $slug) { return '' }
     $tag = ''
     try {
-        $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/NousResearch/hermes-agent/releases/latest' `
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$slug/releases/latest" `
             -Headers @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'hermes-installer' } -TimeoutSec 20
         $tag = "$($release.tag_name)"
     } catch { }
     if ($tag -cnotmatch $pattern) {
         try {
-            $request = [Net.HttpWebRequest]::Create('https://github.com/NousResearch/hermes-agent/releases/latest')
+            $request = [Net.HttpWebRequest]::Create("https://github.com/$slug/releases/latest")
             $request.Method = 'HEAD'
             $request.AllowAutoRedirect = $false
             $request.Timeout = 20000
@@ -928,14 +931,21 @@ function Get-LatestStableRelease([string]$Origin) {
     return ''
 }
 
+# "owner/repo" for a GitHub origin URL, '' when the URL is not one.
+function Get-RepoSlug([string]$Origin) {
+    $slug = $Origin -replace '^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)', ''
+    $slug = $slug -replace '\.git$', ''
+    return $slug.TrimEnd('/')
+}
+
 # The stable release this run installs, '' to follow the branch, or '-' when stable applies but no
-# release could be looked up: an explicit -Channel, else stable for the official repository's main line (forks and mirrors publish no official
-# releases; hermes_cli.update_channel.default_channel decides the same way).
+# release could be looked up: an explicit -Channel, else stable for the fork that publishes these
+# tags (hermes_cli.update_channel.default_channel decides the same way).
 function Get-StableTarget([string]$Origin) {
     if ($Commit -or $Channel -ceq 'main') { return '' }
     if ($Channel -cne 'stable') {
         if ($Branch -cne 'main') { return '' }
-        if ($Origin -notmatch '^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)NousResearch/hermes-agent(\.git)?/?$') { return '' }
+        if ((Get-RepoSlug $Origin) -notmatch '^chaorenex1/My-H$') { return '' }
     }
     $release = Get-LatestStableRelease $Origin
     if ($release) { return $release }
@@ -1286,8 +1296,6 @@ function Invoke-BootstrapPm {
         # Bare $SkipBrowser, like $InstallDir: under iex/scriptblock entry the
         # param() binding is not in $script: scope (see Initialize-ResolvedPaths).
         $pmArgs = @('install')
-        # Legacy spelling on purpose: the stable PM this script installs by
-        # default rejects 'chromium', and newer PMs read 'agent-browser' as 'chromium'.
         if ($SkipBrowser) { $pmArgs += @('--without', 'agent-browser') }
         if ($SkipComputerUse) { $pmArgs += @('--without', 'cua-driver') }
         Invoke-Logged "Installing dependencies (hash-verified via uv.lock)" { & $bootPy -m pm.cli @pmArgs }
@@ -1541,9 +1549,7 @@ function New-DesktopShortcuts {
         }
                 $sc = $shell.CreateShortcut($lnkPath)
                 $sc.TargetPath = $TargetExe
-                # Not the exe's folder: the Desktop's children inherit it, and a helper
-                # that outlives the app then blocks the next update's swap (#101789).
-                $sc.WorkingDirectory = $env:USERPROFILE
+                $sc.WorkingDirectory = $workDir
                 $sc.IconLocation = $iconLocation
                 $sc.Description = 'Hermes Agent'
                 $sc.Save()

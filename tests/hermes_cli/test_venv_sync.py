@@ -179,3 +179,18 @@ class TestCliContract:
 
         assert proc.returncode == 1
         assert json.loads(proc.stdout)["state"] == "failed"
+
+
+def test_relaunched_child_does_not_relaunch_again(monkeypatch, tmp_path):
+    """A relaunched process must not re-exec: a venv that stays not current would loop forever."""
+    import hermes_cli.steward as steward
+
+    def _unreachable(_root):
+        raise AssertionError("relaunched child re-ran the launch decision")
+
+    monkeypatch.setattr(steward, "read_install_stamp", _unreachable)
+    monkeypatch.setenv(venv_sync.RELAUNCH_MARKER, "1")
+    root = _checkout(tmp_path)
+
+    assert venv_sync.prepare_launch(root, ["gateway", "run"]) is None
+    assert venv_sync.RELAUNCH_MARKER not in __import__("os").environ

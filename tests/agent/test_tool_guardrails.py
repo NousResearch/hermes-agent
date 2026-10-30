@@ -506,3 +506,74 @@ def test_rate_limited_retry_is_not_a_replay_but_stays_bounded(result, throttled,
             break
     else:
         raise AssertionError("a permanently failing endpoint must still halt or block")
+
+
+# ── Session-scoped halt memory (#146494) ───────────────────────────────────
+# Every counter here resets on reset_for_turn(), so a model that replays the
+# exact call the guardrail already halted gets a fresh streak next turn and the
+# turn halts AGAIN with the same canned reply. The controller is created once
+# per agent (agent_init.py:1252) and lives for the whole session: it must
+# remember halted signatures across turns — while still allowing ONE retry per
+# turn (the call may be legitimate after an edit) and forgetting the memory
+# once real progress lands.
+
+def _streak_halt(c, tool, args, result):
+    for _ in range(5):
+        assert c.before_call(tool, args).allows_execution
+        c.after_call(tool, args, result, failed=False)
+        c.observe_call(tool, args, result, failed=False)
+    assert c.halt_decision is not None
+    assert c.halt_decision.code == "identical_call_streak_halt"
+    return c.halt_decision
+
+
+def test_halted_call_replay_is_allowed_once_next_turn_then_blocked():
+    c = _HARD()
+    args = {"command": "hermes config get memory.provider"}
+    _streak_halt(c, "terminal", args, "local\n")
+
+    c.reset_for_turn()
+    assert c.before_call("terminal", args).allows_execution, "first retry next turn must run"
+    blocked = c.before_call("terminal", args)
+    assert blocked.action == "block"
+    assert blocked.code == "replay_of_halted_call"
+    assert blocked.should_halt, "the replay block must end the turn like every other block"
+
+
+def test_mutation_evicts_session_halt_memory():
+    c = _HARD()
+    args = {"command": "cat status.txt"}
+    _streak_halt(c, "terminal", args, "closed\n")
+
+    c.reset_for_turn()
+    c.after_call("patch", {"path": "status.txt", "old_string": "a", "new_string": "b"},
+                 '{"success": true, "diff": "..."}', failed=False)
+    assert c.before_call("terminal", args).allows_execution
+    assert c.before_call("terminal", args).allows_execution, \
+        "a landed mutation makes the halted call a new experiment, not a replay forever"
+
+
+def test_replay_with_changed_result_evicts_session_halt():
+    c = _HARD()
+    args = {"command": "cat status.txt"}
+    _streak_halt(c, "terminal", args, "closed\n")
+
+    c.reset_for_turn()
+    assert c.before_call("terminal", args).allows_execution
+    # the file changed underneath: the retry produced a DIFFERENT result
+    c.after_call("terminal", args, "open\n", failed=False)
+    c.observe_call("terminal", args, "open\n", failed=False)
+    assert c.before_call("terminal", args).allows_execution
+    assert c.before_call("terminal", args).allows_execution, \
+        "a replay that produced a new result was legitimate progress; forget the halt"
+
+
+def test_replay_gate_is_off_when_hard_stop_disabled():
+    # Interactive surfaces never halt, so there is no session memory to enforce.
+    c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=False))
+    args = {"command": "ls"}
+    for _ in range(12):
+        assert c.before_call("terminal", args).allows_execution
+        c.after_call("terminal", args, "a\n", failed=False)
+        c.observe_call("terminal", args, "a\n", failed=False)
+    assert c.halt_decision is None

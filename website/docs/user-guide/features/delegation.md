@@ -740,9 +740,8 @@ With isolation on:
 
 ### Merging a child's branch
 
-`hermes worktree merge <branch>` merges into the current worktree only when the
-branch passes the checks you give it; otherwise HEAD and the tree are left as
-they were:
+`hermes worktree merge <branch>` checks a branch before merging it into the
+current worktree. A failed check refuses without changing anything:
 
 ```bash
 hermes worktree merge hermes-subagent/subagent-<id> \
@@ -755,16 +754,22 @@ hermes worktree merge hermes-subagent/subagent-<id> \
   sides of a rename, must be that path or under that directory.
 - `--tested SHA`: the commit the child says it verified. Each child is told to
   report it. It must be the branch tip; commits after it refuse the merge.
-- `--gate CMD`: runs in the worktree after the merge commit. A non-zero exit,
-  or running past `--gate-timeout` (default 1800 s, which kills the gate's
-  whole process tree), puts the branch back at the pre-merge commit. Files the
-  gate created or staged stay on disk. A gate that commits is reported and
-  nothing is reset.
+- `--gate CMD`: runs in the worktree after the merge commit; running past
+  `--gate-timeout` (default 1800 s) kills the gate's whole process tree. A
+  failing gate does **not** roll back: the merge commit is kept, the command
+  exits non-zero, and the result names the `git reset --keep <sha>` that
+  undoes it.
 - It refuses before merging when tracked files have uncommitted changes
   (including ones hidden by assume-unchanged or skip-worktree), or when a file
   the branch writes already exists here untracked or git-ignored. A conflict
   aborts the merge and lists the conflicting files. `--json` prints the full
   result.
+- Conflicts and the exact set of paths the merge will write are computed with
+  `git merge-tree` before anything changes (git 2.38 or newer). The merge
+  itself is an ordinary `git merge --no-ff` of the checked commit, so hooks,
+  signing and merge config apply; if the result differs from the prediction
+  (for example `branch.<name>.mergeOptions`), it is reported and the gate is
+  not run.
 
 A useful pattern for a fan-out: commit shared scaffolding (types, stubs,
 tests) first, so every child branches from it, then merge each child's branch

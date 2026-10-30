@@ -1,27 +1,23 @@
-"""``hermes worktree merge`` — fold a child branch into the current worktree, all-or-nothing.
+"""``hermes worktree merge`` — merge a child branch into the current worktree after checking it.
 
 A coordinator that fans work out to worktree-isolated subagents gets a branch back from each one.
 Merging them by hand trusts every child's summary. This command checks the branch against what the
-coordinator asked for before the merge lands, and keeps it only when the check passes:
+coordinator asked for, and refuses without changing anything when a check fails:
 
 * ``--allow PATH``: every file the branch changes (both sides of a rename) must equal a listed path
-  or sit under a listed directory. Any file outside them refuses the merge.
+  or sit under a listed directory.
 * ``--tested SHA``: the commit the child says it verified. It must be on the branch and be its tip;
-  commits after it were never run through that verification, so they refuse the merge.
-* ``--gate CMD``: runs in the worktree after the merge commit. A failure or timeout (which kills
-  the gate's whole process tree) puts the branch back at the commit it had before the merge.
+  commits after it were never run through that verification.
+* Tracked files with uncommitted changes (including ones hidden by assume-unchanged/skip-worktree).
+* Conflicts, computed with ``git merge-tree`` before anything is written.
+* Any path the merge will write (from the predicted tree, so relocations are included), or a parent
+  of one, that holds something untracked here: git silently overwrites ignored files.
 
-Nothing in the worktree changes until every check has passed. ``git merge-tree`` computes the merge
-result first: a conflict refuses with the conflicting files listed, and the exact set of paths the
-merge will write (renames and relocations included) is checked against the worktree. That predicted
-tree is then written with plumbing (``commit-tree``, ``read-tree -m -u``, ``update-ref``), never
-porcelain ``merge``/``reset``, whose config (``branch.<name>.mergeOptions``, ``submodule.recurse``)
-could write something other than what was checked. Merge hooks therefore do not run. Tracked files
-with uncommitted changes (including ones hidden by assume-unchanged/skip-worktree) refuse, and so
-does any written path, or parent of one, that holds something untracked here, since git silently
-overwrites ignored files. The rollback therefore only touches what the merge brought in; files the
-gate created or staged stay on disk. A gate that moves HEAD itself (a commit) is reported and the
-rollback is skipped.
+Then it runs an ordinary ``git merge --no-ff`` of the checked commit, so hooks, signing and the
+repository's merge config apply as they would by hand. ``--gate CMD`` runs after the merge (a timeout
+kills the gate's whole process tree). A failing gate does NOT roll back: undoing a merge inside a
+live worktree cannot be made safe against every checkout filter, sparse pattern and concurrent
+change, so the merge commit is kept and the result names the ``git reset --keep`` that undoes it.
 """
 
 from __future__ import annotations
@@ -64,8 +60,7 @@ class MergeResult:
     untracked_collisions: list[str] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
     gate: Optional[GateResult] = None
-    reset_to: str = ""
-    restored_ref: str = ""
+    before: str = ""
     error: str = ""
 
 
@@ -220,36 +215,23 @@ def _unsafe_destinations(repo: str, before: str, tree: str) -> list[str]:
     return sorted(unsafe)
 
 
-# Plumbing only from here on: porcelain merge/reset read config (branch.<name>.mergeOptions such as
-# -Xsubtree, submodule.recurse) that merge-tree does not, so what they write could differ from what
-# was checked. read-tree never recurses into submodules with this flag and override.
-_NO_RECURSE = ("-c", "submodule.recurse=false")
-
-
-def _plumb(repo: str, *args: str) -> str:
-    from hermes_cli.worktree_ops import _git as run_git
-    result = run_git([*_NO_RECURSE, *args], repo, timeout=_GIT_TIMEOUT, stdin=subprocess.DEVNULL)
-    if result.returncode != 0:
-        raise MergeRefused(f"git {args[0]} failed: {(result.stderr or result.stdout).strip()[:300]}")
-    return result.stdout.strip()
-
-
-def _merge(repo: str, result: MergeResult, before: str, tree: str) -> None:
-    """Commit the predicted tree with HEAD and the checked tip as parents, move the index and worktree
-    from HEAD to it (exactly the checked write set), then move HEAD only if it is still *before*."""
-    merge = _plumb(repo, "commit-tree", tree, "-p", before, "-p", result.tip, "-m", f"Merge branch '{result.branch}'")
-    _plumb(repo, "read-tree", "-m", "-u", "--no-recurse-submodules", before, merge)
-    try:
-        _plumb(repo, "update-ref", "-m", f"hermes worktree merge {result.branch}", "HEAD", merge, before)
-    except MergeRefused:
-        _plumb(repo, "read-tree", "--reset", "-u", "--no-recurse-submodules", before)
-        raise
-    result.merge_commit = merge
+def _merge(repo: str, result: MergeResult, tree: str) -> None:
+    # Merge the commit that was checked, not the branch name, which can move in the meantime.
+    merged = _git(repo, "merge", "--no-ff", "--no-edit", "-m", f"Merge branch '{result.branch}'", result.tip,
+                  check=False)
+    if merged.returncode != 0:  # merge-tree predicted a clean merge, so this is a hook or config refusing
+        raise MergeRefused(f"git merge failed: {(merged.stderr or merged.stdout).strip()[:300]} "
+                           "(if a merge is now in progress, `git merge --abort` ends it)")
+    result.merge_commit = _out(repo, "rev-parse", "HEAD")
+    if _out(repo, "rev-parse", "HEAD^{tree}") != tree:
+        result.error = ("the merge result differs from the checked prediction (repository merge options such as "
+                        "branch.<name>.mergeOptions?); review it before continuing")
 
 
 def merge_branch(repo: str, branch: str, *, allowed: Optional[list[str]] = None, tested: Optional[str] = None,
                  gate: Optional[str] = None, gate_timeout: float = 1800) -> MergeResult:
-    """Check and merge *branch* into *repo*'s HEAD; on any failure HEAD and the tree are as before."""
+    """Check *branch*, then merge it into *repo*'s HEAD. A refusal changes nothing; after the merge,
+    a failed gate keeps the merge and reports how to undo it (no automatic rollback)."""
     result = MergeResult(branch=branch)
     try:
         allowed = _normalize_allowed(allowed or [])
@@ -259,52 +241,25 @@ def merge_branch(repo: str, branch: str, *, allowed: Optional[list[str]] = None,
             result.already_merged = True
             return result
         _check_branch(repo, result, allowed, tested)
-        before = _out(repo, "rev-parse", "HEAD")
-        head_ref = _git(repo, "symbolic-ref", "-q", "HEAD", check=False).stdout.strip()
-        tree = _predict(repo, result, before)
-        result.untracked_collisions = _unsafe_destinations(repo, before, tree)
+        result.before = _out(repo, "rev-parse", "HEAD")
+        tree = _predict(repo, result, result.before)
+        result.untracked_collisions = _unsafe_destinations(repo, result.before, tree)
         if result.untracked_collisions:
             raise MergeRefused(f"{len(result.untracked_collisions)} path(s) the merge writes hold untracked "
                                "(possibly git-ignored) files or links here; move them aside first")
-        _merge(repo, result, before, tree)
+        _merge(repo, result, tree)
     except MergeRefused as exc:
         result.error = str(exc)
         return result
-    if gate:
+    if gate and not result.error:
         result.gate = _run_gate(repo, gate, gate_timeout)
         if result.gate.timed_out or result.gate.exit_code != 0:
             result.error = "the gate timed out" if result.gate.timed_out else "the gate failed"
-            _undo_merge(repo, result, before, head_ref)
-            return result
-    result.merged = True
+    if result.error:
+        result.error += (f"; the merge commit {result.merge_commit[:12]} is kept. To undo it: "
+                         f"`git reset --keep {result.before}`")
+    result.merged = not result.error
     return result
-
-
-def _undo_merge(repo: str, result: MergeResult, before: str, head_ref: str) -> None:
-    """Put the merged-into branch back at *before* without deleting anything the merge did not bring.
-
-    Same checkout, HEAD still the merge commit: unstage whatever the gate staged (it stays on disk,
-    untracked), then reset the tracked files; every path the merge wrote was checked to hold nothing
-    untracked beforehand. The gate checked out something else: leave that checkout alone and move only
-    the original branch ref, and only while it still holds the merge. Anything else is reported."""
-    now_ref = _git(repo, "symbolic-ref", "-q", "HEAD", check=False).stdout.strip()
-    merge = result.merge_commit
-    if now_ref == head_ref and _out(repo, "rev-parse", "HEAD") == merge:
-        try:
-            _plumb(repo, "read-tree", merge)  # unstage: what the gate staged stays on disk, untracked
-            _plumb(repo, "read-tree", "--reset", "-u", "--no-recurse-submodules", before)
-            _plumb(repo, "update-ref", "-m", "hermes worktree merge: gate failed", "HEAD", before, merge)
-        except MergeRefused as exc:
-            result.error += f"; the rollback failed ({exc}); check `git status` before continuing"
-            return
-    elif now_ref != head_ref and head_ref and \
-            _git(repo, "update-ref", head_ref, before, merge, check=False).returncode == 0:
-        result.restored_ref = head_ref
-    else:
-        result.error += (f"; the gate moved HEAD itself, so the rollback was skipped (merge commit {merge[:12]}); "
-                         "check `git log` and `git status` before continuing")
-        return
-    result.reset_to, result.merge_commit = before, ""
 
 
 def _print_human(result: MergeResult) -> None:
@@ -313,6 +268,8 @@ def _print_human(result: MergeResult) -> None:
         return
     if result.merged:
         print(f"✓ Merged {result.branch} ({result.tip[:12]}) as {result.merge_commit[:12]}: {len(result.files)} file(s)")
+    elif result.merge_commit:
+        print(f"✗ Merged {result.branch} as {result.merge_commit[:12]}, but {result.error}")
     else:
         print(f"✗ Not merged: {result.error}")
     for label, items in (("Outside --allow", result.outside_allowed),
@@ -328,10 +285,6 @@ def _print_human(result: MergeResult) -> None:
         print(f"  Gate `{result.gate.command}`: {state} after {result.gate.duration_s}s")
         if not result.merged and result.gate.output_tail:
             print("  Gate output (tail):\n" + result.gate.output_tail)
-    if result.restored_ref:
-        print(f"  {result.restored_ref} moved back to {result.reset_to[:12]}; the checkout the gate left was not touched.")
-    elif result.reset_to:
-        print(f"  Worktree reset to {result.reset_to[:12]}.")
 
 
 def cmd_merge(_worktree_gc, repo_root: str, args) -> int:

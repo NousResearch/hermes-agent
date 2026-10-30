@@ -49,10 +49,12 @@ def build_worktree_parser(subparsers) -> None:
     worktree_restore.add_argument("--repo", help="Repo root (default: current repo)")
 
     worktree_merge = worktree_subparsers.add_parser(
-        "merge", help="Merge a branch (e.g. a subagent's) into this worktree only if it passes checks",
-        description="Merge <branch> into the current worktree's HEAD, all-or-nothing. Refuses when "
-            "tracked files are dirty, a changed file is outside --allow, or commits landed after "
-            "--tested; a conflict aborts; a failing or timed-out --gate resets to the pre-merge commit.")
+        "merge", help="Check a branch (e.g. a subagent's), then merge it into this worktree",
+        description="Merge <branch> into the current worktree's HEAD after checking it. Refuses, "
+            "changing nothing, when tracked files are dirty, a changed file is outside --allow, "
+            "commits landed after --tested, the merge would conflict, or it would overwrite an "
+            "untracked file. --gate runs after the merge; a failing gate keeps the merge and prints "
+            "the `git reset --keep` that undoes it.")
     worktree_merge.add_argument("branch", help="Branch or commit to merge (e.g. hermes-subagent/subagent-<id>)")
     worktree_merge.add_argument(
         "--allow", action="append", metavar="PATH",
@@ -62,7 +64,7 @@ def build_worktree_parser(subparsers) -> None:
     worktree_merge.add_argument("--gate", metavar="CMD", help="Shell command that must pass after the merge")
     worktree_merge.add_argument(
         "--gate-timeout", type=float, default=1800, metavar="SECONDS", dest="gate_timeout",
-        help="Kill the gate and reset after SECONDS (default 1800)")
+        help="Kill the gate after SECONDS (default 1800)")
     worktree_merge.add_argument("--json", action="store_true", help="Machine-readable result")
     worktree_merge.add_argument("--repo", help="Worktree to merge into (default: current worktree)")
 

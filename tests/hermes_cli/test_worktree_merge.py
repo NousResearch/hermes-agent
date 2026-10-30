@@ -138,15 +138,17 @@ def test_tested_commit_not_on_the_branch_refuses(repo, capsys):
     _unchanged(repo, before)
 
 
-def test_failing_gate_resets_to_the_pre_merge_commit(repo, capsys):
-    _child(repo, [("src/app.py", "x = 2\n")])
+def test_failing_gate_keeps_the_merge_and_names_the_undo(repo, capsys):
+    tip = _child(repo, [("src/app.py", "x = 2\n")])
     before = _git(repo, "rev-parse", "HEAD")
 
     code, result = _merge(repo, capsys, "child", "--gate", "echo gate-said-no; exit 3")
 
     assert code == 1 and result["merged"] is False
     assert result["gate"]["exit_code"] == 3 and "gate-said-no" in result["gate"]["output_tail"]
-    assert result["reset_to"] == before
+    assert _git(repo, "rev-parse", "HEAD^1") == before and _git(repo, "rev-parse", "HEAD^2") == tip
+    assert f"git reset --keep {before}" in result["error"]
+    _git(repo, "reset", "--keep", before)  # the named undo works
     _unchanged(repo, before)
 
 
@@ -159,7 +161,7 @@ def _alive(pid):
 
 
 @pytest.mark.platforms("posix")
-def test_gate_timeout_kills_the_gate_tree_and_resets(repo, capsys, tmp_path):
+def test_gate_timeout_kills_the_gate_tree_and_keeps_the_merge(repo, capsys, tmp_path):
     from tests.waiting import wait_until
 
     _child(repo, [("src/app.py", "x = 2\n")])
@@ -171,7 +173,7 @@ def test_gate_timeout_kills_the_gate_tree_and_resets(repo, capsys, tmp_path):
 
     assert code == 1 and result["gate"]["timed_out"] is True
     assert result["gate"]["duration_s"] < 15, "the merge waited for the gate's orphaned child"
-    _unchanged(repo, before)
+    assert _git(repo, "rev-parse", "HEAD^1") == before
     grandchild = int(pidfile.read_text(encoding="utf-8-sig"))
     assert wait_until(lambda: not _alive(grandchild), timeout=5), "the gate's child outlived the timeout"
 
@@ -197,18 +199,6 @@ def test_branch_that_moves_after_the_checks_merges_only_the_checked_commit(repo,
     assert (repo / "README.md").read_text(encoding="utf-8-sig") == "hello\n"
 
 
-def test_failing_gate_that_switches_branch_moves_only_the_original_branch_back(repo, capsys):
-    _child(repo, [("src/app.py", "x = 2\n")])
-    _git(repo, "branch", "elsewhere")
-    before = _git(repo, "rev-parse", "HEAD")
-
-    code, result = _merge(repo, capsys, "child", "--gate", "git switch -q elsewhere; exit 1")
-
-    assert code == 1 and result["reset_to"] == before and result["restored_ref"] == "refs/heads/main"
-    assert _git(repo, "rev-parse", "refs/heads/main") == before
-    assert _git(repo, "symbolic-ref", "HEAD") == "refs/heads/elsewhere"
-
-
 def test_ignored_untracked_file_the_branch_would_overwrite_refuses(repo, capsys):
     _commit(repo, ".gitignore", "notes.txt\n", "ignore notes")
     _git(repo, "switch", "-q", "-c", "child")
@@ -224,29 +214,6 @@ def test_ignored_untracked_file_the_branch_would_overwrite_refuses(repo, capsys)
     assert code == 1 and result["untracked_collisions"] == ["notes.txt"]
     assert (repo / "notes.txt").read_text(encoding="utf-8-sig") == "USER WORK\n"
     _unchanged(repo, before)
-
-
-def test_failing_gate_that_stages_an_untracked_user_file_leaves_it_on_disk(repo, capsys):
-    _child(repo, [("src/app.py", "x = 2\n")])
-    (repo / "scratch.txt").write_text("USER WORK\n", encoding="utf-8")
-    before = _git(repo, "rev-parse", "HEAD")
-
-    code, result = _merge(repo, capsys, "child", "--gate", "git add -A; exit 1")
-
-    assert code == 1 and result["reset_to"] == before
-    assert (repo / "scratch.txt").read_text(encoding="utf-8-sig") == "USER WORK\n"
-    _unchanged(repo, before)
-
-
-def test_failing_gate_that_commits_is_reported_and_nothing_is_reset(repo, capsys):
-    _child(repo, [("src/app.py", "x = 2\n")])
-    (repo / "scratch.txt").write_text("USER WORK\n", encoding="utf-8")
-
-    code, result = _merge(repo, capsys, "child", "--gate", "git add -A; git commit -q -m gate; exit 1")
-
-    assert code == 1 and result["reset_to"] == "" and "rollback was skipped" in result["error"]
-    assert _git(repo, "log", "-1", "--format=%s") == "gate"
-    assert (repo / "scratch.txt").read_text(encoding="utf-8-sig") == "USER WORK\n"
 
 
 def test_assume_unchanged_edit_refuses_and_is_left_alone(repo, capsys):
@@ -323,7 +290,7 @@ def test_untracked_non_directory_where_the_merge_needs_a_directory_refuses(repo,
         os.symlink("does-not-exist", target)
     before = _git(repo, "rev-parse", "HEAD")
 
-    code, result = _merge(repo, capsys, "child", "--gate", "exit 1")
+    code, result = _merge(repo, capsys, "child")
 
     assert code == 1 and result["untracked_collisions"] == ["obstacle"]
     assert os.path.lexists(target)
@@ -366,41 +333,21 @@ def test_hidden_edit_check_is_not_fooled_by_a_carriage_return_name(repo, capsys)
     assert _git(repo, "rev-parse", "HEAD") == before
 
 
-def test_branch_merge_options_cannot_make_the_merge_write_unchecked_paths(repo, capsys):
+def test_merge_that_departs_from_the_prediction_is_reported(repo, capsys):
     _child(repo, [("extra.py", "CHILD\n")])
     _git(repo, "mv", "src", "prefix")
-    _commit(repo, ".gitignore", "prefix/extra.py\n", "move src under prefix/")
-    (repo / "prefix" / "extra.py").write_text("USER WORK\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-m", "move src under prefix/")
     _git(repo, "config", "branch.main.mergeOptions", "-Xsubtree=prefix")
     before = _git(repo, "rev-parse", "HEAD")
 
-    code, result = _merge(repo, capsys, "child", "--gate", "exit 1")
+    code, result = _merge(repo, capsys, "child", "--gate", "touch gate-ran")
 
-    assert code == 1 and result["error"] == "the gate failed" and result["reset_to"] == before
-    assert (repo / "prefix" / "extra.py").read_text(encoding="utf-8-sig") == "USER WORK\n"
-    _unchanged(repo, before)
-
-
-def test_rollback_does_not_recurse_into_an_unchanged_submodule(repo, capsys, tmp_path):
-    module = tmp_path / "module"
-    _git(tmp_path, "init", "-q", "-b", "main", str(module))
-    _commit(module, "lib.py", "base\n", "module")
-    _git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(module), "vendor")
-    _git(repo, "commit", "-q", "-m", "add submodule")
-    _child(repo, [("src/app.py", "x = 2\n")])
-    _git(repo, "config", "submodule.recurse", "true")
-    _git(repo, "config", "submodule.vendor.ignore", "all")
-    (repo / "vendor" / "lib.py").write_text("USER SUBMODULE WORK\n", encoding="utf-8")
-    before = _git(repo, "rev-parse", "HEAD")
-
-    code, result = _merge(repo, capsys, "child", "--gate", "exit 1")
-
-    assert code == 1 and result["reset_to"] == before
-    assert (repo / "vendor" / "lib.py").read_text(encoding="utf-8-sig") == "USER SUBMODULE WORK\n"
-    assert _git(repo, "rev-parse", "HEAD") == before
+    assert code == 1 and "differs from the checked prediction" in result["error"]
+    assert result["gate"] is None and not (repo / "gate-ran").exists()
+    assert f"git reset --keep {before}" in result["error"]
 
 
-def test_conflict_aborts_and_lists_the_files(repo, capsys):
+def test_conflict_refuses_and_lists_the_files(repo, capsys):
     _child(repo, [("src/app.py", "x = 2\n")])
     _commit(repo, "src/app.py", "x = 99\n", "parent moved on")
     before = _git(repo, "rev-parse", "HEAD")

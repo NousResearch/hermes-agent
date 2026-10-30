@@ -3,9 +3,10 @@ repo: https://github.com/LarryLemonBot/annotate-for-hermes
 sha: ae9dca1613317de7647eae542cc16fc63dcff4c0
 title: "Annotate for Hermes"
 description: >-
-  Collect comments on selected assistant passages in one attachment inside the
-  message composer. Review, edit or remove each comment, then send all selections
-  with an ordinary reply. Disclosure — Desktop-only; uses the public composer
+  Annotate for Hermes adds response annotations: highlight assistant text, add
+  comments and collect your feedback in one attachment inside the message composer.
+  Review, edit or remove each annotation, then send all selections with an ordinary
+  reply. Disclosure — Desktop-only; uses the public composer
   annotation API and draft/session SDK, renders its own popovers, and temporarily
   highlights selected text. No network calls, credentials, telemetry, model calls,
   Python hooks, automatic sends, self-updater or changes to application files.

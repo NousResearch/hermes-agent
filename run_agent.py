@@ -5024,6 +5024,38 @@ class AIAgent:
         logger.info("Copilot credentials refreshed from %s", token_source)
         return True
 
+    def _resolve_anthropic_refresh_token_from_pool(self) -> Optional[str]:
+        """Resolve the refreshed Anthropic token from this agent's credential pool.
+
+        The per-request refresh must stay bound to the pool entry that was
+        selected for this agent (pool priority / rotation decide the account).
+        Previously this path consulted the singleton ``resolve_anthropic_token``
+        which prefers ``~/.claude/.credentials.json`` over the pool, so a pool
+        that selected a *different* OAuth account was silently overridden on
+        the very first request — ``hermes auth`` priority had no effect.
+
+        Returns ``None`` when the agent has no matching Anthropic pool (caller
+        falls back to the singleton resolver).  Returns an empty string when
+        the pool exists but has no usable entry at all, so the caller does not
+        hop to an out-of-pool account behind the pool's back.
+        """
+        pool = getattr(self, "_credential_pool", None)
+        if pool is None or getattr(pool, "provider", None) != "anthropic":
+            return None
+        if not pool.has_credentials():
+            return None
+        entry = pool.refresh_current_entry(api_key_hint=self._anthropic_api_key)
+        if entry is None:
+            # Current entry unusable (exhausted/dead/refresh failed): let the
+            # pool pick the next one by its own strategy.
+            entry = pool.select()
+        if entry is None:
+            return ""
+        token = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "") or ""
+        if token and entry.id != getattr(self, "_credential_pool_entry_id", None):
+            self._credential_pool_entry_id = entry.id
+        return token
+
     def _try_refresh_anthropic_client_credentials(self) -> bool:
         if self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key"):
             return False
@@ -5040,7 +5072,11 @@ class AIAgent:
         try:
             from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client
 
-            new_token = resolve_anthropic_token()
+            new_token = self._resolve_anthropic_refresh_token_from_pool()
+            if new_token is None:
+                # No usable pool binding for this agent — fall back to the
+                # singleton resolver (env token / Claude Code credentials file).
+                new_token = resolve_anthropic_token()
         except Exception as exc:
             logger.debug("Anthropic credential refresh failed: %s", exc)
             return False

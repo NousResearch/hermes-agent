@@ -5115,3 +5115,141 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# _worktree_has_active_work — primary-HEAD comparison, fail-closed
+# ---------------------------------------------------------------------------
+
+def _git_init_primary(path: Path) -> None:
+    """Helper: initialise a bare primary git repo with an initial commit."""
+    subprocess.run(["git", "init", str(path)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "config", "user.email", "test@test.com"],
+        check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(path), "config", "user.name", "Test"],
+        check=True, capture_output=True,
+    )
+    (path / "README.md").write_text("initial")
+    subprocess.run(["git", "-C", str(path), "add", "."], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-m", "initial"],
+        check=True, capture_output=True,
+    )
+
+
+def _git_add_worktree(primary: Path, wt_path: Path, branch: str) -> None:
+    """Helper: add a worktree on a new branch."""
+    subprocess.run(
+        ["git", "-C", str(primary), "worktree", "add", "-b", branch, str(wt_path)],
+        check=True, capture_output=True,
+    )
+
+
+def _git_commit_in_wt(wt_path: Path, filename: str = "extra.md") -> None:
+    """Helper: make a commit inside a worktree."""
+    subprocess.run(
+        ["git", "-C", str(wt_path), "config", "user.email", "test@test.com"],
+        check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(wt_path), "config", "user.name", "Test"],
+        check=True, capture_output=True,
+    )
+    (wt_path / filename).write_text("extra")
+    subprocess.run(["git", "-C", str(wt_path), "add", "."], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(wt_path), "commit", "-m", f"add {filename}"],
+        check=True, capture_output=True,
+    )
+
+
+class TestWorktreeHasActiveWork:
+    """Tests for _worktree_has_active_work using real temporary git repos.
+
+    The key regression scenario (CHANGES 1) is a clean worktree with an
+    unmerged commit and NO upstream tracking branch — the old @{upstream}..
+    check returned False (fail-open) for this case. The new implementation
+    compares against the primary checkout HEAD and correctly returns True.
+    """
+
+    def test_nonexistent_path_returns_false(self, tmp_path):
+        """Path that does not exist → False (not unknown, not active)."""
+        result = kb._worktree_has_active_work(str(tmp_path / "no_such_dir"))
+        assert result is False
+
+    def test_not_a_git_repo_returns_none(self, tmp_path):
+        """An existing path that is not a git repo → None (fail-closed)."""
+        (tmp_path / "mydir").mkdir()
+        result = kb._worktree_has_active_work(str(tmp_path / "mydir"))
+        assert result is None
+
+    def test_clean_worktree_no_new_commits_returns_false(self, tmp_path):
+        """Worktree on a branch with no new commits (same HEAD as primary) → False."""
+        primary = tmp_path / "primary"
+        primary.mkdir()
+        _git_init_primary(primary)
+
+        wt_path = tmp_path / "wt_clean"
+        _git_add_worktree(primary, wt_path, "wt/t_clean")
+        # No commit in the worktree — same HEAD as primary.
+        result = kb._worktree_has_active_work(str(wt_path))
+        assert result is False
+
+    def test_unmerged_commit_no_upstream_returns_true(self, tmp_path):
+        """Worktree with an unmerged commit and NO upstream tracking → True.
+
+        This is the exact regression case from CHANGES 1: the old @{upstream}..
+        check returned False here because the branch has no tracking branch.
+        """
+        primary = tmp_path / "primary"
+        primary.mkdir()
+        _git_init_primary(primary)
+
+        wt_path = tmp_path / "wt_ahead"
+        _git_add_worktree(primary, wt_path, "wt/t_ahead")
+        _git_commit_in_wt(wt_path)
+
+        # Verify there is indeed no upstream tracking (the bug condition).
+        out = subprocess.run(
+            ["git", "-C", str(wt_path), "config", "--get", "branch.wt/t_ahead.remote"],
+            capture_output=True, text=True, check=False,
+        )
+        assert out.returncode != 0, "branch must have no upstream for this test to be meaningful"
+
+        result = kb._worktree_has_active_work(str(wt_path))
+        assert result is True
+
+    def test_dirty_worktree_returns_true(self, tmp_path):
+        """Worktree with uncommitted changes → True even without an unmerged commit."""
+        primary = tmp_path / "primary"
+        primary.mkdir()
+        _git_init_primary(primary)
+
+        wt_path = tmp_path / "wt_dirty"
+        _git_add_worktree(primary, wt_path, "wt/t_dirty")
+        # Write a file without committing.
+        (wt_path / "unstaged.txt").write_text("dirty")
+
+        result = kb._worktree_has_active_work(str(wt_path))
+        assert result is True
+
+    def test_exception_in_subprocess_returns_none(self, tmp_path, monkeypatch):
+        """Unexpected exception during git subprocess → None (fail-closed)."""
+        primary = tmp_path / "primary"
+        primary.mkdir()
+        _git_init_primary(primary)
+
+        wt_path = tmp_path / "wt_exc"
+        _git_add_worktree(primary, wt_path, "wt/t_exc")
+
+        orig_run = subprocess.run
+
+        def _raise(*_a, **_kw):
+            raise OSError("simulated git failure")
+
+        monkeypatch.setattr(subprocess, "run", _raise)
+        result = kb._worktree_has_active_work(str(wt_path))
+        assert result is None

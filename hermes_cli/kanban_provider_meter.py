@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from typing import Mapping, Optional, Tuple
 
-from agent.account_usage import AccountUsageSnapshot
+from agent.account_usage import AccountUsageSnapshot, PooledUsageSnapshot
 from agent import account_usage
 
 
@@ -78,20 +78,32 @@ def _has_headroom(snapshot: AccountUsageSnapshot | None, minimum_remaining_perce
     numeric = [window.used_percent for window in snapshot.windows]
     if any(value is None for value in numeric):
         return False
-    # A provider is usable when at least one concrete usage window has
-    # headroom.  Different providers expose different window sets; requiring
-    # every window would incorrectly reject Claude when its short window is
-    # healthy but a longer informational window is exhausted.
-    return any(100.0 - float(value) >= minimum_remaining_percent for value in numeric)
+    # Every reported window is a constraint: the account's headroom is the
+    # bottleneck window, not the window with the most spare quota.
+    return min(100.0 - float(value) for value in numeric) >= minimum_remaining_percent
 
 
-def _has_headroom_all(snapshot: AccountUsageSnapshot | None, minimum_remaining_percent: int) -> bool:
-    if snapshot is None or not snapshot.available or not snapshot.windows:
-        return False
-    numeric = [window.used_percent for window in snapshot.windows]
-    if any(value is None for value in numeric):
-        return False
-    return all(100.0 - float(value) >= minimum_remaining_percent for value in numeric)
+def pool_account_headroom(reading: PooledUsageSnapshot) -> float:
+    """Return the bottleneck-window headroom for one pooled account.
+
+    A missing usage percentage cannot establish usable headroom and therefore
+    sorts below any concrete reading.  The caller still checks ``available``
+    before selecting an account.
+    """
+    values = [
+        100.0 - float(window.used_percent)
+        for window in reading.snapshot.windows
+        if window.used_percent is not None
+    ]
+    return min(values) if values else -1.0
+
+
+def select_pool_reading(
+    pooled: list[PooledUsageSnapshot] | tuple[PooledUsageSnapshot, ...] | None,
+) -> PooledUsageSnapshot | None:
+    """Select the available pooled account with the most bottleneck headroom."""
+    usable = [reading for reading in (pooled or ()) if reading.snapshot.available]
+    return max(usable, key=pool_account_headroom, default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -115,10 +127,6 @@ def choose_available_candidate(
         if candidate.provider.strip().lower() != "nous"
         and candidate.model.strip()
         and _has_headroom(readings.get(candidate.provider.strip().lower()), threshold)
-        and (
-            candidate.provider.strip().lower() != "openai-codex"
-            or _has_headroom_all(readings.get(candidate.provider.strip().lower()), threshold)
-        )
     ]
     if not eligible:
         return None
@@ -133,6 +141,7 @@ def remediate_candidate(
     *,
     minimum_remaining_percent: int = 10,
     _credentials: Optional[Mapping[str, Tuple[Optional[str], Optional[str]]]] = None,
+    _pool_readings: Optional[Mapping[str, list[PooledUsageSnapshot]]] = None,
     _out_readings: Optional[dict] = None,
 ) -> ProviderMeterCandidate | None:
     """Fetch provider meters and return the execution override, if safe.
@@ -162,11 +171,20 @@ def remediate_candidate(
         # Resolve through the module at call time so the dispatcher observes
         # refreshed meters and tests/operators can replace the live lookup
         # without re-importing this policy module.
-        raw = account_usage.fetch_account_usage(provider, api_key=api_key, base_url=base_url)
+        pooled = (_pool_readings or {}).get(provider)
+        if pooled is not None:
+            selected_reading = select_pool_reading(pooled)
+            raw = selected_reading.snapshot if selected_reading is not None else None
+            if _out_readings is not None:
+                _out_readings[provider] = pooled
+        else:
+            raw = account_usage.fetch_account_usage(provider, api_key=api_key, base_url=base_url)
         # Build a (provider, credential_fingerprint) compound cache key so that
         # snapshots from different accounts are never mixed across assignees.
         cache_key = (provider, _credential_fingerprint(api_key))
-        if raw is not None and raw.available:
+        if pooled is not None:
+            readings[provider] = raw
+        elif raw is not None and raw.available:
             # Success — update the cache.
             _snapshot_cache[cache_key] = (raw, now)
             readings[provider] = raw
@@ -182,7 +200,12 @@ def remediate_candidate(
             # Quota exhausted, auth error, or no data — fail-closed.
             readings[provider] = None
     if _out_readings is not None:
-        _out_readings.update(readings)
+        for provider, reading in readings.items():
+            # Preserve the account-by-account pool readings for event
+            # serialization; only single-credential lookups use the selected
+            # provider snapshot here.
+            if provider not in (_pool_readings or {}):
+                _out_readings[provider] = reading
     return choose_available_candidate(
         candidates, readings, minimum_remaining_percent=minimum_remaining_percent
     )

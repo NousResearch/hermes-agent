@@ -962,6 +962,10 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Operator-level parent-gate bypass flag. Set to 1 by
+    # ``promote_task(force=True)`` and cleared by ``claim_task`` on the
+    # first successful claim, honouring the bypass exactly once.
+    force_promoted: int = 0
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1049,6 +1053,11 @@ class Task:
             block_recurrences=(
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
+                else 0
+            ),
+            force_promoted=(
+                int(row["force_promoted"])
+                if "force_promoted" in keys and row["force_promoted"] is not None
                 else 0
             ),
         )
@@ -1233,7 +1242,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Set to 1 by ``promote_task(force=True)`` to signal that the operator
+    -- has explicitly overridden the parent-dependency gate. The claim gate
+    -- in ``claim_task`` skips the undone-parents check and clears this flag
+    -- atomically so the bypass is honoured exactly once per force-promote.
+    force_promoted       INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2418,6 +2432,18 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "force_promoted" not in cols:
+        # Operator-level parent-gate bypass flag. Set to 1 by
+        # ``promote_task(force=True)``; the claim gate clears it atomically
+        # on first claim so the bypass is honoured exactly once. Existing rows
+        # get 0, which is the correct default (no bypass in flight).
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "force_promoted",
+            "force_promoted INTEGER NOT NULL DEFAULT 0",
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -4302,23 +4328,41 @@ def claim_task(
         # 'todo' here — recompute_ready will re-promote when the parents
         # actually finish. See RCA at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived', 'cancelled') LIMIT 1",
+        #
+        # Exception: when the operator used ``promote_task(force=True)`` they
+        # have explicitly acknowledged undone parents and want the task to run
+        # now. ``force_promoted=1`` is the handshake between promote and claim;
+        # we clear it here so the bypass is honoured exactly once.
+        task_fp = conn.execute(
+            "SELECT force_promoted FROM tasks WHERE id = ? AND status = 'ready'",
             (task_id,),
         ).fetchone()
-        if undone:
+        if task_fp is None:
+            return None
+        if not task_fp["force_promoted"]:
+            undone = conn.execute(
+                "SELECT 1 FROM task_links l "
+                "JOIN tasks p ON p.id = l.parent_id "
+                "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived', 'cancelled') LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if undone:
+                conn.execute(
+                    "UPDATE tasks SET status = 'todo' "
+                    "WHERE id = ? AND status = 'ready'",
+                    (task_id,),
+                )
+                _append_event(
+                    conn, task_id, "claim_rejected",
+                    {"reason": "parents_not_done"},
+                )
+                return None
+        # Clear the force_promoted flag (consume the one-shot bypass).
+        if task_fp["force_promoted"]:
             conn.execute(
-                "UPDATE tasks SET status = 'todo' "
-                "WHERE id = ? AND status = 'ready'",
+                "UPDATE tasks SET force_promoted = 0 WHERE id = ?",
                 (task_id,),
             )
-            _append_event(
-                conn, task_id, "claim_rejected",
-                {"reason": "parents_not_done"},
-            )
-            return None
         # Defensive: if a prior run somehow leaked (invariant violation from
         # an unknown code path), close it as 'reclaimed' so we don't strand
         # it when the CAS resets the pointer below. No-op when the invariant
@@ -6018,9 +6062,10 @@ def promote_task(
 
     with write_txn(conn):
         upd = conn.execute(
-            "UPDATE tasks SET status = 'ready' "
+            "UPDATE tasks SET status = 'ready', "
+            "    force_promoted = CASE WHEN ? THEN 1 ELSE force_promoted END "
             "WHERE id = ? AND status IN ('todo', 'blocked')",
-            (task_id,),
+            (1 if force else 0, task_id),
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
@@ -6035,7 +6080,13 @@ def promote_task(
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Transition ``blocked``/``scheduled`` -> ready or todo.
+    """Transition ``blocked``/``scheduled``/``todo`` -> ready or todo.
+
+    Accepts ``todo`` in addition to ``blocked`` and ``scheduled`` so that an
+    operator can recover a task that was demoted back to ``todo`` by the claim
+    gate (e.g. after ``promote --force`` was used but the task was later
+    manually inspected and confirmed ready to run now with all dependencies
+    considered satisfied).
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
     status. In the common path (``block_task`` closed the run already) this
@@ -6047,7 +6098,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled', 'todo')",
             (task_id,),
         ).fetchone()
         if stale and stale["current_run_id"]:
@@ -6088,7 +6139,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "WHERE id = ? AND status IN ('blocked', 'scheduled', 'todo')",
             (new_status, task_id),
         )
         if cur.rowcount != 1:
@@ -6292,6 +6343,62 @@ def decompose_triage_task(
             return None
         if root_row["status"] != "triage":
             return None
+
+        # Fail-closed guard: refuse to decompose while the root worktree
+        # has uncommitted changes or commits not yet merged into the primary
+        # checkout. Spawning children from a stale baseline means they miss
+        # the root's work and silently redo it from scratch (observed on
+        # t_3f1ea6d8). We add an audit comment and return None — the task
+        # stays in triage so a human or the operator can decide how to proceed.
+        if root_row["workspace_kind"] == "worktree" and root_row["workspace_path"]:
+            _wt_state = _worktree_has_active_work(root_row["workspace_path"])
+            if _wt_state is True:
+                conn.execute(
+                    "INSERT INTO task_comments (task_id, author, body, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        task_id,
+                        author or "decomposer",
+                        (
+                            "Decomposition blocked: the root worktree at "
+                            + root_row["workspace_path"]
+                            + " has uncommitted changes or unmerged commits. "
+                            + "Commit or stash the local work, then retry decomposition."
+                        ),
+                        now,
+                    ),
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "decompose_blocked_dirty_worktree",
+                    {"workspace_path": root_row["workspace_path"]},
+                )
+                return None
+            if _wt_state is None:
+                conn.execute(
+                    "INSERT INTO task_comments (task_id, author, body, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        task_id,
+                        author or "decomposer",
+                        (
+                            "Decomposition blocked: could not determine the git state of "
+                            "the root worktree at "
+                            + root_row["workspace_path"]
+                            + ". Verify that git is available and the path is a valid "
+                            "worktree, then retry decomposition."
+                        ),
+                        now,
+                    ),
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "decompose_blocked_unknown_worktree_state",
+                    {"workspace_path": root_row["workspace_path"]},
+                )
+                return None
         tenant = root_row["tenant"]
         # Children inherit the root's workspace by default so a fan-out
         # of a code-gen task lands in the parent's project dir/worktree
@@ -6561,6 +6668,84 @@ def _git_toplevel(path: Path) -> Optional[Path]:
         return Path(out).expanduser().resolve()
     except Exception:
         return Path(out).expanduser()
+
+
+def _worktree_has_active_work(workspace_path: str) -> Optional[bool]:
+    """Return True when the git worktree at *workspace_path* has local work
+    that has not been merged into the primary checkout — either uncommitted
+    changes (dirty state) or commits that are not yet in the primary checkout.
+
+    Returns False when the path does not exist (worktree never created) or
+    when the state is confirmed clean.
+
+    Returns None when the state cannot be determined (git failure, timeout,
+    or the path is not a git repo). Callers must treat None as **fail-closed**
+    and block decomposition, not proceed.
+
+    Kanban worktree branches (``wt/<id>``) have no upstream tracking branch, so
+    ``@{upstream}`` always fails with a fatal error.  We compare against the
+    primary checkout's HEAD instead: any commits in this worktree's history
+    that are not ancestors of the primary HEAD are considered unmerged work.
+    """
+    path = Path(workspace_path)
+    if not path.exists():
+        return False
+    try:
+        # 1. Uncommitted changes (staged + unstaged).
+        dirty = subprocess.run(
+            ["git", "-C", str(path), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+        if dirty.returncode != 0:
+            return None  # not a git repo or git unavailable
+        if dirty.stdout.strip():
+            return True
+
+        # 2. Commits not yet merged into the primary checkout.
+        # Use the shared git common dir to locate the primary HEAD so this
+        # works even when there is no upstream tracking branch configured.
+        common_dir = _git_common_dir(path)
+        if common_dir is None:
+            return None
+
+        primary_head_result = subprocess.run(
+            ["git", "--git-dir", str(common_dir), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+        if primary_head_result.returncode != 0:
+            return None
+        primary_head = primary_head_result.stdout.strip()
+        if not primary_head:
+            return None
+
+        ahead_result = subprocess.run(
+            ["git", "-C", str(path), "rev-list", "--count", "HEAD", f"^{primary_head}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+        if ahead_result.returncode != 0:
+            return None
+        count_str = ahead_result.stdout.strip()
+        if count_str.isdigit() and int(count_str) > 0:
+            return True
+
+        return False
+    except Exception:
+        return None  # fail-closed: cannot determine state, block decomposition
 
 
 def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:
@@ -9396,6 +9581,15 @@ def _default_spawn(
                 pass
     except Exception:
         pass
+    # A persistent `dir` workspace may intentionally be the protected root
+    # itself. The worker must be able to edit its assigned workspace, so do
+    # not export that exact path as a protected root.
+    try:
+        _workspace_real = os.path.realpath(workspace)
+        _pg_roots = [root for root in _pg_roots
+                     if os.path.realpath(root) != _workspace_real]
+    except Exception:
+        pass
     if _pg_roots:
         env["HERMES_PROTECTED_GIT_ROOTS"] = os.pathsep.join(_pg_roots)
 
@@ -9530,6 +9724,7 @@ def _jwt_expired_for_meter(token: object) -> bool:
 
 def _read_assignee_credentials(
     hermes_home: Path,
+    _out_pool_readings: Optional[dict] = None,
 ) -> dict[str, tuple[Optional[str], Optional[str]]]:
     """Read usable provider credentials from an assignee profile.
 
@@ -9739,6 +9934,23 @@ def _read_assignee_credentials(
             api_key = (env_vars.get("OPENAI_API_KEY") or "").strip()
             if api_key:
                 result["openai-codex"] = (api_key, None)
+        if _out_pool_readings is not None:
+            try:
+                from agent.account_usage import fetch_pool_account_usage
+                from hermes_cli.auth import read_credential_pool
+                for _provider in ("anthropic", "openai-codex"):
+                    if _provider in result:
+                        if read_credential_pool(_provider):
+                            _out_pool_readings[_provider] = fetch_pool_account_usage(
+                                _provider, usable_only=True
+                            )
+            except Exception as exc:
+                _log.warning(
+                    "provider_meter: pool usage lookup failed; falling back to "
+                    "single-credential meter (%s: %s)",
+                    type(exc).__name__, exc,
+                )
+                _out_pool_readings.clear()
     finally:
         if override_token is not None and reset_hermes_home_override is not None:
             try:
@@ -9753,14 +9965,62 @@ def _serialize_meter_readings(readings: dict) -> dict:
     """Serialize AccountUsageSnapshot readings to a JSON-safe dict for event payloads."""
     out: dict = {}
     for provider, snap in readings.items():
+        if isinstance(snap, list):
+            from hermes_cli.kanban_provider_meter import select_pool_reading
+
+            accounts = []
+            for pooled in snap:
+                account = pooled.snapshot
+                accounts.append({
+                    "label": pooled.label,
+                    "source": account.source,
+                    "fingerprint": pooled.fingerprint[:8],
+                    "available": account.available,
+                    "unavailable_reason": account.unavailable_reason,
+                    "title": account.title,
+                    "plan": account.plan,
+                    "details": list(account.details),
+                    "windows": [
+                        {
+                            "label": w.label,
+                            "used_percent": w.used_percent,
+                            "reset_at": w.reset_at.isoformat() if w.reset_at else None,
+                            "detail": w.detail,
+                        }
+                        for w in account.windows
+                    ],
+                })
+            selected = select_pool_reading(snap)
+            snap = selected.snapshot if selected is not None else None
+            serialized = _serialize_meter_readings({provider: snap})[provider]
+            if serialized is None:
+                serialized = {"available": False, "accounts": accounts}
+            else:
+                serialized["accounts"] = accounts
+                preferred = selected
+                if preferred is not None:
+                    serialized["preferred_account"] = {
+                        "label": preferred.label,
+                        "fingerprint": preferred.fingerprint[:8],
+                    }
+            out[provider] = serialized
+            continue
         if snap is None:
             out[provider] = None
         else:
             out[provider] = {
                 "available": snap.available,
                 "unavailable_reason": snap.unavailable_reason,
+                "title": snap.title,
+                "plan": snap.plan,
+                "details": list(snap.details),
                 "windows": [
-                    {"label": w.label, "used_percent": w.used_percent}
+                    {
+                        "label": w.label,
+                        "used_percent": w.used_percent,
+                        "reset_at": w.reset_at.isoformat() if w.reset_at else None,
+                        "detail": w.detail,
+                    }
                     for w in snap.windows
                 ],
             }
@@ -9792,7 +10052,8 @@ def _remediate_provider_meter(task: Task, conn: Optional[sqlite3.Connection] = N
         # ---- resolve assignee credentials --------------------------------
         assignee = str(task.assignee or "").strip()
         assignee_home = _resolve_assignee_home(assignee)
-        creds = _read_assignee_credentials(assignee_home)
+        pool_readings: dict = {}
+        creds = _read_assignee_credentials(assignee_home, pool_readings)
 
         if not creds:
             _log.warning(
@@ -9855,6 +10116,7 @@ def _remediate_provider_meter(task: Task, conn: Optional[sqlite3.Connection] = N
             candidates,
             minimum_remaining_percent=int(settings.get("minimum_remaining_percent", 10)),
             _credentials=creds,
+            _pool_readings=pool_readings,
             _out_readings=(out_readings := {}),
         )
 

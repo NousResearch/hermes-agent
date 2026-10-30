@@ -3772,6 +3772,32 @@ def check_protected_root_write_guard(command: str, session_cwd: str) -> Optional
     return None
 
 
+def check_protected_root_path(path: str) -> Optional[dict]:
+    """Block writes to a path inside a protected checkout (no shell parsing).
+
+    Unlike :func:`check_protected_root_write_guard`, this function takes a
+    resolved absolute path directly and calls ``_pg_is_inside_protected_root``
+    without any shell string assembly or :mod:`shlex` parsing.  That means
+    paths containing single quotes, spaces, or other shell metacharacters are
+    checked correctly instead of triggering a ``ValueError`` that silently
+    returns an empty target list.
+    """
+    raw_roots = os.environ.get("HERMES_PROTECTED_GIT_ROOTS", "").strip()
+    if not raw_roots:
+        return None
+    roots = [root for root in raw_roots.split(os.pathsep) if root.strip()]
+    hit, root = _pg_is_inside_protected_root(path, roots)
+    if hit:
+        msg = (
+            f"BLOCKED: write to protected checkout `{root}` is forbidden "
+            f"(target: `{path}`). Work in your linked worktree "
+            f"`{os.path.join(root, '.worktrees')}` instead."
+        )
+        logger.warning("Protected-root write guard blocked %s", path)
+        return {"approved": False, "message": msg, "status": "blocked"}
+    return None
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
                              has_host_access: bool = False) -> dict:

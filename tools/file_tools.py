@@ -19,7 +19,7 @@ from tools.file_operations import (
 )
 from tools import file_state
 from agent.redact import redact_sensitive_text
-from tools.approval import check_protected_root_write_guard
+from tools.approval import check_protected_root_path, check_protected_root_write_guard
 
 logger = logging.getLogger(__name__)
 
@@ -1608,11 +1608,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         # cannot bypass the guard by relying on a wrong cwd.
         if os.environ.get("HERMES_PROTECTED_GIT_ROOTS", "").strip():
             _guard_target = _resolved if _resolved else path
-            _guard_cwd = os.environ.get("TERMINAL_CWD") or os.getcwd()
             try:
-                _protected_error = check_protected_root_write_guard(
-                    f"tee -- {_guard_target}", _guard_cwd
-                )
+                _protected_error = check_protected_root_path(_guard_target)
             except Exception as _guard_exc:
                 return tool_error(json.dumps({
                     "type": "protected_root_guard_error",
@@ -1758,14 +1755,23 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         # so no partial write can occur.
         if os.environ.get("HERMES_PROTECTED_GIT_ROOTS", "").strip():
             _guard_cwd = os.environ.get("TERMINAL_CWD") or os.getcwd()
-            # Build a deduplicated list of (resolved or raw) check targets.
+            # Build check targets: resolved paths first, then fallback abspath
+            # for any path that failed to resolve — so special characters in
+            # filenames (quotes, spaces) don't create a gap where the guard
+            # silently skips unresolvable entries.
             _guard_resolved: set[str] = set(_resolved_paths)
-            _guard_targets = list(_guard_resolved) or list(_paths_to_check)
+            _guard_targets: list[str] = list(_guard_resolved)
+            for _p in _paths_to_check:
+                _abs_p = (
+                    os.path.normpath(os.path.join(_guard_cwd, _p))
+                    if not os.path.isabs(_p)
+                    else os.path.normpath(_p)
+                )
+                if _abs_p not in _guard_resolved:
+                    _guard_targets.append(_abs_p)
             for _gt in _guard_targets:
                 try:
-                    _protected_error = check_protected_root_write_guard(
-                        f"tee -- {_gt}", _guard_cwd
-                    )
+                    _protected_error = check_protected_root_path(_gt)
                 except Exception as _guard_exc:
                     return tool_error(json.dumps({
                         "type": "protected_root_guard_error",

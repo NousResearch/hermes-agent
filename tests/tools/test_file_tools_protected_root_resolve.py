@@ -160,7 +160,7 @@ def test_write_file_guard_exception_is_fail_closed(monkeypatch, tmp_path):
         raise RuntimeError("simulated guard failure")
 
     with patch("tools.file_tools._resolve_path_for_task", return_value=Path(resolved_target)), \
-         patch("tools.file_tools.check_protected_root_write_guard", side_effect=_guard_raises), \
+         patch("tools.file_tools.check_protected_root_path", side_effect=_guard_raises), \
          patch("tools.file_tools._get_file_ops") as mock_ops:
         result = json.loads(write_file_tool("boom.py", "data"))
 
@@ -184,7 +184,7 @@ def test_patch_guard_exception_is_fail_closed(monkeypatch, tmp_path):
         raise RuntimeError("simulated guard failure in patch")
 
     with patch("tools.file_tools._resolve_path_for_task", return_value=Path(resolved_target)), \
-         patch("tools.file_tools.check_protected_root_write_guard", side_effect=_guard_raises), \
+         patch("tools.file_tools.check_protected_root_path", side_effect=_guard_raises), \
          patch("tools.file_tools._get_file_ops") as mock_ops:
         result = json.loads(patch_tool(
             mode="replace",
@@ -224,4 +224,184 @@ def test_write_file_linked_worktree_still_allowed(monkeypatch, tmp_path):
 
     assert result.get("status") == "ok" or not result.get("error"), \
         f"write to linked worktree should succeed, got: {result}"
+    ops.write_file.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# (f) single-quote in filename — a'b.py — write_file and patch replace blocked
+# ---------------------------------------------------------------------------
+def test_write_file_single_quote_in_path_is_blocked(monkeypatch, tmp_path):
+    """write_file to a path with a single quote is blocked (no shlex involved)."""
+    protected = tmp_path / "protected_repo"
+    protected.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    monkeypatch.setenv("HERMES_PROTECTED_GIT_ROOTS", str(protected))
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.chdir(outside)
+
+    resolved_target = str(protected / "a'b.py")
+
+    from tools.file_tools import write_file_tool
+
+    with patch("tools.file_tools._resolve_path_for_task", return_value=Path(resolved_target)), \
+         patch("tools.file_tools._get_file_ops") as mock_ops:
+        result = json.loads(write_file_tool("a'b.py", "malicious content"))
+
+    assert "error" in result, f"expected blocked on single-quote path, got: {result}"
+    assert "protected checkout" in result["error"]
+    mock_ops.assert_not_called()
+    assert not Path(resolved_target).exists()
+
+
+def test_patch_replace_single_quote_in_path_is_blocked(monkeypatch, tmp_path):
+    """patch_tool replace mode blocks a path with a single quote."""
+    protected = tmp_path / "protected_repo"
+    protected.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    monkeypatch.setenv("HERMES_PROTECTED_GIT_ROOTS", str(protected))
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.chdir(outside)
+
+    resolved_target = str(protected / "a'b.py")
+
+    from tools.file_tools import patch_tool
+
+    with patch("tools.file_tools._resolve_path_for_task", return_value=Path(resolved_target)), \
+         patch("tools.file_tools._get_file_ops") as mock_ops:
+        result = json.loads(patch_tool(
+            mode="replace",
+            path="a'b.py",
+            old_string="old",
+            new_string="new",
+        ))
+
+    assert "error" in result, f"expected blocked on single-quote path, got: {result}"
+    assert "protected checkout" in result["error"]
+    mock_ops.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# (g) space in filename — sp ace.py — write_file and patch replace blocked
+# ---------------------------------------------------------------------------
+def test_write_file_space_in_path_is_blocked(monkeypatch, tmp_path):
+    """write_file to a path with a space is blocked (no shlex tokenisation)."""
+    protected = tmp_path / "protected_repo"
+    protected.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    monkeypatch.setenv("HERMES_PROTECTED_GIT_ROOTS", str(protected))
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.chdir(outside)
+
+    resolved_target = str(protected / "sp ace.py")
+
+    from tools.file_tools import write_file_tool
+
+    with patch("tools.file_tools._resolve_path_for_task", return_value=Path(resolved_target)), \
+         patch("tools.file_tools._get_file_ops") as mock_ops:
+        result = json.loads(write_file_tool("sp ace.py", "malicious content"))
+
+    assert "error" in result, f"expected blocked on path with space, got: {result}"
+    assert "protected checkout" in result["error"]
+    mock_ops.assert_not_called()
+    assert not Path(resolved_target).exists()
+
+
+def test_patch_replace_space_in_path_is_blocked(monkeypatch, tmp_path):
+    """patch_tool replace mode blocks a path with a space in the filename."""
+    protected = tmp_path / "protected_repo"
+    protected.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    monkeypatch.setenv("HERMES_PROTECTED_GIT_ROOTS", str(protected))
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.chdir(outside)
+
+    resolved_target = str(protected / "sp ace.py")
+
+    from tools.file_tools import patch_tool
+
+    with patch("tools.file_tools._resolve_path_for_task", return_value=Path(resolved_target)), \
+         patch("tools.file_tools._get_file_ops") as mock_ops:
+        result = json.loads(patch_tool(
+            mode="replace",
+            path="sp ace.py",
+            old_string="old",
+            new_string="new",
+        ))
+
+    assert "error" in result, f"expected blocked on path with space, got: {result}"
+    assert "protected checkout" in result["error"]
+    mock_ops.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# (h) patch replace: _resolve_path_for_task raises → raw path as abspath used
+# ---------------------------------------------------------------------------
+def test_patch_replace_resolve_failure_falls_back_to_raw_abspath(monkeypatch, tmp_path):
+    """When _resolve_path_for_task fails, patch_tool falls back to raw path
+    resolved against TERMINAL_CWD so the guard still fires."""
+    protected = tmp_path / "protected_repo"
+    protected.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    monkeypatch.setenv("HERMES_PROTECTED_GIT_ROOTS", str(protected))
+    # TERMINAL_CWD points into the protected root — relative path "target.py"
+    # will become protected/target.py via the fallback abspath logic.
+    monkeypatch.setenv("TERMINAL_CWD", str(protected))
+    monkeypatch.chdir(outside)
+
+    from tools.file_tools import patch_tool
+
+    # OSError is caught by _check_sensitive_path (falls back to raw path, which
+    # is fine for the sensitive-path check); it is also caught by the
+    # _resolved_paths build loop (except Exception), leaving _resolved_paths
+    # empty so the guard falls back to the raw→abspath logic.
+    with patch("tools.file_tools._resolve_path_for_task", side_effect=OSError("cannot resolve")), \
+         patch("tools.file_tools._get_file_ops") as mock_ops:
+        result = json.loads(patch_tool(
+            mode="replace",
+            path="target.py",
+            old_string="old",
+            new_string="new",
+        ))
+
+    assert "error" in result, f"expected guard to fire via raw abspath fallback, got: {result}"
+    assert "protected checkout" in result["error"]
+    mock_ops.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# (i) single-quote filename inside a linked worktree — still allowed
+# ---------------------------------------------------------------------------
+def test_write_file_single_quote_in_linked_worktree_is_allowed(monkeypatch, tmp_path):
+    """a'b.py inside .worktrees/ is NOT blocked (linked-worktree exemption)."""
+    protected = tmp_path / "protected_repo"
+    worktree = protected / ".worktrees" / "task-001"
+    worktree.mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_PROTECTED_GIT_ROOTS", str(protected))
+
+    resolved_target = str(worktree / "a'b.py")
+
+    from tools.file_tools import write_file_tool
+
+    ops = MagicMock()
+    written = MagicMock()
+    written.to_dict.return_value = {"status": "ok"}
+    ops.write_file.return_value = written
+
+    with patch("tools.file_tools._resolve_path_for_task", return_value=Path(resolved_target)), \
+         patch("tools.file_tools._get_file_ops", return_value=ops):
+        result = json.loads(write_file_tool("a'b.py", "# safe worktree content"))
+
+    assert result.get("status") == "ok" or not result.get("error"), \
+        f"write to linked worktree a'b.py should succeed, got: {result}"
     ops.write_file.assert_called_once()

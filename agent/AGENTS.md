@@ -119,6 +119,23 @@ validation and `_normalize_lang` accept; `SUPPORTED_LANGUAGES` stays the bundled
 `surface_catalog` serves (the TUI ships English only in TS). Endonyms for bundled ids live in `i18n_languages.py` and must agree with
 `apps/shared/src/i18n.ts`.
 
+## Adviser (native second-model reviewer)
+
+`agent/adviser_runtime.py` owns the per-agent roster (`AdviserSession`, attached as
+`agent.adviser` by `init_agent`) and one worker per configured reviewer; the turn loop only calls
+`on_step(messages, terminal=...)` at two boundaries — after a tool round (`turn_tool_round`) and
+before the stop gates (`turn_final_response`, with the candidate answer appended to a copy). Do not
+add a third capture site without checking the cursor in `adviser_delta.DeltaTracker`: a rewritten
+prefix replays the whole transcript and resets the reviewer's private context.
+`adviser_config.py` = `WATCHDOG.yml` roster; `adviser_prompts.py` = system prompt;
+`adviser_emission.py` = admission; `adviser_model.py` = private tool loop + quarantine;
+`adviser_delivery.py` = steer/interrupt/continuation/card (the row format the CLI/TUI/Desktop
+adviser card parses); `adviser_recorder.py` = JSONL telemetry. Delivery reuses the native
+`agent.steer(kind="adviser")` and `agent.interrupt` paths; the stop gate drains
+`agent.adviser.take_continuation()` before plugin continuations. A failing reviewer must never park
+the primary: catch-up waits release on `failing`/`halted`/`quota`. Off by default
+(`adviser.enabled`), because every reviewed turn is one extra completion.
+
 ## Memory, context engines, curator
 
 `agent/memory_provider.py` (ABC) + `agent/memory_manager.py` (orchestrator) drive memory-provider

@@ -235,6 +235,9 @@ def run_tool_round(
     # follow-up API call can exceed the gateway inactivity timeout (HERMES_AGENT_TIMEOUT, default 1800s) and
     # the gateway kills the session before the next activity touch fires (#69559, #69131).
     agent._touch_activity(f"tool results posted, continuing iteration #{api_call_count}")
+    from agent.adviser_bridge import step_review
+
+    step_review(agent, messages)
     return _verdict("continue")
 
 

@@ -873,6 +873,27 @@ prompt_caching:
   cache_ttl: "5m" # use "1h" for long sessions with pauses between turns
 
 # =============================================================================
+# Adviser (native second-model reviewer)
+# =============================================================================
+# A second model shadows each turn, reads the incremental transcript, and may
+# deliver `nit` / `concern` / `blocker` notes into the same session. The roster
+# and per-adviser overrides live in WATCHDOG.yml ($HERMES_HOME or any project
+# directory up to the git root); this block is the global default.
+# Off by default: it costs one extra completion per reviewed turn.
+adviser:
+  enabled: false
+  # Empty = inherit the primary agent's provider/model for every review.
+  # provider: openrouter
+  # model: anthropic/claude-sonnet-4
+  review_mode: turn        # turn | agent-end
+  review_interval: 1
+  sync_backlog: "off"      # off | "1" | "3" | "5" (30s cap) | strict
+  immune_turns: 3
+  continue_severity: concern  # nit | concern | blocker
+  max_notes_per_update: 4
+  evict_stale_results: true
+
+# =============================================================================
 # Auxiliary Models (Advanced — Experimental)
 # =============================================================================
 # Hermes uses lightweight "auxiliary" models for side tasks: image analysis,

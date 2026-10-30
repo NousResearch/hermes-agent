@@ -124,6 +124,18 @@ def _plugin_continuation_row(pending: dict) -> dict:
     }
 
 
+def _adviser_continuation(agent) -> Optional[dict]:
+    """A native adviser's stop-gate request for one more round, or ``None``."""
+    adviser = getattr(agent, "adviser", None)
+    if adviser is None:
+        return None
+    try:
+        return adviser.take_continuation()
+    except Exception:
+        logger.debug("adviser continuation read failed", exc_info=True)
+        return None
+
+
 def _kanban_stop_nudge(agent, messages) -> Optional[str]:
     """Workers must end with a terminal board tool (kanban_complete / kanban_block /
     kanban_request_review / kanban_request_changes); a narrated stop is recorded
@@ -200,6 +212,36 @@ def apply_stop_gates(
             pending_verification_response=final_response,
             # Prefix semantics on purpose: the streamed prefix IS on screen here. The gateway
             # interim verdict uses _interim_content_fully_streamed instead (#88954).
+            pending_verification_response_previewed=agent._interim_content_was_streamed(
+                final_response or ""
+            ),
+        )
+
+    from agent.adviser_bridge import terminal_review
+
+    terminal_review(agent, messages, final_response)
+
+    _adviser_pending = _adviser_continuation(agent)
+    if _adviser_pending:
+        from agent.prompt_builder import advisory_user_row
+
+        agent._adviser_continue_nudges = getattr(agent, "_adviser_continue_nudges", 0) + 1
+        final_msg["finish_reason"] = "adviser_continue"
+        _append_interim_answer(
+            agent, final_msg, messages, conversation_history,
+            "adviser continuation interim flush failed",
+        )
+        adviser_row = advisory_user_row(str(_adviser_pending.get("text") or ""))
+        append_message(messages, adviser_row)
+        notify_plugin_message(agent, adviser_row)
+        agent._session_messages = messages
+        logger.debug(
+            "adviser continuation nudge issued (attempt %d, source=%s)",
+            agent._adviser_continue_nudges, _adviser_pending.get("source") or "",
+        )
+        return StopGateVerdict(
+            continue_turn=True, final_response=None,
+            pending_verification_response=final_response,
             pending_verification_response_previewed=agent._interim_content_was_streamed(
                 final_response or ""
             ),

@@ -4,6 +4,8 @@ import { type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState 
 import { useComposerScope } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
 import { mediaKind, resolveMediaPlaybackSrc } from '@/lib/media'
+import { cachedPlaybackSrc, forgetPlaybackSrc, rememberPlaybackSrc } from '@/lib/playback-source-cache'
+import { $connection } from '@/store/session'
 
 type PlaybackEvent = SyntheticEvent<HTMLAudioElement | HTMLVideoElement>
 
@@ -39,7 +41,18 @@ export function useMediaPlaybackSrc(path: string) {
   const runtimeId = useStore(view.$runtimeId)
   const sessionId = storedId || runtimeId || undefined
 
-  const [media, setMedia] = useState({ failed: false, path, src: '' })
+  // A remount reuses the URL an earlier mount resolved: the browser keeps what it fetched, and the
+  // clip's remembered position (keyed by URL) still applies.
+  const conn = useStore($connection)
+
+  const cacheKey = JSON.stringify([
+    path,
+    owner?.connectionId ?? conn?.connectionId ?? '',
+    owner?.profile ?? conn?.profile ?? '',
+    sessionId ?? ''
+  ])
+
+  const [media, setMedia] = useState(() => ({ failed: false, path, src: cachedPlaybackSrc(cacheKey) ?? '' }))
   const loadedSrc = useRef('')
   // Minted for a source that failed before it ever loaded; it gets no retry of its own.
   const retriedSrc = useRef('')
@@ -48,10 +61,13 @@ export function useMediaPlaybackSrc(path: string) {
   useEffect(() => {
     let cancelled = false
     let objectUrl = ''
+    const cached = kind === 'file' ? undefined : cachedPlaybackSrc(cacheKey)
 
-    setMedia({ failed: kind === 'file', path, src: '' })
+    setMedia(current =>
+      cached && current.path === path && current.src === cached ? current : { failed: kind === 'file', path, src: cached ?? '' }
+    )
 
-    if (kind === 'file') {
+    if (kind === 'file' || cached) {
       return
     }
 
@@ -59,6 +75,8 @@ export function useMediaPlaybackSrc(path: string) {
       .then(value => {
         if (value.startsWith('blob:')) {
           objectUrl = value
+        } else {
+          rememberPlaybackSrc(cacheKey, value)
         }
 
         if (!cancelled) {
@@ -80,7 +98,7 @@ export function useMediaPlaybackSrc(path: string) {
         URL.revokeObjectURL(objectUrl)
       }
     }
-  }, [kind, owner, path, sessionId])
+  }, [cacheKey, kind, owner, path, sessionId])
 
   const onLoadedMetadata = useCallback((event: PlaybackEvent) => {
     const element = event.currentTarget
@@ -107,8 +125,10 @@ export function useMediaPlaybackSrc(path: string) {
       const element = event.currentTarget
       const failing = element.getAttribute('src') ?? ''
 
-      const fail = () =>
+      const fail = () => {
+        forgetPlaybackSrc(cacheKey)
         setMedia(current => (current.src === failing ? { ...current, failed: true } : current))
+      }
 
       const neverLoaded = loadedSrc.current !== failing
       // A source that never loaded can only have expired if its element waited to fetch it
@@ -139,12 +159,13 @@ export function useMediaPlaybackSrc(path: string) {
             retriedSrc.current = fresh
           }
 
+          rememberPlaybackSrc(cacheKey, fresh)
           resume.current = { ...point, src: fresh }
           setMedia(current => (current.src === failing ? { ...current, src: fresh } : current))
         })
         .catch(fail)
     },
-    [owner, path, sessionId]
+    [cacheKey, owner, path, sessionId]
   )
 
   // An element with preload="none" fetches nothing for a new source until asked, so one

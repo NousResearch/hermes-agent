@@ -610,3 +610,245 @@ def test_task_discovery_reads_localized_schtasks_output(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "_run", run)
     found = service.discover_existing_gateway_service(home, deadline=time.monotonic() + 5)
     assert found is not None and found.start_argv == ("schtasks.exe", "/Run", "/TN", name)
+
+
+@pytest.mark.parametrize("dump,expected", [
+    # The user's exact reported case: fish exports MANPAGER set to a shell snippet,
+    # start-umbriel re-imports it, ``show-environment`` returns it ANSI-C-quoted.
+    # Before the fix this refused the whole environment with service_identity_unverified.
+    ("MANPAGER=$'sh -c \\'col -bx | bat -l man -p\\''\nHOME=/home/b3low-z3r0\nPATH=/usr/bin",
+     {"MANPAGER": "sh -c 'col -bx | bat -l man -p'",
+      "HOME": "/home/b3low-z3r0",
+      "PATH": "/usr/bin"}),
+    # Simple un-quoted values still work.
+    ("HOME=/home/b3low-z3r0\nPATH=/usr/bin",
+     {"HOME": "/home/b3low-z3r0", "PATH": "/usr/bin"}),
+    ("MANPAGER=bat", {"MANPAGER": "bat"}),
+    # A leading ``HOME=/`` is fine even on a single-line input.
+    ("HOME=/", {"HOME": "/"}),
+    # Empty input yields an empty dict (no lines to parse).
+    ("", {}),
+    # ``$''`` is a valid ANSI-C empty value.
+    ("FOO=$''", {"FOO": ""}),
+    # Every C escape systemd's shell_maybe_quote actually emits.
+    ("KEY=$'a\\tb'", {"KEY": "a\tb"}),
+    ("KEY=$'a\\nb'", {"KEY": "a\nb"}),
+    ("KEY=$'a\\rb'", {"KEY": "a\rb"}),
+    ("KEY=$'a\\ab'", {"KEY": "a\ab"}),
+    ("KEY=$'a\\bb'", {"KEY": "a\bb"}),
+    ("KEY=$'a\\fb'", {"KEY": "a\fb"}),
+    ("KEY=$'a\\vb'", {"KEY": "a\vb"}),
+    # Octal escapes are ``\ooo`` and carry control bytes and DEL.
+    ("KEY=$'a\\001b'", {"KEY": "a\x01b"}),
+    ("KEY=$'a\\033b'", {"KEY": "a\x1bb"}),
+    ("KEY=$'a\\177b'", {"KEY": "a\x7fb"}),
+    # ``\\`` and ``\'`` are the only literal escapes, in that precedence order.
+    ("KEY=$'bar\\\\baz'", {"KEY": "bar\\baz"}),
+    ("KEY=$'it\\'s'", {"KEY": "it's"}),
+    # A value that is itself ``$'x'`` round-trips, not re-decoded.
+    ("KEY=$'$\\'x\\''", {"KEY": "$'x'"}),
+    # Raw UTF-8 stays raw in systemd's output and must survive byte-exact:
+    # quoting a value does not re-encode existing multibyte characters.
+    ("KEY=café", {"KEY": "café"}),
+    ("KEY=🎉", {"KEY": "🎉"}),
+    ("KEY=$'café with space'", {"KEY": "café with space"}),
+    ("KEY=$'🎉 party'", {"KEY": "🎉 party"}),
+    ("PS1=$'/home/José Pérez/.hermes'", {"PS1": "/home/José Pérez/.hermes"}),
+    # ``str.splitlines`` also breaks on these, but systemd emits them raw inside
+    # a value: splitting on them would cut a KEY=VALUE pair in half.
+    ("KEY=a\u0085b", {"KEY": "a\u0085b"}),
+    ("KEY=a\u2028b", {"KEY": "a\u2028b"}),
+    ("KEY=a\u2029b", {"KEY": "a\u2029b"}),
+])
+def test_manager_environment_pairs_decodes_show_environment(dump, expected):
+    r"""``systemctl show-environment`` output decodes cleanly.
+
+    Regression for the case where a fish-set ``MANPAGER="sh -c 'col -bx | bat -l man -p'"``
+    reached the user manager via ``start-umbriel``'s ``import-environment`` and the strict
+    ``if "\\" in value: _unverified()`` rejected the entire environment.
+    """
+    from hermes_cli.gateway_runtime_service_identity import manager_environment_pairs
+    assert manager_environment_pairs(dump) == expected
+
+
+@pytest.mark.parametrize("dump", [
+    # Stray backslash outside any ``$'...'`` wrapper means the source is not our install.
+    "FOO=bar\\baz",
+    # A bare single quote never reaches us unquoted: systemd would wrap it.
+    "FOO='hello world'",
+    # Line without ``=`` cannot express a KEY=VAL pair.
+    "FOOBAR",
+    # ``$'`` opened but never closed is malformed systemd output.
+    "FOO=$'unterminated",
+    # Bare opener with no body is also malformed.
+    "FOO=$'",
+    # Empty key (``=val``) is not a name we trust.
+    "=val",
+    # Escapes outside systemd's grammar are refused rather than guessed at:
+    # ``\xHH`` and ``\uHHHH`` are bash forms that shell_maybe_quote never emits.
+    "KEY=$'\\x41\\x42'",
+    "KEY=$'\\u00e9'",
+    # An unknown single-char escape is not a C escape we accept.
+    "KEY=$'a\\zb'",
+])
+def test_manager_environment_pairs_rejects_malformed_output(dump):
+    from hermes_cli.gateway_runtime_service_identity import manager_environment_pairs
+    with pytest.raises(ValueError, match="service_identity_unverified"):
+        manager_environment_pairs(dump)
+
+
+@pytest.mark.parametrize("payload,expected", [
+    # The user's exact reported case: the value fish exports and start-umbriel
+    # re-imports. The JSON form carries it unescaped, so nothing to decode.
+    ('{"MANPAGER": "sh -c \'col -bx | bat -l man -p\'", "HOME": "/home/b3low-z3r0"}',
+     {"MANPAGER": "sh -c 'col -bx | bat -l man -p'", "HOME": "/home/b3low-z3r0"}),
+    # Raw UTF-8 needs no escaping and survives byte-exact.
+    ('{"PS1": "/home/José Pérez/.hermes"}', {"PS1": "/home/José Pérez/.hermes"}),
+    ('{"EMOJI": "🎉 party"}', {"EMOJI": "🎉 party"}),
+    # U+0085 / U+2028 / U+2029 are line separators to str.splitlines but are
+    # ordinary characters inside a JSON string.
+    ('{"NEL": "ab"}', {"NEL": "ab"}),
+    ('{"LSEP": "a b"}', {"LSEP": "a b"}),
+    ('{"PSEP": "a b"}', {"PSEP": "a b"}),
+    # A newline inside a value is a plain "\n" in JSON, not a line break.
+    ('{"MULTI": "line1\\nline2"}', {"MULTI": "line1\nline2"}),
+    # A tab likewise.
+    ('{"TAB": "a\\tb"}', {"TAB": "a\tb"}),
+    # Control characters are JSON-escaped by the printer and come back as-is.
+    ('{"CTRL": "a\\u0001b"}', {"CTRL": "a\x01b"}),
+    # DEL is a valid JSON character.
+    ('{"DEL": "ab"}', {"DEL": "ab"}),
+    # A '=' inside a value needs no escaping: the JSON keys are authoritative.
+    ('{"EQ": "a=b=c"}', {"EQ": "a=b=c"}),
+    # Backslash and single quote are ordinary JSON characters.
+    ('{"BSL": "bar\\\\baz"}', {"BSL": "bar\\baz"}),
+    ('{"SQ": "it\'s"}', {"SQ": "it's"}),
+    # An empty value is an empty string, distinct from an absent key.
+    ('{"EMPTY": ""}', {"EMPTY": ""}),
+    # An empty object is an empty environment.
+    ("{}", {}),
+])
+def test_manager_environment_pairs_json_decodes_show_environment(payload, expected):
+    """The JSON form of ``show-environment`` needs no shell-quoting grammar at all.
+
+    ``systemctl show-environment --output=json`` prints each value already
+    unescaped, so the parser only has to read a JSON object.
+    """
+    from hermes_cli.gateway_runtime_service_identity import manager_environment_pairs_json
+    assert manager_environment_pairs_json(payload) == expected
+
+
+@pytest.mark.parametrize("payload", [
+    # Not JSON at all: the plain text form, which the text reader handles.
+    "MANPAGER=$'sh -c \\'col -bx | bat -l man -p\\''",
+    # Truncated JSON.
+    '{"HOME": "/home/u"',
+    # A JSON array is not the environment block shape.
+    '["HOME=/home/u"]',
+    # A JSON scalar is not either.
+    '"HOME=/home/u"',
+    # A non-string value cannot be an environment entry.
+    '{"HOME": 42}',
+    # A non-string key cannot name an environment entry.
+    '{"HOME": "/home/u", 42: "x"}',
+    # A JSON null is not an environment value.
+    '{"HOME": null}',
+])
+def test_manager_environment_pairs_json_rejects_malformed_output(payload):
+    from hermes_cli.gateway_runtime_service_identity import manager_environment_pairs_json
+    with pytest.raises(ValueError, match="service_identity_unverified"):
+        manager_environment_pairs_json(payload)
+
+
+@pytest.mark.parametrize("payload", [
+    # systemd validates every environment name before it enters the manager
+    # block: alphanumerics and "_", never a leading digit. A JSON key outside
+    # that set cannot come from the manager, so it is refused rather than
+    # read as a variable.
+    '{"A B": "v"}',
+    '{"A-B": "v"}',
+    '{"A.B": "v"}',
+    '{"A$B": "v"}',
+    '{"A{B": "v"}',
+    '{"A}B": "v"}',
+    '{"A"B": "v"}',
+    '{"1ABC": "v"}',
+    '{"": "v"}',
+])
+def test_manager_environment_pairs_json_rejects_invalid_names(payload):
+    """A JSON object whose keys are not valid environment names is refused.
+
+    Without this, a malformed document read as text would yield a variable
+    named ``{"A"`` and the identity check would compare against the wrong
+    value instead of failing closed.
+    """
+    from hermes_cli.gateway_runtime_service_identity import manager_environment_pairs_json
+    with pytest.raises(ValueError, match="service_identity_unverified"):
+        manager_environment_pairs_json(payload)
+
+
+@pytest.mark.parametrize("dump", [
+    # The same rule applies to the text form: a name systemd would never
+    # store is refused instead of being taken for a variable.
+    '{"A":"b=c"}',
+    '{"A=b":"c"}',
+    "A-B=v",
+    "A.B=v",
+    "1ABC=v",
+    "{bad}=v",
+])
+def test_manager_environment_pairs_rejects_invalid_names(dump):
+    """The text reader refuses names systemd cannot store.
+
+    ``{"A":"b=c"}`` is what a malformed JSON document looks like to the text
+    reader: a name of ``{"A":"b`` and a value of ``c"}``. Refusing the name
+    keeps that from becoming an environment variable.
+    """
+    from hermes_cli.gateway_runtime_service_identity import manager_environment_pairs
+    with pytest.raises(ValueError, match="service_identity_unverified"):
+        manager_environment_pairs(dump)
+
+
+def test_environment_pairs_keeps_the_space_separated_environment_grammar():
+    """The unit's ``Environment=`` is one space-separated line, not one pair per line.
+
+    ``verify_systemd`` reads that property with ``environment_pairs``; keeping the
+    two grammars in separate readers means ``HERMES_HOME`` is still found, so a
+    unit bound to a named profile verifies against that profile.
+    """
+    from hermes_cli.gateway_runtime_service_identity import environment_pairs
+    pairs = environment_pairs(
+        "PATH=/usr/bin:/bin HERMES_HOME=/home/u/.hermes/profiles/work HERMES_SUPERVISED_CHILD=1"
+    )
+    assert pairs == {
+        "PATH": "/usr/bin:/bin",
+        "HERMES_HOME": "/home/u/.hermes/profiles/work",
+        "HERMES_SUPERVISED_CHILD": "1",
+    }
+
+
+@pytest.mark.platforms("linux")
+def test_manager_environment_pairs_end_to_end_against_systemd_quoted_dump():
+    """End-to-end: a ``show-environment`` dump that mixes ANSI-C and plain values decodes cleanly.
+
+    Mirrors the gateway verifier's call site (``inherited = manager_environment_pairs(manager_env)``)
+    and asserts nothing in ``MANPAGER``'s actual value trips the unverified branch.
+    """
+    from hermes_cli.gateway_runtime_service_identity import manager_environment_pairs
+    dump = (
+        "HOME=/home/b3low-z3r0\n"
+        "USER=b3low-z3r0\n"
+        # The exact MANPAGER value fish exports; this round-trip was the original bug.
+        "MANPAGER=$'sh -c \\'col -bx | bat -l man -p\\''\n"
+        "PATH=/usr/local/bin:/usr/bin:/bin\n"
+        # Octal escape via systemd's ANSI-C wrapper is also fine.
+        "LANG=$'en\\n'\n"
+        # A quoted value carrying raw UTF-8 must not be re-encoded.
+        "DOCS=$'/home/José/Documents'\n"
+    )
+    pairs = manager_environment_pairs(dump)
+    assert pairs["MANPAGER"] == "sh -c 'col -bx | bat -l man -p'"
+    assert pairs["HOME"] == "/home/b3low-z3r0"
+    assert pairs["LANG"] == "en\n"
+    assert pairs["DOCS"] == "/home/José/Documents"
+    assert pairs["PATH"].startswith("/usr/local/bin")

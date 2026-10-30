@@ -89,6 +89,41 @@ def _exists(path: Path) -> bool:
         return False
 
 
+def _manager_environment(command: tuple[str, ...] | list[str], deadline: float) -> dict[str, str]:
+    """Read the systemd manager's environment block as a mapping.
+
+    ``systemctl show-environment --output=json`` prints the block as a JSON
+    object with every value already unescaped and unquoted, so there is no
+    shell-quoting grammar to interpret and no line separator to split on: each
+    byte the manager can hold round-trips exactly. That mode exists since
+    systemd v250.
+
+    Older releases accept ``--output=json`` but ignore it for this verb and
+    print the plain text form instead, so the shape of the output decides which
+    reader to use. Environment variable names cannot begin with ``{`` (D-Bus
+    rejects such names), so a leading brace identifies the JSON form without
+    a second call. The text reader stays as the fallback for those hosts.
+
+    A brace-leading output is JSON and nothing else, so a JSON failure is not
+    retried as text: the text reader would read a malformed document as
+    assignments. Only output that does not start with a brace is text.
+    """
+    from hermes_cli.gateway_runtime_service_identity import (
+        manager_environment_pairs,
+        manager_environment_pairs_json,
+    )
+    result = _run([*command, "show-environment", "--output=json"], deadline)
+    if result.returncode:
+        # The flag itself was rejected: fall back to the plain text form.
+        result = _run([*command, "show-environment"], deadline)
+        if result.returncode:
+            raise RuntimeStartError("service_identity_unverified")
+        return manager_environment_pairs(result.stdout)
+    if result.stdout.startswith("{"):
+        return manager_environment_pairs_json(result.stdout)
+    return manager_environment_pairs(result.stdout)
+
+
 def _systemd(home: Path, deadline: float) -> ExistingService | None:
     from hermes_cli import gateway as gw
     from hermes_cli.service_manager import _s6_running
@@ -127,11 +162,9 @@ def _systemd(home: Path, deadline: float) -> ExistingService | None:
             raise RuntimeStartError("service_state_unknown")
         if state == "failed":
             raise RuntimeStartError("service_failed")
-        environment = _run([*command, "show-environment"], deadline)
-        if environment.returncode:
-            raise RuntimeStartError("service_identity_unverified")
+        environment = _manager_environment(command, deadline)
         try:
-            verify_systemd(props, environment.stdout, home, system=system)
+            verify_systemd(props, environment, home, system=system)
         except ForeignRoot:
             # A unit named like ours but pinned to another HOME root belongs to a
             # different install (a sandbox HOME beside a real one); it neither serves

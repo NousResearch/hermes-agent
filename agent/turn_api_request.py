@@ -65,6 +65,8 @@ def _fire_pre_api_request_hook(
 ) -> None:
     from agent.conversation_loop import _system_prompt_for_hooks
 
+    # A retry can reuse its logical request id and start time, but it is a new begin.
+    agent._terminal_api_request_hook_key = None
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
         if has_hook("pre_api_request"):

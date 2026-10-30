@@ -71,8 +71,13 @@ def _fire_post_api_request_hook(
     from agent.conversation_loop import _moa_reference_metrics_for_hook
 
     try:
+        from agent.api_request_hooks import claim_api_request_terminal
         from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
+        if not claim_api_request_terminal(agent, api_request_id, api_start_time):
+            return
         if has_hook("post_api_request"):
+            if assistant_message is None:
+                assistant_message = normalize_response_for_agent(agent, response)
             _invoke_hook(
                 "post_api_request",
                 task_id=effective_task_id,

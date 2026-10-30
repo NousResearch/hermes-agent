@@ -29,6 +29,15 @@ def _model_dump(value: Any) -> Any:
             return value.model_dump()
 
 
+def claim_api_request_terminal(agent: Any, api_request_id: str, started_at: float) -> bool:
+    """Claim the current begin's terminal before callbacks or recovery can re-enter."""
+    key = (api_request_id, started_at)
+    if getattr(agent, "_terminal_api_request_hook_key", None) == key:
+        return False
+    agent._terminal_api_request_hook_key = key
+    return True
+
+
 class ApiRequestHooksMixin:
     """Hook payload sanitising + ``api_request_error`` dispatch (see module docstring)."""
 
@@ -165,11 +174,13 @@ class ApiRequestHooksMixin:
         api_start_time: float, api_kwargs: Optional[dict[str, Any]], error_type: str,
         error_message: str, status_code: Optional[int] = None, retry_count: Optional[int] = None,
         max_retries: Optional[int] = None, retryable: Optional[bool] = None,
-        reason: Optional[str] = None,
+        reason: Optional[str] = None, request_api_mode: Optional[str] = None,
     ) -> None:
         # Lazy module import (not from-import) so tests can replace lifecycle dispatch at this call site.
         with suppress(Exception):
             from hermes_cli import lifecycle as _lifecycle
+            if not claim_api_request_terminal(self, api_request_id, api_start_time):
+                return
             if not _lifecycle.has_hook("api_request_error"):
                 return
             ended_at = time.time()
@@ -183,7 +194,7 @@ class ApiRequestHooksMixin:
                 model=self.model,
                 provider=self.provider,
                 base_url=self.base_url,
-                api_mode=self.api_mode,
+                api_mode=self.api_mode if request_api_mode is None else request_api_mode,
                 api_call_count=api_call_count,
                 api_duration=ended_at - api_start_time,
                 started_at=api_start_time,

@@ -431,7 +431,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
@@ -4475,7 +4475,9 @@ class BasePlatformAdapter(ABC):
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
         _thread_metadata = _thread_metadata_for_event(event)
-        typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
+        _typing_metadata = typing_metadata_for_turn(  # fixed now: a later inbound must not move it
+            self, event.source.chat_id, _reply_anchor_for_event(event), _thread_metadata)
+        typing_task = self._start_typing_refresh(event, interrupt_event, _typing_metadata)
         try:
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
@@ -4557,7 +4559,7 @@ class BasePlatformAdapter(ABC):
                     self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
-                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata)
                 self._spawn_drain_task(pending_event, session_key, delay=delay)
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
@@ -4569,20 +4571,18 @@ class BasePlatformAdapter(ABC):
         except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
-            _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
+            await self._notify_turn_error(event, e)
             from hermes_cli.config_backend import ConfigBackendUnavailable as _outage  # this turn only
             if isinstance(e, (SystemExit, KeyboardInterrupt)) and not isinstance(e, _outage):  # rest contained
                 raise
         finally:
             await self._release_turn_marker(event)
             event._turn_marker_handoff = False  # a later run of this object clears its own marker
-            # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
-            # alive.
-            await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+            # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it alive.
+            await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata)
             await self._fire_post_delivery_callback(session_key, interrupt_event)
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
-            await self._stop_typing_refresh(
-                event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
+            await self._stop_typing_refresh(event.source.chat_id, None, metadata=_typing_metadata, stop_attempts=1)
             # Flush any timer that missed the in-band drain, then reconcile ownership.
             await self._flush_text_debounce_now(session_key)
             self._finish_session_task(session_key, interrupt_event)

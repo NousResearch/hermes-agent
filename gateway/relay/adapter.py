@@ -1098,7 +1098,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
                 value = getattr(src, attr, None)
                 if value:
                     cache[chat] = str(value)
-            # Triggering message ts for the typing/status lane's synthetic thread anchor.
+            # Latest message ts: the status anchor for typing frames that carry no turn's own anchor.
             message_id, _chat = _event_ids(event)
             if message_id:
                 self._last_inbound_ts_by_chat[chat] = str(message_id)
@@ -1483,23 +1483,28 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         return effective_reply_to
 
     def _with_status_thread_anchor(
-        self, chat_id: str, metadata: Optional[dict[str, Any]]
+        self, chat_id: str, metadata: Optional[dict[str, Any]], anchor: Optional[str] = None
     ) -> dict[str, Any]:
-        """Copy ``metadata`` with the typing/status thread anchor applied. Slack's
-        status line is THREAD-scoped and the typing lane's metadata carries no anchor
-        for a top-level DM, so synthesize it from the per-chat inbound-ts cache. Shared
-        by ``send_typing`` and ``stop_typing`` — the clear MUST target the same thread
-        the heartbeat set or the status sticks until Slack's timeout."""
+        """Copy ``metadata`` with the typing/status thread anchor applied. Slack's status
+        line is THREAD-scoped and a top-level DM turn's metadata names no thread, so its
+        status sits on ``anchor``, the turn's own message. A turn fixes it at start
+        (``status_metadata_for_turn``) and its refreshes and clear reuse it: the clear MUST
+        target the thread the heartbeat set or the status sticks. Without one (event-less
+        callers) it falls back to the chat's latest inbound ts, which a later message moves."""
         md = dict(metadata or {})
         if (
             not (md.get("thread_id") or md.get("thread_ts"))
             and self._platform_by_chat.get(str(chat_id)) == _SLACK
             and self._chat_type_by_chat.get(str(chat_id)) == "dm"
         ):
-            anchor = self._last_inbound_ts_by_chat.get(str(chat_id))
+            anchor = anchor or self._last_inbound_ts_by_chat.get(str(chat_id))
             if anchor:
-                md["thread_id"] = anchor
+                md["thread_id"] = str(anchor)
         return md
+
+    def status_metadata_for_turn(self, chat_id: str, anchor: str, metadata: Optional[dict]) -> dict[str, Any]:
+        """``helpers.typing_metadata_for_turn`` hook: the turn's typing metadata, status anchor fixed."""
+        return self._with_status_thread_anchor(chat_id, metadata, anchor)
 
     async def edit_message(
         self,
@@ -1587,13 +1592,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         """One ``typing`` frame (``content`` None = omit; "" = Slack clear). Cosmetic: never raises."""
         # Thread anchor for the status surface. Slack's status line ("is thinking…" in the thread's replies
         # footer — works with plain chat:write, confirmed on native no-assistant bots) is THREAD-only: the
-        # connector's typing case no-ops without a thread_ts. But the typing lane's metadata (base.py
-        # _thread_metadata_for_source) has no anchor for a top-level DM — source.thread_id is None — so
-        # every heartbeat was silently dropped. In thread-per-message mode the turn's thread root IS the
-        # triggering message ts (run.py's synthetic root); synthesize it here from the per-chat inbound
-        # cache, exactly like native send_typing resolves thread_ts from metadata.message_id. Flat mode
-        # (reply_in_thread=false) keeps the no-anchor no-op: there is no thread and must not be one
-        # (#18859).
+        # connector's typing case no-ops without a thread_ts. A top-level DM turn's typing metadata already
+        # names its own message (fixed at turn start); see _with_status_thread_anchor for the fallback.
         md = self._with_status_thread_anchor(chat_id, metadata)
         frame: dict[str, Any] = {"op": "typing", "chat_id": chat_id, "metadata": self._with_scope(chat_id, md)}
         if content is not None:

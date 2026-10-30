@@ -723,8 +723,7 @@ class MCPServerTransportMixin:
         anomalyco/opencode#31271.)
         """
         self._ping_unsupported = False  # fresh transport: re-probe ``ping`` across the reconnect
-        # Forget guard verdicts from the previous catalog before deciding whether a new one is even
-        # fetched: a server that stops advertising ``tools`` must not keep reporting stale drops.
+        # A server that stops advertising ``tools`` must not keep reporting the old catalog's drops.
         self._dropped_tools = {}
         if self.session is None:
             return
@@ -735,6 +734,7 @@ class MCPServerTransportMixin:
         else:
             async with self._rpc_lock:
                 self._list_cache_meta = {}
+                self._dropped_tools = {}  # under the lock: a queued refresh can't mix verdicts in
                 self._tools = await _core._paginate_full_list(
                     self.session.list_tools, "tools", self.name, cache_meta_out=self._list_cache_meta)
         self._register_discovered_tools_if_needed()

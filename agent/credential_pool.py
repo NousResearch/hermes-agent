@@ -1947,7 +1947,16 @@ class CredentialPool:
             if current is not None:
                 return current
             available = self._available_entries()
-            return available[0] if available else None
+            if not available:
+                return None
+            # fill_first honours the active schedule window so that peek()
+            # and effective_entries() agree on which entry comes first.
+            # Other strategies (round_robin, random, least_used) do not use
+            # the schedule, so they keep the raw available order.
+            if self._strategy == STRATEGY_FILL_FIRST:
+                scheduled, _ = _scheduled_entries(self.provider, available)
+                return scheduled[0] if scheduled else available[0]
+            return available[0]
 
     def mark_exhausted_and_rotate(
         self,

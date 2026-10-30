@@ -151,6 +151,9 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         "--to", default="github", choices=["github", "clawhub"], help="Target registry")
     skills_publish.add_argument(
         "--repo", default="", help="Target GitHub repo (e.g. openai/skills)")
+    skills_publish.add_argument(
+        "--accept-license-terms", action="store_true",
+        help="Confirm acceptance of ClawHub license terms before publishing")
 
     skills_snapshot = skills_subparsers.add_parser(
         "snapshot", help="Export/import skill configurations")

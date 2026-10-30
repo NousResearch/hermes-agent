@@ -9,9 +9,11 @@
 // (the server's stream tickets last an hour). A URL that fails anyway is
 // re-resolved by its player, which replaces the entry.
 
+import { LruCache } from '@/lib/lru-cache'
+
 const PLAYBACK_TTL_MS = 20 * 60_000
 
-const playback = new Map<string, { at: number; src: string }>()
+const playback = new LruCache<string, { at: number; src: string }>(128)
 
 export function cachedPlaybackSrc(key: string, now = Date.now()): string | undefined {
   const entry = playback.get(key)
@@ -26,22 +28,14 @@ export function cachedPlaybackSrc(key: string, now = Date.now()): string | undef
 }
 
 export function rememberPlaybackSrc(key: string, src: string, now = Date.now()): void {
-  playback.delete(key)
-
   // A blob URL is revoked by the element that minted it; never hand one to another mount.
   if (!src || src.startsWith('blob:')) {
+    playback.delete(key)
+
     return
   }
 
   playback.set(key, { at: now, src })
-
-  for (const [stale, entry] of playback) {
-    if (now - entry.at < PLAYBACK_TTL_MS) {
-      break
-    }
-
-    playback.delete(stale)
-  }
 }
 
 export function forgetPlaybackSrc(key: string): void {
@@ -50,5 +44,7 @@ export function forgetPlaybackSrc(key: string): void {
 
 /** Process-memory only; tests reset it between cases that reuse one path. */
 export function clearPlaybackSourceCache(): void {
-  playback.clear()
+  for (const key of [...playback.keys()]) {
+    playback.delete(key)
+  }
 }

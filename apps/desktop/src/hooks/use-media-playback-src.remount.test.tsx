@@ -18,9 +18,14 @@ vi.mock('@/lib/media', async importOriginal => ({
 const resolve = vi.mocked(resolveMediaPlaybackSrc)
 
 function Player() {
-  const { onError, src } = useMediaPlaybackSrc('/srv/clip.mp4')
+  const { failed, onError, src } = useMediaPlaybackSrc('/srv/clip.mp4')
 
-  return src ? <video data-testid="video" onError={onError} preload="metadata" src={src} /> : null
+  return (
+    <>
+      {src && <video data-testid="video" onError={onError} preload="metadata" src={src} />}
+      {failed && <span>failed</span>}
+    </>
+  )
 }
 
 const src = () => screen.getByTestId('video').getAttribute('src')
@@ -34,18 +39,27 @@ afterEach(() => {
   resolve.mockReset()
 })
 
-it('a remounted clip keeps its stream URL until that URL fails', async () => {
+it('a remounted clip keeps its stream URL', async () => {
   const first = render(<Player />)
   await waitFor(() => expect(src()).toMatch(/ticket=t1$/))
   first.unmount()
 
-  const second = render(<Player />)
+  render(<Player />)
   expect(src()).toMatch(/ticket=t1$/)
   expect(resolve).toHaveBeenCalledTimes(1)
+})
 
-  // A source that fails before it ever loaded is a real failure: the next mount resolves afresh.
-  fireEvent.error(screen.getByTestId('video'))
-  second.unmount()
+it('a reused URL that fails before loading (a dead ticket) gets one fresh URL on the same mount', async () => {
+  const first = render(<Player />)
+  await waitFor(() => expect(src()).toMatch(/ticket=t1$/))
+  first.unmount()
+
   render(<Player />)
+  expect(src()).toMatch(/ticket=t1$/)
+  fireEvent.error(screen.getByTestId('video'))
   await waitFor(() => expect(src()).toMatch(/ticket=t2$/))
+
+  // The fresh URL failing too is a real failure.
+  fireEvent.error(screen.getByTestId('video'))
+  await screen.findByText('failed')
 })

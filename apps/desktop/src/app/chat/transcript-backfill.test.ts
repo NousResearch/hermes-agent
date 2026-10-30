@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
-import { $transcriptTailBySessionId, recordTranscriptTail, transcriptTailState } from '@/store/transcript-tail'
+import { $transcriptTailBySessionId, recordTranscriptTail, rewindTranscriptTail, transcriptTailState } from '@/store/transcript-tail'
 
 import {
   _resetTranscriptBackfillForTests,
@@ -513,6 +513,91 @@ describe('backfillOlderTranscriptPage', () => {
     expect(await pending).toBe(false)
     expect(applyOlderPage).not.toHaveBeenCalled()
     expect(transcriptTailState('stored-1')).toMatchObject({ nextOffset: 1, possiblyTruncated: false })
+  })
+
+  it('retries from the new tail offset after an active-turn retention rewind', async () => {
+    truncatedTail()
+    let resolveFirst!: (value: unknown) => void
+
+    vi.mocked(getOlderSessionMessages)
+      .mockReturnValueOnce(
+        new Promise(resolve => {
+          resolveFirst = resolve
+        }) as never
+      )
+      .mockResolvedValueOnce({
+        messages: [row(5, 'actual older page')],
+        pagination: { limit: 120, offset: 113, order: 'latest', returned: 1 },
+        session_id: 'stored-1'
+      } as never)
+
+    const applyOlderPage = vi.fn((_messages: ChatMessage[]) => true)
+    const pending = backfillOlderTranscriptPage({
+      storedSessionId: 'stored-1',
+      isCurrent: () => true,
+      applyOlderPage
+    })
+
+    // The renderer released seven old server rows during the first REST read.
+    expect(rewindTranscriptTail('stored-1', 7)).toBe(true)
+    resolveFirst({
+      messages: [row(99, 'stale page')],
+      pagination: { limit: 120, offset: 120, order: 'latest', returned: 1 },
+      session_id: 'stored-1'
+    })
+
+    expect(await pending).toBe(true)
+    expect(getOlderSessionMessages).toHaveBeenNthCalledWith(1, 'stored-1', undefined, 120)
+    expect(getOlderSessionMessages).toHaveBeenNthCalledWith(2, 'stored-1', undefined, 113)
+    expect(applyOlderPage).toHaveBeenCalledTimes(1)
+    expect(applyOlderPage.mock.calls[0][0][0].rowId).toBe(5)
+  })
+
+  it('skips an overlapping-only page within one click instead of silently stalling', async () => {
+    truncatedTail()
+
+    vi.mocked(getOlderSessionMessages)
+      .mockResolvedValueOnce({
+        messages: Array.from({ length: 120 }, (_, index) => row(index + 500, 'already held')),
+        pagination: { limit: 120, offset: 120, order: 'latest', returned: 120 },
+        session_id: 'stored-1'
+      } as never)
+      .mockResolvedValueOnce({
+        messages: [row(1, 'really older')],
+        pagination: { limit: 120, offset: 240, order: 'latest', returned: 1 },
+        session_id: 'stored-1'
+      } as never)
+
+    const applyOlderPage = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true)
+    expect(await backfillOlderTranscriptPage({
+      storedSessionId: 'stored-1',
+      isCurrent: () => true,
+      applyOlderPage
+    })).toBe(true)
+    expect(getOlderSessionMessages).toHaveBeenCalledTimes(2)
+    expect(getOlderSessionMessages).toHaveBeenNthCalledWith(2, 'stored-1', undefined, 240)
+    expect(applyOlderPage).toHaveBeenCalledTimes(2)
+  })
+
+  it('bounds retries under a continually changing live tail', async () => {
+    truncatedTail()
+    vi.mocked(getOlderSessionMessages).mockImplementation(async () => {
+      rewindTranscriptTail('stored-1', 1)
+
+      return {
+        messages: [row(1, 'always stale')],
+        pagination: { limit: 120, offset: 120, order: 'latest', returned: 1 },
+        session_id: 'stored-1'
+      } as never
+    })
+    const applyOlderPage = vi.fn()
+    expect(await backfillOlderTranscriptPage({
+      storedSessionId: 'stored-1',
+      isCurrent: () => true,
+      applyOlderPage
+    })).toBe(false)
+    expect(getOlderSessionMessages).toHaveBeenCalledTimes(4)
+    expect(applyOlderPage).not.toHaveBeenCalled()
   })
 
   it('shares one in-flight fetch per stored session', async () => {

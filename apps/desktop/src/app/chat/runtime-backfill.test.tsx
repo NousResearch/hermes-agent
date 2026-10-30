@@ -6,6 +6,7 @@ import { stubThreadEnvironment } from '@/components/assistant-ui/test-utils'
 import { type TranscriptWindowValue, useTranscriptWindow } from '@/components/assistant-ui/thread/transcript-window'
 import type * as HermesApi from '@/hermes'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { RENDER_WEIGHT_CHARS } from '@/lib/render-weight'
 import type * as SessionStates from '@/store/session-states'
 import { $transcriptTailBySessionId, recordTranscriptTail } from '@/store/transcript-tail'
 
@@ -35,6 +36,60 @@ beforeEach(() => {
 })
 
 describe('runtime older-page expansion', () => {
+  it('advances older history on a single click while an enormous live turn is streaming', async () => {
+    const heavy = Array.from({ length: 60 }, (_, index): ChatMessage => ({
+      id: 'heavy-' + index,
+      role: 'user',
+      parts: [{ type: 'text', text: 'x'.repeat(RENDER_WEIGHT_CHARS * 130) }]
+    }))
+    const $messages = atom(heavy)
+    const view = {
+      ...PRIMARY_SESSION_VIEW,
+      $messages,
+      $runtimeId: atom<string | null>('streaming-runtime'),
+      $storedId: atom<string | null>('streaming-stored')
+    }
+    let window!: TranscriptWindowValue
+
+    function Observe() {
+      window = useTranscriptWindow()
+
+      return null
+    }
+
+    render(
+      <SessionViewProvider value={view}>
+        <ChatRuntimeBoundary
+          busy
+          onCancel={() => {}}
+          onEdit={async () => {}}
+          onReload={async () => {}}
+          onThreadMessagesChange={() => {}}
+          suppressMessages={false}
+        >
+          <Observe />
+        </ChatRuntimeBoundary>
+      </SessionViewProvider>
+    )
+
+    expect(window.currentMessages).toHaveLength(30)
+    const changed = [...heavy]
+    changed[changed.length - 1] = {
+      ...changed.at(-1)!,
+      parts: [{ type: 'text', text: 'y'.repeat(RENDER_WEIGHT_CHARS * 140) }]
+    }
+    act(() => $messages.set(changed))
+    expect(window.currentMessages).toHaveLength(30)
+
+    const onPrepend = vi.fn()
+    await act(async () => {
+      expect(await window.expandWindow(onPrepend)).toBe(true)
+    })
+
+    expect(onPrepend).toHaveBeenCalledTimes(1)
+    expect(window.currentMessages!.length).toBeGreaterThan(30)
+  })
+
   it.each([true, false])(
     'captures only a page that adds history, after its network wait (adds rows: %s)',
     async addsRows => {

@@ -1,13 +1,13 @@
 name: hermes-lang-cs
 repo: https://github.com/ostravajih/hermes-lang-cs
-sha: 59d0a6c289afb6320a128b95b912f8cc497171e6
+sha: 17002bfd36788fb7dd6b7a28a8e7c0feb0064534
 title: Czech (Čeština) Language Pack
 description: >-
   Czech (Čeština) language pack for Hermes Agent covering all three UI surfaces — core
-  CLI/gateway/platforms (3,509/3,509 keys), the Ink TUI (1,385/1,385) and the Desktop app (5,333 of
-  5,456). Core and TUI keys match the English source of `main` at e82bf01 (2026-10-26) exactly: no
+  CLI/gateway/platforms (3,510/3,510 keys), the Ink TUI (1,386/1,386) and the Desktop app (5,360 of
+  5,485). Core and TUI keys match the English source of `main` at ef75bc70 (2026-10-29) exactly: no
   key upstream has since removed and no placeholder divergence, checked by flattening both sides.
-  The remaining 123 Desktop keys are the ones whose English value is a function with branching
+  The remaining 125 Desktop keys are the ones whose English value is a function with branching
   (plural counts such as `cron.count`, conditional labels such as `assistant.thread.errorSwitchToModel`),
   which the pack format cannot express as one template — they are omitted so they fall back to
   English instead of rendering a wrong Czech form. Two core strings (`display.verb_connector.search`
@@ -23,7 +23,7 @@ tier: community
 category: general
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/ostravajih/hermes-lang-cs#readme
-version: "1.0.0"
+version: "1.0.1"
 platforms: []
 capabilities:
   provides_tools: []

@@ -7,8 +7,8 @@ from contextlib import contextmanager
 
 from agent.compaction_display import project_compaction_message_for_display
 from agent.context_compressor import user_originated_turn_view
+from hermes_state_common import DISPLAY_VISIBLE_SQL
 from hermes_state_compaction_display import not_a_later_tool_copy_sql
-from hermes_state_messages import DISPLAY_VISIBLE_SQL
 
 
 _SYNTHETIC_PROMPT = re.compile(

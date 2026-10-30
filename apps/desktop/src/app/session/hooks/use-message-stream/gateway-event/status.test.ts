@@ -112,4 +112,13 @@ describe('gateway `error` event → error card + toast', () => {
     expect(toast.message).toBe(serverCopy)
     expect(toast.detail).toBeUndefined()
   })
+
+  it('raises no toast for the session on screen: its card already says it (one event, one surface)', () => {
+    const { ctx, failAssistantMessage } = errorContext('Hermes could not finish this turn. Try again.')
+
+    handleStatusEvent({ ...ctx, isActiveEvent: true })
+
+    expect(failAssistantMessage).toHaveBeenCalledTimes(1)
+    expect($notifications.get()).toEqual([])
+  })
 })

@@ -45,7 +45,9 @@ vi.mock('@/store/onboarding', async importOriginal => ({
 $displayTimestamps.set(true)
 
 // Resolve error-card copy from the catalog so wording edits don't break the behavior assertions.
-const copy = (value: ErrorCardCopy['title'], provider = '') => (typeof value === 'function' ? value(provider) : value)
+const copy = (value: ErrorCardCopy['title'], provider = '') =>
+  typeof value === 'function' ? value(provider, '') : value
+
 const codes = en.assistant.thread.errorCodes
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
@@ -183,6 +185,7 @@ function Harness({
   assistant = assistantMessage(),
   onBranchInNewChat,
   onCancel,
+  onDismissError,
   onRestoreToMessage,
   onReload,
   isRunning = false,
@@ -191,6 +194,7 @@ function Harness({
   assistant?: ThreadMessage
   onBranchInNewChat?: (messageId: string) => void
   onCancel?: () => void
+  onDismissError?: (messageId: string) => void
   onRestoreToMessage?: (messageId: string) => void
   onReload?: () => Promise<void>
   isRunning?: boolean
@@ -206,7 +210,12 @@ function Harness({
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread onBranchInNewChat={onBranchInNewChat} onCancel={onCancel} onRestoreToMessage={onRestoreToMessage} />
+      <Thread
+        onBranchInNewChat={onBranchInNewChat}
+        onCancel={onCancel}
+        onDismissError={onDismissError}
+        onRestoreToMessage={onRestoreToMessage}
+      />
     </AssistantRuntimeProvider>
   )
 }
@@ -353,9 +362,11 @@ describe('ownership refusal recovery (#106217)', () => {
     render(<Harness assistant={ownershipRefusalMessage()} />)
 
     // The raw refusal ("live owner", "pid", "lease") is kept only inside the
-    // collapsed Details disclosure, never as the headline.
+    // collapsed details block, never as the headline.
     const raw = await screen.findByText(/already has a live owner/)
-    expect(raw.closest('details')).not.toBeNull()
+    const details = raw.closest<HTMLElement>('[data-slot="aui_error-details"]')
+    expect(details).not.toBeNull()
+    expect(details!.hidden).toBe(true)
   })
 })
 
@@ -372,13 +383,13 @@ describe('code-keyed error card copy and actions', () => {
       />
     )
 
-    expect(await screen.findByText(copy(codes.content_policy_blocked.title))).toBeTruthy()
+    expect(await screen.findByText(copy(codes.content_policy_blocked.title, 'openai'))).toBeTruthy()
 
     // The user bubble itself is also labelled "Edit message"; assert on the
     // card's own action button.
     const editActions = screen
       .getAllByRole('button', { name: 'Edit message' })
-      .filter(button => button.classList.contains('aui-error-action'))
+      .filter(button => button.classList.contains('aui-error-btn'))
 
     expect(editActions).toHaveLength(1)
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
@@ -395,7 +406,7 @@ describe('code-keyed error card copy and actions', () => {
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
     // The raw HTTP body is not the lead sentence.
     expect(screen.getByText(copy(codes.model_not_found.title))).toBeTruthy()
-    expect(screen.getByText(/HTTP 400/).closest('details')).not.toBeNull()
+    expect(screen.getByText(/HTTP 400/).closest('[data-slot="aui_error-details"]')).not.toBeNull()
   })
 
   it('offers Compress conversation and Start new session for a context overflow', async () => {
@@ -403,7 +414,7 @@ describe('code-keyed error card copy and actions', () => {
 
     expect(await screen.findByText(copy(codes.context_overflow.title))).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Compress conversation' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Start new session' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: en.assistant.thread.errorStartNewChatLink })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
   })
 
@@ -417,7 +428,7 @@ describe('code-keyed error card copy and actions', () => {
       />
     )
 
-    expect(await screen.findByText(copy(codes.rate_limit.title))).toBeTruthy()
+    expect(await screen.findByText(copy(codes.rate_limit.title, 'openai'))).toBeTruthy()
     expect(screen.getByText(copy(codes.rate_limit.body, 'openai'))).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   })
@@ -432,6 +443,63 @@ describe('code-keyed error card copy and actions', () => {
 
     expect(await screen.findByText(en.assistant.thread.errorLayers.generic)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+  })
+})
+
+describe('error card layout (Error System Overhaul)', () => {
+  const rateLimited = () =>
+    failedMessage({ code: 'rate_limit', layer: 'provider', provider: 'openai', retryable: true }, 'HTTP 429: slow down')
+
+  it('reveals the raw error from the details toggle and hides it again', async () => {
+    render(<Harness assistant={rateLimited()} />)
+
+    const toggle = await screen.findByRole('button', { name: en.assistant.thread.errorDetails })
+    const details = screen.getByText('HTTP 429: slow down').closest<HTMLElement>('[data-slot="aui_error-details"]')!
+
+    expect(details.hidden).toBe(true)
+    expect(toggle.getAttribute('aria-controls')).toBe(details.id)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+
+    fireEvent.click(toggle)
+    expect(details.hidden).toBe(false)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(toggle.textContent).toBe(en.assistant.thread.errorHideDetails)
+
+    fireEvent.click(toggle)
+    expect(details.hidden).toBe(true)
+  })
+
+  it('lets the user close a degraded card but not a blocking one', async () => {
+    const onDismissError = vi.fn()
+    const view = render(<Harness assistant={rateLimited()} onDismissError={onDismissError} />)
+
+    const card = await screen.findByRole('alert')
+    expect(card.dataset.severity).toBe('degraded')
+    fireEvent.click(screen.getByRole('button', { name: en.assistant.thread.dismissError }))
+    expect(onDismissError).toHaveBeenCalledWith('assistant-error-3')
+    view.unmount()
+
+    render(
+      <Harness
+        assistant={failedMessage({ code: 'model_not_found', layer: 'provider', provider: 'openai', retryable: false })}
+        onDismissError={onDismissError}
+      />
+    )
+
+    expect((await screen.findByRole('alert')).dataset.severity).toBe('blocking')
+    expect(screen.queryByRole('button', { name: en.assistant.thread.dismissError })).toBeNull()
+  })
+
+  it('speaks for an out-of-credits turn only when the banner is not up for this chat', async () => {
+    render(
+      <MemoryRouter>
+        <Harness
+          assistant={failedMessage({ code: 'billing', layer: 'billing', provider: 'openai', retryable: false })}
+        />
+      </MemoryRouter>
+    )
+
+    expect(await screen.findByRole('button', { name: en.assistant.thread.errorOpenBillingSettings })).toBeTruthy()
   })
 })
 
@@ -452,13 +520,13 @@ describe('scheduled retry at the usage-limit reset (#98852)', () => {
 
     render(<Harness assistant={rateLimited(resetsAt)} onReload={onReload} />)
 
-    const arm = await screen.findByRole('button', { name: /^Retry when the limit resets \(\d\d:\d\d\)$/ })
+    const arm = await screen.findByRole('button', { name: /^Retry at \d\d:\d\d$/ })
 
     vi.useFakeTimers()
     fireEvent.click(arm)
 
     expect(screen.getByTestId('error-retry-scheduled').textContent).toMatch(/Retrying at \d\d:\d\d — in \d+m \d\ds/)
-    expect(screen.queryByRole('button', { name: /^Retry when the limit resets/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Retry at / })).toBeNull()
 
     await act(async () => vi.advanceTimersByTime(resetsAt * 1000 - Date.now() - 1_000))
     expect(onReload).not.toHaveBeenCalled()
@@ -475,7 +543,7 @@ describe('scheduled retry at the usage-limit reset (#98852)', () => {
     const resetsAt = Math.floor(Date.now() / 1000) + 600
 
     const view = render(<Harness assistant={rateLimited(resetsAt)} onReload={onReload} />)
-    const armName = /^Retry when the limit resets/
+    const armName = /^Retry at /
 
     fireEvent.click(await screen.findByRole('button', { name: armName }))
     vi.useFakeTimers()
@@ -622,7 +690,11 @@ describe('rejected API key recovery', () => {
 
 describe('switch provider on a live session (#95066)', () => {
   const billingFailure = () =>
-    failedMessage({ code: 'billing', layer: 'billing', provider: 'openai-codex', retryable: false }, 'HTTP 429: quota')
+    // Out of credits is banner-only now, so a firewall block stands in for a card whose fix is another provider.
+    failedMessage(
+      { code: 'upstream_blocked', layer: 'provider', provider: 'openai-codex', retryable: false },
+      'HTTP 403: blocked'
+    )
 
   it('opens the live session model menu instead of leaving the chat for Settings', async () => {
     render(
@@ -662,7 +734,7 @@ describe('expired OAuth grant recovery', () => {
   it('explains the expiry and re-runs that provider sign-in in one click', async () => {
     render(<Harness assistant={oauthExpiredMessage()} />)
 
-    expect(await screen.findByText(/Nous Portal sign-in has expired/)).toBeTruthy()
+    expect(await screen.findByText(/Nous Portal sign-in expired/)).toBeTruthy()
     // Signing in changes the outcome, so Retry stays as the follow-up click.
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
 

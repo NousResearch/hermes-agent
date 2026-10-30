@@ -91,6 +91,7 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
             remaining(deadline)
             return subprocess.Popen(command, cwd=root, env=env, close_fds=True,
                                     stdin=subprocess.DEVNULL, stdout=output, stderr=output,
+                                    # detached-spawn: ok — a gateway daemon launch must outlive its launcher
                                     **windows_detach_popen_kwargs())
     except OSError as exc:
         reason = "windows_breakaway_unavailable" if sys.platform == "win32" else "spawn_failed"

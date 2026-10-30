@@ -3735,6 +3735,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_fd,
+                # detached-spawn: ok — restart-safe cron worker, must survive a gateway restart (#101940)
                 start_new_session=True,
                 creationflags=windows_hide_flags(),
             )

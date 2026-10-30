@@ -42,7 +42,8 @@ automatically.
 ## Prerequisites
 
 - A Photon account — sign up at [app.photon.codes][app]
-- **Node.js 18.17 or newer** on PATH (`node --version`)
+- Node.js: Hermes uses its managed Node when available.
+  `hermes pm install node` provisions the pin; the adapter can fall back to PATH.
 - A phone number that can receive iMessage (used to bind your account)
 
 That's it — there is no public URL or tunnel to set up.
@@ -73,7 +74,11 @@ The setup, in order:
    user with that number already exists, so re-running is safe.
 5. **Prints your assigned iMessage line** — the number you text to reach
    your agent.
-6. **Runs `npm install`** inside the plugin's sidecar directory.
+6. **Runs `npm install`** inside the plugin's sidecar directory. On
+   read-only / immutable install trees (hosted Docker images, Podman,
+   Nix) the sidecar automatically falls back to a writable mirror under
+   `~/.hermes/photon/sidecar`; set `PHOTON_SIDECAR_DIR` to pin an
+   explicit location.
 
 Runtime credentials are written to `~/.hermes/.env`
 (`PHOTON_PROJECT_ID` = the Spectrum project id, `PHOTON_PROJECT_SECRET`),
@@ -145,7 +150,7 @@ BlueBubbles iMessage channel uses.
 ## Start the gateway
 
 ```bash
-hermes gateway start --platform photon
+hermes gateway start
 ```
 
 You'll see something like:
@@ -202,9 +207,32 @@ Common issues:
   `voice()` content builders via the sidecar's `/send-attachment`
   endpoint. Captions arrive as a separate iMessage bubble after the
   media.
+- **Native polls are supported.** Hermes sends poll content through
+  spectrum-ts' `poll()` builder via the sidecar's `/send-poll` endpoint.
+- **Read receipts are supported.** The sidecar marks an inbound iMessage
+  read after forwarding it to Hermes, so the sender sees `Read` without
+  waiting for a model/tool turn. Inbound receipts for Hermes-sent messages
+  are consumed as presence telemetry and never create an agent turn. Set
+  `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`.
+- **Message effects are supported.** Hermes sends text with native iMessage
+  bubble/screen effects through spectrum-ts' iMessage `effect()` builder
+  via the sidecar's `/send-effect` endpoint.
 - **Photon's free quotas:** 5,000 messages per server per day,
   50 new-conversation initiations per shared line per day. Increases
   available — email `help@photon.codes`.
+- **Cron and standalone sends need the gateway running.** Out-of-process
+  senders (cron jobs, `hermes send`, the dashboard) reuse the sidecar the
+  gateway spawned — they read its port/token from
+  `<hermes-home>/runtime/photon-sidecar.json`, written once the sidecar
+  passes its health check and removed when it stops. If a standalone send
+  reports the gateway appears to be down, start (or restart) the gateway
+  first.
+- **Shared/free-tier lines can't initiate conversations with new
+  targets.** Photon-side policy: a shared line can only message a number
+  after that number has texted the line first. A cron/standalone send to a
+  brand-new recipient will be rejected by Photon even when Hermes is set
+  up correctly — either have the recipient message the line once, or move
+  to a dedicated line.
 
 ## Env vars
 
@@ -214,7 +242,6 @@ Common issues:
 | `PHOTON_PROJECT_SECRET`   | from `.env`        | Project secret; set by setup               |
 | `PHOTON_SIDECAR_PORT`     | `8789`             | Loopback port for the sidecar control + inbound channel |
 | `PHOTON_SIDECAR_AUTOSTART`| `true`             | Whether the adapter spawns the sidecar     |
-| `PHOTON_NODE_BIN`         | `which node`       | Override the Node binary path              |
 | `PHOTON_HOME_CHANNEL`     | (unset)            | Default space id for cron / notifications  |
 | `PHOTON_HOME_CHANNEL_NAME`| (unset)            | Human label for the home channel           |
 | `PHOTON_ALLOWED_USERS`    | (unset)            | Comma-separated E.164 allowlist            |

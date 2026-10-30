@@ -1,9 +1,4 @@
-"""Tests for the dispatch_in_gateway gate on _kanban_notifier_watcher.
-
-- Non-dispatch gateways (dispatch_in_gateway=false) exit before opening any DB.
-- HERMES_KANBAN_DISPATCH_IN_GATEWAY env var disables without loading config.
-- Dispatch-owning gateways (dispatch_in_gateway=true) proceed past the gate.
-"""
+"""Notifier polling has an independent gateway config gate."""
 
 import asyncio
 from unittest.mock import MagicMock, patch
@@ -20,32 +15,21 @@ def _make_runner(with_adapter=False):
     return runner
 
 
-def _fake_config(dispatch_in_gateway):
-    return {"kanban": {"dispatch_in_gateway": dispatch_in_gateway}}
+def test_notifier_watcher_skips_when_notifications_disabled():
+    runner = _make_runner(with_adapter=True)
 
-
-def test_notifier_watcher_skips_when_dispatch_disabled():
-    """dispatch_in_gateway=false returns before opening any board DB."""
-    runner = _make_runner()
-    with patch("hermes_cli.config.load_config", return_value=_fake_config(False)):
-        with patch("hermes_cli.kanban_db.connect") as mock_connect:
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={"kanban": {"notify_in_gateway": False}},
+    ):
+        with patch("hermes_cli.kanban_db.list_boards") as list_boards:
             asyncio.run(runner._kanban_notifier_watcher())
-    mock_connect.assert_not_called()
+
+    list_boards.assert_not_called()
 
 
-def test_notifier_watcher_env_override_disables(monkeypatch):
-    """HERMES_KANBAN_DISPATCH_IN_GATEWAY=false skips config load entirely."""
-    runner = _make_runner()
-    monkeypatch.setenv("HERMES_KANBAN_DISPATCH_IN_GATEWAY", "false")
-    with patch("hermes_cli.config.load_config") as mock_load_config:
-        with patch("hermes_cli.kanban_db.connect") as mock_connect:
-            asyncio.run(runner._kanban_notifier_watcher())
-    mock_load_config.assert_not_called()
-    mock_connect.assert_not_called()
-
-
-def test_notifier_watcher_runs_when_dispatch_enabled():
-    """dispatch_in_gateway=true proceeds past the gate to the board fan-out."""
+def test_notifier_watcher_polls_without_dispatch_ownership():
+    """A profile gateway still polls its profile-owned subscriptions."""
     runner = _make_runner(with_adapter=True)
     past_gate = []
     sleep_calls = []
@@ -62,7 +46,15 @@ def test_notifier_watcher_runs_when_dispatch_enabled():
 
     import hermes_cli.kanban_db as _kb
 
-    with patch("hermes_cli.config.load_config", return_value=_fake_config(True)):
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={
+            "kanban": {
+                "dispatch_in_gateway": False,
+                "notify_in_gateway": True,
+            }
+        },
+    ):
         with patch.object(
             _kb, "list_boards",
             side_effect=lambda *a, **kw: past_gate.append(True) or [],
@@ -71,4 +63,6 @@ def test_notifier_watcher_runs_when_dispatch_enabled():
                 with patch("asyncio.to_thread", side_effect=fake_to_thread):
                     asyncio.run(runner._kanban_notifier_watcher())
 
-    assert past_gate, "list_boards should be called when dispatch_in_gateway=true"
+    assert past_gate, (
+        "gateways without the dispatch lock must still poll owned subscriptions"
+    )

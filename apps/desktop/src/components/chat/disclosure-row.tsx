@@ -14,12 +14,18 @@ import { cn } from '@/lib/utils'
 //     title text, NOT the full row — and reaches just past the chevron with
 //     `-mx-1.5 px-1.5` so it reads as a soft hit-target rather than a slab
 //     stretching to the message edge.
+//   - `trailing` stays in flow (e.g. a duration timer), so the title always
+//     reserves space for it instead of painting underneath it. Interactive
+//     controls go in `action`, which lays out *in flow* at the far right so it
+//     never sits on top of the caret's hit-target.
 export function DisclosureRow({
+  action,
   children,
   onToggle,
   open,
   trailing
 }: {
+  action?: ReactNode
   children: ReactNode
   onToggle?: () => void
   open: boolean
@@ -48,16 +54,19 @@ export function DisclosureRow({
               'flex h-(--conversation-line-height) shrink-0 items-center justify-center transition-opacity duration-150',
               open
                 ? 'opacity-80'
-                : 'opacity-0 group-hover/disclosure-row:opacity-80 group-focus-within/disclosure-row:opacity-80'
+                : 'opacity-(--disclosure-caret-rest) group-hover/disclosure-row:opacity-80 group-focus-within/disclosure-row:opacity-80'
             )}
           >
             <DisclosureCaret open={open} />
           </span>
         )}
       </button>
-      {trailing && (
-        <span className="absolute right-1 top-0 flex h-(--conversation-line-height) items-center">{trailing}</span>
+      {action && (
+        <span className="ml-auto flex h-(--conversation-line-height) shrink-0 items-center self-start pl-1.5">
+          {action}
+        </span>
       )}
+      {trailing && <span className="flex h-(--conversation-line-height) shrink-0 items-center pl-1.5">{trailing}</span>}
     </div>
   )
 }

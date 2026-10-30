@@ -1,0 +1,62 @@
+# Community catalog entry — hermes-model-switcher
+#
+# Owner-submitted: the PR author (nicolasestrem) owns and maintains the repo below.
+# Exact-SHA pin (40-hex, resolves as a COMMIT on the repo). Dashboard-only plugin:
+# the whole code surface is a Dashboard extension tab served through the plugin host.
+name: hermes-model-switcher
+repo: https://github.com/nicolasestrem/hermes-model-switcher
+sha: d62530d906307154e16ed98bb9b4be10ea6fef56
+description: >-
+  Choose models across Hermes profiles from a Dashboard tab: a per-profile
+  picker built on host-supplied model data (SDK-authenticated
+  GET /api/model/options), a preview of provider/model intent across every
+  supported model-selection slot (main, delegation, auxiliary, judge,
+  fallback, MoA, cron, plugin and specialist), and one-click apply or revert
+  with presets.
+  Main-slot preview shows intended provider/model, not the exact persisted
+  diff; the exact diff is shown only after host readback. Disclosure — its
+  apply route reads and edits the profiles' config.yaml (that is the plugin's
+  function) through public seams only: POST /api/model/set for main and
+  compatible auxiliary slots, and public hermes_cli.config load/save under the
+  target home for other slots; credential presence checks use public
+  profile-scoped secret helpers (agent.secret_scope), and profile discovery
+  uses public hermes_constants. The plugin makes no direct third-party
+  requests and opens no provider caches or pricing registries directly, but
+  its browser tab does call the host's /api/model/* routes through the
+  Dashboard SDK, and the host options route may itself initiate provider or
+  pricing I/O even without an explicit refresh request, so reads are not
+  guaranteed cache-only.
+  It runs no shell commands or background processes and reports nothing. The
+  private undo journal stores a full pre-change snapshot of each config it
+  edits, which can contain sensitive fields including embedded credentials.
+  Saved presets also persist reviewed change values, potentially including
+  inline credentials or credential-bearing base URLs, in presets.json (0600)
+  under get_hermes_home()/state/hermes-model-switcher/ (0700).
+  The host write route has no expected-revision check: readback surfaces many
+  foreign edits as recovery_required, but a concurrent same-key edit can be
+  overwritten undetected and full-state deletions retain an unrelated-write
+  race, so not every foreign edit is guaranteed to surface.
+maintainer: Nico Estrem
+tier: community
+category: models
+docs_url: https://github.com/nicolasestrem/hermes-model-switcher#readme
+version: "0.3.2"
+# Fresh 0.3.2 captures at the pinned commit, re-taken after the catalog-row
+# fix: Dashboard SDK fixture with the
+# plugin's real backend and Hermes' own /api/model/* routers over an isolated
+# lab home (provenance in docs/images/catalog-captures.json).
+screenshots:
+  - https://raw.githubusercontent.com/nicolasestrem/hermes-model-switcher/d62530d906307154e16ed98bb9b4be10ea6fef56/docs/images/model-switcher-0.3.2-dashboard.png
+  - https://raw.githubusercontent.com/nicolasestrem/hermes-model-switcher/d62530d906307154e16ed98bb9b4be10ea6fef56/docs/images/model-switcher-0.3.2-preview.png
+  - https://raw.githubusercontent.com/nicolasestrem/hermes-model-switcher/d62530d906307154e16ed98bb9b4be10ea6fef56/docs/images/model-switcher-0.3.2-operation.png
+  - https://raw.githubusercontent.com/nicolasestrem/hermes-model-switcher/d62530d906307154e16ed98bb9b4be10ea6fef56/docs/images/model-switcher-0.3.2-catalog.png
+  - https://raw.githubusercontent.com/nicolasestrem/hermes-model-switcher/d62530d906307154e16ed98bb9b4be10ea6fef56/docs/images/model-switcher-0.3.2-light.png
+  - https://raw.githubusercontent.com/nicolasestrem/hermes-model-switcher/d62530d906307154e16ed98bb9b4be10ea6fef56/docs/images/model-switcher-0.3.2-narrow.png
+known_issues:
+  - "Couples at runtime to public Hermes seams that are not stability-guaranteed APIs (the /api/model/* dashboard routes, hermes_cli.config, agent.secret_scope, hermes_constants); a host refactor can break the plugin until it re-pins. Missing upstream seams remain open: a compare-and-save write with an expected-revision check (hermes-agent #142339), a public typed write route for non-main slots (#142340), and a dry-run footprint for exact main-slot previews (#142341)."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.22.3"

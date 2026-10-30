@@ -1,5 +1,5 @@
-import { useLayoutEffect, useMemo, useState, type ReactNode } from "react";
-import { useLocation } from "react-router-dom";
+import { useMemo, useState, type ReactNode } from "react";
+import { useLocation } from "react-router";
 import { PageHeaderContext } from "./page-header-context";
 import { resolvePageTitle } from "@/lib/resolve-page-title";
 import { cn } from "@/lib/utils";
@@ -18,15 +18,15 @@ export function PageHeaderProvider({
   const [afterTitle, setAfterTitle] = useState<ReactNode>(null);
   const [end, setEnd] = useState<ReactNode>(null);
 
-  // Clear any per-page title / toolbar slots when the path changes. Child routes
-  // re-fill these on mount via usePageHeader.
-  /* eslint-disable react-hooks/set-state-in-effect */
-  useLayoutEffect(() => {
+  // Reset before the new route commits: parent layout effects run after child
+  // effects, so clearing there would erase the new page's header actions.
+  const [previousPathname, setPreviousPathname] = useState(pathname);
+  if (pathname !== previousPathname) {
+    setPreviousPathname(pathname);
     setTitleOverride(null);
     setAfterTitle(null);
     setEnd(null);
-  }, [pathname]);
-  /* eslint-enable react-hooks/set-state-in-effect */
+  }
 
   const defaultTitle = useMemo(
     () => resolvePageTitle(pathname, t, pluginTabs),
@@ -55,7 +55,7 @@ export function PageHeaderProvider({
           className={cn(
             "z-1 w-full shrink-0",
             "box-border border-b border-current/20",
-            "bg-background-base/40 backdrop-blur-sm",
+            "bg-background-base",
             // Mobile stacks title + toolbar — fixed h-14 clips content; desktop stays one row.
             "min-h-0 overflow-x-hidden overflow-y-visible py-3 sm:h-14 sm:min-h-[3.5rem] sm:overflow-hidden sm:py-0",
           )}
@@ -88,7 +88,6 @@ export function PageHeaderProvider({
                       ? "shrink truncate"
                       : "truncate",
                 )}
-                style={{ mixBlendMode: "plus-lighter" }}
               >
                 {displayTitle}
               </h1>

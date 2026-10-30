@@ -92,9 +92,18 @@ export const hu: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Aktív memóriaszolgáltató",
+    noProvider: "nincs — csak beépített",
+    builtinLayer: "Beépített réteg",
+    builtinNote: "A MEMORY.md és a USER.md a Hermes saját memóriája, független minden külső szolgáltatótól. Alapértelmezés szerint mindkettő betöltődik a munkamenetekbe; a (memory.memory_enabled / memory.user_profile_enabled) beállítások külön-külön kikapcsolják őket. A szolgáltató kiegészíti őket, de sosem helyettesíti.",
+  },
+
   status: {
     actionFailed: "Művelet sikertelen",
     actionFinished: "Befejezve",
+    actionFinishedOwed: "Frissítve, de még függőben (futtasd újra a `hermes update` parancsot a befejezéshez)",
     actions: "Műveletek",
     agent: "Ügynök",
     activeSessions: "Aktív munkamenetek",
@@ -129,8 +138,14 @@ export const hu: Translations = {
     title: "Munkamenetek",
     history: "Előzmények",
     overview: "Áttekintés",
+    filterChats: "Csevegések",
+    filterAutomation: "Automatizálás",
+    filterAll: "Összes",
+    sourceFilter: "Munkamenet forrása",
+    anySource: "Bármely forrás",
     searchPlaceholder: "Keresés üzenettartalomban...",
     noSessions: "Még nincsenek munkamenetek",
+    noSessionsInFilter: "Nincs munkamenet ebben a szűrőben",
     noMatch: "Nincs a keresésnek megfelelő munkamenet",
     startConversation: "Indítson egy beszélgetést, hogy itt megjelenjen",
     noMessages: "Nincsenek üzenetek",
@@ -156,8 +171,14 @@ export const hu: Translations = {
     deleteSelectedConfirmMessage:
       "Ez véglegesen eltávolítja a kijelölt {count} munkamenetet és minden üzenetüket. A művelet nem vonható vissza.",
     selectedSessionsDeleted: "{count} munkamenet törölve",
+    selectedSessionsSkippedActive: "{deleted} törölve; {count} megtartva, mert egy kör még fut",
     failedToDeleteSelected: "Nem sikerült törölni a kijelölt munkameneteket",
     resumeInChat: "Folytatás a csevegésben",
+    newChat: "Új csevegés",
+    workspace: "munkaterület",
+    workspaceDefault: "Alapértelmezett",
+    workspaceRescan: "Tárolók újrakeresése",
+    workspaceCustom: "Másik útvonal…",
     previousPage: "Előző oldal",
     nextPage: "Következő oldal",
     roles: {
@@ -286,8 +307,8 @@ export const hu: Translations = {
     nameRequired: "A név kötelező",
     nameRule:
       "Csak kisbetűk, számjegyek, _ és - karakterek; betűvel vagy számjeggyel kell kezdődnie; legfeljebb 64 karakter.",
-    invalidName: "Érvénytelen profilnév",
-    cloneFromDefault: "Konfiguráció klónozása az alapértelmezett profilból",
+    invalidName: "Érvénytelen profilnév",    cloneFrom: "Konfiguráció klónozása ebből a profilból",
+    cloneFromNone: "Nincs (üres)",
     allProfiles: "Profilok",
     noProfiles: "Nem található profil.",
     defaultBadge: "alapértelmezett",
@@ -317,6 +338,8 @@ export const hu: Translations = {
     disableRuntime: "Letiltás",
     enableAfterInstall: "Engedélyezés a telepítés után",
     enableRuntime: "Engedélyezés",
+    toggleTakesEffectAfterRestart:
+      "Mentve — indítsa újra az átjárót a módosítás alkalmazásához.",
     forceReinstall: "Kényszerített újratelepítés (a meglévő mappa előbb törlődik)",
     headline:
       "Hermes-bővítmények felfedezése, telepítése, engedélyezése és frissítése (a `hermes plugins` paritás).",
@@ -432,25 +455,38 @@ export const hu: Translations = {
     replaceCurrentValue: "Jelenlegi érték cseréje ({preview})",
     showValue: "Tényleges érték megjelenítése",
     hideValue: "Érték elrejtése",
+    customTitle: "Egyéni kulcsok",
+    customHint: "A .env fájlban tárolt tetszőleges környezeti változók, amelyeket a Hermes nem ismer fel. Használd ezeket környezeti változók beillesztésére képességekhez, MCP-kiszolgálókhoz vagy saját eszközeidhez.",
+    customConfigured: "{count} egyéni kulcs beállítva",
+    addCustomKey: "Egyéni kulcs hozzáadása",
+    customKeyName: "Változó neve",
+    customKeyNamePlaceholder: "pl. MY_SERVICE_API_KEY",
+    add: "Hozzáadás",
+    invalidKeyName: "Csak betűket, számokat és aláhúzásokat használj (betűvel vagy aláhúzással kell kezdődnie).",
   },
 
   oauth: {
     title: "Szolgáltatói bejelentkezések (OAuth)",
     providerLogins: "Szolgáltatói bejelentkezések (OAuth)",
-    description: "{connected} / {total} OAuth-szolgáltató csatlakoztatva. A bejelentkezési folyamat jelenleg a CLI-n keresztül fut; kattintson a Parancs másolása gombra, és illessze be egy terminálba a beállításhoz.",
+    description:
+      "{connected} / {total} OAuth-szolgáltató csatlakoztatva. Használja a Bejelentkezés gombot az irányítópult által támogatott folyamatokhoz; a CLI-parancsok továbbra is elérhetők külső vagy tartalék beállításhoz.",
     connected: "Csatlakoztatva",
     expired: "Lejárt",
-    notConnected: "Nincs csatlakoztatva. Futtassa a {command} parancsot egy terminálban.",
+    notConnected: "Nincs csatlakoztatva. Használja a Bejelentkezés gombot, ha elérhető, vagy futtassa a {command} parancsot egy terminálban.",
     runInTerminal: "egy terminálban.",
     noProviders: "Nem észlelhető OAuth-képes szolgáltató.",
     login: "Bejelentkezés",
     disconnect: "Lecsatlakozás",
     managedExternally: "Külsőleg kezelt",
     copied: "Másolva ✓",
+    copyCode: "Kód másolása",
+    copyFailed: "Nem sikerült automatikusan másolni. Jelölje ki a kódot, és másolja kézzel.",
     cli: "Másolás",
     copyCliCommand: "CLI-parancs másolása (külső / tartalék)",
     connect: "Csatlakozás",
     sessionExpires: "A munkamenet {time} múlva lejár",
+    sessionExpiredNoError:
+      "A bejelentkezés lejárt anélkül, hogy elérte volna a szolgáltatót. Ez általában azt jelenti, hogy a bejelentkezési oldal elakadt a megnyitott lapon (szerveroldali probléma) — fejezze be ott a bejelentkezést, majd kattintson az Újra gombra. Ha továbbra sem sikerül, használjon inkább API-kulcsot vagy a CLI-t.",
     initiatingLogin: "Bejelentkezési folyamat indítása…",
     exchangingCode: "Kód cseréje tokenekre…",
     connectedClosing: "Csatlakoztatva! Bezárás…",
@@ -600,6 +636,12 @@ export const hu: Translations = {
       "A táblákkal külön tudod választani az egymással nem összefüggő munkafolyamokat — egyet projektenként, repónként vagy területenként. Az egyik tábla workerei sosem látják a másik tábla feladatait.",
     slug: "Slug",
     slugHint: "— kisbetűk, kötőjelek, pl. atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Megjelenítendő név",
     displayNameHint: "(opcionális)",
     description: "Leírás",

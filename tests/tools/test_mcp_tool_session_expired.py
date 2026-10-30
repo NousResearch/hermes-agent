@@ -10,11 +10,14 @@ Before the #13383 fix, this class of failure fell through as a plain
 tool error with no recovery path, so every subsequent call on the
 affected MCP server failed until the gateway was manually restarted.
 """
+import asyncio
 import json
 import threading
+import time
 from unittest.mock import MagicMock
 
 import pytest
+from tools import mcp_tool_loop as _mcp_loop
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +27,7 @@ import pytest
 
 def test_is_session_expired_detects_invalid_or_expired_session():
     """Reporter's exact wpcom-mcp error message (#13383)."""
-    from tools.mcp_tool import _is_session_expired_error
+    from tools.mcp_tool_errors import _is_session_expired_error
     exc = RuntimeError("Invalid params: Invalid or expired session")
     assert _is_session_expired_error(exc) is True
 
@@ -32,7 +35,7 @@ def test_is_session_expired_detects_invalid_or_expired_session():
 def test_is_session_expired_detects_expired_session_variant():
     """Generic ``session expired`` / ``expired session`` phrasings used
     by other SDK servers."""
-    from tools.mcp_tool import _is_session_expired_error
+    from tools.mcp_tool_errors import _is_session_expired_error
     assert _is_session_expired_error(RuntimeError("Session expired")) is True
     assert _is_session_expired_error(RuntimeError("expired session: abc")) is True
 
@@ -40,61 +43,40 @@ def test_is_session_expired_detects_expired_session_variant():
 def test_is_session_expired_detects_session_not_found():
     """Server-side GC produces ``session not found`` / ``unknown session``
     on some implementations."""
-    from tools.mcp_tool import _is_session_expired_error
+    from tools.mcp_tool_errors import _is_session_expired_error
     assert _is_session_expired_error(RuntimeError("session not found")) is True
     assert _is_session_expired_error(RuntimeError("Unknown session: abc123")) is True
 
 
-def test_is_session_expired_detects_session_terminated():
-    """Remote Playwright MCP reports transport loss as ``Session terminated``."""
-    from tools.mcp_tool import _is_session_expired_error
+def test_is_session_expired_traversal_is_budget_bounded():
+    """Pathologically long chains stop at the node budget without spinning."""
+    from tools import mcp_tool_errors as _mcp_errors
+    from tools.mcp_tool_errors import _is_session_expired_error
 
-    assert _is_session_expired_error(RuntimeError("Session terminated")) is True
+    exc: BaseException = RuntimeError("leaf")
+    for i in range(_mcp_errors._EXC_TRAVERSAL_MAX_NODES * 2):
+        wrapper = RuntimeError(f"layer {i}")
+        wrapper.__cause__ = exc
+        exc = wrapper
 
-
-def test_is_session_expired_detects_stale_pipe_and_closed_transport_variants():
-    """Stdio/AnyIO stale-pipe failures usually surface as closed-resource
-    or broken-pipe text, not an HTTP session-expired JSON-RPC error."""
-    from tools.mcp_tool import _is_session_expired_error
-    assert _is_session_expired_error(RuntimeError("ClosedResourceError")) is True
-    assert _is_session_expired_error(RuntimeError("closed resource in MCP child")) is True
-    assert _is_session_expired_error(RuntimeError("transport is closed")) is True
-    assert _is_session_expired_error(RuntimeError("Broken pipe while writing request")) is True
-    assert _is_session_expired_error(RuntimeError("End of file from MCP server")) is True
-
-
-def test_is_session_expired_is_case_insensitive():
-    """Match uses lower-cased comparison so servers that emit the
-    message in different cases (SDK formatter quirks) still trigger."""
-    from tools.mcp_tool import _is_session_expired_error
-    assert _is_session_expired_error(RuntimeError("INVALID OR EXPIRED SESSION")) is True
-    assert _is_session_expired_error(RuntimeError("Session Expired")) is True
+    # Terminates quickly and classifies false (no transport signal within
+    # budget). The exact outcome past the budget is unspecified; the
+    # invariant under test is termination.
+    assert _is_session_expired_error(exc) is False
 
 
-def test_is_session_expired_rejects_unrelated_errors():
-    """Narrow scope: only the specific session-expired markers trigger.
-    A regular RuntimeError / ValueError does not."""
-    from tools.mcp_tool import _is_session_expired_error
-    assert _is_session_expired_error(RuntimeError("Tool failed to execute")) is False
-    assert _is_session_expired_error(ValueError("Missing parameter")) is False
-    assert _is_session_expired_error(Exception("Connection refused")) is False
-    # 401 is handled by the sibling _is_auth_error path, not here.
-    assert _is_session_expired_error(RuntimeError("401 Unauthorized")) is False
+def test_is_session_expired_walks_group_chain():
+    """A group's own ``__cause__``/``__context__`` are inspected like any node's: a marker there classifies
+    as expired, and an InterruptedError there still overrides a marker inside the group."""
+    from tools.mcp_tool_errors import _is_session_expired_error
 
+    group = ExceptionGroup("task group", [ValueError("unrelated")])
+    group.__context__ = RuntimeError("session terminated")
+    assert _is_session_expired_error(group) is True
 
-def test_is_session_expired_rejects_interrupted_error():
-    """InterruptedError is the user-cancel signal — must never route
-    through the session-reconnect path."""
-    from tools.mcp_tool import _is_session_expired_error
-    assert _is_session_expired_error(InterruptedError()) is False
-    assert _is_session_expired_error(InterruptedError("Invalid or expired session")) is False
-
-
-def test_is_session_expired_rejects_empty_message():
-    """Bare exceptions with no message shouldn't match."""
-    from tools.mcp_tool import _is_session_expired_error
-    assert _is_session_expired_error(RuntimeError("")) is False
-    assert _is_session_expired_error(Exception()) is False
+    group = ExceptionGroup("task group", [RuntimeError("session terminated")])
+    group.__context__ = InterruptedError()
+    assert _is_session_expired_error(group) is False
 
 
 # ---------------------------------------------------------------------------
@@ -106,28 +88,51 @@ def _install_stub_server(name: str = "wpcom"):
     """Register a minimal server stub that _handle_session_expired_and_retry
     can signal via _reconnect_event, and that reports ready+session after
     the event fires."""
-    from tools import mcp_tool
 
-    mcp_tool._ensure_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
 
     server = MagicMock()
     server.name = name
+
+    ready_flag = threading.Event()
+    ready_flag.set()
+
+    class _ReadyAdapter:
+        def is_set(self):
+            return ready_flag.is_set()
+
+        def clear(self):
+            ready_flag.clear()
+
+        def set(self):
+            ready_flag.set()
+
+    server._ready = _ReadyAdapter()
+
     # _reconnect_event is called via loop.call_soon_threadsafe(…set); use
-    # a threading-safe substitute.
+    # a threading-safe substitute.  The production reconnect path must not
+    # treat the old stale session as fresh, so this test double swaps in a
+    # distinct session object when reconnect is requested.
     reconnect_flag = threading.Event()
 
     class _EventAdapter:
         def set(self):
             reconnect_flag.set()
+            old_session = server.session
+            new_session = MagicMock()
+            for method_name in (
+                "call_tool",
+                "list_resources",
+                "read_resource",
+                "list_prompts",
+                "get_prompt",
+            ):
+                if hasattr(old_session, method_name):
+                    setattr(new_session, method_name, getattr(old_session, method_name))
+            server.session = new_session
+            ready_flag.set()
 
     server._reconnect_event = _EventAdapter()
-
-    # Immediately "ready" — simulates a fast reconnect (_ready.is_set()
-    # is polled by _handle_session_expired_and_retry until the timeout).
-    ready_flag = threading.Event()
-    ready_flag.set()
-    server._ready = MagicMock()
-    server._ready.is_set = ready_flag.is_set
 
     # session attr must be truthy for the handler's initial check
     # (``if not server or not server.session``) and for the post-
@@ -136,93 +141,184 @@ def _install_stub_server(name: str = "wpcom"):
     return server, reconnect_flag
 
 
-def test_call_tool_handler_reconnects_on_session_expired(monkeypatch, tmp_path):
-    """Reporter's exact repro: call_tool raises "Invalid or expired
-    session", handler triggers reconnect, retries once, and returns
-    the retry's successful JSON (not the generic error)."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
+@pytest.mark.parametrize(
+    "transport_config, expected_route",
+    [
+        ({"command": "librarian-mcp"}, "stdio"),
+        ({"url": "https://neo4j.example.test/mcp", "skip_preflight": True}, "http"),
+    ],
+    ids=["stdio", "http"],
+)
+@pytest.mark.parametrize("application_error", [False, True], ids=["success", "application-error"])
+def test_call_tool_handler_rebuilds_configured_server_transport(
+    monkeypatch, tmp_path, transport_config, expected_route, application_error
+):
+    """The real server run loop selects and rebuilds its configured transport."""
+    from anyio import ClosedResourceError
     from tools import mcp_tool
-    from tools.mcp_tool import _make_tool_handler
+    from tools.mcp_tool import MCPServerTask
+    from tools.mcp_tool_handlers import _make_tool_handler
 
-    server, reconnect_flag = _install_stub_server("wpcom")
-    mcp_tool._servers["wpcom"] = server
-    mcp_tool._server_error_counts.pop("wpcom", None)
-
-    # First call raises session-expired; second call (post-reconnect)
-    # returns a proper MCP tool result.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _mcp_loop._ensure_mcp_loop()
+    transport_ready = threading.Event()
+    routes = []
+    configs = []
+    sessions = []
     call_count = {"n": 0}
 
-    async def _call_sequence(*a, **kw):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            raise RuntimeError("Invalid params: Invalid or expired session")
-        # Second call: mimic the MCP SDK's structured success response.
-        result = MagicMock()
-        result.isError = False
-        result.content = [MagicMock(type="text", text="tool completed")]
-        result.structuredContent = None
-        return result
+    class _Session:
+        async def call_tool(self, *args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise ClosedResourceError
+            result = MagicMock()
+            result.is_error = application_error
+            result.content = [MagicMock(type="text", text="reconnected")]
+            result.structured_content = None
+            return result
 
-    server.session.call_tool = _call_sequence
+    class _LifecycleTask(MCPServerTask):
+        async def _serve_transport(self, route, config):
+            routes.append(route)
+            configs.append(dict(config))
+            self.session = _Session()
+            sessions.append(self.session)
+            self._ready.set()
+            transport_ready.set()
+            return await self._wait_for_lifecycle_event()
+
+        async def _run_stdio(self, config):
+            return await self._serve_transport("stdio", config)
+
+        async def _run_http(self, config):
+            return await self._serve_transport("http", config)
+
+    server = _LifecycleTask("resumed")
+    mcp_tool._servers["resumed"] = server
+    mcp_tool._server_error_counts.pop("resumed", None)
+    mcp_tool._server_breaker_opened_at.pop("resumed", None)
+    # Auto-retry after session expiry is only safe (and only performed) for
+    # tools positively annotated read-only; a write may already have
+    # executed server-side (#88821).
+    mcp_tool._tool_read_only_hints.setdefault("resumed", {})["health"] = True
+    loop = mcp_tool._mcp_loop
+    assert loop is not None
+    run_future = asyncio.run_coroutine_threadsafe(
+        server.run(transport_config), loop
+    )
 
     try:
-        handler = _make_tool_handler("wpcom", "wpcom-mcp-content-authoring", 10.0)
-        out = handler({"slug": "hello"})
-        parsed = json.loads(out)
-        # Retry succeeded — no error surfaced to caller.
-        assert "error" not in parsed, (
-            f"Expected retry to succeed after reconnect; got: {parsed}"
-        )
-        # _reconnect_event was signalled exactly once.
-        assert reconnect_flag.is_set(), (
-            "Handler did not trigger transport reconnect on session-expired "
-            "error — the reconnect flow is the whole point of this fix."
-        )
-        # Exactly 2 call attempts (original + one retry).
-        assert call_count["n"] == 2, (
-            f"Expected 1 original + 1 retry = 2 calls; got {call_count['n']}"
-        )
+        assert transport_ready.wait(3), "server lifecycle did not establish transport"
+        handler = _make_tool_handler("resumed", "health", 10.0)
+        parsed = json.loads(handler({}))
+
+        if expected_route == "stdio":
+            # A stdio pipe closing after dispatch is an ambiguous mid-call death: the transport
+            # is rebuilt for future calls, but the call itself is not replayed (#106440).
+            assert parsed["outcome_uncertain"] is True, parsed
+            assert call_count["n"] == 1
+        else:
+            assert parsed == {"error" if application_error else "result": "reconnected"}
+            # The recovered result is the tool's real answer either way; an application error is
+            # still one breaker strike (#10447), a success resets the counter.
+            assert mcp_tool._server_error_counts.get("resumed", 0) == (1 if application_error else 0)
+            assert call_count["n"] == 2
+        assert routes == [expected_route, expected_route]
+        assert configs == [transport_config, transport_config]
+        assert len(sessions) == 2
+        assert sessions[0] is not sessions[1]
     finally:
-        mcp_tool._servers.pop("wpcom", None)
-        mcp_tool._server_error_counts.pop("wpcom", None)
+        loop.call_soon_threadsafe(server._shutdown_event.set)
+        run_future.result(timeout=5)
+        mcp_tool._servers.pop("resumed", None)
+        mcp_tool._server_error_counts.pop("resumed", None)
+        mcp_tool._server_breaker_opened_at.pop("resumed", None)
+        mcp_tool._tool_read_only_hints.pop("resumed", None)
 
 
-def test_call_tool_handler_non_session_expired_error_falls_through(
-    monkeypatch, tmp_path
-):
-    """Preserved-behaviour canary: a non-session-expired exception must
-    NOT trigger reconnect — it must fall through to the generic error
-    path so the caller sees the real failure."""
+def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
+    """Regression for long-lived HTTP/stream MCP sessions.
+
+    If the reconnect helper only checks ``_ready.is_set()`` and
+    ``session is not None``, it can return immediately while ``session`` still
+    points at the stale transport. The retry then hits the same dead session
+    and the circuit breaker eventually reports the server as unreachable. The
+    handler must wait for a distinct session object before retrying.
+    """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
-    from tools.mcp_tool import _make_tool_handler
+    from tools import mcp_tool_loop as _mcp_loop
+    from tools.mcp_tool_handlers import _make_tool_handler
 
-    server, reconnect_flag = _install_stub_server("srv")
-    mcp_tool._servers["srv"] = server
-    mcp_tool._server_error_counts.pop("srv", None)
+    _mcp_loop._ensure_mcp_loop()
+    server = MagicMock()
+    server.name = "hindsight"
+    ready_flag = threading.Event()
+    ready_flag.set()
 
-    async def _raises(*a, **kw):
-        raise RuntimeError("Tool execution failed — unrelated error")
+    class _ReadyAdapter:
+        def is_set(self):
+            return ready_flag.is_set()
 
-    server.session.call_tool = _raises
+        def clear(self):
+            ready_flag.clear()
+
+        def set(self):
+            ready_flag.set()
+
+    old_session = MagicMock()
+
+    async def _old_call(*a, **kw):
+        raise RuntimeError("Session terminated")
+
+    old_session.call_tool = _old_call
+    new_session = MagicMock()
+
+    async def _new_call(*a, **kw):
+        result = MagicMock()
+        result.is_error = False
+        result.content = [MagicMock(type="text", text="bank ok")]
+        result.structured_content = None
+        return result
+
+    new_session.call_tool = _new_call
+    server.session = old_session
+    server._ready = _ReadyAdapter()
+
+    class _ReconnectAdapter:
+        def set(self):
+            server.session = new_session
+            ready_flag.set()
+
+    server._reconnect_event = _ReconnectAdapter()
+    mcp_tool._servers["hindsight"] = server
+    mcp_tool._server_error_counts["hindsight"] = 7
+    # Read-only annotation: the session-expired auto-retry now only fires
+    # for tools positively marked readOnlyHint=True (write-capable calls
+    # get the outcome-unknown path instead).
+    mcp_tool._tool_read_only_hints.setdefault("hindsight", {})["get_bank"] = True
+    # Stamp the breaker "open" far enough in the past that the cooldown has
+    # provably elapsed, so this call is a half-open probe. The breaker compares
+    # against time.monotonic() (tools/mcp_tool.py), whose origin is arbitrary and
+    # small on a freshly-booted CI container — a hardcoded literal like 123.0
+    # only looked "elapsed" on a long-uptime dev box and flaked under CI.
+    mcp_tool._server_breaker_opened_at["hindsight"] = (
+        time.monotonic() - mcp_tool._CIRCUIT_BREAKER_COOLDOWN_SEC - 1.0
+    )
 
     try:
-        handler = _make_tool_handler("srv", "mytool", 10.0)
-        out = handler({"arg": "v"})
-        parsed = json.loads(out)
-        # Generic error path surfaced the failure.
-        assert "MCP call failed" in parsed.get("error", "")
-        # Reconnect was NOT triggered for this unrelated failure.
-        assert not reconnect_flag.is_set(), (
-            "Reconnect must not fire for non-session-expired errors — "
-            "this would cause spurious transport churn on every tool "
-            "failure."
-        )
+        handler = _make_tool_handler("hindsight", "get_bank", 10.0)
+        parsed = json.loads(handler({}))
+        assert parsed.get("result") == "bank ok", parsed
+        assert mcp_tool._server_error_counts.get("hindsight", 0) == 0
+        assert "hindsight" not in mcp_tool._server_breaker_opened_at
     finally:
-        mcp_tool._servers.pop("srv", None)
-        mcp_tool._server_error_counts.pop("srv", None)
+        mcp_tool._servers.pop("hindsight", None)
+        mcp_tool._server_error_counts.pop("hindsight", None)
+        mcp_tool._server_breaker_opened_at.pop("hindsight", None)
+        mcp_tool._tool_read_only_hints.pop("hindsight", None)
 
 
 def test_session_expired_handler_returns_none_without_loop(monkeypatch):
@@ -230,7 +326,7 @@ def test_session_expired_handler_returns_none_without_loop(monkeypatch):
     race), the handler must fall through cleanly instead of hanging
     or raising."""
     from tools import mcp_tool
-    from tools.mcp_tool import _handle_session_expired_and_retry
+    from tools.mcp_tool_handlers import _handle_session_expired_and_retry
 
     # Install a server stub but make the event loop unavailable.
     server = MagicMock()
@@ -253,6 +349,13 @@ def test_session_expired_handler_returns_none_without_loop(monkeypatch):
             "Without an event loop, session-expired handler must fall "
             "through to caller's generic error path — not hang or raise."
         )
+        # A write-capable call still gets the outcome-uncertain verdict: a generic "call failed"
+        # would invite the model to replay a write that may have landed.
+        out = _handle_session_expired_and_retry(
+            "srv-noloop", RuntimeError("Invalid or expired session"), lambda: '{"ok": true}',
+            "tools/call", call_may_have_side_effects=True,
+        )
+        assert out is not None and json.loads(out).get("outcome_uncertain") is True
     finally:
         mcp_tool._servers.pop("srv-noloop", None)
 
@@ -260,7 +363,7 @@ def test_session_expired_handler_returns_none_without_loop(monkeypatch):
 def test_session_expired_handler_returns_none_without_server_record():
     """If the server has been torn down / isn't in _servers, fall
     through cleanly — nothing to reconnect to."""
-    from tools.mcp_tool import _handle_session_expired_and_retry
+    from tools.mcp_tool_handlers import _handle_session_expired_and_retry
     out = _handle_session_expired_and_retry(
         "does-not-exist",
         RuntimeError("Invalid or expired session"),
@@ -268,38 +371,6 @@ def test_session_expired_handler_returns_none_without_server_record():
         "tools/call",
     )
     assert out is None
-
-
-def test_session_expired_handler_returns_none_when_retry_also_fails(
-    monkeypatch, tmp_path
-):
-    """If the retry after reconnect also raises, fall through to the
-    generic error path (don't loop forever, don't mask the second
-    failure)."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    from tools import mcp_tool
-    from tools.mcp_tool import _handle_session_expired_and_retry
-
-    server, _ = _install_stub_server("srv-retry-fail")
-    mcp_tool._servers["srv-retry-fail"] = server
-
-    def _retry_raises():
-        raise RuntimeError("retry blew up too")
-
-    try:
-        out = _handle_session_expired_and_retry(
-            "srv-retry-fail",
-            RuntimeError("Invalid or expired session"),
-            _retry_raises,
-            "tools/call",
-        )
-        assert out is None, (
-            "When the retry itself fails, the handler must return None "
-            "so the caller's generic error path runs — no retry loop."
-        )
-    finally:
-        mcp_tool._servers.pop("srv-retry-fail", None)
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +421,8 @@ def test_non_tool_handlers_also_reconnect_on_session_expired(
 
     setattr(server.session, session_method, _sequence)
 
-    factory = getattr(mcp_tool, handler_factory)
+    from tools import mcp_tool_handlers as _mcp_handlers
+    factory = getattr(_mcp_handlers, handler_factory)
     # list_resources / list_prompts take (server_name, timeout).
     # read_resource / get_prompt take the same signature.
     try:
@@ -374,3 +446,72 @@ def test_non_tool_handlers_also_reconnect_on_session_expired(
     finally:
         mcp_tool._servers.pop(f"srv-{op_label}", None)
         mcp_tool._server_error_counts.pop(f"srv-{op_label}", None)
+
+
+# ---------------------------------------------------------------------------
+# At-most-once guard for write-capable tools: a session-expired/transport
+# failure on a call that may already have executed server-side must NOT be
+# auto-retried. The transport is healed and an outcome_uncertain error tells
+# the model to verify first. Only readOnlyHint=True tools keep the retry.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("read_only", [False, True], ids=["write-capable", "read-only"])
+def test_session_expired_retry_only_for_read_only_tools(monkeypatch, tmp_path, read_only):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool_handlers import _make_tool_handler
+
+    _mcp_loop._ensure_mcp_loop()
+    server, reconnect_flag = _install_stub_server("srv")
+    call_count = {"n": 0}
+
+    async def _sequence(*a, **kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("Session terminated")
+        result = MagicMock()
+        result.is_error = False
+        result.content = [MagicMock(type="text", text="fresh data")]
+        result.structured_content = None
+        return result
+
+    server.session.call_tool = _sequence
+    mcp_tool._servers["srv"] = server
+    mcp_tool._server_error_counts.pop("srv", None)
+    if read_only:
+        mcp_tool._tool_read_only_hints.setdefault("srv", {})["tool"] = True
+    # else: no readOnlyHint entry -> fails safe to write-capable.
+
+    try:
+        parsed = json.loads(_make_tool_handler("srv", "tool", 10.0)({}))
+        assert reconnect_flag.is_set()  # transport healed either way
+        if read_only:
+            assert parsed.get("result") == "fresh data", parsed
+            assert call_count["n"] == 2  # original + one retry
+        else:
+            assert parsed.get("outcome_uncertain") is True, parsed
+            assert call_count["n"] == 1  # exactly one dispatch
+            # Successful reconnect clears breaker state (session-state failure, not server health).
+            assert mcp_tool._server_error_counts.get("srv", 0) == 0
+    finally:
+        mcp_tool._servers.pop("srv", None)
+        mcp_tool._server_error_counts.pop("srv", None)
+        mcp_tool._server_breaker_opened_at.pop("srv", None)
+        mcp_tool._tool_read_only_hints.pop("srv", None)
+
+
+def test_tool_is_read_only_fails_safe():
+    """Unknown server/tool metadata classifies as write-capable (False)."""
+    from tools import mcp_tool
+    from tools.mcp_tool_handlers import _tool_is_read_only
+
+    assert _tool_is_read_only("no-such-server", "tool") is False
+    mcp_tool._tool_read_only_hints["known"] = {"reader": True, "writer": False}
+    try:
+        assert _tool_is_read_only("known", "reader") is True
+        assert _tool_is_read_only("known", "writer") is False
+        assert _tool_is_read_only("known", "unlisted") is False
+    finally:
+        mcp_tool._tool_read_only_hints.pop("known", None)

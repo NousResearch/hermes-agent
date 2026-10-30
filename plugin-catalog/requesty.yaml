@@ -1,0 +1,29 @@
+name: requesty
+repo: https://github.com/requestyai/hermes-provider-requesty
+sha: "aa4e37d7f09dfc1e98b915d740d09e8b1b44c98d"
+subdir: requesty
+title: Requesty
+description: >-
+  Requesty LLM gateway as a Hermes model provider (`--provider requesty`, alias `rq`, or Requesty
+  in `hermes model`). The picker lists Requesty's managed routing policies (curated routes with
+  failover, `@eu` variants for EU-only hosting); any Requesty model id or org policy also works.
+  `/reasoning` maps onto Requesty's `reasoning_effort` for reasoning-capable models, the Hermes
+  session id is sent as `requesty.trace_id`, and context windows and estimated cost come from the
+  Requesty catalog. Prompt caching is done server-side by Requesty. Disclosure — chat requests
+  go to https://router.requesty.ai/v1 (or REQUESTY_BASE_URL) through Hermes' own client with
+  REQUESTY_API_KEY, which Hermes reads; the plugin itself only fetches Requesty's public model
+  catalogs (/v1/models/managed and /v1/models, no credentials), once per process, sometimes on a
+  short-lived background thread. No attribution headers, telemetry, file access or processes.
+  Supersedes #27908.
+maintainer: requestyai
+tier: community
+category: models
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/requestyai/hermes-provider-requesty#readme
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - REQUESTY_API_KEY

@@ -19,6 +19,7 @@ Hermetic: the model-resolution chain is fully mocked (no network), mirroring
 ``tests/hermes_cli/test_user_providers_model_switch.py``.
 """
 
+from contextlib import nullcontext
 from unittest.mock import patch
 
 import pytest
@@ -50,6 +51,7 @@ def _run_switch(
     validation=_ACCEPTED,
     current_model="old-model",
     current_base_url="",
+    detect_provider=False,
 ):
     """Drive ``switch_model`` with the resolution chain mocked out.
 
@@ -63,7 +65,7 @@ def _run_switch(
          patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
          patch("hermes_cli.model_switch.normalize_model_for_provider", side_effect=lambda model, provider: model), \
          patch("hermes_cli.models_validate.validate_requested_model", return_value=validation), \
-         patch("hermes_cli.models.detect_provider_for_model", return_value=None), \
+         (nullcontext() if detect_provider else patch("hermes_cli.models.detect_provider_for_model", return_value=None)), \
          patch("hermes_cli.model_switch.get_model_info", return_value=None), \
          patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \
          patch(
@@ -124,6 +126,25 @@ def test_xai_oauth_soft_accept_preserved_when_no_match():
     )
     assert result.success is True, result.error_message
     assert result.target_provider == "xai-oauth"
+
+
+def test_qualified_vertex_model_switches_when_vertex_credentials_exist(monkeypatch):
+    """A Vertex-authenticated user selecting its ``google/`` model must not stay on Anthropic (#139510)."""
+    from hermes_cli import models
+
+    monkeypatch.setattr(models, "cached_provider_model_ids", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(models, "_find_openrouter_slug", lambda _name: None)
+    monkeypatch.setattr("agent.vertex_adapter.has_vertex_credentials", lambda: True)
+
+    result = _run_switch(
+        raw_input="google/gemini-4-argon",
+        current_provider="anthropic",
+        current_model="claude-haiku-5-5",
+        detect_provider=True,
+    )
+
+    assert result.success is True, result.error_message
+    assert (result.target_provider, result.new_model) == ("vertex", "google/gemini-4-argon")
 
 
 

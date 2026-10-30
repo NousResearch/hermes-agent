@@ -66,3 +66,17 @@ def finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool
     if description and description.strip():
         with contextlib.suppress(Exception):  # non-fatal — `hermes profile describe` works later
             write_profile_meta(profile_dir, description=description.strip(), description_auto=False)
+
+
+def clone_file(source_dir: Path, profile_dir: Path, relpath: str) -> None:
+    """Copy one profile-relative file if it exists. ``.env`` is tightened to owner-only:
+    ``copy2`` preserves source mode bits, so a loose source (umask 0o644) would leak."""
+    src = source_dir / relpath
+    if not src.exists():
+        return
+    dst = profile_dir / relpath
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    if relpath == ".env":
+        with contextlib.suppress(OSError):
+            os.chmod(str(dst), 0o600)

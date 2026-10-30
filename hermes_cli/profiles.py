@@ -1,5 +1,6 @@
 """Profile management for multiple isolated Hermes instances."""
 
+from hermes_cli.profiles_initialization import clone_file
 import contextlib
 import json
 import logging
@@ -1134,20 +1135,6 @@ def _seed_file_if_missing(path: Path, text: str, mode: Optional[int] = None) -> 
             os.chmod(str(path), mode)
 
 
-def _clone_file(source_dir: Path, profile_dir: Path, relpath: str) -> None:
-    """Copy one profile-relative file if it exists. ``.env`` is tightened to owner-only:
-    ``copy2`` preserves source mode bits, so a loose source (umask 0o644) would leak."""
-    src = source_dir / relpath
-    if not src.exists():
-        return
-    dst = profile_dir / relpath
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
-    if relpath == ".env":
-        with contextlib.suppress(OSError):
-            os.chmod(str(dst), 0o600)
-
-
 # Files a clone edits in place after copying. A ``--clone-all`` copy preserves symlinks
 # (``symlinks=True``), so a symlinked source ``.env`` would otherwise be edited THROUGH the link and
 # the channel stripping would mutate the SOURCE profile. These are materialized as real files first.
@@ -1320,18 +1307,18 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         _seed_model_config(profile_dir)
         return
     for relpath in _CLONE_CONFIG_FILES:
-        _clone_file(source_dir, profile_dir, relpath)
+        clone_file(source_dir, profile_dir, relpath)
     _strip_multiplex_flag(profile_dir / "config.yaml")
     source_skills = source_dir / "skills"
     if source_skills.is_dir():
         _copytree_keep_junctions(source_skills, profile_dir / "skills", _non_exportable_entries, dirs_exist_ok=True)
     for relpath in _CLONE_SUBDIR_FILES:
-        _clone_file(source_dir, profile_dir, relpath)
+        clone_file(source_dir, profile_dir, relpath)
     _clone_plugins(source_dir, profile_dir)
     from hermes_cli.profile_memory_config import _load_config_dict, active_memory_provider, clone_memory_provider_config
     clone_memory_provider_config(source_dir, profile_dir, active_memory_provider(_load_config_dict(source_dir)))
     if sync_imports:  # a plain file at the profile root, written by the agent-importers plugin
-        _clone_file(source_dir, profile_dir, "import-sync.json")
+        clone_file(source_dir, profile_dir, "import-sync.json")
 
 
 def create_profile(
@@ -1383,6 +1370,9 @@ def create_profile(
     if profile_dir.exists():
         raise _profile_exists_error(canon)
     source_dir = _resolve_clone_source(clone_from) if cloning else None
+    from agent.codex_auth_policy import refuse_codex_credential_copy
+    if source_dir is not None:
+        refuse_codex_credential_copy(source_dir)
     if source_dir is not None and clone_channels:
         from hermes_cli.profile_channels import clone_channels_refusal
         refusal = clone_channels_refusal(source_dir, clone_from or get_active_profile_name() or "default")

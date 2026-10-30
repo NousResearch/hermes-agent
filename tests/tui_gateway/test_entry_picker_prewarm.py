@@ -36,6 +36,13 @@ def _run_main(monkeypatch, events, *, prewarm=None):
     ``events`` receives ``("write", <event type>)`` for every write_json call
     and ``("prewarm",)`` when the spy fires, in call order.
     """
+    from agent import codex_auth_policy
+
+    def bind_default_policy(*, read_only):
+        # Repeated wiring probes are not new process-authority launches.
+        assert read_only is False
+
+    monkeypatch.setattr(codex_auth_policy, "bind_codex_auth_policy", bind_default_policy)
     monkeypatch.setattr(entry, "_install_sidecar_publisher", lambda: None)
     monkeypatch.setattr(entry.server, "_stdio_is_rpc_channel", False, raising=False)  # main() flips it; restore after
     monkeypatch.setattr(entry, "ensure_mcp_discovery_started", lambda: None)

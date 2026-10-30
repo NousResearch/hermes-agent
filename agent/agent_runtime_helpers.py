@@ -5,6 +5,8 @@ Each function takes the parent ``AIAgent`` as ``agent`` except the stateless mes
 """
 
 from __future__ import annotations
+
+from agent.agent_runtime_messages import is_codex_interim
 import contextlib
 import copy
 import json
@@ -375,15 +377,6 @@ def note_turn_persisted(agent):
     agent._inflight_turn_session_id = None
 
 
-def _is_codex_interim(m: dict) -> bool:
-    """Codex Responses interim turn: carries its own continuation state, replayed verbatim."""
-    return bool(
-        m.get("codex_reasoning_items")
-        or m.get("codex_message_items")
-        or m.get("finish_reason") == "incomplete"
-    )
-
-
 def _merge_assistant_into(prev: dict, msg: dict) -> bool:
     """Fold consecutive assistant *msg* into *prev* (union tool_calls, concat text). Returns whether *msg*'s
     text survives: multimodal (list) content is never joined."""
@@ -556,7 +549,7 @@ def _merge_consecutive_assistants(messages: list[dict]) -> tuple[list[dict], int
         if (
             prev is not None and prev.get("role") == "assistant"
             and isinstance(msg, dict) and msg.get("role") == "assistant"
-            and not _is_codex_interim(msg) and not _is_codex_interim(prev)
+            and not is_codex_interim(msg) and not is_codex_interim(prev)
         ):
             # A provisional verification candidate is superseded, not unioned.
             if prev.get("finish_reason") in {"verification_required", "verify_hook_continue"}:
@@ -630,7 +623,7 @@ def _prune_unanswered_tool_calls(messages: list[dict]) -> tuple[list[dict], int]
     for i, msg in enumerate(messages):
         if not (
             isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("tool_calls")
-            and not _is_codex_interim(msg)
+            and not is_codex_interim(msg)
         ):
             pruned.append(msg)
             continue
@@ -1013,8 +1006,9 @@ def recover_with_credential_pool(
     Rate limits: retry once, then rotate. Billing: rotate immediately. Auth: refresh before
     rotating. ``classified_reason`` beats raw HTTP codes (e.g. Anthropic 400 "out of extra
     usage"); ``billing_unverified`` gives the entry a short cooldown, not the one-hour bench."""
+    from agent.codex_auth_policy import readonly_codex_agent
     pool = agent._credential_pool
-    if pool is None:
+    if pool is None or readonly_codex_agent(agent):
         return False, has_retried_429
     # The pool belongs to the PRIMARY provider: acting on fallback errors would corrupt its state
     # and reset base_url to the primary endpoint. Empty pool provider means unscoped; empty agent
@@ -2440,6 +2434,8 @@ def switch_model(
     api_mode, base_url, destination_capabilities = _resolve_switch_destination(
         agent, new_model, new_provider, base_url, api_mode, capabilities, old_norm, new_norm
     )
+    from agent.codex_auth_policy import require_native_codex_runtime
+    require_native_codex_runtime(api_mode)
     snapshot = _snapshot_switch_state(agent)
     try:
         _swap_switch_runtime(

@@ -512,9 +512,15 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
     are skipped so the unavailable primary model can never leak into a different runtime."""
     from hermes_cli.auth import AuthError
     from hermes_cli.runtime_provider import resolve_runtime_provider
+    from agent.codex_auth_policy import codex_auth_read_only
+    resolve_kwargs = dict(resolve_kwargs or {})
+    if codex_auth_read_only():
+        resolve_kwargs["codex_auth_read_only"] = True
     try:
-        return _RuntimeFallbackResolution(resolve_runtime_provider(**(resolve_kwargs or {})), None, False)
+        return _RuntimeFallbackResolution(resolve_runtime_provider(**resolve_kwargs), None, False)
     except AuthError as primary_exc:
+        from agent.codex_auth_policy import reject_readonly_codex_fallback
+        reject_readonly_codex_fallback(primary_exc)
         for entry in _load_fallback_model() or []:
             fb_provider = str(entry.get("provider") or "").strip() if isinstance(entry, dict) else ""
             fb_model = str(entry.get("model") or "").strip() if isinstance(entry, dict) else ""

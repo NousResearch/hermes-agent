@@ -160,6 +160,50 @@ Codex uses a separate Responses API path:
 - dedicated credential resolution and auth store support
 - a resumed session whose lingering Codex reasoning items (`encrypted_content`) are rejected — as a 400 `invalid_encrypted_content` or as a 401 `token_expired` — self-heals by stripping the cached items and replaying once, before any credential refresh or pool rotation. Reasoning minted after that strip keeps replaying; only a second rejection in the same session turns replay off
 
+### Read-only Codex auth for a dedicated stdio process
+
+A local integration can start its **own new process** with:
+
+```bash
+python -m tui_gateway.entry --codex-auth-read-only
+```
+
+The flag is off by default. Its immutable process policy is bound before stdio
+startup and cannot be reset or lowered by RPC, runtime arguments, or a profile
+switch. All profiles/threads hosted by that opted-in process share the restriction;
+other processes keep normal behavior. No environment or saved configuration is changed.
+A fork inheriting an enabled policy fails closed with a `RuntimeError`; it cannot
+continue using that policy. A fresh exec/spawn does **not** inherit this opt-in:
+launch each separate stdio process with the flag explicitly. This is not a
+transitive child-process restriction.
+
+Native Codex resolution reads existing singleton or pool-only credentials and keeps
+the selected token paired with its endpoint (an explicit runtime URL still wins).
+It does not acquire an auth-store lock, adopt Codex CLI credentials, refresh tokens,
+load a mutable Codex pool, persist cooldowns, or rotate credentials. This also applies
+to auxiliary resolution, forced refresh, 401/429 recovery, model switches and agent
+rebuilds. Missing credentials fail closed; expired stored tokens are returned as-is
+and may fail inference. A Codex failure does not activate a different provider as
+an escape from this policy, including direct `AIAgent` initialization without
+pre-resolved credentials. Profile clone/mirror operations whose source auth store
+has `providers`/`credential_pool` entries identified by the native canonical
+`openai-codex` ID or supported aliases (`codex`, `chatgpt`, `chatgpt-codex`) are
+refused before copy I/O, rather than copying then stripping credentials. Unreadable
+or malformed auth stores are also refused with a fixed policy error. This is ID
+recognition, not inspection of arbitrary disguised labels or embedded secret data.
+`codex_app_server` is unsupported and rejected because
+its subprocess owns a separate authentication lifecycle.
+
+This is **Codex auth policy, not a read-only filesystem or OS sandbox**. Other
+providers, ordinary session/log/config writes, and inference/catalog requests are
+not disabled. Use OS isolation for containment (see `SECURITY.md`).
+
+The lower-level `resolve_runtime_provider(codex_auth_read_only=True)` keyword
+only selects that call's readonly credential-resolution path and rejects the
+app-server mode. It does **not** bind process authority or independently disable
+later pool/mutation APIs. Those guards require the stdio process opt-in above;
+an explicit `False` cannot lower an already enabled process policy.
+
 ## Auxiliary model routing
 
 Auxiliary tasks such as:

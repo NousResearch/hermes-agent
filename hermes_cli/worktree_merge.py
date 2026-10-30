@@ -16,9 +16,11 @@ coordinator asked for, and refuses without changing anything when a check fails:
 Then it runs an ordinary ``git merge --no-ff`` of the checked commit, so hooks, signing and the
 repository's merge config apply as they would by hand. ``--gate CMD`` runs after the merge; a timeout
 kills the gate's process tree (a process that detaches into its own session and is reparented before
-the timeout is no longer part of that tree and is not tracked). A failing gate does NOT roll back: undoing a merge inside a
-live worktree cannot be made safe against every checkout filter, sparse pattern and concurrent
-change, so the merge commit is kept and the result names the ``git reset --keep`` that undoes it.
+the timeout is no longer part of that tree and is not tracked). A failing gate does NOT roll back:
+undoing a merge inside a live worktree cannot be made safe against every checkout filter, sparse
+pattern and concurrent change, so the merge commit is kept. The result names the ``git reset --keep``
+that undoes it while HEAD is still where the merge left it; if the gate moved HEAD, it says so and
+asks for a look at ``git log`` instead.
 """
 
 from __future__ import annotations

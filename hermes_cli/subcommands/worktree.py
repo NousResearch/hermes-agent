@@ -54,7 +54,7 @@ def build_worktree_parser(subparsers) -> None:
             "changing nothing, when tracked files are dirty, a changed file is outside --allow, "
             "commits landed after --tested, the merge would conflict, or it would overwrite an "
             "untracked file. --gate runs after the merge; a failing gate keeps the merge and prints "
-            "the `git reset --keep` that undoes it.")
+            "recovery guidance (the `git reset --keep` that undoes it, unless the gate moved HEAD).")
     worktree_merge.add_argument("branch", help="Branch or commit to merge (e.g. hermes-subagent/subagent-<id>)")
     worktree_merge.add_argument(
         "--allow", action="append", metavar="PATH",

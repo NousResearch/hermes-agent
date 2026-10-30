@@ -58,7 +58,7 @@ class _Claim:
 
 async def run(params, board_db):
     from agent.retry_utils import jittered_backoff
-    from hermes_cli.gateway_client import connect_gateway, GatewayClientError
+    from hermes_cli.gateway_client import connect_gateway, GatewayClientError, outside_restart_wait
     from websockets.exceptions import WebSocketException
     if os.environ.get('HERMES_TUI_GATEWAY_URL'):
         raise GatewayClientError('Kanban requires the assigned local profile owner')
@@ -71,15 +71,19 @@ async def run(params, board_db):
     while True:
         seen = claim.answered
         try:
-            async with connect_gateway() as client:
-                # kanban.run subscribes this socket to the card's session, but only receipts matter
-                # here: discard the turn's events, or they fill the client's bounded queue and its
-                # reader stops, with the next receipt behind it.
-                drain = asyncio.create_task(_discard(client.events))
-                try:
-                    receipt = await _await_receipt(client, params, board_db, claim)
-                finally:
-                    drain.cancel()
+            # Never into a restart's after-turn wait: it cut this socket so the turn's submitter
+            # waits for the NEXT owner, and a worker polling its receipt inside the wait keeps the
+            # turn it waits on alive, holding `hermes update` until restart_after_turn_timeout.
+            with outside_restart_wait():
+                async with connect_gateway() as client:
+                    # kanban.run subscribes this socket to the card's session, but only receipts
+                    # matter here: discard the turn's events, or they fill the client's bounded
+                    # queue and its reader stops, with the next receipt behind it.
+                    drain = asyncio.create_task(_discard(client.events))
+                    try:
+                        receipt = await _await_receipt(client, params, board_db, claim)
+                    finally:
+                        drain.cancel()
         # A restart also surfaces as a refused or reset dial, a failed handshake, or an answer
         # that never came.
         except (GatewayClientError, WebSocketException, OSError, TimeoutError) as exc:

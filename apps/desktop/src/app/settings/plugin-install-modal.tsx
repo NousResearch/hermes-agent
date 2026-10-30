@@ -20,6 +20,7 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Loader2 } from '@/lib/icons'
+import { lookupPluginCatalogEntry } from '@/lib/plugin-catalog'
 import { cn } from '@/lib/utils'
 import { COMMIT_SHA_RE, inspectAgentPlugin } from '@/store/agent-plugins'
 import {
@@ -32,7 +33,14 @@ import { $activeGatewayProfile, $profiles, $profileScope, normalizeProfileKey, p
 import { $connection } from '@/store/session'
 
 import { PluginInstallDetails } from './plugin-install-details'
-import { installComponents, type InstallModalCopy, type ProbeResult, runPluginInstall } from './plugin-install-run'
+import {
+  installComponents,
+  type InstallModalCopy,
+  type InstallOutcome,
+  type ProbeResult,
+  reviewedCommit,
+  runPluginInstall
+} from './plugin-install-run'
 import { usePluginProbe } from './use-plugin-probe'
 
 const CAPTION = 'text-[length:var(--conversation-caption-font-size)]'
@@ -268,15 +276,27 @@ function Disclosure({
 
 interface InstallFooterProps {
   canInstall: boolean
+  /** An older backend cannot hold the install to the reviewed commit: Install becomes "Install anyway". */
+  confirmUnreviewed: boolean
   failed: boolean
   installing: boolean
   onInstall: () => void
+  onInstallAnyway: () => void
   onRetry: () => void
   retryable: boolean
 }
 
 /** Cancel, then Install (one loader while it runs) or, after a failure, Retry — unless retrying cannot help. */
-function InstallFooter({ canInstall, failed, installing, onInstall, onRetry, retryable }: InstallFooterProps) {
+function InstallFooter({
+  canInstall,
+  confirmUnreviewed,
+  failed,
+  installing,
+  onInstall,
+  onInstallAnyway,
+  onRetry,
+  retryable
+}: InstallFooterProps) {
   const { t } = useI18n()
   const m = t.settings.plugins.installModal
 
@@ -285,7 +305,9 @@ function InstallFooter({ canInstall, failed, installing, onInstall, onRetry, ret
       <Button disabled={installing} onClick={closePluginInstallRequest} variant="outline">
         {t.common.cancel}
       </Button>
-      {failed ? (
+      {confirmUnreviewed && !installing ? (
+        <Button onClick={onInstallAnyway}>{m.installAnyway}</Button>
+      ) : failed ? (
         retryable && <Button onClick={onRetry}>{t.common.retry}</Button>
       ) : (
         <Button disabled={!canInstall} onClick={onInstall}>
@@ -295,6 +317,114 @@ function InstallFooter({ canInstall, failed, installing, onInstall, onRetry, ret
       )}
     </DialogFooter>
   )
+}
+
+interface SourceMovedNoticeProps {
+  copy: InstallModalCopy
+  /** A failure on screen replaces the notice. */
+  failure: null | string
+  probe: null | ProbeResult
+  request: PluginInstallRequest
+  shown: boolean
+}
+
+/** The source moved past the commit the user reviewed: name the commit the fresh review holds the install to. */
+function SourceMovedNotice({ copy, failure, probe, request, shown }: SourceMovedNoticeProps) {
+  if (!shown || failure) {
+    return null
+  }
+
+  return (
+    <p className={cn(CAPTION, 'text-(--ui-text-secondary)')} role="status">
+      {copy.sourceMoved(probe?.ok ? (reviewedCommit({ probe, request })?.slice(0, 12) ?? '') : '')}
+    </p>
+  )
+}
+
+/** Read the source again after a refusal. A catalog pick whose pin the backend did not read (native Desktop
+ *  inspects the branch tip in Electron) also takes the catalog's current pin, or every Install would resend
+ *  the one the catalog left; `repin` is that lookup, which Install waits on. */
+function useReviewAgain(request: PluginInstallRequest, start: (repo: string) => void) {
+  const [repin, setRepin] = useState<Promise<void>>(() => Promise.resolve())
+  // Set once the source is read again: Install then waits until the new inspection AND pin are on screen.
+  const [rereview, setRereview] = useState<'idle' | 'pending' | 'shown'>('idle')
+
+  const reviewAgain = (current: ProbeResult) => {
+    start(request.repo)
+    const name = request.catalogName
+
+    if (name && !current.catalogPin) {
+      setRereview('pending')
+      setRepin(
+        lookupPluginCatalogEntry(name)
+          .then(found => {
+            const open = $pluginInstallRequest.get()
+
+            if (found.ok && open?.catalogName === name) {
+              openPluginInstallRequest({ ...open, sha: found.entry.sha })
+            }
+          })
+          .finally(() => setRereview('shown'))
+      )
+    } else {
+      setRereview('shown')
+    }
+  }
+
+  return { repin, rereview, reviewAgain }
+}
+
+interface InstallNoticesProps {
+  confirmUnreviewed: boolean
+  copy: InstallModalCopy
+  /** A failure on screen replaces the partial-install notice. */
+  failure: null | string
+  partial: null | string
+  uncertain: boolean
+}
+
+/** What the last Install left: only the agent half in, an older backend's missing guarantee, or no answer. */
+function InstallNotices({ confirmUnreviewed, copy, failure, partial, uncertain }: InstallNoticesProps) {
+  return (
+    <>
+      {partial && !failure && (
+        <p className={cn(CAPTION, 'text-destructive')} role="alert">
+          {partial}
+        </p>
+      )}
+      {confirmUnreviewed && (
+        <p className={cn(CAPTION, 'text-foreground')} role="alert">
+          {copy.legacyBackendConfirm}
+        </p>
+      )}
+      {uncertain && (
+        <p className={cn(CAPTION, 'text-(--ui-text-secondary)')} role="status">
+          {copy.installUncertain}
+        </p>
+      )}
+    </>
+  )
+}
+
+interface InstallGate {
+  force: boolean
+  installing: boolean
+  partial: null | string
+  pinInvalid: boolean
+  probe: null | ProbeResult
+  rereview: 'idle' | 'pending' | 'shown'
+  uncertain: boolean
+  verified: boolean
+}
+
+/** An unverified repository installs only once its contents are on screen; a reviewed pick may start at once,
+ *  except after the source moved: then nothing installs until the new inspection and pin are shown.
+ *  After a partial install only Force (a replacement of both halves) may proceed. */
+function installEnabled(gate: InstallGate): boolean {
+  const { force, installing, partial, pinInvalid, probe, rereview, uncertain, verified } = gate
+  const reviewed = rereview === 'idle' ? verified || Boolean(probe?.ok) : rereview === 'shown' && Boolean(probe?.ok)
+
+  return !installing && !uncertain && !pinInvalid && (!partial || force) && reviewed
 }
 
 interface InstallViewProps {
@@ -329,6 +459,13 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
   const [pinRef, setPinRef] = useState('')
   const [installError, setInstallError] = useState<null | string>(null)
   const [installUncertain, setInstallUncertain] = useState(false)
+  // The source moved past the commit on screen: the dialog read it again and shows the new one for review.
+  const [sourceMoved, setSourceMoved] = useState(false)
+  // The backend predates `inspected_sha` and installed nothing: Install waits for an explicit "Install anyway".
+  const [confirmUnreviewed, setConfirmUnreviewed] = useState(false)
+  // The agent half installed and the desktop half could not follow it: only a replacement of both proceeds.
+  const [partial, setPartial] = useState<null | string>(null)
+  const { repin, rereview, reviewAgain } = useReviewAgain(request, start)
 
   useEffect(() => {
     start(request.repo)
@@ -351,30 +488,57 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
   const retryable = Boolean(installError) || !(probe?.unavailable || nothing)
   const line = `${verified ? m.reviewedByNous : m.securityIntro} ${(enable ? m.installsAndEnables : m.installsOnly)(targetLabel)}`
 
-  const install = async () => {
+  const install = async (withoutReviewedCommit = false) => {
     onInstallingChange(true)
     setInstallError(null)
+    setSourceMoved(false)
+    setConfirmUnreviewed(false)
+    // The commit the user clicked on: a lookup finishing after the click never changes it.
+    const chosen = $pluginInstallRequest.get() ?? request
 
     try {
       // A catalog pick may click Install while the inspection is still running: wait for it under the loader.
-      const detected = await settled()
+      const [detected] = await Promise.all([settled(), repin])
 
       if (!detected?.ok) {
         return
       }
 
       const outcome = await runPluginInstall(
-        { request, probe: detected, profile: targetProfile, enable, force, ref: pin || undefined, remote },
+        {
+          request: chosen,
+          probe: detected,
+          profile: targetProfile,
+          enable,
+          force,
+          ref: pin || undefined,
+          remote,
+          withoutReviewedCommit
+        },
         { copy: m, navigate, requestGateway }
       )
 
-      if (outcome.status === 'done') {
-        finishInstall(request, navigate)
-      } else if (outcome.status === 'uncertain') {
-        setInstallUncertain(true)
-      } else {
-        setInstallError(outcome.error)
+      const settle: Record<InstallOutcome['status'], () => void> = {
+        done: () => finishInstall(request, navigate),
+        uncertain: () => setInstallUncertain(true),
+        // Never resend the commit the source left: drop that inspection and read the source again, so
+        // Install waits on the new commit being on screen.
+        stale: () => {
+          setSourceMoved(true)
+          reviewAgain(detected)
+        },
+        // Never install the desktop half beside it at another commit: show the source as it is now, and
+        // Install waits for Force reinstall, which replaces both halves with that version.
+        partial: () => {
+          setPartial((outcome as Extract<InstallOutcome, { status: 'partial' }>).error)
+          setAdvancedOpen(true)
+          reviewAgain(detected)
+        },
+        needsConfirm: () => setConfirmUnreviewed(true),
+        failed: () => setInstallError((outcome as Extract<InstallOutcome, { status: 'failed' }>).error)
       }
+
+      settle[outcome.status]()
     } finally {
       onInstallingChange(false)
     }
@@ -388,8 +552,16 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
     }
   }
 
-  // An unverified repository installs only once its contents are on screen; a reviewed pick may start at once.
-  const canInstall = !installing && !installUncertain && !pinInvalid && (verified || Boolean(probe?.ok))
+  const canInstall = installEnabled({
+    force,
+    installing,
+    partial,
+    pinInvalid,
+    probe,
+    rereview,
+    uncertain: installUncertain,
+    verified
+  })
 
   return (
     <>
@@ -403,6 +575,7 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
             busy={installing}
             copy={m}
             force={force}
+            offerForce={Boolean(partial)}
             onForceChange={setForce}
             pin={{ value: pinRef, invalid: pinInvalid, onChange: setPinRef }}
             probe={probe}
@@ -422,18 +595,23 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
             {failure}
           </p>
         )}
-        {installUncertain && (
-          <p className={cn(CAPTION, 'text-(--ui-text-secondary)')} role="status">
-            {m.installUncertain}
-          </p>
-        )}
+        <SourceMovedNotice copy={m} failure={failure} probe={probe} request={request} shown={sourceMoved} />
+        <InstallNotices
+          confirmUnreviewed={confirmUnreviewed}
+          copy={m}
+          failure={failure}
+          partial={partial}
+          uncertain={installUncertain}
+        />
       </div>
 
       <InstallFooter
         canInstall={canInstall}
+        confirmUnreviewed={confirmUnreviewed}
         failed={Boolean(failure)}
         installing={installing}
         onInstall={() => void install()}
+        onInstallAnyway={() => void install(true)}
         onRetry={retry}
         retryable={retryable}
       />

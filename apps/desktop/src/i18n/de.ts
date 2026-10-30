@@ -5,6 +5,7 @@ import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
+import { deCronControl } from './de_cron_control'
 import { deErrorCodes } from './de_error_codes'
 import { deErrorLayers } from './de_error_layers'
 import { deFirstRun } from './de_first_run'
@@ -465,7 +466,8 @@ export const deOverrides = {
       microphoneConstraintsUnsupported: 'Mikrofon-Einschränkungen werden von diesem Gerät nicht unterstützt.',
       microphoneFailed: 'Mikrofon fehlgeschlagen',
       microphoneInUse: 'Das Mikrofon wird bereits von einer anderen App verwendet.',
-      microphoneNeedsHttps: 'Das Mikrofon braucht eine sichere Verbindung. Öffne die Webapp über HTTPS oder über einen SSH-Tunnel zu 127.0.0.1, um es zu nutzen.',
+      microphoneNeedsHttps:
+        'Das Mikrofon braucht eine sichere Verbindung. Öffne die Webapp über HTTPS oder über einen SSH-Tunnel zu 127.0.0.1, um es zu nutzen.',
       microphonePermissionDenied: 'Die Mikrofonberechtigung wurde verweigert.',
       microphoneStartFailed: 'Mikrofonaufnahme konnte nicht gestartet werden.',
       microphoneUnsupported: 'Diese Laufzeitumgebung unterstützt keine Mikrofonaufnahme.',
@@ -842,6 +844,17 @@ export const deOverrides = {
         versionLabel: 'Version',
         reviewedPin: sha => (sha ? `Geprüfter Pin ${sha}` : 'Geprüfter Pin'),
         latestCommit: 'Neuester Commit',
+        sourceMoved: sha =>
+          sha
+            ? `Das Repository hat sich seit deiner Prüfung geändert. Prüfe die neue Version (Commit ${sha}), bevor du sie installierst.`
+            : 'Das Repository hat sich seit deiner Prüfung geändert. Die neue Version wird gelesen…',
+        legacyBackendConfirm:
+          'Dieses Backend ist älter als diese App und kann nicht garantieren, dass genau die geprüfte Version installiert wird: Hat sich das Repository seitdem geändert, wird stattdessen die neuere Version installiert. Aktualisiere das Backend, um diese Garantie zu bekommen.',
+        installAnyway: 'Trotzdem installieren',
+        partialInstall: sha =>
+          sha
+            ? `Das Plugin ist nur teilweise installiert: Der Agent-Teil ist mit Commit ${sha} installiert, der Desktop-Teil konnte nicht folgen, weil sich das Repository seit deiner Prüfung geändert hat. Aktiviere unter „Erweitert“ die erzwungene Neuinstallation, um beide Teile durch die angezeigte Version zu ersetzen, oder brich ab, um nur den Agent-Teil zu behalten.`
+            : 'Das Plugin ist nur teilweise installiert: Der Agent-Teil ist installiert, der Desktop-Teil konnte nicht folgen, weil sich das Repository seit deiner Prüfung geändert hat. Aktiviere unter „Erweitert“ die erzwungene Neuinstallation, um beide Teile durch die angezeigte Version zu ersetzen, oder brich ab, um nur den Agent-Teil zu behalten.',
         nothingToInstall: 'Dieses Paket hat hier nichts zu installieren.'
       }
     },
@@ -3204,7 +3217,8 @@ export const deOverrides = {
     exported: 'Profil exportiert',
     failedImport: 'Profil konnte nicht importiert werden',
     failedExport: 'Profil konnte nicht exportiert werden',
-    exportNeedsHost: name => `Der Browser kann kein Profilarchiv speichern. Führe auf dem Hermes-Host aus: hermes profile export ${name}`,
+    exportNeedsHost: name =>
+      `Der Browser kann kein Profilarchiv speichern. Führe auf dem Hermes-Host aus: hermes profile export ${name}`,
     allProfiles: 'Alle Profile',
     showAllProfiles: 'Alle Profile anzeigen',
     notServedHere: 'Hier nicht bereitgestellt',
@@ -3357,6 +3371,7 @@ export const deOverrides = {
     declined: 'Modelländerung abgebrochen – Sie haben die Warnung zur Datentrainings-Stufe abgelehnt.'
   },
   cron: {
+    control: deCronControl,
     close: 'Cron schließen',
     title: 'Geplante Jobs',
     count: count => `${count} ${count === 1 ? 'Job' : 'Jobs'}`,
@@ -4786,7 +4801,8 @@ export const deOverrides = {
     saveApply: 'Speichern & anwenden',
     notExpressible: 'diese Anordnung greift ineinander (Windrad) — noch nicht als verschachtelte Splits ausdrückbar',
     zoneCount: count => `${count} Zonen`,
-    tabCount: count => `${count} Tabs`
+    tabCount: count => `${count} Tabs`,
+    tabActions: title => `Aktionen für ${title}`
   },
   contextMenu: {
     link: {
@@ -4840,142 +4856,148 @@ export const deOverrides = {
       errorCodes: {
         ...deErrorCodes,
         auth: {
-          title: provider => `${provider} hat Ihre Anmeldung abgelehnt`,
-          body: provider =>
-            `Die für ${provider} gespeicherten Zugangsdaten wurden nicht akzeptiert. Korrigieren Sie sie in den Einstellungen oder wechseln Sie den Anbieter und senden Sie Ihre Nachricht erneut.`
+          title: provider => `${provider} hat Ihren API-Key abgelehnt`,
+          body: () =>
+            'Der gespeicherte Key ist ungültig oder wurde widerrufen. Aktualisieren Sie ihn und senden Sie Ihre Nachricht erneut.'
         },
         auth_permanent: {
-          title: provider => `${provider} hat Ihre Anmeldung abgelehnt`,
-          body: provider =>
-            `Die für ${provider} gespeicherten Zugangsdaten sind ungültig oder wurden widerrufen. Aktualisieren Sie sie oder wechseln Sie den Anbieter und senden Sie Ihre Nachricht erneut.`
+          title: provider => `${provider} hat Ihren API-Key abgelehnt`,
+          body: () =>
+            'Der gespeicherte Key ist ungültig oder wurde widerrufen. Aktualisieren Sie ihn und senden Sie Ihre Nachricht erneut.'
         },
         billing: {
-          title: 'Kein Guthaben mehr',
-          body: provider =>
-            `Ihr ${provider}-Konto hat kein Guthaben mehr. Laden Sie Guthaben auf oder wechseln Sie den Anbieter und senden Sie erneut.`
+          title: provider => `Kein Guthaben bei ${provider}`,
+          body: provider => `Laden Sie Guthaben auf, um kostenpflichtige Modelle bei ${provider} weiter zu nutzen.`
         },
         rate_limit: {
-          title: 'Der KI-Dienst ist ausgelastet',
+          title: provider => `${provider} ist gerade ausgelastet`,
           body: provider =>
-            `${provider} begrenzt gerade die Anfragen. Warten Sie eine Minute und versuchen Sie es erneut.`
+            `Sie haben das Anfragelimit von ${provider} erreicht. Warten Sie einen Moment und versuchen Sie es erneut.`
         },
         upstream_rate_limit: {
-          title: 'Der KI-Dienst ist ausgelastet',
-          body: provider =>
-            `${provider} begrenzt gerade die Anfragen. Warten Sie eine Minute und versuchen Sie es erneut.`
+          title: (_provider, model) => `${model || 'Dieses Modell'} ist gerade ausgelastet`,
+          body: (provider, model) =>
+            `${model || 'Dieses Modell'} wird hinter ${provider} an der Quelle begrenzt, nicht bei Ihrem Konto. Versuchen Sie es gleich erneut.`
         },
         overloaded: {
-          title: 'Der KI-Dienst ist überlastet',
+          title: provider => `${provider} ist gerade ausgelastet`,
           body: provider =>
-            `${provider} hat gerade Probleme. Versuchen Sie es gleich erneut oder wechseln Sie den Anbieter.`
+            `${provider} ist überlastet und konnte diese Anfrage nicht annehmen. Versuchen Sie es gleich erneut.`
         },
         server_error: {
-          title: 'Beim KI-Dienst ist ein Fehler aufgetreten',
-          body: provider =>
-            `${provider} hat einen Serverfehler zurückgegeben. Versuchen Sie es gleich erneut oder wechseln Sie den Anbieter.`
+          title: provider => `${provider} hat Probleme`,
+          body: provider => `${provider} hat einen Serverfehler zurückgegeben. Versuchen Sie es gleich erneut.`
         },
         timeout: {
-          title: 'Der KI-Dienst ist nicht erreichbar',
+          title: provider => `${provider} nicht erreichbar`,
           body: provider =>
-            `${provider} war nicht erreichbar oder hat nicht rechtzeitig geantwortet. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut.`
+            `Hermes konnte ${provider} nicht erreichen. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.`
         },
         no_reply: {
-          title: 'Die Antwort wurde nicht fertig',
-          body: 'Hermes hat diesen Durchlauf ohne Antwort beendet. Versuchen Sie es erneut, um sie noch einmal zu senden.'
+          title: 'Die Antwort ist nicht angekommen',
+          body: 'Hermes hat diesen Durchlauf beendet, aber keine Antwort hat dieses Fenster erreicht. Versuchen Sie es erneut, um sie noch einmal zu senden.'
         },
         stream_drop: {
           title: 'Die Antwort wurde abgebrochen',
           body: 'Die Verbindung ist abgebrochen, bevor die Antwort fertig war. Versuchen Sie es erneut, um sie noch einmal zu senden.'
         },
         upstream_blocked: {
-          title: 'Eine Firewall hat die Anfrage blockiert',
-          body: (provider: string) =>
-            `Eine Firewall oder ein CDN vor ${provider} hat die Anfrage blockiert, bevor sie das Modell erreicht hat – Ihr Schlüssel ist vermutlich in Ordnung. Setzen Sie in den Einstellungen über die extra_headers des Anbieters einen User-Agent-Header oder wechseln Sie den Anbieter und senden Sie die Nachricht dann erneut.`
+          title: provider => `${provider} hat diese Anfrage blockiert`,
+          body: provider =>
+            `Eine Firewall vor ${provider} hat sie abgewiesen, bevor sie das Modell erreicht hat. Wechseln Sie den Anbieter oder legen Sie dafür einen eigenen User-Agent fest.`
         },
         ssl_cert_verification: {
-          title: 'Sichere Verbindung fehlgeschlagen',
+          title: provider => `Verbindung zu ${provider} nicht verifizierbar`,
           body: provider =>
-            `Hermes konnte die sichere Verbindung zu ${provider} nicht verifizieren. Prüfen Sie Ihre Netzwerk- oder Proxy-Einstellungen oder wechseln Sie den Anbieter und senden Sie Ihre Nachricht erneut.`
+            `Ein Proxy oder ein veralteter Zertifikatsspeicher hat die sichere Verbindung zu ${provider} blockiert. Die Einrichtungsanleitung zeigt, wie Sie das beheben.`
         },
         context_overflow: {
-          title: 'Dieses Gespräch ist zu lang',
-          body: 'Das Gespräch passt nicht mehr ins Modell. Komprimieren Sie es oder starten Sie einen neuen Chat und senden Sie erneut.'
+          title: 'Dieser Chat ist zu lang',
+          body: (_provider, model) =>
+            `Das Gespräch passt nicht mehr in das Kontextfenster ${model ? `von ${model}` : 'des Modells'}. Komprimieren Sie es, um weiterzumachen.`
         },
         payload_too_large: {
           title: 'Diese Nachricht ist zu groß',
-          body: 'Die Anfrage war zu groß für das Modell. Komprimieren Sie das Gespräch oder starten Sie einen neuen Chat und senden Sie erneut.'
+          body: provider =>
+            `Die Anfrage überschreitet samt Anhängen das Größenlimit von ${provider}. Komprimieren Sie das Gespräch oder entfernen Sie Anhänge.`
         },
         model_not_found: {
-          title: 'Dieses Modell ist nicht verfügbar',
-          body: provider =>
-            `${provider} bietet dieses Modell für Ihr Konto nicht an. Wählen Sie ein anderes Modell und senden Sie Ihre Nachricht erneut.`
+          title: (_provider, model) => `${model || 'Dieses Modell'} ist nicht verfügbar`,
+          body: (provider, model) =>
+            `${provider} bietet ${model || 'dieses Modell'} für Ihr Konto nicht an. Wählen Sie ein anderes Modell.`
         },
         provider_policy_blocked: {
-          title: 'Dieses Modell ist durch Ihre Kontoeinstellungen gesperrt',
+          title: (provider, model) => `${provider}-Einstellungen sperren ${model || 'dieses Modell'}`,
           body: provider =>
-            `${provider} leitet diese Anfrage mit den Daten- und Datenschutzeinstellungen Ihres Kontos nicht weiter. Wählen Sie ein anderes Modell oder wechseln Sie den Anbieter.`
+            `Ihre Datenschutzeinstellungen bei ${provider} schließen alle Endpunkte für dieses Modell aus. Ändern Sie sie bei ${provider} oder wählen Sie ein anderes Modell.`
         },
         content_policy_blocked: {
-          title: 'Der KI-Dienst hat diese Anfrage abgelehnt',
+          title: provider => `${provider} hat diese Nachricht abgelehnt`,
           body: provider =>
-            `${provider} wollte diese Nachricht nicht beantworten. Ändern Sie sie und senden Sie sie erneut.`
+            `Der Sicherheitsfilter von ${provider} hat sie abgewiesen. Bearbeiten Sie die Nachricht und senden Sie sie erneut.`
         },
         format_error: {
-          title: 'Der KI-Dienst hat die Anfrage abgelehnt',
+          title: provider => `${provider} hat diese Anfrage abgelehnt`,
           body: provider =>
-            `${provider} hat den Aufbau dieser Anfrage nicht akzeptiert. Wechseln Sie den Anbieter oder senden Sie Diagnosedaten, damit wir es prüfen können.`
+            `${provider} konnte den Aufbau dieses Gesprächs nicht annehmen. Wechseln Sie den Anbieter oder starten Sie einen neuen Chat, falls es weiter passiert.`
         },
         truncated: {
           title: 'Die Antwort wurde abgeschnitten',
-          body: 'Das Modell hat vor dem Ende abgebrochen. Versuchen Sie es erneut, um eine vollständige Antwort zu erhalten.'
+          body: (_provider, model) =>
+            `${model || 'Das Modell'} hat seine Antwort vor dem Ende abgebrochen. Wählen Sie „Fortsetzen“, um dort weiterzumachen, wo es aufgehört hat.`
         },
         invalid_response: {
-          title: 'Der KI-Dienst hat eine unlesbare Antwort geschickt',
+          title: 'Antwort nicht lesbar',
           body: provider =>
-            `${provider} hat etwas zurückgegeben, das Hermes nicht lesen konnte. Versuchen Sie es gleich erneut.`
+            `${provider} hat eine leere oder fehlerhafte Antwort geschickt. Versuchen Sie es gleich erneut.`
         },
         empty_response: {
-          title: 'Der KI-Dienst hat eine leere Antwort geschickt',
+          title: 'Keine Antwort erhalten',
           body: provider => `${provider} hat auf diese Nachricht nichts zurückgegeben. Versuchen Sie es gleich erneut.`
         },
         loop_error: {
-          title: 'Hermes ist in einer Schleife hängen geblieben',
-          body: 'Die Antwort hat dieselben Schritte wiederholt, daher hat Hermes sie gestoppt. Versuchen Sie es erneut oder starten Sie einen neuen Chat, wenn es wieder passiert.'
+          title: 'Schritt konnte nicht abgeschlossen werden',
+          body: 'Beim Verarbeiten der Antwort ist etwas schiefgelaufen. Versuchen Sie es erneut; wenn es wieder passiert, senden Sie Diagnosedaten aus den Details.'
+        },
+        agent_init_failed: {
+          title: 'Chat konnte nicht starten',
+          body: provider =>
+            `Hermes konnte für diesen Chat keine Verbindung zu ${provider} herstellen. Versuchen Sie es erneut; wenn es weiter fehlschlägt, prüfen Sie den Anbieter in den Einstellungen.`
         },
         SESSION_NOT_OWNED: {
-          title: 'Dieser Chat ist woanders offen',
-          body: 'Dieser Chat ist gerade in einem anderen Hermes-Fenster oder Terminal geöffnet. Schließen Sie ihn dort und senden Sie Ihre Nachricht erneut, oder starten Sie hier einen neuen Chat.'
+          title: 'Chat ist woanders geöffnet',
+          body: 'Dieser Chat ist in einem anderen Hermes-Fenster oder Terminal geöffnet. Starten Sie hier einen neuen Chat oder schließen Sie ihn zuerst dort.'
         },
         disk_full: {
-          title: 'Festplatte voll',
-          body: 'Ihre Festplatte ist voll, daher konnte Hermes dieses Gespräch nicht speichern. Geben Sie Speicherplatz frei und versuchen Sie es erneut.'
+          title: 'Ihre Festplatte ist voll',
+          body: 'Hermes konnte dieses Gespräch nicht speichern. Geben Sie Speicherplatz frei und versuchen Sie es erneut.'
         },
         free_tier_disabled: {
-          title: 'Chatten ohne Anmeldung ist gerade abgeschaltet',
+          title: 'Anmelden, um weiterzuchatten',
           body: 'Melden Sie sich mit einem Nous-Konto an, um weiterzuschreiben – es ist kostenlos.'
         },
         free_tier_rate_limited: {
-          title: 'Sie haben das Kontingent für Chats ohne Anmeldung aufgebraucht',
+          title: 'Kostenloses Kontingent aufgebraucht',
           body: 'Es wird bald wieder aufgefüllt. Melden Sie sich mit einem Nous-Konto an, um ein größeres Kontingent zu erhalten – es ist kostenlos.'
         },
         free_tier_at_capacity: {
-          title: 'Chatten ohne Anmeldung ist gerade sehr stark ausgelastet',
+          title: 'Kostenloser Zugang ist ausgelastet',
           body: 'Melden Sie sich an, um die Warteschlange zu überspringen – es ist kostenlos –, oder versuchen Sie es später erneut.'
         },
         free_tier_model_not_free: {
-          title: 'Dieses Modell gibt es ohne Anmeldung nicht',
+          title: 'Dieses Modell erfordert Anmeldung',
           body: 'Hermes verwendet vorerst das kostenlose Modell. Melden Sie sich mit einem Nous-Konto an, um mehr Modelle zu nutzen – es ist kostenlos.'
         },
         free_tier_route: {
-          title: 'Hermes hat das kostenlose Modell über diese Route nicht erreicht',
+          title: 'Kostenloses Modell nicht erreichbar',
           body: 'Melden Sie sich mit einem Nous-Konto an – es ist kostenlos – oder prüfen Sie die Einstellung NOUS_INFERENCE_BASE_URL.'
         },
         free_tier_outage: {
-          title: 'Das kostenlose Modell antwortet gerade schlecht',
+          title: 'Kostenloses Modell hat Probleme',
           body: 'Versuchen Sie in einer Minute, Ihre Nachricht erneut zu senden.'
         },
         free_tier_refused: {
-          title: 'Hermes konnte das ohne Anmeldung nicht senden',
+          title: 'Anmelden, um weiterzuchatten',
           body: 'Eine Anmeldung mit einem Nous-Konto ist kostenlos.'
         },
         usage_window: {
@@ -4986,14 +5008,27 @@ export const deOverrides = {
       errorAuthKinds: {
         api_key: {
           title: provider => `${provider} hat Ihren API-Key abgelehnt`,
-          body: provider =>
-            `Der für ${provider} gespeicherte Key ist ungültig oder wurde widerrufen. Aktualisieren Sie ihn und versuchen Sie es erneut.`
+          body: () =>
+            'Der gespeicherte Key ist ungültig oder wurde widerrufen. Aktualisieren Sie ihn und senden Sie Ihre Nachricht erneut.'
         },
         oauth: {
-          title: provider => `Ihre ${provider}-Anmeldung ist abgelaufen`
+          title: provider => `Erneut bei ${provider} anmelden`
         }
       },
-      errorDetails: 'Details',
+      errorDetails: 'Fehlerdetails anzeigen',
+      errorHideDetails: 'Fehlerdetails ausblenden',
+      errorDetailsCopy: 'Details kopieren',
+      errorCopyRaw: 'Fehler kopieren',
+      errorContinue: 'Fortsetzen',
+      errorOpenProviderSettings: provider => `${provider}-Einstellungen öffnen`,
+      errorOpenSetupGuide: 'Einrichtungsanleitung öffnen',
+      errorSetupGuideLink: 'Einrichtungsanleitung',
+      errorOpenModelSettings: 'Modelleinstellungen öffnen',
+      errorStartNewChatLink: 'Neuen Chat starten',
+      errorChooseModelLink: 'Anderes Modell wählen',
+      errorRetryAtResetShort: time => `Um ${time} erneut versuchen`,
+      errorRateLimitResetBody: (provider, time) =>
+        `Sie haben das Anfragelimit von ${provider} erreicht. Es wird um ${time} zurückgesetzt.`,
       errorGenericProvider: 'Der KI-Dienst',
       errorToastTitle: 'Hermes konnte die Antwort nicht fertigstellen',
       errorRetry: 'Erneut versuchen',
@@ -5003,8 +5038,6 @@ export const deOverrides = {
       errorUseCreditsFailed: 'Mit Guthaben weitermachen konnte nicht aktiviert werden',
       errorAddCredits: 'Guthaben aufladen',
       errorOpenBillingSettings: 'Abrechnungseinstellungen öffnen',
-      errorLimitResets: (time: string) => `Limit wird um ${time} zurückgesetzt`,
-      errorRetryAtReset: (time: string) => `Erneut versuchen, wenn das Limit zurückgesetzt wird (${time})`,
       errorRetryScheduled: (time: string, wait: string) => `Neuer Versuch um ${time} – in ${wait}`,
       errorRetryScheduledCancel: 'Abbrechen',
       errorStartNewSession: 'Neue Session starten',
@@ -5022,7 +5055,6 @@ export const deOverrides = {
       errorOpenLogs: 'Logs öffnen',
       errorOpenLogsFailed: 'Der Logs-Ordner konnte nicht geöffnet werden',
       errorOpenDesktopLogs: 'Desktop-Logs öffnen',
-      errorCopyDiagnostics: 'Fehlerdetails kopieren',
       errorSendDiagnostics: 'Diagnose senden',
       filesChanged: count => (count === 1 ? '1 Datei geändert' : `${count} Dateien geändert`),
       reviewChanges: 'Prüfen',

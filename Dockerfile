@@ -74,9 +74,11 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/tools
 # must be declared here. The list is the `ldd ... | grep "not found"` set of
 # the pinned chrome binary in this base image, mapped to trixie package
 # names (see .hermes/plans/termux-removal-commit-spec.md).
+# tmux backs the hermes-agent skill's interactive spawning recipe; the runtime
+# user cannot apt-get it later (no root, and the root fs resets on restart).
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
-    ca-certificates curl iputils-ping python3 python-is-python3 gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils \
+    ca-certificates curl iputils-ping python3 python-is-python3 gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils tmux \
     libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 && \
     rm -rf /var/lib/apt/lists/*
 
@@ -272,12 +274,21 @@ FROM runtime_base AS python_deps
 # is baked so hosted/immutable images can enable the adapter without writing
 # the sealed venv.
 #
+# [fal] is baked because the image tool's availability check imports
+# fal_client whenever a FAL backend resolves, which the Nous-managed gateway
+# always does on hosted agents. Lazy-installing it at the gateway's first boot
+# builds a whole new venv generation on the volume (about 90s).
+#
 # --record-selection writes these extras to the store's facts.json as the venv
 # selection, as a bundle build does. Without it, the first opt-in extra a
 # container installs on use (FAL, a plugin's deps) records a selection of
 # just that extra, and every later boot runs a generation without the extras
 # baked here (aiohttp, so no API server). stage2's dependency refresh
 # restores this baseline into volumes that already lost it.
+#
+# The [documents] extra (python-docx, openpyxl, python-pptx, reportlab, pypdf;
+# ~25 MB) is baked so the microsoft-office and pdf skills work out of the box:
+# this venv is sealed and has no pip, so the agent could not add them itself.
 #
 # Source binding is created after the source copy below.
 COPY pyproject.toml uv.lock ./
@@ -291,7 +302,7 @@ RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3
     --cache /opt/hermes/uv-cache \
     --out /opt/hermes/.venv --no-install-project --sealed --record-selection \
     --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock \
-    --extra azure-identity --extra matrix --extra google-chat
+    --extra azure-identity --extra matrix --extra google-chat --extra fal --extra documents
 
 # Icons render on the runtime environment: Pillow and resvg-py are core
 # dependencies. A stage of its own so the frontend stage keeps building its
@@ -516,6 +527,8 @@ COPY --chmod=0755 docker/entrypoint-dispatch.sh /opt/hermes/docker/entrypoint-di
 # binary by absolute path, so this PATH ordering is transparent to
 # every other consumer.
 ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
+# Login shells re-read /etc/profile, which resets PATH; this re-adds the dirs above.
+COPY --chmod=0644 docker/profile-hermes-path.sh /etc/profile.d/hermes.sh
 # PM's atomic writer creates private facts for source installs. In the
 # image these are shared, non-secret package metadata, read by UID 10000.
 # uv's environment locks are build-only and may be world-writable. Remove

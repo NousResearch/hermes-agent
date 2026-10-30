@@ -6,6 +6,7 @@ import { introZh } from './intro-zh'
 import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
+import { zhCronControl } from './zh_cron_control'
 import { zhErrorCodes } from './zh_error_codes'
 import { zhErrorLayers } from './zh_error_layers'
 import { zhFirstRun } from './zh_first_run'
@@ -675,6 +676,15 @@ export const zhOverrides = {
         versionLabel: '版本',
         reviewedPin: sha => (sha ? `已审核的固定提交 ${sha}` : '已审核的固定提交'),
         latestCommit: '最新提交',
+        sourceMoved: sha =>
+          sha ? `自你审阅后仓库已变更。请先审阅新版本（提交 ${sha}）再安装。` : '自你审阅后仓库已变更。正在读取新版本…',
+        legacyBackendConfirm:
+          '此后端比本应用旧，无法保证安装的就是你审阅过的版本：如果仓库此后有变更，安装的会是更新的版本。更新后端即可获得这一保证。',
+        installAnyway: '仍然安装',
+        partialInstall: sha =>
+          sha
+            ? `插件只安装了一部分：代理部分已安装在提交 ${sha}，但由于仓库在你审阅后有变更，桌面部分未能随之安装。在“高级”中打开强制重装，可用显示的版本替换两部分；或取消，仅保留代理部分。`
+            : '插件只安装了一部分：代理部分已安装，但由于仓库在你审阅后有变更，桌面部分未能随之安装。在“高级”中打开强制重装，可用显示的版本替换两部分；或取消，仅保留代理部分。',
         nothingToInstall: '此包在这里没有可安装的内容。'
       }
     },
@@ -2829,6 +2839,7 @@ export const zhOverrides = {
   },
 
   cron: {
+    control: zhCronControl,
     close: '关闭定时任务',
     title: '定时任务',
     count: count => `${count} 个任务`,
@@ -4204,7 +4215,8 @@ export const zhOverrides = {
     saveApply: '保存并应用',
     notExpressible: '此排列互相咬合（风车形）——暂无法表示为嵌套拆分',
     zoneCount: count => `${count} 个区域`,
-    tabCount: count => `${count} 个标签页`
+    tabCount: count => `${count} 个标签页`,
+    tabActions: title => `${title} 的操作`
   },
 
   contextMenu: {
@@ -4258,54 +4270,78 @@ export const zhOverrides = {
       errorCodes: {
         ...zhErrorCodes,
         provider_policy_blocked: {
-          title: '账户设置阻止了此模型',
-          body: provider => `${provider} 无法按你账户的数据或隐私设置路由此请求。请选择其他模型或切换服务商。`
+          title: (provider, model) => `${provider} 设置阻止了 ${model || '此模型'}`,
+          body: provider =>
+            `你的 ${provider} 隐私设置排除了此模型的所有端点。请在 ${provider} 上更改设置，或选择其他模型。`
         },
         content_policy_blocked: {
-          title: 'AI 服务拒绝回答此请求',
-          body: provider => `${provider} 拒绝回答这条消息。请修改后重新发送。`
+          title: provider => `${provider} 拒绝了此消息`,
+          body: provider => `${provider} 的安全过滤器拒绝了它。请修改消息后重新发送。`
         },
         format_error: {
-          title: 'AI 服务拒绝了请求格式',
-          body: provider => `${provider} 不接受此请求的构造方式。请切换服务商，或发送诊断信息以便我们排查。`
+          title: provider => `${provider} 拒绝了此请求`,
+          body: provider => `${provider} 无法接受此对话的结构。请切换服务商；若问题持续，请新建聊天。`
         },
         invalid_response: {
-          title: 'AI 服务返回了无法读取的回复',
-          body: provider => `${provider} 返回了 Hermes 无法读取的内容。请稍后重试。`
+          title: '无法读取回复',
+          body: provider => `${provider} 返回了空的或损坏的回复。请稍后重试。`
         },
         empty_response: {
-          title: 'AI 服务返回了空回复',
+          title: '未能获得回复',
           body: provider => `${provider} 没有为此消息返回内容。请稍后重试。`
         },
         rate_limit: {
-          title: 'AI 服务繁忙',
-          body: provider => `${provider} 正在限制请求数量。请稍等片刻后重试。`
+          title: provider => `${provider} 当前繁忙`,
+          body: provider => `你已达到 ${provider} 的速率限制。请稍等片刻后重试。`
         },
         upstream_rate_limit: {
-          title: 'AI 服务繁忙',
-          body: provider => `${provider} 正在限制请求数量。请稍等片刻后重试。`
+          title: (_provider, model) => `${model || '此模型'} 当前繁忙`,
+          body: (provider, model) =>
+            `${model || '此模型'} 在 ${provider} 的上游受到速率限制，与你的账户无关。请稍后重试。`
         },
         overloaded: {
-          title: 'AI 服务负载过高',
-          body: provider => `${provider} 当前遇到问题。请稍后重试或切换服务商。`
+          title: provider => `${provider} 当前繁忙`,
+          body: provider => `${provider} 负载过高，无法处理此请求。请稍后重试。`
         },
         server_error: {
-          title: 'AI 服务发生错误',
-          body: provider => `${provider} 返回了服务器错误。请稍后重试或切换服务商。`
+          title: provider => `${provider} 出现问题`,
+          body: provider => `${provider} 返回了服务器错误。请稍后重试。`
         },
         timeout: {
-          title: '无法连接到 AI 服务',
-          body: provider => `无法连接到 ${provider}，或其未及时响应。请检查网络连接后重试。`
+          title: provider => `无法连接 ${provider}`,
+          body: provider => `Hermes 无法连接到 ${provider}。请检查网络连接后重试。`
         },
         ssl_cert_verification: {
-          title: '安全连接失败',
-          body: provider => `Hermes 无法验证与 ${provider} 的安全连接。请检查网络或代理设置，或切换服务商后重新发送。`
+          title: provider => `无法验证 ${provider} 的连接`,
+          body: provider => `代理或过时的证书存储阻止了与 ${provider} 的安全连接。设置指南介绍了修复方法。`
         },
         usage_window: {
           title: '包含用量已用完',
           body: '你的方案包含的用量已用完，将在重置后恢复。在 /topup 中添加额度即可继续。'
         }
       },
+      errorAuthKinds: {
+        api_key: {
+          title: provider => `${provider} 拒绝了你的 API 密钥`,
+          body: () => '已保存的密钥无效或已被撤销。请更新密钥，然后重新发送消息。'
+        },
+        oauth: {
+          title: provider => `重新登录 ${provider}`
+        }
+      },
+      errorDetails: '查看错误详情',
+      errorHideDetails: '隐藏错误详情',
+      errorDetailsCopy: '复制详情',
+      errorCopyRaw: '复制错误',
+      errorContinue: '继续',
+      errorOpenProviderSettings: provider => `打开 ${provider} 设置`,
+      errorOpenSetupGuide: '打开设置指南',
+      errorSetupGuideLink: '设置指南',
+      errorOpenModelSettings: '打开模型设置',
+      errorStartNewChatLink: '新建聊天',
+      errorChooseModelLink: '选择其他模型',
+      errorRetryAtResetShort: time => `于 ${time} 重试`,
+      errorRateLimitResetBody: (provider, time) => `你已达到 ${provider} 的速率限制，将于 ${time} 重置。`,
       errorRetry: '重试',
       errorSwitchToModel: (model, note) => (note ? `切换到 ${model}（${note}）` : `切换到 ${model}`),
       errorSwitchModelFailed: '无法切换模型',
@@ -4313,18 +4349,15 @@ export const zhOverrides = {
       errorUseCreditsFailed: '无法开启用额度继续',
       errorAddCredits: '添加额度',
       errorOpenBillingSettings: '打开账单设置',
-      errorLimitResets: time => `限额将于 ${time} 重置`,
-      errorRetryAtReset: time => `限额重置后重试（${time}）`,
       errorRetryScheduled: (time, wait) => `将于 ${time} 重试 — 还剩 ${wait}`,
       errorRetryScheduledCancel: '取消',
       errorStartNewSession: '开始新会话',
       errorSwitchProvider: '切换服务商',
       errorSignInAgain: provider => `重新登录 ${provider}`,
-      errorOauthExpired: provider => `您的 ${provider} 登录已过期或被撤销。请重新登录以继续对话。`,
+      errorOauthExpired: provider => `你的 ${provider} 登录已过期或被撤销。请重新登录以继续聊天。`,
       errorOpenLogs: '打开日志',
       errorOpenLogsFailed: '无法打开日志文件夹',
       errorOpenDesktopLogs: '打开桌面端日志',
-      errorCopyDiagnostics: '复制错误详情',
       errorSendDiagnostics: '发送诊断信息',
       filesChanged: count => `${count} 个文件已更改`,
       reviewChanges: '查看',

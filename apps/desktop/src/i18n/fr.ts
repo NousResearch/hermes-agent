@@ -6,6 +6,7 @@ import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
+import { frCronControl } from './fr_cron_control'
 import { frErrorCodes } from './fr_error_codes'
 import { frErrorLayers } from './fr_error_layers'
 import { frFirstRun } from './fr_first_run'
@@ -465,7 +466,8 @@ export const frOverrides = {
       microphoneConstraintsUnsupported: 'Les contraintes du microphone ne sont pas prises en charge par cet appareil.',
       microphoneFailed: 'Échec du microphone',
       microphoneInUse: 'Le microphone est déjà utilisé par une autre application.',
-      microphoneNeedsHttps: "Le micro nécessite une connexion sécurisée. Ouvrez la Webapp en HTTPS, ou via un tunnel SSH vers 127.0.0.1, pour l'utiliser.",
+      microphoneNeedsHttps:
+        "Le micro nécessite une connexion sécurisée. Ouvrez la Webapp en HTTPS, ou via un tunnel SSH vers 127.0.0.1, pour l'utiliser.",
       microphonePermissionDenied: "L'autorisation du microphone a été refusée.",
       microphoneStartFailed: "Impossible de démarrer l'enregistrement du microphone.",
       microphoneUnsupported: "Ce runtime ne prend pas en charge l'enregistrement micro.",
@@ -844,6 +846,17 @@ export const frOverrides = {
         versionLabel: 'Version',
         reviewedPin: sha => (sha ? `Pin examiné ${sha}` : 'Pin examiné'),
         latestCommit: 'Dernier commit',
+        sourceMoved: sha =>
+          sha
+            ? `Le dépôt a changé depuis votre examen. Examinez la nouvelle version (commit ${sha}) avant de l'installer.`
+            : 'Le dépôt a changé depuis votre examen. Lecture de la nouvelle version…',
+        legacyBackendConfirm:
+          "Ce backend est plus ancien que cette application : il ne peut pas garantir que la version examinée est celle qui sera installée. Si le dépôt a changé depuis, c'est la version plus récente qui s'installe. Mettez à jour le backend pour obtenir cette garantie.",
+        installAnyway: 'Installer quand même',
+        partialInstall: sha =>
+          sha
+            ? `Le plugin n'est installé qu'en partie : la partie agent est installée au commit ${sha}, mais la partie bureau n'a pas pu suivre car le dépôt a changé depuis votre examen. Activez Forcer la réinstallation dans Avancé pour remplacer les deux parties par la version affichée, ou annulez pour ne garder que la partie agent.`
+            : "Le plugin n'est installé qu'en partie : la partie agent est installée, mais la partie bureau n'a pas pu suivre car le dépôt a changé depuis votre examen. Activez Forcer la réinstallation dans Avancé pour remplacer les deux parties par la version affichée, ou annulez pour ne garder que la partie agent.",
         nothingToInstall: 'Ce paquet n’a rien à installer ici.'
       }
     },
@@ -3209,7 +3222,8 @@ export const frOverrides = {
     exported: 'Profil exporté',
     failedImport: "Échec de l'importation du profil",
     failedExport: "Échec de l'exportation du profil",
-    exportNeedsHost: name => `Le navigateur ne peut pas enregistrer une archive de profil. Sur l'hôte Hermes, exécutez : hermes profile export ${name}`,
+    exportNeedsHost: name =>
+      `Le navigateur ne peut pas enregistrer une archive de profil. Sur l'hôte Hermes, exécutez : hermes profile export ${name}`,
     allProfiles: 'Tous les profils',
     showAllProfiles: 'Afficher tous les profils',
     notServedHere: 'Non proposé ici',
@@ -3362,6 +3376,7 @@ export const frOverrides = {
       'Changement de modèle annulé — vous avez refusé l’avertissement sur le niveau d’entraînement sur les données.'
   },
   cron: {
+    control: frCronControl,
     close: 'Fermer le cron',
     title: 'Tâches planifiées',
     count: count => `${count} ${count === 1 ? 'tâche' : 'tâches'}`,
@@ -4628,7 +4643,8 @@ export const frOverrides = {
     }
   },
   rightSidebar: {
-    terminalDropUnquotable: (shell, paths) => `Impossible de saisir ces noms en toute sécurité dans ${shell} : ${paths}`,
+    terminalDropUnquotable: (shell, paths) =>
+      `Impossible de saisir ces noms en toute sécurité dans ${shell} : ${paths}`,
     aria: 'Barre latérale droite',
     panelsAria: 'Panneaux de la barre latérale droite',
     files: 'Système de fichiers',
@@ -4796,7 +4812,8 @@ export const frOverrides = {
     saveApply: 'Enregistrer et appliquer',
     notExpressible: "cet agencement s'entrelace (roue) — pas encore exprimable comme des divisions imbriquées",
     zoneCount: count => `${count} zones`,
-    tabCount: count => `${count} onglet${count === 1 ? '' : 's'}`
+    tabCount: count => `${count} onglet${count === 1 ? '' : 's'}`,
+    tabActions: title => `Actions pour ${title}`
   },
   contextMenu: {
     link: {
@@ -4850,138 +4867,144 @@ export const frOverrides = {
       errorCodes: {
         ...frErrorCodes,
         auth: {
-          title: provider => `${provider} a refusé votre connexion`,
-          body: provider =>
-            `Les identifiants enregistrés pour ${provider} ont été refusés. Corrigez-les dans Paramètres ou changez de fournisseur, puis réessayez.`
+          title: provider => `${provider} a refusé votre clé API`,
+          body: () =>
+            'La clé enregistrée est invalide ou a été révoquée. Mettez-la à jour, puis renvoyez votre message.'
         },
         auth_permanent: {
-          title: provider => `${provider} a refusé votre connexion`,
-          body: provider =>
-            `Les identifiants enregistrés pour ${provider} sont invalides ou révoqués. Mettez-les à jour ou changez de fournisseur, puis réessayez.`
+          title: provider => `${provider} a refusé votre clé API`,
+          body: () =>
+            'La clé enregistrée est invalide ou a été révoquée. Mettez-la à jour, puis renvoyez votre message.'
         },
         billing: {
-          title: 'Crédits épuisés',
-          body: provider =>
-            `Votre compte ${provider} n'a plus de crédits. Rechargez-le ou changez de fournisseur, puis réessayez.`
+          title: provider => `Crédits ${provider} épuisés`,
+          body: provider => `Ajoutez des crédits pour continuer à utiliser les modèles payants sur ${provider}.`
         },
         rate_limit: {
-          title: "Le service d'IA est occupé",
-          body: provider => `${provider} limite actuellement les demandes. Attendez une minute, puis réessayez.`
+          title: provider => `${provider} est très sollicité`,
+          body: provider =>
+            `Vous avez atteint la limite de requêtes de ${provider}. Patientez un instant, puis réessayez.`
         },
         upstream_rate_limit: {
-          title: "Le service d'IA est occupé",
-          body: provider => `${provider} limite actuellement les demandes. Attendez une minute, puis réessayez.`
+          title: (_provider, model) => `${model || 'Ce modèle'} est très sollicité`,
+          body: (provider, model) =>
+            `${model || 'Ce modèle'} est limité en amont de ${provider}, et non sur votre compte. Réessayez dans un instant.`
         },
         overloaded: {
-          title: "Le service d'IA est surchargé",
-          body: provider =>
-            `${provider} rencontre des difficultés. Réessayez dans un instant ou changez de fournisseur.`
+          title: provider => `${provider} est très sollicité`,
+          body: provider => `${provider} est surchargé et n'a pas pu traiter cette demande. Réessayez dans un instant.`
         },
         server_error: {
-          title: "Le service d'IA a rencontré un problème",
-          body: provider =>
-            `${provider} a renvoyé une erreur serveur. Réessayez dans un instant ou changez de fournisseur.`
+          title: provider => `${provider} rencontre des problèmes`,
+          body: provider => `${provider} a renvoyé une erreur serveur. Réessayez dans un instant.`
         },
         timeout: {
-          title: 'Service d’IA injoignable',
-          body: provider =>
-            `${provider} est injoignable ou n'a pas répondu à temps. Vérifiez votre connexion internet, puis réessayez.`
+          title: provider => `Impossible de joindre ${provider}`,
+          body: provider => `Hermes n'a pas pu joindre ${provider}. Vérifiez votre connexion, puis réessayez.`
         },
         no_reply: {
-          title: "La réponse n'a pas abouti",
-          body: 'Hermes a terminé ce tour sans réponse. Réessayez pour la renvoyer.'
+          title: "La réponse n'est pas arrivée",
+          body: "Hermes a terminé ce tour, mais aucune réponse n'est parvenue à cette fenêtre. Réessayez pour la renvoyer."
         },
         stream_drop: {
           title: 'La réponse a été interrompue',
           body: 'La connexion a été coupée avant la fin de la réponse. Réessayez pour la renvoyer.'
         },
         upstream_blocked: {
-          title: 'Un pare-feu a bloqué la requête',
-          body: (provider: string) =>
-            `Un pare-feu ou un CDN placé devant ${provider} a bloqué la requête avant qu’elle n’atteigne le modèle — votre clé est probablement valide. Définissez un en-tête User-Agent via les extra_headers du fournisseur dans Paramètres, ou changez de fournisseur, puis renvoyez votre message.`
+          title: provider => `${provider} a bloqué cette demande`,
+          body: provider =>
+            `Un pare-feu placé devant ${provider} l'a refusée avant qu'elle n'atteigne le modèle. Changez de fournisseur ou définissez un User-Agent personnalisé pour celui-ci.`
         },
         ssl_cert_verification: {
-          title: 'Échec de la connexion sécurisée',
+          title: provider => `Connexion à ${provider} non vérifiable`,
           body: provider =>
-            `Hermes n'a pas pu vérifier la connexion sécurisée à ${provider}. Vérifiez votre réseau ou votre proxy, ou changez de fournisseur.`
+            `Un proxy ou un magasin de certificats obsolète a bloqué la connexion sécurisée à ${provider}. Le guide de configuration explique comment corriger le problème.`
         },
         context_overflow: {
           title: 'Cette conversation est trop longue',
-          body: 'La conversation ne tient plus dans le modèle. Compressez-la ou démarrez-en une nouvelle, puis réessayez.'
+          body: (_provider, model) =>
+            `La conversation ne tient plus dans la fenêtre de contexte ${model ? `de ${model}` : 'du modèle'}. Compressez-la pour continuer.`
         },
         payload_too_large: {
           title: 'Ce message est trop volumineux',
-          body: 'La demande était trop grande pour le modèle. Compressez la conversation ou démarrez-en une nouvelle, puis réessayez.'
+          body: provider =>
+            `La demande, pièces jointes comprises, dépasse la taille maximale acceptée par ${provider}. Compressez la conversation ou retirez des pièces jointes.`
         },
         model_not_found: {
-          title: "Ce modèle n'est pas disponible",
-          body: provider =>
-            `${provider} ne propose pas ce modèle pour votre compte. Choisissez-en un autre, puis réessayez.`
+          title: (_provider, model) => `${model || 'Ce modèle'} n'est pas disponible`,
+          body: (provider, model) =>
+            `${provider} ne propose pas ${model || 'ce modèle'} pour votre compte. Choisissez un autre modèle.`
         },
         provider_policy_blocked: {
-          title: 'Ce modèle est bloqué par les paramètres de votre compte',
+          title: (provider, model) => `${provider} bloque ${model || 'ce modèle'}`,
           body: provider =>
-            `${provider} n'a pas routé cette demande avec vos paramètres de données ou de confidentialité. Choisissez un autre modèle ou fournisseur.`
+            `Vos paramètres de confidentialité ${provider} excluent tous les points de terminaison de ce modèle. Modifiez-les sur ${provider} ou choisissez un autre modèle.`
         },
         content_policy_blocked: {
-          title: "Le service d'IA a refusé cette demande",
-          body: provider => `${provider} n'a pas répondu à ce message. Modifiez-le puis renvoyez-le.`
+          title: provider => `${provider} a refusé ce message`,
+          body: provider => `Le filtre de sécurité de ${provider} l'a refusé. Modifiez le message, puis renvoyez-le.`
         },
         format_error: {
-          title: "Le service d'IA a rejeté la demande",
+          title: provider => `${provider} a rejeté cette demande`,
           body: provider =>
-            `${provider} n'a pas accepté la forme de cette demande. Changez de fournisseur ou envoyez les diagnostics.`
+            `${provider} n'a pas pu accepter la structure de cette conversation. Changez de fournisseur, ou démarrez une nouvelle conversation si le problème persiste.`
         },
         truncated: {
           title: 'La réponse a été écourtée',
-          body: "Le modèle s'est arrêté avant la fin. Réessayez pour obtenir une réponse complète."
+          body: (_provider, model) =>
+            `${model || 'Le modèle'} s'est arrêté avant d'avoir fini sa réponse. Continuez pour reprendre là où il s'est arrêté.`
         },
         invalid_response: {
-          title: "Le service d'IA a envoyé une réponse illisible",
-          body: provider => `${provider} a renvoyé une réponse que Hermes n'a pas pu lire. Réessayez dans un instant.`
+          title: 'Impossible de lire la réponse',
+          body: provider => `${provider} a renvoyé une réponse vide ou corrompue. Réessayez dans un instant.`
         },
         empty_response: {
-          title: "Le service d'IA a envoyé une réponse vide",
+          title: "Impossible d'obtenir une réponse",
           body: provider => `${provider} n'a rien renvoyé pour ce message. Réessayez dans un instant.`
         },
         loop_error: {
-          title: 'Hermes est resté bloqué dans une boucle',
-          body: 'La réponse répétait les mêmes étapes ; Hermes l’a donc arrêtée. Réessayez ou démarrez une nouvelle conversation.'
+          title: "Cette étape n'a pas abouti",
+          body: 'Un problème est survenu lors du traitement de la réponse. Réessayez ; si cela se reproduit, envoyez les diagnostics depuis les détails.'
+        },
+        agent_init_failed: {
+          title: 'Impossible de démarrer cette conversation',
+          body: provider =>
+            `Hermes n'a pas pu se connecter à ${provider} pour cette conversation. Réessayez ; si l'échec persiste, vérifiez le fournisseur dans Paramètres.`
         },
         SESSION_NOT_OWNED: {
-          title: 'Cette conversation est ouverte ailleurs',
-          body: 'Cette conversation est déjà ouverte dans une autre fenêtre Hermes ou un terminal. Fermez-la là-bas puis réessayez, ou démarrez-en une nouvelle ici.'
+          title: 'Conversation ouverte ailleurs',
+          body: "Cette conversation est ouverte dans une autre fenêtre Hermes ou un terminal. Démarrez-en une nouvelle ici, ou fermez-la d'abord là-bas."
         },
         disk_full: {
-          title: 'Disque plein',
-          body: "Votre disque est plein ; Hermes n'a pas pu enregistrer cette conversation. Libérez de l'espace puis réessayez."
+          title: 'Votre disque est plein',
+          body: "Hermes n'a pas pu enregistrer cette conversation. Libérez de l'espace, puis réessayez."
         },
         free_tier_disabled: {
-          title: "L'utilisation de Hermes sans connexion est désactivée pour le moment",
+          title: 'Connectez-vous pour continuer',
           body: 'Connectez-vous avec un compte Nous gratuit pour continuer.'
         },
         free_tier_rate_limited: {
-          title: 'Vous avez épuisé le quota sans connexion',
+          title: 'Quota gratuit épuisé',
           body: 'Il sera bientôt renouvelé. Connectez-vous avec un compte Nous gratuit pour obtenir un quota plus élevé.'
         },
         free_tier_at_capacity: {
-          title: 'Le service sans connexion est très sollicité',
+          title: 'Offre gratuite très sollicitée',
           body: 'Connectez-vous gratuitement pour éviter la file, ou réessayez un peu plus tard.'
         },
         free_tier_model_not_free: {
-          title: "Ce modèle n'est pas disponible sans connexion",
+          title: 'Ce modèle nécessite une connexion',
           body: 'Hermes utilise le modèle gratuit pour le moment. Connectez-vous avec un compte Nous gratuit pour accéder à plus de modèles.'
         },
         free_tier_route: {
-          title: "Hermes n'a pas pu joindre le modèle gratuit par cette route",
+          title: 'Modèle gratuit injoignable',
           body: 'Connectez-vous avec un compte Nous gratuit ou vérifiez le paramètre NOUS_INFERENCE_BASE_URL.'
         },
         free_tier_outage: {
-          title: 'Le modèle gratuit rencontre des difficultés',
+          title: 'Modèle gratuit en difficulté',
           body: 'Renvoyez votre message dans une minute.'
         },
         free_tier_refused: {
-          title: "Hermes n'a pas pu envoyer ce message sans connexion",
+          title: 'Connectez-vous pour continuer',
           body: 'La connexion avec un compte Nous est gratuite.'
         },
         usage_window: {
@@ -4992,14 +5015,27 @@ export const frOverrides = {
       errorAuthKinds: {
         api_key: {
           title: provider => `${provider} a refusé votre clé API`,
-          body: provider =>
-            `La clé enregistrée pour ${provider} est invalide ou révoquée. Mettez-la à jour, puis réessayez.`
+          body: () =>
+            'La clé enregistrée est invalide ou a été révoquée. Mettez-la à jour, puis renvoyez votre message.'
         },
         oauth: {
-          title: provider => `Votre connexion à ${provider} a expiré`
+          title: provider => `Reconnectez-vous à ${provider}`
         }
       },
-      errorDetails: 'Détails',
+      errorDetails: "Voir les détails de l'erreur",
+      errorHideDetails: "Masquer les détails de l'erreur",
+      errorDetailsCopy: 'Copier les détails',
+      errorCopyRaw: "Copier l'erreur",
+      errorContinue: 'Continuer',
+      errorOpenProviderSettings: provider => `Ouvrir les réglages de ${provider}`,
+      errorOpenSetupGuide: 'Ouvrir le guide de configuration',
+      errorSetupGuideLink: 'Guide de configuration',
+      errorOpenModelSettings: 'Ouvrir les réglages du modèle',
+      errorStartNewChatLink: 'Démarrer une nouvelle conversation',
+      errorChooseModelLink: 'Choisir un autre modèle',
+      errorRetryAtResetShort: time => `Réessayer à ${time}`,
+      errorRateLimitResetBody: (provider, time) =>
+        `Vous avez atteint la limite de requêtes de ${provider}. Elle se réinitialise à ${time}.`,
       errorGenericProvider: "Le service d'IA",
       errorToastTitle: "Hermes n'a pas pu terminer la réponse",
       errorRetry: 'Réessayer',
@@ -5009,8 +5045,6 @@ export const frOverrides = {
       errorUseCreditsFailed: 'Impossible d’activer Continuer avec les crédits',
       errorAddCredits: 'Ajouter des crédits',
       errorOpenBillingSettings: 'Ouvrir les réglages de facturation',
-      errorLimitResets: (time: string) => `Le quota se réinitialise à ${time}`,
-      errorRetryAtReset: (time: string) => `Réessayer à la réinitialisation du quota (${time})`,
       errorRetryScheduled: (time: string, wait: string) => `Nouvel essai à ${time} — dans ${wait}`,
       errorRetryScheduledCancel: 'Annuler',
       errorStartNewSession: 'Démarrer une nouvelle session',
@@ -5028,7 +5062,6 @@ export const frOverrides = {
       errorOpenLogs: 'Ouvrir les journaux',
       errorOpenLogsFailed: "Impossible d'ouvrir le dossier des journaux",
       errorOpenDesktopLogs: 'Ouvrir les journaux du Desktop',
-      errorCopyDiagnostics: "Copier les détails de l'erreur",
       errorSendDiagnostics: 'Envoyer les diagnostics',
       filesChanged: count => (count === 1 ? '1 fichier modifié' : `${count} fichiers modifiés`),
       reviewChanges: 'Examiner',

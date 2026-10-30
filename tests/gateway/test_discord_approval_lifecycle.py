@@ -192,7 +192,8 @@ async def test_timeout_edits_cannot_restore_buttons_or_pending_embed(monkeypatch
         state.update(kwargs)
 
     message.edit.side_effect = edit
-    notice_task = asyncio.create_task(adapter.expire_exec_approval("555", "1234", "Timed out"))
+    # The gateway's timeout notice edits the card through the generic edit_message.
+    notice_task = asyncio.create_task(adapter.edit_message("555", "1234", "Timed out"))
     retire_task = asyncio.create_task(view.retire("timeout"))
     await asyncio.wait_for(asyncio.gather(*(event.wait() for event in entered.values())), 5)
     first, last = ("retire", "notice") if notice_last else ("notice", "retire")
@@ -292,3 +293,29 @@ async def test_failed_click_keeps_a_pending_card_live(monkeypatch):
     assert (footer["text"] if isinstance(footer, dict) else footer.text) == t(
         "platform.discord.approval.already_resolved")
     assert view.is_finished()
+
+
+_FENCED_TABLE = "cat <<'EOF'\n```\n| item | " + "description " * 10 + "|\n|---|---|\n" + "| a | b |\n" * 30 + "```\nEOF"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["echo " + "x" * 5000, _FENCED_TABLE * 10, ("echo '" + "`" * 7 + "' ") * 300],
+                         ids=["long", "fenced-table", "backtick-runs"])
+async def test_timeout_notice_fits_the_command_into_one_in_place_edit(monkeypatch, command):
+    """The gateway's notice reaches the real Discord edit as one message: the command is cut to
+    the room left and cannot close the card's fence (Discord would rewrite a table after it into
+    a longer bullet list), so no "(1/N)" marker and no streaming-preview state are left."""
+    from gateway import run_turn_runner_approval_settle as settle_mod
+
+    adapter, _view, _entry, message = await _pending_card(monkeypatch)
+    adapter.send = AsyncMock()
+    ctx = SimpleNamespace(_status_adapter=adapter, _status_chat_id="555", _status_thread_metadata=None)
+
+    await settle_mod._post_timeout_notice(ctx, command, "1234", 300)
+
+    message.edit.assert_awaited_once()
+    content = message.edit.await_args.kwargs["content"]
+    assert content.endswith("...\n```") and len(content) == adapter.MAX_MESSAGE_LENGTH
+    assert content.count("```") == 2  # only the card's own fence
+    assert "(1/" not in content and adapter._last_overflow_preview == {}
+    adapter.send.assert_not_awaited()

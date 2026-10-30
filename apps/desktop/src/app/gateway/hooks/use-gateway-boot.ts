@@ -19,8 +19,8 @@ import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import {
   decideLivenessForceClose,
-  LIVENESS_PROBE_TIMEOUT_MS,
-  LIVENESS_REPROBE_DELAY_MS
+  LIVENESS_REPROBE_DELAY_MS,
+  probeGatewayLiveness
 } from '@/lib/gateway-liveness-policy'
 import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { hostHas } from '@/lib/host-capabilities'
@@ -699,7 +699,7 @@ export function useGatewayBoot({
       // one inconclusive probe DEFERS the teardown behind a bounded re-probe;
       // only an exhausted streak (or no in-flight work) closes.
       try {
-        await gateway.request('ping', {}, LIVENESS_PROBE_TIMEOUT_MS)
+        await probeGatewayLiveness(gateway)
         livenessProbeFailures = 0
       } catch (probeErr) {
         // A version-skewed backend that predates the ping method answers
@@ -1305,7 +1305,7 @@ export function useGatewayBoot({
       // work in flight still closes and re-dials, so a restart that DID take
       // this socket down is recovered here and now.
       try {
-        await gateway.request('ping', {}, LIVENESS_PROBE_TIMEOUT_MS)
+        await probeGatewayLiveness(gateway)
         livenessProbeFailures = 0
 
         return

@@ -420,7 +420,7 @@ DEFAULT_CONFIG = {
         "command_timeout": 30,
         # headed: visible Chromium window (local); skips per-turn cleanup, idle reaper still applies
         "headed": False,
-        "allow_private_urls": False,  # allow private/internal IPs (localhost, 192.168.x.x, ...)
+        "allow_private_urls": False,  # legacy security.allow_private_urls; local/sidecar Chromium ignore it
         # Local browser engine. "auto" = Chromium; "lightpanda" = `lightpanda serve` per session
         # (faster navigation, no screenshots); "chrome" is read as "auto". Ignored while a cloud
         # provider, cdp_url or use_real_profile is active.
@@ -432,7 +432,7 @@ DEFAULT_CONFIG = {
         # profile per session.
         "user_data_dir": "",
         "chromium_args": [],  # extra Chromium flags for local sessions, e.g. ["--lang=de"]
-        # With a cloud provider, auto-spawn local Chromium for LAN/localhost URLs instead
+        # Cloud provider: LAN/localhost URLs open in a local Chromium (ignores allow_private_urls; False refuses)
         "auto_local_for_private_urls": True,
         "cdp_url": "",  # persistent CDP endpoint for attaching to an existing Chromium/Chrome
         # Consent to browse with the user's REAL logins locally: runs on a Hermes-managed SNAPSHOT
@@ -1040,9 +1040,9 @@ DEFAULT_CONFIG = {
             "secret": "",
             "session_ttl_seconds": 0,  # 0 → plugin default (12h)
         },
-        # Drain-control token auth (dashboard_auth/drain plugin). The secret is NOT here: env
-        # HERMES_DASHBOARD_DRAIN_SECRET; no-op unless >=256-bit, weak secrets rejected
-        # (fail-closed). scope = capability label; min_secret_chars in url-safe-b64 chars.
+        "session_token_auth": {"enabled": True},  # session_token plugin: a provisioned HERMES_DASHBOARD_SESSION_TOKEN (literal or file:<path>) authorizes the gated dashboard; enabled: false opts out
+        # Drain-control token auth (dashboard_auth/drain plugin): the secret is NOT here (env
+        # HERMES_DASHBOARD_DRAIN_SECRET); no-op unless >=256-bit, weak secrets rejected (fail-closed).
         "drain_auth": {"scope": "drain", "min_secret_chars": 43},
         # Public URL (env HERMES_DASHBOARD_PUBLIC_URL): full authority (scheme + host + optional
         # prefix, e.g. https://example.com/hermes) for the OAuth redirect_uri; its hostname is
@@ -1261,7 +1261,7 @@ DEFAULT_CONFIG = {
         # openWakeWord/pyopen-wakeword only: consecutive over-threshold frames to fire (higher = fewer
         # false triggers, more latency; 1 = single-frame)
         "confirmation_frames": 3,
-        "start_new_session": True,  # fresh session on wake vs. continue the current one
+        "start_new_session": True,  # fresh session on wake vs. continue the current one (detached-spawn: ok — a config key)
         # sherpa only: listen for every wake-enabled profile's phrase and route to it
         "profile_routing": True,
         "openwakeword": {
@@ -1355,8 +1355,7 @@ DEFAULT_CONFIG = {
         # children fail only from real errors (API, tools, iteration budget). A progressing child (including one
         # waiting on a multi-minute completion) restarts the window; a frozen one is caught.
         "child_timeout_seconds": 0,
-        # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" |
-        # "none" (empty = inherit)
+        # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" | "none" (empty = inherit)
         "reasoning_effort": "",
         # Max parallel children per batch AND max concurrent background delegation units; async
         # dispatches beyond it run synchronously. Floor 1, no ceiling.
@@ -1364,6 +1363,7 @@ DEFAULT_CONFIG = {
         # Background fan-outs return as ONE message when the whole call finishes. true = each task
         # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
         "independent_completions": False,
+        "gateway_mode": "auto",  # gateway: inline (join in the turn) | background | auto = inline where interim msgs are off
         # Orchestrator role controls. Depth floored at 1, no ceiling; each level multiplies cost.
         "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
@@ -1660,11 +1660,9 @@ DEFAULT_CONFIG = {
         # channel — a pending approval there just blocks for the full timeout with nobody to answer (#37284,
         # #87509): deny    — block the command instantly and let the agent find another way (default, safe;
         # mirrors cron_mode deny) approve — auto-approve all dangerous commands on unattended platforms
-        # Shared by the CLI prompt and gateway/messaging waits. Messaging approvals arrive as a push
-        # notification the user may not see immediately — 60s proved too tight on Telegram/Discord (the
-        # prompt expired before the user reached their phone), so the default is 300.
         "mode": "smart",
         "timeout": 300,
+        "discord_prompt_timeout": 300,  # Discord buttons stay clickable (min 30 s, cap MAX_SAFE_TIMEOUT_S)
         "cron_mode": "deny",
         "single_query_mode": "deny",
         "unattended_mode": "deny",
@@ -1754,7 +1752,7 @@ DEFAULT_CONFIG = {
         "codex_login_flow": "device_code",
     },
     "security": {  # Security: URL/private-network guards, redaction and approval presentation.
-        "allow_private_urls": False,  # allow requests to private/internal IPs (OpenWrt, VPNs)
+        "allow_private_urls": False,  # private IPs for web/vision/media + cloud/CDP browsers; not local/sidecar Chromium
         # CIDR blocks a local TUN proxy answers DNS with (Mihomo/Clash fake-ip, Surge enhanced).
         # Answers inside these blocks are the proxy's sentinels, not internal hosts, so the guard
         # dials them instead of rejecting them as private. Empty = normal private-address verdict.
@@ -2714,13 +2712,13 @@ DEFAULT_CONFIG = {
 }
 
 
-from hermes_cli.config_defaults_env import _base_url, _env, _msg, _prov, _setting, _skill, _tool
+from hermes_cli.config_defaults_env import OptionalEnvVars, _base_url, _env, _msg, _prov, _setting, _skill, _tool
 
 
 # Optional environment variables that enhance functionality. Feeds the dashboard keys page and setup
 # checklists; category: provider|tool|skill|messaging|setting, advanced=True hides from checklists,
-# tools=[...] lists the model tools the key unlocks.
-OPTIONAL_ENV_VARS = {
+# tools=[...] lists the model tools the key unlocks. Provider entries: config_provider_env (on first read).
+OPTIONAL_ENV_VARS = OptionalEnvVars({
     # ── Provider (handled in provider selection, not shown in checklists) ──
     "NOUS_BASE_URL": _base_url("Nous Portal"),
     "HERMES_ANON_API_SECRET": _env(
@@ -3120,4 +3118,4 @@ OPTIONAL_ENV_VARS = {
     "HERMES_EPHEMERAL_SYSTEM_PROMPT": _setting(
         "Ephemeral system prompt injected at API-call time (never persisted to sessions)",
         "Ephemeral system prompt", None),
-}
+})

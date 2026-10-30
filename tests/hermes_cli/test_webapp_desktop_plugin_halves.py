@@ -99,3 +99,38 @@ def test_a_users_own_plugin_is_never_overwritten_and_the_default_home_wins(webap
     (hermes_root / "plugins" / "notes" / "desktop" / "plugin.js").unlink()
     webapp.post("/api/desktop-plugins/reconcile")
     assert (mine / "plugin.js").read_text(encoding="utf-8") == "mine"
+
+
+def test_a_root_layout_package_brings_its_desktop_half_as_the_installers_publish_it(webapp, hermes_root, tmp_path):
+    # plugin.yaml + __init__.py + a ROOT plugin.js: the install probe reports both halves, so the
+    # tab installs the agent half alone and counts on this pass for the desktop one.
+    package = hermes_root / "plugins" / "radar"
+    (package / ".git").mkdir(parents=True)
+    (package / ".git" / "config").write_text('[remote "origin"]\n\turl = https://github.com/example/radar\n')
+    (package / "plugin.yaml").write_text("name: radar\n", encoding="utf-8")
+    (package / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
+    (package / "plugin.js").write_text("export default { id: 'radar' }", encoding="utf-8")
+    (package / "panel.js").write_text("export const panel = 1", encoding="utf-8")
+    (package / "__pycache__").mkdir()
+    (package / "__pycache__" / "x.pyc").write_bytes(b"pyc")
+    # A root plugin.js the user could reach through a link would publish anything on the host.
+    linked = hermes_root / "plugins" / "leaky"
+    linked.mkdir()
+    (linked / "plugin.js").write_text("export default {}", encoding="utf-8")
+    (tmp_path / "secret").write_text("x", encoding="utf-8")
+    (linked / "secret").symlink_to(tmp_path / "secret")
+
+    loaded = _loaded(webapp)
+
+    text, marker = loaded["radar"]
+    assert text == "export default { id: 'radar' }"
+    assert (marker["package"], marker["source"], marker["repo"]) == ("radar", str(package), "https://github.com/example/radar")
+    copy = hermes_root / "desktop-plugins" / "radar"
+    # The repository root is the plugin folder, its assets with it; the clone's .git and the agent half's bytecode are not.
+    assert (copy / "panel.js").read_text(encoding="utf-8") == "export const panel = 1"
+    assert not (copy / ".git").exists() and not (copy / "__pycache__").exists()
+    assert "leaky" not in loaded
+
+    (package / "plugin.js").unlink()
+    webapp.post("/api/desktop-plugins/reconcile")
+    assert "radar" not in _loaded(webapp)

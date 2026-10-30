@@ -995,7 +995,12 @@ function retireDiskPlugin(file: string, record: DiskPlugin): void {
  *  entry is retired here so the pane/commands vanish without waiting for the
  *  next scan. Unified-package halves are not addressable this way — the agent
  *  uninstall prunes them. Resolves with the failure reason instead of throwing. */
-export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boolean; error?: string }> {
+export async function uninstallDiskPlugin(
+  pluginId: string,
+  /** How the folder goes away. Native Desktop deletes it in Electron; a browser-hosted tab has no disk
+   *  of its own and passes the backend that serves it (`plugins.manage remove_desktop`). */
+  removeDesktop?: (payload: { name: string }) => Promise<{ ok: boolean; error?: string }>
+): Promise<{ ok: boolean; error?: string }> {
   const found = [...disk.entries()].find(([, record]) => record.id === pluginId || record.origin === pluginId)
 
   if (!found) {
@@ -1003,7 +1008,7 @@ export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boole
   }
 
   const [file, record] = found
-  const remove = window.hermesDesktop?.removeDesktopPlugin
+  const remove = removeDesktop ?? window.hermesDesktop?.removeDesktopPlugin
 
   if (!remove) {
     return { ok: false, error: 'this Hermes Desktop build cannot remove desktop plugins — delete the folder by hand' }

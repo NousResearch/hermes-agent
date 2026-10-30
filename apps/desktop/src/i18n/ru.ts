@@ -6,6 +6,7 @@ import { ruBoot } from './ru_boot'
 import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
+import { ruCronControl } from './ru_cron_control'
 import { ruErrorCodes } from './ru_error_codes'
 import { ruFirstRun } from './ru_first_run'
 import { ruGatewayHost } from './ru_gateway_host'
@@ -148,7 +149,8 @@ export const ruOverrides = {
       microphoneConstraintsUnsupported: 'Ограничения микрофона не поддерживаются этим устройством.',
       microphoneFailed: 'Ошибка микрофона',
       microphoneInUse: 'Микрофон уже используется другим приложением.',
-      microphoneNeedsHttps: 'Микрофону нужно защищённое соединение. Откройте Webapp по HTTPS или через SSH-туннель к 127.0.0.1, чтобы им пользоваться.',
+      microphoneNeedsHttps:
+        'Микрофону нужно защищённое соединение. Откройте Webapp по HTTPS или через SSH-туннель к 127.0.0.1, чтобы им пользоваться.',
       microphonePermissionDenied: 'Доступ к микрофону запрещён.',
       microphoneStartFailed: 'Не удалось начать запись с микрофона.',
       microphoneUnsupported: 'Это окружение не поддерживает запись с микрофона.',
@@ -2070,7 +2072,8 @@ export const ruOverrides = {
     exported: 'Профиль экспортирован',
     failedImport: 'Не удалось импортировать профиль',
     failedExport: 'Не удалось экспортировать профиль',
-    exportNeedsHost: name => `Браузер не может сохранить архив профиля. На хосте Hermes выполните: hermes profile export ${name}`,
+    exportNeedsHost: name =>
+      `Браузер не может сохранить архив профиля. На хосте Hermes выполните: hermes profile export ${name}`,
     allProfiles: 'Все профили',
     showAllProfiles: 'Показать все профили',
     notServedHere: 'Здесь не обслуживается',
@@ -2173,6 +2176,7 @@ export const ruOverrides = {
   },
 
   cron: {
+    control: ruCronControl,
     close: 'Закрыть cron',
     title: 'Запланированные задачи',
     count: count => `${count} ${RU_PLURAL(count, 'задача', 'задачи', 'задач')}`,
@@ -3454,7 +3458,8 @@ export const ruOverrides = {
     saveApply: 'Сохранить и применить',
     notExpressible: 'эта расстановка зацеплена (pinwheel) — пока не выразима как вложенные разделения',
     zoneCount: count => `${count} ${RU_NOUN(count, 'зона', 'зоны', 'зон')}`,
-    tabCount: count => `${count} ${RU_NOUN(count, 'вкладка', 'вкладки', 'вкладок')}`
+    tabCount: count => `${count} ${RU_NOUN(count, 'вкладка', 'вкладки', 'вкладок')}`,
+    tabActions: title => `Действия: ${title}`
   },
   contextMenu: {
     link: {
@@ -3488,6 +3493,18 @@ export const ruOverrides = {
       errorUseCreditsFailed: 'Не удалось включить «Продолжать за кредиты»',
       errorAddCredits: 'Пополнить кредиты',
       errorOpenBillingSettings: 'Открыть настройки оплаты',
+      errorHideDetails: 'Скрыть подробности ошибки',
+      errorDetailsCopy: 'Копировать подробности',
+      errorCopyRaw: 'Копировать ошибку',
+      errorContinue: 'Продолжить',
+      errorOpenProviderSettings: provider => `Открыть настройки ${provider}`,
+      errorOpenSetupGuide: 'Открыть руководство по настройке',
+      errorSetupGuideLink: 'Руководство по настройке',
+      errorOpenModelSettings: 'Открыть настройки модели',
+      errorStartNewChatLink: 'Начать новый чат',
+      errorChooseModelLink: 'Выбрать другую модель',
+      errorRetryAtResetShort: time => `Повторить в ${time}`,
+      errorRateLimitResetBody: (provider, time) => `Вы достигли лимита запросов ${provider}. Он сбросится в ${time}.`,
       loadingSession: 'Загрузка сеанса',
       showEarlier: 'Показать ранние сообщения',
       loadingResponse: 'Hermes загружает ответ',

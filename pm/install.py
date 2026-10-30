@@ -971,6 +971,23 @@ def _dependents_first(names: list[str]) -> list[str]:
     return order
 
 
+# ``_store_path_dirs`` walks the whole store manifest (facts plus every package's install
+# root, each resolving the stamp path) on every call: one call per bash tool re-walked the
+# store for every concurrent tool, so a stalled disk convoyed the gateway's tool workers.
+# Compose it once per process; the key is the installed-facts file identity, which changes
+# exactly when pm installs/uninstalls a package — the only time these dirs can change.
+_STORE_PATH_DIRS_CACHE: Optional[tuple[float, int, list[str]]] = None
+
+
+def _store_facts_key() -> tuple[float, int]:
+    """Identity of the installed-facts file: changes only on pm install/uninstall."""
+    try:
+        st = paths.facts_path().stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (0.0, 0)
+
+
 def _store_path_dirs() -> list[str]:
     """Composed PATH dirs of all installed (non-internal, on_path) store
     packages, each package ahead of its dependencies (``_dependents_first``),
@@ -979,6 +996,12 @@ def _store_path_dirs() -> list[str]:
     though it's not in the root closure. A package whose dependency chain is
     not fully installed contributes nothing: store npm over a missing store
     node would run the user's node, a partial toolchain. Never installs."""
+
+    global _STORE_PATH_DIRS_CACHE
+    key = _store_facts_key()
+    cached = _STORE_PATH_DIRS_CACHE
+    if cached is not None and cached[0] == key:
+        return list(cached[1])
 
     lockfile = _lockfile()
     target = current_target()
@@ -1014,6 +1037,7 @@ def _store_path_dirs() -> list[str]:
         for directory in path_dirs:
             if directory and native(directory) not in dirs:
                 dirs.append(native(directory))
+    _STORE_PATH_DIRS_CACHE = (key, dirs)
     return dirs
 
 

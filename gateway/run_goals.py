@@ -468,12 +468,17 @@ class GatewayGoalsMixin:
                 )
             return
 
-        source = self._build_process_event_source({
-            "session_key": "",
-            "platform": platform_name,
-            "chat_id": chat_id,
-            **{k: route.get(k, "") for k in ("chat_type", "thread_id", "user_id", "user_name")},
-        })
+        source = await asyncio.to_thread(
+            self._build_process_event_source,
+            {
+                "session_key": "",
+                "platform": platform_name,
+                "chat_id": chat_id,
+                **{k: route.get(k, "") for k in ("chat_type", "thread_id", "user_id", "user_name")},
+            },
+        )
+        # session-store index load runs off the gateway loop: a stalled disk or a held writer
+        # lock stalls a worker thread, not the loop — the liveness probe keeps answering.
         if source is None:
             return
         if profile and not getattr(source, "profile", None):

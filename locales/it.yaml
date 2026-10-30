@@ -804,6 +804,9 @@ gateway:
     no_command: "Il comando rapido '/{command}' non ha nessun comando definito."
     unsupported_type: "Il comando rapido '/{command}' ha un tipo non supportato (supportati: 'exec', 'alias')."
     no_target: "Il comando rapido '/{command}' non ha nessuna destinazione definita."
+  plugin_card:
+    action_failed: "L'azione non è riuscita; riprova o usa il comando digitato."
+    card_too_large: "La scheda aggiornata era troppo grande per essere mostrata ({size} byte; il limite è {limit})."
   unknown_command: "Comando sconosciuto `/{command}`. Digita /commands per vedere quelli disponibili, oppure reinvia senza la barra iniziale per mandarlo come messaggio normale."
   session:
     auto_reset_notice: "◐ Sessione reimpostata dopo l'interruzione. Cronologia della conversazione cancellata.\nUsa /resume per sfogliare e ripristinare una sessione precedente.\n"

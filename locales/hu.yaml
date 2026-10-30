@@ -814,6 +814,9 @@ gateway:
     no_command: "A '/{command}' gyorsparancshoz nincs parancs megadva."
     unsupported_type: "A '/{command}' gyorsparancs típusa nem támogatott (támogatott: 'exec', 'alias')."
     no_target: "A '/{command}' gyorsparancshoz nincs cél megadva."
+  plugin_card:
+    action_failed: "A művelet nem sikerült; próbáld újra, vagy használd a begépelt parancsot."
+    card_too_large: "A frissített kártya túl nagy volt a megjelenítéshez ({size} bájt; a korlát {limit})."
   unknown_command: "Ismeretlen parancs: `/{command}`. A /commands paranccsal megnézheted, mi érhető el, vagy küldd el újra a kezdő perjel nélkül, hogy normál üzenetként menjen."
   session:
     auto_reset_notice: |

@@ -804,6 +804,9 @@ gateway:
     no_command: "빠른 명령 '/{command}'에 정의된 명령이 없어요."
     unsupported_type: "빠른 명령 '/{command}'의 유형을 지원하지 않아요 (지원: 'exec', 'alias')."
     no_target: "빠른 명령 '/{command}'에 정의된 대상이 없어요."
+  plugin_card:
+    action_failed: "작업에 실패했어요. 다시 시도하거나 명령을 직접 입력해 주세요."
+    card_too_large: "업데이트된 카드가 너무 커서 표시할 수 없어요({size}바이트, 한도 {limit})."
   unknown_command: "알 수 없는 명령 `/{command}`. /commands로 사용 가능한 명령을 확인하거나, 앞의 슬래시를 빼고 다시 보내면 일반 메시지로 전송돼요."
   session:
     auto_reset_notice: "◐ 중지 후 세션이 초기화되었어요. 대화 기록이 지워졌어요.\n이전 세션을 찾아 복원하려면 /resume을 사용하세요.\n"

@@ -222,9 +222,11 @@ async def _run_runner_command(runner, live, name, arg, kind, shell):
     # The session's own entry, so HERMES_SESSION_ID is bound as on its turns: a background job
     # the handler starts records this session as its parent.
     entry = await asyncio.to_thread(runner.session_store.lookup_by_session_key, live.route)
+    from gateway.plugin_card_actions import plugin_reply_text
     try:
-        # The argument as typed, like main's CLI: no messaging dash repair.
-        return await runner._hm_run_plugin_handler(handler, event, live.source, entry, args=arg)
+        # The argument as typed, like main's CLI: no messaging dash repair. A local session shows a
+        # CardReply's text: its clients render no Adaptive Cards.
+        return plugin_reply_text(await runner._hm_run_plugin_handler(handler, event, live.source, entry, args=arg))
     except Exception as e:  # main's CLI printed it; messaging (run_inbound_hooks) still only logs it
         logger.warning("Plugin command dispatch failed: %s", e, exc_info=True)
         return t('cli.plugin.command_error', error=str(e) or type(e).__name__)

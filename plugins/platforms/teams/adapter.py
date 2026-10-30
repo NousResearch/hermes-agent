@@ -65,6 +65,7 @@ from gateway.platforms._shared import (
     coerce_port, extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     seed_extra_from_env as _seed_extra_from_env, send_error
 )
+from gateway.plugin_card_actions import ROUTING_KEY as PLUGIN_ROUTING_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -518,22 +519,27 @@ class TeamsAdapter(BasePlatformAdapter):
                 return
         if "<at>" in text:  # strip the <at>BotName</at> tags Teams prepends for @mentions
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
-        from_account = activity.from_
-        user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
-        source = self.build_source(
-            chat_id=conv.id,
-            chat_name=getattr(conv, "name", None) or "",
-            chat_type=_CHAT_TYPES.get(getattr(conv, "conversation_type", None) or "", "dm"),
-            user_id=str(user_id),
-            user_name=getattr(from_account, "name", None) or "",
-            guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
-            message_id=msg_id)
+        source = self._source_for_activity(activity, msg_id)
         media: list = [m for m in [await self._cache_attachment(a) for a in getattr(activity, "attachments", None) or []] if m]
         media_kinds = [kind for _, _, kind in media]  # media items are (path, media_type, kind)
         msg_type = next((t for kind, t in _MEDIA_KIND_PRECEDENCE if kind in media_kinds), MessageType.TEXT)
         await self.handle_message(MessageEvent(
             text=text, source=source, message_type=msg_type, message_id=msg_id,
             media_urls=[path for path, _, _ in media], media_types=[mt for _, mt, _ in media]))
+
+    def _source_for_activity(self, activity: Any, message_id: Optional[str]):
+        """SessionSource for the sender of *activity* in its conversation (messages and card clicks):
+        the AAD object id identifies the user, falling back to the channel account id."""
+        conv, from_account = activity.conversation, activity.from_
+        user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
+        return self.build_source(
+            chat_id=conv.id,
+            chat_name=getattr(conv, "name", None) or "",
+            chat_type=_CHAT_TYPES.get(getattr(conv, "conversation_type", None) or "", "dm"),
+            user_id=str(user_id),
+            user_name=getattr(from_account, "name", None) or "",
+            guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
+            message_id=message_id)
 
     @staticmethod
     def _activity_mentions_bot(activity: Any, bot_ids: set, text: str) -> bool:
@@ -633,12 +639,21 @@ class TeamsAdapter(BasePlatformAdapter):
         card = AdaptiveCard().with_version("1.4").with_body(body)
         return InvokeResponse(status=200, body=AdaptiveCardActionCardResponse(value=card))
 
+    @staticmethod
+    def _invoke_raw_card(card: dict) -> InvokeResponse[AdaptiveCardActionCardResponse]:
+        """A plugin's raw Adaptive Card JSON as the replacement card (``ValueError`` when the SDK model
+        refuses it); every SDK card model keeps unknown keys (``extra="allow"``), so no element is dropped."""
+        return InvokeResponse(status=200, body=AdaptiveCardActionCardResponse(value=AdaptiveCard.model_validate(card)))
+
     async def _on_card_action(
         self, ctx: ActivityContext[AdaptiveCardInvokeActivity]
     ) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
         from tools.approval import resolve_gateway_approval, has_blocking_approval
 
         data = ctx.activity.value.action.data or {}
+        if PLUGIN_ROUTING_KEY in data:  # a plugin's button (ctx.register_card_action_handler)
+            from plugins.platforms.teams.card_actions import answer_plugin_card_action
+            return await answer_plugin_card_action(self, ctx.activity, data)
         hermes_action = data.get("hermes_action", "")
         session_key = data.get("session_key", "")
         if not hermes_action or not session_key:
@@ -704,6 +719,22 @@ class TeamsAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[teams] send_exec_approval failed: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e), retryable=True)
+
+    async def send_card_message(
+        self, chat_id: str, card: dict, fallback_text: str, metadata: Optional[dict[str, Any]] = None
+    ) -> SendResult:
+        """A plugin's raw Adaptive Card JSON as a message (``gateway/plugin_card_actions.py``);
+        ``fallback_text`` is its ``fallbackText`` unless the card sets one."""
+        if not self._app:
+            return SendResult(success=False, error="Teams app not initialized")
+        try:
+            result = await self._send_card(chat_id, AdaptiveCard.model_validate({"fallbackText": fallback_text, **card}))
+            return SendResult(success=True, message_id=getattr(result, "id", None) if result else None)
+        except Exception as e:  # health: allow BLE001 -- a refused card or failed send falls back to the text reply
+            # The type only: a validation error quotes the card.
+            logger.warning("[teams] plugin card send failed: %s", type(e).__name__)
+            logger.debug("[teams] plugin card send failed", exc_info=True)
+            return SendResult(success=False, error=type(e).__name__)
 
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None

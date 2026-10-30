@@ -2014,6 +2014,59 @@ def register(ctx):
 
 This is the public way for plugins to participate in Slack interactivity. Older plugins may patch `SlackAdapter.connect`; prefer this API instead. For the full slack_bolt surface (events, shortcuts, commands — not just Block Kit actions), use the generic `register_platform_handler("slack", ...)` below.
 
+### Answer with Adaptive Cards and handle their button clicks
+
+A slash command can answer with an [Adaptive Card](https://adaptivecards.io) instead of text, and the card's `Action.Execute` buttons can call back into your plugin, which answers with a new card that replaces the clicked one. Microsoft Teams renders the cards today. Every other surface shows the reply's text: other messaging platforms, the CLI, the TUI and Desktop. The contract types live in `gateway.plugin_card_actions`.
+
+```python
+from gateway.plugin_card_actions import CardActionResult, CardReply
+
+def _card(item: str, status: str) -> dict:
+    return {
+        "type": "AdaptiveCard", "version": "1.5",
+        "body": [{"type": "TextBlock", "text": f"Proposal {item}: {status}", "wrap": True}],
+        "actions": [{"type": "Action.Execute", "title": "Approve", "verb": "approve",
+                     # Route the click to this plugin; keep the data small (ids + a version hash).
+                     "data": {"hermes_plugin_action": "myplugin", "op": "approve", "item": item, "v": "3f2a"}}],
+    }
+
+def _review(raw_args: str) -> CardReply:
+    # text is required: it is what surfaces without cards show.
+    return CardReply(card=_card("42", "pending"), text="Proposal 42 is pending: /myplugin approve 42")
+
+def _on_click(event) -> CardActionResult:
+    if event.user_id not in OWNERS:  # the allowlist gate is not enough: authorize the clicker yourself
+        return CardActionResult(text="Only the owner can review proposals.")
+    item = str(event.action_data.get("item", ""))
+    if not proposal_is_current(item, event.action_data.get("v")):  # button data is client-controlled
+        return CardActionResult(text="That proposal changed; run /myplugin again.")
+    approve(item)
+    return CardActionResult(card=_card(item, "approved"))
+
+def register(ctx):
+    ctx.register_command("myplugin", handler=_review, description="Review proposals")
+    ctx.register_card_action_handler("myplugin", _on_click)
+```
+
+**Signature:** `ctx.register_card_action_handler(namespace: str, callback) -> PluginRegistration | None`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `namespace` | `str` | 1–64 characters of `[a-z0-9_.-]`, starting with a letter or digit. A button reaches this handler when its `data` carries `"hermes_plugin_action": "<namespace>"`. One plugin owns a namespace: another plugin's registration is refused with a warning (and returns `None`); the owning plugin registering again (a reload) replaces its handler. |
+| `callback` | callable, sync or `async` | Receives a `CardActionEvent` and returns a `CardActionResult`, a card `dict` (replaces the clicked card) or a `str` (shown briefly in the client). |
+
+`CardActionEvent` fields: `platform`, `namespace`, `action_data` (the button's own `data`, routing key removed), `inputs` (the values of the card's `Input.*` elements), `user_id` (the clicker's platform-verified id; on Teams the Azure AD object id), `user_name`, `chat_id`, `message_id` (the clicked card's message, when the platform says) and `session_key` (the chat's session key, derived as its messages derive it).
+
+**Runtime behavior:**
+
+- A click runs the way the plugin's slash commands run: in the plugin's profile, with `HERMES_SESSION_PLATFORM`, `HERMES_SESSION_USER_ID`, `HERMES_SESSION_CHAT_ID` and the other `HERMES_SESSION_*` names bound for the clicker's chat (read them with `gateway.session_context.get_session_env`). Sync handlers run on the gateway's worker pool, async handlers are awaited, and `ctx.post_message` posts into that chat.
+- Teams waits for the answer inside the click, so a handler has 8 seconds. A handler that raises, runs longer, or returns something else is answered with "That action failed; try again or use the typed command." Hermes logs the plugin and exception type, never the button data or inputs.
+- A card larger than 28,000 bytes (as JSON) is not sent. Its click is answered with a short text instead, and a `CardReply` falls back to its `text`.
+- Teams merges the card's input values into the clicked button's `data`. When Hermes sends your card it moves each routed button's own keys under `hermes_plugin_data`, so the click splits them back into `action_data` and `inputs`. A card your plugin sends some other way (for example with `register_platform_handler`) has no such split: `action_data` holds every key and `inputs` is empty.
+- The handlers live in the gateway process, so they need `plugins.isolation: in_process`. Under `host` isolation, `register_card_action_handler` is refused, the same as `register_slack_action_handler`.
+
+**Security:** Teams answers a click only for users in `TEAMS_ALLOWED_USERS` (or with `TEAMS_ALLOW_ALL_USERS=true`). With neither set, clicks are refused. That gate only says the clicker may talk to the bot, so check `event.user_id` against your plugin's own owners or roles. Treat `action_data` and `inputs` as client-controlled: a client can send any value. Re-validate ids and state on the server (the version hash in the example), and keep button data small: ids and a version, never the content itself.
+
 ### Register native platform handlers (any platform)
 
 Plugins that need to receive platform events the core adapter doesn't route — extra update types, native button callbacks, reaction/member events, webhook routes — can register a handler factory that the platform's adapter invokes at connect time. This works on **every** gateway platform.
@@ -2112,6 +2165,8 @@ re-discovery. Every one of those paths runs a **real forced rescan** (`discover_
   by a late plugin is wired without a restart. Re-wiring is deduped per native client by `(plugin, factory
   qualname)`; on Telegram the late handlers are hoisted ahead of core's catch-all `filters.COMMAND` /
   `CallbackQueryHandler` (PTB dispatches the first match per group), exactly as they would sit at connect.
+  Card action handlers (`card:<namespace>`) are looked up per click, so they need no re-wire, and unloading
+  the plugin removes them.
 - **Deferred** — `tools` and `prompt` sections apply from the **next session** (the running session's
   prompt/tool schema is cache-stable, same rule as `/skills install`); `mcp_servers` (the plugin's
   `mcp.json` servers, by their mcp.json names) connect on `mcp.reload` or the next session.

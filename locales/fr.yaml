@@ -946,6 +946,9 @@ gateway:
     no_command: "La commande rapide '/{command}' n'a aucune commande définie."
     unsupported_type: "La commande rapide '/{command}' a un type non pris en charge (pris en charge : 'exec', 'alias')."
     no_target: "La commande rapide '/{command}' n'a aucune cible définie."
+  plugin_card:
+    action_failed: "Cette action a échoué ; réessayez ou utilisez la commande tapée."
+    card_too_large: "La carte mise à jour était trop volumineuse pour être affichée ({size} octets ; la limite est de {limit})."
   unknown_command: "Commande inconnue `/{command}`. Tapez /commands pour voir ce qui est disponible, ou renvoyez le texte sans la barre oblique initiale pour l'envoyer comme message normal."
   session:
     auto_reset_notice: |

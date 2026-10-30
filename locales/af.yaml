@@ -804,6 +804,9 @@ gateway:
     no_command: "Vinnige opdrag '/{command}' het geen opdrag gedefinieer nie."
     unsupported_type: "Vinnige opdrag '/{command}' het 'n nie-ondersteunde tipe (ondersteun: 'exec', 'alias')."
     no_target: "Vinnige opdrag '/{command}' het geen teiken gedefinieer nie."
+  plugin_card:
+    action_failed: "Daardie aksie het misluk; probeer weer of gebruik die getikte opdrag."
+    card_too_large: "Die bygewerkte kaart was te groot om te wys ({size} grepe; die limiet is {limit})."
   unknown_command: "Onbekende opdrag `/{command}`. Tik /commands om te sien wat beskikbaar is, of stuur weer sonder die voorste skuinsstreep om dit as 'n gewone boodskap te stuur."
   session:
     auto_reset_notice: "◐ Sessie herstel nadat dit gestop is. Gesprekgeskiedenis uitgevee.\nGebruik /resume om 'n vorige sessie te blaai en te herstel.\n"

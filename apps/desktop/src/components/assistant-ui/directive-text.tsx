@@ -14,6 +14,7 @@ import { ExternalLink, openLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { downscaleDataUrlForPreview, FALLBACK_PLACEHOLDER } from '@/lib/image-resize'
 import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
+import { openResponseAnnotations, parseResponseAnnotations } from '@/lib/response-annotations'
 import { useSessionLinkTitle } from '@/lib/session-link-title'
 import { parseSessionRefValue, sessionRefFallbackLabel } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
@@ -304,6 +305,8 @@ function parseDirectiveText(text: string): Unstable_DirectiveSegment[] {
  *  handed a chip reading `desktop` throws away the context you navigated for.
  *  The chip's `truncate` cuts the overflow. */
 export function refChipLabel(type: string, id: string): string {
+  if (type === 'annotation') {return parseResponseAnnotations(id)?.label || id}
+
   if (type === 'terminal') {
     return id || 'terminal'
   }
@@ -518,10 +521,23 @@ export interface DirectiveAction {
   href?: (value: string) => string
   icon: string
   label: (t: I18nContextValue['t']) => string
-  run: (value: string, options?: { native?: boolean }) => void
+  run: (
+    value: string,
+    options?: {
+      native?: boolean
+      editable?: boolean
+      anchor?: { left: number; top: number; bottom: number; width: number }
+    }
+  ) => void
 }
 
 export const DIRECTIVE_ACTIONS: Record<string, DirectiveAction> = {
+  annotation: {
+    icon: 'comment-discussion',
+    label: t => t.composer.openDirective,
+    run: (value, options) =>
+      openResponseAnnotations({ value, editable: options?.editable ?? false, anchor: options?.anchor })
+  },
   session: {
     icon: 'link-external',
     label: t => t.composer.openDirective,
@@ -611,7 +627,7 @@ const DirectiveChip: FC<{
     ...refAttrs(type, cn('wrap-anywhere', activate && 'cursor-pointer')),
     'data-directive-id': id,
     'data-slot': 'aui_directive-chip',
-    title: id
+    title: type === 'annotation' ? undefined : id
   }
 
   if (href) {

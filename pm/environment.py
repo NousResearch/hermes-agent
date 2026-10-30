@@ -49,6 +49,19 @@ _RESOLVER_MARKERS = (
 # A package's own build ran and failed; a fetch/download failure never prints this.
 _BUILD_MARKERS = ("the build backend returned an error",)
 
+# The tail of a failed `uv` run is not its error: a failed sdist build streams
+# the build backend's own output last, and setuptools ends that with a held-back
+# DeprecationWarning about license classifiers. Reading the blind tail as the
+# reason reported a missing clang++ as a license problem (#132820).
+_FAILURE_HEADER_MARKER = "failed to build"
+_FAILURE_LINE_MARKERS = (
+    "error:",
+    "fatal error",
+    "cmake error",
+    "no such file or directory",
+    "failed with exit status",
+)
+
 # The index omitted upload times (no PEP 700 metadata), so the release-age cutoff
 # cannot date the file. uv words it as "no solution", but the index is at fault,
 # not the requested set, so it must never read as a dependency conflict (#135589).
@@ -92,14 +105,31 @@ def _is_bytecode_compile_failure(result: subprocess.CompletedProcess) -> bool:
     return _BYTECODE_COMPILE_MARKER in text
 
 
+def _failure_reason(output: str, *, limit: int = 600) -> str:
+    """The line naming a failed ``uv`` run, or the bounded tail when none does.
+
+    The last lines of a failed build are the backend's own trailing warnings, so
+    the tail hides the failure; the last line that reports one IS the reason.
+    uv's ``Failed to build <package>`` header rides above it as context.
+    """
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    reason = next((line for line in reversed(lines)
+                   if any(marker in line.lower() for marker in _FAILURE_LINE_MARKERS)), "")
+    if not reason:
+        return output.strip()[-limit:]
+    header = next((line for line in reversed(lines)
+                   if line != reason and _FAILURE_HEADER_MARKER in line.lower()), "")
+    return (f"{header}\n{reason}" if header else reason)[:limit]
+
+
 def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallError:
     """Turn a failed `uv <stage>` into the right classified error.
 
     Resolver-conflict output → ResolutionConflict; a build backend that ran and
     failed → BuildFailure; anything else (fetch, tooling) → plain InstallError
-    with the tail of the output.
+    naming the failure line (the bounded tail when the log reports none).
     """
-    cause = f"uv {stage} exited {returncode}: {output.strip()[-600:]}"
+    cause = f"uv {stage} exited {returncode}: {_failure_reason(output)}"
     lowered = output.lower()
     if _UNDATED_PIN in lowered or all(marker in lowered for marker in _UNDATED_FILE):
         return InstallError("venv", cause, UNDATED_INDEX_HINT)

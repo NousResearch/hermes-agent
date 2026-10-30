@@ -82,7 +82,7 @@ def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
             _dir_tree_signature(os.path.join(root, name), sig, depth - 1)
 
 
-def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
+def _compute_scan_signature(dirs_to_scan, disabled) -> tuple:
     """Stat-based change signature over every directory the catalog walks; platform is read via
     ``agent.skill_utils.sys`` so test patches are honored."""
     from agent import skill_utils as _skill_utils
@@ -91,6 +91,35 @@ def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
     for d in dirs_to_scan:
         _dir_tree_signature(str(d), sig)
     return (tuple(sig), frozenset(disabled), platform)
+
+
+# Call-scoped signature memo: validators that run inside one RPC (the published-map gate in
+# agent.skill_commands and the shared-catalog gate here) each walked the whole tree, twice per
+# palette open on a large install. Inside shared_scan_signature() the first walk serves every
+# validator in the same call; the memo dies with the scope, so cross-call freshness (CFG-8) is
+# unchanged — a skill installed between calls is still seen by the next one.
+_signature_scope: contextvars.ContextVar = contextvars.ContextVar("skills_scan_signature_scope", default=None)
+
+
+@contextmanager
+def shared_scan_signature():
+    """Share one directory-signature walk among every validator in the calling scope."""
+    token = _signature_scope.set({})
+    try:
+        yield
+    finally:
+        _signature_scope.reset(token)
+
+
+def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
+    scope = _signature_scope.get()
+    if scope is None:
+        return _compute_scan_signature(dirs_to_scan, disabled)
+    key = (tuple(str(d) for d in dirs_to_scan), frozenset(disabled))
+    hit = scope.get(key)
+    if hit is None:
+        hit = scope[key] = _compute_scan_signature(dirs_to_scan, disabled)
+    return hit
 
 
 HERMES_HOME = get_hermes_home()  # all skills live in ~/.hermes/skills/ (seeded from bundled)

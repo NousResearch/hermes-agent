@@ -241,6 +241,18 @@ export type BotsMessages = {
     disbandTitle: string
     deleteTitle: string
     deleteAction: string
+    /** Bulk multi-select confirm title ("Delete N group chats?"). */
+    deleteNTitle: (count: number) => string
+    /** Bulk multi-select confirm button. */
+    deleteNAction: (count: number) => string
+    /** Bulk multi-select body naming the count. */
+    deleteNDesc: (count: number) => string
+    /** Success toast after bulk disband. */
+    deletedN: (count: number) => string
+    /** Toolbar / overflow: clear every live group room. */
+    clearAllAction: string
+    clearAllTitle: string
+    clearAllDesc: (count: number) => string
     composerPlaceholder: string
     slashCommandsUnsupported: string
     attachHint: string

@@ -1,6 +1,7 @@
 import { ConfirmDialog, host } from '@hermes/plugin-sdk'
 import type { useI18n } from '@hermes/plugin-sdk'
 
+import { disbandGroupChats } from './bulk-disband'
 import { CreateAgentDialog, CreateGroupChatDialog, GroupDialog } from './create-dialog'
 import type { useRoster } from './data'
 import { EditProfileDialog } from './edit-profile-dialog'
@@ -10,6 +11,40 @@ import { deleteBot } from './profile-ops'
 import type { GroupMember, RosterRow } from './types'
 import { createBotSection, moveGroupChatsToSection, renameBotSection, type SectionDialogState } from './user-sections'
 import { SectionNameDialog } from './user-sections-ui'
+
+/** One room, or many rooms for bulk delete (still one confirm). */
+export type DeletingGroupState =
+  | { items: Array<{ members: GroupMember[]; name: string }>; kind?: 'bulk' | 'clear-all' }
+  | { members: GroupMember[]; name: string }
+  | null
+
+function deletingGroupItems(
+  deletingGroup: DeletingGroupState
+): Array<{ members: GroupMember[]; name: string }> {
+  if (!deletingGroup) {
+    return []
+  }
+  if ('items' in deletingGroup && Array.isArray(deletingGroup.items)) {
+    return deletingGroup.items
+  }
+  if ('name' in deletingGroup) {
+    return [{ name: deletingGroup.name, members: deletingGroup.members }]
+  }
+  return []
+}
+
+function deletingGroupKind(deletingGroup: DeletingGroupState): 'bulk' | 'clear-all' | 'single' {
+  if (!deletingGroup) {
+    return 'single'
+  }
+  if ('items' in deletingGroup && Array.isArray(deletingGroup.items)) {
+    if (deletingGroup.kind === 'clear-all') {
+      return 'clear-all'
+    }
+    return deletingGroup.items.length > 1 ? 'bulk' : 'single'
+  }
+  return 'single'
+}
 
 interface renderRosterDialogsProps {
   b: ReturnType<typeof useBots>
@@ -22,8 +57,8 @@ interface renderRosterDialogsProps {
   setEditing: (value: RosterRow | null) => void
   deleting: (RosterRow & { path?: string }) | null
   setDeleting: (value: (RosterRow & { path?: string }) | null) => void
-  deletingGroup: { members: GroupMember[]; name: string } | null
-  setDeletingGroup: (value: { members: GroupMember[]; name: string } | null) => void
+  deletingGroup: DeletingGroupState
+  setDeletingGroup: (value: DeletingGroupState) => void
   grouping: RosterRow | null
   setGrouping: (value: RosterRow | null) => void
   sectionDialog: SectionDialogState
@@ -31,6 +66,8 @@ interface renderRosterDialogsProps {
   roster: RosterRow[]
   activeSourceRoster: RosterRow[]
   refetch: ReturnType<typeof useRoster>['refetch']
+  /** Clears multi-select after a successful bulk disband. */
+  onGroupDisbandDone?: () => void
 }
 
 export function renderRosterDialogs({
@@ -52,8 +89,15 @@ export function renderRosterDialogs({
   setSectionDialog,
   roster,
   activeSourceRoster,
-  refetch
+  refetch,
+  onGroupDisbandDone
 }: renderRosterDialogsProps) {
+  const groupItems = deletingGroupItems(deletingGroup)
+  const bulkCount = groupItems.length
+  const kind = deletingGroupKind(deletingGroup)
+  const bulk = kind === 'bulk' || kind === 'clear-all'
+  const singleName = kind === 'single' && bulkCount === 1 ? groupItems[0]?.name : null
+
   return (
     <>
       <CreateAgentDialog
@@ -136,28 +180,56 @@ export function renderRosterDialogs({
       />
       <ConfirmDialog
         busyLabel="Deleting…"
-        confirmLabel={b.group.deleteAction}
+        confirmLabel={
+          kind === 'clear-all'
+            ? b.group.clearAllAction
+            : bulk
+              ? b.group.deleteNAction(bulkCount)
+              : b.group.deleteAction
+        }
         description={
-          deletingGroup
-            ? `This removes “${deletingGroup.name}” from its bots and clears the shared room log. The bots and their individual chats are kept.`
-            : null
+          kind === 'clear-all'
+            ? b.group.clearAllDesc(bulkCount)
+            : bulk
+              ? b.group.deleteNDesc(bulkCount)
+              : singleName
+                ? `This removes “${singleName}” from its bots and clears the shared room log. The bots and their individual chats are kept.`
+                : null
         }
         destructive
         doneLabel="Deleted"
         onClose={() => setDeletingGroup(null)}
         onConfirm={async () => {
-          if (!deletingGroup) {
+          if (!groupItems.length) {
             return
           }
 
-          await disbandGroupChat(deletingGroup.name, deletingGroup.members)
+          if (bulk) {
+            const { disbanded } = await disbandGroupChats(groupItems)
+            onGroupDisbandDone?.()
+            host.notify({
+              kind: 'success',
+              message: b.group.deletedN(disbanded.length)
+            })
+            return
+          }
+
+          const one = groupItems[0]
+          await disbandGroupChat(one.name, one.members)
+          onGroupDisbandDone?.()
           host.notify({
             kind: 'success',
-            message: `Deleted group “${deletingGroup.name}”`
+            message: `Deleted group “${one.name}”`
           })
         }}
-        open={Boolean(deletingGroup)}
-        title={b.group.deleteTitle}
+        open={bulkCount > 0}
+        title={
+          kind === 'clear-all'
+            ? b.group.clearAllTitle
+            : bulk
+              ? b.group.deleteNTitle(bulkCount)
+              : b.group.deleteTitle
+        }
       />
     </>
   )

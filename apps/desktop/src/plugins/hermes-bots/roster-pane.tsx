@@ -41,9 +41,10 @@ import { $activeGroupMemberKeys } from './group-presence'
 import { $showHiddenBots, isBotHidden } from './hidden-bots'
 import { useBots } from './i18n'
 import { $activityToasts } from './roster-actions'
+import { buildGroupDisbandTargets, nextGroupSelection } from './bulk-disband'
 import { renderRosterContent } from './roster-pane-content'
 import { deriveRosterPresentation, deriveRosterRows, sortRosterBots } from './roster-pane-derivation'
-import { renderRosterDialogs } from './roster-pane-dialogs'
+import { type DeletingGroupState, renderRosterDialogs } from './roster-pane-dialogs'
 import { RosterGroupRowView } from './roster-pane-groups'
 import { $lastSources, usePublishRosterSnapshot } from './roster-pane-lifecycle'
 import { rosterSectionRenderers } from './roster-pane-sections'
@@ -245,7 +246,9 @@ export function BotsPane() {
   // `path` is the profile directory the gateway reports on a profiles.list row;
   // it is not part of the shared RosterRow model, so it rides as an extra here.
   const [deleting, setDeleting] = useState<null | (RosterRow & { path?: string })>(null)
-  const [deletingGroup, setDeletingGroup] = useState<null | { members: GroupMember[]; name: string }>(null)
+  const [deletingGroup, setDeletingGroup] = useState<DeletingGroupState>(null)
+  const [selectedGroupNames, setSelectedGroupNames] = useState<Set<string>>(() => new Set())
+  const [anchorGroupName, setAnchorGroupName] = useState<null | string>(null)
   const userSections = useValue($botSections)
   const dragging = useValue($draggingBot)
   useEscapeCancelsBotDrag()
@@ -408,6 +411,45 @@ export function BotsPane() {
 
     return () => cancelAnimationFrame(frame)
   }, [hiddenExpanded, hasRosterConstraint])
+
+  // Escape clears multi-select on group rows (bulk delete).
+  useEffect(() => {
+    if (!selectedGroupNames.size) {
+      return
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setSelectedGroupNames(new Set())
+        setAnchorGroupName(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selectedGroupNames.size])
+
+  // Drop selection entries that left the live projection (disbanded / filtered out).
+  useEffect(() => {
+    if (!selectedGroupNames.size) {
+      return
+    }
+    const live = new Set(sortedGroupRows.map(row => row.name))
+    let changed = false
+    const next = new Set<string>()
+    for (const name of selectedGroupNames) {
+      if (live.has(name)) {
+        next.add(name)
+      } else {
+        changed = true
+      }
+    }
+    if (changed) {
+      setSelectedGroupNames(next)
+      if (anchorGroupName && !live.has(anchorGroupName)) {
+        setAnchorGroupName(null)
+      }
+    }
+  }, [sortedGroupRows, selectedGroupNames, anchorGroupName])
+
   usePublishRosterSnapshot({ data, live, roster, allMeta, activeSourceRoster })
 
   useReconcileRosterOwner(data, error, selectionHydrated, roster, sourceSnapshot, allMeta)
@@ -448,10 +490,54 @@ export function BotsPane() {
       members={row.members}
       onDisband={setDeletingGroup}
       onNewSection={target => setSectionDialog({ group: target, mode: 'create' })}
-      onOpen={group => openGroupChat(group, 'name')}
+      onOpen={(group: string) => {
+        setSelectedGroupNames(new Set())
+        setAnchorGroupName(null)
+        openGroupChat(group, 'name')
+      }}
+      onSelectClick={(group: string, mod: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => {
+        if (!(mod.ctrlKey || mod.metaKey || mod.shiftKey)) {
+          return false
+        }
+        const ordered = sortedGroupRows.map(entry => entry.name)
+        const next = nextGroupSelection(selectedGroupNames, ordered, group, mod, anchorGroupName)
+        setSelectedGroupNames(next.selected)
+        setAnchorGroupName(next.anchor)
+        return true
+      }}
+      selected={selectedGroupNames.has(row.name)}
       sortedGroupRows={sortedGroupRows}
     />
   )
+
+  const clearGroupSelection = () => {
+    setSelectedGroupNames(new Set())
+    setAnchorGroupName(null)
+  }
+
+  const membersForGroup = (name: string): GroupMember[] => {
+    const fromRow = sortedGroupRows.find(row => row.name === name)?.members
+    if (fromRow?.length) {
+      return fromRow
+    }
+    return groupChatMemberBots(name, roster, allMeta)
+  }
+
+  const requestDeleteSelectedGroups = () => {
+    const names = [...selectedGroupNames]
+    if (!names.length) {
+      return
+    }
+    setDeletingGroup({ items: buildGroupDisbandTargets(names, membersForGroup) })
+  }
+
+  const requestClearAllGroups = () => {
+    const names = sortedGroupRows.map(row => row.name)
+    if (!names.length) {
+      return
+    }
+    setDeletingGroup({ kind: 'clear-all', items: buildGroupDisbandTargets(names, membersForGroup) })
+  }
 
   const { renderUserSections, renderGatewaySection, renderGroupChatSection, renderHiddenGatewaySection } =
     rosterSectionRenderers({
@@ -492,7 +578,11 @@ export function BotsPane() {
         activityFilter,
         setActivityFilter,
         gatewayFilter,
-        setGatewayFilter
+        setGatewayFilter,
+        liveGroupCount: sortedGroupRows.length,
+        selectedGroupCount: selectedGroupNames.size,
+        onDeleteSelectedGroups: requestDeleteSelectedGroups,
+        onClearAllGroups: requestClearAllGroups
       })}
       {renderRosterContent({
         b,
@@ -543,7 +633,8 @@ export function BotsPane() {
         setSectionDialog,
         roster,
         activeSourceRoster,
-        refetch
+        refetch,
+        onGroupDisbandDone: clearGroupSelection
       })}
     </div>
   )

@@ -168,6 +168,7 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 - Token is stored at `~/.hermes/google_token.json` and auto-refreshes.
 - Pending OAuth session state/verifier are stored temporarily at `~/.hermes/google_oauth_pending.json` until exchange completes.
 - If `gws` is installed, `google_api.py` points it at the same `~/.hermes/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.
+- `google_api.py` also gives `gws` its own config dir per Google account (`~/.hermes/google_workspace/gws/<hash>/`), because `gws` shares one access-token cache per config dir across accounts. Setting `GOOGLE_WORKSPACE_CLI_CONFIG_DIR` yourself turns this isolation off: every profile and account then shares that one cache.
 - To revoke: `$GSETUP --revoke`
 
 ## Usage

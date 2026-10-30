@@ -22,8 +22,16 @@ _HOSTED_MANAGED_FILES_ROOT = Path("/opt/data")
 @dataclass(frozen=True)
 class ManagedFilesPolicy:
     default_path: Path
-    locked_root: Path | None
+    locked_root: list[Path] | Path | None
     can_change_path: bool
+
+    @property
+    def locked_roots(self) -> list[Path] | None:
+        if self.locked_root is None:
+            return None
+        if isinstance(self.locked_root, (list, tuple)):
+            return list(self.locked_root)
+        return [self.locked_root]
 
 
 def _resolve_fs_candidate(raw: str, *, cwd: str | None = None) -> Path:
@@ -411,11 +419,29 @@ def _dashboard_local_update_managed_externally() -> bool:
     return True
 
 
+def _parse_managed_roots(raw: str, *, create_root: bool = True) -> list[Path]:
+    segments = raw.split(os.pathsep)
+    roots: list[Path] = []
+    for segment in segments:
+        trimmed = segment.strip()
+        if not trimmed:
+            raise ValueError(f"{_MANAGED_FILES_ROOT_ENV} contains an empty segment")
+        p = Path(trimmed).expanduser()
+        if not p.is_absolute():
+            raise ValueError(f"{_MANAGED_FILES_ROOT_ENV} segments must be absolute paths: {segment!r}")
+        if p.exists() and not p.is_dir():
+            raise ValueError(f"{_MANAGED_FILES_ROOT_ENV} path is not a directory: {segment!r}")
+        resolved = _ensure_managed_root(p) if create_root else _canonical_path(p)
+        roots.append(resolved)
+    return roots
+
+
 def _managed_files_policy(request: Optional[Request], *, create_root: bool = True) -> ManagedFilesPolicy:
     raw_forced_root = os.environ.get(_MANAGED_FILES_ROOT_ENV, "").strip()
     if raw_forced_root:
-        root = _ensure_managed_root(raw_forced_root) if create_root else _canonical_path(Path(raw_forced_root))
-        return ManagedFilesPolicy(default_path=root, locked_root=root, can_change_path=False)
+        roots = _parse_managed_roots(raw_forced_root, create_root=create_root)
+        locked: list[Path] | Path = roots[0] if len(roots) == 1 else roots
+        return ManagedFilesPolicy(default_path=roots[0], locked_root=locked, can_change_path=False)
 
     # Remote/OAuth access does not imply a hosted container (a gated macOS launchd
     # install still browses its home). Lock to /opt/data only when the Hermes
@@ -434,7 +460,7 @@ def _resolve_managed_path(
 ) -> tuple[ManagedFilesPolicy, Path, str]:
     policy = _managed_files_policy(request, create_root=create_root)
     text = _path_text(raw_path)
-    root = policy.locked_root
+    roots = policy.locked_roots
 
     if for_agent_read and text and not text.startswith("file:") and (
             os.name == "nt" or not os.access(text, os.R_OK)):
@@ -445,16 +471,14 @@ def _resolve_managed_path(
         if translated is not None:
             text = str(translated)
 
-    if root is not None and (not text or text in {".", "/"}):
-        candidate = root
-    elif not text:
+    if not text or (roots is not None and text in {".", "/"}):
         candidate = policy.default_path
     else:
         candidate = Path(text).expanduser()
-        if root is not None and not candidate.is_absolute():
+        if roots is not None and not candidate.is_absolute():
             if any(part == ".." for part in candidate.parts):
                 raise HTTPException(status_code=400, detail="Path cannot contain '..'")
-            candidate = root / candidate
+            candidate = policy.default_path / candidate
         elif not candidate.is_absolute():
             raise HTTPException(status_code=400, detail="Path must be absolute")
 
@@ -467,26 +491,32 @@ def _resolve_managed_path(
     else:
         resolved = _canonical_path(candidate, require_exists=not for_write)
 
-    if root is not None and not _path_is_under(root, resolved):
+    if roots is not None and not any(_path_is_under(r, resolved) for r in roots):
         raise HTTPException(status_code=403, detail="Path outside managed files root")
 
     return policy, resolved, str(resolved)
 
 
 def _managed_response_meta(policy: ManagedFilesPolicy) -> dict[str, Any]:
-    locked_root = str(policy.locked_root) if policy.locked_root is not None else None
+    if policy.locked_root is None:
+        locked_root = None
+    elif isinstance(policy.locked_root, (list, tuple)):
+        locked_root = os.pathsep.join(str(r) for r in policy.locked_root)
+    else:
+        locked_root = str(policy.locked_root)
     return {"root": locked_root, "locked_root": locked_root, "can_change_path": policy.can_change_path}
 
 
-def _hosted_fs_path_allowed(root: Path, target: Path) -> bool:
+def _hosted_fs_path_allowed(root: Path | list[Path], target: Path) -> bool:
     from hermes_cli.web_routers.files import _is_sensitive_path
 
     resolved = _canonical_path(target)
-    return (_path_is_under(root, resolved)
+    roots = root if isinstance(root, (list, tuple)) else [root]
+    return (any(_path_is_under(r, resolved) for r in roots)
             and not _is_sensitive_path(target) and not _is_sensitive_path(resolved))
 
 
-def _hosted_fs_read_guard(target: Path, request: Optional[Request] = None) -> Path | None:
+def _hosted_fs_read_guard(target: Path, request: Optional[Request] = None) -> Path | list[Path] | None:
     """Preview and Git reads share managed-file restrictions on locked deployments.
 
     ``request`` is unused (the policy is env/home driven) and optional so the
@@ -507,11 +537,7 @@ def _managed_file_entry(
     except (OSError, RuntimeError):
         raise HTTPException(status_code=400, detail="Invalid path")
 
-    # A dangling symlink is still a directory entry even when its missing
-    # target resolves outside the managed root. Classify only a definite
-    # missing target before checking the resolved-target boundary so one safe
-    # placeholder does not abort the whole listing. Permission and other I/O
-    # errors still pass through the existing boundary/error handling below.
+    roots = policy.locked_roots
     st = None
     if target.is_symlink():
         try:
@@ -519,8 +545,8 @@ def _managed_file_entry(
         except FileNotFoundError:
             # A placeholder may describe only an entry inside the managed root,
             # even when the missing destination is outside it.
-            if policy.locked_root is not None and not _path_is_under(
-                policy.locked_root, target.parent.resolve() / target.name
+            if roots is not None and not any(
+                _path_is_under(r, target.parent.resolve() / target.name) for r in roots
             ):
                 raise HTTPException(status_code=403, detail="Path outside managed files root")
             return {
@@ -535,7 +561,7 @@ def _managed_file_entry(
         except OSError:
             pass
 
-    if policy.locked_root is not None and not _path_is_under(policy.locked_root, resolved):
+    if roots is not None and not any(_path_is_under(r, resolved) for r in roots):
         raise HTTPException(status_code=403, detail="Path outside managed files root")
 
     if st is None:

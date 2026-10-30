@@ -1220,7 +1220,7 @@ async def fs_read_data_url(
     # HTTP cache and revalidates each time, so an unchanged file costs a 304 instead of its bytes
     # over a slow link, and a rewritten one is fetched fresh.
     validators = {"Cache-Control": "private, no-cache", "ETag": _fs_etag(target, st)}
-    if validators["ETag"] in _if_none_match(request):
+    if {validators["ETag"], "*"} & _if_none_match(request):
         return Response(status_code=304, headers=validators)
 
     def _render() -> JSONResponse:

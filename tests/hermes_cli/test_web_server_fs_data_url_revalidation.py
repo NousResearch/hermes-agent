@@ -48,10 +48,13 @@ def test_an_unchanged_image_revalidates_to_304_and_a_rewritten_one_is_read_again
     unchanged = client.get(route, params=query, headers={"If-None-Match": etag})
     assert (unchanged.status_code, unchanged.content) == (304, b"")
 
-    image.write_bytes(b"second!")
+    assert client.get(route, params=query, headers={"If-None-Match": "*"}).status_code == 304
+
+    # Same length, later mtime: an edit in place that keeps the size is still a new image.
+    image.write_bytes(b"FIRST")
     stat = image.stat()
     os.utime(image, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
     rewritten = client.get(route, params=query, headers={"If-None-Match": etag})
     assert rewritten.status_code == 200
-    assert rewritten.json() == {"dataUrl": _data_url(b"second!")}
+    assert rewritten.json() == {"dataUrl": _data_url(b"FIRST")}
     assert rewritten.headers["etag"] != etag

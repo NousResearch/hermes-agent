@@ -25,20 +25,37 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
-def _loop_wakeup_prompt_landed(runner, session_key, text: str) -> bool:
-    """True when the wakeup prompt is already this route's persisted role=user turn (sys-8xces5).
+def _loop_wakeup_transcript_len(runner, session_key) -> int:
+    """Transcript length before injection — the attempt-scoped floor for the landed probe
+    (sys-8xces5 review). -1 = unprovable (no session / store error): the probe then returns
+    False and the tick rolls back — pre-fix behaviour, which can only duplicate, never wedge."""
+    try:
+        entry = runner.session_store.lookup_by_session_key(session_key) if session_key else None
+        if entry is None:
+            return -1
+        return len(runner.session_store.load_transcript(entry.session_id))
+    except Exception:
+        return -1
+
+
+def _loop_wakeup_prompt_landed(runner, session_key, text: str, since: int) -> bool:
+    """True when THIS attempt persisted the wakeup prompt as this route's role=user turn (sys-8xces5).
 
     The dedupe ledger is the transcript itself — ``admit_route_wake``'s identity is a per-attempt
-    uuid, useless for dedupe. Scan the tail for a byte-identical user turn (exact digest). False
-    = not provable -> caller rolls the tick back (pre-fix behaviour: one possible duplicate beats
-    burning the tick on a genuine pre-persist failure)."""
+    uuid, useless for dedupe. Scan only turns appended after ``since`` (the pre-injection snapshot):
+    a byte-identical turn from an EARLIER attempt — a slash loop repeating the same raw command
+    every tick, or a re-set loop restarting at '#1' — must not false-land a pre-persist failure,
+    or ``awaiting_response`` wedges the loop across restarts. False = not provable -> caller rolls
+    the tick back (one possible duplicate beats burning the tick on a genuine pre-persist failure)."""
     from hermes_cli.loops import wakeup_payload_digest
 
+    if since < 0:
+        return False
     try:
         entry = runner.session_store.lookup_by_session_key(session_key) if session_key else None
         if entry is None:
             return False
-        turns = runner.session_store.load_transcript(entry.session_id)
+        turns = runner.session_store.load_transcript(entry.session_id)[since:]
     except Exception:
         return False
     want = wakeup_payload_digest(text)
@@ -508,6 +525,14 @@ class GatewayGoalsMixin:
         wakeup = await self._run_in_executor_with_context(mgr.fire_tick)
         if not wakeup:
             return
+        # sys-8xces5 review: snapshot the transcript length BEFORE injection so the landed probe
+        # below only sees turns THIS attempt appended — an identical turn from an earlier attempt,
+        # or a slash command that repeats verbatim every tick, must not false-land a pre-persist
+        # failure. Slash wakeups (snapshot -1) skip the probe entirely: the digest cannot
+        # distinguish attempts, so a raise always rolls back (worst case one duplicate command).
+        is_slash = wakeup.lstrip().startswith("/")
+        snapshot = -1 if is_slash else await self._run_in_executor_with_context(
+            _loop_wakeup_transcript_len, self, session_key)
         # #85957: after the parent turn's event.complete the CLIENT owns the next turn on this stateless
         # surface. Persist the completion as a durable delivery row — never self-post it as a new role=user
         # prompt.
@@ -522,11 +547,11 @@ class GatewayGoalsMixin:
             from gateway.session_automation import admit_route_wake
             # Under a session authority the tick commits to the FIFO (never a classic turn beside an
             # admitted one); a slash-command loop is a command and keeps the command path.
-            if wakeup.lstrip().startswith("/") or not await admit_route_wake(self, adapter, source, wakeup, "loop-tick"):
+            if is_slash or not await admit_route_wake(self, adapter, source, wakeup, "loop-tick"):
                 await adapter.handle_message(self._synthetic_prompt_event(source, wakeup, internal=True))
             # Slash-command loops dispatch through the command path and never hit the post-turn
             # completion hook — complete the tick immediately (caps + scheduling).
-            if wakeup.lstrip().startswith("/"):
+            if is_slash:
                 await self._run_in_executor_with_context(mgr.complete_tick, "")
         except Exception as exc:
             logger.warning("loop wakeup injection failed for %s: %s", sid, exc)
@@ -534,9 +559,12 @@ class GatewayGoalsMixin:
                 # sys-8xces5: the raise may have come AFTER the prompt persisted as this session's
                 # role=user turn (admit/handle_message commit then raise) — a blind rollback
                 # re-renders the same '#N' next pass and duplicates the turn. The persisted
-                # transcript is the dedupe ledger: roll back only when the prompt is provably absent.
-                landed = await self._run_in_executor_with_context(
-                    _loop_wakeup_prompt_landed, self, session_key, wakeup)
+                # transcript is the dedupe ledger: roll back only when the prompt is provably
+                # absent FOR THIS ATTEMPT — only post-snapshot turns count, and slash wakeups
+                # (payload repeats verbatim every tick) are never probed, so their raises always
+                # roll back rather than risk wedging awaiting_response.
+                landed = snapshot >= 0 and await self._run_in_executor_with_context(
+                    _loop_wakeup_prompt_landed, self, session_key, wakeup, snapshot)
                 mgr.abandon_tick(wakeup if landed else None)
         # Viewers swap the countdown for "running now" (or re-anchor it after a slash tick settled).
         self._publish_local_control(source)

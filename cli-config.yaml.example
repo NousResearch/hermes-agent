@@ -192,6 +192,7 @@ model:
   #   my-proxy:
   #     base_url: "http://127.0.0.1:4000/v1"
   #     session_affinity_header: x-litellm-session-id
+  #     initiator_header: true   # x-initiator: user|agent, for routing proxies
 # providers:
 #   meta:
 #     base_url: https://api.meta.ai/v1

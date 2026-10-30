@@ -1,10 +1,11 @@
 """Gateway lifecycle ledger — durable termination-reason evidence.
 
-Graceful shutdowns leave forensics (``gateway-exit-diag.log``); an unclean
-death (SIGKILL, kernel OOM, VM death) runs no handler.  A sentinel at
+Graceful shutdowns leave forensics (``gateway-exit-diag.log``); a life that never
+completed an exit path (SIGKILL, kernel OOM, VM death, a stop that outlasted the
+supervisor's timeout) leaves no exit record.  A sentinel at
 ``<HERMES_HOME>/state/gateway.lifecycle.json`` closes the gap:
 :func:`record_startup` finds ``phase == "running"`` from the previous life →
-unclean death, appended to the exit-diag log as ``gateway.previous_unclean_exit``
+unclean exit of unknown cause, appended to the exit-diag log as ``gateway.previous_unclean_exit``
 and logged at WARNING; :func:`mark_exited` rewrites ``phase=exited`` on every
 clean exit path.  Best-effort: forensics must never affect the lifecycle.
 """
@@ -153,6 +154,18 @@ def _suspected_oom(mem: dict[str, Any]) -> bool:
     )
 
 
+def _heartbeat_of_life(hb: dict[str, Any], sentinel: dict[str, Any]) -> bool:
+    """Only the dead life's own heartbeat is evidence about it. The file outlives its writer, so it
+    can be an earlier life's (that life never beat), or a ``--replace`` predecessor's written after
+    the successor claimed the sentinel."""
+    if type(hb.get("pid")) is not int or hb["pid"] != sentinel.get("pid"):
+        return False
+    try:
+        return datetime.fromisoformat(hb["updated_at"]) >= datetime.fromisoformat(sentinel["started_at"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def detect_unclean_exit(home: Optional[Path] = None) -> Optional[dict[str, Any]]:
     """Evidence dict when the previous life died uncleanly, else ``None``. Read-only."""
     sentinel = _read_json(get_lifecycle_sentinel_path(home))
@@ -171,8 +184,9 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[dict[str, Any]]
         hb = _read_json(get_loop_heartbeat_path(home)) or {}
     except Exception:
         hb = {}
-    if hb:
-        evidence["last_heartbeat_at"] = hb.get("updated_at")
+    if not _heartbeat_of_life(hb, sentinel):
+        return evidence
+    evidence["last_heartbeat_at"] = hb["updated_at"]
     mem = hb.get("mem")
     if isinstance(mem, dict):
         evidence["last_heartbeat_mem"] = mem
@@ -300,9 +314,10 @@ def _report_unclean_exit(evidence: dict[str, Any], home: Optional[Path], *, defe
             )
     _append_exit_diag({"ts": _now_iso(), "tag": "gateway.previous_unclean_exit", "pid": os.getpid(), **evidence}, home)
     logger.warning(
-        "Previous gateway life (pid=%s, started_at=%s) exited UNCLEANLY (no exit path ran — SIGKILL / OOM / "
-        "VM death, or a process kill issued by the agent or one of its descendants, e.g. a pkill/taskkill of "
-        "the host interpreter image; see #113667). last_heartbeat_at=%s last_mem=%s suspected_oom=%s",
+        "Previous gateway life (pid=%s, started_at=%s) ended without completing an exit path; cause "
+        "unknown (SIGKILL / OOM / VM death, a stop that outlasted the supervisor's timeout, or a process "
+        "kill issued by the agent or one of its descendants, e.g. a pkill/taskkill of the host interpreter "
+        "image; see #113667). last_heartbeat_at=%s last_mem=%s suspected_oom=%s (memory heuristic)",
         evidence.get("prior_pid"), evidence.get("prior_started_at"), evidence.get("last_heartbeat_at"),
         evidence.get("last_heartbeat_mem"), evidence.get("suspected_oom", False),
     )

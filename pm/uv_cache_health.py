@@ -79,20 +79,24 @@ _WHEEL_VERSION = re.compile(rb"(?im)^wheel-version[ \t]*:")
 def _damaged(path: Path, header: re.Pattern | None = None) -> bool:
     """True only on positive evidence of a torn write: missing, empty or NUL bytes.
 
-    A file that cannot be read for another reason (permissions) proves
-    nothing and counts as healthy: a false positive would delete an entry uv
-    can still use.
+    The whole file is scanned in bounded chunks: a torn write can keep the
+    first pages and lose later ones. A file that cannot be read for another
+    reason (permissions) proves nothing and counts as healthy: a false
+    positive would delete an entry uv can still use.
     """
     try:
         with path.open("rb") as stream:
             head = stream.read(_HEAD)
+            if not head or b"\0" in head or (header is not None and not header.search(head)):
+                return True
+            while chunk := stream.read(_HEAD):
+                if b"\0" in chunk:
+                    return True
     except FileNotFoundError:
         return True
     except OSError:
         return False
-    if not head or b"\0" in head:
-        return True
-    return header is not None and not header.search(head)
+    return False
 
 
 def _archive_root(cache: Path) -> Path | None:

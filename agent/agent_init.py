@@ -1099,8 +1099,8 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
     agent.session_id = session_id or new_session_id(agent.session_start)
     _publish_session_id(agent.session_id)
 
-    # ~/.hermes/sessions/ — kept unconditionally for request_dump_*.json debug breadcrumbs.
-    agent.logs_dir = get_hermes_home() / "sessions"
+    agent._hermes_home = get_hermes_home()  # Immutable owner: profiles are session islands.
+    agent.logs_dir = agent._hermes_home / "sessions"
     agent.logs_dir.mkdir(parents=True, exist_ok=True)
     _set_defaults(agent, _SESSION_STATE)
 

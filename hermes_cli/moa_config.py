@@ -238,6 +238,17 @@ _FLAT_PRESET_KEYS = (
     "fanout", "enabled")
 
 
+def is_preset_field_path(parts: list[str]) -> bool:
+    """True for a split ``moa.presets.<name>.<field>`` path whose field ``_normalize_preset`` reads.
+
+    ``<name>`` may be anything except blank or whitespace-padded: :func:`normalize_moa_config` strips
+    names, so a ``" review "`` entry would silently replace the ``review`` preset. Such a path is
+    not a field path and keeps the unknown-key notice.
+    """
+    return (len(parts) == 4 and parts[:2] == ["moa", "presets"]
+            and bool(parts[2]) and parts[2] == parts[2].strip() and parts[3] in _FLAT_PRESET_KEYS)
+
+
 # When the reference fan-out runs. "user_turn" (default) runs the advisors ONCE per user turn (the original
 # MoA shape, and the cheapest cadence — #67199): the aggregator gets their upfront plan-level advice, then
 # acts alone for the rest of the tool loop. "per_iteration" re-runs the advisors whenever the advisory view

@@ -92,6 +92,9 @@ def test_moa_preset_fields_set_and_get_without_notice(name, hermes_home, capsys)
     pytest.param(r"moa.presets.review\.v2.fanoutt", id="field-typo-escaped-name"),
     pytest.param("moa.presets.review.unexpected.fanout", id="extra-segment-before-field"),
     pytest.param("moa.presets.review.fanout.unexpected", id="extra-segment-after-field"),
+    # The normalizer strips names, so this entry would replace the ``review`` preset.
+    pytest.param("moa.presets. review .fanout", id="space-padded-name"),
+    pytest.param("moa.presets.review", id="whole-preset"),
 ])
 def test_moa_non_field_paths_still_notice(key, hermes_home, monkeypatch, capsys):
     # Only the schema walk and the MoA rule decide these keys; skip the plugin scan they would fall through to.

@@ -82,6 +82,8 @@ _ALLOWED_TEAMS_SERVICE_HOSTS = frozenset({"smba.trafficmanager.net", "smba.infra
 # Conservative conversation-ID charset (``thread.skype`` / ``thread.tacv2`` suffixes included) so a
 # hostile value cannot path-traverse out of ``/v3/conversations/<id>/activities``.
 _TEAMS_CONV_ID_RE = re.compile(r"^[A-Za-z0-9:@\-_.]+$")
+# Placeholder Teams leaves where a message was quoted (no trailing ``\s*``: keeps code indentation).
+_QUOTED_RE = re.compile(r'<quoted\s+messageId="(?P<message_id>[^"]+)"\s*/>')
 _BF_TOKEN_SCOPE = "https://api.botframework.com/.default"
 
 
@@ -518,6 +520,8 @@ class TeamsAdapter(BasePlatformAdapter):
                 return
         if "<at>" in text:  # strip the <at>BotName</at> tags Teams prepends for @mentions
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
+        text, quote = self._quoted_reply(activity, text)
+        quote_id, quote_sender = getattr(quote, "message_id", None), getattr(quote, "sender_id", None)
         from_account = activity.from_
         user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
         source = self.build_source(
@@ -533,7 +537,10 @@ class TeamsAdapter(BasePlatformAdapter):
         msg_type = next((t for kind, t in _MEDIA_KIND_PRECEDENCE if kind in media_kinds), MessageType.TEXT)
         await self.handle_message(MessageEvent(
             text=text, source=source, message_type=msg_type, message_id=msg_id,
-            media_urls=[path for path, _, _ in media], media_types=[mt for _, mt, _ in media]))
+            media_urls=[path for path, _, _ in media], media_types=[mt for _, mt, _ in media],
+            reply_to_message_id=quote_id, reply_to_text=(getattr(quote, "preview", None) or "").strip() or None,
+            reply_to_author_id=quote_sender, reply_to_author_name=getattr(quote, "sender_name", None),
+            reply_to_is_own_message=quote_id in self._sent_ids or quote_sender in bot_ids))
 
     @staticmethod
     def _activity_mentions_bot(activity: Any, bot_ids: set, text: str) -> bool:
@@ -544,6 +551,21 @@ class TeamsAdapter(BasePlatformAdapter):
         if not mentions:
             return "<at>" in text
         return any(str(getattr(getattr(e, "mentioned", None), "id", "")) in bot_ids for e in mentions)
+
+    @staticmethod
+    def _quoted_reply(activity: Any, text: str) -> tuple:
+        """``(text, quote)``: Teams leaves a ``<quoted messageId="…"/>`` placeholder in the body and puts the
+        quoted message (sender, possibly partial ``preview``) in a ``quotedReply`` entity, matched by id.
+        Placeholders with an entity are stripped, unknown ones kept; the first non-deleted quote wins."""
+        quotes = {}
+        for e in getattr(activity, "entities", None) or []:
+            q = getattr(e, "quoted_reply", None) if getattr(e, "type", None) == "quotedReply" else None
+            if isinstance(mid := getattr(q, "message_id", None), str) and mid:
+                quotes.setdefault(mid, q)
+        if not quotes:
+            return text, None
+        text = _QUOTED_RE.sub(lambda m: " " if m["message_id"] in quotes else m[0], text).strip()
+        return text, next((q for q in quotes.values() if getattr(q, "is_reply_deleted", None) is not True), None)
 
     async def _cache_attachment(self, att: Any) -> Optional[tuple]:
         """Download + cache one inbound attachment → ``(path, media_type, kind)`` or ``None``."""

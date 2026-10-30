@@ -39,6 +39,25 @@ describe('captureTraceOnce', () => {
     expect(write).toHaveBeenCalledWith('/tmp/t.json', '{"traceEvents":[]}')
   })
 
+  it('pulls in the trace file when the tracer answers with a path', async () => {
+    const t = tracer({ stop: async () => '/tmp/chrome-trace-out' })
+    const write = vi.fn(async () => {})
+    const read = vi.fn(async () => '{"traceEvents":[1]}')
+
+    const written = await captureTraceOnce({
+      tracer: t,
+      durationMs: 1000,
+      outFile: '/tmp/t.json',
+      write,
+      read,
+      sleep: async () => {}
+    })
+
+    expect(written).toBe('/tmp/t.json')
+    expect(read).toHaveBeenCalledWith('/tmp/chrome-trace-out')
+    expect(write).toHaveBeenCalledWith('/tmp/t.json', '{"traceEvents":[1]}')
+  })
+
   it('writes nothing and stops the tracer when recording is refused', async () => {
     const t = tracer({
       start: async () => {

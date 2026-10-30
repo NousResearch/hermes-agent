@@ -50,6 +50,10 @@ export interface CaptureTraceOptions {
   durationMs: number
   outFile: string
   write: (file: string, data: string) => Promise<void>
+  /** Electron's `stopRecording` resolves to the PATH of the trace file, while
+   *  other implementations resolve to the JSON itself. Supply `read` so a path
+   *  result can be pulled in and written to `outFile` under our own name. */
+  read?: (file: string) => Promise<string>
   sleep?: (ms: number) => Promise<void>
   categories?: readonly string[]
 }
@@ -75,6 +79,7 @@ export async function captureTraceOnce({
   durationMs,
   outFile,
   write,
+  read,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
   categories = TRACE_CATEGORIES
 }: CaptureTraceOptions): Promise<string | null> {
@@ -92,7 +97,15 @@ export async function captureTraceOnce({
     // is already done with us, and retrying it in `finally` only stacks another
     // rejected promise on top of the real failure.
     started = false
-    const json = await tracer.stopRecording()
+    const result = await tracer.stopRecording()
+
+    if (!result) {
+      return null
+    }
+
+    // Electron hands back the trace FILE path; some tracers hand back the JSON
+    // itself. Normalise both into one payload written under our own name.
+    const json = result.trimStart().startsWith('{') ? result : read ? await read(result) : null
 
     if (!json) {
       return null

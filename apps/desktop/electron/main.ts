@@ -14066,7 +14066,8 @@ function installPerfCaptureHooks(window: BrowserWindow): void {
     tracer: contentTracing,
     durationMs,
     outFile,
-    write: (file, data) => fs.promises.writeFile(file, data, 'utf8')
+    write: (file, data) => fs.promises.writeFile(file, data, 'utf8'),
+    read: file => fs.promises.readFile(file, 'utf8')
   }).then(written => rememberLog(written ? `[perf] trace written to ${written}` : '[perf] trace capture refused'))
 }
 

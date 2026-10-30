@@ -27,6 +27,16 @@ def _running(monkeypatch, tmp_path):
     return sd, stops
 
 
+@pytest.fixture
+def telemetry(monkeypatch):
+    """(action, outcome, actor, reason) of every managed-process event stop_if_idle records."""
+    from agent.monitoring import managed_processes
+    seen = []
+    monkeypatch.setattr(managed_processes, "record", lambda subsystem, action, outcome, *, actor=None, reason=None,
+                        count=None: seen.append((action, outcome, actor, reason)) if subsystem == "bot_desktop" else None)
+    return seen
+
+
 def _age(path, seconds):
     old = time.time() - seconds
     os.utime(path, (old, old))
@@ -68,7 +78,7 @@ def test_a_human_lease_keeps_the_screen_until_nothing_has_used_it_for_four_windo
 
 @pytest.mark.parametrize("meanwhile", ["nothing", "another viewer takes over", "the same viewer hands back and retakes",
                                        "the stop is refused"])
-def test_the_idle_stop_hands_back_only_the_abandoned_human_lease(tmp_path, monkeypatch, meanwhile):
+def test_the_idle_stop_hands_back_only_the_abandoned_human_lease(tmp_path, monkeypatch, meanwhile, telemetry):
     """The lapse stops the screen, but a lease that still names the human fences the agent out of the next
     one ("a human has control"), so the next use never brings the screen back. Only the generation judged
     abandoned is released: a takeover made while the screen was being stopped is kept."""
@@ -104,9 +114,14 @@ def test_the_idle_stop_hands_back_only_the_abandoned_human_lease(tmp_path, monke
     else:
         assert (held.holder, held.viewer_id) == (lease.HUMAN, "v1" if same_viewer else "v2"), \
             "a takeover made meanwhile was revoked"
+    stop_event = ("idle_stop", "kept", "watcher", None) if meanwhile == "the stop is refused" else (
+        "idle_stop", "stopped", "watcher", "abandoned_lease")
+    handback = {"nothing": [("lease_handback", "released", "watcher", None)], "the stop is refused": []}.get(
+        meanwhile, [("lease_handback", "kept_newer", "watcher", None)])
+    assert telemetry == [stop_event, *handback]
 
 
-def test_a_lease_that_cannot_be_written_never_undoes_the_stop(tmp_path, monkeypatch, caplog):
+def test_a_lease_that_cannot_be_written_never_undoes_the_stop(tmp_path, monkeypatch, caplog, telemetry):
     sd, _ = _running(monkeypatch, tmp_path)
     monkeypatch.setattr(lease, "get", lambda profile_key=None: lease.Lease(holder=lease.HUMAN, viewer_id="v1"))
     monkeypatch.setattr(runtime, "stop", lambda still_due=None: still_due())
@@ -121,6 +136,75 @@ def test_a_lease_that_cannot_be_written_never_undoes_the_stop(tmp_path, monkeypa
         assert runtime.stop_if_idle() is True
     # the only sign the agent is still fenced out by the old lease
     assert "its abandoned lease was not released" in caplog.text
+    assert telemetry == [("idle_stop", "stopped", "watcher", "abandoned_lease"),
+                         ("lease_handback", "write_failed", "watcher", None)]
+
+
+def test_the_lease_is_handed_back_before_any_telemetry_is_written(tmp_path, monkeypatch):
+    """A slow telemetry write must not leave the abandoned human lease fencing the agent out meanwhile."""
+    from agent.monitoring import managed_processes
+    lease._reset_for_tests()
+    sd, _ = _running(monkeypatch, tmp_path)
+    path = lease._path(None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"holder": "human", "viewer_id": "v1", "epoch": 3}', encoding="utf-8")
+    (sd / "activity").touch()
+    _age(sd / "activity", 600 * runtime.HUMAN_LEASE_ABANDONED_WINDOWS + 60)
+    monkeypatch.setattr(runtime, "stop", lambda still_due=None: bool(still_due()))
+    holders = []
+    monkeypatch.setattr(managed_processes, "record", lambda *a, **k: holders.append(lease.get().holder))
+    assert runtime.stop_if_idle() is True
+    assert holders == [lease.AGENT, lease.AGENT], "telemetry was written while the human lease still fenced"
+
+
+def test_broken_telemetry_never_costs_the_stop_or_the_lease_hand_back(tmp_path, monkeypatch):
+    import builtins
+    lease._reset_for_tests()
+    sd, _ = _running(monkeypatch, tmp_path)
+    path = lease._path(None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"holder": "human", "viewer_id": "v1", "epoch": 3}', encoding="utf-8")
+    (sd / "activity").touch()
+    _age(sd / "activity", 600 * runtime.HUMAN_LEASE_ABANDONED_WINDOWS + 60)
+    stops = []
+    monkeypatch.setattr(runtime, "stop", lambda still_due=None: still_due() and not stops.append(True))
+    real_import = builtins.__import__
+
+    def broken(name, *a, **k):
+        if name.startswith("agent.monitoring"):
+            raise ImportError("monitoring unavailable")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", broken)
+    assert runtime.stop_if_idle() is True and stops == [True]
+    assert lease.get().holder == lease.AGENT, "the abandoned lease was not handed back"
+
+
+def test_a_screen_kept_on_the_second_look_reports_no_idle_reason(tmp_path, monkeypatch, telemetry):
+    """Used, replaced or gone by the time the stop judged it again under start.lock: "kept, idle" would be a lie."""
+    sd, _ = _running(monkeypatch, tmp_path)
+    monkeypatch.setattr(lease, "get", lambda profile_key=None: lease.Lease(holder=lease.AGENT))
+    _age(sd / "env", 3600)
+
+    def stop(still_due=None):
+        runtime.touch_activity()  # used while the stop waited on the lock
+        return bool(still_due())
+
+    monkeypatch.setattr(runtime, "stop", stop)
+    assert runtime.stop_if_idle() is False
+    assert telemetry == [("idle_stop", "kept", "watcher", None)]
+
+
+def test_the_screens_own_check_reports_itself_as_the_actor(tmp_path, monkeypatch, telemetry):
+    """Operators tell a gateway's stop from a screen that stopped itself (its gateway gone) by the actor."""
+    sd, _ = _running(monkeypatch, tmp_path)
+    monkeypatch.setattr(lease, "get", lambda profile_key=None: lease.Lease(holder=lease.AGENT))
+    monkeypatch.setattr(runtime, "stop", lambda still_due=None: still_due())
+    monkeypatch.setattr(runtime, "_launcher_identity", lambda: (4242, 100.0))
+    _age(sd / "env", 3600)
+    assert runtime.stop_if_idle(launcher=(4242, 100.0)) is True
+    assert runtime.stop_if_idle() is True
+    assert telemetry == [("idle_stop", "stopped", "screen", "idle"), ("idle_stop", "stopped", "watcher", "idle")]
 
 
 def test_a_short_window_never_times_out_a_human_between_two_viewer_stamps(tmp_path, monkeypatch):

@@ -932,6 +932,24 @@ class GatewayStartupMixin:
                     _sigusr2, file=self._open_faulthandler_log(), all_threads=True, chain=False,
                 )
 
+    def _start_gateway_health_export(self):
+        """Start the OTLP health export for this gateway and every profile it serves (their Bot Desktop
+        screens and spooled managed-process events); the served set is read at each export pass."""
+        from hermes_cli.config import load_config
+        from agent.monitoring.gateway_health_export import start_gateway_health_export
+        from hermes_constants import get_routing_process_hermes_home
+
+        def served_homes() -> list:
+            return [get_routing_process_hermes_home(), *(self._served_profile_homes or {}).values()]
+
+        try:
+            config = load_config()
+        except Exception:  # export off then, which also removes spools nothing would drain. (An unreadable file
+            # does not raise: load_config returns the last-known-good settings, which decide export.)
+            logger.warning("Gateway health OTLP export: config load failed, export off", exc_info=True)
+            config = {}
+        return start_gateway_health_export(config, homes=served_homes)
+
     async def _start_log_startup_environment(self) -> None:
         """Bind the gateway loop, disarm the startup watchdog, and log the startup environment."""
         try:
@@ -985,9 +1003,8 @@ class GatewayStartupMixin:
         except Exception:
             logger.debug("Initial gateway runtime-status write failed", exc_info=True)
         with _log_suppressed(logging.DEBUG, "gateway health OTLP export startup failed", exc_info=True):
-            from hermes_cli.config import load_config
-            from agent.monitoring.gateway_health_export import start_gateway_health_export
-            self._gateway_health_export_runtime = start_gateway_health_export(load_config())
+            # Off the event loop: the config read, the spool setup and a possible SDK lazy-install.
+            self._gateway_health_export_runtime = await asyncio.to_thread(self._start_gateway_health_export)
             if getattr(self._gateway_health_export_runtime, "enabled", False):
                 logger.info("Gateway health OTLP export: enabled")
         # Supply-chain advisories: log only (never block startup or surface to users; only the operator can act).

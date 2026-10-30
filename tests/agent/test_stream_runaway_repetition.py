@@ -43,6 +43,10 @@ assert len(_ASKED_FOR_REPEAT) < STOP_PATH_MIN_CHARS <= len(_DISTINCT_ROWS)
 # ~100K of distinct legitimate text before a loop starts: the cut must not wait for the reply to double.
 _LONG_PREFIX = "".join(hashlib.sha256(str(i).encode()).hexdigest() + "\n" for i in range(1540))
 _LOOP_BUDGET = 100_000
+# A few distinct lines of reasoning, then one token repeated without a newline (a GLM-5.3-Flash
+# thinking turn): the lines written before the loop must not keep it streaming.
+_SHORT_PREFIX = "".join(f"Check {i}: service {i} answers on port {8000 + i} and its config parses.\n" for i in range(16))
+_ONE_TOKEN_LOOP = "aaaaaaaa" * 16
 
 
 class _FakeEndpoint:
@@ -197,9 +201,10 @@ def _run_turn(server: _FakeEndpoint, api_mode: str) -> dict:
         ("anthropic_messages", "content", _STATUS_LINE_78551, ""),
         ("anthropic_messages", "reasoning", _CYCLE_125650, ""),
         ("chat_completions", "content", _CYCLE_125650, _LONG_PREFIX),
+        ("chat_completions", "reasoning", _ONE_TOKEN_LOOP, _SHORT_PREFIX),
     ],
     ids=["chat-content", "chat-reasoning-behind-details", "anthropic-text", "anthropic-thinking",
-         "chat-loop-after-long-prefix"],
+         "chat-loop-after-long-prefix", "chat-reasoning-one-line-loop-after-distinct-lines"],
 )
 def test_looping_stream_is_cut_without_a_stream_callback(endpoint, api_mode, channel, loop, prefix):
     server = endpoint(channel, loop, endless=True, prefix=prefix)

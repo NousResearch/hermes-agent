@@ -25,6 +25,32 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _loop_wakeup_prompt_landed(runner, session_key, text: str) -> bool:
+    """True when the wakeup prompt is already this route's persisted role=user turn (sys-8xces5).
+
+    The dedupe ledger is the transcript itself — ``admit_route_wake``'s identity is a per-attempt
+    uuid, useless for dedupe. Scan the tail for a byte-identical user turn (exact digest). False
+    = not provable -> caller rolls the tick back (pre-fix behaviour: one possible duplicate beats
+    burning the tick on a genuine pre-persist failure)."""
+    from hermes_cli.loops import wakeup_payload_digest
+
+    try:
+        entry = runner.session_store.lookup_by_session_key(session_key) if session_key else None
+        if entry is None:
+            return False
+        turns = runner.session_store.load_transcript(entry.session_id)
+    except Exception:
+        return False
+    want = wakeup_payload_digest(text)
+    for turn in reversed(turns[-50:]):  # a landed prompt is seconds old; the tail is enough
+        if not isinstance(turn, dict) or turn.get("role") != "user":
+            continue
+        content = turn.get("content")
+        if isinstance(content, str) and wakeup_payload_digest(content) == want:
+            return True
+    return False
+
+
 class GatewayGoalsMixin:
     """Goal/heartbeat continuation, post-turn hooks and loop-wakeup watcher methods for GatewayRunner."""
 
@@ -505,7 +531,13 @@ class GatewayGoalsMixin:
         except Exception as exc:
             logger.warning("loop wakeup injection failed for %s: %s", sid, exc)
             with suppress(Exception):
-                mgr.abandon_tick()
+                # sys-8xces5: the raise may have come AFTER the prompt persisted as this session's
+                # role=user turn (admit/handle_message commit then raise) — a blind rollback
+                # re-renders the same '#N' next pass and duplicates the turn. The persisted
+                # transcript is the dedupe ledger: roll back only when the prompt is provably absent.
+                landed = await self._run_in_executor_with_context(
+                    _loop_wakeup_prompt_landed, self, session_key, wakeup)
+                mgr.abandon_tick(wakeup if landed else None)
         # Viewers swap the countdown for "running now" (or re-anchor it after a slash tick settled).
         self._publish_local_control(source)
 

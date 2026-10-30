@@ -92,6 +92,18 @@ For code-changing tasks, pick the review model encoded by the task graph:
 
 Both review models carry their structured handoff on the lifecycle transition itself. Do not place secrets, tokens, or raw PII in `summary` or `metadata`; run rows are durable.
 
+### Evidence for unattended review lanes
+
+Review workers normally run in single-query mode with nobody present to answer an approval prompt. The terminal safety gate therefore refuses approval-requiring commands such as executable heredocs. That is an intentional boundary, not a reviewer failure; do not weaken it or ask the reviewer to disguise the same script as another shell payload.
+
+Shape implementation evidence so the reviewer can judge it without crossing that boundary:
+
+- Put relevant command output literally in the review handoff, and name the exact command that produced each block. Treat the output as evidence to corroborate against the artifact, not as proof by assertion.
+- When a criterion genuinely requires fresh execution, provide one plain, read-only command. Avoid heredocs, generated script files, command chains with side effects, and anything that would require an interactive approval.
+- If neither is possible, identify the specific claim that remains unverified and provide artifact-level evidence (for example, the changed file, before/after counts, or a deterministic invariant). Re-execution strengthens a review but is not the only acceptable evidence shape.
+
+The reviewer should continue with static and contract checks after a safe execution refusal, then record the bounded verification gap in its approval, change request, or escalation. A refusal alone is not a reason to bypass the gate or silently approve an unsupported claim.
+
 The injected `KANBAN_GUIDANCE` covers both graph shapes, `kanban_complete`, the same-card review loop, and `kanban_block` for genuine blockers.
 
 ## Logs and audit trail

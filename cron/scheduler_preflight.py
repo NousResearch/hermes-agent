@@ -208,7 +208,7 @@ class SharedRouteAdapters:
     def __bool__(self) -> bool:
         return bool(self._primary) and bool(self._routes)
 
-    def get(self, platform, target=None, default=None):
+    def get(self, platform, target=None, default=None, *, origin=None):
         if not target:
             return default
         adapter = self._primary.get(platform)
@@ -218,6 +218,15 @@ class SharedRouteAdapters:
         chat_id = str(target.get("chat_id") or "") or None
         thread_id = target.get("thread_id")
         thread_id = str(thread_id) if thread_id else None
+        # Only the persisted, session-captured origin may supply sender identity.
+        # Never trust target fields or carry an identity to a different conversation.
+        origin = origin if isinstance(origin, dict) else {}
+        origin_matches = (
+            str(origin.get("platform") or "").lower() == platform_key
+            and str(origin.get("chat_id") or "") == chat_id
+            and (str(origin.get("thread_id") or "") or None) == thread_id
+        )
+        user_id = origin.get("user_id") if origin_matches else None
         # A cron target carries no inbound guild anchor, so a route's guild_id is matched against
         # itself — the target-exact discriminators (chat_id/thread_id) authorize the send. Without
         # this the documented ``guild_id + chat_id`` Discord route never authorized cron output.
@@ -226,8 +235,11 @@ class SharedRouteAdapters:
                 continue
             if not (route.chat_id or route.thread_id):
                 continue  # guild-only routes are not target-exact
+            if route.user_id is not None and route.guild_id and origin.get("scope_id") != route.guild_id:
+                continue
             if route.matches(
                 str(route.platform), guild_id=route.guild_id, chat_id=chat_id, thread_id=thread_id,
+                user_id=user_id,
             ):
                 return adapter
         return default

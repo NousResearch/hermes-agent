@@ -3,7 +3,7 @@ repo: https://github.com/Adolanium/hermes-ledgerline
 sha: a89efceab1ff5eb0cc3f58c0482c0f1d368a6d1b
 version: "0.1.9"
 image: https://raw.githubusercontent.com/Adolanium/hermes-ledgerline/a89efceab1ff5eb0cc3f58c0482c0f1d368a6d1b/assets/catalog-banner.png
-description: Inspect session costs and usage in Hermes Desktop.
+description: "Inspect session costs and usage in Hermes Desktop. Disclosure — reads session lists, session detail, search, usage analytics and cron targets from the gateway's core REST API through the raw window.hermesDesktop.api bridge (the plugin SDK has no route to those endpoints), and runs hermes version, hermes insights and hermes send --list through the gateway's cli.exec. Only when you start them: explain and audit send the selected session's digest (tool arguments only if you tick that box) to your configured model, as a new Hermes session or a background prompt on the focused one; alerts and test messages are sent with hermes send to a messaging target you pick; scheduled reports create a Hermes cron job (one agent turn per run on the default model, delivered to the target you pick) and are paused, resumed or removed through cron.manage. Budgets, dismissed tips, scans and saved answers are kept in Hermes plugin storage on the desktop. Nothing is sent elsewhere and it exposes no tools to the model."
 maintainer: Adolanium
 tier: community
 category: desktop

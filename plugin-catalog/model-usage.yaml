@@ -1,0 +1,17 @@
+name: model-usage
+repo: https://github.com/Mirinai307/hermes-plugin-model-usage
+sha: 9962d96da39c038490ba2c9b57080d36082f7f61
+description: "Minimal triple-ring status-bar gauges for Claude and Codex — outer thin ring = context of the current chat, middle = 5-hour session, inner = weekly window, colored by remaining share — with a click-through detail popover and one-shot 30%/10% limit alerts (in-app toast + OS notification while Hermes is unfocused). Duplicate pool rows of the same login are merged. EN/KO/JA. Disclosure — no network calls of its own (reads the gateway's model.options usage cache and the focused chat's usage stats), never reads or stores credentials, no subprocesses, no telemetry; stores only the list of alerts already shown in plugin storage."
+maintainer: Mirinai307
+tier: community
+category: desktop
+docs_url: https://github.com/Mirinai307/hermes-plugin-model-usage#readme
+version: "1.1.0"
+title: "Model Usage"
+screenshots:
+- https://raw.githubusercontent.com/Mirinai307/hermes-plugin-model-usage/9962d96da39c038490ba2c9b57080d36082f7f61/docs/statusbar.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

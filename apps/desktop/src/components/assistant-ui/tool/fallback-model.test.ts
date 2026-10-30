@@ -513,6 +513,7 @@ describe('Windows absolute preview targets', () => {
   it('keeps non-HTML Windows files out of the preview tag, like POSIX ones', () => {
     expect(isPreviewableTarget('C:\\Users\\me\\notes.txt')).toBe(isPreviewableTarget('/Users/me/notes.txt'))
     expect(isPreviewableTarget('C:\\Users\\me\\notes.txt')).toBe(false)
+    expect(isPreviewableTarget('/Users/me/diagram.svg')).toBe(true)
   })
 })
 

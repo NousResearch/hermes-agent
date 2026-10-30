@@ -374,25 +374,14 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         <Slot area="titleBar.center" />
       </div>
 
-      {visiblePaneTools.length > 0 && (
-        <div
-          aria-label={t.shell.appControls}
-          className={cn(
-            titlebarToolClusterClass,
-            'top-[calc(var(--titlebar-controls-top)+var(--right-rail-top-inset,0px))] right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))]'
-          )}
-        >
-          {visiblePaneTools.map(tool => (
-            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
-          ))}
-        </div>
-      )}
-
       <div
         aria-label={t.shell.appControls}
         className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
         data-titlebar-cluster="right"
       >
+        {visiblePaneTools.map(tool => (
+          <TitlebarToolButton key={tool.id} navigate={navigate} style={{ order: -2000 }} tool={tool} />
+        ))}
         {visibleSystemTools.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
@@ -405,7 +394,15 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   )
 }
 
-function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof useNavigate>; tool: TitlebarTool }) {
+function TitlebarToolButton({
+  navigate,
+  style,
+  tool
+}: {
+  navigate: ReturnType<typeof useNavigate>
+  style?: React.CSSProperties
+  tool: TitlebarTool
+}) {
   // Titlebar actions never show an active background — state reads from the
   // icon itself (e.g. the mute/unmute glyph). aria-pressed still carries it
   // for a11y.
@@ -420,7 +417,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
   if (tool.href) {
     return (
       <Tip label={tooltipLabel} placement="toolbar">
-        <Button asChild className={className} size="icon-titlebar" variant="ghost">
+        <Button asChild className={className} size="icon-titlebar" style={style} variant="ghost">
           <a
             aria-label={tool.label}
             data-tour={tool.tour}
@@ -458,6 +455,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
         }}
         onPointerDown={event => event.stopPropagation()}
         size="icon-titlebar"
+        style={style}
         type="button"
         variant="ghost"
       >

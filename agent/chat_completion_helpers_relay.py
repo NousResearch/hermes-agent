@@ -38,6 +38,7 @@ class RelayChatAccumulator:
         self._reasoning_details: list[Any] = []  # opaque provider records (signed blocks); order preserved verbatim
         self._tool_calls = _ToolCallAccumulator()
         self._model = self._usage = self._finish_reason = None
+        self._last_one = False  # Nous Portal ``lastOne`` usage frame: a clean terminal
         self._role = "assistant"
 
     def observe(self, chunk: Any) -> None:
@@ -46,6 +47,8 @@ class RelayChatAccumulator:
         self._model = chunk.get("model") or self._model
         if chunk.get("usage"):
             self._usage = chunk["usage"]
+        if chunk.get("lastOne") in (True, 1, "true"):
+            self._last_one = True  # mirrors the consumer's _choiceless_chunk promotion
         choices = chunk.get("choices") or []
         choice = choices[0] if choices else None  # Hermes never requests n>1
         if not isinstance(choice, dict):
@@ -77,6 +80,11 @@ class RelayChatAccumulator:
             "refusal": "".join(self._refusal) or None,
             "reasoning_details": self._reasoning_details or None,
             "tool_calls": [acc[i] for i in sorted(acc)] or None}
-        # "stop" also covers Nous Portal ``lastOne`` usage frames, which carry no finish_reason.
+        # A missing finish block stays None: the recorded response must not claim a
+        # completion the stream never confirmed — a server-side truncation can end the
+        # wire before the finish chunk while Hermes' consumer (which saw no terminal
+        # chunk either) already owns the classification (partial-stream stub or
+        # usage-implied stop). ``lastOne`` usage frames are a clean terminal (#90848).
         return {"model": self._model, "usage": self._usage,
-            "choices": [{"message": message, "finish_reason": self._finish_reason or "stop"}]}
+            "choices": [{"message": message, "finish_reason":
+                self._finish_reason or ("stop" if self._last_one else None)}]}

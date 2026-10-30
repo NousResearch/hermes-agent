@@ -3332,6 +3332,19 @@ class _StreamingCall(StreamingWaitMonitor):
                 "text with no tool calls. The server or a proxy closed the stream cleanly.")
             return _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, clean_eof=True)
         effective_finish_reason = "length" if has_truncated_tool_args else (finish_reason or "stop")
+        finish_reason_inferred = finish_reason is None and not has_truncated_tool_args
+        if finish_reason_inferred:
+            # ``finish_reason`` stayed None past every drop guard: the trailing usage
+            # frame (or a completed tool-call argument stream) implied a clean stop
+            # (#91373). Keep that contract, but log and tag the inference so a
+            # provider-confirmed stop is distinguishable from a completion the
+            # provider never confirmed — server-side truncations can deliver the
+            # usage frame while severing the response body mid-JSON (#t_00b7be50).
+            # INFO, not WARNING: include_usage providers end this way by design.
+            logger.info(
+                "No finish_reason reached the consumer; classified as \"stop\" by "
+                "usage-frame inference (#91373). Truncated text here means the "
+                "provider dropped the finish block, not the whole stream.")
         provider_stream_error = _provider_stream_error_from_text(
             full_content or "", effective_finish_reason, response=getattr(stream, "response", None))
         if provider_stream_error is not None:
@@ -3347,7 +3360,8 @@ class _StreamingCall(StreamingWaitMonitor):
         # look a request up. Fabricated only when the stream never sent one.
         response = SimpleNamespace(id=response_id or ("stream-" + str(uuid.uuid4())), model=model_name, usage=usage_obj,
             provider=upstream_provider,
-            choices=[SimpleNamespace(index=0, message=message, finish_reason=effective_finish_reason)])
+            choices=[SimpleNamespace(index=0, message=message, finish_reason=effective_finish_reason)],
+            _finish_reason_inferred=finish_reason_inferred)
         # A held router timeout shim (#68396) is rejected by validate_response and retried;
         # releasing its text here would show the provider failure as assistant output.
         if not is_router_timeout_shim(response):

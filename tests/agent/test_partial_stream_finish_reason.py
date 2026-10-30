@@ -941,6 +941,9 @@ class TestPortalLastOneWithoutDone:
         assert getattr(response, "id", None) != PARTIAL_STREAM_STUB_ID
         assert response.choices[0].finish_reason == "stop"
         assert response.choices[0].message.content == "LONGCAT_OK"
+        # ``lastOne`` is a provider-sent terminal marker (promoted in the chunk
+        # loop), not an inference from surviving usage: the tag stays False.
+        assert getattr(response, "_finish_reason_inferred", False) is False
 
 
 # ── Trailing usage chunk with no finish_reason (#91373) ───────────────────
@@ -978,6 +981,7 @@ class TestStreamIncludeUsageFinalChunk:
         assert response.id != PARTIAL_STREAM_STUB_ID
         assert response.choices[0].finish_reason == "stop"
         assert response.choices[0].message.content == "The final answer is 42."
+        assert getattr(response, "_finish_reason_inferred", False) is True
         assert response.usage is not None
         assert response.usage.prompt_tokens == 100
         assert response.usage.completion_tokens == 10
@@ -1218,3 +1222,78 @@ class TestRouterRewriteTruncationMessageIsHonest:
             "the output length limit — the honest-message fix must not blank "
             "out the accurate case (#91717 scenario 1)."
         )
+
+
+# ── finish_reason inference tag + relay-accumulator honesty (#t_00b7be50) ──
+
+class TestFinishReasonNotWashedToStop:
+    """A finish block that never reached the collector/consumer must not be
+    recorded as a confirmed completion: glm-style server truncations end the
+    wire after the text but before the finish chunk, and the blanket
+    ``finish_reason or "stop"`` wash made every such drop look like a clean
+    "stop" both on the Relay-recorded response and in downstream consumers
+    (#t_00b7be50)."""
+
+    def _finalize_relay(self, chunks):
+        from agent.chat_completion_helpers_relay import RelayChatAccumulator
+
+        accumulator = RelayChatAccumulator()
+        for chunk in chunks:
+            accumulator.observe(chunk)
+        return accumulator.finalize()
+
+    def test_missing_finish_block_stays_none(self):
+        """Text streamed, wire severed before the finish chunk: the recorded
+        response carries finish_reason=None, not a fabricated "stop"."""
+        response = self._finalize_relay([
+            {"model": "glm", "choices": [{"delta": {"content": "partial"}, "finish_reason": None}]},
+        ])
+        assert response["choices"][0]["finish_reason"] is None
+
+    def test_explicit_finish_block_is_preserved(self):
+        response = self._finalize_relay([
+            {"model": "glm", "choices": [{"delta": {"content": "done"}, "finish_reason": None}]},
+            {"model": "glm", "choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ])
+        assert response["choices"][0]["finish_reason"] == "stop"
+
+    def test_tool_call_finish_is_preserved(self):
+        response = self._finalize_relay([
+            {"model": "glm", "choices": [{"delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "function": {"name": "terminal", "arguments": "{}"}},
+            ]}, "finish_reason": None}]},
+            {"model": "glm", "choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+        ])
+        assert response["choices"][0]["finish_reason"] == "tool_calls"
+
+    def test_last_one_usage_frame_promotes_stop(self):
+        """Nous Portal ``lastOne`` usage frames remain a clean terminal (#90848):
+        the promotion mirrors the consumer's ``_choiceless_chunk`` behavior."""
+        response = self._finalize_relay([
+            {"model": "longcat", "choices": [{"delta": {"content": "ok"}, "finish_reason": None}]},
+            {"choices": [], "model": "longcat", "usage": {"total_tokens": 2}, "lastOne": True},
+        ])
+        assert response["choices"][0]["finish_reason"] == "stop"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_consumer_confirmed_finish_is_not_tagged_inferred(
+        self, _mock_close, mock_create,
+    ):
+        """The consumer-side ``_finish_reason_inferred`` tag is False when the
+        provider really sent the finish chunk."""
+        def _confirmed_stream():
+            yield _make_stream_chunk(content="complete", finish_reason="stop")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _confirmed_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_stream_delta = lambda text: None
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].finish_reason == "stop"
+        assert getattr(response, "_finish_reason_inferred", False) is False

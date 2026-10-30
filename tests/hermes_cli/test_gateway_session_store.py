@@ -418,6 +418,24 @@ def test_create_if_missing_titles_a_gateway_created_session(store, monkeypatch):
     assert gss.create_titled_session("Fresh Named") == "local-new"
     _method, params = [c for c in client.calls if c[0] == "session.create"][-1]
     assert params["title"] == "Fresh Named" and params["source"] and params["cwd"]
+    # hw-lk5: no explicit flags -> no model key; the gateway resolves the profile default.
+    assert "model" not in params
+
+
+def test_create_if_missing_freezes_the_caller_s_explicit_route(store, monkeypatch):
+    """hw-lk5: ``-c NAME --create-if-missing -m X`` must freeze X on the created row. A created
+    session's turns ride the resume contract — the frozen route wins and a repeated --model only
+    re-checks it — so flags dropped at creation strand the session on the profile default forever
+    (the workflow seat-routing failure: seats pin a model, every attempt bills the default)."""
+    db, client = store
+    from hermes_cli import gateway_session_store as gss
+    monkeypatch.setattr(gss, "session_store", lambda: db)
+    assert gss.create_titled_session("Pinned Named", {"model": "claude-opus-5-5",
+                                                      "provider": "anthropic"}) == "local-new"
+    _method, params = [c for c in client.calls if c[0] == "session.create"][-1]
+    assert params["title"] == "Pinned Named"
+    assert params.get("model") == "claude-opus-5-5"
+    assert params.get("provider") == "anthropic"
 
 
 def test_bare_continue_finds_the_last_session_the_cli_created(tmp_path, monkeypatch):

@@ -102,7 +102,7 @@ def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> 
 
     Multi-word phrases (not bare "exceed"/"token") avoid matching "rate limit exceeded" or
     "invalid authentication token"; a bare 400 only counts on a long session."""
-    if not agent_result.get("failed"):
+    if not agent_result.get("failed") or agent_result.get("compression_retryable"):
         return False
     if agent_result.get("compression_exhausted"):
         return True

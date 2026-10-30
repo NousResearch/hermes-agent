@@ -599,12 +599,18 @@ are `bad` (the unprefixed `merged`, `reverted`, `review_accepted`, `review_rejec
 shape. `--ref`/`--note` are single lines (512/500 characters; notes are scanned for prompt injection).
 Hermes sets the `recorder` itself: `agent` when the command runs inside a session (`HERMES_SESSION_ID` is
 set), else `cli`; plugins calling `SessionDB.record_session_outcome` pass `plugin:<id>`. Re-recording the
-same session, signal, source, ref and recorder updates that row; an agent can `remove` only `agent` rows.
+same session, signal, source, ref and recorder updates that row's verdict and note in place; its
+`observed_at` changes only when you pass `--observed-at`, so re-reporting a signal without it never moves
+the row past a later one. An agent can `remove` only `agent` rows.
 
 A later outcome about the same artifact supersedes an earlier one without deleting it: among rows with
-the same session, source, domain (the signal's prefix before the first `.`; `merged`/`reverted` fold into
-`pr`, `review_*` into `review`, `ci_*` into `ci`, `ticket_*` into `task`) and non-empty ref, reads return
-the one observed last (ties go to the later record), so `pr.reverted` replaces `pr.merged` for that PR.
+the same session, source, domain and non-empty ref, reads return the one observed last (ties go to the
+later record), so `pr.reverted` observed after `pr.merged` replaces it for that PR, and re-adding
+`pr.merged` without `--observed-at` leaves the revert in place. The domain is derived from the signal on
+read: the eight unprefixed well-known names fold into their dotted form's domain (`merged`/`reverted` into
+`pr`, `review_accepted`/`review_rejected` into `review`, `ci_passed`/`ci_failed` into `ci`,
+`ticket_closed`/`ticket_reopened` into `task`); any other signal's domain is the text before its first `.`,
+or the whole signal when it has no `.`.
 `agent` rows are their own group and never replace, or get replaced by, a `cli` or plugin row.
 
 Outcomes are stored on the exact session id and read across its compression lineage (the root and the

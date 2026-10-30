@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import IO, Callable, Protocol
 
 from hermes_constants import get_hermes_home
+from tools.environments.capture import CaptureStatus
 from tools.environments.fd_wait import open_fd_waiter
 from tools.tool_output_truncate import head_tail_split, truncation_notice
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -26,7 +27,7 @@ _UNBOUNDED_CAPTURE_CHARS = 2**63 - 1
 _SPILL_MAX_AGE_S = 7 * 86400
 
 
-class _BoundedOutputCollector:
+class _BoundedOutputCollector(CaptureStatus):
     """Retain a bounded 40/60 head-tail window of streamed text. When ``spill_path`` is set,
     the FULL stream is also teed to that file once eviction begins (up to ``_SPILL_CAP_CHARS``)
     so a truncated foreground result is recoverable without re-running."""
@@ -35,6 +36,7 @@ class _BoundedOutputCollector:
     _SPILL_CAP_CHARS = 5_000_000
 
     def __init__(self, max_chars: int, spill_path: Path | None = None):
+        super().__init__()
         self.max_chars = max(1, int(max_chars))
         self._head_limit = int(self.max_chars * 0.4)
         self._tail_limit = self.max_chars - self._head_limit
@@ -75,6 +77,7 @@ class _BoundedOutputCollector:
         except OSError:
             # Disk trouble must never break command execution.
             self._spill_capped = True
+            self.capture_failed("spill write")
 
     def close_spill(self) -> str | None:
         """Close the spill file and return its path if it was used."""
@@ -84,7 +87,8 @@ class _BoundedOutputCollector:
             try:
                 self._spill_fh.close()
             except OSError:
-                pass
+                self._spill_capped = True
+                self.capture_failed("spill finalization")
             self._spill_fh = None
             return str(self._spill_path)
 
@@ -203,6 +207,9 @@ def _finalize_wait_result(collector: _BoundedOutputCollector, rendered: str, ret
     if spill:
         result["output_total_chars"] = collector.total_chars
         result["full_output_path"] = spill
+    if collector._spill_capped:
+        result["full_output_capped"] = True
+    result.update(collector.capture_fields())
     return result
 
 
@@ -288,6 +295,7 @@ class _ThreadedProcessHandle:
 
     def __init__(self, exec_fn: Callable[[], tuple[str, int]], cancel_fn: Callable[[], None] | None = None):
         self._cancel_fn = cancel_fn
+        self.capture_status = CaptureStatus()
         self._done = threading.Event()
         self._returncode: int | None = None
 
@@ -301,9 +309,14 @@ class _ThreadedProcessHandle:
                 output, exit_code = exec_fn()
                 self._returncode = exit_code
                 try:
-                    os.write(self._write_fd, output.encode("utf-8", errors="replace"))
-                except OSError:
-                    pass
+                    remaining = memoryview(output.encode("utf-8", errors="replace"))
+                    while remaining:
+                        written = os.write(self._write_fd, remaining)
+                        if written <= 0:
+                            raise OSError("output pipe write made no progress")
+                        remaining = remaining[written:]
+                except (OSError, ValueError, TypeError):
+                    self.capture_status.capture_failed("SDK output emission")
             except Exception:
                 self._returncode = 1
             finally:
@@ -368,12 +381,16 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: th
     # baseline ``TextIOWrapper`` (which was constructed with ``encoding="utf-8", errors="replace"`` on
     # ``Popen``) so binary or mis-encoded output is preserved with U+FFFD substitution rather than
     # clobbering the whole buffer.
-    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    decoder = None
     try:
         fd = stream.fileno()
     except Exception:  # mocks / in-memory adapters without a real descriptor
         fd = None
     try:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        state = getattr(proc, "_hermes_decoder_state", None)
+        if isinstance(state, tuple):
+            decoder.setstate(state)
         if not isinstance(fd, int) or fd < 0:
             for piece in stream:
                 if piece is not None:
@@ -382,16 +399,30 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: th
             _drain_fd_windows(proc, fd, output, decoder, stop)
         else:
             _drain_fd_select(proc, fd, output, decoder, stop)
-    except Exception:
-        pass  # closed fd / broken stream: keep what was captured
+    except Exception:  # health: allow BLE001 -- reader boundary records failure without exposing exception contents
+        output.capture_failed("stream read")
+        # No reader remains: release the pipe so a verbose child cannot block
+        # forever on a full buffer. Its resulting exit status is still observed.
+        try:
+            stream.close()
+        except (OSError, ValueError):
+            pass
     finally:
+        producer_status = getattr(proc, "capture_status", None)
+        if isinstance(producer_status, CaptureStatus) and producer_status.capture_error:
+            output.capture_failed("SDK output emission")
         # With errors="replace" this emits U+FFFD for a final incomplete sequence.
         try:
-            tail = decoder.decode(b"", final=True)
+            handing_off = decoder is not None and stop is not None and stop.is_set()
+            if handing_off:
+                proc._hermes_decoder_state = decoder.getstate()
+            else:
+                proc._hermes_decoder_state = None
+            tail = decoder.decode(b"", final=True) if decoder is not None and not handing_off else ""
             if tail:
                 output.append(tail)
-        except Exception:
-            pass
+        except Exception:  # health: allow BLE001 -- final decoder/adapter failure is carried in the result
+            output.capture_failed("decoder finalization")
 
 
 def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:
@@ -400,7 +431,9 @@ def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, st
     reader — yield-to-background)."""
     waiter = open_fd_waiter(fd)
     if waiter is None:
-        return  # fd already closed
+        if stop is None or not stop.is_set():
+            output.capture_failed("readiness setup")
+        return
     try:
         _drain_fd_waiter(proc, fd, waiter, output, decoder, stop)
     finally:
@@ -413,10 +446,7 @@ def _drain_fd_waiter(proc, fd: int, waiter, output: _BoundedOutputCollector, dec
         if stop is not None and stop.is_set():
             return
         if waiter.wait(0.1):
-            try:
-                chunk = os.read(fd, 4096)
-            except (ValueError, OSError):
-                return
+            chunk = os.read(fd, 4096)
             if not chunk:
                 return  # true EOF — all writers closed
             output.append(decoder.decode(chunk))
@@ -440,11 +470,9 @@ def _drain_fd_windows(proc, fd: int, output: _BoundedOutputCollector, decoder, s
     import ctypes
     import msvcrt
 
-    try:
-        raw_handle = msvcrt.get_osfhandle(fd)
-    except OSError:
-        return
+    raw_handle = msvcrt.get_osfhandle(fd)
     if raw_handle in (-1, 0):
+        output.capture_failed("pipe handle setup")
         return
 
     handle = ctypes.c_void_p(raw_handle)
@@ -454,17 +482,14 @@ def _drain_fd_windows(proc, fd: int, output: _BoundedOutputCollector, decoder, s
     while True:
         if stop is not None and stop.is_set():
             return
-        try:
-            ok = kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(available), None)
-        except OSError:
-            return
+        ok = kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(available), None)
         if not ok:
+            # ERROR_BROKEN_PIPE is Windows' EOF; other errors are not EOF.
+            if kernel32.GetLastError() != 109:
+                raise OSError("pipe readiness wait failed")
             return
         if available.value:
-            try:
-                chunk = os.read(fd, min(int(available.value), 4096))
-            except (ValueError, OSError):
-                return
+            chunk = os.read(fd, min(int(available.value), 4096))
             if not chunk:
                 return
             output.append(decoder.decode(chunk))
@@ -477,10 +502,29 @@ def _drain_fd_windows(proc, fd: int, output: _BoundedOutputCollector, decoder, s
         time.sleep(0.1)
 
 
+class _FailedDrain:
+    """A reader that never started: the wait loop still owns the live child."""
+
+    def join(self, timeout=None):
+        return None
+
+    def is_alive(self):
+        return False
+
+
 def _start_drain_thread(
         proc: ProcessHandle, output: _BoundedOutputCollector, stop: threading.Event | None = None,
-) -> threading.Thread:
-    """Start the daemon thread running :func:`_drain_stdout`; *stop* ends it early."""
-    thread = threading.Thread(target=_drain_stdout, args=(proc, output, stop), daemon=True)
-    thread.start()
+) -> threading.Thread | _FailedDrain:
+    """Start a reader without letting failure retry an already-started command."""
+    try:
+        thread = threading.Thread(target=_drain_stdout, args=(proc, output, stop), daemon=True)
+        thread.start()
+    except RuntimeError:
+        output.capture_failed("reader thread initialization")
+        if proc.stdout is not None:
+            try:
+                proc.stdout.close()
+            except (OSError, ValueError):
+                pass
+        return _FailedDrain()
     return thread

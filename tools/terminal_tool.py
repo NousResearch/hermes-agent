@@ -1360,8 +1360,13 @@ def _run_foreground(
             return _error_json(_redact_terminal_error_text(f"Command execution failed: {type(e).__name__}: {e}"))
 
     if result.get("yielded_session_id"):  # handed to the background: no exit status yet
+        from tools.environments.capture import capture_fields
+        integrity = capture_fields(result.get("capture_error", ""), bool(result.get("output_incomplete")))
         return json.dumps({
-            "output": result.get("output", ""), "exit_code": None, "error": None,
+            "output": result.get("output", ""), "exit_code": None, "error": integrity.get("capture_error"),
+            **integrity,
+            **{key: result[key] for key in ("full_output_path", "output_total_chars", "full_output_capped",
+                                            "truncation_note") if key in result},
             "status": "yielded_to_background", "session_id": result["yielded_session_id"],
             "pid": result.get("pid"), "notify_on_complete": True, "note": _YIELDED_NOTE,
         }, ensure_ascii=False)

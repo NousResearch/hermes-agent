@@ -499,6 +499,22 @@ describe("ChatPage", () => {
     expect(labels).toContain("Reload page");
   });
 
+  it("reports capture failure without claiming startup failure or reconnecting", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    await act(async () => {
+      FakeWebSocket.instances[0].onclose?.({ code: 1011, reason: "PTY output capture failed", wasClean: true });
+    });
+    expect(container.textContent).toContain("output may be incomplete");
+    expect(container.textContent).not.toContain("Chat could not start");
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
   it("renders Start new session after the server could not start the chat (1011)", async () => {
     const { default: ChatPage } = await import("./ChatPage");
     await render(

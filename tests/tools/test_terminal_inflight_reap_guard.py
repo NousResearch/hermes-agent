@@ -100,6 +100,26 @@ def test_a_remote_execute_code_call_keeps_its_environment_past_the_lifetime(env,
     assert tt._active_environments["default"] is env
 
 
+def test_remote_publication_failure_keeps_env_until_return_without_replay(env, monkeypatch):
+    from unittest.mock import Mock
+    from tools import code_kernel_remote
+
+    def publish_then_fail(code, *, env, **kwargs):
+        env.execute("publish cell")
+        raise OSError("response lost after publication")
+
+    fallback = Mock(return_value='{"status":"success"}')
+    monkeypatch.setattr(code_kernel_remote, "execute_in_remote_kernel", publish_then_fail)
+    monkeypatch.setattr(code_execution_tool, "_run_remote_per_call", fallback)
+    result = json.loads(code_execution_tool._execute_remote("side_effect()", "session-42", None))
+
+    fallback.assert_not_called()
+    assert result["status"] == "error"
+    assert env.cleaned_mid_call is False
+    _sweep_after_long_call()
+    assert env.cleaned
+
+
 def test_a_call_that_raises_releases_its_environment_to_the_reaper(env, monkeypatch):
     def boom(*args, **kwargs):
         raise RuntimeError("boom")

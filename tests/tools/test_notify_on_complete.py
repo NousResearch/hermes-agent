@@ -306,7 +306,8 @@ def _silent_bg_harness(monkeypatch, tmp_path):
     dummy_env = SimpleNamespace(env={})
 
     def fake_spawn_local(**kwargs):
-        return SimpleNamespace(
+        return process_registry_module.ProcessSession(
+            command=kwargs["command"],
             id="proc_silent_test",
             pid=4242,
             notify_on_complete=False,

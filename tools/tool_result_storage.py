@@ -335,7 +335,8 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     from tools.code_execution_rpc import _private_dirs_cmd
     cmd = (f"{_private_dirs_cmd(storage_dir)} "
            f"&& cat > {shlex.quote(remote_path)}")
-    if env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) != 0:
+    written = env.execute(cmd, timeout=30, stdin_data=content)
+    if written.get("returncode", 1) != 0 or written.get("output_incomplete"):
         return False
 
     expected = len(content.encode("utf-8", errors="replace"))
@@ -344,6 +345,8 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     except Exception as exc:
         logger.debug("Sandbox size probe failed for %s: %s", remote_path, exc)
         return True
+    if probe.get("output_incomplete") or probe.get("capture_error"):
+        return False
     if probe.get("returncode", 1) != 0:
         return True
     raw = str(probe.get("output", "") or "").strip().split()
@@ -407,6 +410,16 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     persisted_content = _pageable_text(content)
     filename = _safe_result_filename(tool_use_id)
     preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
+    payload = None
+    if '"output_incomplete"' in content:
+        try:
+            payload = json.loads(content)
+        except (TypeError, ValueError):
+            pass
+    if isinstance(payload, dict) and payload.get("output_incomplete"):
+        integrity = {key: payload[key] for key in
+                     ("exit_code", "capture_error", "output_incomplete", "error") if key in payload}
+        preview = json.dumps(integrity, ensure_ascii=False) + "\n" + preview
 
     def _persisted(path: str, host_suffix: str = "") -> str:
         logger.info("Persisted large tool result: %s (%s, %d chars -> %s%s)",

@@ -166,6 +166,7 @@ def spawn_background_process(
     exit_code 0 immediately, so the stale-interrupt kill cannot occur here.
     """
     from tools.process_registry import process_registry
+    from tools.environments.capture import OutputCaptureError, capture_fields
     from tools.terminal_tool import (
         _redact_terminal_error_text, _resolve_command_cwd, _resolve_notification_flag_conflict,
     )
@@ -182,7 +183,8 @@ def spawn_background_process(
             effective_pty=effective_pty, persist_on_release=persist_on_release,
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,
-                       "pid": proc_session.pid, "exit_code": 0, "error": None}
+                       "pid": proc_session.pid, "exit_code": 0, "error": proc_session.capture_error or None,
+                       **proc_session.capture_fields()}
         if persist_on_release:
             result_data["persist_on_release"] = True
         if approval_note:
@@ -227,6 +229,11 @@ def spawn_background_process(
             proc_session.watch_patterns = list(watch_patterns)
             result_data["watch_patterns"] = proc_session.watch_patterns
         return json.dumps(result_data, ensure_ascii=False)
+    except OutputCaptureError:
+        error = ("Background command may already have started; output capture is incomplete. "
+                 "Inspect its effects before considering a retry.")
+        return json.dumps({"output": "", "exit_code": None, "error": error,
+                           **capture_fields(error)}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({
             "output": "", "exit_code": -1,
@@ -263,14 +270,30 @@ def yield_to_background_handler(
 
     def _handler(proc, output_so_far: str) -> dict:
         from tools.process_registry import process_registry
+        from tools.environments.base_output import _finalize_wait_result
+        collector = getattr(proc, "_hermes_capture_collector", None)
+        captured = {"output": output_so_far, "returncode": None}
+
+        def finalize_capture():
+            from tools.terminal_tool_result import _redact_spill_file
+            if collector is not None:
+                captured.update(_finalize_wait_result(collector, output_so_far, None))
+            spill = dict(_redact_spill_file(
+                captured.pop("full_output_path", None), captured.get("output_total_chars"), command,
+                incomplete=True))  # This file is only the foreground prefix.
+            captured.update(spill)
+            if collector is not None and spill.get("capture_error"):
+                collector.capture_failed("spill redaction")
+
         session = process_registry.adopt_local(
             proc, command=command, cwd=cwd, task_id=effective_task_id,
             owner_task_id=task_id or effective_task_id, session_key=session_key,
-            output_so_far=output_so_far)
+            output_so_far=output_so_far, finalize_capture=finalize_capture)
+        captured.update(session.capture_fields())
         _stamp_routing_if_gateway(process_registry, session, session_key)
         logger.info("foreground command yielded to background as %s (pid %s)", session.id, session.pid)
         return {
-            "output": output_so_far, "returncode": None, "yielded_session_id": session.id, "pid": session.pid,
+            **captured, "yielded_session_id": session.id, "pid": session.pid,
         }
     return _handler
 

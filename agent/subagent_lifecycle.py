@@ -4,6 +4,7 @@ objects. Plugins obtain it via ``PluginContext.subagent_lifecycle``."""
 from __future__ import annotations
 
 import contextvars
+import copy
 import dataclasses
 import enum
 import hashlib
@@ -366,7 +367,9 @@ class SubagentLifecycleService:
         if record is None:
             return SubagentResult(handle, SubagentState.UNKNOWN, False, error_classification="UNKNOWN_HANDLE")
         with _REGISTRY.lock:
-            return record.result or SubagentResult(record.handle, record.state, False, error_classification="NOT_READY")
+            # Frozen dataclasses still contain mutable metadata; keep the retained receipt private.
+            return copy.deepcopy(record.result) if record.result is not None else SubagentResult(
+                record.handle, record.state, False, error_classification="NOT_READY")
 
     def reconnect(self, handle: SubagentHandle | Mapping[str, Any]) -> SubagentReconnectResult:
         record = self._record(handle)

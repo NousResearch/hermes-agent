@@ -471,7 +471,40 @@ def cmd_doctor(args) -> int:
             bad += 1
             continue
         print(f"✓ {name} {fact['version']}")
+    bad += _doctor_uv_cache(repair=getattr(args, "repair", False))
     return 1 if bad else 0
+
+
+def _doctor_uv_cache(*, repair: bool) -> int:
+    """Report (and with --repair, remove) uv cache entries an interrupted install corrupted.
+
+    Read-only by default like the rest of doctor. Installs already purge a
+    corrupt entry they trip over; this finds them before an install does.
+    """
+    from pm.environment import managed_environment
+    from pm.packages import uv_cache_path
+    from pm.uv_cache_health import corrupt_cached_packages
+
+    cache = uv_cache_path()
+    corrupt = sorted(corrupt_cached_packages(cache))
+    if not corrupt:
+        print(f"✓ uv cache: no corrupt entries in {cache}")
+        return 0
+    if not repair:
+        print(f"✗ uv cache: corrupt entries for {', '.join(corrupt)} in {cache}; "
+              "run `hermes pm doctor --repair` (installs also remove them when they hit one)")
+        return 1
+    try:
+        managed_environment(cache, cache=cache).purge_cached_packages(corrupt)
+    except InstallError as exc:
+        print(f"✗ uv cache: {exc}")
+        return 1
+    left = sorted(corrupt_cached_packages(cache))
+    if left:
+        print(f"✗ uv cache: still corrupt after cleaning: {', '.join(left)} in {cache}")
+        return 1
+    print(f"✓ uv cache: removed corrupt entries for {', '.join(corrupt)}; they are fetched again on next use")
+    return 0
 
 
 def _gc_store(store, facts) -> tuple[int, int]:
@@ -942,6 +975,8 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_env)
 
     p = sub.add_parser("doctor", help="check installed state against the lockfile")
+    p.add_argument("--repair", action="store_true",
+                   help="remove corrupt entries from PM's uv cache so they are fetched again")
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("repair", help="rebuild the recorded dependency environment without changing its graph")

@@ -322,3 +322,38 @@ def test_gate_without_a_session_workspace_keeps_the_launch_directory(backend_and
     judge.assert_called_once()
     assert decision["verdict"] == "done"
     assert str(backend.resolve()) in mgr.state.gates[0].last_output_tail
+
+
+# ──────────────────────────────────────────────────────────────────────
+# /goal gate add --retries N
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _dispatch(mgr, arg):
+    from hermes_cli.goal_command import dispatch_goal_command
+    return dispatch_goal_command(mgr, arg, authorize_gate=lambda: None)
+
+
+def test_gate_add_retries_flag_sets_the_cap_and_keeps_the_command():
+    mgr = _mgr_with_goal("gate-retries-flag-sid")
+    result = _dispatch(mgr, "gate add --retries 5 pytest -q --maxfail=1")
+    assert not result.error
+    gate = mgr.state.gates[0]
+    assert gate.command == "pytest -q --maxfail=1"
+    assert gate.max_retries == 5
+
+
+def test_gate_add_without_flag_keeps_the_default_cap():
+    mgr = _mgr_with_goal("gate-retries-default-sid")
+    _dispatch(mgr, "gate add echo --retries 5")
+    gate = mgr.state.gates[0]
+    assert gate.command == "echo --retries 5"
+    assert gate.max_retries == DEFAULT_GATE_MAX_RETRIES
+
+
+@pytest.mark.parametrize("arg", ["--retries", "--retries 5", "--retries x true", "--retries 0 true"])
+def test_gate_add_bad_retries_is_refused_without_adding_a_gate(arg):
+    mgr = _mgr_with_goal("gate-retries-bad-sid")
+    result = _dispatch(mgr, "gate add " + arg)
+    assert result.error
+    assert mgr.state.gates == []

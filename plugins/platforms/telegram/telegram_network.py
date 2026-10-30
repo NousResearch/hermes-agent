@@ -62,6 +62,25 @@ SEED_FALLBACK_IPS: list[str] = ["149.154.166.110", "149.154.167.220"]
 _UNSET = object()
 
 
+class _ReleasingStream(httpx.AsyncByteStream):
+    """Response body that calls ``release`` once when it is closed (see ``_send_counted``)."""
+
+    def __init__(self, stream, release):
+        self._stream, self._release = stream, release
+
+    async def __aiter__(self):
+        async for chunk in self._stream:
+            yield chunk
+
+    async def aclose(self) -> None:
+        try:
+            await self._stream.aclose()
+        finally:
+            release, self._release = self._release, None
+            if release is not None:
+                await release()
+
+
 def _resolve_proxy_url(target_hosts=None) -> str | None:
     from gateway.platforms.base import resolve_proxy_url  # env vars + macOS system proxy
     return resolve_proxy_url("TELEGRAM_PROXY", target_hosts=target_hosts)
@@ -93,6 +112,10 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         self._sticky_ip: object = _UNSET
         self._sticky_lock = asyncio.Lock()
         self._last_failure: tuple[str, str] | None = None
+        # Pools are shared by every concurrent send: a failed path's pool is closed only after its last
+        # request (and unread response body) is done, so one ConnectError cannot break the other sends.
+        self._inflight: dict[httpx.AsyncBaseTransport, int] = {}
+        self._retired: set[httpx.AsyncBaseTransport] = set()
 
     async def _get_fallback(self, ip: str) -> httpx.AsyncHTTPTransport:
         async with self._fallback_lock:
@@ -102,32 +125,58 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 self._fallbacks[ip] = transport
             return transport
 
+    async def _send_counted(self, transport: httpx.AsyncBaseTransport, request: httpx.Request) -> httpx.Response:
+        self._inflight[transport] = self._inflight.get(transport, 0) + 1
+        try:
+            response = await transport.handle_async_request(request)
+        except BaseException:
+            await self._release(transport)
+            raise
+        if response.is_closed:
+            await self._release(transport)
+        else:
+            response.stream = _ReleasingStream(response.stream, lambda: self._release(transport))
+        return response
+
+    async def _release(self, transport: httpx.AsyncBaseTransport) -> None:
+        remaining = self._inflight.pop(transport, 1) - 1
+        if remaining > 0:
+            self._inflight[transport] = remaining
+        elif transport in self._retired:
+            self._retired.discard(transport)
+            await self._discard(transport)
+
+    async def _discard(self, transport: httpx.AsyncBaseTransport) -> None:
+        """Close a pool taken out of rotation, or defer that until its in-flight requests finish."""
+        if self._inflight.get(transport):
+            self._retired.add(transport)
+            return
+        try:
+            await transport.aclose()
+        except Exception:  # closing a broken pool must never mask the real error
+            logger.debug("[Telegram] Error closing discarded Telegram transport", exc_info=True)
+
     async def _reset_primary(self, transport: httpx.AsyncHTTPTransport) -> None:
         # Retryable primary failures leave half-closed sockets in the pool; replace the generation first.
         async with self._primary_lock:
             if self._primary_closed or transport is not self._primary:
                 return
             self._primary = httpx.AsyncHTTPTransport(**self._transport_kwargs)
-        try:
-            await transport.aclose()
-        except Exception as exc:
-            logger.debug("[Telegram] Error closing primary transport: %s", exc)
+        await self._discard(transport)
 
-    async def _reset_fallback(self, ip: str) -> None:
+    async def _reset_fallback(self, ip: str, transport: httpx.AsyncBaseTransport) -> None:
         """Discard a failed fallback pool: a peer-closed connect leaves a CLOSE_WAIT socket in it, and the
         poisoned pool would leak one fd per retry.
 
         Retaining the poisoned pool leaks one descriptor per retry until the process hits its file limit and
-        can no longer accept connections or resolve DNS (#63311).
+        can no longer accept connections or resolve DNS (#63311). Only the failed generation is discarded,
+        never the fresh pool a concurrent failure already put in its place.
         """
         async with self._fallback_lock:
-            transport = self._fallbacks.pop(ip, None)
-        if transport is None:
-            return
-        try:
-            await transport.aclose()
-        except Exception as exc:  # closing a broken pool must never mask the real error
-            logger.debug("[Telegram] Error closing fallback transport %s: %s", ip, exc)
+            if self._fallbacks.get(ip) is not transport:
+                return
+            del self._fallbacks[ip]
+        await self._discard(transport)
 
     def _attempt_order(self) -> list[Optional[str]]:
         """Sticky path first, then IPv4 literals, dual-stack hostname last (a blackholed IPv6 path never
@@ -148,7 +197,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
             candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
             transport = self._primary if ip is None else await self._get_fallback(ip)
             try:
-                response = await transport.handle_async_request(candidate)
+                response = await self._send_counted(transport, candidate)
                 if self._last_failure is not None:
                     failed_path, failure = self._last_failure
                     self._last_failure = None
@@ -185,7 +234,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                     logger.warning("[Telegram] Dual-stack api.telegram.org path failed (%s)", failure)
                     continue
                 logger.warning("[Telegram] IPv4 Telegram API IP %s failed: %s", ip, failure)
-                await self._reset_fallback(ip)
+                await self._reset_fallback(ip, transport)
                 continue
         if last_error is None:
             raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
@@ -199,7 +248,8 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         async with self._fallback_lock:
             transports = list(self._fallbacks.values())
             self._fallbacks.clear()
-        for transport in transports:
+        retired, self._retired = list(self._retired), set()
+        for transport in transports + retired:
             await transport.aclose()
 
 

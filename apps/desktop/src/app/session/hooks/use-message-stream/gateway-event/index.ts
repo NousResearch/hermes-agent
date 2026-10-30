@@ -250,7 +250,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
-      const replaySessionId = approvalReplaySessionId(event.type, activeSessionIdRef.current, sessionId, {
+      const replaySessionId = approvalReplaySessionId(event.type, sessionId, {
         explicit: Boolean(explicitSid),
         isGone: isSessionGone
       })

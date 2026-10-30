@@ -92,6 +92,9 @@ def record_response_usage(
         _note_usage_less = getattr(compressor, "note_usage_less_response", None)
         if callable(_note_usage_less):
             _note_usage_less()
+        # Per-row stamp source (#136851): this response reported no usage, so clear the
+        # figure instead of leaving the previous response's for the next built row.
+        agent._last_response_completion_tokens = None
         logger.info(
             "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
             agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
@@ -106,6 +109,10 @@ def record_response_usage(
     _moa_client, canonical_usage, _moa_ref_cost = _fold_moa_usage(agent, canonical_usage)
     prompt_tokens = canonical_usage.prompt_tokens
     completion_tokens = canonical_usage.output_tokens
+    # Per-row stamp source for build_assistant_message (#136851): this response's own
+    # provider-reported completion figure. Kept separate from _last_turn_usage so the
+    # per-message stamp never depends on turn-level aggregation semantics.
+    agent._last_response_completion_tokens = completion_tokens
     total_tokens = canonical_usage.total_tokens
     # Gemini long decode sums every hop's re-sent prefix into prompt_tokens (billing, session totals);
     # the context actually in the window is the first hop's prompt: compaction and the meter read that.

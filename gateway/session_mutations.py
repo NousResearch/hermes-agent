@@ -9,6 +9,7 @@ import logging
 from contextlib import nullcontext
 from functools import partial
 
+from gateway.session_messaging_picks import CHAT_PICKS, is_chat_pick
 from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
 from hermes_state_runtime import RuntimeStoreError, mutate_runtime_session
 
@@ -56,12 +57,17 @@ def _authorize_control(authority, actor, ref, params, owner=None):
                 require_history_claim(authority, conn, actor, ref.session_id)
                 cold_history = authorize_history(conn, actor, ref.session_id)
         if not cold_history:
-            if params.get('operation') == 'delete':
-                # The read gate mounts a cold row first, so the check below sees what it is.
+            operation = params.get('operation')
+            if operation in {'delete', 'archive', 'sidebar'}:
+                # The read gate mounts a cold row first, so the checks below see what it is.
                 authority.authorize(actor, ref, 'session:read')
-            if not (params.get('operation') == 'delete' and authority.sessions[ref.session_id].superseded):
-                # An old conversation its chat moved past is read-only, but deleting it retires its
-                # own lineage only (retirement never evicts a read-only mount's route).
+            from gateway.session_history_mount import is_history_mount
+            if operation == 'delete':
+                from gateway.session_history_mount import require_history_leaf
+                require_history_leaf(authority, ref.session_id)
+            if not (operation in {'delete', 'archive', 'sidebar'} and is_history_mount(authority.sessions[ref.session_id])):
+                # Stored history is read-only, but deleting it retires its own lineage only, and
+                # archiving or pinning it flags that lineage's rows only.
                 authority.authorize(actor, ref, 'session:control')
     return cold_history
 
@@ -78,8 +84,13 @@ def _owner_ref(authority, ref, params):
     listed id: its busy gate, generation fence and eviction are keyed by the session it writes, so
     authorizing it on the owner while writing the segment would bypass the owner's FIFO. A segment
     of a live owner therefore stays a named refusal for those, as on main. A delete of a messaging
-    conversation's later compression segment resolves to its lineage root, where its lane's
-    session lives (``messaging_owner_ref``, as resume does)."""
+    conversation's later compression segment, or a model/reasoning pick on it, resolves to its
+    lineage root, where its lane's session lives (``messaging_owner_ref``, as resume does)."""
+    if params.get('operation') in CHAT_PICKS:
+        # A messaging chat's picks are its lane's (route-keyed) overrides: a compression segment names
+        # the lineage root its lane is mounted on. Any other row keeps its id.
+        from gateway.session_route_recovery import messaging_owner_ref
+        return messaging_owner_ref(authority, ref)
     if params.get('operation') not in _OWNER_AUTHORIZED:
         return ref
     from gateway.session_contract import SessionRef
@@ -123,12 +134,13 @@ async def _owned_mutation(authority, actor, ref, params):
                 result = await _mutate_session(authority, actor, ref, params, owner=owner)
             except (RuntimeStoreError, *MUTATION_GUARD_REFUSALS) as exc:
                 # A pick on a running session is for the next turn (the running turn keeps its route).
-                if params.get('operation') != 'model' or getattr(exc, 'reason', 'session_busy') != 'session_busy':
+                if (params.get('operation') not in {'model', 'reasoning'}
+                        or getattr(exc, 'reason', 'session_busy') != 'session_busy'):
                     raise
                 from gateway.session_deferred_pick import defer_pick
                 # Its own BEGIN IMMEDIATE: off the loop, like the receipt commit.
                 return await asyncio.to_thread(defer_pick, authority, actor, ref, params)
-    if params.get('operation') in {*_POLICY, 'compress', 'reset'}:
+    if params.get('operation') in {*_POLICY, 'compress', 'reset'} and not is_chat_pick(live, params['operation']):
         authority._schedule(ref)
     return result
 
@@ -153,6 +165,11 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, ow
     if operation == 'branch' and 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     authority._require_admission_open()
+    live = authority.sessions.get((owner or ref).session_id)
+    if is_chat_pick(live, operation):
+        # No frozen policy to commit into: the chat's own /model and /reasoning override (#141152).
+        from gateway.session_messaging_picks import apply_chat_pick
+        return await apply_chat_pick(authority, ref, owner or ref, live, params, principal_id=actor.subject)
 
     def authorize_write(conn):
         from hermes_state_mutation_binding import authorize_history, import_history_control
@@ -236,6 +253,7 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
                 # no eviction.
                 return {'session_id': ref.session_id, 'operation': operation, **prepared}
     applied = False
+    result = None
     async with commit_lock or nullcontext():
         if prepared is not None and 'snapshot' not in prepared:
             # Exact retry: the durable receipt is the result. Never re-prepare (compress
@@ -245,8 +263,19 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
         else:
             # The receipt transaction is synchronous SQLite: run it off the event loop so a large
             # state.db or a contended writer lock never stalls other clients (main 1769024ca3b).
-            result = await asyncio.to_thread(mutate_runtime_session, authority.db, **fields,
-                                             _prepared=prepared, _authorize_write=authorize_write)
+            commit = partial(mutate_runtime_session, authority.db, **fields,
+                             _prepared=prepared, _authorize_write=authorize_write)
+            if operation == 'delete':
+                from gateway.session_onboarding import ending_run_on_delete
+                commit = partial(ending_run_on_delete, authority.db, ref.session_id, commit)
+            try:
+                result = await asyncio.to_thread(commit)
+            finally:
+                if operation == 'compress':
+                    # Before the projection's boundary eviction ends the resident agent's engine
+                    # session; a refused commit only releases a one-off engine.
+                    from gateway.session_mutation_compress import finish_compress_engine
+                    await finish_compress_engine(authority, prepared, result if applied else None)
         try:
             await _project_result(authority, ref, live, params, result, editor_servers, applied=applied)
         finally:
@@ -286,6 +315,17 @@ async def _project_result(authority, ref, live, params, result, editor_servers, 
             from gateway.session_local_mcp import retire_editor_mcp
             await asyncio.to_thread(retire_editor_mcp, authority, ref.session_id)
     if operation not in {*_POLICY, 'reset', 'compress', 'rewind'} or owns_projection:
+        if operation == 'workspace':
+            # Main's move drops the terminal environment so the next command starts in the new folder: the
+            # route-keyed one a turn built and the cwd its commands recorded, which would win over the move.
+            # Off-loop (a remote teardown takes seconds) and before the policy publishes and the queue runs,
+            # so no turn starts on the old environment.
+            from gateway.session_policy_refresh import drop_session_terminal
+            try:
+                await asyncio.to_thread(drop_session_terminal, authority, ref)
+            except Exception:  # health: allow BLE001 -- the move is committed: it must still publish
+                logger.warning('Session %s moved without dropping its terminal environment', ref.session_id,
+                               exc_info=True)
         _project_committed(authority, ref, operation, result)
     if live is not None:
         if operation == 'rewind' and owns_projection:
@@ -317,12 +357,6 @@ def _project_committed(authority, ref, operation, result):
         from gateway.session_local import local_session_info
         authority.sessions[ref.session_id].event_stream.publish(
             ref.session_id, local_session_info(authority, ref), event_type='session.info')
-    if operation == 'workspace':
-        # Main's move drops the terminal environment so the next command starts in the new folder.
-        from hermes_state_local import local_receipt
-        from tools.terminal_tool_lifecycle import cleanup_vm
-        for sid in {ref.session_id, local_receipt(authority.db, ref.session_id)['entry']['session_id']}:
-            cleanup_vm(sid)
     if operation == 'branch':
         from gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, result['branched_session_id'])
@@ -390,14 +424,20 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
     release_launch_secrets(authority, session_ids)
     release_session_workspaces(authority, session_ids)
     from tools.async_delegation import allow_for_session
+    from gateway.session_vault_prompt import release_unlocks
     for sid in session_ids:
         # A closed session's refusal of new delegations (session_viewer_close) goes with its live state.
         allow_for_session((authority.profile_id, sid))
+        # So do the password managers it unlocked: this path never reaches the viewer-close settle.
+        release_unlocks(sid)
         candidate = authority.sessions.pop(sid, None)
-        if candidate is not None and not candidate.superseded:  # its route is the newer session's
+        if candidate is not None:  # a detached conversation's route is its own key
             evict = getattr(authority.runner, '_evict_cached_agent', None)
             if callable(evict):
                 evict(candidate.route)
+            if candidate.detached:  # the ids its key owned in the store (session_detached.detached_entry)
+                from gateway.session_detached import drop_owner_hints
+                drop_owner_hints(authority.runner.session_store, candidate.route)
     from gateway.session_local_mcp import release_editor_mcp
     release_editor_mcp(authority, session_ids)
     from gateway.session_worker_construct import release_session_prefill

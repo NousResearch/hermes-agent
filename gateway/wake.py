@@ -35,8 +35,26 @@ def adapter_supports_push(adapter: Any) -> bool:
     return bool(getattr(adapter, "supports_async_delivery", True))
 
 
+# Store refusal codes (``RuntimeStoreError.reason``) that refuse a notice for good by themselves: the
+# route has no session (``not_found``) or the payload is malformed (``invalid_params``). A bare
+# ``admission_conflict`` proves nothing: an unowned completion, or one pinned to a live session the
+# route does not run, may still find its owner (d6635ffe03b), so it is permanent only when the
+# authority's state proves the pin gone (``refusal_proven_permanent``). Every other refusal
+# (``runtime_draining`` during a restart's after-turn wait or a parked profile, ``queue_full``,
+# ``session_busy``, ``stale_epoch``, ...) clears on its own: back off, never give the notice up.
+PERMANENT_REFUSAL_REASONS = frozenset({'not_found', 'invalid_params'})
+
+
 class WakeNotAccepted(RuntimeError):
-    """No adapter admission: retry without treating a healthy chat as dead."""
+    """No adapter admission: retry without treating a healthy chat as dead. ``reason`` is the
+    store's refusal code when the session authority refused it, ``runtime_draining`` when the
+    adapter path refused it during a drain (None: the adapter did not accept);
+    ``permanent`` is set once the refusal is proven final (``refusal_proven_permanent``)."""
+
+    def __init__(self, message: str = "internal wake not accepted by adapter", *, reason: Optional[str] = None):
+        super().__init__(message)
+        self.reason = reason
+        self.permanent = False
 
 
 def session_owned_by_profile(config: Any, profile: Optional[str], session_id: Any) -> bool:
@@ -83,9 +101,27 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
     not model execution, authorization of a later turn, or successful outbound delivery.
     """
     event._gateway_accepted = False
+    # A draining gateway answers new work with a drain notice and discards queued follow-ups,
+    # so a wake admitted now would never run. Refuse it so the caller keeps it for a retry.
+    if _runner_draining(adapter):
+        raise WakeNotAccepted("gateway is draining; retry after restart", reason="runtime_draining")
     await adapter.handle_message(event)
     if event._gateway_accepted is not True:
-        raise WakeNotAccepted("internal wake not accepted by adapter")
+        raise WakeNotAccepted()
+    # handle_message can await before it claims or queues the event (Telegram topic recovery, the
+    # busy handler's profile scope). A drain seen here dooms the stored event: the drain gate refuses
+    # a claimed turn and the pending discard drops a queued follow-up. Refuse it so the producer
+    # retries it after the restart.
+    if _runner_draining(adapter):
+        raise WakeNotAccepted("gateway began draining during admission; retry after restart",
+                              reason="runtime_draining")
+    # No drain began before or during admission, so the producer takes this receipt as final and
+    # will not retry: a drain that begins later must run the wake rather than drop it (#138123).
+    event._admitted_before_drain = True
+
+
+def _runner_draining(adapter: Any) -> bool:
+    return getattr(getattr(adapter, "gateway_runner", None), "_draining", False) is True
 
 
 async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None,
@@ -109,7 +145,7 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
                 if await admit_route_wake(runner, adapter, source, text, "kanban-wake", category):
                     return  # committed to the session FIFO: never interrupts the admitted turn
             except RuntimeStoreError as exc:
-                raise WakeNotAccepted(str(exc)) from exc
+                raise WakeNotAccepted(str(exc), reason=exc.reason) from exc
         synth_event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=True,
                                    metadata={"notification_category": notification_category})
         await admit_internal_event(adapter, synth_event)

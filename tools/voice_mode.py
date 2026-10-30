@@ -371,9 +371,9 @@ def _sd_play_blocking(sd, audio, sample_rate: int, *, timeout: float, blocksize:
     """``sd.play`` then poll until idle or *timeout* (``sd.wait()`` has no timeout and
     hangs forever if the device stalls)."""
     sd.play(audio, samplerate=sample_rate, blocksize=blocksize)
-    deadline = time.monotonic() + timeout
-    while sd.get_stream() and sd.get_stream().active and time.monotonic() < deadline:
-        time.sleep(0.01)
+    from agent.deadline import poll_until
+
+    poll_until(lambda: not (sd.get_stream() and sd.get_stream().active), timeout, 0.01)
     sd.stop()
 
 
@@ -1541,15 +1541,9 @@ def check_voice_requirements() -> dict[str, Any]:
 # ── Temp file cleanup ──
 def cleanup_temp_recordings(max_age_seconds: int = 3600) -> int:
     """Remove ``recording_*.wav`` temp files older than *max_age_seconds*; returns the count."""
-    if not os.path.isdir(_TEMP_DIR):
-        return 0
-    deleted, now = 0, time.time()
-    for entry in os.scandir(_TEMP_DIR):
-        if entry.is_file() and entry.name.startswith("recording_") and entry.name.endswith(".wav"):
-            with suppress(OSError):
-                if now - entry.stat().st_mtime > max_age_seconds:
-                    os.unlink(entry.path)
-                    deleted += 1
+    from utils import unlink_files_older_than
+
+    deleted = unlink_files_older_than(_TEMP_DIR, "recording_*.wav", max_age_seconds)
     if deleted:
         logger.debug("Cleaned up %d old voice recordings", deleted)
     return deleted

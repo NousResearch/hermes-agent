@@ -14,11 +14,15 @@ record under the owner-epoch fence: a cancelled older close, a reattach or a sta
 remove the record it saw, never a newer close stored since.
 """
 import asyncio
+import contextlib
 import json
 import logging
+import time
 import uuid
 from functools import partial
+from pathlib import Path
 
+from gateway.session_history_mount import is_history_mount
 from hermes_state_local import local_receipt
 from hermes_state_mutation_retirement import VIEWER_CLOSE_PREFIX
 from hermes_state_runtime import RuntimeStoreError
@@ -47,6 +51,11 @@ def _busy(authority, session_id, target):
 # The viewer's /new: the classic CLI's ``new_session``; Ink's ``tui_close`` (/new or a resume switch,
 # both of which main's TUI followed with on_session_reset for the session it opened next).
 _RESET_REASONS = frozenset({'new_session', 'tui_close'})
+# Ends nobody asked for (#143547 LC-35/LC-37): the last viewer vanished without closing (a killed
+# terminal, a dropped socket), or the previous gateway stopped under it. Both stay resumable.
+ORPHAN_REASONS = frozenset({'ws_orphan_reap', 'startup_orphan_reap'})
+# The legacy startup sweep's session TTL (tui_gateway ``_SESSION_TTL_S``): see arm_startup_orphan_closes.
+STARTUP_IDLE_S = 6 * 3600.0
 
 
 class _PendingClose:
@@ -75,8 +84,8 @@ async def close_viewer_session(authority, session_id, reason):
     live = authority.sessions[session_id]
     if live.subscribers:
         return  # a viewer attached while the detach was off the loop: nothing closes or ends
-    if live.superseded:
-        return  # a read-only historic mount: its route's delegations and agent are the newer session's
+    if is_history_mount(live):
+        return  # stored history: no route, agent or delegation of its own
     from tools.async_delegation import interrupt_for_session, refuse_for_session
     route = live.route
     parents = tuple(dict.fromkeys((session_id, _physical_target(authority, session_id))))
@@ -84,6 +93,11 @@ async def close_viewer_session(authority, session_id, reason):
     for parent in parents:
         interrupt_for_session(session_key=route, parent_session_id=parent, reason=f'viewer_close:{reason}')
     authority.pending_closes[session_id] = close = _PendingClose(reason)
+    await _store_and_settle(authority, session_id, live, close)
+
+
+async def _store_and_settle(authority, session_id, live, close):
+    """Persist *close* (already pending in memory), then complete it at once if the FIFO is idle."""
     await asyncio.to_thread(_persist_close, authority, session_id, close.record)
     if not _still_pending(authority, session_id, live, close):
         # A viewer attached during the write: its own clear may have run before this commit. Only
@@ -142,7 +156,7 @@ def rearm_persisted_closes(authority):
     for key, record in stored:
         session_id = key[len(CLOSE_PREFIX):]
         live = authority.sessions.get(session_id)
-        if live is None or live.superseded:
+        if live is None or is_history_mount(live):
             continue  # not restored (paused, retired): left stored for a later recovery
         if live.subscribers:
             forget_persisted_close(authority, session_id, record)
@@ -150,6 +164,115 @@ def rearm_persisted_closes(authority):
         authority.pending_closes.setdefault(session_id, _PendingClose.from_record(record))
         armed.append(session_id)
     return armed
+
+
+def _seconds(raw, default):
+    with contextlib.suppress(ValueError, TypeError):
+        return max(0.0, float(raw))
+    return default
+
+
+def _section(config, key):
+    value = config.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def orphan_close_grace(authority, *, startup=False):
+    """Blocking: ``sessions.orphan_end_grace_s`` of the profile that owns *authority*'s store (0 = never).
+    Unset, the legacy backend's switches for the same reaping still opt out: ``dashboard.
+    ws_orphan_reap_grace_s: 0`` (park forever) and, for *startup* arms, ``startup_orphan_sweep: false``."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_cli.config_effective import load_user_config_effective
+    from gateway.session_local import profile_env_scope
+    from utils import is_truthy_value
+    default = DEFAULT_CONFIG['sessions']['orphan_end_grace_s']
+    home = Path(authority.db.db_path).resolve().parent
+    # A dropped socket detaches outside the RPC's owner scope: expand ``${VAR}`` against this profile.
+    with profile_env_scope(home):
+        config = load_user_config_effective(home / 'config.yaml')
+    sessions, dashboard = _section(config, 'sessions'), _section(config, 'dashboard')
+    if 'orphan_end_grace_s' in sessions:
+        return _seconds(sessions['orphan_end_grace_s'], default)
+    legacy_off = _seconds(dashboard.get('ws_orphan_reap_grace_s'), default) == 0 or (
+        startup and not is_truthy_value(dashboard.get('startup_orphan_sweep'), default=True))
+    return 0.0 if legacy_off else default
+
+
+def orphan_candidate(authority, session_id):
+    """Blocking: *session_id* is a local session with an open row. ACP ends on its own at detach."""
+    try:
+        receipt = local_receipt(authority.db, session_id)
+        row = authority.db.get_session(receipt['entry']['session_id'])
+    except (RuntimeStoreError, KeyError, TypeError):
+        return False  # not a local session
+    return receipt.get('policy', {}).get('source') != 'acp' and row is not None and row['ended_at'] is None
+
+
+def _call_later(loop, delay, callback):
+    # The loop's monotonic clock: time the host spends asleep does not count toward the grace.
+    return loop.call_later(delay, callback)
+
+
+def _stopping(authority):
+    return authority.retiring or authority.retired or authority.runner._draining
+
+
+def arm_orphan_close(authority, session_id, reason, grace):
+    """*session_id* has no viewer and nobody closed it: unless one attaches within *grace* seconds,
+    close it as a viewer would, without stopping its turn or its async delegations (#106742). A
+    stopping owner arms nothing; the next boot does (``recover_local_sessions``)."""
+    live = authority.sessions.get(session_id)
+    if not grace or live is None or live.subscribers or is_history_mount(live) or _stopping(authority):
+        return
+    cancel_orphan_close(authority, session_id)
+    authority.orphan_closes[session_id] = _call_later(
+        asyncio.get_running_loop(), grace, partial(_fire_orphan_close, authority, session_id, reason))
+
+
+async def arm_detached_orphan_close(authority, session_id):
+    """``session.detach`` with no ``end_reason`` (a killed terminal, a dropped socket) left no viewer."""
+    def grace():
+        return orphan_close_grace(authority) if orphan_candidate(authority, session_id) else 0
+    arm_orphan_close(authority, session_id, 'ws_orphan_reap', await asyncio.to_thread(grace))
+
+
+def _idle_s(authority, session_id):
+    from hermes_state_common import _sql_session_last_active
+    with authority.db._read_ctx() as conn:
+        row = conn.execute(f'SELECT {_sql_session_last_active("s")} FROM sessions s WHERE s.id = ?',
+                           (_physical_target(authority, session_id),)).fetchone()
+    return time.time() - row[0] if row and row[0] else 0.0
+
+
+def arm_startup_orphan_closes(authority, session_ids):
+    """Boot, after the stored closes are re-armed: the previous owner stopped under these sessions
+    (idle, or with input it left queued), so no viewer is left to close them (#143547 LC-37). One
+    that reattaches keeps it open; a fired close still waits for the queued input to settle.
+    An idle classic CLI only redials on its next call, so a session idle less than the legacy
+    sweep's TTL waits out the rest of it, as that sweep did, before its grace starts to count."""
+    grace = orphan_close_grace(authority, startup=True)
+    for session_id in session_ids:
+        if grace and session_id not in authority.pending_closes and orphan_candidate(authority, session_id):
+            delay = max(grace, STARTUP_IDLE_S - _idle_s(authority, session_id))
+            arm_orphan_close(authority, session_id, 'startup_orphan_reap', delay)
+
+
+def cancel_orphan_close(authority, session_id):
+    handle = authority.orphan_closes.pop(session_id, None)
+    if handle is not None:
+        handle.cancel()
+
+
+def _fire_orphan_close(authority, session_id, reason):
+    authority.orphan_closes.pop(session_id, None)
+    live = authority.sessions.get(session_id)
+    if live is None or live.subscribers or session_id in authority.pending_closes or _stopping(authority):
+        return
+    # The persisted pending close a viewer's own close uses: it completes once the turn settles, and
+    # survives a restart. Never ``close_viewer_session``: that would interrupt the delegations.
+    authority.pending_closes[session_id] = close = _PendingClose(reason)
+    from gateway.session_runtime_workers import track_mutation
+    track_mutation(authority, _store_and_settle(authority, session_id, live, close))
 
 
 async def settle_viewer_close(authority, session_id):
@@ -185,6 +308,8 @@ async def settle_viewer_close(authority, session_id):
     if live.subscribers:
         return  # a viewer reattached during the stamp; reopen_if_reattached reopened the row
     platform = (row or {}).get('source') or (live.source.platform.value if live.source else '')
+    from gateway.session_vault_prompt import release_unlocks
+    release_unlocks(session_id)
     await _run_close_lifecycle(authority, live, target, platform, close.reason)
 
 
@@ -200,6 +325,8 @@ async def _resolve_abandoned_unknown(authority, session_id, live, close):
     unknown = [row for row in rows if row['status'] == 'unknown']
     if not unknown:
         return True
+    if close.reason in ORPHAN_REASONS:
+        return False  # nobody closed it: the turn waits for its user's own Discard
     from gateway.session_contract import SessionRef
     ref = SessionRef(authority.profile_id, session_id)
     for row in unknown:

@@ -334,15 +334,19 @@ def _check_manifest_v2(report: DoctorReport, manifest: Any) -> None:
 
 
 def _check_desktop_half_copy(report: DoctorReport, path: Path) -> None:
-    """Warn when the Desktop app runs a stale copy of this package's ``desktop/plugin.js``.
+    """Warn when the Desktop app runs a stale copy of this package's desktop ``plugin.js``.
 
     Electron copies a unified package's desktop half to ``<root>/desktop-plugins/<name>/`` and loads
     THAT copy, so editing the package in place changes nothing on screen until the copy is refreshed.
     The copy carries a ``.hermes-package.json`` marker whose ``source`` names the folder it came from.
     """
-    source = path / "desktop" / "plugin.js"
-    if not source.is_file():
+    from hermes_cli.desktop_plugin_halves import desktop_source
+
+    source_dir = desktop_source(path)
+    if source_dir is None:
         return
+    source = source_dir / "plugin.js"
+    shown = source.relative_to(path).as_posix()
     from hermes_constants import get_default_hermes_root
 
     app_root = get_default_hermes_root() / "desktop-plugins"
@@ -360,7 +364,7 @@ def _check_desktop_half_copy(report: DoctorReport, path: Path) -> None:
         except (OSError, ValueError, KeyError, TypeError):
             continue
         report.warning(
-            f"Desktop runs a stale copy of desktop/plugin.js ({marker_file.parent}); your edits are not "
+            f"Desktop runs a stale copy of {shown} ({marker_file.parent}); your edits are not "
             "loaded. Refresh it with Capabilities → Plugins → Rescan in the Desktop app (or restart it). "
             "To develop in place, symlink the checkout into plugins/ instead: the Desktop then re-syncs "
             "the copy on every save.")

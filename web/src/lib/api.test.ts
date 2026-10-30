@@ -114,6 +114,18 @@ describe("api.getModelOptions", () => {
 });
 
 describe("management profile scope", () => {
+  it("sends explicit WhatsApp re-pair consent to the selected profile", async () => {
+    const fetchMock = jsonFetchMock({ pairing_id: "fresh", status: "starting" });
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("worker");
+
+    await api.startWhatsAppOnboarding({ mode: "bot", reset_session: true });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/messaging/whatsapp/onboarding/start?profile=worker");
+    expect(JSON.parse(String(init?.body))).toEqual({ mode: "bot", reset_session: true });
+  });
+
   // Every family whose routes write into a named profile's home must carry the
   // scope; an unprofiled request 400s on a host that merely HAS a second profile.
   it.each([

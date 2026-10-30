@@ -38,7 +38,7 @@ interface SharedMetricsConsentDialogProps {
   requestGateway: SharedMetricsRequester
 }
 
-const CHOICE_ORDER: readonly SharedMetricsChoice[] = ['share', 'local', 'off']
+const CHOICE_ORDER: readonly SharedMetricsChoice[] = ['share', 'off']
 
 /**
  * Owner of the one-time shared-metrics question, the Desktop twin of `hermes
@@ -48,7 +48,7 @@ const CHOICE_ORDER: readonly SharedMetricsChoice[] = ['share', 'local', 'off']
  * healthy install opens straight to chat. An answer given in the CLI (or here,
  * or in Settings) is the same config keys, so nobody is asked twice. This host
  * also paints the "What is collected" details the strip opens on request:
- * three equal choices, none preselected or focused, and closing it decides
+ * two equal choices, neither preselected or focused, and closing it decides
  * nothing (the strip stays until answered).
  */
 export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }: SharedMetricsConsentDialogProps) {

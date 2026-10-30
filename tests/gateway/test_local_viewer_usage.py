@@ -175,6 +175,28 @@ def test_published_usage_view_matches_the_embedded_ticker(agent):
     assert frame['usage'] == _get_usage(agent)
 
 
+def test_a_window_plans_gauge_rides_the_canonical_usage_feed():
+    """The Desktop status bar's plan allowance reads ``usage.plan_gauge``; a normal local session's
+    ticks and turn-end usage come from the gateway (``usage_frame`` / ``tui_usage``), not ``_get_usage``."""
+    from agent.credits_tracker import CreditsState
+    from agent.usage_gauges import WindowGauge
+    from gateway.session_usage import publish_usage, tui_usage, usage_stats
+    from tui_gateway.contracts.registry import CANONICAL_METHODS, EVENTS
+    from tui_gateway.server import _get_usage
+
+    day = WindowGauge(id='day', scope='all', label='today', used_bp=4_200, resets_at_ms=4_000_000_000_000)
+    agent = _agent()
+    agent._credits_state = CreditsState(denominator_kind='usage_window', gauges=(day,))
+    published = []
+    publish_usage(_turn(Platform.LOCAL, published, agent), agent)
+    frame = published[-1][1]
+    expected = {'id': 'day', 'label': 'today', 'used_bp': 4_200, 'resets_at_ms': 4_000_000_000_000}
+    assert frame['usage']['plan_gauge'] == expected == _get_usage(agent)['plan_gauge']
+    assert tui_usage(usage_stats(agent))['plan_gauge'] == expected  # message.complete.usage
+    EVENTS['session.usage'].payload.model_validate(frame)
+    CANONICAL_METHODS['session.stats'].result.model_validate(usage_stats(agent))
+
+
 def test_turn_end_publishes_the_agents_banner_info():
     """Main re-emitted ``session.info`` at every turn end; the first turn's carries the built agent's
     ``system_prompt`` (the banner's ``▸ System Prompt — N chars`` row, FINDINGS row 2) and tools."""

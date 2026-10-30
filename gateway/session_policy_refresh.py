@@ -260,7 +260,7 @@ async def refresh_resumed_policy(authority, ref, *, attached=False):
                    ref.session_id, reason)
 
 
-def _drop_terminal(authority, ref):
+def drop_session_terminal(authority, ref):
     """The session's own cached terminal environments (keyed by its route, or its ids under per-session
     isolation): the terminal tool reuses one by key whatever backend built it. A profile-shared one stays.
     Its recorded cwd (keyed by its route or task id) goes too: it wins over the new binding's directory."""
@@ -284,7 +284,7 @@ def _drop_terminal(authority, ref):
 async def _publish(authority, ref, moved=False):
     from gateway.session_local import local_session_info, publish_local_policy
     if moved:  # before the drain can run a turn on the new binding with the old environment
-        await asyncio.to_thread(_drop_terminal, authority, ref)
+        await asyncio.to_thread(drop_session_terminal, authority, ref)
     publish_local_policy(authority, ref.session_id)
     # A drain that ran during the off-loop commit saw the new stored policy beside the old live one and
     # paused; with both equal again, anything admitted meanwhile runs.

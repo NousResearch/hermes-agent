@@ -6,7 +6,7 @@ staged toolchain directly without recursing through the worker it is building.
 from __future__ import annotations
 
 import codecs
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import io
@@ -68,6 +68,11 @@ _BYTECODE_COMPILE_MARKER = "failed to bytecode-compile"
 # stitched back if a later verbose flood evicts them; the bytecode marker has
 # to ride the same path or repair/bootstrap never sees the retry signal.
 _STREAM_TAIL_MARKERS = _RESOLVER_MARKERS + (_BYTECODE_COMPILE_MARKER,)
+
+# Retries after purging corrupt cached packages. Each round must name a package
+# not purged before, so this bounds a cache with several damaged entries, never
+# a loop on one broken wheel.
+_CACHE_RECOVERY_ROUNDS = 3
 
 
 class ResolutionConflict(InstallError):
@@ -425,7 +430,13 @@ class PythonEnvironment:
             command += ["--extra", extra]
         for group in sorted(set(groups)):
             command += ["--group", group]
-        result = self._run(command, cwd=source, timeout=timeout)
+        result = self._with_cache_recovery(
+            "sync", lambda: self._sync_attempt(command, cwd=source, timeout=timeout))
+        if result.returncode:
+            raise classify_uv_failure("sync", result.returncode, result.stderr or result.stdout)
+
+    def _sync_attempt(self, command: list[str], *, cwd: Path, timeout: int) -> subprocess.CompletedProcess:
+        result = self._run(command, cwd=cwd, timeout=timeout)
         if _is_bytecode_compile_failure(result):
             # Compile is an optimization. Retry once without the flag so a
             # locked temp script cannot fail pm repair/bootstrap. Imports
@@ -436,9 +447,87 @@ class PythonEnvironment:
                     "Modules will compile on first import.\n"
                 )
             fallback = [arg for arg in command if arg != "--compile-bytecode"]
-            result = self._run(fallback, cwd=source, timeout=timeout)
+            result = self._run(fallback, cwd=cwd, timeout=timeout)
+        return result
+
+    def _with_cache_recovery(self, stage: str, attempt: Callable[[], subprocess.CompletedProcess],
+                             ) -> subprocess.CompletedProcess:
+        """Run *attempt*; if a corrupt cached package failed it, purge it and retry.
+
+        An install interrupted by a machine stop can leave a cache entry whose
+        files are NUL bytes, and uv reuses it on every sync, so a plain retry
+        never helps. Only uv's install-step corruption shapes trigger this
+        (pm.uv_cache_health); every other failure returns untouched for the
+        caller to classify. Each purge also takes every entry that fails the
+        same validation, so one retry normally covers several damaged packages.
+        uv stops at the first broken entry, though, and a dangling pointer is
+        invisible to the scan, so a retry that trips over a DIFFERENT package
+        purges that one too. A package that fails again after its purge ends
+        the loop: the source itself is serving a broken wheel.
+        """
+        from pm.uv_cache_health import corrupt_cached_packages, failed_cached_packages
+
+        purged: set[str] = set()
+        result = attempt()
+        for _ in range(_CACHE_RECOVERY_ROUNDS):
+            if not result.returncode:
+                return result
+            failed = failed_cached_packages(f"{result.stderr or ''}\n{result.stdout or ''}")
+            if not failed or failed <= purged:
+                break
+            names = sorted((failed | corrupt_cached_packages(self.cache)) - purged)
+            if self.output is not None:
+                self.output.write(f"The cached copy of {', '.join(names)} is corrupt; "
+                                  "removing it from the uv cache and retrying the install.\n")
+            self.purge_cached_packages(names)
+            purged.update(names)
+            result = attempt()
+        if not result.returncode or not purged:
+            return result
+        text = f"{result.stderr or ''}\n{result.stdout or ''}"
+        cache = native(self.cache)
+        still = failed_cached_packages(text)
+        if still:
+            remedy = ("the package source is serving a broken wheel; retry later or pin another version"
+                      if still <= purged else "run `hermes pm doctor --repair`, then retry")
+            raise InstallError(
+                "venv",
+                f"uv {stage} exited {result.returncode}: the cached copy of {', '.join(sorted(still))} is "
+                f"still invalid after removing {', '.join(sorted(purged))} from the uv cache at {cache}: "
+                f"{text.strip()[-600:]}",
+                remedy,
+            )
+        if self.offline:
+            raise InstallError(
+                "venv",
+                f"uv {stage} exited {result.returncode}: removed the corrupt cached copy of "
+                f"{', '.join(sorted(purged))} from {cache}, and offline mode cannot fetch it again: "
+                f"{text.strip()[-600:]}",
+                "retry with network access",
+            )
+        return result
+
+    def purge_cached_packages(self, names: Sequence[str]) -> None:
+        """Remove *names* from the uv cache.
+
+        ``uv cache clean`` waits for other uv processes holding the cache, so
+        another profile's sync never loses files it is reading. Archives it
+        leaves behind that still fail validation are then deleted
+        (pm.uv_cache_health.remove_corrupt_entries).
+        """
+        from pm.uv_cache_health import remove_corrupt_entries
+
+        cache = native(self.cache)
+        try:
+            result = replace(self, output=None)._run(["cache", "clean", *names],
+                                                     cwd=self.cache.parent, timeout=900)
+        except InstallError as exc:
+            raise InstallError("uv", f"could not clean the uv cache at {cache}: {exc.cause}",
+                               "stop other Hermes installs and retry") from exc
         if result.returncode:
-            raise classify_uv_failure("sync", result.returncode, result.stderr or result.stdout)
+            raise InstallError("uv", f"could not remove {', '.join(names)} from the uv cache at "
+                               f"{cache}: {(result.stderr or result.stdout)[-600:]}")
+        remove_corrupt_entries(self.cache, set(names))
 
     def export_requirements(self, source: Path, out: Path, *, extras: Sequence[str] = (),
                             timeout: int = 1800) -> None:
@@ -481,7 +570,8 @@ class PythonEnvironment:
         if wheelhouse is not None:
             command += ["--no-index", "--only-binary", ":all:",
                         "--find-links", str(wheelhouse.absolute())]
-        result = self._run(command, cwd=requirements.parent, timeout=timeout)
+        result = self._with_cache_recovery(
+            "pip", lambda: self._run(command, cwd=requirements.parent, timeout=timeout))
         if result.returncode:
             raise classify_uv_failure("pip", result.returncode, result.stderr or result.stdout)
 

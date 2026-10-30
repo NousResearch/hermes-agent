@@ -386,11 +386,65 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert "pythonw.exe" in content
     assert "hermes_cli.main" in content
     assert "gateway run" in content
-    assert ", 0, False" in content  # hidden window, detached/async
+    assert ", 0, True)" in content  # hidden window, waits for the real gateway
     for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
         assert var in content
     assert "--profile" in content and "work" in content
     assert content.endswith("\r\n")
+
+
+def test_gateway_vbs_script_restarts_only_an_abnormal_exit(monkeypatch):
+    """RestartOnFailure does not fire on an action's nonzero exit, so the launcher owns the restart. A clean
+    exit (planned stop, handoff) and the permanent config refusal (78, as launchd maps it) stay stopped."""
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (r"C:\venv\Scripts\python.exe", Path(r"C:\venv"), []),
+    )
+    lines = gateway_windows._build_gateway_vbs_script(r"C:\venv\Scripts\python.exe", r"C:\Hermes", r"C:\Hermes", "").splitlines()
+
+    assert lines[-6] == "Do"
+    assert lines[-5].startswith("  exit_code = sh.Run(") and lines[-5].endswith(", 0, True)")
+    assert lines[-4:] == [
+        "  If exit_code = 0 Or exit_code = 78 Then Exit Do",
+        "  WScript.Sleep 60000",
+        "Loop",
+        "WScript.Quit 0",
+    ]
+
+
+def test_gateway_vbs_generated_launcher_passes_the_identity_check(monkeypatch, tmp_path):
+    """The generator and the identity grammar must move together or Desktop refuses its own launcher."""
+    from hermes_cli.gateway_runtime_service_identity import _vbs_identity
+
+    python = str(tmp_path / "python.exe")
+    monkeypatch.setattr(gateway_windows, "_resolve_detached_python", lambda exe: (python, tmp_path, []))
+    content = gateway_windows._build_gateway_vbs_script(python, str(tmp_path), str(tmp_path), "")
+
+    home, argv = _vbs_identity(content)
+
+    assert home == str(tmp_path)
+    assert argv[0] == python and argv[-2:] == ["gateway", "run"]
+
+
+@pytest.mark.parametrize("run_code,spawned", [(0, 0), (1, 1)])
+def test_start_goes_through_a_registered_task_so_its_launcher_supervises(monkeypatch, run_code, spawned):
+    """A direct spawn beside a registered task has no owner to restart it; a refused /Run still starts one."""
+    calls, spawns = [], []
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_print_start_attestation_warning", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda *a, **k: [])
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "reconcile_scheduled_task", lambda name: False)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Test")
+    monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: None)
+    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda *a, **k: spawns.append(1) or 123)
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args, **k: calls.append(args) or (run_code, "", "denied"))
+
+    gateway_windows.start()
+
+    assert calls == [["/Run", "/TN", "Hermes_Test"]]
+    assert len(spawns) == spawned
 
 
 def test_atomic_write_leaves_no_staging_file_when_swap_fails(monkeypatch, tmp_path):

@@ -59,6 +59,7 @@ _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 _TASK_LOGON_DELAY = "PT30S"
 _TASK_RESTART_INTERVAL = "PT1M"
 _TASK_RESTART_COUNT = 999
+_LAUNCHER_RESTART_DELAY_MS = 60000
 
 _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
 
@@ -421,6 +422,8 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     No cmd.exe anywhere in the chain. Mirrors ``_build_gateway_cmd_script`` (same env + argv via
     ``_resolve_detached_python``).
     """
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+
     python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     # list2cmdline gives CreateProcess-correct quoting for WScript.Shell.Run.
     command_line = subprocess.list2cmdline(_gateway_run_argv(python_exe_path, profile_arg))
@@ -429,7 +432,7 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     lines = [
         f"' {_TASK_DESCRIPTION}",
         "Option Explicit",
-        "Dim sh, env, existing_pp",
+        "Dim sh, env, existing_pp, exit_code",
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({q('HERMES_HOME')}) = {q(hermes_home)}",
@@ -443,8 +446,16 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
         f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {q(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async.
-        f"sh.Run {q(command_line)}, 0, False",
+        # Window style 0 = hidden; bWaitOnReturn True so the task's action lives as long as the gateway
+        # and IgnoreNew makes a repeated /Run a no-op. Task Scheduler's RestartOnFailure does not fire on
+        # an action's nonzero exit (measured on Windows 11), so this loop is what restarts an abnormal
+        # exit. A clean exit is a planned stop or a handoff, and 78 a permanent refusal: neither retries.
+        "Do",
+        f"  exit_code = sh.Run({q(command_line)}, 0, True)",
+        f"  If exit_code = 0 Or exit_code = {GATEWAY_FATAL_CONFIG_EXIT_CODE} Then Exit Do",
+        f"  WScript.Sleep {_LAUNCHER_RESTART_DELAY_MS}",
+        "Loop",
+        "WScript.Quit 0",
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -1726,9 +1737,14 @@ def start() -> None:
         print("ℹ Login auto-start not installed; add it later with: hermes gateway install")
     elif is_task_registered():
         reconcile_scheduled_task(get_task_name())   # like systemd's regenerate-on-stale before a start
+        # Through the task so its launcher supervises this gateway; a direct spawn would have no owner.
+        code, _out, err = _exec_schtasks(["/Run", "/TN", get_task_name()])
+        if code == 0:
+            _report_gateway_start("scheduled task")
+            return
+        print(f"⚠ schtasks /Run returned code {code}: {err.strip()} (falling back to a direct spawn)")
 
-    # Manual starts use the same console-less direct spawn as restart() and install --start-now;
-    # Scheduled Task / Startup entries are only login persistence.
+    # With no task (or a refused /Run): the same console-less direct spawn as install --start-now.
     _spawn_detached()
     _report_gateway_start("direct spawn")
 

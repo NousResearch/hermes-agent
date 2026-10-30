@@ -248,8 +248,10 @@ async def ensure_hosted_service(runner):
 
 
 async def _ensure_hosted_service(runner, authority):
+    service = getattr(authority, 'hosted_room_service', None)
+    if service is not None and getattr(service, '_transport_installed', False):
+        return
     with owner_scope(authority):
-        service = getattr(authority, 'hosted_room_service', None)
         if service is None:
             loop = asyncio.get_running_loop()
             from gateway.hosted_rooms_gateway_import import import_standalone_rooms

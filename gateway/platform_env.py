@@ -190,7 +190,7 @@ def bundled_sibling(directory: str, stem: str = "gateway_env") -> Any:
     executed from its file under a private name: the plugin package (``__init__``, adapter,
     ``register()``) is never imported. None when absent or *directory* is not a bundled plugin."""
     from gateway.config import Platform
-    if directory not in Platform._scan_bundled_plugin_platforms()[0]:
+    if directory not in Platform._cached_bundled_plugin_platforms()[0]:
         return None
     path = Path(__file__).resolve().parent.parent / "plugins" / "platforms" / directory / f"{stem}.py"
     if not path.is_file():

@@ -184,7 +184,7 @@ def core_ships_platform(name: str) -> bool:
     from gateway.config import Platform
     value = str(name or "").strip().lower()
     return value in {Platform[member].value for member in Platform._member_names_} or (
-        value in Platform._scan_bundled_plugin_platforms()[0])
+        value in Platform._cached_bundled_plugin_platforms()[0])
 
 
 class PlatformRegistry:

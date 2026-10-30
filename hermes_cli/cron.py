@@ -6,7 +6,8 @@ import re
 import sys
 from datetime import timezone, UTC
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
+from collections.abc import Iterable
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -623,6 +624,7 @@ def _print_active_jobs_summary(jobs) -> None:
     """Print the '<N> active job(s)' + next-run line shared by every status path."""
     if not jobs:
         print("  No active jobs")
+        _print_vanished_job_warning(jobs)
         return
     from cron.jobs import _parse_aware
 
@@ -658,6 +660,7 @@ def _print_active_jobs_summary(jobs) -> None:
             print(f"    {j.get('id', '?')}  {j.get('name', '(unnamed)')}: {_dispatch_kind_label(d.get('kind'))}, "
                   f"scheduled {d.get('scheduled_at', '?')}, ran {d.get('dispatched_at', '?')} "
                   + color(f"({late_by} late)", Colors.YELLOW))
+    _print_vanished_job_warning(jobs)
 
 
 def _scripts_dir_for_cron() -> Path:
@@ -803,6 +806,34 @@ def _print_job_details(job_data: dict[str, Any]) -> None:
     for key, template in _JOB_DETAIL_LINES:
         if job_data.get(key):
             print(template.format(job_data[key]))
+
+
+def _print_vanished_job_warning(jobs) -> None:
+    """Surface jobs that were created, never removed, and are gone anyway.
+
+    The store cannot answer this by itself — a lost job leaves no trace in ``jobs.json``,
+    only an absence. The lifecycle journal records intent, so reconciling the two turns a
+    silent loss into a visible one. Best effort: a guard failure must never break
+    `hermes cron status`.
+    """
+    try:
+        from cron.lifecycle_journal import STATUS_OK, check_vanished_jobs
+
+        report = check_vanished_jobs(jobs=jobs)
+        if report.status == STATUS_OK:
+            return
+        print()
+        print(color(f"  ⚠️  {report.summary()}", Colors.RED))
+        for entry in report.vanished:
+            print(color(
+                f"     - {entry['job_id']} ({entry.get('name') or 'unnamed'}) "
+                f"created {entry.get('created_at')} by {entry.get('actor')}",
+                Colors.DIM,
+            ))
+    except Exception:
+        # This module has no logger and the guard is advisory — a failure here must never
+        # break `hermes cron status`.
+        pass
 
 
 def cron_create(args):

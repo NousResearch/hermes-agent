@@ -691,7 +691,9 @@ async def _managed_file_response(
     content_disposition_type: str,
     media_only: bool = False,
 ) -> FileResponse:
-    """Range-aware response after applying managed-file policy."""
+    """Range-aware response after applying managed-file policy. A player source
+    (``media_only``) has no size cap: it is served from disk one Range at a
+    time, as an SSH profile's clip already is, so a long recording plays."""
     authority = getattr(request.state, "file_ticket_authority", None)
     if authority is not None:
         from hermes_cli.web_server_file_response import OpenedFileResponse
@@ -707,7 +709,8 @@ async def _managed_file_response(
     _policy, target, _display_path, max_bytes, mime_type = _managed_readable_file(request, path)
     if media_only and target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
         raise HTTPException(status_code=415, detail="Unsupported media type")
-    _managed_file_size(target, max_bytes)
+    if not media_only:
+        _managed_file_size(target, max_bytes)
     await asyncio.to_thread(_refuse_live_database, target)
     return FileResponse(
         path=str(target),
@@ -726,7 +729,7 @@ def _open_ticket_file(request: Request, authority: file_tickets.FileAuthority, *
         )
         if media_only and target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
             raise HTTPException(status_code=415, detail="Unsupported media type")
-        return target, max_bytes
+        return target, None if media_only else max_bytes
 
     return _pin_ticket_file(authority, checked)
 
@@ -833,7 +836,7 @@ async def stream_managed_file(
     media pipeline may reject an attachment response as an ``<audio>``/
     ``<video>`` source. Browser media elements authenticate with a reusable
     path-bound ``?ticket=``; the session token is never accepted in this URL.
-    Same size cap, sensitive guard and MIME detection as download. A
+    No size cap (Range-served); sensitive guard and MIME detection as download. A
     ``session_id`` resolves ``/workspace`` in that session's own sandbox, as the
     ticket route does. An SSH profile's clip streams from its SSH machine
     (``_remote_fs_backend``, the rule download uses), one Range at a time.

@@ -42,7 +42,7 @@ import {
 } from '@/store/session'
 import { $sessionStates, isLiveTurnAwaitingEvents, isSessionRemote } from '@/store/session-states'
 import { flushStreamDeltas } from '@/store/stream-delta-flush'
-import { clearSessionSubagents } from '@/store/subagents'
+import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { runGatewayRestart } from '@/store/system-actions'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
@@ -800,8 +800,14 @@ export function usePromptActions({
     })
 
     clearSessionTodos(sessionId)
-    clearSessionSubagents(sessionId)
-    resetSessionBackground(sessionId)
+    // Stop ends this turn only: background subagents keep running and keep their rows; the
+    // stopped turn's own children drop out of the next roster snapshot.
+    pruneFinishedSessionSubagents(sessionId)
+    // No resetSessionBackground() here. A plain interrupt (Stop, or "send now"
+    // on a queued message while busy) keeps the timeline, and the gateway's
+    // session.interrupt deliberately leaves terminal(background=true) processes
+    // running. Killing them belongs only to the rewind paths (reload / restore /
+    // edit), where the spawning turns are discarded.
     setSessionDraftingTool(sessionId, '')
     // Auto-compaction sets a per-session flag that only clears on message.start
     // / message.complete / error. A hung compaction emits none of those, so the
@@ -1102,9 +1108,16 @@ export function usePromptActions({
 
       // The confirm is a wait of user length: a turn that started or output that landed meanwhile
       // makes the plan (and the rollback snapshot) stale, so drop it rather than cut a live turn.
-      if (!plan || isStaleAfterConfirm(sessionId, messages)) {
+      if (!plan || activeSessionIdRef.current !== sessionId || isStaleAfterConfirm(sessionId, messages)) {
         return
       }
+
+      // Regenerate truncates history (prompt.submit truncate_before_*) just like
+      // restore/edit, so the discarded turns' todos and background processes
+      // belong to an abandoned timeline — drop them before the re-run.
+      clearSessionTodos(sessionId)
+      resetSessionBackground(sessionId)
+      clearPreviewArtifacts(sessionId)
 
       clearNotifications()
       updateSessionState(sessionId, state => applyReloadOptimistic(state, plan))
@@ -1284,18 +1297,43 @@ export function usePromptActions({
     ]
   )
 
+  // Roll an optimistic edit/truncation back to *messages* (the original history) so the UI stays in
+  // sync with what's persisted instead of stranding a partial timeline; without *messages* only the
+  // busy state is cleared. *ownsForeground* is false when the foreground flags now belong to another
+  // session (the user switched away during a confirm).
+  const rollBackEdit = useCallback(
+    (sessionId: string, messages?: ChatMessage[], ownsForeground = true) => {
+      if (ownsForeground) {
+        setMutableRef(busyRef, false)
+        setBusy(false)
+        setAwaitingResponse(false)
+      }
+
+      updateSessionState(sessionId, state => ({
+        ...state,
+        busy: false,
+        awaitingResponse: false,
+        turnLive: false,
+        turnStartedAt: null,
+        ...(messages ? { messages } : {})
+      }))
+    },
+    [busyRef, updateSessionState]
+  )
+
   // Stale target after compression/resume drift (the cached rowId and ordinal address the
   // pre-compression segment): reload server history, recompute the full edit plan against the
   // refreshed transcript, and retry the real edit once. Do NOT plain-resubmit without a truncation
   // address — that drops rewind semantics and silently appends the edit as a new turn (#82462).
-  // Returns 'sent', or the error to surface and whether that submit carried the deep confirm.
+  // Returns 'done' once the retry was sent, or declined and rolled back; otherwise the error to
+  // surface and whether that submit carried the deep confirm.
   const retryStaleEdit = useCallback(
     async (
       sessionId: string,
       edited: AppendMessage,
       plan: EditPlan & { confirmDeepTruncate: boolean },
       messages: ChatMessage[]
-    ): Promise<'sent' | { surfaced?: unknown; surfacedConfirmed?: boolean; unavailable: boolean }> => {
+    ): Promise<'done' | { surfaced?: unknown; surfacedConfirmed?: boolean; unavailable: boolean }> => {
       let surfacedConfirmed: boolean | undefined
 
       try {
@@ -1305,14 +1343,51 @@ export function usePromptActions({
           await resumeStoredSession(storedId)
         }
 
-        const refreshed = $messages.get()
-        const retryPlan = planEdit(refreshed, edited)
-
-        if (!retryPlan || retryPlan.isFailedTurn) {
+        // The resume can rebind the runtime (or the user switched away meanwhile): surface that as
+        // unavailable rather than drop the edit.
+        if (activeSessionIdRef.current !== sessionId) {
           return { unavailable: true }
         }
 
-        surfacedConfirmed = retryKeepsDeepConfirm(plan, messages, retryPlan, refreshed)
+        // A refresh that keeps the same later turns keeps the user's answer; one that reveals more
+        // asks again. After the dialog the plan is re-aimed by content (revalidateEditPlan), since the
+        // session slice and the $messages mirror are distinct arrays.
+        const refreshed = $messages.get()
+        const first = planEdit(refreshed, edited)
+
+        if (!first || first.isFailedTurn) {
+          return { unavailable: true }
+        }
+
+        const planned = await planEditAfterConfirm({
+          answeredFor: retryKeepsDeepConfirm(plan, messages, first, refreshed) ? refreshed : undefined,
+          confirmDeep: () => confirm(deepCutConfirmRequest(t.assistant.thread)),
+          current: () => currentMessages(sessionId),
+          edited,
+          planning: refreshed,
+          stillOwned: () => activeSessionIdRef.current === sessionId
+        })
+
+        if (planned === null || planned === 'moved') {
+          if (planned === 'moved') {
+            // The edited turn moved while the confirm was open: nothing was sent.
+            notify({ kind: 'warning', message: copy.editFailed })
+          }
+
+          // Nothing was cut. A turn the backend accepted meanwhile (another window, a queued
+          // follow-up) owns the busy flags and the transcript now, so leave both to it. Otherwise,
+          // after a refresh the optimistic edit is already gone: keep whatever history the session
+          // holds now; with no stored session to refresh from, restore the original history. A
+          // switch during the confirm leaves the foreground flags to the session now on screen.
+          if (!$sessionStates.get()[sessionId]?.turnLive) {
+            rollBackEdit(sessionId, storedId ? undefined : messages, activeSessionIdRef.current === sessionId)
+          }
+
+          return 'done'
+        }
+
+        const { messages: target, plan: retryPlan } = planned
+        surfacedConfirmed = retryPlan.confirmDeepTruncate
 
         const survivorRowIds = await submitRewindPrompt(
           sessionId,
@@ -1322,13 +1397,13 @@ export function usePromptActions({
           false,
           retryPlan.truncateRowId,
           retryPlan.sourceText,
-          durableRowIdsForRebind(refreshed),
+          durableRowIdsForRebind(target),
           surfacedConfirmed
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
 
-        return 'sent'
+        return 'done'
       } catch (retryErr) {
         return {
           surfaced: retryErr,
@@ -1337,26 +1412,16 @@ export function usePromptActions({
         }
       }
     },
-    [applySurvivorRowIds, resumeStoredSession, selectedStoredSessionIdRef, submitRewindPrompt]
-  )
-
-  // Roll an optimistic edit/truncation back to the original history so the UI stays in sync with
-  // what's persisted instead of stranding a partial timeline.
-  const rollBackEdit = useCallback(
-    (sessionId: string, messages: ChatMessage[]) => {
-      setMutableRef(busyRef, false)
-      setBusy(false)
-      setAwaitingResponse(false)
-      updateSessionState(sessionId, state => ({
-        ...state,
-        busy: false,
-        awaitingResponse: false,
-        turnLive: false,
-        turnStartedAt: null,
-        messages
-      }))
-    },
-    [busyRef, updateSessionState]
+    [
+      activeSessionIdRef,
+      applySurvivorRowIds,
+      copy.editFailed,
+      resumeStoredSession,
+      rollBackEdit,
+      selectedStoredSessionIdRef,
+      submitRewindPrompt,
+      t
+    ]
   )
 
   const runEdit = useCallback(
@@ -1438,7 +1503,7 @@ export function usePromptActions({
         if (!plan.isFailedTurn && !unavailable && isStaleTargetError(err)) {
           const retried = await retryStaleEdit(sessionId, edited, plan, messages)
 
-          if (retried === 'sent') {
+          if (retried === 'done') {
             return
           }
 

@@ -142,19 +142,42 @@ async function stageDroppedEntries(entries: DroppedEntry[]): Promise<string[]> {
   return paths.filter(Boolean)
 }
 
-// The path quoted so the terminal's shell reads it as one literal argument, whatever characters
-// the name holds: a name must never end the quoting and add a command for the next Enter. Shells
-// not named here get POSIX quoting.
-function quotePathForShell(path: string, shellName: string): string {
-  const shell = shellName.toLowerCase()
+const POSIX_SHELLS = new Set(['ash', 'bash', 'dash', 'ksh', 'mksh', 'sh', 'zsh'])
 
-  if (shell.includes('powershell') || shell.includes('pwsh')) {
+// Every shell reads a path made only of these as one plain word, so a shell the quoter does not
+// name still gets it as typed. A leading - or ~ would read as an option or a home directory.
+const PLAIN_PATH = /^[\w./:][\w./:-]*$/
+
+/** The shell's program name: `C:\...\pwsh.exe` is `pwsh`, a login shell's `-zsh` is `zsh`. */
+function shellProgram(shellName: string): string {
+  return shellName
+    .toLowerCase()
+    .replace(/^.*[\\/]/, '')
+    .replace(/^-/, '')
+    .replace(/\.exe$/, '')
+}
+
+// The path quoted so the terminal's shell reads it as one literal argument, whatever characters
+// the name holds: a name must never end the quoting and add a command for the next Enter. Null
+// when this shell has no quoting that does that: a shell not named here (nu, xonsh, elvish, the
+// remote shell of an SSH tab) gets only a plain path, typed as it is.
+function quotePathForShell(path: string, shellName: string): null | string {
+  const name = shellProgram(shellName)
+
+  if (name.startsWith('pwsh') || name.startsWith('powershell')) {
     // PowerShell reads the typographic quotes U+2018..U+201B as single quotes too; doubling any of
     // them keeps it literal.
     return `'${path.replace(/['\u2018\u2019\u201a\u201b]/g, '$&$&')}'`
   }
 
-  if (shell.includes('cmd')) {
+  if (name === 'cmd') {
+    // With delayed expansion on (cmd /V:ON, or set in the registry) cmd replaces !NAME! inside
+    // double quotes too and drops a lone !. Nothing tells the terminal whether it is on, and no
+    // quoting keeps a ! literal both ways.
+    if (path.includes('!')) {
+      return null
+    }
+
     // cmd expands %NAME% inside double quotes before it reads them, and a value holding a quote
     // would end the quoting. Each % goes outside the quotes as ^%, which no variable name matches.
     return path
@@ -163,8 +186,6 @@ function quotePathForShell(path: string, shellName: string): string {
       .join('^%')
   }
 
-  const name = shell.replace(/^.*[\\/]/, '').replace(/\.exe$/, '')
-
   if (name === 'fish') {
     // Inside fish's single quotes \' and \\ are escapes.
     return `'${path.replace(/[\\']/g, '\\$&')}'`
@@ -172,8 +193,16 @@ function quotePathForShell(path: string, shellName: string): string {
 
   const quoted = `'${path.replace(/'/g, "'\\''")}'`
 
-  // csh and tcsh expand !-history even inside single quotes; \! is the escape there.
-  return name === 'csh' || name === 'tcsh' ? quoted.replace(/!/g, '\\!') : quoted
+  if (name === 'csh' || name === 'tcsh') {
+    // csh and tcsh expand !-history even inside single quotes; \! is the escape there.
+    return quoted.replace(/!/g, '\\!')
+  }
+
+  if (POSIX_SHELLS.has(name)) {
+    return quoted
+  }
+
+  return PLAIN_PATH.test(path) ? path : null
 }
 
 // C0 controls, DEL and C1 controls. A line editor acts on them inside any quoting (^U erases the
@@ -233,7 +262,23 @@ export function bindTerminalDrop(
 
     const typePaths = (paths: string[]) => {
       const refused = paths.filter(hasControlCharacter)
-      const typed = paths.filter(path => !hasControlCharacter(path))
+      const shellName = getShellName()
+      const typed: string[] = []
+      const unquotable: string[] = []
+
+      for (const path of paths) {
+        if (hasControlCharacter(path)) {
+          continue
+        }
+
+        const quoted = quotePathForShell(path, shellName)
+
+        if (quoted === null) {
+          unquotable.push(path)
+        } else {
+          typed.push(quoted)
+        }
+      }
 
       if (refused.length) {
         notify({
@@ -243,12 +288,20 @@ export function bindTerminalDrop(
         })
       }
 
+      if (unquotable.length) {
+        notify({
+          kind: 'warning',
+          title: translateNow('rightSidebar.terminalDropControlTitle'),
+          message: translateNow('rightSidebar.terminalDropUnquotable', shellProgram(shellName), unquotable.join(', '))
+        })
+      }
+
       if (!typed.length) {
         return
       }
 
       markActivity()
-      term.paste(`${typed.map(p => quotePathForShell(p, getShellName())).join(' ')} `)
+      term.paste(`${typed.join(' ')} `)
       term.focus()
       triggerHaptic('selection')
     }

@@ -271,7 +271,7 @@ messaging = [
   "python-telegram-bot[webhooks]==22.8",
   "discord.py[voice]==2.7.1",
   "aiohttp==3.14.5",
-  "brotlicffi==1.2.0.2",
+  "brotlicffi==1.2.1.0",
   "slack-bolt==1.30.0",
   "slack-sdk==3.45.0",
   "qrcode==7.4.2",
@@ -373,6 +373,24 @@ google-chat = [
 # bundles firecrawl-anydoc==0.2.4; the extra exists so a lean/broken install
 # can re-sync exactly the pin from core.
 doc-extract = ["firecrawl-anydoc==0.2.4"]
+# Office/PDF authoring libraries for skills/productivity/{docx,xlsx,powerpoint,pdf}.
+# Baked into the Docker image (Dockerfile `--extra documents`), whose sealed
+# venv has no pip and whose root fs resets on restart; ~25 MB there. Not in
+# [all]: plain installs keep the skills' persistent side environment instead.
+documents = [
+  "python-docx==1.2.0",
+  "openpyxl==3.1.5",
+  "python-pptx==1.0.2",
+  "reportlab==5.1.0",
+  "pypdf==6.21.2",
+]
+# PDF text extraction and rasterization for skills/productivity/pdf. Only in
+# the skills' side environment (`hermes pm environment documents --extra
+# documents --extra documents-pdf`), never baked: ~17 MB of pdfminer/pdfium.
+documents-pdf = [
+  "pdfplumber==0.11.10",
+  "pypdfium2==5.14.0",
+]
 trace-upload = ["huggingface-hub==1.33.0"]
 # Cloud memory providers are opt-in PM extras. They stay outside [all]
 # so a quarantined release cannot break fresh installs.
@@ -699,6 +717,7 @@ hermes_cli = [
   "observability/schemas/*.json",
   "data/*.json",
   "local_runtime/*.json",
+  "process_supervisor.sh",
 ]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —
@@ -709,7 +728,9 @@ gateway = ["assets/**/*"]
 # Bundled plugin discovery reads these manifests at runtime. Keep them in
 # sealed wheels with the plugin Python modules; without this declaration the
 # wheel contains adapters but discovery finds zero bundled plugins.
-plugins = ["**/plugin.yaml", "**/plugin.yml"]
+# The remote config backend checks its vendored config-plane conformance fixtures (secret-key
+# list) at runtime: plugins/config_backends/remote/values.py.
+plugins = ["**/plugin.yaml", "**/plugin.yml", "config_backends/remote/vendor/**/*"]
 # pm/lock.json is the runtime pin table (uv/python/tool versions + sha256s).
 # Without it a sealed wheel installs the pm package but has no pins to
 # realize — the pm store would be empty.

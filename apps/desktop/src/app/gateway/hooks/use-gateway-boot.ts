@@ -19,11 +19,12 @@ import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import {
   decideLivenessForceClose,
-  LIVENESS_PROBE_TIMEOUT_MS,
-  LIVENESS_REPROBE_DELAY_MS
+  LIVENESS_REPROBE_DELAY_MS,
+  probeGatewayLiveness
 } from '@/lib/gateway-liveness-policy'
 import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
-import { browserLaunchProfile, isBrowserHostedDesktop } from '@/lib/platform'
+import { hostHas } from '@/lib/host-capabilities'
+import { browserLaunchProfile } from '@/lib/platform'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
@@ -184,11 +185,11 @@ async function openWebappTabProfile(desktop: Window['hermesDesktop'], primary: s
     return
   }
 
-  // A stale link or bookmark can name a profile this gateway no longer has: stay on the gateway's own.
+  // A stale link or bookmark can name a profile this gateway no longer has or does not serve: stay on its own.
   const routes = await desktop.getProfileRoutes?.([profile]).catch(() => null)
 
   if (routes && !routes.some(route => normalizeProfileKey(route.profile) === normalizeProfileKey(profile))) {
-    console.warn(`[gateway] this gateway has no profile "${profile}"; this tab stays on "${primary}"`)
+    console.warn(`[gateway] this gateway has no profile "${profile}" or does not serve it; this tab stays on "${primary}"`)
     await desktop.profile?.remember?.(primary)
 
     return
@@ -698,7 +699,7 @@ export function useGatewayBoot({
       // one inconclusive probe DEFERS the teardown behind a bounded re-probe;
       // only an exhausted streak (or no in-flight work) closes.
       try {
-        await gateway.request('ping', {}, LIVENESS_PROBE_TIMEOUT_MS)
+        await probeGatewayLiveness(gateway)
         livenessProbeFailures = 0
       } catch (probeErr) {
         // A version-skewed backend that predates the ping method answers
@@ -744,7 +745,7 @@ export function useGatewayBoot({
     // stored preference; absent, behavior is unchanged.
     async function getWindowBackend(startup = false): Promise<HermesConnection> {
       // Webapp: the tab's own socket, whatever profile the tab opens on (openWebappTabProfile).
-      if (isBrowserHostedDesktop()) {
+      if (hostHas('servingOriginConnection')) {
         return desktop.getConnection()
       }
 
@@ -772,7 +773,7 @@ export function useGatewayBoot({
       shouldPublish: () => boolean = () => true,
       startup = false
     ): Promise<boolean> {
-      const webapp = isBrowserHostedDesktop()
+      const webapp = hostHas('servingOriginConnection')
       // The resolved descriptor reflects the explicit startup default. The
       // legacy profile.get preference only remembers the last workspace used.
       // A Webapp tab's primary is the profile its gateway runs as.
@@ -1304,7 +1305,7 @@ export function useGatewayBoot({
       // work in flight still closes and re-dials, so a restart that DID take
       // this socket down is recovered here and now.
       try {
-        await gateway.request('ping', {}, LIVENESS_PROBE_TIMEOUT_MS)
+        await probeGatewayLiveness(gateway)
         livenessProbeFailures = 0
 
         return

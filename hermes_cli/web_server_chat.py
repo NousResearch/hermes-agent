@@ -231,9 +231,11 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
     A socket that sends that header is judged by it alone: on a core socket
     (``/api/ws``, ``/api/pty``, the audio streams) the grant is refused
     (``native_invalid``) even when a valid ``token`` query credential rides along.
-    That is intended; only the plugin WebSocket gate accepts the grant.
+    That is intended; only the plugin WebSocket gate accepts the grant. The audio
+    streams instead take the ``interactive`` grant of the Desktop's ``/api/ws`` dial,
+    in its gateway subprotocol (``redeem_audio_ws``), stamped on ``_hermes_native_grant``.
     """
-    from hermes_cli.dashboard_auth.native_http import HEADER, authenticate_native_ws
+    from hermes_cli.dashboard_auth.native_http import HEADER, authenticate_native_ws, redeem_audio_ws
     from hermes_cli.web_server import _SESSION_TOKEN, app
     from hermes_cli.browser_credential import generation_of
     from hermes_cli.web_session_sockets import OWN_TICKET_SOCKETS, track
@@ -250,6 +252,12 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
         if grant is None:
             return "native_invalid", "native"
         ws._hermes_auth_identity = {"user_id": grant["subject"], "provider": "local"}
+        return None, "native"
+    grant = redeem_audio_ws(ws)
+    if grant is not None:
+        ws._hermes_auth_identity = {"user_id": grant["subject"], "provider": "local"}
+        ws._hermes_native_grant = grant
+        ws._hermes_ws_subprotocol = _GATEWAY_WS_PROTOCOL
         return None, "native"
     if auth_required:
         # Lazy import — keeps this function importable in test harnesses

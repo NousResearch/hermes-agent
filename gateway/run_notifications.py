@@ -666,7 +666,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     return self._restored_source(entry)
             except Exception as exc:
                 logger.debug("Synthetic process-event session-store lookup failed for %s: %s", session_key, exc)
-            cached_source = self._get_cached_session_source(session_key)
+            from gateway.session_detached import detached_live_source
+            cached_source = detached_live_source(self, session_key) or self._get_cached_session_source(session_key)
             if cached_source is not None:
                 return cached_source
             derived = _parse_session_key(session_key) or {}
@@ -857,6 +858,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         Platform.RELAY adapter fronts N logical platforms; native wins), literal ``p.value`` scan as
         fallback for minimal runner stubs / exotic platform strings when the resolver can't run."""
         from gateway.delivery import resolve_delivery_transport
+        from gateway.session_detached import detached_route_of
+        if detached_route_of(source):  # an old conversation's app viewers (gateway/session_detached.py)
+            return self._delivery_adapter_for(source)
         if source is not None:
             owner = self._transport_owner(source)
             if owner is not None:
@@ -872,7 +876,32 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             _transport = None
         if _transport is not None:
             return _transport.adapter
+        if source is not None and (relay := self._committed_relay_adapter(source)) is not None:
+            return relay
         return next((a for p, a in adapters.items() if p.value == platform_name), None)
+
+    def _committed_relay_adapter(self, source):
+        """The relay a restored *source* was admitted through, proven by its route's last committed
+        admission. Persisted origins omit relay trust, so a connector-stamped profile with no local
+        route to borrow the primary relay by otherwise finds no adapter after a restart."""
+        from gateway.session_authorities import active_authority
+        from gateway.session_automation import committed_route_envelope
+        from gateway.session_envelope import restore_native
+        from hermes_state_runtime import RuntimeStoreError
+        authority = active_authority(self)
+        if authority is None:
+            return None
+        entry = self.session_store.lookup_by_session_key(self.session_store._generate_session_key(source))
+        envelope = committed_route_envelope(authority, entry) if entry is not None else None
+        if envelope is None or 'relay' not in envelope['provenance']:
+            return None
+        # The seal is rechecked against the live connector, as ``snapshot_automation`` does.
+        try:
+            restored = restore_native({'text': '', 'native_text_v1': {
+                key: value for key, value in envelope.items() if key != 'media'}}, self)
+        except RuntimeStoreError:
+            return None
+        return self._adapter_for_source(restored.source)
 
     async def _inject_watch_notification(
         self, synth_text: str, evt: dict, *, raise_not_accepted: bool = False,
@@ -884,7 +913,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         gateway route or a refused notice pinned to a permanently-gone session (``_watch_pin_gone``).
         Not transactional: a crash after acceptance can replay (at-least-once).
         """
+        from gateway.session_detached import follow_detached_pin
+        from gateway.session_local_recovery import restore_completion_route
         from gateway.wake import WakeNotAccepted, adapter_supports_push, admit_internal_event
+        restore_completion_route(self, str(evt.get("session_key") or ""))  # watch notices and heartbeats too
+        queued, evt = evt, await follow_detached_pin(self, evt)  # the drain reads its verdict off *queued*
         source = await asyncio.to_thread(self._build_process_event_source, evt)
         if not source:
             # API-server sessions bind the RAW X-Hermes-Session-Id key, not a structured ``agent:...`` key.
@@ -967,7 +1000,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if pin_gone and not raise_not_accepted:
                 return None
             if not raise_not_accepted:
-                evt["_refusal_permanent"] = exc.permanent  # the drain counts only permanent refusals
+                queued["_refusal_permanent"] = exc.permanent  # the drain counts only permanent refusals
             logger.warning("Watch notification not admitted for %s chat=%s: %s",
                            platform_name, source.chat_id, exc)
             # Durable callers refund the claim; ordinary watch callers just requeue.
@@ -1235,10 +1268,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     async def _deliver_completion_notification_scoped(
         self, synth_text: str, evt: dict, *, sibling_claims=(),
     ) -> Optional[bool]:
+        from gateway.session_local_recovery import restore_completion_route
         from gateway.wake import WakeNotAccepted
         from tools.process_registry_notifications import should_surface_notification
         if not should_surface_notification(evt):
             return None  # Suppressed noise is terminal, not a consumed process result.
+        restore_completion_route(self, str(evt.get("session_key") or ""))
+        from gateway.session_detached import follow_detached_pin
+        evt = await follow_detached_pin(self, evt)
         identity = self._completion_delivery_identity(evt)
         claim = self._CompletionClaim()
         accepted = identity_claimed = refused = False
@@ -1474,7 +1511,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     async def _deliver_async_delegation_group_scoped(self, group: list[dict]) -> Optional[bool]:
         from gateway.run import _format_gateway_process_notification
+        from gateway.session_local_recovery import restore_completion_route
         from tools.process_registry import process_registry as _pr
+        restore_completion_route(self, str(group[0].get("session_key") or ""))
         # API delivery does not start a model turn, so there is nothing to coalesce.
         # Keep each unit's stable identity with its row across partial delivery/retry.
         if group and group[0].get("origin_session_id"):

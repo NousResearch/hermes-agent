@@ -1,7 +1,12 @@
 import { fileUrlToNativePath } from '@hermes/shared'
 import DOMPurify from 'dompurify'
 
-import { isDesktopFsRemoteMode, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
+import {
+  type DesktopFsSessionScope,
+  isDesktopFsRemoteMode,
+  readDesktopFileDataUrl,
+  readDesktopFileText
+} from '@/lib/desktop-fs'
 import { isWindowsAbsolutePath } from '@/lib/path-compare'
 import type { PreviewTarget } from '@/store/preview'
 
@@ -267,7 +272,7 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   }
 }
 
-async function enrichPreviewTarget(target: PreviewTarget | null): Promise<PreviewTarget | null> {
+async function enrichPreviewTarget(target: PreviewTarget | null, scope?: DesktopFsSessionScope): Promise<PreviewTarget | null> {
   if (
     !isDesktopFsRemoteMode() ||
     !target ||
@@ -280,7 +285,7 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
 
   if (target.previewKind === 'html') {
     try {
-      const dataUrl = validatedRemoteHtmlDataUrl(await readDesktopFileDataUrl(target.path || target.source))
+      const dataUrl = validatedRemoteHtmlDataUrl(await readDesktopFileDataUrl(target.path || target.source, scope))
 
       return dataUrl ? { ...target, dataUrl } : { ...target, renderMode: 'source', transient: true }
     } catch {
@@ -289,7 +294,7 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
   }
 
   try {
-    const result = await readDesktopFileText(target.path || target.source)
+    const result = await readDesktopFileText(target.path || target.source, scope)
 
     return {
       ...target,
@@ -306,7 +311,8 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
 
 export async function normalizeOrLocalPreviewTarget(
   rawTarget: string,
-  cwd?: string | null
+  cwd?: string | null,
+  scope?: DesktopFsSessionScope
 ): Promise<PreviewTarget | null> {
   try {
     const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
@@ -319,10 +325,10 @@ export async function normalizeOrLocalPreviewTarget(
       // machine, so remote mode keeps the fabricated fallback the gateway
       // read resolves later.
       if (normalized.previewKind === 'directory' || normalized.previewKind === 'missing') {
-        return isDesktopFsRemoteMode() ? enrichPreviewTarget(localPreviewTarget(rawTarget, cwd)) : null
+        return isDesktopFsRemoteMode() ? enrichPreviewTarget(localPreviewTarget(rawTarget, cwd), scope) : null
       }
 
-      return enrichPreviewTarget(normalized)
+      return enrichPreviewTarget(normalized, scope)
     }
 
     // The main process resolved the target against the real filesystem and
@@ -339,5 +345,5 @@ export async function normalizeOrLocalPreviewTarget(
     // through to renderer-side local classification so text/images still open.
   }
 
-  return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd))
+  return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd), scope)
 }

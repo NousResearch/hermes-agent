@@ -17,6 +17,7 @@ import os
 import urllib.parse
 import urllib.request
 from fastapi import APIRouter
+from hermes_cli.dashboard_auth.native_http import grant_home_scope
 from hermes_cli.web_routers._common import http_failure
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
@@ -533,15 +534,16 @@ async def transcribe_stream_ws(ws: WebSocket) -> None:
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
-    await ws.accept()
+    await ws.accept(subprotocol=getattr(ws, "_hermes_ws_subprotocol", None))
 
     profile = (ws.query_params.get("profile") or "").strip() or None
+    grant = getattr(ws, "_hermes_native_grant", None)
     loop = asyncio.get_running_loop()
     partials: asyncio.Queue = asyncio.Queue()
 
     def _open():
         from tools.transcription_streaming import open_streaming_session
-        with _config_profile_scope(profile):
+        with grant_home_scope(grant), _config_profile_scope(profile):
             return open_streaming_session(on_partial=lambda text: loop.call_soon_threadsafe(partials.put_nowait, text))
 
     session = None
@@ -580,7 +582,11 @@ async def transcribe_stream_ws(ws: WebSocket) -> None:
         session.cancel()
         forwarder.cancel()
         return
-    result = await loop.run_in_executor(None, session.finalize)
+    def _finalize():
+        with grant_home_scope(grant), _config_profile_scope(profile):
+            return session.finalize()
+
+    result = await loop.run_in_executor(None, _finalize)
     await asyncio.sleep(0)  # let the last partial flush before the final frame
     forwarder.cancel()
     with contextlib.suppress(Exception):
@@ -620,19 +626,21 @@ async def speak_stream_ws(ws: WebSocket) -> None:
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
-    await ws.accept()
+    await ws.accept(subprotocol=getattr(ws, "_hermes_ws_subprotocol", None))
 
     # Profile via query param, like /api/pty and /api/console: the provider
     # chain + API keys must resolve from the requesting profile's config, not
-    # the dashboard's own — at resolve time AND in the synthesis thread.
+    # the dashboard's own — at resolve time AND in the synthesis thread. A
+    # native grant's home owns the implicit selector (its explicit ones match it).
     profile = (ws.query_params.get("profile") or "").strip() or None
+    grant = getattr(ws, "_hermes_native_grant", None)
 
     loop = asyncio.get_running_loop()
 
     def _resolve():
         from tools.tts_streaming import resolve_streaming_provider
         from tools.tts_tool import _get_provider, _load_tts_config, _resolve_max_text_length
-        with _config_profile_scope(profile):
+        with grant_home_scope(grant), _config_profile_scope(profile):
             cfg = _load_tts_config()
             streamer = resolve_streaming_provider(cfg)
             cap = _resolve_max_text_length(_get_provider(cfg), cfg)
@@ -674,7 +682,7 @@ async def speak_stream_ws(ws: WebSocket) -> None:
         # Every streamer re-resolves its API key on each stream() call (tts_streaming ->
         # resolve_provider_secret), so the whole synthesis body runs under the requesting
         # profile's scope, not only the resolve step above (else the launch profile's key).
-        with _config_profile_scope(profile):
+        with grant_home_scope(grant), _config_profile_scope(profile):
             _synthesize()
 
     def _synthesize():

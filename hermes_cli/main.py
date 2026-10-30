@@ -259,16 +259,14 @@ def _config_default_interface_early() -> str:
     """Return the configured default interface ("cli"/"tui") via a minimal
     YAML read. Best-effort: any error falls back to "cli" (legacy behavior)."""
     global _EARLY_INTERFACE_CACHE
+    from hermes_cli.config_backend import config_exists, read_config_doc
     cfg_path = _early_interface_config_path()
     if _EARLY_INTERFACE_CACHE is not None and _EARLY_INTERFACE_CACHE[0] == cfg_path:
         return _EARLY_INTERFACE_CACHE[1]
     value = "cli"
     try:
-        if os.path.exists(cfg_path):
-            import hermes_yaml as _yaml_iface
-
-            with open(cfg_path, encoding="utf-8-sig") as _f:
-                raw = _yaml_iface.safe_load(_f) or {}
+        if config_exists(cfg_path):
+            raw = read_config_doc(cfg_path) or {}
             disp = raw.get("display", {})
             if isinstance(disp, dict):
                 iface = disp.get("interface")
@@ -551,17 +549,17 @@ def _under_gateway_supervisor(argv: list) -> bool:
     service children only — consulted ONLY for gateway commands because it is
     inherited by every descendant of a systemd-launched process, e.g.
     self-hosted CI runners), HERMES_GATEWAY_EXTERNAL_SUPERVISOR (explicit
-    opt-in). XPC_SERVICE_NAME is deliberately NOT consulted: interactive macOS
-    terminals set it too.
+    opt-in) and HERMES_GATEWAY_PROFILE_PIN (its tool children's copy, which is
+    no supervisor claim). XPC_SERVICE_NAME is deliberately NOT consulted:
+    interactive macOS terminals set it too.
     """
     if os.environ.get("HERMES_SUPERVISED_CHILD") or os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
         return True
     is_gateway_cmd = next((a for a in argv if not a.startswith("-")), None) == "gateway"
     if is_gateway_cmd and os.environ.get("INVOCATION_ID"):
         return True
-    return os.environ.get(
-        "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", ""
-    ).strip().lower() in {"1", "true", "yes", "on"}
+    return any(os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+               for name in ("HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "HERMES_GATEWAY_PROFILE_PIN"))
 
 
 def _s6_supervised_gateway_run(argv: list) -> bool:
@@ -721,6 +719,7 @@ load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 # .env value still wins — this is config.yaml fallback only. network.force_ipv4
 # is read from the same parse to avoid a second full load_config() (~17ms).
 _FORCE_IPV4_EARLY = False
+from hermes_cli.config_backend import config_exists
 try:
     # The effective-config cache (shared raw parse with read_raw_config()) means this SAME parse
     # serves hermes_logging, hermes_time and later raw reads: 3-4 config.yaml parses become one.
@@ -728,7 +727,7 @@ try:
     from hermes_cli.config_effective import load_user_config_effective as _load_effective_early
 
     _cfg_path = get_hermes_home() / "config.yaml"
-    if _cfg_path.exists():
+    if config_exists(_cfg_path):
         _early_cfg_raw = _load_effective_early(_cfg_path)
         if "HERMES_REDACT_SECRETS" not in os.environ:
             _early_sec_cfg = _early_cfg_raw.get("security", {})
@@ -783,8 +782,6 @@ from hermes_cli.model_setup_flows import (
     _model_flow_custom,
     _model_flow_azure_foundry,
     _model_flow_named_custom,
-    _model_flow_copilot,
-    _model_flow_copilot_acp,
     _model_flow_kimi,
     _model_flow_stepfun,
     _model_flow_bedrock,
@@ -795,6 +792,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_ai_gateway,
     _model_flow_plugin_provider,
     _is_profile_plugin_flow_provider,
+    _profile_model_setup_flow,
 )
 from hermes_cli.model_setup_flows_local import _model_flow_local
 logger = logging.getLogger(__name__)
@@ -1156,7 +1154,7 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     ):
         return True
 
-    # Provider-specific auth fallbacks (e.g. Copilot via gh auth).
+    # Provider-specific auth fallbacks (e.g. a token borrowed from a vendor CLI).
     if not strict_profile_scope:
         try:
             if any(
@@ -1881,8 +1879,6 @@ _PROVIDER_MODEL_FLOWS = {
     "xai-oauth": lambda c, m, a: _model_flow_xai_oauth(c, m, args=a),
     "qwen-oauth": lambda c, m, a: _model_flow_qwen_oauth(c, m),
     "minimax-oauth": lambda c, m, a: _model_flow_minimax_oauth(c, m, args=a),
-    "copilot-acp": lambda c, m, a: _model_flow_copilot_acp(c, m),
-    "copilot": lambda c, m, a: _model_flow_copilot(c, m),
     "custom": lambda c, m, a: _model_flow_custom(c),
     "llamacpp": lambda c, m, a: _model_flow_local(c, m),
     "anthropic": lambda c, m, a: _model_flow_anthropic(c, m),
@@ -1935,11 +1931,10 @@ def _resolve_active_provider(config, model_cfg, effective_provider, custom_provi
                     active,
                 )
         else:
-            print(
-                f"Warning: Unknown provider '{effective_provider}'. Check 'hermes model' for "
-                "available providers, or run 'hermes doctor' to diagnose config "
-                "issues. Falling back to auto provider detection."
-            )
+            from hermes_cli.left_core_migration import provider_install_hint
+            hint = provider_install_hint(effective_provider) or ("Check 'hermes model' for available providers, or run "
+                                                                  "'hermes doctor' to diagnose config issues.")
+            print(f"Warning: Unknown provider '{effective_provider}'. {hint} Falling back to auto provider detection.")
     if not active:
         try:
             active = resolve_provider("auto")
@@ -2039,7 +2034,8 @@ def select_provider_and_model(args=None):
     saves_before = _model_choice_save_count()
     from hermes_cli.observability.shared_metrics_setup import cli_provider_setup
     with cli_provider_setup(selected_provider):
-        flow = _PROVIDER_MODEL_FLOWS.get(selected_provider)
+        # Bespoke core flow, else the profile's own (``model_setup_flow``), else the generic one.
+        flow = _PROVIDER_MODEL_FLOWS.get(selected_provider) or _profile_model_setup_flow(selected_provider)
         if flow is None and _is_profile_plugin_flow_provider(selected_provider):
             # Registered plugin profile with no bespoke flow: the generic one, keyed by its auth_type.
             flow = lambda c, m, a: _model_flow_plugin_provider(c, selected_provider, m)

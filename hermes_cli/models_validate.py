@@ -96,7 +96,7 @@ def _match_in_catalog(
 @dataclass
 class _Request:
     requested: str
-    lookup: str                 # id used for catalog membership (copilot-normalized / preset base)
+    lookup: str                 # id used for catalog membership (profile-normalized / preset base)
     provider: Optional[str]     # raw caller value (Ollama checks look at this, not ``normalized``)
     normalized: str
     api_key: Optional[str]
@@ -796,9 +796,9 @@ def validate_requested_model(
     normalized = _m.normalize_provider(provider)
     if normalized == "openrouter" and base_url and not base_url_host_matches(base_url, "openrouter.ai"):
         normalized = "custom"
-    lookup = requested
-    if normalized == "copilot":
-        lookup = _m.normalize_copilot_model_id(requested, api_key=api_key) or requested
+    from providers import get_provider_profile
+    profile = get_provider_profile(normalized) if normalized else None
+    lookup = (profile.normalize_model_id(requested, api_key=api_key or "") if profile is not None else None) or requested
 
     if not requested:
         return _reject("Model name cannot be empty.")

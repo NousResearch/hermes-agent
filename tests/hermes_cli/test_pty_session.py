@@ -58,6 +58,7 @@ class FakeWS:
     def __init__(self):
         self.sent = []               # list of ("bytes"|"text", payload)
         self.close_code = None
+        self.close_reason = None
 
     async def send_bytes(self, data):
         self.sent.append(("bytes", bytes(data)))
@@ -67,6 +68,7 @@ class FakeWS:
 
     async def close(self, code=1000, reason=""):
         self.close_code = code
+        self.close_reason = reason
 
 
 class FailingWS(FakeWS):

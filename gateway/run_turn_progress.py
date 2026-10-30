@@ -1009,9 +1009,11 @@ class GatewayTurnProgressMixin:
 
 def local_viewer_turn(runner) -> bool:
     """A local route's viewers read the canonical event stream; ``LocalSessionAdapter.send``
-    publishes nothing, so status and notices go to that stream instead."""
-    return (getattr(runner, "_approval_owner", None) is not None
-            and getattr(getattr(runner._ctx, "source", None), "platform", None) == Platform.LOCAL)
+    publishes nothing, so status and notices go to that stream instead. So does a conversation its
+    chat moved past (gateway/session_detached.py): it delivers through that same adapter."""
+    source = getattr(runner._ctx, "source", None) if getattr(runner, "_approval_owner", None) is not None else None
+    from gateway.session_detached import detached_route_of
+    return getattr(source, "platform", None) == Platform.LOCAL or detached_route_of(source) is not None
 
 
 def _viewer_status_kind(kind, text):

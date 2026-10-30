@@ -966,6 +966,10 @@ def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Pa
     :func:`export_scratch_tmp_env`), so ``tempfile`` defaults land here without call sites
     knowing. Entries idle for ``SCRATCH_MAX_IDLE_HOURS`` are pruned at most once per process
     and once per hour across processes (stamp file), so a fan-out of children stays cheap.
+    The pass itself runs in a detached child process (``hermes_constants_scratch_detach``): the
+    directory is created and permissioned before this returns, no caller (the boot hook
+    included) waits on the idle scan or the ``rmtree`` of a multi-GB entry, and the pass still
+    finishes when the caller is a ``hermes`` command that exits a moment later.
 
     Permissions follow :func:`apply_secure_dir_policy`, so an explicit ``HERMES_HOME_MODE`` or
     a managed/shared home is honored instead of a blanket ``0700`` (#117347).
@@ -1012,7 +1016,9 @@ def _prune_scratch_dir_once(scratch: Path) -> None:
         pass
     with contextlib.suppress(Exception):
         stamp.touch()
-        prune_scratch_dir(scratch)
+        from hermes_constants_scratch_detach import spawn_prune
+
+        spawn_prune(scratch)
 
 
 def scratch_dir_usage_bytes(scratch: Path | None = None) -> int:

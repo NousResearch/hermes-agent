@@ -31,12 +31,15 @@ export function useChangeWorkspaceItem(
   const targetId = primaryFocused ? undefined : focusedRuntimeId || null
 
   const changeWorkspace = useCallback(async () => {
-    const [dir] = await selectDesktopPaths({ defaultPath: currentCwd, directories: true, multiple: false, title })
+    const [dir] = await selectDesktopPaths(
+      { defaultPath: currentCwd, directories: true, multiple: false, title },
+      focusedRuntimeId ? { sessionId: focusedRuntimeId } : undefined
+    )
 
     if (dir) {
       await changeSessionCwd(dir, targetId ?? undefined)
     }
-  }, [changeSessionCwd, currentCwd, targetId, title])
+  }, [changeSessionCwd, currentCwd, focusedRuntimeId, targetId, title])
 
   return useMemo(
     () => ({

@@ -36,6 +36,39 @@ const shallowEqual = (a: object, b: object): boolean => {
 const getThreadListAdapter = (store: ExternalStoreAdapter) => store.adapters?.threadList ?? {}
 
 /**
+ * @assistant-ui/core 0.2.23's ThreadListRuntimeImpl exposes a LazyMemoizeSubject's
+ * getState(), but subscribes directly to the underlying core. Because the
+ * subject never becomes connected in that arrangement, getState() allocates a
+ * new wrapper object on every read. React/tap treats that as a changed
+ * external-store snapshot and can enter an update-depth loop before the first
+ * session is even opened.
+ *
+ * Keep the public runtime API intact while making the snapshot contract
+ * explicit: equal list states must retain their reference identity. Compare
+ * all top-level fields; the external-store core replaces arrays and item maps
+ * when they change. Remove this workaround when upstream caches these reads.
+ */
+export function stabilizeThreadListSnapshot(runtime: AssistantRuntime): AssistantRuntime {
+  const threads = runtime.threads
+  const getState = threads.getState.bind(threads)
+  let previous = getState()
+
+  threads.getState = () => {
+    const next = getState()
+
+    if (shallowEqual(previous, next)) {
+      return previous
+    }
+
+    previous = next
+
+    return next
+  }
+
+  return runtime
+}
+
+/**
  * Write only the items whose (message, parentId) pair actually moved.
  *
  * `useRuntimeMessageRepository` caches normalized ThreadMessages by source
@@ -280,5 +313,5 @@ export function useIncrementalExternalStoreRuntime<T extends ThreadMessage>(
     return runtime.registerModelContextProvider(modelContext)
   }, [modelContext, runtime])
 
-  return useMemo(() => new AssistantRuntimeImpl(runtime), [runtime])
+  return useMemo(() => stabilizeThreadListSnapshot(new AssistantRuntimeImpl(runtime)), [runtime])
 }

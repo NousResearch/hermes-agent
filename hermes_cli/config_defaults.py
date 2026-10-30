@@ -4,6 +4,7 @@ Pure-data leaf module — must not import from hermes_cli.config. Comments are t
 docs of config.yaml.
 """
 
+from hermes_cli.config_defaults_auxiliary import _aux
 
 #: Image every container terminal backend (docker/modal/daytona, the singularity plugin) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -15,19 +16,6 @@ LEGACY_SANDBOX_IMAGE = LEGACY_SANDBOX_IMAGES[0]
 # Vercel Sandbox managed image (Vercel deprecated its `runtime` presets in Aug 2026).
 DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
 LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
-
-
-def _aux(timeout, *, reasoning_effort=True, **extra):
-    """Standard auxiliary-task model block (see DEFAULT_CONFIG["auxiliary"]).
-
-    reasoning_effort=False omits that key (MoA blocks configure depth per slot);
-    ``extra`` keys are appended after the standard ones.
-    """
-    d = {"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": timeout, "extra_body": {}}
-    if reasoning_effort:
-        d["reasoning_effort"] = ""
-    d.update(extra)
-    return d
 
 
 DEFAULT_CONFIG = {
@@ -432,7 +420,7 @@ DEFAULT_CONFIG = {
         "command_timeout": 30,
         # headed: visible Chromium window (local); skips per-turn cleanup, idle reaper still applies
         "headed": False,
-        "allow_private_urls": False,  # allow private/internal IPs (localhost, 192.168.x.x, ...)
+        "allow_private_urls": False,  # legacy security.allow_private_urls; local/sidecar Chromium ignore it
         # Local browser engine. "auto" = Chromium; "lightpanda" = `lightpanda serve` per session
         # (faster navigation, no screenshots); "chrome" is read as "auto". Ignored while a cloud
         # provider, cdp_url or use_real_profile is active.
@@ -444,7 +432,7 @@ DEFAULT_CONFIG = {
         # profile per session.
         "user_data_dir": "",
         "chromium_args": [],  # extra Chromium flags for local sessions, e.g. ["--lang=de"]
-        # With a cloud provider, auto-spawn local Chromium for LAN/localhost URLs instead
+        # Cloud provider: LAN/localhost URLs open in a local Chromium (ignores allow_private_urls; False refuses)
         "auto_local_for_private_urls": True,
         "cdp_url": "",  # persistent CDP endpoint for attaching to an existing Chromium/Chrome
         # Consent to browse with the user's REAL logins locally: runs on a Hermes-managed SNAPSHOT
@@ -482,8 +470,7 @@ DEFAULT_CONFIG = {
     # and merged are removed; dirty or unpushed ones are archived to refs/hermes/archive/<tree>
     # first (`hermes worktree restore <name>`). Live trees and Kanban t_<hex> trees are never touched.
     "worktrees": {
-        # false = never remove a dirty/unpushed tree (the pre-archive behaviour, exactly).
-        "archive_dirty": True,
+        "archive_dirty": True,  # false = never remove a dirty/unpushed tree (the pre-archive behaviour)
         # Untracked files larger than this (MB) are not archived, so a tree holding one is kept.
         "archive_max_file_mb": 50,
         # The sweep deletes archive refs older than this many days. 0 keeps them forever.
@@ -491,6 +478,7 @@ DEFAULT_CONFIG = {
         # Optional size budget (GB) for idle trees: past it the oldest idle trees are archived and
         # removed first. Live, young and Kanban trees are never counted or touched. 0 = off.
         "max_total_gb": 0,
+        "install_state_retention_days": 14,  # installs/<key> of a missing checkout, unused this long, goes; 0 = never
     },
     # Filesystem checkpoints: snapshot the working directory once per turn (on the first
     # write_file/patch call); restore with /rollback. Opt-in via `hermes chat --checkpoints` or
@@ -663,7 +651,7 @@ DEFAULT_CONFIG = {
         # (Historical key name.) When True, gpt-5.4/5.5/5.6 and gpt-6 Astra (any slug containing
         # "astra" without "900k") on the ChatGPT Codex OAuth route raise their compaction trigger to
         # 85%: Codex hard-caps them at a 272K window, so the global 50% would compact at ~136K. False = global `threshold`. Only that route; the same models via
-        # OpenAI direct, OpenRouter or Copilot keep the global value.
+        # OpenAI direct, OpenRouter or another relay keep the global value.
         "codex_gpt55_autoraise": True,
         # Show the one-time autoraise banner; False keeps the autoraise, hides the notice.
         "codex_gpt55_autoraise_notice": True,
@@ -678,21 +666,21 @@ DEFAULT_CONFIG = {
         # safety margin; explicit values only clamp downward so the server goes first.
         "codex_responses_compact_threshold": None,
         # in_place: compaction rewrites the message list and system prompt WITHOUT rotating the
-        # session id (no parent_session_id chain, no `name #N` renumbering), avoiding the
-        # session-rotation bug cluster. Pre-compaction turns are soft-archived under the same id
-        # (active=0, compacted=1) — still session_search-able. False = legacy rotating-compaction
-        # path.
+        # session id (no parent_session_id chain, no `name #N` renumbering), avoiding the session-rotation
+        # bug cluster. Pre-compaction turns are soft-archived under the same id (active=0, compacted=1) —
+        # still session_search-able. False = legacy rotating-compaction path.
         "in_place": True,
         # Per-model threshold overrides: keys substring-match the model name (longest wins), values
         # replace the global `threshold`, e.g. {"glm-5.2": 0.40}. Prefix a key with "<provider>:" to
         # scope it to one route ({"openai-codex:astra": 0.85} leaves Astra on OpenRouter/Nous at the
         # global value). The <512K floor (0.75) still applies raise-only on top.
         "model_thresholds": {},
-        # Opt-in idle compaction (0 = off): a session resuming after this many idle seconds compacts
-        # up front, before the first reply. Time-based complement to `threshold`; skipped when
-        # already at/below threshold × target_ratio; honors the same cooldown/ anti-thrash/lock
-        # guards. Example: 1800 = 30 min.
+        # Opt-in idle compaction (0 = off): a session resuming after this many idle seconds compacts up
+        # front, before the first reply. Time-based complement to `threshold`; skipped when already at/below
+        # threshold × target_ratio; honors the same cooldown/anti-thrash/lock guards. Example: 1800 = 30 min.
         "idle_compact_after_seconds": 0,
+        # Opt-in: write the next summary in the background near the trigger; compaction uses (or waits for) it if it still covers the same messages.
+        "prepare_ahead": False,
     },
     # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "5m" | "1h" | "auto"
     # (auto = 1h for human-paced sessions — cli/tui/desktop/messaging — and 5m for subagent, cron,
@@ -748,7 +736,7 @@ DEFAULT_CONFIG = {
         # WARNING is logged whenever a non-":free" model is engaged.
         "openrouter_model": "",
         # Endpoints that reject NON-streaming chat (HTTP 400): aux calls are sent with stream=True
-        # and aggregated. Case-insensitive URL substrings; copilot.tencent.com is always
+        # and aggregated. Case-insensitive URL substrings; some vendor endpoints are always
         # stream-only.
         "stream_only_base_urls": [],
         # Per-task blocks share one shape (_aux): provider "auto" = inherit the main model; base_url
@@ -1052,9 +1040,9 @@ DEFAULT_CONFIG = {
             "secret": "",
             "session_ttl_seconds": 0,  # 0 → plugin default (12h)
         },
-        # Drain-control token auth (dashboard_auth/drain plugin). The secret is NOT here: env
-        # HERMES_DASHBOARD_DRAIN_SECRET; no-op unless >=256-bit, weak secrets rejected
-        # (fail-closed). scope = capability label; min_secret_chars in url-safe-b64 chars.
+        "session_token_auth": {"enabled": True},  # session_token plugin: a provisioned HERMES_DASHBOARD_SESSION_TOKEN (literal or file:<path>) authorizes the gated dashboard; enabled: false opts out
+        # Drain-control token auth (dashboard_auth/drain plugin): the secret is NOT here (env
+        # HERMES_DASHBOARD_DRAIN_SECRET); no-op unless >=256-bit, weak secrets rejected (fail-closed).
         "drain_auth": {"scope": "drain", "min_secret_chars": 43},
         # Public URL (env HERMES_DASHBOARD_PUBLIC_URL): full authority (scheme + host + optional
         # prefix, e.g. https://example.com/hermes) for the OAuth redirect_uri; its hostname is
@@ -1273,7 +1261,7 @@ DEFAULT_CONFIG = {
         # openWakeWord/pyopen-wakeword only: consecutive over-threshold frames to fire (higher = fewer
         # false triggers, more latency; 1 = single-frame)
         "confirmation_frames": 3,
-        "start_new_session": True,  # fresh session on wake vs. continue the current one
+        "start_new_session": True,  # fresh session on wake vs. continue the current one (detached-spawn: ok — a config key)
         # sherpa only: listen for every wake-enabled profile's phrase and route to it
         "profile_routing": True,
         "openwakeword": {
@@ -1367,8 +1355,7 @@ DEFAULT_CONFIG = {
         # children fail only from real errors (API, tools, iteration budget). A progressing child (including one
         # waiting on a multi-minute completion) restarts the window; a frozen one is caught.
         "child_timeout_seconds": 0,
-        # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" |
-        # "none" (empty = inherit)
+        # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" | "none" (empty = inherit)
         "reasoning_effort": "",
         # Max parallel children per batch AND max concurrent background delegation units; async
         # dispatches beyond it run synchronously. Floor 1, no ceiling.
@@ -1376,6 +1363,7 @@ DEFAULT_CONFIG = {
         # Background fan-outs return as ONE message when the whole call finishes. true = each task
         # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
         "independent_completions": False,
+        "gateway_mode": "auto",  # gateway: inline (join in the turn) | background | auto = inline where interim msgs are off
         # Orchestrator role controls. Depth floored at 1, no ceiling; each level multiplies cost.
         "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
@@ -1672,11 +1660,9 @@ DEFAULT_CONFIG = {
         # channel — a pending approval there just blocks for the full timeout with nobody to answer (#37284,
         # #87509): deny    — block the command instantly and let the agent find another way (default, safe;
         # mirrors cron_mode deny) approve — auto-approve all dangerous commands on unattended platforms
-        # Shared by the CLI prompt and gateway/messaging waits. Messaging approvals arrive as a push
-        # notification the user may not see immediately — 60s proved too tight on Telegram/Discord (the
-        # prompt expired before the user reached their phone), so the default is 300.
         "mode": "smart",
         "timeout": 300,
+        "discord_prompt_timeout": 300,  # Discord buttons stay clickable (min 30 s, cap MAX_SAFE_TIMEOUT_S)
         "cron_mode": "deny",
         "single_query_mode": "deny",
         "unattended_mode": "deny",
@@ -1766,7 +1752,7 @@ DEFAULT_CONFIG = {
         "codex_login_flow": "device_code",
     },
     "security": {  # Security: URL/private-network guards, redaction and approval presentation.
-        "allow_private_urls": False,  # allow requests to private/internal IPs (OpenWrt, VPNs)
+        "allow_private_urls": False,  # private IPs for web/vision/media + cloud/CDP browsers; not local/sidecar Chromium
         # CIDR blocks a local TUN proxy answers DNS with (Mihomo/Clash fake-ip, Surge enhanced).
         # Answers inside these blocks are the proxy's sentinels, not internal hosts, so the guard
         # dials them instead of rejecting them as private. Empty = normal private-address verdict.
@@ -2095,6 +2081,15 @@ DEFAULT_CONFIG = {
         # OTLP destination. headers_env maps header names to ENVIRONMENT VARIABLE NAMES (never
         # secret values); values are read from the environment at export time.
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
+    },
+    # Native hosted-room Discussion ceilings, shared by all members per discussion.
+    # Positive integers only (no unlimited/0). Read from the root owner's config at service
+    # startup for all hosted rooms; restart the owning service after changing them.
+    "hosted_rooms": {
+        "discussion": {
+            "max_rounds": 3,
+            "max_messages": 10,
+        },
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
         "unmanaged_idle_exit_seconds": 600,  # client-auto-started gateway only; 0 disables

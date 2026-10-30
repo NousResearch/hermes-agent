@@ -16,12 +16,13 @@ import json
 from pathlib import Path
 import re
 import secrets
+import time
 
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 
 from hermes_cli.pty_session import (
-    WS_CLOSE_VIEWER_STALLED, WS_CLOSE_VIEWER_STALLED_REASON, PtySession, PtySessionRegistry,
-    RegistryFull, _close_ws, run_reaper,
+    _VIEWER_SEND_ERRORS, _VIEWER_SEND_TIMEOUT_SECONDS, WS_CLOSE_VIEWER_STALLED,
+    WS_CLOSE_VIEWER_STALLED_REASON, PtySession, PtySessionRegistry, RegistryFull, _close_ws, run_reaper,
 )
 from hermes_cli.web_host_terminal import META_PREFIX
 from hermes_constants import assert_named_profile_home_live, get_hermes_home
@@ -29,8 +30,19 @@ from hermes_constants import assert_named_profile_home_live, get_hermes_home
 # No survival across backend restart. Disconnects retain a bounded ANSI tail.
 RETENTION_SECONDS = 15 * 60
 _MAX_SHELLS = 16
-# Inbound frames buffered while one batch is written (backpressure bound).
-_INPUT_BATCH_FRAMES = 64
+# Inbound input buffered while one batch is written (backpressure bound): full only once it holds
+# both ``_INPUT_QUEUE_FRAMES`` frames and ``_INPUT_QUEUE_BYTES`` bytes, each frame also costing
+# ``_FRAME_OVERHEAD_BYTES``. Until then the reader keeps reading the socket, which is where the
+# server's keepalive pongs arrive (``_InputQueue``).
+_INPUT_QUEUE_FRAMES = 64
+_INPUT_QUEUE_BYTES = 1024 * 1024
+_FRAME_OVERHEAD_BYTES = 256
+# How often a reader held up by that bound checks that the tab is still there (``_queue_frame``).
+# Once the connection is gone a check fails within about three: the first can still reach the
+# kernel before the peer's reset comes back.
+_LIVENESS_PROBE_SECONDS = 1.0
+# How long a resize that undoes the previous one waits for the program to answer that one (``_resize``).
+_RESIZE_ANSWER_SECONDS = 1.0
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
 
@@ -40,6 +52,10 @@ class TerminalDenied(Exception):
 
 class TerminalExpired(Exception):
     pass
+
+
+class TerminalExited(TerminalExpired):
+    """The shell exited by itself (``exit``, Ctrl-D); the server did not end it."""
 
 
 def _home_live(home: Path) -> bool:
@@ -93,6 +109,10 @@ def _request_home(profile: str | None) -> Path:
 
 
 class HostTerminalRegistry(PtySessionRegistry):
+    # The most exited shells remembered at once: a tab that redials after the reaper took its
+    # shell still learns that it exited (``resolve``).
+    _EXITS_KEPT = 4 * _MAX_SHELLS
+
     def __init__(self):
         # Every live shell keeps a read in flight. On the loop's default executor, retained
         # shells would queue the keystroke fences, ownership checks, uploads and SessionDB
@@ -101,6 +121,9 @@ class HostTerminalRegistry(PtySessionRegistry):
             ttl=RETENTION_SECONDS, max_sessions=_MAX_SHELLS, buffer_cap=1024 * 1024, read_timeout=0.2,
             drain_executor=ThreadPoolExecutor(_MAX_SHELLS, thread_name_prefix="host-pty-drain"))
         self.owners: dict[str, HostOwner] = {}
+        # Token -> (owner identity, when it was reaped) of shells that exited by themselves, for
+        # the retention TTL.
+        self.exits: dict[str, tuple[tuple[str, str], float]] = {}
 
     def _reap_one_idle_or_raise(self) -> None:
         # Retention is a promise, not an LRU hint; never evict a live shell to
@@ -138,7 +161,7 @@ class HostTerminalRegistry(PtySessionRegistry):
         session = self._sessions.get(token)
         owner = self.owners.get(token)
         if session is None or owner is None:
-            raise TerminalExpired()
+            raise self._gone(token, identity)
         if owner.identity != identity:
             raise TerminalDenied()
 
@@ -150,10 +173,20 @@ class HostTerminalRegistry(PtySessionRegistry):
         await asyncio.to_thread(validate)
         # No await between the final check and the caller's attach claim. The
         # home was just checked off-loop; every input write checks it again.
-        if (self._sessions.get(token) is not session
-                or (not closing and (not session.alive or self.expired(session)))):
+        if self._sessions.get(token) is not session:
+            # The reaper took the shell during validation; it may have exited first.
+            raise self._gone(token, identity)
+        if not closing and _exited(session):
+            raise TerminalExited()
+        if not closing and self.expired(session):
             raise TerminalExpired()
         return session, owner
+
+    def _gone(self, token: str, identity: tuple[str, str]) -> TerminalExpired:
+        """The refusal of a token with no registered shell: ``TerminalExited`` if *identity*'s shell
+        exited by itself, else ``TerminalExpired``."""
+        gone = self.exits.get(token)
+        return TerminalExited() if gone is not None and gone[0] == identity else TerminalExpired()
 
     async def remove(self, token: str):
         session = self._sessions.pop(token, None)
@@ -167,20 +200,37 @@ class HostTerminalRegistry(PtySessionRegistry):
         # One thread hop per tick keeps every shell's marker reads off the loop.
         owners = list(self.owners.items())
         retired = await asyncio.to_thread(lambda: {token for token, owner in owners if not owner.current()})
+        now = time.monotonic() if now is None else now
         for token, owner in owners:
             session = self._sessions.get(token)
             if session is not None and (token in retired or self._reapable(session, now)):
+                if token not in retired and _exited(session):
+                    self._remember_exit(token, owner, now)
                 await self.remove(token)
         for token in list(self.owners):
             if token not in self._sessions:
                 self.owners.pop(token, None)
+        for token in [token for token, (_, at) in self.exits.items() if now - at > self._ttl]:
+            del self.exits[token]
+
+    def _remember_exit(self, token: str, owner: HostOwner, now: float) -> None:
+        self.exits[token] = (owner.identity, now)
+        while len(self.exits) > self._EXITS_KEPT:
+            del self.exits[next(iter(self.exits))]
 
     async def close_all(self):
         await super().close_all()
         self.owners.clear()
+        self.exits.clear()
         # Every drain is cancelled by now; a read still in flight returns within its
         # timeout, so let it finish behind us. A closed registry never spawns again.
         self._drain_executor.shutdown(wait=False)
+
+
+def _exited(session: PtySession) -> bool:
+    """Whether a session still in the registry lost its shell: the server pops a session before
+    it closes one, so only the shell's own exit leaves a dead one behind."""
+    return not session.alive or not session.bridge.is_alive()
 
 
 def get_host_terminals(app) -> HostTerminalRegistry:
@@ -259,21 +309,96 @@ async def _admit(ws: WebSocket, registry: HostTerminalRegistry):
     return session, owner
 
 
+def _frame_payload(msg: dict) -> bytes:
+    """What a frame writes to the program: a binary frame's bytes, a text frame's UTF-8. The
+    WebSocket library decodes a text frame strictly, so its text always encodes back."""
+    raw = msg.get("bytes")
+    return (msg.get("text") or "").encode("utf-8") if raw is None else raw
+
+
+def _frame_cost(item) -> int:
+    """What a queued item counts against ``_INPUT_QUEUE_BYTES``: its payload and the per-frame overhead."""
+    if not isinstance(item, dict):  # the reader's last item: None or the error that ended reading
+        return _FRAME_OVERHEAD_BYTES
+    # The bytes ``_input_runs`` writes, not characters: a CJK or emoji paste is 3-4 bytes each.
+    return len(_frame_payload(item)) + _FRAME_OVERHEAD_BYTES
+
+
+class _InputQueue(asyncio.Queue):
+    """The frames a tab sent while a batch is written, full once it holds at least
+    ``_INPUT_QUEUE_FRAMES`` frames and at least ``_INPUT_QUEUE_BYTES`` charged by ``_frame_cost``.
+
+    A full queue stops the reader, and with it the WebSocket library's own read of the socket once
+    that buffers 32 unread frames: keepalive pongs then go unread, and a bind that pings (any
+    non-loopback Webapp) closes a live tab with 1011 after the ping timeout, dropping the input
+    queued behind it. A frame count alone fills on a few dozen keys typed while a paste waits on a
+    program that is not reading, and a byte count alone on one large paste; needing both gives
+    typing far more room (one-byte keys fill it at 4,081 frames) and never stops the reader before
+    the frame count alone would. Typing past that stalls the reader just as large frames do.
+
+    So the frame count is not a strict limit: small frames can queue thousands. The payload ceiling
+    stays about the frame count alone's: a frame is only taken while the queue holds fewer than
+    ``_INPUT_QUEUE_FRAMES`` frames or charges under ``_INPUT_QUEUE_BYTES``, and each frame is at
+    most the server's ``ws_max_size``.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.queued = 0
+
+    def full(self) -> bool:
+        return self.qsize() >= _INPUT_QUEUE_FRAMES and self.queued >= _INPUT_QUEUE_BYTES
+
+    def _put(self, item):
+        self.queued += _frame_cost(item)
+        super()._put(item)
+
+    def _get(self):
+        item = super()._get()
+        self.queued -= _frame_cost(item)
+        return item
+
+
+async def _queue_frame(ws: WebSocket, inbox: asyncio.Queue, ended: asyncio.Future, msg) -> None:
+    """``inbox.put(msg)``, checking that the tab is still there while the inbox stays full.
+
+    A full inbox stops the reader taking frames. That backpressure bounds what a tab can queue, but
+    it also leaves the tab's close unread behind those frames, and short of reading them only a send
+    can find out that the connection is gone. So while the put waits, the tab gets an empty binary
+    frame (no output, which the client ignores) every ``_LIVENESS_PROBE_SECONDS``; attach has already
+    sent the replay, so it is never taken for one. A send that fails means the connection is gone:
+    ``ended`` is set, which cancels a write waiting on the program, and the put goes on waiting
+    unprobed.
+    """
+    while not ended.done():
+        try:
+            return await asyncio.wait_for(inbox.put(msg), _LIVENESS_PROBE_SECONDS)
+        except TimeoutError:
+            pass
+        try:
+            await asyncio.wait_for(ws.send_bytes(b""), _VIEWER_SEND_TIMEOUT_SECONDS)
+        except _VIEWER_SEND_ERRORS:
+            ended.set_result(None)
+    await inbox.put(msg)
+
+
 async def _read_frames(ws: WebSocket, inbox: asyncio.Queue, ended: asyncio.Future) -> None:
     """Queue inbound frames. The last item is None, or the error that ended reading
     (re-raised by ``_pump_input`` so the route's handlers still see it). ``ended`` gets the same
-    item as soon as reading ends, before it is queued: a write waiting on the shell, or a full
-    inbox behind it, must not keep the pump from seeing that the socket is gone."""
+    item as soon as reading ends, before it is queued, or None as soon as a full inbox finds the
+    socket gone (``_queue_frame``): a write waiting on the shell, or a full inbox behind it, must
+    not keep the pump from seeing that the socket is gone."""
     end = None
     try:
         while (msg := await ws.receive()).get("type") != "websocket.disconnect":
-            await inbox.put(msg)
+            await _queue_frame(ws, inbox, ended, msg)
     except RuntimeError:  # a superseding/drain task already closed us
         pass
     # health: allow BLE001 -- forwarded, not swallowed: _pump_input re-raises it, and a reader that died unqueued would hang the pump
     except Exception as exc:
         end = exc
-    ended.set_result(end)
+    if not ended.done():
+        ended.set_result(end)
     await inbox.put(end)
 
 
@@ -316,21 +441,38 @@ async def _write_while_open(session: PtySession, ws: WebSocket, data: bytes, fen
 
 def _input_runs(frames: list[dict], resize_re):
     """``frames`` in order: consecutive keystrokes joined into one run, resizes as ``(cols, rows)``."""
-    run = b""
+    run: list[bytes] = []  # joined once: a batch can hold megabytes of pasted input
     for msg in frames:
-        raw = msg.get("bytes")
-        if raw is None:
-            raw = (msg.get("text") or "").encode("utf-8")
+        raw = _frame_payload(msg)
         match = resize_re.fullmatch(raw) if raw else None
         if match is None:
-            run += raw
+            if raw:
+                run.append(raw)
             continue
         if run:
-            yield run
-            run = b""
+            yield b"".join(run)
+            run = []
         yield int(match[1]), int(match[2])
     if run:
-        yield run
+        yield b"".join(run)
+
+
+async def _resize(session: PtySession, ws: WebSocket, size: tuple[int, int], undo):
+    """Apply ``size``; return what the next resize needs to tell whether it undoes this one.
+
+    A program can read the size well after its SIGWINCH (Node, behind its event loop, and reports a
+    'resize', which Hermes' TUI redraws on, only when the size it reads has changed). A step undone
+    before it looks is never seen: both signals find the size it already had. So a resize back to
+    the size before the previous one first waits until the program has written output since that
+    one, as a program that redraws on a resize does, or ``_RESIZE_ANSWER_SECONDS`` for one that
+    does not. ``undo`` is ``(size before the previous resize, outputs when it was applied)``, set
+    only when that resize changed the size.
+    """
+    if undo is not None and undo[0] == size:
+        await session.wait_for_output(undo[1], _RESIZE_ANSWER_SECONDS)
+    before = session.size()
+    session.resize(ws, cols=size[0], rows=size[1])
+    return (before, session.outputs) if before is not None and before != size else None
 
 
 async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
@@ -352,9 +494,10 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
     buffers input itself, so Windows writes land at once and keep the bridge's deadline.
     """
     from hermes_cli.web_server_chat import _RESIZE_RE
-    inbox: asyncio.Queue = asyncio.Queue(maxsize=_INPUT_BATCH_FRAMES)
+    inbox: asyncio.Queue = _InputQueue()
     ended = asyncio.get_running_loop().create_future()
     reader = asyncio.create_task(_read_frames(ws, inbox, ended))
+    undo = None
     try:
         # No Ctrl-L/redraw input: arbitrary foreground shell programs own stdin.
         while session._ws is ws and session.alive:
@@ -364,7 +507,7 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
             frames = [msg for msg in batch if isinstance(msg, dict)]
             for item in _input_runs(frames, _RESIZE_RE):
                 if isinstance(item, tuple):
-                    session.resize(ws, cols=item[0], rows=item[1])
+                    undo = await _resize(session, ws, item, undo)
                     continue
                 try:
                     delivered = await _write_while_open(session, ws, item, owner.admit, ended)
@@ -397,6 +540,7 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
 
 async def host_terminal(ws: WebSocket) -> None:
     """Called only after both the existing WS gate and host policy have passed."""
+    from hermes_cli.pty_session import WS_CLOSE_PROCESS_EXITED, WS_CLOSE_PROCESS_EXITED_REASON
     from hermes_cli.web_server_chat import _pty_fail
     session = None
     try:
@@ -419,6 +563,9 @@ async def host_terminal(ws: WebSocket) -> None:
         await _pump_input(ws, registry, token, session, owner)
     except TerminalDenied:
         await ws.close(code=4403, reason="Terminal belongs to another identity or profile")
+    except TerminalExited:
+        # The same close an attached tab gets when its shell exits: the tab closes too.
+        await ws.close(code=WS_CLOSE_PROCESS_EXITED, reason=WS_CLOSE_PROCESS_EXITED_REASON)
     except (TerminalExpired, FileNotFoundError, HTTPException):
         await ws.close(code=4410, reason="Terminal or profile expired; open a new terminal")
     except RegistryFull:

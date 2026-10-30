@@ -184,6 +184,8 @@ class MoaConfigPayload(_MoaReferenceControls):
 class FsWriteText(BaseModel):
     path: str
     content: str
+    #: The session the file was read for: its /workspace is that session's sandbox.
+    session_id: Optional[str] = None
 
 class GitPathBody(BaseModel):
     path: str
@@ -341,6 +343,11 @@ class CronJobCreate(BaseModel):
     enabled_toolsets: Optional[list[str]] = None
     workdir: Optional[str] = None
     no_agent: bool = False
+    # Validated in cron.jobs.create_job (unknown IANA zone / out-of-range grace -> 400).
+    timezone: Optional[str] = None
+    grace_minutes: Optional[int | str] = None
+    # Missed-run policy: true runs one catch-up, false skips; omitted follows the default.
+    catch_up: Optional[StrictBool] = None
 
 class CronJobUpdate(BaseModel):
     updates: dict

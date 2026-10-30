@@ -809,3 +809,32 @@ export function sessionReadOwnerPin(id: string, profile?: ProfileScope): { conne
     ...(profile == null && ownerProfile ? { profile: ownerProfile } : {})
   }
 }
+
+/** The backend a gateway FILE request naming session `id` must go to: the owner's
+ *  backend-facing profile, plus its connection when that is not the ambient one.
+ *  Null when no owner profile is known. A file route looks `session_id` up in
+ *  the profile the request names, so the id must never travel with another
+ *  profile: a caller that gets null names no session at all. */
+export function sessionFileOwnerScope(id: string): { connectionId?: string; profile: string } | null {
+  const owner = _sessionOwnerResolver?.(id)
+
+  if (!owner) {
+    return null
+  }
+
+  if (typeof owner === 'string') {
+    const profile = owner.trim()
+
+    return profile ? { profile } : null
+  }
+
+  const profile = String(owner.targetProfile || owner.profile || '').trim()
+
+  if (!profile) {
+    return null
+  }
+
+  const connectionId = String(owner.connectionId ?? '').trim()
+
+  return connectionId && connectionId !== (ambientOwnerConnectionId() ?? 'local') ? { connectionId, profile } : { profile }
+}

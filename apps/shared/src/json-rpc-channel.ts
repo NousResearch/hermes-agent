@@ -170,6 +170,10 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000
 export const DEFAULT_HEARTBEAT_DEADLINE_MS = 45_000
 const MAX_OUTSTANDING_PINGS = 8
+// A tick that lands this many intervals late ran behind a local stall (frozen
+// renderer, intensive throttling, OS suspend): the gap says nothing about the
+// peer, so the deadline is not judged on it alone.
+const LATE_TICK_INTERVALS = 1.5
 
 // Hoisted decoder: attach mode can drive high-frequency binary frames (tool
 // deltas, reasoning streams) and a fresh TextDecoder per message is avoidable
@@ -562,6 +566,14 @@ export class JsonRpcRequestChannel {
     // throttling), so the previous ping's pong is ~60 s old at every tick;
     // a deadline on its age alone dropped every idle hidden socket.
     let lastPingAt = 0
+    let lastTickAt = Date.now()
+    let previousTickLate = false
+    // One probe per silence episode: a one-off late tick (an on-time tick, then
+    // a stall) cannot tell local suspension from a dead peer, so it re-probes
+    // once instead of dropping a socket whose pong is still queued behind the
+    // stall. Steady throttling makes every tick late; that is not a stall, and
+    // its dead-socket detection stays two throttled ticks.
+    let graceProbeSent = false
 
     this.heartbeatTimer = setInterval(() => {
       if (this.transport !== transport) {
@@ -569,11 +581,26 @@ export class JsonRpcRequestChannel {
       }
 
       const now = Date.now()
+      const late = now - lastTickAt >= this.options.heartbeatIntervalMs * LATE_TICK_INTERVALS
+      const stalled = late && !previousTickLate
 
-      if (lastPingAt > this.lastLivenessAt && now - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
-        this.failHeartbeat(new Error('WebSocket heartbeat acknowledgement timed out'))
+      lastTickAt = now
+      previousTickLate = late
 
-        return
+      const unanswered = lastPingAt > this.lastLivenessAt
+
+      if (!unanswered) {
+        graceProbeSent = false
+      }
+
+      if (unanswered && now - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
+        if (!stalled || graceProbeSent) {
+          this.failHeartbeat(new Error('WebSocket heartbeat acknowledgement timed out'))
+
+          return
+        }
+
+        graceProbeSent = true
       }
 
       const id = `heartbeat-${++this.heartbeatSequence}`

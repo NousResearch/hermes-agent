@@ -126,7 +126,7 @@ async def respond_run(adapter, run_id, body, *, kind):
     ref = SessionRef(authority.profile_id, row['target_session_id'])
     actor = Principal('api', authority.profile_id,
         frozenset({'session:read', 'session:approve', 'session:respond'}), 'api-control:' + uuid.uuid4().hex)
-    snapshot = await authority.attach(actor, ref)
+    snapshot = await authority.attach(actor, ref, history=False)  # prompts only
     try:
         if not any(p['prompt_id'] == prompt_id and p['kind'] == kind for p in snapshot.prompts):
             raise RuntimeStoreError('approval_not_pending')

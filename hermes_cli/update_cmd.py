@@ -586,6 +586,7 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
 
     child_env = dict(os.environ if env is None else env)
     child_env.setdefault("PYTHONUNBUFFERED", "1")
+    # detached-spawn: ok — awaited update step; a cancel tree-kills its group (kill_process_tree)
     spawn = {"creationflags": windows_hide_flags()} if os.name == "nt" else {"process_group": 0}
     proc = subprocess.Popen(
         cmd, cwd=cwd, env=child_env, stdin=subprocess.DEVNULL,
@@ -788,6 +789,8 @@ def _complete_source_update(request: dict | None) -> None:
     from copy import deepcopy
     _completion_receipt.record_stage(
         "apply", "skipped" if request.get("completion_message") else "success", mode=request.get("apply_mode", "git"))
+    from hermes_cli.update_stage import publish_stage
+    publish_stage("Updating dependencies")  # the completion below starts with the dependency sync
     current = _completion_receipt._current.get()
     if current is not None:
         request["receipt"] = deepcopy(current.data)
@@ -1806,6 +1809,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # declare this local, so only they hand off through retired shims.
     _hermes_current_updater_frame = True
     _commit.begin_update_attempt()  # nothing an earlier update in this process armed is ours (O5)
+    from hermes_cli.update_proxy_env import prefer_dotenv_proxy_env
+    prefer_dotenv_proxy_env()  # the .env loaded at import beats a system proxy the Desktop injected
     git_operation = git_operation_in_progress(_m().PROJECT_ROOT)
     if git_operation:
         root = _m().PROJECT_ROOT
@@ -1840,6 +1845,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
     _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
     _record_snapshot_stage(args, pre_update_snapshot_id)
+    from hermes_cli.update_stage import publish_stage
+    publish_stage("Downloading updates")  # a failed backup never stops the update
 
     _windows_gateway_resume = _pause_gateways_for_update(opts)
     if _windows_gateway_resume:
@@ -1923,6 +1930,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                          if "No space left on device" in (fetch_result.stderr or "") else "fetch_failed")
             sys.exit(1)
 
+        _check.fetch_release_tag(git_cmd, _m().PROJECT_ROOT, completion_request)
         current_branch = _current_branch_name(git_cmd, check=True)
         _commit.record_run_start(git_cmd, _m().PROJECT_ROOT)
         held_message = None

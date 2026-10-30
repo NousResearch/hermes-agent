@@ -307,10 +307,8 @@ class GatewayAgentCacheMixin:
         state = self._peek_session_state(session_key)
         if state is not None:
             if state.turn.lease is not None:
-                try:
-                    state.turn.lease.release()
-                except Exception:
-                    logger.debug("Failed to release active session slot", exc_info=True)
+                from gateway.active_lease_io import release_soon
+                release_soon(state.turn.lease)
             # One structured reset instead of a drifting pop-list. Turn-lease tokens are deliberately NOT
             # cleared here — _release_turn_lease owns them.
             state.turn.clear()

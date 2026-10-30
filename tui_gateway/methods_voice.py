@@ -363,7 +363,7 @@ def _voice_cfg_dict() -> dict:
 
     ``_load_cfg()`` does not deep-merge DEFAULT_CONFIG, so both the root AND ``voice`` may be any YAML
     scalar / list / None. A hand-edit like ``voice: true`` or a malformed top-level config that parses to a
-    scalar would otherwise break ``.get("…")`` and take every ``voice.*`` branch down with it (Copilot
+    scalar would otherwise break ``.get("…")`` and take every ``voice.*`` branch down with it (review
     round-3..7 review on 19835). Coerce through ``isinstance`` at every level so malformed config falls back
     to an empty dict instead of crashing /voice. See #19835.
     """
@@ -504,6 +504,7 @@ def _wake_detect_handler(transport, sid: str, phrase: str, new_session: bool):
         try:
             _emit("wake.detected", sid, {
                 "phrase": matched_phrase or phrase, "profile": matched_profile or None,
+                # detached-spawn: ok — not a spawn: a wake.detected event field
                 "start_new_session": new_session})
         finally:
             reset_transport(token)
@@ -848,7 +849,7 @@ def _(rid, params: dict) -> dict:
         # Shape-safe lookups: malformed ``voice:`` YAML (bool/scalar/list) must not crash /voice with a 5025
         # — fall back to VAD defaults. Exclude ``bool`` from the numeric check since Python's bool is a
         # subclass of int — a hand-edit like ``silence_threshold: true`` would otherwise forward as ``1``
-        # instead of falling back to the documented 200 / 3.0 defaults (Copilot round-12 on #19835).
+        # instead of falling back to the documented 200 / 3.0 defaults (review round-12 on #19835).
         voice_cfg = _voice_cfg_dict()
         max_rec = _voice_cfg_number(voice_cfg.get("max_recording_seconds"), 120.0)
         # Hand the mic to STT if the wake detector holds it; a terminal capture event resumes it.

@@ -75,6 +75,20 @@ def test_global_setting_stays_the_default_for_jobs_without_their_own(home):
     assert [r["status"] for r in _ledger(job["id"])] == ["missed"]
 
 
+def test_explicit_grace_skips_past_it_unless_the_job_opts_into_catch_up(home):
+    capped = jobs.create_job(prompt="brief", schedule="* * * * *", deliver="local", grace_minutes=5)
+    opted = jobs.create_job(prompt="scan", schedule="* * * * *", deliver="local",
+                            grace_minutes=5, catch_up=True)
+    slot = (jobs._hermes_now() - timedelta(minutes=20)).replace(second=0, microsecond=0)
+    stored = jobs.load_jobs()
+    for row in stored:
+        row["next_run_at"] = slot.isoformat()
+    jobs.save_jobs(stored)
+
+    assert [j["id"] for j in jobs.get_due_jobs()] == [opted["id"]]
+    assert [r["status"] for r in _ledger(capped["id"])] == ["missed"]
+
+
 def test_one_shot_past_grace_skips_by_default_and_fires_once_when_opted_in(home):
     run_at = (jobs._hermes_now() + timedelta(hours=1)).isoformat()
     skipped = jobs.create_job(prompt="stale reminder", schedule=run_at, deliver="local")

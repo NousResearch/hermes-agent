@@ -150,29 +150,24 @@ class GatewayKanbanWatchersMixin:
         self._kanban_sub_op(board, "rewind_notify_cursor", sub, claimed_cursor=claimed_cursor, old_cursor=old_cursor)
 
     async def _deliver_kanban_artifacts(self, *, adapter, chat_id: str, metadata: dict, event_payload: Optional[dict], task) -> None:
-        """Upload artifact files referenced by a completed kanban task.
+        """Upload the artifact files a completed kanban task explicitly declared.
 
-        Sources, in priority order: ``event_payload['artifacts']``,
-        ``event_payload['summary']``, then ``task.result`` (legacy). Paths are
-        deduplicated, missing files are skipped (may be mentioned for
-        reference only), and upload errors are logged, never raised.
+        Only ``event_payload['artifacts']`` authorizes an upload. That list is written by the
+        board's own staging step, so a path in it is a declaration the task made.
+
+        Worker prose is deliberately NOT a source: ``event_payload['summary']`` and
+        ``task.result`` are free text, and a path mentioned there would otherwise let any
+        worker (or an injection inside its output) cause an existing host file to be uploaded
+        to the chat. Prose can still *describe* a file; it cannot authorize sending one.
+
+        Paths are deduplicated, missing files are skipped, and upload errors are logged,
+        never raised.
         """
         raw_paths: list[str] = []
-        prose_paths: list[str] = []
         if isinstance(event_payload, dict):
             raw = event_payload.get("artifacts")
             if isinstance(raw, (list, tuple)):
                 raw_paths += [item for item in raw if isinstance(item, str)]
-            summary = event_payload.get("summary")
-            if isinstance(summary, str) and summary:
-                prose_paths += adapter.extract_local_files(summary)[0]
-        if task is not None and getattr(task, "result", None):
-            prose_paths += adapter.extract_local_files(str(task.result))[0]
-        # A staged copy and the scratch original it was copied from are the
-        # same deliverable; on a review handoff the original still exists, so
-        # prose mentions of it must not upload the file a second time.
-        staged_names = {os.path.basename(p) for p in raw_paths}
-        raw_paths += [p for p in prose_paths if os.path.basename(p) not in staged_names]
         candidates: list[str] = []
         for path in raw_paths:
             expanded = os.path.expanduser(path) if path else ""

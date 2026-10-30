@@ -59,12 +59,19 @@ export function onBrowserWindowKindChange(listener: () => void): () => void {
 type Bindings = Record<string, string[]>
 
 /** Moves every binding still on its old shipped default onto the new one; a
- *  user's own rebind (anything else, including a cleared binding) stays. */
-export function rebaseShippedDefaults(bindings: Bindings, previous: Bindings, next: Bindings): Bindings {
+ *  user's own rebind (anything else, including a cleared binding) stays, and
+ *  so does any id `keep` claims. Value equality alone cannot tell a rebind
+ *  from a default: a rebind to Alt+W in an app window IS the tab default. */
+export function rebaseShippedDefaults(
+  bindings: Bindings,
+  previous: Bindings,
+  next: Bindings,
+  keep: (id: string, combos: string[]) => boolean = () => false
+): Bindings {
   const out = { ...bindings }
 
   for (const [id, combos] of Object.entries(next)) {
-    if (!arraysEqual(out[id] ?? [], previous[id] ?? []) || arraysEqual(out[id] ?? [], combos)) {
+    if (!arraysEqual(out[id] ?? [], previous[id] ?? []) || arraysEqual(out[id] ?? [], combos) || keep(id, combos)) {
       continue
     }
 
@@ -77,14 +84,15 @@ export function rebaseShippedDefaults(bindings: Bindings, previous: Bindings, ne
 /** Keeps `store`'s defaults on the current window kind. */
 export function followBrowserWindowKind(
   store: { get(): Bindings; set(value: Bindings): void },
-  defaults: () => Bindings
+  defaults: () => Bindings,
+  keep?: (id: string, combos: string[]) => boolean
 ): () => void {
   let shipped = defaults()
 
   return onBrowserWindowKindChange(() => {
     const next = defaults()
     const current = store.get()
-    const rebased = rebaseShippedDefaults(current, shipped, next)
+    const rebased = rebaseShippedDefaults(current, shipped, next, keep)
 
     shipped = next
 

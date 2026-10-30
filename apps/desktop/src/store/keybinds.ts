@@ -38,6 +38,12 @@ function readStoredOverrides(): Record<string, string[]> {
 
 const storedOverrides = readStoredOverrides()
 
+// Actions the user set themselves. A display-mode change moves shipped
+// defaults (Ctrl+W in an app window, Alt+W in a tab) and must never move
+// these, even when the user's combo equals the other mode's default. Every
+// stored entry is one: older builds stored exactly the rebinds.
+const explicitIds = new Set(Object.keys(storedOverrides))
+
 // Defaults overlaid with the user's stored overrides. Unknown / stale action
 // ids are dropped; actions added in a later release pick up their shipped
 // default; late-registered contributed actions resolve via `bindingsFor`.
@@ -55,8 +61,10 @@ function loadBindings(): KeybindBindings {
   return base
 }
 
-// Persist only the actions whose combos differ from their shipped default, so
-// changing a default never gets shadowed by a stored snapshot.
+// Persist the user's own bindings and nothing that still follows a shipped
+// default, so changing a default never gets shadowed by a stored snapshot. A
+// user binding is kept even while it equals the current default: it is the
+// other window kind's default too, and storing a diff would drop it.
 function persistBindings(bindings: KeybindBindings, options: WriteOptions): void {
   const defaults = defaultBindings()
   const diff: KeybindBindings = {}
@@ -64,7 +72,7 @@ function persistBindings(bindings: KeybindBindings, options: WriteOptions): void
   for (const action of allKeybindActions()) {
     const current = bindings[action.id] ?? []
 
-    if (!arraysEqual(current, defaults[action.id] ?? [])) {
+    if (explicitIds.has(action.id) || !arraysEqual(current, defaults[action.id] ?? [])) {
       diff[action.id] = current
     }
   }
@@ -88,8 +96,26 @@ export const $bindings = atom<KeybindBindings>(loadBindings())
 
 persistStore($bindings, persistBindings, defaultBindings())
 
+// A default move that would land on a chord the user gave another action is
+// skipped, so the user's binding is not silently shadowed; the action keeps
+// its combo as a saved one, or a reload would bring the collision back.
+function keepOffUserChords(id: string, combos: string[]): boolean {
+  if (explicitIds.has(id)) {
+    return true
+  }
+
+  const bindings = $bindings.get()
+  const taken = combos.some(combo => conflictsFor(id, combo, bindings).some(other => explicitIds.has(other)))
+
+  if (taken) {
+    explicitIds.add(id)
+  }
+
+  return taken
+}
+
 // "Open in Chrome" turns an app window into a tab without a reload.
-followBrowserWindowKind($bindings, defaultBindings)
+followBrowserWindowKind($bindings, defaultBindings, keepOffUserChords)
 
 /** Live combos for an action: explicit binding → stored override → default. */
 export function bindingsFor(id: string, bindings: KeybindBindings = $bindings.get()): string[] {
@@ -121,8 +147,17 @@ export const $comboIndex = computed([$bindings, $registryVersion], bindings => {
 })
 
 export function setBinding(actionId: string, combos: string[]): void {
-  if (!keybindAction(actionId)) {
+  const action = keybindAction(actionId)
+
+  if (!action) {
     return
+  }
+
+  // Picking the current default again is a reset, not a pin.
+  if (arraysEqual(combos, [...action.defaults])) {
+    explicitIds.delete(actionId)
+  } else {
+    explicitIds.add(actionId)
   }
 
   $bindings.set({ ...$bindings.get(), [actionId]: [...combos] })
@@ -140,18 +175,19 @@ export function resetBinding(actionId: string): void {
     return
   }
 
+  explicitIds.delete(actionId)
   $bindings.set({ ...$bindings.get(), [actionId]: [...action.defaults] })
 }
 
 export function resetAllBindings(): void {
+  explicitIds.clear()
   $bindings.set(defaultBindings())
 }
 
 // Other actions that already use `combo` (excluding `actionId` itself). A
 // `passthrough` action layered over a later one shares the chord by design,
 // so that pair is not reported from either side.
-export function conflictsFor(actionId: string, combo: string): string[] {
-  const bindings = $bindings.get()
+export function conflictsFor(actionId: string, combo: string, bindings = $bindings.get()): string[] {
   const actions = allKeybindActions()
   const self = actions.findIndex(action => action.id === actionId)
 

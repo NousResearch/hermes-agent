@@ -109,6 +109,42 @@ it('follows a live display-mode change and leaves a user rebind alone', async ()
   expect($bindings.get()['view.closeTab']).toEqual(['mod+shift+q'])
 })
 
+it('keeps a rebind that equals the other window kind\'s default across flips and a reload', async () => {
+  setPlatform('Win32')
+  const moveTo = stubDisplayMode('standalone')
+  const { bindingsFor, setBinding } = await import('@/store/keybinds')
+
+  setBinding('view.closeTab', ['alt+w'])
+  moveTo('browser')
+  moveTo('standalone')
+
+  expect(bindingsFor('view.closeTab')).toEqual(['alt+w'])
+
+  vi.resetModules()
+  const reloaded = await import('@/store/keybinds')
+
+  expect(reloaded.bindingsFor('view.closeTab')).toEqual(['alt+w'])
+})
+
+it('skips a default move onto a chord the user gave another action', async () => {
+  setPlatform('Win32')
+  const moveTo = stubDisplayMode('standalone')
+  const { $comboIndex, bindingsFor, conflictsFor, setBinding } = await import('@/store/keybinds')
+
+  setBinding('session.focusSearch', ['alt+n'])
+  moveTo('browser')
+
+  expect($comboIndex.get().get('alt+n')).toEqual(['session.focusSearch'])
+  expect(bindingsFor('session.new')).toEqual(['mod+n'])
+  expect(conflictsFor('session.focusSearch', 'alt+n')).toEqual([])
+  expect(bindingsFor('session.next')).toEqual(['alt+]'])
+
+  vi.resetModules()
+  const reloaded = await import('@/store/keybinds')
+
+  expect(reloaded.$comboIndex.get().get('alt+n')).toEqual(['session.focusSearch'])
+})
+
 it('a non-Chromium web-app window keeps the browser-tab defaults', async () => {
   setPlatform('Win32')
   setUserAgent(FIREFOX_UA)

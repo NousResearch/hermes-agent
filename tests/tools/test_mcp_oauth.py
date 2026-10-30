@@ -836,6 +836,23 @@ class TestNonInteractiveFailFastAtCallbackBoundary:
         err = capsys.readouterr().err
         assert "https://idp.example.com/authorize" not in err
 
+    def test_redirect_handler_rejects_when_another_session_owns_browser_oauth(self, monkeypatch, capsys):
+        """Only one interactive Hermes process may own the MCP OAuth browser step per profile."""
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        monkeypatch.setattr(mod, "_try_acquire_interactive_oauth_lock", lambda: None)
+        monkeypatch.setattr(
+            "webbrowser.open", MagicMock(side_effect=AssertionError("must not open browser"))
+        )
+
+        with pytest.raises(OAuthNonInteractiveError, match="Another Hermes session"):
+            asyncio.run(mod._make_redirect_handler(49301)("https://idp.example.com/authorize?x=2"))
+
+        err = capsys.readouterr().err
+        assert "https://idp.example.com/authorize" not in err
+
     def test_guard_does_not_fire_on_interactive_redirect(self, monkeypatch, capsys):
         """Positive control: the fail-fast guard is scoped to the auth-code path.
 

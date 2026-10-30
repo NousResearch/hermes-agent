@@ -520,10 +520,13 @@ def _find_literal_path_expressions(roots: list[str]) -> list[str]:
 
 
 def _diagnostic_safe_root(root: str) -> str:
-    """``./``-anchor a relative root named like engine stderr (``rg: data``). Every
-    result line starts with the root, and the lanes tell stderr from results by these
-    prefixes, so such a root would turn all of its own results into diagnostics."""
-    return f"./{root}" if root.lstrip().startswith(_DIAGNOSTIC_PREFIXES) else root
+    """``./``-anchor a relative root that the engines would misread: one named like
+    engine stderr (``rg: data``; every result line starts with the root, and the lanes
+    tell stderr from results by these prefixes), one led by whitespace (its result
+    lines get split like stderr), and one led by ``-`` (parsed as an option)."""
+    if root[:1].isspace() or root.startswith("-") or root.lstrip().startswith(_DIAGNOSTIC_PREFIXES):
+        return f"./{root}"
+    return root
 
 
 _ERROR_DETAIL_CHARS = 2000
@@ -749,10 +752,6 @@ class SearchMixin:
         cwd = getattr(self.env, "cwd", None) or self.cwd
         return _macos_protected_search_exclusions(path, cwd=cwd, home=_fo._HOME, platform=sys.platform)
 
-    def _protected_prune_paths(self, path: str) -> list[str]:
-        """Absolute-ish protected paths for find's ``-path ... -prune``."""
-        return [os.path.normpath(os.path.join(path, item)) for item in self._macos_search_exclusions(path)]
-
     def _effective_macos_search_exclusions(self, roots: list[str]) -> list[tuple[str, str, str]]:
         """Unique ``(root, relative, absolute)`` exclusions across ``roots``, never
         pruning a root the caller chose explicitly."""
@@ -957,7 +956,8 @@ class SearchMixin:
             else:
                 glob_expr_probe = glob_expr
             probe_words = [rg, flags, "--count-matches", glob_expr_probe,
-                           self._escape_shell_arg(pattern, translate_path=False), self._escape_native_tool_arg(path)]
+                           self._escape_shell_arg(pattern, translate_path=False),
+                           self._escape_native_tool_arg(_diagnostic_safe_root(path))]
             probe = self._run_rg_bounded(probe_words, 50, timeout=30)
             total, per_file = 0, []
             for line in (probe.stdout or "").strip().splitlines():
@@ -1168,7 +1168,7 @@ class SearchMixin:
         # still allowing an explicitly selected hidden root. ``./`` keeps dash-prefixed
         # roots from parsing as options and roots named like stderr (``find: x``) from
         # reading as diagnostics.
-        find_roots = [f"./{root}" if root.startswith("-") else _diagnostic_safe_root(root) for root in roots]
+        find_roots = [_diagnostic_safe_root(root) for root in roots]
         q_roots = [self._escape_shell_arg(root) for root in find_roots]
         hidden_prune = f" {self._hidden_prune_expr(q_roots)} -o"
         protected_paths = [absolute for _r, _rel, absolute in self._effective_macos_search_exclusions(roots)]
@@ -1435,13 +1435,13 @@ class SearchMixin:
         """Fallback search using grep."""
         # grep's --exclude-dir matches BASENAMES anywhere, so it can't express "only
         # the home-level Downloads"; route pruning through find's path-scoped -prune.
-        protected_paths = self._protected_prune_paths(path)
+        exclusions = self._macos_search_exclusions(path)
         # grep applies --exclude-dir='.*' to the command-line root too (GNU grep: to
         # every component of it), so a search rooted under a hidden dir such as
         # ~/.hermes returns nothing (#18473); find's -prune only sees descendants.
-        if protected_paths or self._root_under_hidden_dir(path):
+        if exclusions or self._root_under_hidden_dir(path):
             return self._search_with_grep_pruned(
-                pattern, path, file_glob, limit, offset, output_mode, context, protected_paths)
+                pattern, path, file_glob, limit, offset, output_mode, context, exclusions)
         # -H forces filenames; -E matches rg regex behavior; --exclude-dir='.*'
         # mirrors rg's hidden-dir default (.git/, .hub/index-cache/, ...).
         cmd_parts = self._grep_cmd(["grep", "-rnHE", "--exclude-dir='.*'"], pattern, output_mode, context, file_glob)
@@ -1460,7 +1460,7 @@ class SearchMixin:
 
     def _search_with_grep_pruned(self, pattern: str, path: str, file_glob: Optional[str],
                                  limit: int, offset: int, output_mode: str, context: int,
-                                 protected_paths: list[str]) -> SearchResult:
+                                 exclusions: list[str]) -> SearchResult:
         """grep fallback via ``find ... -prune -exec grep {} +``, used when the root needs
         path-scoped pruning (macOS protected dirs) or is itself under a dot-directory
         (#18473: grep's ``--exclude-dir='.*'`` would drop the root). Trade-off: find folds
@@ -1468,10 +1468,10 @@ class SearchMixin:
         grep_parts = self._grep_cmd(["grep", "-nHE"], pattern, output_mode, context)
         find_root = _diagnostic_safe_root(path or ".")
         q_root = self._escape_shell_arg(find_root)
-        if find_root != (path or "."):
-            # find prints descendants under the anchored ``./<root>`` spelling, so the
-            # protected ``-path`` predicates must use it too or they never match.
-            protected_paths = [f"./{item}" for item in protected_paths]
+        # find prints descendants under the operand exactly as given (``./x``, an
+        # anchored ``./ Work``), so the ``-path`` predicates are built on that operand;
+        # a normalized spelling (``Downloads`` for root ``.``) never matches.
+        protected_paths = [posixpath.join(find_root, rel) for rel in exclusions]
         # ``-H``: follow a symlink handed in as the OPERAND (and only the operand). Without
         # it ``find <link> -type f`` tests the link itself and hands grep nothing, so a
         # symlinked root answered a confident ``total_count: 0`` on every platform (#116270).

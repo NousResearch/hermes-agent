@@ -122,10 +122,11 @@ def test_auth_add_anthropic_oauth_persists_pool_entry(tmp_path, monkeypatch):
 
     payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     entries = payload["credential_pool"]["anthropic"]
-    entry = next(item for item in entries if item["source"] == "manual:hermes_pkce")
+    entry = next(item for item in entries if item["source"] == "hermes_pkce_shared")
+    assert "access_token" not in entry
+    assert "refresh_token" not in entry
     assert entry["label"] == "claude@example.com"
-    assert entry["source"] == "manual:hermes_pkce"
-    assert entry["refresh_token"] == "refresh-token"
+    assert entry["source"] == "hermes_pkce_shared"
     assert entry["expires_at_ms"] == 1711234567000
 
 

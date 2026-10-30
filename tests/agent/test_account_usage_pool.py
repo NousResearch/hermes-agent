@@ -88,7 +88,7 @@ def test_pool_usage_reuses_snapshot_cache_per_credential(monkeypatch):
     assert calls == ["token-success"]
 
 
-def test_pool_usage_reuses_unavailable_snapshot_cache_per_credential(monkeypatch):
+def test_pool_usage_does_not_cache_unavailable_snapshot_per_credential(monkeypatch):
     entries = [{"id": "a", "label": "work", "access_token": "token-unavailable", "source": "manual"}]
     monkeypatch.setattr("hermes_cli.auth.read_credential_pool", lambda provider: entries)
     monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "token-unavailable")
@@ -103,12 +103,12 @@ def test_pool_usage_reuses_unavailable_snapshot_cache_per_credential(monkeypatch
     first = account_usage.fetch_pool_account_usage("anthropic")
     second = account_usage.fetch_pool_account_usage("anthropic")
 
-    assert calls == ["token-unavailable"]
+    assert calls == ["token-unavailable", "token-unavailable"]
     assert first[0].snapshot.available is False
     assert second[0].snapshot is snapshot
 
 
-def test_pool_usage_caches_none_as_unavailable_snapshot(monkeypatch):
+def test_pool_usage_does_not_cache_none_as_unavailable_snapshot(monkeypatch):
     entries = [{"id": "a", "label": "work", "access_token": "token-none", "source": "manual"}]
     monkeypatch.setattr("hermes_cli.auth.read_credential_pool", lambda provider: entries)
     monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "token-none")
@@ -122,10 +122,31 @@ def test_pool_usage_caches_none_as_unavailable_snapshot(monkeypatch):
     first = account_usage.fetch_pool_account_usage("anthropic")
     second = account_usage.fetch_pool_account_usage("anthropic")
 
-    assert calls == ["token-none"]
+    assert calls == ["token-none", "token-none"]
     assert first[0].snapshot.available is False
     assert first[0].snapshot.unavailable_reason == "Usage lookup unavailable."
-    assert second[0].snapshot is first[0].snapshot
+    assert second[0].snapshot is not first[0].snapshot
+
+
+def test_shared_pkce_entry_hydrates_access_token_for_meter(monkeypatch):
+    entries = [{"id": "shared", "label": "team", "source": "hermes_pkce_shared"}]
+    monkeypatch.setattr("hermes_cli.auth.read_credential_pool", lambda provider: entries)
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: None)
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_shared_hermes_oauth_credentials",
+        lambda label: {"accessToken": "shared-meter-token"} if label == "team" else None,
+    )
+    seen = []
+    monkeypatch.setattr(
+        account_usage,
+        "fetch_account_usage",
+        lambda provider, *, api_key=None, base_url=None: seen.append(api_key) or _snapshot(),
+    )
+
+    readings = account_usage.fetch_pool_account_usage("anthropic")
+
+    assert seen == ["shared-meter-token"]
+    assert readings[0].fingerprint.startswith("sha256:")
 
 
 def test_pool_entries_sharing_stale_stored_fingerprint_do_not_share_cache(monkeypatch):
@@ -155,3 +176,24 @@ def test_pool_entries_sharing_stale_stored_fingerprint_do_not_share_cache(monkey
     assert [r.snapshot.unavailable_reason for r in readings] == ["from:tok-a", "from:tok-b"]
     assert readings[0].fingerprint != readings[1].fingerprint
     assert [r.active for r in readings] == [True, False]
+
+
+def test_usable_only_skips_dead_and_quota_exhausted_accounts(monkeypatch):
+    entries = [
+        {"id": "dead", "label": "dead", "access_token": "dead-token", "last_status": "dead"},
+        {"id": "quota", "label": "quota", "access_token": "quota-token", "last_status": "exhausted", "last_error_code": 429},
+        {"id": "worker-error", "label": "worker-error", "access_token": "worker-token", "last_status": "exhausted", "last_error_code": 400},
+    ]
+    monkeypatch.setattr("hermes_cli.auth.read_credential_pool", lambda provider: entries)
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "worker-token")
+    seen = []
+    monkeypatch.setattr(
+        account_usage,
+        "fetch_account_usage",
+        lambda provider, *, api_key=None, base_url=None: seen.append(api_key) or _snapshot(),
+    )
+
+    readings = account_usage.fetch_pool_account_usage("anthropic", usable_only=True)
+
+    assert [reading.label for reading in readings] == ["worker-error"]
+    assert seen == ["worker-token"]

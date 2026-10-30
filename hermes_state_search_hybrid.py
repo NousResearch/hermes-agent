@@ -5,6 +5,14 @@ always runs (the existing FTS/trigram ``search_messages`` path). Semantic search
 runs only when ``session_search.embedding_model`` is set; those two rankings are
 merged with reciprocal rank fusion. No model configured means fuzzy only — the
 semantic store is not read and no embedding call is made.
+
+Semantic hits honor the same ``source`` / ``exclude_sources`` filters as the
+fuzzy lane. Sidecar open/read failures degrade to the fuzzy ranking already
+computed — search never 500s solely because embeddings are unavailable.
+
+Indexing is incremental: each search embeds up to ``_INDEX_BATCH`` still-missing
+messages, walking ``messages.id`` newest-first past already-stored rows so older
+history is eventually covered rather than only the current tail window.
 """
 
 from __future__ import annotations
@@ -184,9 +192,29 @@ def _message_text(raw: Any) -> str:
     return text.strip()[:_EMBED_TEXT_CAP]
 
 
-def _recent_messages(db, limit: int) -> list[tuple[int, str]]:
+def _source_clause(source_filter=None, exclude_sources=None) -> tuple[str, list[Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if source_filter is not None:
+        allowed = list(source_filter)
+        if not allowed:
+            return "1=0", []
+        clauses.append(f"s.source IN ({','.join('?' for _ in allowed)})")
+        params.extend(allowed)
+    if exclude_sources is not None:
+        blocked = list(exclude_sources)
+        if blocked:
+            clauses.append(f"s.source NOT IN ({','.join('?' for _ in blocked)})")
+            params.extend(blocked)
+    if not clauses:
+        return "1=1", []
+    return " AND ".join(clauses), params
+
+
+def _unindexed_messages(db, have: set[int], limit: int) -> list[tuple[int, str, str]]:
+    """Newest-first unindexed user/assistant rows, paging past already-stored ids."""
     path = getattr(db, "db_path", None)
-    if not path:
+    if not path or limit <= 0:
         return []
     uri = f"file:{path}?mode=ro"
     try:
@@ -194,36 +222,70 @@ def _recent_messages(db, limit: int) -> list[tuple[int, str]]:
     except sqlite3.Error:
         logger.debug("session search index read failed", exc_info=True)
         return []
+    out: list[tuple[int, str, str]] = []
+    # Page deeper than the batch so already-indexed recent rows do not hide older
+    # still-missing history when embeddings are enabled after traffic has grown.
+    page = max(limit * 4, _INDEX_BATCH * 4)
+    before_id: Optional[int] = None
     try:
-        rows = conn.execute(
-            """
-            SELECT id, session_id, content FROM messages
-            WHERE role IN ('user', 'assistant') AND content IS NOT NULL AND content != ''
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-    except sqlite3.Error:
-        logger.debug("session search message scan failed", exc_info=True)
-        return []
+        while len(out) < limit:
+            if before_id is None:
+                sql = """
+                    SELECT id, session_id, content FROM messages
+                    WHERE role IN ('user', 'assistant')
+                      AND content IS NOT NULL AND content != ''
+                    ORDER BY id DESC
+                    LIMIT ?
+                """
+                params: list[Any] = [page]
+            else:
+                sql = """
+                    SELECT id, session_id, content FROM messages
+                    WHERE role IN ('user', 'assistant')
+                      AND content IS NOT NULL AND content != ''
+                      AND id < ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                """
+                params = [before_id, page]
+            try:
+                rows = conn.execute(sql, params).fetchall()
+            except sqlite3.Error:
+                logger.debug("session search message scan failed", exc_info=True)
+                return out
+            if not rows:
+                break
+            before_id = int(rows[-1][0])
+            for mid, sid, content in rows:
+                mid_i = int(mid)
+                if mid_i in have:
+                    continue
+                text = _message_text(content)
+                if text and sid:
+                    out.append((mid_i, str(sid), text))
+                    if len(out) >= limit:
+                        break
+            if len(rows) < page:
+                break
     finally:
         conn.close()
-    out = []
-    for mid, sid, content in rows:
-        text = _message_text(content)
-        if text and sid:
-            out.append((int(mid), str(sid), text))
     return out
 
 
-def _session_rows(db, session_ids: Sequence[str]) -> dict[str, dict]:
+def _session_rows(
+    db,
+    session_ids: Sequence[str],
+    *,
+    source_filter=None,
+    exclude_sources=None,
+) -> dict[str, dict]:
     if not session_ids:
         return {}
     path = getattr(db, "db_path", None)
     if not path:
         return {}
     placeholders = ",".join("?" for _ in session_ids)
+    source_sql, source_params = _source_clause(source_filter, exclude_sources)
     sql = f"""
         SELECT s.id AS session_id, s.source, s.model, s.started_at AS session_started,
                substr(m.content, 1, 240) AS snippet, m.role
@@ -231,17 +293,35 @@ def _session_rows(db, session_ids: Sequence[str]) -> dict[str, dict]:
         LEFT JOIN messages m ON m.id = (
             SELECT id FROM messages WHERE session_id = s.id ORDER BY id DESC LIMIT 1
         )
-        WHERE s.id IN ({placeholders})
+        WHERE s.id IN ({placeholders}) AND ({source_sql})
     """
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2.0)
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(sql, list(session_ids)).fetchall()
+        rows = conn.execute(sql, list(session_ids) + source_params).fetchall()
         conn.close()
     except sqlite3.Error:
         logger.debug("session search session hydrate failed", exc_info=True)
         return {}
     return {str(row["session_id"]): dict(row) for row in rows}
+
+
+def _filter_session_ids(
+    db,
+    session_ids: Sequence[str],
+    *,
+    source_filter=None,
+    exclude_sources=None,
+) -> list[str]:
+    if not session_ids or (source_filter is None and exclude_sources is None):
+        return list(session_ids)
+    allowed = _session_rows(
+        db,
+        session_ids,
+        source_filter=source_filter,
+        exclude_sources=exclude_sources,
+    )
+    return [sid for sid in session_ids if sid in allowed]
 
 
 def content_search_matches(
@@ -273,18 +353,37 @@ def content_search_matches(
         )
     )
     owned = index is None
-    store = index or EmbeddingIndex(db.db_path)
+    store = index
     try:
-        _index_batch(store, db, cfg["model"], embed_fn)
+        if store is None:
+            try:
+                store = EmbeddingIndex(db.db_path)
+            except Exception:
+                logger.debug("session search sidecar open failed; fuzzy only", exc_info=True)
+                return fuzzy
         try:
-            query_vec = embed_fn([query])[0]
+            _index_batch(store, db, cfg["model"], embed_fn)
+            try:
+                query_vec = embed_fn([query])[0]
+            except Exception:
+                logger.debug("session search query embed failed; fuzzy only", exc_info=True)
+                return fuzzy
+            semantic_sessions = store.ranked_sessions(cfg["model"], query_vec, max(limit * 4, limit))
         except Exception:
-            logger.debug("session search query embed failed; fuzzy only", exc_info=True)
+            logger.debug("session search sidecar read failed; fuzzy only", exc_info=True)
             return fuzzy
-        semantic_sessions = store.ranked_sessions(cfg["model"], query_vec, limit)
     finally:
-        if owned:
-            store.close()
+        if owned and store is not None:
+            try:
+                store.close()
+            except Exception:
+                logger.debug("session search sidecar close failed", exc_info=True)
+    semantic_sessions = _filter_session_ids(
+        db,
+        semantic_sessions,
+        source_filter=source_filter,
+        exclude_sources=exclude_sources,
+    )
     if not semantic_sessions:
         return fuzzy
     fuzzy_sessions: list[str] = []
@@ -297,18 +396,21 @@ def content_search_matches(
         fuzzy_sessions.append(sid)
     fused = rrf_fuse([fuzzy_sessions, semantic_sessions])[:limit]
     missing = [sid for sid in fused if sid not in by_session]
-    by_session.update(_session_rows(db, missing))
+    by_session.update(
+        _session_rows(
+            db,
+            missing,
+            source_filter=source_filter,
+            exclude_sources=exclude_sources,
+        )
+    )
     ordered = [by_session[sid] for sid in fused if sid in by_session]
     return ordered or fuzzy
 
 
 def _index_batch(store: EmbeddingIndex, db, model: str, embed_fn: EmbedFn) -> None:
     have = store.stored_ids(model)
-    pending = [
-        (mid, sid, text)
-        for mid, sid, text in _recent_messages(db, _INDEX_BATCH * 4)
-        if mid not in have
-    ][:_INDEX_BATCH]
+    pending = _unindexed_messages(db, have, _INDEX_BATCH)
     if not pending:
         return
     try:

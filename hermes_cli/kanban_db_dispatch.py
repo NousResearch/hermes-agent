@@ -362,11 +362,14 @@ UNVERIFIED_WORKER_FINGERPRINT = "unverified"
 
 
 def _process_fingerprint(pid: int) -> Optional[str]:
-    """Restart-stable identity of a live process: ``"<instantiation epoch>|<start time>"``. The start
-    time alone (``/proc/<pid>/stat`` field 22 on Linux) is clock ticks since THIS boot, so a row that
+    """Restart-stable identity of a live process: ``"<instantiation epoch>|<start time>"``. On Linux
+    the start time alone (``/proc/<pid>/stat`` field 22) is clock ticks since THIS boot, so a row that
     survives a reboot could match an unrelated process with the same PID and the same tick value;
     ``gateway.drain_control.current_instantiation_epoch`` (``boot_id`` + PID-1 start) changes on every
-    reboot / container recreate, so the composed value never survives one. ``None`` when unreadable."""
+    reboot / container recreate, so there the composed value never survives one. Without ``/proc``
+    (macOS, Windows) the epoch is ``""`` and the value is ``"|<start>"``: the start time is then the
+    kernel's absolute (epoch-based) process birth in centiseconds, which a post-reboot process cannot
+    repeat, so the start time carries the whole guarantee by itself. ``None`` when unreadable."""
     from gateway.drain_control import current_instantiation_epoch
     from gateway.status import get_process_start_time
     start = get_process_start_time(int(pid))
@@ -375,14 +378,63 @@ def _process_fingerprint(pid: int) -> Optional[str]:
     return f"{current_instantiation_epoch()}|{start}"
 
 
+# A live PID whose start time cannot be read right now (psutil ``ZombieProcess`` / ``AccessDenied``
+# under load on macOS, a torn ``/proc`` read on Linux) is re-read this many times before the verdict
+# becomes "unknown". Steady-state reads succeed first time, so the sweep pays nothing unless a read
+# fails; the bound keeps a run of failures from stalling the (write-locked) reclaim sweep.
+FINGERPRINT_READ_ATTEMPTS = 3
+FINGERPRINT_READ_RETRY_SECONDS = 0.25
+
+
+def _read_start_time_with_retry(pid: int) -> Optional[int]:
+    """``get_process_start_time(pid)``, retried on ``None`` up to ``FINGERPRINT_READ_ATTEMPTS`` times."""
+    from gateway.status import get_process_start_time
+    for attempt in range(FINGERPRINT_READ_ATTEMPTS):
+        current = get_process_start_time(pid)
+        if current is not None:
+            return current
+        if attempt + 1 < FINGERPRINT_READ_ATTEMPTS:
+            time.sleep(FINGERPRINT_READ_RETRY_SECONDS)
+    return None
+
+
+def _fingerprint_matches(pid: Optional[int], started_at) -> Optional[bool]:
+    """Compare the live ``pid`` against the fingerprint recorded at spawn.
+
+    ``True``: the process is the worker we spawned. ``False``: the read succeeded and the identity is
+    positively different — the PID was recycled by a stranger. ``None``: the identity could not be
+    read this time (bounded retry exhausted). Unknown is NOT evidence of death: the 2026-10-22
+    double-dispatch incident came from a transient psutil failure being read as "recycled", which
+    released a claim beside a live worker. A ``None`` fingerprint is a legacy row (existence is the
+    whole answer, ``True``); the UNVERIFIED marker is always foreign (``False``) — callers that hold
+    such a row check for it first. An integer fingerprint (rows written before the boot witness was
+    added) compares the start time only."""
+    if started_at is None or not pid:
+        return True
+    if started_at == UNVERIFIED_WORKER_FINGERPRINT:
+        return False
+    current = _read_start_time_with_retry(int(pid))
+    if current is None:
+        return None
+    if isinstance(started_at, str) and "|" in started_at:
+        from gateway.drain_control import current_instantiation_epoch
+        return f"{current_instantiation_epoch()}|{current}" == started_at
+    from gateway.status import _start_times_agree
+    try:
+        return _start_times_agree(current, started_at)
+    except (TypeError, ValueError):
+        return False
+
+
 def _worker_alive(pid: Optional[int], started_at) -> bool:
-    """True when ``pid`` is live AND is still the worker we spawned. ``started_at`` is the fingerprint
-    recorded by ``_set_worker_pid``; after a reboot (or any PID recycle) an unrelated process can own
-    the number, so bare existence is never enough to extend a claim or to signal. A legacy row without
-    a fingerprint keeps the existence answer: killing it is the pre-fingerprint behaviour and the row is
-    rewritten with a fingerprint on its next spawn. An UNVERIFIED spawn also keeps the existence answer
-    (a claim is never released beside a possibly-live worker) but ``_terminate_reclaimed_worker``
-    refuses to signal it."""
+    """True when ``pid`` is live AND is not positively another process. ``started_at`` is the
+    fingerprint recorded by ``_set_worker_pid``; after a reboot (or any PID recycle) an unrelated
+    process can own the number, so bare existence is never enough to extend a claim or to signal. A
+    legacy row without a fingerprint keeps the existence answer: killing it is the pre-fingerprint
+    behaviour and the row is rewritten with a fingerprint on its next spawn. An UNVERIFIED spawn also
+    keeps the existence answer (a claim is never released beside a possibly-live worker) but
+    ``_terminate_reclaimed_worker`` refuses to signal it. A fingerprint that cannot be read right now
+    is treated the same way: the worker is reported alive (held), never dead."""
     if not _kb._pid_alive(pid):
         return False
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
@@ -391,24 +443,13 @@ def _worker_alive(pid: Optional[int], started_at) -> bool:
 
 
 def _pid_recycled(pid: Optional[int], started_at) -> bool:
-    """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
-    longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never
-    recycled; the UNVERIFIED marker is always foreign. An integer fingerprint (rows written before the
-    boot witness was added) compares the start time only."""
-    if started_at is None or not pid:
+    """True only when a live ``pid`` is POSITIVELY not the process fingerprinted at spawn (the read
+    succeeded and differs): signalling it would hit a stranger. ``None`` fingerprint = legacy row,
+    never recycled; the UNVERIFIED marker is always foreign. An unreadable fingerprint is NOT
+    recycled — see ``_fingerprint_matches``."""
+    if not pid:
         return False
-    if started_at == UNVERIFIED_WORKER_FINGERPRINT:
-        return True
-    if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
-    from gateway.status import _start_times_agree, get_process_start_time
-    current = get_process_start_time(int(pid))
-    if current is None:
-        return True
-    try:
-        return not _start_times_agree(current, started_at)
-    except (TypeError, ValueError):
-        return True
+    return _fingerprint_matches(pid, started_at) is False
 
 
 def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
@@ -471,10 +512,18 @@ def _terminate_reclaimed_worker(
         info["signal_refused"] = True
         info["terminated"] = not _kb._pid_alive(pid)
         return info
-    if _kb._pid_alive(pid) and _pid_recycled(pid, started_at):
-        info["terminated"] = True
-        info["pid_recycled"] = True
-        return info
+    if _kb._pid_alive(pid):
+        verdict = _fingerprint_matches(pid, started_at)
+        if verdict is False:
+            info["terminated"] = True
+            info["pid_recycled"] = True
+            return info
+        if verdict is None:
+            # Live, identity unreadable right now: an unverified process is never signalled, and
+            # the claim is held (not released beside it). The next sweep re-reads.
+            info["signal_refused"] = True
+            info["fingerprint_unreadable"] = True
+            return info
 
     info["termination_attempted"] = True
     try:
@@ -679,9 +728,12 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         pid = int(row["worker_pid"])
         tid = row["id"]
         started_at = _kb._row_get(row, "worker_started_at")
-        if started_at == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
-            # Fingerprint capture failed at spawn: we cannot prove this live PID is our worker, so
-            # it is neither signalled nor released beside (duplicate). It is reclaimed once it exits.
+        alive = _kb._pid_alive(pid)
+        verdict = _fingerprint_matches(pid, started_at) if alive else True
+        if alive and (started_at == UNVERIFIED_WORKER_FINGERPRINT or verdict is None):
+            # Fingerprint capture failed at spawn, or the identity cannot be read right now: we cannot
+            # prove this live PID is our worker, so it is neither signalled nor released beside
+            # (duplicate). It is reclaimed once it exits, or once the fingerprint reads again.
             _kb._log.warning("kanban: task %s worker pid %s exceeded max runtime but has no verified "
                              "identity; not signalled", tid, pid)
             continue
@@ -690,7 +742,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         # mismatch) is never signalled: the worker is already gone.
         killed = False
         kill = _kill_fn(signal_fn)
-        if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
+        if kill is not None and not (alive and verdict is False):
             with contextlib.suppress(ProcessLookupError, OSError):
                 kill(pid, signal.SIGTERM)
             # Short polling wait — no time.sleep on the write txn.

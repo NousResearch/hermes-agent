@@ -1887,6 +1887,9 @@ DEFAULT_CONFIG = {
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,
         # crashed) for the same task/profile. Reassignment resets the streak.
         "failure_limit": 2,
+        # Consecutive clean worker exits without a terminal kanban call (protocol violations)
+        # before the card is blocked. Separate from failure_limit; per-task max_retries wins.
+        "protocol_violation_limit": 3,
         # Worker stdout/stderr log rotation at spawn time (2 MiB + one backup). Raise to keep more
         # early failure evidence from long-running workers.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,

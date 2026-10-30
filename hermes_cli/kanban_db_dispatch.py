@@ -1262,7 +1262,7 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 continue  # task deleted mid-loop
             task_override = _kb._row_get(trow, "max_retries")
             violation_limit = (
-                int(task_override) if task_override is not None else _PROTOCOL_VIOLATION_FAILURE_LIMIT
+                int(task_override) if task_override is not None else configured_protocol_violation_limit()
             )
             if streak < violation_limit:
                 # Below budget: already back at ``ready`` with the error stamped.
@@ -1882,6 +1882,19 @@ def resolve_max_in_progress(configured: Optional[int]) -> Optional[int]:
     if configured is not None:
         return configured
     return derive_default_max_in_progress()
+
+
+def configured_protocol_violation_limit() -> int:
+    """``kanban.protocol_violation_limit`` (consecutive clean-exit-without-terminal-call
+    runs before the card is blocked), or ``_PROTOCOL_VIOLATION_FAILURE_LIMIT`` when
+    unset/invalid. A positive integer wins; per-task ``max_retries`` still beats it."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("protocol_violation_limit")
+        ival = int(raw)
+    except Exception:
+        return _PROTOCOL_VIOLATION_FAILURE_LIMIT
+    return ival if ival >= 1 else _PROTOCOL_VIOLATION_FAILURE_LIMIT
 
 
 def configured_max_in_progress() -> Optional[int]:

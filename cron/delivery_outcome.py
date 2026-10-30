@@ -72,6 +72,36 @@ def settled_outcome(execution_id: str) -> Optional[str]:
     return terminal[0] if terminal else None
 
 
+def enqueue_delivery_failure(
+    job: dict, execution_id: str, delivery_error: Optional[str], *, for_failure: bool = False,
+    direct: bool = False,
+) -> None:
+    """Queue one diagnostic per execution, never another diagnostic for a failed notice."""
+    if not delivery_error or for_failure or not job.get("failure_deliver"):
+        return
+    from agent.redact import redact_sensitive_text
+    from cron.delivery_queue import enqueue
+    from cron.scheduler_failure_copy import generic_failure_notice
+
+    notice_id = f"{execution_id}:delivery-failure"
+    cleaned = redact_sensitive_text(str(delivery_error), force=True, redact_url_credentials=True)
+    content = generic_failure_notice(
+        job.get("name") or job["id"], job["id"],
+        f"output delivery failed: {' '.join(cleaned.split())[:180]}")
+    try:
+        enqueue(notice_id, dict(job, execution_id=notice_id), content, for_failure=True)
+        if direct:
+            from cron import scheduler
+            from cron.delivery_queue import drain
+
+            # Direct script jobs have no gateway to drain the queue. Claim only this notice;
+            # terminal rows and concurrent gateway claims still fence duplicate sends.
+            drain(lambda j, text, failure: scheduler._deliver_result(
+                j, text, for_failure=failure), limit=1, execution_id=notice_id)
+    except Exception:
+        logger.warning("Cron delivery %s: could not queue failure notice", execution_id, exc_info=True)
+
+
 def settle_queued_delivery(job_id: Optional[str], execution_id: Optional[str]) -> bool:
     """Apply the queue's terminal outcome for *execution_id*; False while still in flight."""
     if not job_id or not execution_id:

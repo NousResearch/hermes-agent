@@ -45,7 +45,7 @@ def run_env(monkeypatch, tmp_path):
 
     Bookkeeping primitives are recorded; durable enqueue, gateway drain and
     target resolution are real. Only the outbound platform sender is replaced.
-    Tests drain explicitly so queue admission cannot masquerade as delivery.
+    Queued runs drain explicitly; direct script runs must deliver without a gateway.
     """
     home = tmp_path / "hermes-home"
     home.mkdir()
@@ -60,8 +60,9 @@ def run_env(monkeypatch, tmp_path):
     async def fake_sender(pconfig, chat_id, message, *, thread_id=None,
                           media_files=None, force_document=False, caption=None):
         send_calls.append({"chat_id": chat_id, "message": message})
-        return {"success": transport["success"], "chat_id": chat_id,
-                "message_id": "1.2", "error": None if transport["success"] else "transport refused"}
+        success = transport.get("alerts_success", transport["success"]) if chat_id == "alerts" else transport["success"]
+        return {"success": success, "chat_id": chat_id,
+                "message_id": "1.2", "error": None if success else "transport refused"}
 
     import gateway.platform_registry as reg
     import hermes_cli.plugins as hp
@@ -503,3 +504,58 @@ class TestPreflightAndDashboardLanes:
             {"failure_deliver": ""}, tmp_path
         )
         assert cleared["failure_deliver"] is None
+
+
+def _drain_failed_delivery(mode, monkeypatch):
+    from cron import delivery_queue
+
+    if mode == "abandoned":
+        assert delivery_queue.claim_next() is not None
+        # Model a replacement gateway observing a dead delivery owner.
+        monkeypatch.setattr(delivery_queue, "_PROCESS_ID", "replacement-gateway")
+        monkeypatch.setattr(delivery_queue, "_owner_is_live", lambda *_: False)
+    s.drain_delivery_queue(adapters={}, loop=None)
+
+
+@pytest.mark.parametrize("mode", ["direct", "queued", "abandoned"])
+@pytest.mark.parametrize("notice_success", [True, False])
+def test_output_delivery_failure_notifies_once_without_recursing(run_env, monkeypatch, mode, notice_success):
+    from cron import delivery_queue
+
+    monkeypatch.setattr(delivery_queue, "_ACTIVE_DELIVERIES", set())
+    monkeypatch.setattr(s, "run_job", _succeeding_run_job())
+    run_env["transport"].update(success=False, alerts_success=notice_success)
+    s.run_one_job({
+        "id": "delivery-failure", "name": "report",
+        "deliver": "slack:report", "failure_deliver": "slack:alerts",
+        "no_agent": mode == "direct",
+    })
+    if mode != "direct":
+        _drain_failed_delivery(mode, monkeypatch)
+    primary = [] if mode == "abandoned" else ["report"]
+    assert [call["chat_id"] for call in run_env["send"]] == primary + ["alerts"]
+    notice = run_env["send"][-1]["message"]
+    assert ("unknown" if mode == "abandoned" else "transport refused") in notice
+    assert "failed" in notice.lower()
+    assert delivery_queue.get_status("exec-t:delivery-failure")["status"] == (
+        "delivered" if notice_success else "failed")
+    assert s.drain_delivery_queue(adapters={}, loop=None) == 0
+
+
+@pytest.mark.parametrize("mode", ["direct", "queued", "abandoned"])
+def test_failed_run_notice_delivery_does_not_create_another_notice(run_env, monkeypatch, mode):
+    from cron import delivery_queue
+
+    monkeypatch.setattr(delivery_queue, "_ACTIVE_DELIVERIES", set())
+    monkeypatch.setattr(s, "run_job", _failing_run_job())
+    run_env["transport"]["success"] = False
+    s.run_one_job({
+        "id": "failed-run", "name": "report",
+        "deliver": "slack:report", "failure_deliver": "slack:alerts",
+        "no_agent": mode == "direct",
+    })
+    if mode != "direct":
+        _drain_failed_delivery(mode, monkeypatch)
+    assert [call["chat_id"] for call in run_env["send"]] == ([] if mode == "abandoned" else ["alerts"])
+    assert delivery_queue.get_status("exec-t:delivery-failure") is None
+    assert s.drain_delivery_queue(adapters={}, loop=None) == 0

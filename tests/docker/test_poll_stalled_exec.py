@@ -68,8 +68,32 @@ def test_fail_closed_dashboard_guard_needs_a_completed_probe(monkeypatch):
     monkeypatch.setattr(docker_conftest, "time", clock)
     monkeypatch.setattr(docker_conftest, "docker_exec_sh", _scripted_exec(clock, ["stall"]))
     monkeypatch.setattr(test_dashboard, "start_container", lambda *args, **kwargs: "c")
-    with pytest.raises(AssertionError, match="No probe of c completed"):
+    with pytest.raises(AssertionError, match="stalled"):
         test_dashboard.test_dashboard_insecure_env_var_no_longer_bypasses_gate("image", "c")
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "failure"),
+    [
+        (7, "rc=7\n", None),  # connection refused: the real fail-closed signal
+        (0, "rc=0\n", "must NOT serve"),
+        (1, "", "refusal"),  # docker exec into a container that already exited
+        (127, "rc=127\n", "refusal"),  # curl missing
+    ],
+    ids=["refused", "served", "container-gone", "curl-missing"],
+)
+def test_fail_closed_dashboard_guard_needs_an_observed_refusal(monkeypatch, returncode, stdout, failure):
+    """A completed probe that never reached the port proves nothing either: only a refusal passes."""
+    clock = _Clock()
+    monkeypatch.setattr(docker_conftest, "time", clock)
+    result = SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+    monkeypatch.setattr(docker_conftest, "docker_exec_sh", _scripted_exec(clock, [result]))
+    monkeypatch.setattr(test_dashboard, "start_container", lambda *args, **kwargs: "c")
+    if failure is None:
+        test_dashboard.test_dashboard_insecure_env_var_no_longer_bypasses_gate("image", "c")
+    else:
+        with pytest.raises(AssertionError, match=failure):
+            test_dashboard.test_dashboard_insecure_env_var_no_longer_bypasses_gate("image", "c")
 
 
 def test_stall_after_a_completed_probe_keeps_its_output(monkeypatch):

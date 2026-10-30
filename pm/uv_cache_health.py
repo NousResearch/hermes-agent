@@ -131,10 +131,14 @@ def _damaged_at(directory: int, name: str, header: re.Pattern | None) -> bool:
     except OSError:
         return False
     try:
-        with os.fdopen(fd, "rb") as stream:
+        # closefd=False: fdopen itself can fail (a directory in the file's place),
+        # and the descriptor must be closed either way.
+        with os.fdopen(fd, "rb", closefd=False) as stream:
             return _stream_damaged(stream, header)
     except OSError:
         return False
+    finally:
+        os.close(fd)
 
 
 def _dist_name(info: str) -> str | None:

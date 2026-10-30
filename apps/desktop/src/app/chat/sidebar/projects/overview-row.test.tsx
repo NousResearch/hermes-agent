@@ -1,8 +1,9 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+import { $sidebarShowAllSessions } from '@/store/layout'
 import type * as ProjectsStore from '@/store/projects'
 
 import type * as Model from './model'
@@ -67,6 +68,7 @@ const session = (id: string, updated: number): SessionInfo => ({ id, updated_at:
 describe('ProjectOverviewRow', () => {
   afterEach(() => {
     workspaceOpen.value = false
+    $sidebarShowAllSessions.set(false)
     projectsStore.fetchProjectSessions.mockReset()
     projectsStore.projectProfile.mockReset().mockReturnValue('default')
   })
@@ -147,6 +149,35 @@ describe('ProjectOverviewRow', () => {
     fireEvent.click(screen.getByText('Show 20 more in Test D'))
     expect(shown()).toBe(120)
     expect(screen.queryByText(/Show .* more in Test D/)).toBeNull()
+  })
+
+  it('restores local collapse after global show-all is switched off', async () => {
+    workspaceOpen.value = true
+    const five = Array.from({ length: 5 }, (_, index) => session(`s${index + 1}`, 500 - index))
+    const busy = { ...project, sessionCount: 5 } as SidebarProjectTree
+    projectsStore.fetchProjectSessions.mockResolvedValue({
+      ...busy,
+      repos: [{ groups: [{ sessions: five }] }]
+    } as unknown as SidebarProjectTree)
+
+    render(
+      <ProjectOverviewRow
+        previewSessions={five.slice(0, 3)}
+        project={busy}
+        renderRows={items => <div data-testid="rows">{items.map(item => item.id).join(',')}</div>}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show all 5 sessions' }))
+    await waitFor(() => expect(screen.getByTestId('rows').textContent).toBe('s1,s2,s3,s4,s5'))
+
+    act(() => $sidebarShowAllSessions.set(true))
+    expect(screen.queryByRole('button', { name: 'Show fewer sessions' })).toBeNull()
+    expect(screen.getByTestId('rows').textContent).toBe('s1,s2,s3,s4,s5')
+
+    act(() => $sidebarShowAllSessions.set(false))
+    fireEvent.click(screen.getByRole('button', { name: 'Show fewer sessions' }))
+    expect(screen.getByTestId('rows').textContent).toBe('s1,s2,s3')
   })
 
   // The hydrated lanes are the raw backend payload: pinned, filtered-out and

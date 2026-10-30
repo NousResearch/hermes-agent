@@ -449,6 +449,7 @@ def _no_sudo_user() -> bool:
 def _transform_sudo_command(
     command: str | None,
     sudo_nopasswd_check: Callable[[], bool] | None = None,
+    sudo_installed_check: Callable[[], bool] | None = None,
 ) -> tuple[str | None, str | None]:
     """Rewrite command-position ``sudo`` executables to ``sudo -S -p ''`` when a password is available (shared by every
     execution environment). Returns ``(command, sudo_stdin)``: ``sudo_stdin`` is one password
@@ -460,7 +461,10 @@ def _transform_sudo_command(
     is required". Password sources, in order: configured SUDO_PASSWORD, the session cache, then
     an interactive prompt (45s timeout, cached on success) when a UI is reachable.
     ``sudo_nopasswd_check`` (supplied by ``BaseEnvironment``) runs ``sudo -n true`` inside the
-    selected backend; a True result skips the prompt and the ``-S`` rewrite entirely."""
+    selected backend; a True result skips the prompt and the ``-S`` rewrite entirely.
+    ``sudo_installed_check`` reports whether that backend has a ``sudo`` executable at all; a False
+    result also skips the prompt (a password cannot help), so the command fails with the shell's own
+    "sudo: not found" instead of asking the user for a password that nothing can use."""
     from tools.terminal_tool import _get_sudo_password_callback
     if command is None:
         return None, None
@@ -490,6 +494,8 @@ def _transform_sudo_command(
         # prompt would otherwise fire: headless callers end up at ``(command, None)`` either
         # way. Re-probed every call so an expired sudo timestamp cannot silently block.
         if sudo_nopasswd_check is not None and sudo_nopasswd_check():
+            return command, None
+        if sudo_installed_check is not None and not sudo_installed_check():
             return command, None
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45, command=command)
         if sudo_password:

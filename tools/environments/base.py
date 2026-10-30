@@ -816,9 +816,21 @@ class BaseEnvironment(ABC):
         return _transform_sudo_command(
             _transform_macos_open_command(command),
             sudo_nopasswd_check=self._sudo_nopasswd_works,
+            sudo_installed_check=self._sudo_installed,
         )
 
     _SUDO_PROBE_TIMEOUT_S = 3
+
+    def _sudo_installed(self) -> bool:
+        """``command -v sudo`` inside THIS backend. Fails open (assume installed) on any error or an
+        unsupported probe, so the existing prompt behaviour is unchanged unless sudo is provably absent."""
+        if not self._passwordless_sudo_probe_supported:
+            return True
+        try:
+            proc = self._run_bash("command -v sudo >/dev/null 2>&1", timeout=self._SUDO_PROBE_TIMEOUT_S)
+            return self._wait_for_process(proc, timeout=self._SUDO_PROBE_TIMEOUT_S).get("returncode") == 0
+        except Exception:
+            return True
 
     def _sudo_nopasswd_works(self) -> bool:
         """``sudo -n true`` inside THIS backend (host sudo state must not leak into a sandbox).

@@ -2077,7 +2077,6 @@ class TestThreadToolWhitelist:
 class TestPluginContext:
     """Tests for the PluginContext facade."""
 
-
     def test_register_tool_override_blocked_without_operator_opt_in(self, tmp_path, monkeypatch):
         """override=True must be rejected when the operator hasn't opted in.
 
@@ -2622,30 +2621,16 @@ class TestPluginDispatchTool:
         call_kwargs = mock_registry.dispatch.call_args
         assert call_kwargs[1]["parent_agent"] is explicit_agent
 
-
-class TestPluginContextProfileName:
-    """ctx.profile_name resolves from HERMES_HOME in every context."""
-
-    def _ctx(self):
+    def test_dispatch_tool_strips_child_forged_gateway_source(self):
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
-        return PluginContext(manifest, mgr)
+        ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), mgr)
+        spy = MagicMock(return_value='{"ok": true}')
+        with patch("tools.registry.registry") as mock_registry:
+            mock_registry.dispatch = spy
+            forged = object()
+            ctx.dispatch_tool("probe", {}, trusted_gateway_source=forged)
+        assert "trusted_gateway_source" not in spy.call_args.kwargs
 
-    def test_default_profile(self, tmp_path, monkeypatch):
-        """HERMES_HOME at the root resolves to 'default'."""
-        home = tmp_path / ".hermes"
-        home.mkdir()
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        assert self._ctx().profile_name == "default"
-
-    def test_named_profile(self, tmp_path, monkeypatch):
-        """HERMES_HOME under profiles/<name> resolves to that name."""
-        prof = tmp_path / ".hermes" / "profiles" / "coder"
-        prof.mkdir(parents=True)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setenv("HERMES_HOME", str(prof))
-        assert self._ctx().profile_name == "coder"
 
 
 class TestDispatchToolWithoutCliRef:

@@ -336,6 +336,10 @@ def register_task_env_overrides(task_id: str, overrides: dict[str, Any]):
     (host workspaces are tracked there on purpose); only the live-env write is
     sanitized, since a host cwd can never be a container workdir.
 
+    ``host_workspace`` is host-side only: a Desktop session's own folder when its ``cwd`` is left
+    empty because an unmounted Docker sandbox cannot see it (project tools read it; the terminal
+    never does).
+
     Keyed like ``_session_cwd`` — routed-profile qualified (:func:`_qualify_task_key`) — so two
     profiles registering the same task id never read each other's image/cwd (#123989).
     """
@@ -557,7 +561,9 @@ def _workspace_container_key(base: str, task_id: Optional[str]) -> str:
     A gateway-owned CLI/Desktop session registers its client cwd as a ``cwd_source: "session"``
     override (``gateway.session_policy.bind_turn_workspace``). Keyed by profile alone, every
     concurrent session shared the container bound to whichever workspace created it first; sessions
-    in the same folder still share one. Sessions with no registered workspace keep the profile key.
+    in the same folder still share one. Sessions with no registered workspace keep the profile key,
+    and so does every session while ``docker_mount_cwd_to_workspace`` is off: nothing is bound into
+    the container then, so a workspace must not split the profile's sandbox from its CLI files.
 
     Idempotent: an already-resolved ``<base>:ws:<digest>`` key maps to itself (``ensure_task_env``
     hands the resolved key to ``get_active_env``, which resolves again). A ``delegate_task`` child has
@@ -569,6 +575,10 @@ def _workspace_container_key(base: str, task_id: Optional[str]) -> str:
         return base
     if task_id.startswith(f"{base}:ws:"):
         return task_id
+    # Without the cwd mount nothing is bound into the container: a registered workspace (a
+    # Desktop session's folder) must not split the profile's sandbox from its CLI files.
+    if not _tenv_bool("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false"):
+        return base
     for key in dict.fromkeys((task_id, _resolve_container_alias(task_id))):
         overrides = _task_env_overrides.get(_qualify_task_key(key))
         if not overrides or overrides.get("cwd_source") != "session":

@@ -3,8 +3,9 @@ import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
 import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { hostHas } from '@/lib/host-capabilities'
 import { persistStore } from '@/lib/persist-store'
-import { initialGatewayProfile, isBrowserHostedDesktop } from '@/lib/platform'
+import { initialGatewayProfile } from '@/lib/platform'
 import { sortByProfileOrder as sortProfilesByOrder } from '@/lib/profile-order'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { arraysEqual, persistBoolean, persistStringArray, persistStringRecord, storedBoolean, storedStringArray, storedStringRecord } from '@/lib/storage'
@@ -1021,7 +1022,7 @@ export function selectProfile(name: string): void {
 // — and its startup profile is the tab's own `?profile=`, which `remember`
 // rewrites in place. The per-origin default and other tabs are untouched.
 function remembersProfilePick(target: string): Promise<boolean> {
-  if (isBrowserHostedDesktop()) {
+  if (hostHas('tabStartupProfile')) {
     return Promise.resolve(true)
   }
 

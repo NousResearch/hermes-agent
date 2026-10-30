@@ -2767,18 +2767,18 @@ def save_env_value_secure(key: str, value: str) -> dict[str, Any]:
 
 
 def reload_env() -> int:
-    """Re-read ~/.hermes/.env into os.environ; returns count of vars changed.
-    Removes deleted vars only when known to Hermes (OPTIONAL_ENV_VARS and _EXTRA_ENV_KEYS) so
-    unrelated environment is never clobbered."""
+    """Re-read ~/.hermes/.env into os.environ; returns count of vars changed. Removes deleted vars only when
+    known to Hermes (OPTIONAL_ENV_VARS and _EXTRA_ENV_KEYS), and none while the .env exists but is unreadable."""
+    from hermes_cli.env_loader import dotenv_unreadable
     env_vars = load_env()
     count = 0
     for key, value in env_vars.items():
         if os.environ.get(key) != value:
             os.environ[key] = value
             count += 1
-    for key in (set(OPTIONAL_ENV_VARS) | _EXTRA_ENV_KEYS) - set(env_vars):
-        if key in os.environ:
-            del os.environ[key]
+    known = set() if dotenv_unreadable(get_env_path()) else set(OPTIONAL_ENV_VARS) | _EXTRA_ENV_KEYS
+    for key in known - set(env_vars):
+        if os.environ.pop(key, None) is not None:
             count += 1
     return count
 
@@ -2963,22 +2963,23 @@ def _suggest_closest_key(key: str, candidates: set[str], cutoff: float = 0.6) ->
 
 
 def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
-    """Validate a dotted config-key path against the known schema -> ``(is_known, suggestion)``.
+    """CLI-syntax key (``\\.`` escapes a dot) -> ``(is_known, suggestion)``: the schema walk, then (only for a
+    refused key) the runtime-read keys DEFAULT_CONFIG leaves unseeded (config_runtime_keys)."""
+    known, suggestion = _validate_schema_key(key)
+    if known or not key:
+        return known, suggestion
+    from hermes_cli.config_runtime_keys import is_runtime_read_key
+    return (True, None) if is_runtime_read_key(_split_key_path(key)) else (False, suggestion)
 
-    Headline case from #34067: ``gateway.discord.gateway_restart_notification`` was silently written, even
-    though ``gateway`` only has 4 known sub-keys (``strict``, ``media_delivery_allow_dirs``,
-    ``trust_recent_files``, ``trust_recent_files_seconds``). The correct path is
-    ``discord.gateway_restart_notification`` (platform configs live at the top level, not under a
-    ``platforms`` namespace).
-    """
+
+def _validate_schema_key(key: str) -> tuple[bool, Optional[str]]:
+    """#34067: ``gateway.discord.gateway_restart_notification`` was silently written; the correct path is
+    ``discord.gateway_restart_notification`` (platform configs live at the top level)."""
     if not key:
         return False, None
-
     segments = _split_key_path(key)
     top = segments[0]
-
-    # A leading underscore on the FIRST segment marks an intentionally non-schema internal key
-    # (test harnesses/tooling); only the first segment is exempt so ``agent._max_turns`` is caught.
+    # A leading ``_`` on the FIRST segment only marks an internal key (``agent._max_turns`` is caught).
     from hermes_cli.left_core_migration import LEFT_CORE_TERMINAL_KEYS
     if top.startswith("_") or top in _PLATFORM_CONTAINER_KEYS or key in LEFT_CORE_TERMINAL_KEYS:
         return True, None
@@ -3470,11 +3471,9 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
 
     # Phantom-key notice (#112348): a nested path under a KNOWN section that the schema does not
     # define (``compression.compressor.enabled``) is echoed straight from the user's file and is
-    # usually read by nothing, so it must not look like a live setting. The check is a
-    # DEFAULT_CONFIG walk and some live keys are deliberately unseeded (``browser.cloud_provider``,
-    # ``stt.provider``, ``gateway.proxy_url``: a stored value counts as an explicit user pick), so
-    # the wording hedges exactly like the set-path notice. Custom top-level keys stay exempt (they
-    # are bridged into os.environ for skills) and ``_validate_config_key`` already accepts
+    # usually read by nothing, so it must not look like a live setting. Unseeded live keys pass via
+    # config_runtime_keys; the wording still hedges like the set-path notice. Custom top-level keys
+    # stay exempt (bridged into os.environ for skills) and ``_validate_config_key`` already accepts
     # open-subkey sections. stderr keeps stdout/--json parseable; the exit code stays 0.
     if _split_key_path(key)[0] in _known_top_level_keys():
         is_known, suggestion = _validate_config_key(key)

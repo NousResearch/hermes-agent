@@ -1,7 +1,7 @@
 name: genealogy-research-recipes
 title: Kinprove Genealogy Research Recipes
 repo: https://github.com/Kinprove/genealogy-research-recipes
-sha: b89b086db98d5f1588e5c07b0b02854d14893708
+sha: 7ef6926609604d4c252b99b5f650c7d01954f5fa
 description: >-
   Fact-checked genealogy instructions for DNA evidence, record searches and proof
   judgment. Native read-only skill bundle with recipe sources and an offline
@@ -13,7 +13,7 @@ tier: community
 category: general
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/Kinprove/genealogy-research-recipes#readme
-version: "1.6.1"
+version: "1.6.4"
 readme: true
 platforms: []
 capabilities:

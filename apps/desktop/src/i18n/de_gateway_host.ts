@@ -27,6 +27,7 @@ export const deGatewayHost: GatewayHostTranslations = {
     unavailableDetail: reason => `Das Gateway konnte die Web-App nicht bereitstellen: ${reason}`,
     restartBusy: 'Gespeichert. Ein Chat läuft, deshalb wurde das Gateway nicht neu gestartet. Wähle „Gateway neu starten“, sobald er beendet ist.',
     restartFailed: 'Gespeichert, aber das Gateway konnte nicht neu starten. Wähle „Gateway neu starten“, um es erneut zu versuchen.',
+    restartFailedBecause: reason => `Das Gateway konnte nicht neu starten: ${reason}`,
     startTimedOut: 'Das Gateway hat die Web-App nicht innerhalb von 90 Sekunden bereitgestellt.',
     stopTimedOut: 'Das Gateway hat die Bereitstellung der Web-App nicht innerhalb von 90 Sekunden beendet.',
     start: 'Starten',

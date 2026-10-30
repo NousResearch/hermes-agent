@@ -404,10 +404,10 @@ class GatewayProfileReconcileMixin:
         steps). Returns the park reason — reservation released — when another gateway owns the home
         (a stray per-profile daemon) or its store cannot be opened; None when served. An
         adapters-only runner (no authority registry) grows the reservation alone."""
-        from gateway.run_runtime import release_profile_home, reserve_profile_home, serve_profile_runtime
+        from gateway.run_runtime import release_profile_home, reserve_profile_home_in_worker, serve_profile_runtime
         from gateway.runtime_ownership import OwnershipConflict
         try:
-            reserve_profile_home(self, name, home)
+            await reserve_profile_home_in_worker(self, name, home)
         except (OwnershipConflict, OSError) as exc:
             logger.error("[MULTIPLEX] Profile '%s' not served: %s", name, exc)
             return f"home owned by another gateway: {exc}"

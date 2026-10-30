@@ -88,6 +88,9 @@ class _HomeLayer:
     misses: dict[str, float] = field(default_factory=dict)
     # plugin dir name -> the error its import raised (``plugin_load_error``), until an import succeeds
     errors: dict[str, str] = field(default_factory=dict)
+    # module names of plugins whose profiles this layer already holds as plugin-host proxies: the
+    # hosted path's ``sys.modules`` check, so a rescan never re-imports, re-warns or swaps proxies
+    hosted: set[str] = field(default_factory=set)
 
 
 _HOME_LAYERS: dict[str, _HomeLayer] = {}
@@ -616,6 +619,9 @@ def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str) -
     so it never takes its hosted siblings down with it."""
     global _current_source
     from hermes_cli.plugin_host_profiles import load_hosted_profiles
+    layer = _REGISTRATION_TARGET.get()
+    if layer is not None and module_name in layer.hosted:
+        return  # already imported into this home's layer
     _current_source = source
     try:
         hosted, in_process = load_hosted_profiles(plugin_dir, module_name)
@@ -627,16 +633,19 @@ def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str) -
         return
     finally:
         _current_source = None
-    if not in_process:
-        return
-    for name, reason in in_process.items():
-        logger.warning("Provider plugin %s: profile %r cannot run in the plugin host (%s); loading it "
-                       "in-process, NOT isolated by plugins.isolation: host", plugin_dir.name, name, reason)
-    token = _REGISTRATION_ONLY.set(frozenset(in_process))
-    try:
-        _exec_plugin_module(plugin_dir, source, module_name)
-    finally:
-        _REGISTRATION_ONLY.reset(token)
+    if in_process:
+        for name, reason in in_process.items():
+            logger.warning("Provider plugin %s: profile %r cannot run in the plugin host (%s); loading it "
+                           "in-process, NOT isolated by plugins.isolation: host", plugin_dir.name, name, reason)
+        token = _REGISTRATION_ONLY.set(frozenset(in_process))
+        try:
+            _exec_plugin_module(plugin_dir, source, module_name)
+        finally:
+            _REGISTRATION_ONLY.reset(token)
+        if module_name not in sys.modules:
+            return  # the in-process import failed: the next scan retries the plugin
+    if layer is not None:
+        layer.hosted.add(module_name)
 
 
 def _exec_plugin_module(plugin_dir: Path, source: str, module_name: str) -> None:

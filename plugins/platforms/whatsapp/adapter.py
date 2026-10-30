@@ -18,7 +18,8 @@ from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret, get_scoped_secret, send_error
 )
 from gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
-from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+from hermes_cli._subprocess_compat import windows_detach_flags
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -45,6 +46,14 @@ def _listener_pids_on_port(port: int) -> list:
             return pids
     with suppress(FileNotFoundError):
         pids.extend(int(m.group(1)) for m in re.finditer(r"pid=(\d+)", subprocess.run(["ss", "-ltnHp", f"sport = :{port}"], timeout=5, **_RUN_TEXT, check=False).stdout))
+    if pids:
+        return pids
+    # Neither lsof nor ss is installed (the repo image ships neither) — a silent empty scan here
+    # meant _kill_port_process found nothing and the port race survived. psutil is a hard dependency.
+    with suppress(Exception):  # psutil missing, or net_connections denied: no evidence, no kill
+        import psutil
+        pids = [c.pid for c in psutil.net_connections(kind="tcp")
+                if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port and c.pid]
     return pids
 
 
@@ -95,8 +104,38 @@ def _pid_looks_like_node_bridge(pid: int) -> bool:
         return False
 
 
+# SIGTERM is a request: the old bridge may take seconds to exit (or ignore it), and the next
+# spawn used to die on EADDRINUSE while the port was still bound. Grace before SIGKILL, and
+# how long connect() waits for the port to actually come free after a kill.
+_SIGTERM_GRACE_S = 5.0
+_BRIDGE_PORT_FREE_TIMEOUT_S = 10.0
+_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)  # escalation paths below are POSIX-only
+
+
+def _pids_alive(pids: list) -> list:
+    """The subset of *pids* still running. ``_pid_exists`` reports zombies dead (an exited but
+    unreaped bridge holds no socket), and never sends a real signal on Windows."""
+    from gateway.status import _pid_exists
+    return [pid for pid in pids if _pid_exists(pid)]
+
+
+def _wait_pids_exit(pids: list, timeout: Optional[float] = None) -> list:
+    """Poll until every pid in *pids* is gone (SIGTERM handlers get grace); returns the survivors."""
+    import time
+    if timeout is None:
+        timeout = _SIGTERM_GRACE_S
+    deadline = time.monotonic() + timeout
+    alive = _pids_alive(pids)
+    while alive and time.monotonic() < deadline:
+        time.sleep(0.1)
+        alive = _pids_alive(pids)
+    return alive
+
+
 def _kill_port_process(port: int) -> None:
-    """Kill any node bridge *listening* on the given TCP port (never a client); SIGTERM on POSIX, taskkill /F on Windows."""
+    """Kill any node bridge *listening* on the given TCP port (never a client); SIGTERM on POSIX with a
+    bounded wait and SIGKILL escalation, taskkill /F (already immediate) on Windows."""
+    signalled: list = []
     with suppress(Exception):
         for pid in _port_listener_pids(port):
             # Killing a mistyped or recycled PID is unrecoverable — verify first.
@@ -111,6 +150,21 @@ def _kill_port_process(port: int) -> None:
             else:
                 with suppress(OSError):  # ProcessLookupError/PermissionError are OSError subclasses
                     os.kill(pid, signal.SIGTERM)
+                    signalled.append(pid)
+    if not signalled:
+        return
+    # SIGTERM is a request, not a fence: a slow-exiting bridge kept the port bound and the next
+    # spawn died on EADDRINUSE. Wait for exit, then SIGKILL survivors — re-checking identity
+    # first, so a PID recycled inside the grace window is never killed.
+    survivors = _wait_pids_exit(signalled)
+    for pid in survivors:
+        if not _pid_looks_like_node_bridge(pid):
+            logger.warning("[whatsapp] Not SIGKILLing PID %s on port %d: identity no longer verifiable", pid, port)
+            continue
+        with suppress(OSError):
+            os.kill(pid, _SIGKILL)
+            logger.warning("[whatsapp] SIGKILLed node bridge PID %d on port %d after it ignored SIGTERM", pid, port)
+    _wait_pids_exit(survivors, timeout=1.0)  # let SIGKILL land and the OS release the socket
 
 
 def _bridge_pid_is_ours(pid: int, expected_start) -> bool:
@@ -165,6 +219,16 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
         with suppress(OSError):  # ProcessLookupError / PermissionError included
             os.kill(pid, signal.SIGTERM)
             logger.info("[whatsapp] Killed stale bridge PID %d from pidfile", pid)
+        if not _IS_WINDOWS:
+            # SIGTERM is a request: a slow-exiting bridge kept the port bound and the next spawn hit
+            # EADDRINUSE. Wait, then SIGKILL — re-checking identity first, so a PID recycled inside the
+            # grace window is never signalled (the same fail-closed rule as the scan above).
+            if _wait_pids_exit([pid]) and _bridge_pid_is_ours(pid, recorded_start):
+                with suppress(OSError):
+                    os.kill(pid, _SIGKILL)
+                    logger.warning("[whatsapp] SIGKILLed stale bridge PID %d after it ignored SIGTERM", pid)
+                # It may hold this session's WhatsApp socket on another port: let it die before a respawn.
+                _wait_pids_exit([pid], timeout=1.0)
     elif _pid_exists(pid):
         reason = ("legacy pidfile lacks a start-time fingerprint and cmdline substring evidence can name a stranger"
                   if recorded_start is None else "it is no longer the bridge (recycled onto an unrelated process)")
@@ -181,6 +245,14 @@ def _write_bridge_pidfile(session_path: Path, pid: int, port: Optional[int] = No
         start = get_process_start_time(pid)
         text = str(pid) if start is None else f"{pid}\n{start}" + ("" if port is None else f"\n{port}")
         (session_path / "bridge.pid").write_text(text, encoding="utf-8")
+
+
+def _spawn_bridge_process(argv: list, log_fh, env: dict) -> subprocess.Popen:
+    """Start the Node bridge as an owned child. It leads its own session (so a container stop
+    reaches it directly, #127047) and dies with this process however this process dies: a SIGKILLed
+    or OOM-killed gateway no longer leaves its bridge serving the port and the WhatsApp session."""
+    return spawn_owned(argv, purpose="whatsapp-bridge", stdin=subprocess.DEVNULL, stdout=log_fh,
+                       stderr=log_fh, env=env, creationflags=windows_detach_flags())
 
 
 def _terminate_bridge_process(proc, *, force: bool = False) -> None:
@@ -543,6 +615,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         for attempt in range(15):
             await asyncio.sleep(1)
             if self._bridge_process.poll() is not None:
+                # bridge.pid must not name a dead PID: the next connect()'s pidfile reap would find
+                # nothing there while the real port holder (if any) survives its port scan.
+                _unlink_quietly(self._session_path / "bridge.pid")
                 return self._bridge_died(died_msg.format(code=self._bridge_process.returncode)), http_ready, data
             try:
                 ok, d = await self._probe_bridge_health()
@@ -641,8 +716,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not self._ensure_bridge_deps(bridge_path.parent):
                 return False
             self._session_path.mkdir(parents=True, exist_ok=True)
-            # A secondary adopts or reaps only a bridge its own pidfile identifies (crash restart);
-            # the default keeps its historical adopt-or-clear-the-port path.
+            # A secondary adopts or reaps only a bridge its own pidfile identifies; the default keeps
+            # its historical adopt-or-clear-the-port path. A bridge this version started dies with
+            # its gateway (spawn_owned), so what is adopted here is one a pre-update gateway or
+            # another process left running; credentials are on disk, so a fresh bridge needs no re-pair.
             if (not secondary or prior_bridge_is_ours) and await self._reuse_running_bridge(bridge_path):
                 return True
             if self._foreign_bridge_session:
@@ -657,8 +734,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     retryable=False,
                 )
                 return False
+            # The reaps below block for up to their SIGTERM grace each; off the loop so every other
+            # platform on this gateway keeps running while a slow bridge exits.
             if not secondary or prior_bridge_is_ours:
-                _kill_stale_bridge_by_pidfile(self._session_path)
+                await asyncio.to_thread(_kill_stale_bridge_by_pidfile, self._session_path)
             if not secondary:
                 if self._bridge_probe_timed_out:
                     # No /health answer is no ownership evidence (another profile's busy bridge looks the same), and
@@ -678,18 +757,21 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             retryable=True,
                         )
                         return False
-                _kill_port_process(self._bridge_port)
-            if not secondary or prior_bridge_is_ours:
-                await asyncio.sleep(1)
+                await asyncio.to_thread(_kill_port_process, self._bridge_port)
+            # The kills above return after SIGTERM (or SIGKILL past the grace); a slow-exiting bridge could still
+            # hold the port, and the blind sleep that used to sit here spawned onto it — EADDRINUSE, retried forever.
+            # A secondary that skipped the kills found the port free, so this returns at once on that path.
+            if not await self._wait_bridge_port_free():
+                return False
             # Bridge output goes to a log file so QR codes, errors, and reconnection messages survive for troubleshooting.
             self._bridge_log = self._session_path.parent / "bridge.log"
             self._bridge_log_fh = bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")  # noqa: ASYNC230 -- long-lived log handle handed to the bridge subprocess
             node = find_node_executable("node")
             if node is None:
                 raise RuntimeError("Node.js is no longer available; run `hermes pm install`")
-            self._bridge_process = subprocess.Popen(  # noqa: ASYNC220 -- persistent bridge; callers use the Popen object (pid, poll)
+            self._bridge_process = _spawn_bridge_process(
                 [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
-                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdin=subprocess.DEVNULL, stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
+                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], bridge_log_fh, self._bridge_env())
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid, self._bridge_port)
             if not await self._wait_for_bridge():
                 return False
@@ -712,6 +794,29 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             with suppress(Exception):
                 self._bridge_log_fh.close()
             self._bridge_log_fh = None
+
+    async def _wait_bridge_port_free(self) -> bool:
+        """Bounded wait for the just-stopped bridge to release its port (``port_is_free`` probes with the
+        bridge's own SO_REUSEADDR bind semantics, so TIME-WAIT alone never blocks); False with a named fatal
+        when a live listener still holds it — spawning onto a busy port only bought an EADDRINUSE crash-loop."""
+        import time
+        from .bridge_ownership import port_is_free
+        deadline = time.monotonic() + _BRIDGE_PORT_FREE_TIMEOUT_S
+        while not port_is_free(self._bridge_port):
+            if time.monotonic() >= deadline:
+                holders: list = []
+                with suppress(Exception):
+                    holders = _port_listener_pids(self._bridge_port)
+                self._set_fatal_error(
+                    "whatsapp_bridge_port_busy",
+                    f"Port {self._bridge_port} is still held by PID(s) {holders or 'unknown'} after the previous "
+                    f"bridge was stopped and {_BRIDGE_PORT_FREE_TIMEOUT_S:.0f}s of waiting; no new bridge was spawned. "
+                    "Stop the holder, or set platforms.whatsapp.extra.bridge_port to a free port.",
+                    retryable=True,
+                )
+                return False
+            await asyncio.sleep(0.2)
+        return True
 
     async def _check_managed_bridge_exit(self) -> Optional[str]:
         returncode = self._bridge_process.poll() if self._bridge_process is not None else None
@@ -753,8 +858,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 await asyncio.sleep(1)
                 if self._bridge_process.poll() is None:
                     self._terminate_bridge(force=True)
+                    # SIGKILL/taskkill /F still takes a moment to be visible to poll(): an in-process
+                    # restart that spawned immediately after raced the dying bridge for the port.
+                    with suppress(subprocess.TimeoutExpired):
+                        await asyncio.to_thread(self._bridge_process.wait, _SIGTERM_GRACE_S)
             except Exception as e:
                 print(f"[{self.name}] Error stopping bridge: {e}")
+            if not _IS_WINDOWS and self._bridge_process.poll() is not None:
+                # Stopped by us; a bridge we failed to stop stays covered by the owner-death supervisor.
+                # (POSIX only: Windows has no supervised group, and its stop path stays as on main.)
+                release_process_group_once_empty(self._bridge_process.pid, timeout=0)
         if self._bridge_process or not getattr(self, "_runtime_status_platform_key", ""):
             _unlink_quietly(self._session_path / "bridge.pid")
         await cancel_task(self._poll_task)
@@ -921,6 +1034,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 async with self._bridge_req("get", "messages", 30) as resp:
                     if resp.status == 200:
                         for msg_data in await resp.json():
+                            if msg_data.get("event") == "delivery_status":
+                                self._log_delivery_status(msg_data)
+                                continue
                             event = await self._build_message_event(msg_data)
                             if event:
                                 # Fire-and-forget: a slow bridge /read must not delay dispatch.
@@ -937,6 +1053,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 print(f"[{self.name}] Poll error: {e}")
                 await asyncio.sleep(5)
             await asyncio.sleep(1)  # Poll interval
+
+    def _log_delivery_status(self, data: dict[str, Any]) -> None:
+        """One gateway.log line per delivery/read status change of a message Hermes sent (Baileys
+        ``messages.update`` for DMs, ``message-receipt.update`` per recipient in groups)."""
+        logger.info(
+            "[%s] WhatsApp delivery status: message=%s chat=%s status=%s%s at=%s%s", self.name,
+            data.get("messageId"), data.get("chatId"), data.get("status"),
+            f" recipient={data['recipientId']}" if data.get("recipientId") else "", data.get("timestamp"),
+            f" error={data['error']}" if data.get("error") else "",
+        )
 
     async def _send_read_receipt(self, data: dict[str, Any]) -> None:
         key = data.get("readReceiptKey")

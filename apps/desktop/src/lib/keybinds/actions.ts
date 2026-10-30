@@ -7,7 +7,8 @@
 
 import { registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
-import { isBrowserHostedDesktop, isMacPlatform } from '@/lib/platform'
+import { hostHas } from '@/lib/host-capabilities'
+import { isMacPlatform } from '@/lib/platform'
 
 export type KeybindCategory = 'composer' | 'profiles' | 'session' | 'navigation' | 'view'
 
@@ -28,7 +29,7 @@ interface BrowserChords {
 type HostDefaults = Pick<KeybindActionMeta, 'defaults' | 'editableTargetPolicy'>
 
 function hostDefaults(native: readonly string[], browser: BrowserChords): HostDefaults {
-  if (!isBrowserHostedDesktop()) {
+  if (!hostHas('browserShortcutDefaults')) {
     return { defaults: native }
   }
 

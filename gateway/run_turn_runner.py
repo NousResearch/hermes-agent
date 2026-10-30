@@ -728,7 +728,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=desc, metadata=ctx._status_thread_metadata,
+                        request_id=approval_data.get("request_id"), **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )
@@ -1016,7 +1017,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             before = (getattr(agent, 'session_prompt_tokens', 0) or 0,
                       getattr(agent, 'session_completion_tokens', 0) or 0)
             with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
-                result = agent.run_conversation(api_message, **kwargs)
+                from gateway.response_filters import silence_allowed
+                # Where a bare marker would become the "needed a reply" warning, the agent ends a
+                # marker that follows a written reply on that reply, before transform/persistence.
+                agent._silence_marker_needs_reply = not silence_allowed(
+                    ctx.persist_user_display_kind, ctx.reply_expected)
+                try:
+                    result = agent.run_conversation(api_message, **kwargs)
+                finally:
+                    agent._silence_marker_needs_reply = False
             if captured is not None:
                 incoming = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
                 outgoing = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])

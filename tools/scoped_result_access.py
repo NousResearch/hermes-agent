@@ -86,7 +86,7 @@ class ScopedResultAccess:
 
     def persist(self, text: str) -> str:
         """Only called by native persistence after its inline size decision."""
-        from tools.tool_result_storage import get_spillover_dir
+        from tools.tool_result_storage import get_spillover_dir, _prune_spillover_once
 
         if len(text) > MAX_RESULT_BYTES:
             return json.dumps({"status": "result_limit_exceeded", "coverage": "incomplete"})
@@ -111,6 +111,7 @@ class ScopedResultAccess:
                     raise OSError("incomplete result write")
             except OSError:
                 return json.dumps({"status": "result_unavailable", "coverage": "incomplete"})
+            _prune_spillover_once()
             self._receipts[result_id] = _Receipt(
                 path, info.st_dev, info.st_ino, len(data), hashlib.sha256(data).hexdigest(),
             )

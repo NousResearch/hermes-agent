@@ -94,3 +94,36 @@ def test_symlink_and_other_profile_cannot_adopt_result(tmp_path, monkeypatch):
         saved.unlink()
         saved.symlink_to(target)
         assert access.read(receipt['result_id'], 0, 1)['status'] == 'unavailable'
+
+
+def test_scoped_persistence_reuses_native_cleanup_and_transcript_retention(tmp_path, monkeypatch):
+    import os
+    import time
+
+    from hermes_state import SessionDB
+    import tools.tool_result_storage as storage
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(storage, "_spillover_pruned_homes", set())
+    monkeypatch.setattr(storage, "_spillover_retention_hours", lambda: 24)
+    root = storage.get_spillover_dir()
+    root.mkdir(parents=True)
+    orphan, retained = root / "scoped-orphan.txt", root / "scoped-retained.txt"
+    stale = time.time() - 48 * 3600
+    for path in (orphan, retained):
+        path.write_text("fictional archived result")
+        os.utime(path, (stale, stale))
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("retained", "cli")
+        db.append_message("retained", "tool", json.dumps({"archive": f"spillover/{retained.name}"}))
+        with ScopedResultAccess({"mcp__mail__read"}, "review_result_page") as access:
+            receipt = json.loads(maybe_persist_tool_result("x" * 110000, "mcp__mail__read", "new"))
+            assert not orphan.exists()
+            assert retained.exists()
+            assert access.read(receipt["result_id"], 0, 1)["text"] == "x"
+        db.delete_session("retained")
+        assert not retained.exists()
+    finally:
+        db.close()

@@ -53,11 +53,9 @@ def _recover_unreachable_compute_host_turn(sid: str, session: dict, inflight_at_
         pending = True
     with session["history_lock"]:
         session["_turn_cancel_requested"] = True
-        discarded = [session.get("queued_prompt"), *(session.get("queued_prompts") or ())]
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
-        _retire_discarded_queued_rows(session, discarded)
         inflight_now = session.get("inflight_turn")
         if not pending and session.get("running") and inflight_now is not None and inflight_now is inflight_at_interrupt:
             session["running"] = False

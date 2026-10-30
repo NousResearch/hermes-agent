@@ -796,7 +796,6 @@ def _interrupt_session_turn(
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
-        _retire_discarded_queued_rows(session, discarded)
     if should_interrupt:
         # Sibling of gateway/run_agent_cache.py::_interrupt_and_clear_session: a user-initiated stop of a
         # live TUI/desktop turn is the same "loop is gone" event for plugins holding per-turn external
@@ -822,6 +821,9 @@ def _interrupt_session_turn(
                 if session.get("running"):
                     session["running"] = False
                     _clear_inflight_turn(session)
+    # After the interrupt and outside history_lock: a busy state.db must not delay Stop. The envelopes are already
+    # off the queue, so nothing can drain them meanwhile.
+    _retire_discarded_queued_rows(session, discarded)
     # Sibling of the #102895 finalize-path fix above: an explicit /stop (or the WS-orphan reaper's
     # interrupt-at-grace) must also reach a background memory/skill review, not just the foreground
     # turn. The review fork is invisible to `should_interrupt`/`run_thread_alive` above (both gated

@@ -398,21 +398,17 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
 
 
 def _retire_discarded_queued_rows(session: dict, envelopes: list) -> None:
-    """Deactivate the accept-time rows of queued prompts that will never drain (Stop discarded them).
-
-    The drain deactivates its row and a restart retires still-marked rows (#125577); a Stop purge did
-    neither. The agent never holds that row, so every in-place compaction treated it as unseen and cloned
-    it after the new set, and ``_adopt_out_of_band_turns`` then handed the stale prompt to the model after
-    the newest turn. Same addressing as the drain: the recorded session, following a compaction clone."""
-    staged_rows = [staged for envelope in envelopes if isinstance(envelope, dict)
-                   and isinstance(staged := envelope.get("_submit_user_row"), dict)
-                   and isinstance(staged.get("_row_id"), int)]
-    if not staged_rows:
+    """Deactivate the accept-time rows of queued prompts Stop discarded, addressed like the drain (recorded
+    session, following a compaction clone); a left-active row is replayed after every compaction (#146968)."""
+    rows = [envelope["_submit_user_row"] for envelope in envelopes
+            if isinstance(envelope, dict) and isinstance(envelope.get("_submit_user_row"), dict)
+            and isinstance(envelope["_submit_user_row"].get("_row_id"), int)]
+    if not rows:
         return
     with _session_db(session) as db:
         if db is None:
             return
-        for staged in staged_rows:
+        for staged in rows:
             try:
                 key = _submit_row_owner_key(staged, session)
                 live_id = db.resolve_active_row_id(key, staged["_row_id"])

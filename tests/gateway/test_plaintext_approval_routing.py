@@ -134,3 +134,26 @@ def test_no_pending_approval_does_not_consume_conversational_yes():
     _clear_approval_state()
 
 
+def test_confirmation_send_failure_does_not_interrupt_approved_turn():
+    """A delivered approval is consumed even when its confirmation cannot be sent."""
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+    adapter._pending_messages = {}
+    adapter._send_with_retry = AsyncMock(side_effect=RuntimeError("transport lost"))
+    agent = MagicMock()
+    runner._session_state(session_key).turn.agent = agent
+    try:
+        handled = asyncio.run(
+            runner._handle_active_session_busy_message(_make_event("yes"), session_key)
+        )
+
+        assert handled is True
+        assert entry.event.is_set()
+        assert entry.result == "once"
+        agent.interrupt.assert_not_called()
+        assert adapter._pending_messages == {}
+    finally:
+        _clear_approval_state()
+
+

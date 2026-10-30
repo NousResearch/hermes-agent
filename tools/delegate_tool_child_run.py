@@ -597,7 +597,7 @@ def _build_tool_trace(messages: Any) -> list[dict[str, Any]]:
     return tool_trace
 
 def _build_result_entry(
-    child: Any, result: dict[str, Any], task_index: int, duration: float, schema: _SchemaOutcome,
+    child: Any, result: dict[str, Any], task_index: int, duration: float, schema: _SchemaOutcome, streamed: str = "",
 ) -> dict[str, Any]:
     """Parent-visible result entry (status, exit_reason, tool trace, tokens, cost).
     ``status``/``exit_reason``/``truncated`` follow the ``_run_single_child`` contract; a structured failure always
@@ -616,12 +616,18 @@ def _build_result_entry(
         placeholders = {"", summary.strip(), "Operation interrupted."}
         partial = next((t for m in reversed(result.get("messages") or []) if m.get("role") == "assistant"
                         and (t := flatten_message_text(m.get("content")).strip()) not in placeholders), "")
+        # A stop mid-stream leaves the reply only in the streamed text (never persisted as a message).
+        partial = partial or (streamed if streamed not in placeholders else "")
         if partial:
             interrupt_note, summary = summary.strip(), partial
     elif result.get("failed") or result.get("error"):
         # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
         # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
         status, exit_reason = "failed", "error"
+        # What the child wrote before failing is the parent's only salvage; the error keeps its own field.
+        if streamed:
+            result = {**result, "error": result.get("error") or summary}
+            summary = streamed
     else:
         # exit_reason ("completed" vs "max_iterations") tells the parent HOW the task ended; completed=False with no
         # failure = budget exhaustion. A declared schema still violated after the bounded retry does NOT fail the

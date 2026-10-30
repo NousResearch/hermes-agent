@@ -1114,3 +1114,43 @@ describe('useComposerSubmit with a setup card waiting in the onboarding chat', (
     expect(onSubmit).toHaveBeenCalledWith('/help', expect.anything())
   })
 })
+
+describe('useComposerSubmit on an insecure origin (plain-HTTP LAN: no crypto.randomUUID)', () => {
+  const V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+  beforeEach(() => vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) }))
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
+
+  it('sends a fresh draft with a v4 submission_id', async () => {
+    const { hook, onSubmit } = renderSubmitHook({ text: 'hello from the LAN' })
+
+    act(() => hook.result.current.submitDraft())
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0]).toEqual([
+      'hello from the LAN',
+      expect.objectContaining({ submission_id: expect.stringMatching(V4) })
+    ])
+  })
+
+  it('puts the draft back when preparing the send throws', async () => {
+    const attachment = { id: 'file-1', kind: 'file', label: 'notes.txt', path: '/work/notes.txt' } as ComposerAttachment
+
+    const { clearDraft, hook, loadIntoComposer, onSubmit, stashAt } = renderSubmitHook({
+      attachments: [attachment],
+      text: 'keep these words'
+    })
+
+    onSubmit.mockImplementation(() => {
+      throw new TypeError('preparation failed')
+    })
+
+    act(() => hook.result.current.submitDraft())
+    expect(clearDraft).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(loadIntoComposer).toHaveBeenCalledWith('keep these words', [attachment]))
+    expect(stashAt).toHaveBeenCalledWith('stored-session', 'keep these words', [attachment])
+  })
+})

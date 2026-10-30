@@ -27,14 +27,14 @@ numeric markers and emit an endnotes section. For a bibliography-shaped report,
 Do not mix: either numeric `[n]` + a Sources section, or `\cite{}` + BibTeX.
 Two numbering systems in one document is worse than none.
 
-## Word (.docx, `docx` skill)
+## Word (.docx, `microsoft-office` skill)
 
 Real footnotes are preferred over inline brackets in prose documents intended
 for human editing — reviewers expect Word footnotes. Keep the ledger ids as the
 footnote numbers so `verify` still works on a markdown source-of-truth, and
 generate the .docx from that markdown.
 
-## Slides (.pptx, `powerpoint` skill)
+## Slides (.pptx, `microsoft-office` skill)
 
 Inline `[n]` in the bullet, one "Sources" slide at the end rendered with
 `--style plain`. Never put a URL in a body bullet — it wrecks the layout and

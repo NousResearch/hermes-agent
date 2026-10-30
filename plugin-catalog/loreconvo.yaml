@@ -1,20 +1,60 @@
 name: loreconvo
 repo: https://github.com/labyrinth-analytics/loreconvo
-sha: bb82f6ab70e8bc12d8b4cbb361b201c99a940c7f
+sha: 99114bdc3f67b6aea01b50ff6546e61eb2de1f8b
 subdir: integrations/hermes
-description: "LoreConvo memory provider: cross-surface persistent session memory with search, recall and structured memory items. Disclosure — stores end-of-session transcripts (truncated, including tool output) and Hermes memory writes in ~/.loreconvo/sessions.db, a store shared across all Hermes profiles and other LoreConvo clients, and injects context from those sessions into each turn; a Pro license enables a one-time Hugging Face embedding-model download; installs the loreconvo package (BUSL-1.1) with lancedb, fastembed and onnxruntime into the Hermes environment."
+description: "LoreConvo memory provider: cross-surface persistent session memory with search, recall and structured memory items. Disclosure — stores end-of-session transcripts (truncated, including tool output) and Hermes memory writes in ~/.loreconvo/sessions.db, a store shared across all Hermes profiles and other LoreConvo clients, and injects context from those sessions into each turn; when LoreDocs is installed its session_link_doc tool writes session-to-document links into the LoreDocs database; a Pro license enables a one-time Hugging Face embedding-model download; installs the loreconvo package (BUSL-1.1) with lancedb, fastembed and onnxruntime into the Hermes environment."
 tier: community
 category: memory
 maintainer: labyrinth-analytics
 capabilities:
   provides_tools:
-    - loreconvo_search_sessions
-    - loreconvo_get_context
-    - loreconvo_save_memory
+    - save_session
+    - get_recent_sessions
+    - get_session
+    - search_sessions
+    - get_context_for
+    - configure_agent_context
+    - inject_agent_context
+    - tag_session
+    - link_sessions
+    - get_related_sessions
+    - graph_session_map
+    - rebuild_index
+    - rebuild_index_status
+    - get_project
+    - list_projects
+    - create_project
+    - loreconvo_onboard
+    - get_skill_history
+    - vault_suggest
+    - get_tier
+    - vault_set_tier
+    - export_sessions
+    - export_for_anthropic
+    - import_sessions
+    - inspect_sessions
+    - get_stats
+    - consolidate_memories
+    - get_memory_digest
+    - set_session_expiry
+    - get_dream_log
+    - get_docs_for_session
+    - session_link_doc
+    - get_server_info
+    - get_anti_patterns
+    - tag_as_anti_pattern
+    - untag_anti_pattern
+    - pin_session
+    - save_memory_item
+    - query_memory_items
+    - transition_memory_item
+    - update_memory_item
+    - configure_tools
   provides_hooks: []
   provides_middleware: []
   requires_env:
     - LORECONVO_HERMES_PROJECT
+    - LORECONVO_PRO
 requires_hermes: ">=0.21.0"
-version: "0.10.18"
+version: "0.10.20"
 docs_url: https://github.com/labyrinth-analytics/loreconvo?tab=readme-ov-file#loreconvo

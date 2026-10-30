@@ -1005,6 +1005,8 @@ platform:
       confirm_title: "Confirmar"
       already_resolved: "Esta aprovação já foi resolvida~"
       expired: "⌛ Aprovação expirada — o comando não foi executado (já atingiu o tempo limite ou foi resolvido em outro lugar)"
+      no_longer_pending: "⌛ Esta aprovação já não está pendente (expirou ou foi respondida noutro lugar)"
+      click_failed: "⚠️ Não foi possível registrar sua escolha. Clique novamente ou responda com /approve ou /deny."
       by_user: "{label} por {user}"
       resolved_once: "Aprovado uma vez"
       resolved_session: "Aprovado para a sessão"

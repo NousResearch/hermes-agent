@@ -124,6 +124,7 @@ def aux_probe_mode():
 
 from agent.credential_pool import load_pool
 from agent.custom_entry_pool import entry_scoped_pool, pool_for_aux_provider
+from agent import auxiliary_plugin_oauth as _plugin_oauth
 from agent.message_metadata import data_use_requirement
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
@@ -3604,7 +3605,7 @@ def _pool_cache_hint(provider: str, *, main_runtime: Optional[dict[str, Any]] = 
     entry_id = str(getattr(entry, "id", "") or "").strip() if entry is not None else ""
     if not entry_id and not digest:
         return ""
-    return f"{normalized}:{entry_id}:{digest}"
+    return f"{normalized}:{entry_id}:{digest}" + _plugin_oauth.expired_cache_hint(normalized, entry)
 
 
 # Ordered (host, provider) tables for inferring a backend from a client base URL (then profile ``hostnames``).
@@ -3764,9 +3765,10 @@ def _retry_same_provider_sync(*, resolved_provider: str, resolved_api_mode: Opti
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=False, **prep,
     )
-    return _validate_llm_response(
-        _relay_sync_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode), task,
-    )
+    with _plugin_oauth.attribute_failure(retry_client):
+        return _validate_llm_response(
+            _relay_sync_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode), task,
+        )
 
 
 async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mode: Optional[str], task: Optional[str], **prep) -> Any:
@@ -3774,11 +3776,12 @@ async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mod
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=True, **prep,
     )
-    return await asyncio.to_thread(
-        _validate_llm_response,
-        await _relay_async_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode),
-        task,
-    )
+    with _plugin_oauth.attribute_failure(retry_client):
+        return await asyncio.to_thread(
+            _validate_llm_response,
+            await _relay_async_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode),
+            task,
+        )
 
 
 def _creds_have_api_key(creds: dict[str, Any]) -> bool:
@@ -3841,10 +3844,12 @@ _CREDENTIAL_REFRESHERS: dict[str, Callable[..., bool]] = {
 
 
 def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "") -> bool:
-    """Refresh short-lived credentials for OAuth-backed auxiliary providers."""
+    """Refresh short-lived OAuth credentials; a plugin OAuth pool refreshes the row that sent the rejected key."""
     normalized = _normalize_aux_provider(provider)
     refresher = _CREDENTIAL_REFRESHERS.get(normalized)
-    if refresher is None:
+    if refresher is None and _plugin_oauth.is_plugin_oauth_pool(normalized):
+        refresher = lambda: _plugin_oauth.refresh_pooled_row(normalized, failed_api_key)
+    elif refresher is None:
         from providers import get_provider_profile
         profile = get_provider_profile(normalized)
         if profile is None:
@@ -3863,17 +3868,15 @@ def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "") ->
 def _auth_refresh_provider_for_route(
     resolved_provider: Optional[str], client_base_url: str, effective_provider: str = "",
 ) -> str:
-    """Provider whose short-lived credentials should be refreshed; auto-routed calls keep
-    ``resolved_provider == "auto"``, so infer the backend from the client's base URL."""
+    """Provider whose credentials to refresh. An ``"auto"`` route's client tag names its backend; only an untagged
+    client falls back to the host, which OAuth and API-key siblings share (api.x.ai, generativelanguage)."""
     normalized = _normalize_aux_provider(resolved_provider)
     if normalized and normalized != "auto":
         return normalized
-    host_provider = _provider_for_host(client_base_url, _AUTH_REFRESH_PROVIDER_BY_HOST)
-    # The auto client already knows it runs on the host's API-key sibling (``xai`` on api.x.ai):
-    # an XAI_API_KEY 401 must not spend a stale ``xai-oauth`` grant's refresh and switch routes.
-    if host_provider and host_provider == f"{_normalize_aux_provider(effective_provider)}-oauth":
-        return normalized
-    return host_provider or normalized
+    raw_effective = str(effective_provider or "").strip().lower()
+    if raw_effective and raw_effective not in {"auto", "actual"} and not raw_effective.startswith("custom"):
+        return _normalize_aux_provider(raw_effective)
+    return _provider_for_host(client_base_url, _AUTH_REFRESH_PROVIDER_BY_HOST) or normalized
 
 
 def _fallback_chain_entry(task: Optional[str], fb_label: str) -> Optional[dict[str, Any]]:
@@ -4062,8 +4065,7 @@ def _plan_fallback_auth_retry(
     """After an auth error on a fallback candidate: refresh credentials and rebuild the request.
     Returns ``(refresh_provider, retry)``; ``retry`` = ``(client, kwargs, destination)`` or None."""
     fb_provider = _auth_refresh_provider_for_route(destination.provider, destination.base_url)
-    refresh_kwargs = {"failed_api_key": failed_api_key} if fb_provider == "anthropic" else {}
-    if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider, **refresh_kwargs):
+    if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider, failed_api_key=failed_api_key):
         retry_client, retry_model = _get_cached_client(
             fb_provider, destination.model, **({"async_mode": True} if async_mode else {}),
             base_url=destination.base_url or None, api_mode=destination.api_mode,
@@ -4567,8 +4569,8 @@ def _try_main_provider_route(
         elif runtime_api_key:
             explicit_api_key = runtime_api_key
     elif runtime_api_key:
-        # Pin aux to the main session's working key, not a re-selected (maybe exhausted) pool key.
-        explicit_api_key = runtime_api_key
+        # Pin the session's working key over a re-selected pool key, unless its plugin OAuth pool knows it is dead.
+        explicit_api_key = None if _plugin_oauth.pool_superseded_key(main_provider, runtime_api_key) else runtime_api_key
     # Skip if the main provider was recently 402'd (unhealthy TTL bounds the bypass).
     main_chain_label = _normalize_chain_label(resolved_provider)
     if main_chain_label and _is_provider_unhealthy(main_chain_label, health_base_url):
@@ -6006,7 +6008,7 @@ def _get_cached_client(
     if not effective_api_key:
         _pool = pool_for_aux_provider(provider, _normalize_aux_provider(provider), lambda k: _load_pool_with_credentials(k, " (peek)"))
         if _pool is not None and (_pe := _peek_pool_entry(provider, _pool)) is not None:
-            effective_api_key = _pool_runtime_api_key(_pe) or api_key
+            effective_api_key = _pool_runtime_api_key(_plugin_oauth.fresh_entry(_normalize_aux_provider(provider), _pool, _pe)) or api_key
     client, default_model = resolve_provider_client(
         provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,
         api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,
@@ -7703,22 +7705,20 @@ def _ladder_credential_rungs(
         resolved_provider, route.base_info, _effective_provider_for_client(client, ""))
     if (_is_auth_error(first_err) and auth_refresh_provider not in {"auto", "", None}
             and not client_is_nous):
-        refresh_kwargs = ({"failed_api_key": getattr(client, "api_key", "")}
-                          if auth_refresh_provider == "anthropic" else {})
-        if _refresh_provider_credentials(auth_refresh_provider, **refresh_kwargs):
+        failed_key = getattr(client, "api_key", "")
+        if _refresh_provider_credentials(auth_refresh_provider, failed_api_key=failed_key if isinstance(failed_key, str) else ""):
             if auth_refresh_provider != _normalize_aux_provider(resolved_provider):
-                # The stale client is cached under the route label (e.g. "auto"), not the
-                # concrete backend we refreshed.
+                # The stale client is cached under the route label (e.g. "auto"), not the backend.
                 _evict_cached_clients(resolved_provider)
             logger.info("Auxiliary %s%s: refreshed %s credentials after auth error, retrying",
                         task or "call", tag, auth_refresh_provider)
-            step = _LadderStep(
-                "retry_same_provider",
-                (auth_refresh_provider, route.resolved_model or route.final_model))
+            step = _LadderStep("retry_same_provider",
+                               (auth_refresh_provider, route.resolved_model or route.final_model))
             resp, first_err = yield from _rung(
                 step, lambda exc: _credential_rung_accepts(exc) or _is_connection_error(exc))
             if first_err is None:
                 return resp, None
+            _plugin_oauth.bench_pooled_row(auth_refresh_provider, first_err)  # no-op unless a 401
             # ``first_err`` is now the retry's own failure, not the original auth error: the
             # pool gate below and the ladder tail's eviction check both read this narrowed
             # value. An unclaimed failure (e.g. a 500) re-raised out of ``_rung`` above

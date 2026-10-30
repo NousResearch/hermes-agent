@@ -1052,7 +1052,8 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
       7. OAuth specs (nous/codex/xai/qwen; "auto" swallows AuthError, logs, and stamps it on a
          keyless fallback as ``auth_error``) → minimax-oauth
          → external-process → anthropic env → bedrock → registry api_key providers
-      8. OpenRouter / bare-custom fallback
+      8. OpenRouter / bare-custom fallback — except for an explicitly requested registered provider
+         nothing above could resolve (signed-out OAuth plugin, dead pool): typed AuthError instead
       9. ``model.openai_runtime`` overlay (openai/openai-codex, named custom providers): rewrites the picked rung's
          api_mode to ``codex_app_server``; the rung's credential/endpoint is then not used
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
@@ -1103,6 +1104,42 @@ def _raise_for_credentialless_bare_custom(requested_provider: str, runtime: dict
     )
 
 
+def _raise_if_registered_provider_unresolved(requested_provider: str, provider: str) -> None:
+    """An explicitly selected registered provider is authoritative, whatever its auth type. Every
+    rung that could build its runtime (credential pool, OAuth store, external process, env key)
+    has already declined, so the OpenRouter fallback would send the request — with an unrelated
+    ``OPENROUTER_API_KEY`` — to a provider the operator never chose (a signed-out plugin OAuth
+    provider's model billed to OpenRouter). Raise the typed error instead so the configured
+    ``fallback_providers`` chain decides. ``auto`` keeps the OpenRouter default."""
+    if requested_provider == "auto" or provider in ("openrouter", "custom") or provider not in PROVIDER_REGISTRY:
+        return
+    from agent.credential_pool import STATUS_DEAD
+    from hermes_cli.runtime_readiness import missing_credentials_suffix
+    from hermes_constants import profile_cli_selector
+    try:
+        pool = load_pool(provider)
+        entries = pool.entries() if pool.has_credentials() else []
+    except Exception:
+        # The pool only refines the wording; an unreadable one must not replace the AuthError below.
+        logger.debug("could not read %s credential pool for the sign-in error", provider, exc_info=True)
+        entries = []
+    dead = [e for e in entries if e.last_status == STATUS_DEAD]
+    if dead:
+        reason = dead[0].last_error_message or dead[0].last_error_reason or "refresh rejected"
+        state = f"its sign-in was lost ({reason})"
+    elif entries:
+        state = "no stored credential is usable right now"
+    else:
+        state = "it is not signed in"
+    raise AuthError(
+        f"No usable credentials for provider '{provider}': {state}. The request is not sent to another provider; "
+        f"run `hermes {profile_cli_selector()}auth add {provider}` to sign in.{missing_credentials_suffix(provider)}",
+        provider=provider,
+        code="missing_credentials",
+        relogin_required=bool(dead) and len(dead) == len(entries),
+    )
+
+
 def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model):
     """Ladder rungs 2-8, yielded lazily so each is evaluated only when the previous one returned
     nothing; the last rung (OpenRouter / bare-custom fallback) always yields a runtime."""
@@ -1142,6 +1179,7 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         yield _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model)
+    _raise_if_registered_provider_unresolved(requested_provider, provider)
     fallback = _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url)
     if swallowed_auth_error is not None and not fallback.get("api_key"):
         fallback["auth_error"] = swallowed_auth_error

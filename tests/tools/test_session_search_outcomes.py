@@ -1,8 +1,9 @@
-"""session_search discovery results carry the outcomes recorded on a session (#138653).
+"""session_search results carry the outcomes recorded on a session (#138653).
 
-Recall should tell work that shipped from work that was reverted: each hit gets ``outcomes`` (newest
-first, at most three, ``{signal, verdict, source, recorder}`` only, never note/ref) when its compression
-lineage has any; a /reset successor of the hit's conversation never lends it outcomes.
+Recall should tell work that shipped from work that was reverted: discover hits, browse rows and the read /
+scroll ``session_meta`` get ``outcomes`` (effective rows only, newest first, at most three, ``{signal,
+verdict, source}``; never note, ref, or a row the agent recorded itself) when the compression lineage has
+any; a /reset successor of the conversation never lends it outcomes.
 """
 
 import json
@@ -30,7 +31,35 @@ def _session(db, sid, text, *, parent=None, end_reason=None, model_config=None):
 
 
 def _rec(db, sid, signal, **kw):
-    db.record_session_outcome(sid, signal=signal, source="github", recorder="cli", **kw)
+    db.record_session_outcome(sid, signal=signal, source="github", recorder=kw.pop("recorder", "cli"), **kw)
+
+
+def _call(db, **kw):
+    result = json.loads(session_search(db=db, **kw))
+    assert result["success"] is True, result
+    return result
+
+
+SHIPPED = [  # pr/5's merge is superseded by its revert; the agent's own (newest) grade is never shown
+    {"signal": "reverted", "verdict": "bad", "source": "github"},
+    {"signal": "review_accepted", "verdict": "good", "source": "github"},
+    {"signal": "ci_passed", "verdict": "good", "source": "github"},
+]
+
+
+def _leaks(payload) -> list[str]:
+    """The note, the ref, the agent's own row, and the recorder field must never reach the model."""
+    text = json.dumps(payload)
+    return [w for w in ("never shown", "pr/5", "task.done", "recorder") if w in text]
+
+
+def _shipped(db):
+    _session(db, "shipped", "rewrite the zebrafish uploader retry loop")
+    _session(db, "quiet", "zebrafish uploader docs pass")
+    for n, (signal, ref) in enumerate((("ci_passed", "run/1"), ("review_accepted", "pr/5"), ("merged", "pr/5"),
+                                       ("reverted", "pr/5"))):
+        _rec(db, "shipped", signal, ref=ref, note="never shown to the model", observed_at=1_700_000_000.0 + n)
+    _rec(db, "shipped", "task.done", verdict="good", recorder="agent", observed_at=1_700_000_100.0)
 
 
 def _hits(db, query):
@@ -39,22 +68,27 @@ def _hits(db, query):
     return {hit["session_id"]: hit for hit in result["results"]}
 
 
-def test_hits_carry_newest_three_outcomes_without_note_or_ref(db):
-    _session(db, "shipped", "rewrite the zebrafish uploader retry loop")
-    _session(db, "quiet", "zebrafish uploader docs pass")
-    for n, (signal, ref) in enumerate((("ci_passed", "run/1"), ("review_accepted", "pr/5"), ("merged", "pr/5"))):
-        _rec(db, "shipped", signal, ref=ref, note="never shown to the model", observed_at=1_700_000_000.0 + n)
-    _rec(db, "shipped", "reverted", ref="pr/6")
+def test_hits_carry_the_newest_three_effective_outcomes_without_note_ref_or_agent_rows(db):
+    _shipped(db)
 
     hits = _hits(db, "zebrafish uploader")
 
-    assert hits["shipped"]["outcomes"] == [
-        {"signal": "reverted", "verdict": "bad", "source": "github", "recorder": "cli"},
-        {"signal": "merged", "verdict": "good", "source": "github", "recorder": "cli"},
-        {"signal": "review_accepted", "verdict": "good", "source": "github", "recorder": "cli"},
-    ]
+    assert hits["shipped"]["outcomes"] == SHIPPED
     assert "outcomes" not in hits["quiet"]
-    assert "never shown" not in json.dumps(hits) and "pr/5" not in json.dumps(hits)
+    assert not _leaks(hits)
+
+
+def test_reading_scrolling_and_browsing_a_session_show_the_same_outcomes(db):
+    _shipped(db)
+    anchor = db.get_messages("shipped")[0]["id"]
+
+    read = _call(db, session_id="shipped")["session_meta"]
+    scroll = _call(db, session_id="shipped", around_message_id=anchor)["session_meta"]
+    browse = {r["session_id"]: r for r in _call(db)["results"]}
+
+    assert read["outcomes"] == scroll["outcomes"] == browse["shipped"]["outcomes"] == SHIPPED
+    assert "outcomes" not in _call(db, session_id="quiet")["session_meta"] and "outcomes" not in browse["quiet"]
+    assert not _leaks([read, scroll, browse])
 
 
 def test_outcome_on_the_compression_tip_reaches_a_hit_in_the_root(db):
@@ -64,8 +98,7 @@ def test_outcome_on_the_compression_tip_reaches_a_hit_in_the_root(db):
 
     hits = list(_hits(db, "okapi billing").values())
 
-    assert [hit.get("outcomes") for hit in hits] == [
-        [{"signal": "merged", "verdict": "good", "source": "github", "recorder": "cli"}]]
+    assert [hit.get("outcomes") for hit in hits] == [[{"signal": "merged", "verdict": "good", "source": "github"}]]
 
 
 def test_outcome_on_a_reset_successor_does_not_reach_the_earlier_conversation(db):

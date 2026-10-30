@@ -601,3 +601,87 @@ def test_alias_with_a_different_payload_label_is_not_matched(homes, monkeypatch)
     )
     assert other.exists(), "a different account's grant must not be retired as LABEL's alias"
     assert set(list_shared_hermes_oauth_credentials()) == {LABEL, "someone-else"}
+
+
+@pytest.mark.parametrize(
+    "bad_label",
+    [
+        pytest.param("attacker", id="mismatch"),
+        pytest.param(None, id="missing"),
+        pytest.param(42, id="non-string"),
+        pytest.param("   ", id="whitespace"),
+    ],
+)
+def test_canonical_file_is_not_trusted_unless_payload_label_matches(homes, monkeypatch, bad_label):
+    """Codex review 8-2: the canonical ``<sanitized>-<digest>.json`` filename
+    is not an identity either -- a victim's canonical path holding another
+    (or no) label must not be served, listed under the victim, or selected."""
+    from agent.anthropic_adapter import (
+        _get_shared_hermes_oauth_label_file,
+        list_shared_hermes_oauth_credentials,
+        read_shared_hermes_oauth_credentials,
+    )
+
+    root, worker = homes
+    _use_home(monkeypatch, root)
+    canonical = _get_shared_hermes_oauth_label_file(LABEL)
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"accessToken": "bad-access", "refreshToken": "bad-refresh", "expiresAt": FUTURE_MS}
+    if bad_label is not None:
+        payload["label"] = bad_label
+    canonical.write_text(json.dumps(payload))
+
+    assert read_shared_hermes_oauth_credentials(LABEL) is None
+    listed = list_shared_hermes_oauth_credentials()
+    assert LABEL not in listed
+    if bad_label == "attacker":
+        # A well-formed grant that merely lives under the wrong filename is
+        # still discoverable under the label it actually declares.
+        assert listed["attacker"]["accessToken"] == "bad-access"
+        assert read_shared_hermes_oauth_credentials("attacker")["accessToken"] == "bad-access"
+    else:
+        assert listed == {}
+    _write_store(worker, [])
+    assert [e for e in _load(monkeypatch, worker)._available_entries() if e.label == LABEL] == []
+
+
+def test_padded_payload_label_normalizes_to_an_exact_match(homes, monkeypatch):
+    """Both sides are stripped before the exact comparison (same rule the
+    publisher and pool use), so surrounding whitespace is not a mismatch."""
+    from agent.anthropic_adapter import _get_shared_hermes_oauth_label_file, read_shared_hermes_oauth_credentials
+
+    root, _worker = homes
+    _use_home(monkeypatch, root)
+    canonical = _get_shared_hermes_oauth_label_file(LABEL)
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_text(json.dumps(
+        {"accessToken": "ok-access", "refreshToken": "ok-refresh", "expiresAt": FUTURE_MS, "label": f"  {LABEL} "}
+    ))
+    assert read_shared_hermes_oauth_credentials(LABEL)["accessToken"] == "ok-access"
+    assert read_shared_hermes_oauth_credentials(f" {LABEL}")["accessToken"] == "ok-access"
+
+
+def test_read_validates_the_bytes_it_returns_under_the_label_lock(homes, monkeypatch):
+    """The alias list is re-read and re-validated inside the label lock, so a
+    file that changed between discovery and read cannot leak a foreign grant."""
+    import agent.anthropic_adapter as adapter
+
+    root, _worker = homes
+    _use_home(monkeypatch, root)
+    alias = root / ".anthropic_oauth" / f"{LABEL}.json"
+    alias.parent.mkdir(parents=True, exist_ok=True)
+    good = {"accessToken": "good-access", "refreshToken": "good-refresh", "expiresAt": FUTURE_MS, "label": LABEL}
+    alias.write_text(json.dumps(good))
+
+    real_find = adapter._find_shared_hermes_oauth_label_aliases
+    lock_seen = []
+
+    def swapping_find(label):
+        found = real_find(label)  # discovery sees the good alias ...
+        lock_seen.append(adapter.shared_hermes_oauth_lock_target(label).with_suffix(".lock").exists())
+        alias.write_text(json.dumps({**good, "label": "attacker"}))  # ... then it is swapped
+        return found
+
+    monkeypatch.setattr(adapter, "_find_shared_hermes_oauth_label_aliases", swapping_find)
+    assert adapter.read_shared_hermes_oauth_credentials(LABEL) is None
+    assert lock_seen == [True], "alias discovery must run under the label lock"

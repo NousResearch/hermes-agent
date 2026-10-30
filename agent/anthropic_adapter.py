@@ -1659,33 +1659,71 @@ def shared_hermes_oauth_lock_target(label: Optional[str]) -> Path:
 
 
 def read_shared_hermes_oauth_credentials(label: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Read one shared Hermes PKCE grant, preferring its label file."""
-    paths = []
-    if label is not None:
-        paths.append(_get_shared_hermes_oauth_label_file(label))
-        paths.extend(_find_shared_hermes_oauth_label_aliases(label))
-    paths.append(_get_shared_hermes_oauth_file())
-    for oauth_file in paths:
-        if not oauth_file.exists():
-            continue
+    """Read one shared Hermes PKCE grant, preferring its label file.
+
+    Per-label files (canonical ``<sanitized>-<digest>.json`` and pre-digest
+    aliases) are trusted only when the payload's own ``label`` matches the
+    requested label exactly -- the filename is never an identity.  That check
+    happens on the bytes actually returned, under the label's publisher lock,
+    so an alias discovered a moment earlier cannot be swapped underneath us.
+    The legacy singleton keeps its ``grants`` map / ``shared_label`` rules.
+    """
+    want = str(label).strip() if label is not None else None
+    if want is not None:
         try:
-            data = json.loads(oauth_file.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                continue
-            if label is not None:
-                if isinstance(data.get("grants"), dict):
-                    data = data["grants"].get(label)
-                elif oauth_file == _get_shared_hermes_oauth_file():
-                    legacy_label = data.get("shared_label") or data.get("label") or "default"
-                    if legacy_label != label:
-                        continue
-            if label is None and isinstance(data.get("grants"), dict):
-                return data
-            if isinstance(data, dict) and data.get("accessToken"):
-                return data
-        except (json.JSONDecodeError, OSError, IOError) as exc:
-            logger.debug("Failed to read shared Hermes OAuth credentials: %s", exc)
+            from hermes_cli.auth import _auth_store_lock
+            with _auth_store_lock(target_path=shared_hermes_oauth_lock_target(want)):
+                per_label = [_get_shared_hermes_oauth_label_file(want)]
+                per_label.extend(_find_shared_hermes_oauth_label_aliases(want))
+                for oauth_file in per_label:
+                    data = _read_per_label_shared_grant(oauth_file, want)
+                    if data is not None:
+                        return data
+        except (OSError, IOError, TimeoutError, ValueError) as exc:
+            logger.debug("Failed to read per-label shared Hermes OAuth credentials: %s", exc)
+
+    oauth_file = _get_shared_hermes_oauth_file()
+    if not oauth_file.exists():
+        return None
+    try:
+        data = json.loads(oauth_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        if label is not None:
+            if isinstance(data.get("grants"), dict):
+                data = data["grants"].get(label)
+            else:
+                legacy_label = data.get("shared_label") or data.get("label") or "default"
+                if legacy_label != label:
+                    return None
+        if label is None and isinstance(data.get("grants"), dict):
+            return data
+        if isinstance(data, dict) and data.get("accessToken"):
+            return data
+    except (json.JSONDecodeError, OSError, IOError) as exc:
+        logger.debug("Failed to read shared Hermes OAuth credentials: %s", exc)
     return None
+
+
+def _read_per_label_shared_grant(path: Path, want: str) -> Optional[Dict[str, Any]]:
+    """Return the grant in ``path`` iff its payload declares label ``want``."""
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, IOError) as exc:
+        logger.debug("Failed to read shared Hermes OAuth grant %s: %s", path.name, exc)
+        return None
+    if not isinstance(data, dict) or not data.get("accessToken"):
+        return None
+    declared = _shared_grant_payload_label(data)
+    if declared != want:
+        logger.warning(
+            "Ignoring shared Hermes OAuth grant %s: payload label %r does not match requested %r",
+            path.name, declared, want,
+        )
+        return None
+    return data
 
 
 def list_shared_hermes_oauth_credentials() -> Dict[str, Dict[str, Any]]:

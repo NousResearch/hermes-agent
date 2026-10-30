@@ -1,6 +1,6 @@
 name: hermes-finance
 title: Hermes Finance
-repo: https://github.com/arspesk/hermes-finance
+repo: https://github.com/apelabs-dev/hermes-finance
 sha: "9c5a10562aaa9f625240d9a59e197cd01187fec5"
 subdir: hermes_plugin
 version: "0.2.5"

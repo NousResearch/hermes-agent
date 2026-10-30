@@ -108,6 +108,25 @@ jobs:
       # nothing.
       - name: Run all workspace checks
         run: node .github/scripts/run-workspace-checks.mjs
+
+      # The lockfile pins @assistant-ui/tap 0.9.8, which has no external-store
+      # commit check at all. Packaged builds have shipped 0.9.17 semantics,
+      # where getSnapshot must return a cached value: a runtime whose snapshot
+      # is freshly allocated on every read throws "Maximum update depth
+      # exceeded" on the first commit — that is how the desktop workspace died
+      # on mount. Nothing in the run above can see that class while the pin
+      # holds, so the runtime snapshot contracts also run against the shipped
+      # semantics. --no-package-lock/--no-save keep package.json and the
+      # lockfile untouched for the clean-worktree check below; the installed
+      # tree is disposable and is not cached.
+      - name: Install the shipped @assistant-ui/tap semantics
+        run: npm install --no-save --no-package-lock @assistant-ui/tap@0.9.17
+      - name: Desktop snapshot contracts against the shipped tap semantics
+        working-directory: apps/desktop
+        run: >-
+          npx vitest run --project ui
+          src/lib/incremental-external-store-runtime.test.ts
+          src/lib/incremental-external-store-runtime.render-loop.test.ts
       - name: Check the checkout is clean
         # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
         # leaves an untracked or modified file in the checkout is reported here. Runs only when

@@ -428,21 +428,50 @@ def _broadcast_watched_changes(now: float | None = None) -> None:
 _skin_watcher_started = False
 
 
+def register_live_transport(transport: Transport | None) -> None:
+    """Track a global-event consumer and wake the parked change watcher."""
+    if transport is not None:
+        with _live_transports_lock:
+            _live_transports.add(transport)
+            _live_transports_lock.notify_all()
+
+
+def unregister_live_transport(transport: Transport | None) -> None:
+    """Remove a consumer; the last disconnect parks only presentation work."""
+    with _live_transports_lock:
+        _live_transports.discard(transport)
+        _live_transports_lock.notify_all()
+    _server_requests.forget(transport)
+
+
 def _ensure_skin_watcher() -> None:
-    """Start the process's one change watcher (named for its original skin-only duty): cheap
-    on-disk signatures → broadcast events, so changes go live without client polling. Idempotent."""
+    """Watch for display changes only while WS peers or the stdio TUI can consume them.
+
+    The transport registry owns demand, not the sessions table: detached turns, cron and
+    pending deliveries must keep running, but do not need unobserved display scans. Keep
+    signatures across a disconnect so reconnect catches changes made while parked.
+    """
+    from agent.memory_provider import spawn_context_thread
+
     global _skin_watcher_started
-    if _skin_watcher_started:
-        return
-    _skin_watcher_started = True
-    _note_skin_broadcast()  # seed the baseline so only a real change repaints
 
     def _loop() -> None:
         while True:
-            time.sleep(0.5)
+            with _live_transports_lock:
+                _live_transports_lock.wait_for(lambda: _stdio_is_rpc_channel or _live_transports)
             _broadcast_skin_if_changed()
             _broadcast_watched_changes()
-    threading.Thread(target=_loop, name="hermes-change-watcher", daemon=True).start()
+            with _live_transports_lock:
+                if _stdio_is_rpc_channel or _live_transports:
+                    _live_transports_lock.wait(timeout=0.5)
+
+    with _live_transports_lock:
+        if _skin_watcher_started:
+            return
+        _note_skin_broadcast()  # seed before the worker or a concurrent ensure can run
+        # Process-wide projections must not inherit the first peer's profile/request scope.
+        contextvars.Context().run(spawn_context_thread, _loop, name="hermes-change-watcher").start()
+        _skin_watcher_started = True
 
 
 def register(server) -> None:

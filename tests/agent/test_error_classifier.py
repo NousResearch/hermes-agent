@@ -487,6 +487,27 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.overloaded
 
+    @pytest.mark.parametrize("body", [
+        {"error": {"message": "Insufficient credits"}},
+        {"error": {"previous_errors": [{"status": 402}]}},
+        {"error": {"upstream": {"status": 429}}},
+        {"error": {"metadata": {"limit_source": "openrouter_credits"}}},
+        {"error": {"metadata": {"limit_source": "daily_quota"}}},
+        {"error": {
+            "message": '[openrouter/model] [402]: {"error":{"metadata":'
+                       '{"limit_source":"openrouter_credits"}}}',
+        }},
+    ])
+    def test_503_wrapping_billing_error_falls_back(self, body):
+        result = classify_api_error(MockAPIError("Service Unavailable", status_code=503, body=body))
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_503_ignores_unrelated_nested_status(self):
+        body = {"error": {"attempt": {"status": 429}, "upstream": {"status": 500}}}
+        result = classify_api_error(MockAPIError("Service Unavailable", status_code=503, body=body))
+        assert result.reason == FailoverReason.overloaded
 
     def test_408_request_timeout_is_retryable_timeout(self):
         """HTTP 408 Request Timeout is a transient timing failure the server

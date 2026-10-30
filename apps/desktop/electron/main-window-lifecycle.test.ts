@@ -115,6 +115,45 @@ test('explicit relaunch activates a minimized tray-hidden window', () => {
   assert.deepEqual(calls, ['restore', 'show', 'focus'])
 })
 
+test('explicit activation shows and focuses an already-visible window (multi-window / notification focus)', () => {
+  const calls: string[] = []
+
+  class FakeWindow {
+    minimized = false
+    visible = true
+    focused = false
+    isDestroyed() {
+      return false
+    }
+    isMinimized() {
+      return this.minimized
+    }
+    isVisible() {
+      return this.visible
+    }
+    isFocused() {
+      return this.focused
+    }
+    restore() {
+      calls.push('restore')
+    }
+    show() {
+      calls.push('show')
+    }
+    moveTop() {
+      calls.push('moveTop')
+    }
+    focus() {
+      calls.push('focus')
+      this.focused = true
+    }
+  }
+
+  activateWindow(new FakeWindow())
+
+  assert.deepEqual(calls, ['show', 'moveTop', 'focus'])
+})
+
 // Regression for #130810: the last-chat `closed` fallback quits on
 // Windows/Linux when no chat surface remains and no quit is already tearing
 // down. It must not consult the overlay-suppression latch, must stay quiet

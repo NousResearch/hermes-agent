@@ -8,7 +8,9 @@ import socket
 import threading
 from unittest.mock import patch
 
-import paramiko
+import pytest
+
+paramiko = pytest.importorskip("paramiko")
 from paramiko.common import (
     AUTH_SUCCESSFUL,
     OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED,
@@ -91,10 +93,11 @@ def test_registers_as_plugin_with_fixed_result_budget() -> None:
         registry.deregister("remote_run")
 
 
-def test_command_builder_quotes_inputs_and_rejects_env_key_injection() -> None:
-    inner = _build_command("printf ok", "/tmp/a b", {"VALUE": "it's safe"}, False)
-    command = _build_command("printf ok", "/tmp/a b", {"VALUE": "it's safe"}, True)
-    assert "cd '/tmp/a b'" in inner
+def test_command_builder_quotes_inputs_and_rejects_env_key_injection(tmp_path) -> None:
+    workdir = str(tmp_path / "a b")
+    inner = _build_command("printf ok", workdir, {"VALUE": "it's safe"}, False)
+    command = _build_command("printf ok", workdir, {"VALUE": "it's safe"}, True)
+    assert f"cd {shlex.quote(workdir)}" in inner
     assert "it'\"'\"'s safe" in inner
     assert shlex.split(command)[-1] == inner
 

@@ -62,6 +62,9 @@ export const ERROR_CODE_KEYS = [
   // The API key this chat started with changed or was removed (gateway: a chat never switches keys
   // on its own): Retry repeats it; a new chat runs on the current key.
   'launch_credentials_unavailable',
+  // The managed local model server is down (starting, or switched off): named as itself, not as
+  // the custom-server endpoint copy, and with no Desktop-only pane (the Webapp shares this card).
+  'local_runtime_unavailable',
   // The owner did not confirm a forwarded send in time; it may already be queued: no Retry.
   'SESSION_OWNER_UNCONFIRMED',
   'agent_init_failed',

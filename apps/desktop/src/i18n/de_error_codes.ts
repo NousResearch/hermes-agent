@@ -19,5 +19,9 @@ export const deErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   launch_credentials_unavailable: {
     title: 'Der API-Schlüssel dieses Chats hat sich geändert',
     body: 'Dieser Chat wurde mit einem API-Schlüssel gestartet, der inzwischen geändert oder entfernt wurde, daher wurde Ihre Nachricht nicht gesendet. Ein offener Chat wechselt nie von selbst zu einem anderen Schlüssel. Wählen Sie „Neue Session starten“, um Ihren aktuellen Schlüssel zu verwenden.'
+  },
+  local_runtime_unavailable: {
+    title: 'Lokaler Modellserver nicht erreichbar',
+    body: 'Der lokale Modellserver läuft nicht: Er startet möglicherweise noch oder wurde ausgeschaltet. Versuchen Sie es gleich noch einmal oder wechseln Sie zu einem anderen Modell.'
   }
 }

@@ -9,7 +9,7 @@ import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext
 markOnboardingDecided()
 
 const SERVER_OFF =
-  'The local model server is turned off. Turn it back on in Settings → Providers → Local models, or switch to another model.'
+  'The local model server is turned off. Turn it back on in the Hermes desktop app, or switch to another model with /model.'
 
 function coldState(): DesktopOnboardingState {
   return {
@@ -74,7 +74,8 @@ describe('refreshOnboarding with the local model server down', () => {
       expect.objectContaining({
         action: expect.objectContaining({ label: 'Open Local models' }),
         id: 'local-runtime-unavailable',
-        message: SERVER_OFF
+        // Desktop has the pane, so its notice names it beside the button that opens it.
+        message: expect.stringContaining('Settings → Providers → Local models')
       })
     )
   })
@@ -90,6 +91,7 @@ describe('refreshOnboarding with the local model server down', () => {
     const shown = notify.mock.calls.at(-1)?.[0]
     expect(shown?.action?.label).toBe('Choose another model')
     expect(shown?.message).toContain('Hermes desktop app')
+    expect(shown?.message).not.toContain('Local models')
   })
 
   it('still opens onboarding for an uncoded failure (a missing credential)', async () => {

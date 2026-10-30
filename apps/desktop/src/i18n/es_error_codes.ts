@@ -19,5 +19,9 @@ export const esErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   launch_credentials_unavailable: {
     title: 'La clave de API de este chat cambió',
     body: 'Este chat se inició con una clave de API que desde entonces cambió o se eliminó, así que tu mensaje no se envió. Un chat abierto nunca cambia por sí solo a otra clave. Usa «Iniciar sesión nueva» para usar tu clave actual.'
+  },
+  local_runtime_unavailable: {
+    title: 'No se puede acceder al servidor de modelos local',
+    body: 'El servidor de modelos local no está en ejecución: puede que aún se esté iniciando o que se haya apagado. Reintenta en un momento o cambia a otro modelo.'
   }
 }

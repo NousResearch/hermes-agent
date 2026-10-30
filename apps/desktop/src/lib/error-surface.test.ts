@@ -208,10 +208,13 @@ describe('cron session read-only (#141348)', () => {
 })
 
 describe('managed local model server down', () => {
-  it('reads as an unreachable model server and offers another model, never a key update', () => {
+  it('names the local model server, not a custom one, and offers another model, never a key update', () => {
     const surface = parseErrorSurface({ layer: 'endpoint', code: 'local_runtime_unavailable', retryable: false })
+    const { body, title } = errorCardText(en.assistant.thread, surface)
 
-    expect(errorCardText(en.assistant.thread, surface).title).toBe(en.assistant.thread.errorLayers.endpoint)
+    expect(`${title} ${body}`).toContain('local model server')
+    // The card is the same in Desktop and the Webapp, which has no Local models pane.
+    expect(body).not.toMatch(/custom|Settings|Local models/)
     expect(errorCardActions(surface)).toEqual({ primary: 'switch_provider' })
   })
 

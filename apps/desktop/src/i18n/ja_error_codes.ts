@@ -105,5 +105,9 @@ export const jaErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   launch_credentials_unavailable: {
     title: 'このチャットの API キーが変更されました',
     body: 'このチャットの開始時の API キーがその後変更または削除されたため、メッセージは送信されませんでした。開いているチャットが自動で別のキーに切り替わることはありません。「新しいセッションを開始」で現在のキーを使ってください。'
+  },
+  local_runtime_unavailable: {
+    title: 'ローカルモデルサーバーに接続できません',
+    body: 'ローカルモデルサーバーが動作していません。まだ起動中か、オフになっている可能性があります。少し待ってから再試行するか、別のモデルに切り替えてください。'
   }
 }

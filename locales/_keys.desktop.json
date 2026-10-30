@@ -250,6 +250,8 @@
     "assistant.thread.errorCodes.invalid_response.title",
     "assistant.thread.errorCodes.launch_credentials_unavailable.body",
     "assistant.thread.errorCodes.launch_credentials_unavailable.title",
+    "assistant.thread.errorCodes.local_runtime_unavailable.body",
+    "assistant.thread.errorCodes.local_runtime_unavailable.title",
     "assistant.thread.errorCodes.loop_error.body",
     "assistant.thread.errorCodes.loop_error.title",
     "assistant.thread.errorCodes.model_not_found.body",

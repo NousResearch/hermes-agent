@@ -336,7 +336,11 @@ export function settleLocalRuntimeNotice(runtime: RuntimeReadinessResult) {
 // The Webapp has no Local models pane (the flag is Electron-only), so there the way forward it can
 // offer is another model, and the sentence must not send the user to a pane they cannot open.
 const WEBAPP_LOCAL_RUNTIME_DOWN =
-  "The local model server isn't serving. Start it from the Hermes desktop app (Settings → Providers → Local models), or choose another model."
+  "The local model server isn't serving. Start it from the Hermes desktop app, or choose another model."
+
+// Desktop has the pane, so its notice names it next to the button that opens it.
+const DESKTOP_LOCAL_RUNTIME_DOWN =
+  "The local model server isn't serving. It may still be starting, or it was turned off: check Settings → Providers → Local models, or choose another model."
 
 function keepConfiguredWithLocalRuntimeDown(reason: string) {
   const pane = $localModelsEnabled.get()
@@ -349,7 +353,7 @@ function keepConfiguredWithLocalRuntimeDown(reason: string) {
       : { label: 'Choose another model', onClick: () => setModelPickerOpen(true) },
     id: LOCAL_RUNTIME_NOTICE_ID,
     kind: 'warning',
-    message: pane ? reason : WEBAPP_LOCAL_RUNTIME_DOWN,
+    message: pane ? DESKTOP_LOCAL_RUNTIME_DOWN : WEBAPP_LOCAL_RUNTIME_DOWN,
     title: 'Local model unavailable'
   })
 }

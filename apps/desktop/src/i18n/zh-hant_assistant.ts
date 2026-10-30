@@ -226,6 +226,10 @@ export const zhHantAssistant = {
         launch_credentials_unavailable: {
           title: '此聊天的 API 金鑰已變更',
           body: '此聊天開始時使用的 API 金鑰後來已被變更或刪除，因此你的訊息未送出。開啟中的聊天不會自行切換到其他金鑰。請使用「開始新工作階段」以使用目前的金鑰。'
+        },
+        local_runtime_unavailable: {
+          title: '無法連線到本機模型伺服器',
+          body: '本機模型伺服器未執行：它可能仍在啟動中，或已被關閉。請稍後重試，或切換到其他模型。'
         }
       },
       errorLayers: {

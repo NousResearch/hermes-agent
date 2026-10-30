@@ -52,6 +52,9 @@ interface VoiceConversationOptions {
   /** Awaited right before the mic is opened. Used to let the wake-word listener
    *  fully release the capture device first, so the two never contend. */
   beforeMicOpen?: () => Promise<void> | void
+  /** This composer's session — stamped on every clip so the right chat's UI
+   *  claims the playback (tiles share one renderer and one speaker). */
+  sessionId?: string | null
 }
 
 /**
@@ -90,7 +93,8 @@ export function useVoiceConversation({
   consumePendingResponse,
   parkText,
   focusInput,
-  beforeMicOpen
+  beforeMicOpen,
+  sessionId
 }: VoiceConversationOptions) {
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
@@ -99,8 +103,12 @@ export function useVoiceConversation({
   // voice; a ref keeps the long-lived turn closures below reading the current
   // value.
   const { connectionId: ownerConnectionId, profile: ownerProfile } = useComposerScope()
-  const ownerRef = useRef({ connectionId: ownerConnectionId, profile: ownerProfile })
-  ownerRef.current = { connectionId: ownerConnectionId, profile: ownerProfile }
+  // The clip's owner: which TTS voice to synthesize with (connection, profile)
+  // AND which session on screen it belongs to. Tiles share this renderer, so
+  // the session id is what lets each chat's composer pill / message button
+  // react only to its own clip.
+  const ownerRef = useRef({ connectionId: ownerConnectionId, profile: ownerProfile, sessionId })
+  ownerRef.current = { connectionId: ownerConnectionId, profile: ownerProfile, sessionId }
   const [status, setStatus] = useState<ConversationStatus>('idle')
   const [muted, setMuted] = useState(false)
   const turnTimeoutRef = useRef<number | null>(null)

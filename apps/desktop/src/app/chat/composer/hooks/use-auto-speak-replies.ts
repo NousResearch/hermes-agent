@@ -133,6 +133,9 @@ export function useAutoSpeakReplies({
           connectionId,
           messageId: reply.id,
           profile,
+          // Stamp the owning session: with tiles open, this renderer holds one
+          // playback slot and only the talkative chat may paint it.
+          sessionId,
           source: 'read-aloud',
           ...(segmentKey ? { turnKey: segmentKey } : {})
         }).then(

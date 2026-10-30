@@ -22,7 +22,14 @@ vi.mock('@/lib/voice-playback', () => ({
 }))
 
 const SESSION_ID = 'session-under-test'
-const IDLE_STATE = { audioElement: null, messageId: null, sequence: 0, source: null, status: 'idle' as const }
+const IDLE_STATE = {
+  audioElement: null,
+  messageId: null,
+  sequence: 0,
+  sessionId: SESSION_ID,
+  source: null,
+  status: 'idle' as const
+}
 
 function assistantMessage(id: string, text: string): ChatMessage {
   return { id, parts: [assistantTextPart(text)], role: 'assistant' }
@@ -80,6 +87,7 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
         audioElement: null,
         messageId: 'assistant-stream-1',
         sequence: 0,
+        sessionId: SESSION_ID,
         source: 'read-aloud',
         status: 'preparing'
       })
@@ -96,6 +104,7 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
         audioElement: null,
         messageId: 'durable-42',
         sequence: 0,
+        sessionId: SESSION_ID,
         source: 'read-aloud',
         status: 'idle'
       })
@@ -169,6 +178,7 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
         audioElement: null,
         messageId: 'assistant-stream-1',
         sequence: 1,
+        sessionId: SESSION_ID,
         source: 'read-aloud',
         status: 'preparing'
       })

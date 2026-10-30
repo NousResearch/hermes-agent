@@ -90,3 +90,30 @@ def test_upstream_capacity_429_is_not_a_credential_to_bench(monkeypatch, body, b
     if benches_pool:
         assert pool.rotate_calls[0]["status_code"] == 429
         assert pool.rotate_calls[0]["api_key_hint"] == "sk-failed"
+
+
+_ANTHROPIC_CREDIT_400 = (
+    "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': "
+    "'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing "
+    "to upgrade or purchase credits.'}}"
+)
+
+
+def test_anthropic_credit_balance_400_walks_the_aux_fallback_chain():
+    """#139285: Anthropic sends credit exhaustion as a 400. The main loop already calls it billing
+    (``_400_TAIL_RULES``); the aux ladder must too, or ``fallback_chain`` never runs."""
+    exc = _Err(_ANTHROPIC_CREDIT_400, 400)
+    assert classify_api_error(exc).reason is FailoverReason.billing
+    assert ac._is_payment_error(exc)
+    assert next(label for predicate, label in ac._FALLBACK_REASONS if predicate(exc)) == "payment error"
+
+
+@pytest.mark.parametrize("body", [
+    "Error code: 400 - {'error': {'message': 'messages: roles must alternate between user and assistant'}}",
+    # The aux list's broader phrasings ("billing", "credits") stay off for 400: only the main
+    # classifier's billing table counts there, so a request-shape 400 is not read as exhaustion.
+    "Error code: 400 - {'error': {'message': 'Unknown parameter: billing_tag'}}",
+    "Error code: 400 - {'error': {'message': 'max_tokens must be at most 8192 (credits are unaffected)'}}",
+])
+def test_non_billing_400_is_not_a_payment_error(body):
+    assert not ac._is_payment_error(_Err(body, 400))

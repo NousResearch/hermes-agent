@@ -165,7 +165,7 @@ export function TimelineRail({ activeIndex, entries, loadingId, onJump }: Timeli
           return (
             <Tip
               key={entry.id}
-              label={entry.preview}
+              label={entry.preview && <span dir="auto">{entry.preview}</span>}
               placement="right-rail"
               sideOffset={8}
               style={{ textAlign: 'right' }}

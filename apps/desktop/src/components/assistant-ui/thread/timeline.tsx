@@ -19,6 +19,7 @@ import {
   type TimelineRevealRequest,
   type TimelineSourceMessage
 } from './timeline-data'
+import { forwardRailWheel, syncRailGutter, timelineRailStyle } from './timeline-layout'
 import { createTimelinePositionReader } from './timeline-position'
 import { TimelineRail } from './timeline-rail'
 import { useTranscriptWindow } from './transcript-window'
@@ -253,6 +254,10 @@ const ActiveThreadTimeline: FC = () => {
     const compute = () => {
       frame = 0
 
+      if (root.current) {
+        syncRailGutter(root.current, viewport)
+      }
+
       if (viewport.dataset.following === 'true' && !history.isHistorical) {
         setActiveIndex(Math.max(0, railEntries.length - 1))
 
@@ -286,9 +291,20 @@ const ActiveThreadTimeline: FC = () => {
       resize.observe(content)
     }
 
+    const rail = root.current
+
+    const forwardWheel = (event: WheelEvent) => {
+      const ticks = rail?.querySelector<HTMLElement>('[data-slot="thread-timeline-ticks"]')
+
+      if (ticks) {
+        forwardRailWheel(event, ticks, viewport)
+      }
+    }
+
     resize.observe(viewport)
     viewport.addEventListener('scroll', schedule, { passive: true })
     viewport.addEventListener('wheel', cancelJump, { passive: true })
+    rail?.addEventListener('wheel', forwardWheel, { passive: true })
     schedule()
 
     return () => {
@@ -297,6 +313,7 @@ const ActiveThreadTimeline: FC = () => {
       resize.disconnect()
       viewport.removeEventListener('scroll', schedule)
       viewport.removeEventListener('wheel', cancelJump)
+      rail?.removeEventListener('wheel', forwardWheel)
     }
   }, [cancelJump, railEntries, history.isHistorical])
 
@@ -311,15 +328,7 @@ const ActiveThreadTimeline: FC = () => {
       data-suppress-pane-reveal=""
       ref={root}
       role="navigation"
-      style={{
-        position: 'absolute',
-        right: 0,
-        top: '50%',
-        transform: 'translateY(-50%)',
-        zIndex: 40,
-        pointerEvents: 'auto',
-        height: `min(${railEntries.length * 0.4375}rem, 50%)`
-      }}
+      style={timelineRailStyle(railEntries.length)}
     >
       <TimelineRail
         activeIndex={activeIndex}

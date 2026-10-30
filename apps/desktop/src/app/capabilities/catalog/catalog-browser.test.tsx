@@ -9,7 +9,19 @@ import { PageSearchShell } from '../../page-search-shell'
 
 import { CatalogBrowser } from './catalog-browser'
 import { type CatalogKind, parseCatalog } from './catalog-data'
+import type * as CatalogQuery from './catalog-query'
+import { catalogCategories, filterCatalog } from './catalog-query'
 import { $catalogCardView } from './store'
+
+vi.mock('./catalog-query', async importOriginal => {
+  const actual = await importOriginal<typeof CatalogQuery>()
+
+  return {
+    ...actual,
+    catalogCategories: vi.fn(actual.catalogCategories),
+    filterCatalog: vi.fn(actual.filterCatalog)
+  }
+})
 
 beforeEach(() => {
   $catalogCardView.set(true)
@@ -137,4 +149,47 @@ it('shares the saved layout choice when moving between Skills and Plugins', () =
   expect(container.querySelector('[data-catalog-list="plugins"]')).not.toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Card view' }))
   expect($catalogCardView.get()).toBe(true)
+})
+
+const isBeta = (entry: { name: string }) => entry.name === 'beta'
+
+const noop = () => {}
+
+it('keeps catalog filtering and shelving off the urgent search render', async () => {
+  queryClient.setQueryData(
+    ['public-catalog', 'skills'],
+    parseCatalog(
+      'skills',
+      ['alpha', 'beta', 'gamma'].map(name => ({
+        name,
+        identifier: `official/${name}`,
+        source: 'official',
+        category: 'memory'
+      }))
+    )
+  )
+
+  function Harness() {
+    const [query, setQuery] = useState('')
+
+    return (
+      <QueryClientProvider client={queryClient}>
+        <PageSearchShell onSearchChange={setQuery} searchPlaceholder="Search catalog" searchValue={query}>
+          <CatalogBrowser isInstalled={isBeta} kind="skills" onInstall={noop} onQueryChange={setQuery} query={query} />
+        </PageSearchShell>
+      </QueryClientProvider>
+    )
+  }
+
+  render(<Harness />)
+  vi.mocked(filterCatalog).mockClear()
+  vi.mocked(catalogCategories).mockClear()
+
+  fireEvent.change(screen.getByRole('textbox', { name: 'Search catalog' }), { target: { value: 'alp' } })
+  await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(1))
+
+  // Only the deferred render filters, so every pass already sees the new query.
+  expect(vi.mocked(filterCatalog).mock.calls.map(([, , query]) => query)).toEqual(['alp'])
+  // Facets and discovery shelves depend on the feed, not the query.
+  expect(catalogCategories).not.toHaveBeenCalled()
 })

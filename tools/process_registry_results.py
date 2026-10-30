@@ -1,8 +1,11 @@
 """Bounded, profile-local receipts for completed terminal processes.
 
-Receipts are read through process_manage, never replayed as notifications or
-adopted as live PIDs. Each producer writes its own file so independent one-shot
-parents cannot overwrite each other's results in the running-PID checkpoint.
+Receipts are read through process_manage and never adopted as live PIDs. A receipt
+whose gateway completion notification has not settled (``notify_pending``) is the
+only durable trace of that notification: the completion queue and the watcher are
+in-memory, so gateway startup re-arms a watcher from it. Each producer writes its
+own file so independent one-shot parents cannot overwrite each other's results in
+the running-PID checkpoint.
 """
 
 import json
@@ -24,6 +27,15 @@ _RESULT_FIELDS = (
     "parent_session_id", "started_at", "exit_code", "completion_reason",
     "termination_source", "notify_on_complete",
 )
+# Past this age a replayed notification would start a turn nobody is waiting on; the
+# receipt stays readable through process_manage. Matches async delegation's replay cap.
+MAX_NOTIFICATION_REPLAY_AGE_SECONDS = 48 * 60 * 60
+
+
+def _route_fields() -> tuple:
+    """The watcher route, so a restart can re-address the notification without its watcher."""
+    from tools.process_registry import _WATCHER_ROUTE_KEYS
+    return (*(f"watcher_{key}" for key in _WATCHER_ROUTE_KEYS), "watcher_interval")
 
 
 def _result_paths():
@@ -51,8 +63,11 @@ def save_completed_result(session) -> None:
     from tools.process_registry import MAX_OUTPUT_CHARS
 
     with session._lock:
-        record = {key: getattr(session, key) for key in _RESULT_FIELDS}
+        record = {key: getattr(session, key) for key in (*_RESULT_FIELDS, *_route_fields())}
         record["output"] = session.output_buffer[-MAX_OUTPUT_CHARS:]
+    # A gateway watcher (watcher_interval) owes this completion a notification until it settles.
+    record["notify_pending"] = bool(record["notify_on_complete"] and record["watcher_interval"])
+    record["completed_at"] = time.time()
     # Live-output opt-out must not persist raw credentials in durable receipts.
     record["output"] = redact_terminal_output(record["output"], record["command"], force=True)
     record["command"] = redact_sensitive_text(record["command"], code_file=True, force=True)
@@ -84,10 +99,21 @@ def _owns_result(owner: str, parent: str | None) -> bool:
         db.close()
 
 
-def load_completed_results(prefix: str = "") -> dict:
-    """Restore read-only snapshots; no process handles, watchers, or queue events."""
+def _session_from_record(record: dict):
+    """Read-only exited snapshot: no process handle or PID, so nothing can be re-run or signalled."""
     from tools.process_registry import ProcessSession
 
+    session = ProcessSession(
+        **{key: record[key] for key in _RESULT_FIELDS},
+        **{key: record[key] for key in _route_fields() if key in record},
+        exited=True, output_buffer=record["output"],
+    )
+    session._completion_event.set()
+    return session
+
+
+def load_completed_results(prefix: str = "") -> dict:
+    """Restore read-only snapshots; no process handles, watchers, or queue events."""
     from gateway.session_context import get_session_env
 
     owner = get_session_env("HERMES_SESSION_ID", "")
@@ -108,12 +134,43 @@ def load_completed_results(prefix: str = "") -> dict:
                 continue
             if not _owns_result(owner, record.get("parent_session_id")):
                 continue
-            session = ProcessSession(
-                **{key: record[key] for key in _RESULT_FIELDS},
-                exited=True, output_buffer=record["output"],
-            )
-            session._completion_event.set()
+            session = _session_from_record(record)
             results[session.id] = session
         except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
             logger.debug("Skipping unreadable process result %s", path.name, exc_info=True)
     return results
+
+
+def pending_notification_results() -> list:
+    """This profile's exited sessions whose gateway notification never settled, oldest first.
+
+    Startup-only, so not ownership-filtered: no session owns anything yet, and the receipt
+    carries its own route. Over-age receipts are skipped, not replayed.
+    """
+    cutoff = time.time() - MAX_NOTIFICATION_REPLAY_AGE_SECONDS
+    pending = []
+    for path in _result_paths():
+        try:
+            record = json.loads(path.read_text(encoding="utf-8-sig"))
+            if record["id"] != path.stem or not re.fullmatch(r"proc_[\w]+", record["id"]):
+                continue
+            if record.get("notify_pending") and record["completed_at"] >= cutoff:
+                pending.append((record["completed_at"], record["id"], _session_from_record(record)))
+        except (OSError, ValueError, KeyError, TypeError):
+            logger.debug("Skipping unreadable process result %s", path.name, exc_info=True)
+    return [session for *_, session in sorted(pending, key=lambda item: item[:2])]
+
+
+def mark_result_notified(session_id: str) -> None:
+    """Settle a receipt's pending notification so a later startup does not re-arm it."""
+    path = get_hermes_home() / "logs" / "process-results" / f"{session_id}.json"
+    try:
+        record = json.loads(path.read_text(encoding="utf-8-sig"))
+        if record.get("notify_pending"):
+            record["notify_pending"] = False
+            atomic_json_write(path, record, mode=0o600)
+    except FileNotFoundError:
+        return  # No durable receipt (disk failure at exit, or a receipt-less test session).
+    except (OSError, ValueError):
+        # The next startup re-arms it: one duplicate notification, never a lost one.
+        logger.warning("Could not settle the notification on process result %s", session_id, exc_info=True)

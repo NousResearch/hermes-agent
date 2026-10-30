@@ -11,11 +11,29 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Set
 
-from hermes_constants import get_hermes_dir
+from hermes_constants import get_hermes_dir, get_routing_process_hermes_home
 
 logger = logging.getLogger(__name__)
+
+
+def _lid_mapping_session_dirs() -> tuple:
+    """Session dirs to read ``lid-mapping-*`` from, scoped dir first.
+
+    The bridge writes its mapping files under the gateway's launch home, but this resolver also
+    runs inside a routed profile's scope (``_profile_runtime_scope`` rebinds ``get_hermes_dir``
+    to the profile home), where the profile's own dir holds no mapping files — a LID then stays
+    unresolved and an allowlisted phone reads as a stranger (#135139). Also probe the launch
+    home's dir so a multiplexed profile still sees the bridge's files. On a single-profile
+    install both candidates are the same dir and behaviour is unchanged."""
+    scoped = get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
+    launch = get_hermes_dir(
+        "platforms/whatsapp/session",
+        "whatsapp/session",
+        home=get_routing_process_hermes_home(),
+    )
+    return (scoped,) if scoped == launch else (scoped, launch)
+
 
 # WhatsApp JIDs are numeric (or plus-prefixed) with ``@``/``.``/``:`` separators.
 # Explicit ASCII class so full-width digits / Unicode word chars can't sneak through.
@@ -72,7 +90,7 @@ def expand_whatsapp_aliases(identifier: str) -> set[str]:
     normalized = normalize_whatsapp_identifier(identifier)
     if not normalized:
         return set()
-    session_dir = get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
+    session_dirs = _lid_mapping_session_dirs()
     resolved: set[str] = set()
     queue = [normalized]
     while queue:
@@ -83,19 +101,22 @@ def expand_whatsapp_aliases(identifier: str) -> set[str]:
             continue
         resolved.add(current)
         for suffix in ("", "_reverse"):
-            mapping_path = session_dir / f"lid-mapping-{current}{suffix}.json"
-            if not mapping_path.exists():
-                continue
-            try:
-                # utf-8-sig: our fix for BOM'd lid-mapping files written on Windows.
-                mapped = normalize_whatsapp_identifier(
-                    json.loads(mapping_path.read_text(encoding="utf-8-sig"))
-                )
-            except (OSError, json.JSONDecodeError) as exc:
-                logger.debug("whatsapp_identity: failed to read %s: %s", mapping_path, exc)
-                continue
-            if mapped and mapped not in resolved:
-                queue.append(mapped)
+            for session_dir in session_dirs:
+                mapping_path = session_dir / f"lid-mapping-{current}{suffix}.json"
+                if not mapping_path.exists():
+                    continue
+                try:
+                    # utf-8-sig: our fix for BOM'd lid-mapping files written on Windows.
+                    mapped = normalize_whatsapp_identifier(
+                        json.loads(mapping_path.read_text(encoding="utf-8-sig"))
+                    )
+                except (OSError, json.JSONDecodeError) as exc:
+                    logger.debug(
+                        "whatsapp_identity: failed to read %s: %s", mapping_path, exc
+                    )
+                    continue
+                if mapped and mapped not in resolved:
+                    queue.append(mapped)
     return resolved
 
 

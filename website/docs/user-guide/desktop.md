@@ -791,8 +791,11 @@ picker installs reviewed entries at their pinned commit into the selected
 profile, and **Install from Git** takes any other repository through the same
 review-then-install dialog; its optional **Pin to commit** field installs one
 exact 40-character commit SHA (private repos included), and pinned plugins
-carry a `pinned @ <sha8>` badge in the list. Old `Settings → Plugins` links
-redirect here.
+carry a `pinned @ <sha8>` badge in the list. **Install from Git** takes any
+git source `hermes plugins install` accepts, including private repos over
+`git@`/`ssh://` and local folders (`file://`). A desktop plugin folder that
+contains a symbolic link is refused. Old `Settings → Plugins` links redirect
+here.
 
 ## Troubleshooting
 

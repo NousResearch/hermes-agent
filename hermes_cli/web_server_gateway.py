@@ -543,6 +543,7 @@ def _spawn_hermes_action(
                 )
                 proc = _popen(creationflags=windows_detach_flags_without_breakaway())
         else:
+            # detached-spawn: ok — dashboard gateway start/restart actions, which must outlive the dashboard
             proc = _popen(start_new_session=True)
     except OSError as exc:
         # Without this the action log would hold only the started-header for a spawn that never

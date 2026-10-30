@@ -26,6 +26,7 @@ busy_commit = ContextVar('busy_commit', default=None)
 _CONTENT_CLAUSES = frozenset({
     'text', 'auto_skill', 'channel_prompt', 'channel_context', 'reply_expected',
     'media_urls', 'media_types', 'media_text_inlined', 'media_types_length', 'media_text_inlined_length',
+    'media_filenames', 'media_filenames_length',
 })
 
 # Nothing was committed (main's busy-queue cap); /retry answers it before rewriting (#139257).

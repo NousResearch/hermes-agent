@@ -3206,7 +3206,8 @@ export const jaOverrides = {
     saveApply: '保存して適用',
     notExpressible: 'この配置は互いに噛み合っています（風車型）— 入れ子の分割では表現できません',
     zoneCount: count => `${count} ゾーン`,
-    tabCount: count => `${count} 個のタブ`
+    tabCount: count => `${count} 個のタブ`,
+    tabActions: title => `${title} の操作`
   },
 
   contextMenu: {

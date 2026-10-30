@@ -45,6 +45,19 @@ _FORBIDDEN: tuple[tuple[str, re.Pattern[str]], ...] = (
      re.compile(r"\b(?:querySelector(?:All)?|closest|getElementsByTagName|createElement)\(\s*[`'\"]webview\b")),
 )
 
+# Review cues, warned and never refused (catalog rule 8): the raw ``window.hermesDesktop`` native bridge
+# (files, git, REST, installs) has no folder or profile scoping — ``ctx.files`` / ``ctx.os`` /
+# ``host.request`` do — yet listed plugins still use it where the SDK has no verb (microphone access,
+# favicon lookup). And the app's markup selected from a CSS rule string, ``closest()`` or a template
+# (``[data-tree-tab=…]{display:none}``) is the reach the refused ``document.querySelector`` rule
+# names, in shapes no refusal regex can tell from a plugin styling SDK components it rendered itself.
+_REVIEW: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("raw bridge window.hermesDesktop",
+     re.compile(r"\b(?:window|globalThis|self)\s*(?:\?\.|\.)\s*hermesDesktop\b")),
+    ("app markup selector",
+     re.compile(r"\[data-(?:slot|tour|sidebar|testid|tree-[\w-]+|pane-host|titlebar-cluster)\b")),
+)
+
 # String literals are matched first and kept, so a ``/*`` or ``//`` INSIDE a string (a glob such as
 # ``'**/*.md'``, a URL) cannot open a "comment" that blanks every line up to the next ``*/`` and
 # hides whatever forbidden construct sits there.
@@ -93,6 +106,14 @@ def desktop_surface_findings(source: str) -> list[tuple[str, int]]:
     return sorted(findings, key=lambda f: f[1])
 
 
+def desktop_review_findings(source: str) -> list[tuple[str, int]]:
+    """``[(cue, line)]`` for every review cue in a plugin.js source, skipping lines a refusal covers."""
+    stripped = _strip_comments(source)
+    refused = {line for _rule, line in desktop_surface_findings(source)}
+    found = {(cue, stripped.count("\n", 0, m.start()) + 1) for cue, pattern in _REVIEW for m in pattern.finditer(stripped)}
+    return sorted((hit for hit in found if hit[1] not in refused), key=lambda h: (h[1], h[0]))
+
+
 # The Desktop installer's entry rules (apps/desktop/electron/desktop-plugin-install.ts
 # ``findDesktopEntry``): a repo-root ``plugin.js`` wins and the whole repo root is published as the
 # plugin folder; otherwise ``desktop/plugin.js`` and its ``desktop/`` tree. Admission must lint every
@@ -136,8 +157,9 @@ def _desktop_surface_files(plugin_dir: Path) -> list[Path]:
     )
 
 
-def desktop_surface_hits(plugin_dir: Path) -> list[str]:
-    """``["<rule> (<rel>:<line>)", ...]`` over the plugin's Desktop surface files only."""
+def desktop_surface_hits(plugin_dir: Path, findings=None) -> list[str]:
+    """``["<rule> (<rel>:<line>)", ...]`` over the plugin's Desktop surface files only. *findings* is
+    the per-source rule pass (``desktop_surface_findings`` refusals by default)."""
     plugin_dir = Path(plugin_dir)
     hits: list[str] = []
     for js in _desktop_surface_files(plugin_dir):
@@ -146,7 +168,7 @@ def desktop_surface_hits(plugin_dir: Path) -> list[str]:
             source = js.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue
-        hits.extend(f"{rule} ({rel}:{line})" for rule, line in desktop_surface_findings(source))
+        hits.extend(f"{rule} ({rel}:{line})" for rule, line in (findings or desktop_surface_findings)(source))
     return hits
 
 
@@ -161,3 +183,7 @@ def check_desktop_surface(report, plugin_dir: Path) -> None:
         "; ".join(hits[:8]) + (f" (+{len(hits) - 8} more)" if len(hits) > 8 else "")
         if hits else "stays inside the plugin SDK surface",
     )
+    if cues := desktop_surface_hits(plugin_dir, desktop_review_findings):
+        report.warn("desktop surface review (catalog rule 8: SDK surface only): " + "; ".join(cues[:8])
+                    + (f" (+{len(cues) - 8} more)" if len(cues) > 8 else "")
+                    + ". Use ctx.files / ctx.os / host.request and SDK slots, or open an issue for the hook you need.")

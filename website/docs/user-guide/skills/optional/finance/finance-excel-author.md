@@ -21,7 +21,7 @@ Build auditable financial workbooks headless via openpyxl.
 | License | Apache-2.0 |
 | Platforms | linux, macos, windows |
 | Tags | `excel`, `openpyxl`, `finance`, `spreadsheet`, `modeling` |
-| Related skills | [`xlsx`](../../bundled/productivity/productivity-xlsx.md), [`pptx-author`](../../optional/finance/finance-pptx-author.md), [`dcf-model`](../../optional/finance/finance-dcf-model.md), [`comps-analysis`](../../optional/finance/finance-comps-analysis.md), [`lbo-model`](../../optional/finance/finance-lbo-model.md), [`3-statement-model`](../../optional/finance/finance-3-statement-model.md) |
+| Related skills | [`microsoft-office`](../../bundled/productivity/productivity-microsoft-office.md), [`pptx-author`](../../optional/finance/finance-pptx-author.md), [`dcf-model`](../../optional/finance/finance-dcf-model.md), [`comps-analysis`](../../optional/finance/finance-comps-analysis.md), [`lbo-model`](../../optional/finance/finance-lbo-model.md), [`3-statement-model`](../../optional/finance/finance-3-statement-model.md) |
 
 ## Reference: full SKILL.md
 
@@ -48,7 +48,7 @@ it). Otherwise, when `hermes` is on PATH, let Hermes build its shared, pinned
 documents environment under the Hermes home (safe to run from several agents
 at once); in a Docker sandbox without Hermes the block builds a venv in the
 sandbox home with the same pinned versions. It is the same block as the
-docx/xlsx/powerpoint/pdf skills. Never `pip install` into the interpreter that
+microsoft-office/pdf skills. Never `pip install` into the interpreter that
 runs Hermes:
 
 ```bash

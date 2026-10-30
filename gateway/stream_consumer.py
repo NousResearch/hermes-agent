@@ -29,7 +29,9 @@ from gateway.config import (
     DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR)
 from gateway.response_filters import (
     is_intentional_silence_response as _is_intentional_silence_response,
-    is_partial_silence_marker as _is_partial_silence_marker)
+    is_partial_silence_marker as _is_partial_silence_marker,
+    ends_with_partial_silence_marker as _ends_with_partial_silence_marker,
+    strip_trailing_silence_marker as _strip_trailing_silence_marker)
 from gateway.stream_consumer_directives import has_pending_media_directive, strip_image_tags_for_display
 from gateway.stream_consumer_fences import ensure_closed_code_fences
 from gateway.stream_consumer_transport import StreamTransportMixin
@@ -579,6 +581,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     if _is_intentional_silence_response(self._clean_for_display(self._accumulated)):
                         await self._suppress_silence_marker()
                         return
+                    # Drop a closing marker before any overflow split: cut off on its own, it
+                    # would read as a bare marker the cleaner keeps. The transcript keeps it.
+                    self._accumulated = _strip_trailing_silence_marker(self._accumulated)
 
                 if self._should_edit(tick) and (
                     self._accumulated or (self._use_native_streaming and self._tool_progress_active)
@@ -784,12 +789,16 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                                or (len(self._accumulated) >= self.cfg.buffer_threshold
                                    and not self._flood_strikes))
         # Defer mid-stream edits while the buffer could still resolve to a silence
-        # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
+        # marker ("NO"→"NO_REPLY"), or a reply's last line could still become a trailing one
+        # ("answer\n\nNO"); got_done always resolves the buffer.
         # Likewise defer while a MEDIA:/[[…]] directive is still being typed: the cleaner
         # only strips complete deliverable tags, so a half-streamed one would be shown, and
         # a media-only reply cleans to "" at finish, which never edits the bubble away.
         cleaned = self._clean_for_display(self._accumulated)
         return (should_edit and not _is_partial_silence_marker(cleaned)
+                # Raw buffer: the cleaner already drops a COMPLETE trailing marker, but an interim
+                # frame carries the cursor after it, which hides the marker from the cleaner.
+                and not _ends_with_partial_silence_marker(self._accumulated)
                 and not has_pending_media_directive(cleaned))
 
     async def _split_first_send(self, tick: _Tick) -> bool:
@@ -1022,6 +1031,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         Image tags are the ones the non-streaming path's ``extract_images`` split attaches: once a
         tag becomes an attachment it must not also render as text — on Discord ``![alt](url)``
         shows as ``!alt`` plus an unfurl (#141806). The tag is removed without trimming the text
-        around it, so interim frames stay prefix-stable.
+        around it, so interim frames stay prefix-stable. A silence marker closing the reply on its own
+        line is dropped (``strip_trailing_silence_marker``); a bare marker is left for the silence check.
         """
-        return strip_image_tags_for_display(_BasePlatformAdapter.strip_media_directives_for_display(text))
+        return _strip_trailing_silence_marker(
+            strip_image_tags_for_display(_BasePlatformAdapter.strip_media_directives_for_display(text)))

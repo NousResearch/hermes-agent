@@ -1,10 +1,10 @@
 # Catalog entry for NousResearch/hermes-agent: plugin-catalog/usage-guard.yaml
-# Pinned to tag v0.4.1 (release published 2026-10-24). Bump sha and version together.
+# Pinned to tag v0.4.5 (release published 2026-10-26). Bump sha and version together.
 name: usage-guard
 repo: https://github.com/mister-ideas/usage-guard
-sha: 77c96af92bd3e144e4af9427c9b3772557f14205
-description: "Keeps an agent inside its subscription allowance: refuses a provider dispatch once a subscription usage window is exhausted, so an account that allows paid extra usage stops at the wall instead of spending overage. Reads the usage Hermes already displays, holds no credentials, and never touches account or billing settings. Disclosure — refuses main-loop provider calls (including MoA turns) for the providers in `provider_keys` (Anthropic and OpenAI Codex by default) when a subscription usage window reaches `threshold_percent`, and by default (`fail_open: false`) also refuses when usage data is missing, stale, unreadable, or the guard's own config is malformed; usage is read through Hermes's own account-usage fetcher (no credentials held, at most one read per source every 180 seconds by default) and cached in $HERMES_HOME/plugin-data/usage-guard/usage.json; a `pre_llm_call` hook adds a short usage note to the next turn's context at 80% and 90% used by default, and an opt-in (off by default) `llm_request` middleware lowers an existing output-token budget near the usage limit; both read only the cache, never the network; auxiliary calls (compression, vision, titles, MoA advisors) are not gated."
-image: https://raw.githubusercontent.com/mister-ideas/usage-guard/77c96af92bd3e144e4af9427c9b3772557f14205/docs/banner.jpg
+sha: 2c3ebac27878cfa4b10836f2e38473d74e190446
+description: "Keeps an agent inside its subscription allowance: refuses a provider dispatch once a subscription usage window is exhausted, so an account that allows paid extra usage stops at the wall instead of spending overage. Reads the usage Hermes already displays, holds no credentials, and never touches account or billing settings. Disclosure — refuses main-loop provider calls (including MoA turns) for the providers in `provider_keys` (Anthropic and OpenAI Codex by default) when a subscription usage window reaches `threshold_percent`, and by default (`fail_open: false`) also refuses when usage data is missing, stale, unreadable, or the guard's own config is malformed; usage is read through Hermes's own account-usage fetcher (no credentials held, at most one read per source every 180 seconds by default) and cached in $HERMES_HOME/plugin-data/usage-guard/usage.json; a `pre_llm_call` hook adds a short usage note to the next turn's context at 80% and 90% used by default, and an opt-in (off by default) `llm_request` middleware lowers an existing output-token budget near the usage limit; both read only the cache, never the network; auxiliary calls (compression, vision, titles, MoA advisors) are not gated. Borrowing is off by default: when `hydrate_from_paths` names files, the guard may read those JSON snapshots instead of reading the endpoint, validating every window and never writing them into its own cache."
+image: https://raw.githubusercontent.com/mister-ideas/usage-guard/2c3ebac27878cfa4b10836f2e38473d74e190446/docs/banner.jpg
 screenshots:
   - https://raw.githubusercontent.com/mister-ideas/usage-guard/77c96af92bd3e144e4af9427c9b3772557f14205/docs/media/shot-refusal.png
   - https://raw.githubusercontent.com/mister-ideas/usage-guard/77c96af92bd3e144e4af9427c9b3772557f14205/docs/media/shot-near-wall.png
@@ -14,9 +14,9 @@ maintainer: mister-ideas
 tier: community
 category: automation
 requires_hermes: ">=0.21.6"
-version: "0.4.1"
+version: "0.4.5"
 known_issues:
-  - "Anthropic windows: Hermes's Anthropic fetcher scales any utilization <= 1 by 100, so a window at 0-1% can read as 100% and the guard will refuse. Fixed upstream by NousResearch/hermes-agent#139916; this entry's requires_hermes rises to the release carrying it."
+  - "Anthropic windows: Hermes's Anthropic fetcher scales any utilization <= 1 by 100, so a window at 0-1% can read as 100% and the guard refuses on it, while a window genuinely at 100% reads the same value. No in-plugin reading can separate the two without risking an exhausted window, so the guard refuses on the ambiguous value and a false refusal is expected while a window sits at or under 1% used; it clears as usage passes 1%. Fixed upstream by NousResearch/hermes-agent#139916 — this entry's requires_hermes rises to the release carrying it."
 capabilities:
   provides_tools: []
   provides_hooks:

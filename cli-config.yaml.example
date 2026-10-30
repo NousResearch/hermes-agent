@@ -288,8 +288,10 @@ model:
 # implicit non-stream stale detector is auto-disabled for local endpoints
 # and can scale upward for very large contexts.
 #
-# Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
-# SDK paths) — those use boto3 with its own timeout configuration.
+# AWS Bedrock (providers.bedrock): the resolved value is the socket read
+# timeout of the boto3 Converse client and of the AnthropicBedrock SDK
+# client, chosen per request for the active model. Connect stays fixed
+# (botocore 60s / SDK 10s); unset keeps botocore's 60s read on Converse.
 #
 # providers:
 #   ollama-local:

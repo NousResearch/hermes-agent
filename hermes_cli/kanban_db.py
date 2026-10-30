@@ -1185,9 +1185,13 @@ def create_task(
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
-    from hermes_cli.kanban_pr_acceptance import validate_contract
+    from hermes_cli.kanban_pr_acceptance import contract_and_declaration
 
-    completion_contract = validate_contract(completion_contract)
+    # The stored column folds an OMITTED contract into ``local-only``; the raw
+    # declaration is what the ``active_pr`` guard reads back from the ``created``
+    # event, so an unset lane stays PR-bearing (fail closed) while an explicit
+    # ``local-only`` is the report-card exemption.
+    completion_contract, raw_contract = contract_and_declaration(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
@@ -1300,6 +1304,7 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "completion_contract": raw_contract,
                     },
                 )
                 if task_status == "blocked":

@@ -93,7 +93,18 @@ def _active_pool_token(provider: str) -> Optional[str]:
 
 def _pool_entry_token(entry: dict) -> str:
     token = entry.get("access_token") or entry.get("api_key") or ""
-    return str(token).strip()
+    token = str(token).strip()
+    if token:
+        return token
+    if str(entry.get("source") or "").strip() == "hermes_pkce_shared":
+        try:
+            from agent.anthropic_adapter import read_shared_hermes_oauth_credentials
+
+            shared = read_shared_hermes_oauth_credentials(str(entry.get("label") or ""))
+            return str((shared or {}).get("accessToken") or "").strip()
+        except Exception:
+            return ""
+    return ""
 
 
 def _fetch_pool_snapshot(provider: str, token: Optional[str], fingerprint: str) -> Optional[AccountUsageSnapshot]:

@@ -155,3 +155,29 @@ def test_pool_entries_sharing_stale_stored_fingerprint_do_not_share_cache(monkey
     assert [r.snapshot.unavailable_reason for r in readings] == ["from:tok-a", "from:tok-b"]
     assert readings[0].fingerprint != readings[1].fingerprint
     assert [r.active for r in readings] == [True, False]
+
+
+def test_shared_pkce_entry_hydrates_access_token_for_meter(monkeypatch):
+    """Shared hermes_pkce rows persist no token in auth.json; the meter must
+    read the shared grant for that label instead of reporting the account as
+    having no usable token (regression after the shared-grant migration)."""
+    entries = [{"id": "shared", "label": "team", "source": "hermes_pkce_shared"}]
+    monkeypatch.setattr("hermes_cli.auth.read_credential_pool", lambda provider: entries)
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: None)
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_shared_hermes_oauth_credentials",
+        lambda label: {"accessToken": "shared-meter-token"} if label == "team" else None,
+    )
+    seen = []
+    monkeypatch.setattr(
+        account_usage,
+        "fetch_account_usage",
+        lambda provider, *, api_key=None, base_url=None: seen.append(api_key) or _snapshot(),
+    )
+
+    readings = account_usage.fetch_pool_account_usage("anthropic")
+
+    assert seen == ["shared-meter-token"]
+    assert readings[0].label == "team"
+    assert readings[0].snapshot.available
+    assert readings[0].fingerprint.startswith("sha256:")

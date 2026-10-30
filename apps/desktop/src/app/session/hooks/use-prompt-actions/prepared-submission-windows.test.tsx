@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { en } from '@/i18n/en'
 import { createClientSessionState } from '@/lib/chat-runtime'
 
-import type { GatewayRequest } from './utils'
+import type { GatewayRequest, SubmitTextOptions } from './utils'
 
 vi.mock('@/store/gateway', async original => ({
   ...(await original<Record<string, unknown>>()),
@@ -58,7 +58,7 @@ async function openWindow(submit: (params: Record<string, unknown>) => unknown) 
 
   const hook = renderHook(() => useSubmitPrompt(deps))
 
-  return { send: (text: string, options?: { submission_id: string }) => act(async () => hook.result.current(text, options)) }
+  return { send: (text: string, options?: SubmitTextOptions) => act(async () => hook.result.current(text, options)) }
 }
 
 afterEach(() => {
@@ -93,4 +93,33 @@ it('two windows sending the same text keep separate identities; only the writer 
   // The writer's explicit retry reuses its own retained identity.
   expect(await first.send('same text', { submission_id: ids[0] })).toBe(true)
   expect(ids[2]).toBe(ids[0])
+})
+
+it('without Web Locks, a slash command sent from two tabs keeps each tab its own retry record', async () => {
+  // A plain-HTTP origin other than loopback: no Web Locks and no crypto.randomUUID.
+  vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) })
+  const sent: unknown[][] = []
+  let loseAck = true
+
+  const admit = (params: Record<string, unknown>) => {
+    sent.push([params.submission_id, params.text])
+
+    if (loseAck) { loseAck = false; throw new Error('connection closed') }
+
+    return { admission_id: params.submission_id, status: 'started' }
+  }
+
+  try {
+    const first = await openWindow(admit)
+    expect(await first.send('expanded skill', { retryText: '/skill task', submission_id: 'first' })).toBe(false)
+
+    const second = await openWindow(admit)
+    expect(await second.send('expanded skill', { retryText: '/skill task', submission_id: 'second' })).toBe(true)
+
+    // The first tab's retry re-sends its retained expansion under its own id, never a new expansion.
+    expect(await first.send('expanded again', { retryText: '/skill task', submission_id: 'first' })).toBe(true)
+    expect(sent).toEqual([['first', 'expanded skill'], ['second', 'expanded skill'], ['first', 'expanded skill']])
+  } finally {
+    vi.unstubAllGlobals()
+  }
 })

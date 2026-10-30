@@ -60,3 +60,22 @@ async def test_a_successful_refusal_send_logs_no_failure(caplog):
         await _refuse(bot)
     assert len(bot.sent) == 1
     assert not [r for r in caplog.records if 'not delivered' in r.getMessage()]
+
+
+@pytest.mark.asyncio
+async def test_a_backlog_for_a_parked_profile_tells_each_chat_once_per_window(monkeypatch):
+    """A relay reconnect drains a backlog of N frames for a parked profile; the chat is told once
+    per (profile, platform, chat) and window, not N times. Another chat is still told."""
+    from gateway import parked_route_refusal
+    clock = [1000.0]
+    monkeypatch.setattr(parked_route_refusal, '_monotonic', lambda: clock[0])
+    bot = _Bot(SendResult(success=True))
+    for _ in range(5):
+        await _refuse(bot)
+    other = SimpleNamespace(platform=Platform.SLACK, chat_id='D', message_id='m2', _rejected_route_profile='beta')
+    drop_rejected_route(bot, other)
+    await asyncio.gather(*list(bot._background_tasks))
+    assert [chat for chat, _text, _reply in bot.sent] == ['C', 'D']
+    clock[0] += parked_route_refusal.PARKED_NOTICE_WINDOW_S
+    await _refuse(bot)
+    assert [chat for chat, _text, _reply in bot.sent] == ['C', 'D', 'C']

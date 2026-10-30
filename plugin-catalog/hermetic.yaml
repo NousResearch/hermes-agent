@@ -1,0 +1,30 @@
+name: hermetic
+repo: https://github.com/forefy/hermetic
+sha: e03fc0cb6b8a6405da18722f51c0931644507953
+version: "1.3.0"
+requires_hermes: ">=0.21.6"
+description: "Status-bar popover for Hermes Desktop with three views: Costs (spend, cache, pricing drift, OpenRouter provider routing), AAI (skill changes, ratings, tests and replays) and HDR (a guard for risky tool calls, hooks, destinations, sensitive paths, what runs on its own). Disclosure — reads this profile's sessions (and other profiles' when you pick them) to audit tool calls, paths and hosts; can edit and save config.yaml and rewrite skill files when you ship or revert a version; AAI replays and judge runs resend conversation context and tool definitions to OpenRouter with your OpenRouter key and incur cost; HDR lists listening TCP ports via ps/lsof; HDR's guard (off by default) checks each tool call through a pre_tool_call hook and, when you turn it on, holds calls Hermes does not check itself (reading keys and logins, writing startup items or key places Hermes does not list) and asks you in its own card or a macOS notification, blocking after up to 20 seconds without an answer or at once when hermetic is not open, or blocks them outright; the guard is a best-effort match on the paths a call names, not a sandbox; questions from every profile wait in the default profile's hermetic folder; HDR also lists shell and gateway hooks and flags hook scripts edited after approval, keeping a copy of each script to compare; Costs reads public model price lists (OpenRouter, and hopscotchlabs.ai model pages for models a profile is billed for through Hopscotch) and, at most once a minute, asks Hermes for the profile provider's account report (OpenRouter usage and limits, Anthropic and OpenAI Codex plan windows, Nous credits), with Hermes looking up the credential."
+maintainer: forefy
+tier: community
+category: desktop
+docs_url: https://github.com/forefy/hermetic#readme
+title: "hermetic"
+image: https://raw.githubusercontent.com/forefy/hermetic/e03fc0cb6b8a6405da18722f51c0931644507953/docs/hermetic-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/forefy/hermetic/e03fc0cb6b8a6405da18722f51c0931644507953/docs/hermetic-costs.png
+  - https://raw.githubusercontent.com/forefy/hermetic/e03fc0cb6b8a6405da18722f51c0931644507953/docs/hermetic-aai.png
+  - https://raw.githubusercontent.com/forefy/hermetic/e03fc0cb6b8a6405da18722f51c0931644507953/docs/hermetic-hdr.png
+  - https://raw.githubusercontent.com/forefy/hermetic/e03fc0cb6b8a6405da18722f51c0931644507953/docs/hermetic-providers.png
+  - https://raw.githubusercontent.com/forefy/hermetic/e03fc0cb6b8a6405da18722f51c0931644507953/docs/hermetic-hdr-pipeline.png
+  - https://raw.githubusercontent.com/forefy/hermetic/e03fc0cb6b8a6405da18722f51c0931644507953/docs/hermetic-aai-settings.png
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_api_request
+    - api_request_error
+    - transform_llm_output
+    - pre_tool_call
+  provides_middleware:
+    - llm_request
+    - llm_execution
+  requires_env: []

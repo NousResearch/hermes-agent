@@ -20,7 +20,28 @@ def uncounted_runtime_work(runner):
                   for worker in getattr(authority, '_managed_workers', {}).values())
     return (managed + sum(live.route not in running and sid not in getattr(authority, '_managed_workers', {})
                 for authority in authorities for sid, live, _ in executing_sessions(authority))
-            + sum(len(mutation_tasks(authority)) for authority in authorities))
+            + sum(len(mutation_tasks(authority)) + len(side_agents(authority)) for authority in authorities))
+
+
+def side_agents(authority):
+    """``(thread, holder)`` for each detached side agent (/bg, /btw, preview restart) whose thread
+    has not unwound (``gateway/session_tui_side.py`` ``_spawn``). A stopped ``/btw`` whose fork
+    is gone (``_SideQuestionStop.abandoned``) is no longer owner work."""
+    from gateway.session_tui_side import _abandoned
+    return [(thread, holder) for thread, holder in list(getattr(authority, '_side_agents', {}).items())
+            if not _abandoned(holder)]
+
+
+def interrupt_side_agents(runner, reason):
+    """Hard-interrupt every counted side agent's holder across served authorities (the stop
+    drain waits for them, so its timed-out interrupt must reach them). Returns how many."""
+    from agent.interrupt_compat import request_hard_interrupt
+    count = 0
+    for authority in all_authorities(runner):
+        for _, holder in side_agents(authority):
+            if holder and holder[0] is not None:
+                count += bool(request_hard_interrupt(holder[0], reason))
+    return count
 
 
 def persist_work_count(authority, _task=None):
@@ -131,7 +152,7 @@ def stop_authority_work(authority):
     from gateway.run_runtime import stop_authority_turns
     from agent.interrupt_compat import request_hard_interrupt
     stop_authority_turns(authority, in_process=True)
-    for _, holder in physical_workers(authority):
+    for _, holder in [*physical_workers(authority), *side_agents(authority)]:
         if holder and holder[0] is not None:
             request_hard_interrupt(holder[0], 'Profile runtime is stopping')
     for cancel in getattr(authority, '_cron_cancellations', {}).values():
@@ -142,7 +163,8 @@ async def join_authority_work(authority, timeout):
     deadline = asyncio.get_running_loop().time() + timeout
     while True:
         stop_authority_work(authority)
-        if not list(physical_workers(authority)) and not list(executing_sessions(authority)) and not mutation_tasks(authority):
+        if (not list(physical_workers(authority)) and not list(executing_sessions(authority))
+                and not mutation_tasks(authority) and not side_agents(authority)):
             return
         if asyncio.get_running_loop().time() >= deadline:
             raise TimeoutError('Profile workers did not stop; ownership retained')

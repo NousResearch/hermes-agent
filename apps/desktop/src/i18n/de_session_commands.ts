@@ -7,6 +7,10 @@ export const deSessionCommands = {
     `${count} Nachrichten rückgängig gemacht — die entfernte Nachricht steht im Eingabefeld`,
   retryNothing: 'nichts zum Wiederholen',
   retryUnsupported: '/retry: Medien oder unbekannte Inhaltsteile können nicht wiederholt werden',
+  busy: (command: string) =>
+    `Sitzung beschäftigt — Hermes antwortet noch. Beende zuerst die aktuelle Antwort (Stopp-Taste oder Strg+C im Terminal), dann führe /${command} aus.`,
+  busyCompressing: (command: string) =>
+    `Sitzung beschäftigt — ein /compress läuft; führe /${command} aus, wenn es fertig ist.`,
   steerUsage: 'Verwendung: /steer <Prompt>',
   steerQueued: (preview: string) => `Steuerung eingereiht — kommt nach dem nächsten Tool-Aufruf an: „${preview}“`,
   steerNoActiveTurn: (preview: string) => `kein aktiver Turn — für den nächsten eingereiht: „${preview}“`,

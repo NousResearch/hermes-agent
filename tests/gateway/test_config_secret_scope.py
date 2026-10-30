@@ -21,7 +21,8 @@ CONFIG = ('model: {default: m1, provider: custom, base_url: "http://127.0.0.1:9/
           'mcp_servers: {docs: {command: docs-mcp, env: {DOCS_TOKEN: mcp-token}}}\n')
 # The policy fields an older gateway's reference did not hash (they did not exist when it was stamped).
 _LATER_FIELDS = ('kanban_json', 'safe_mode', 'ignore_user_config', 'skills_prompt', 'editor_mcp_json',
-                 'coding_posture', 'client_env_json', 'client_env_remote', 'client_env_rules_json')
+                 'coding_posture', 'client_env_json', 'client_env_remote', 'client_env_rules_json',
+                 'edit_approval_policy')
 
 
 def _home(monkeypatch):

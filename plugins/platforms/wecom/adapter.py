@@ -110,6 +110,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
     MAX_STREAM_CONTENT_LENGTH = MAX_STREAM_CONTENT_LENGTH
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     _SPLIT_THRESHOLD = 3900  # chunks near the 4000-char client split are almost certainly continued
+    serial_receive_loop = True  # _read_events awaits each frame before reading the next
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM)
@@ -224,13 +225,12 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
 
     async def _open_connection(self) -> None:
         await self._cleanup_ws()
-        # certifi's CA bundle so aiohttp trusts the same roots as urllib/requests (macOS stale OpenSSL path).
+        # certifi's CA bundle so aiohttp trusts the same roots as urllib/requests (macOS stale OpenSSL path),
+        # re-derived when an install-environment rotation deleted the imported one (#137255).
         import ssl as _ssl
-        try:
-            import certifi
-            cafile = certifi.where()
-        except ImportError:
-            cafile = None
+
+        from agent.ssl_verify import certifi_bundle_path
+        cafile = certifi_bundle_path()
         _ssl_ctx = _ssl.create_default_context(cafile=cafile)
         self._session = aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=aiohttp.TCPConnector(ssl=_ssl_ctx))
         self._ws = await self._session.ws_connect(self._ws_url, heartbeat=HEARTBEAT_INTERVAL_SECONDS * 2, timeout=CONNECT_TIMEOUT_SECONDS)

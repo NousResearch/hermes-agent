@@ -51,6 +51,7 @@ class PromptSubmitParams(SessionParams):
     turn_author: JsonValue | None = Field(default=None, exclude=True, alias="_turn_author")
     hosted_terminal_callback: JsonValue | None = Field(
         default=None, exclude=True, alias="_hosted_terminal_callback")
+    hosted_images: JsonValue | None = Field(default=None, exclude=True, alias="_hosted_images")
 
 
 class PromptSubmitStatus(WireEnum):
@@ -73,6 +74,10 @@ class PromptSubmitResult(Result):
     survivor_user_row_ids: list[int | None] | None = None
     survivor_row_id_map: dict[str, int | None] | None = None
     turn_isolation: bool | None = None
+    # RT-37: the gateway's durable ledger held work for this session, so the prompt was admitted into
+    # the OWNER's FIFO (``status: queued``) and runs there after the current turn; nothing runs here.
+    admission_id: str | None = None
+    forwarded: bool | None = None
 
 
 method("prompt.submit", params=PromptSubmitParams, result=PromptSubmitResult,
@@ -163,6 +168,14 @@ method("pdf.attach", params=PdfAttachParams, result=PdfAttachResult,
        doc="Render a PDF's pages to PNG and queue them as images for the next turn.")
 
 
+class StagedFileUpload(Params):
+    """Source identity returned by the browser upload route, checked against the live profile."""
+
+    install_id: str
+    path: str
+    profile_home: str
+
+
 class FileAttachParams(SessionParams):
     """``path`` when the file is gateway-visible, else ``data_url`` carries the bytes; ``name`` labels
     an uploaded file."""
@@ -170,6 +183,7 @@ class FileAttachParams(SessionParams):
     path: str | None = None
     data_url: str | None = None
     name: str | None = None
+    staged_upload: StagedFileUpload | None = None
 
 
 class FileAttachResult(Result):

@@ -18,7 +18,15 @@ _profile_scoped = _registry.profile_scoped
 # ── shared helpers
 
 def _write_display_sections(*, sections=None, drop_sections=(), **display_fields) -> None:
-    """Persist ``display.<field>`` + ``display.sections`` edits via the raw (uncached) write-back."""
+    """Persist ``display.<field>`` + ``display.sections`` edits via the raw (uncached) write-back.
+    Without a config file (remote backend) they are explicit keyed edits, refused as a whole when
+    any key is locked (never the bulk save's silent omission of the locked part)."""
+    from hermes_cli.config_backend import supports_file_tooling
+    if not supports_file_tooling():
+        sets = {f"display.{field}": v for field, v in display_fields.items()}
+        sets.update({f"display.sections.{name}": v for name, v in (sections or {}).items()})
+        _write_config_changes(sets, tuple(f"display.sections.{name}" for name in drop_sections))
+        return
     cfg = _load_cfg_raw()
     display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
     cur = display.get("sections") if isinstance(display.get("sections"), dict) else {}
@@ -96,10 +104,16 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
 
 
 def _cfgset_guarded(fn):
-    """Setter whose uncaught exception becomes ``_err(rid, 5001, str(e))``."""
+    """Setter whose uncaught exception becomes ``_err(rid, 5001, str(e))``. A config backend's
+    refusal (locked key, refused value) passes through to ``config.set``'s 4002 answer, like the
+    unguarded setters'."""
+    from hermes_cli.config_backend import ConfigWriteError
+
     def setter(rid, params, key, value, session):
         try:
             return fn(rid, params, key, value, session)
+        except ConfigWriteError:
+            raise
         except Exception as e:
             return _err(rid, 5001, str(e))
     return setter
@@ -256,14 +270,15 @@ def _set_focus(rid, params, key, value, session):
         return _err(rid, 4002, f"unknown focus value: {value} (use on|off|status)")
     if action == "status" or target is None:
         return _kv(rid, key, "on" if cur_focus else "off", tool_progress=_load_tool_progress_mode())
+    updates = {}
     if target:
         saved = (cur_focus and d_f.get("focus_saved_tool_progress")) or _load_tool_progress_mode()
-        _write_config_key("display.focus_saved_tool_progress", normalize_tool_progress_mode(saved))
+        updates["display.focus_saved_tool_progress"] = normalize_tool_progress_mode(saved)
         effective = FOCUS_TOOL_PROGRESS_MODE
     else:
         effective = normalize_tool_progress_mode(d_f.get("focus_saved_tool_progress") or "all")
-    _write_config_key("display.tool_progress", effective)
-    _write_config_key("display.focus_view", bool(target))
+    updates.update({"display.tool_progress": effective, "display.focus_view": bool(target)})
+    _write_config_keys(updates)  # one write: a refused key leaves focus fully as it was
     if session:
         session["focus_view"] = bool(target)
         session["tool_progress_mode"] = effective
@@ -363,8 +378,8 @@ def _word_setters() -> dict:
             sections={section: w for section in _DETAIL_SECTION_NAMES}, details_mode=w)),
         # thinking_mode also keeps details_mode aligned (compat bridge).
         "thinking_mode": (_word, {"collapsed", "truncated", "full"}, "unknown thinking_mode: {value}", lambda w: (
-            _write_config_key("display.thinking_mode", w),
-            _write_config_key("display.details_mode", "expanded" if w == "full" else "collapsed"))),
+            _write_config_keys({"display.thinking_mode": w,
+                                "display.details_mode": "expanded" if w == "full" else "collapsed"}))),
         # 'light'/'dark' pin beats background auto-detection (xterm.js hosts misreport OSC 11).
         "theme": (_word, {"auto", "light", "dark"}, "unknown theme value: {value} (use auto|light|dark)",
                   lambda w: _write_config_key("display.tui_theme", w)),
@@ -411,6 +426,9 @@ def _toggle_setters() -> dict:
         "battery": (_word, "display.battery",
                     {"on": True, "true": True, "yes": True, "off": False, "false": False, "no": False},
                     lambda: not bool(_display_cfg().get("battery", False)), on_off),
+        # Ink's /timestamps: the classic CLI's display.timestamps (the shared owner's setter too).
+        "timestamps": (_word, "display.timestamps", _BOOL_WORDS,
+                       lambda: not bool(_display_cfg().get("timestamps", False)), on_off),
         "statusbar": (_word, "display.tui_statusbar", {"on": "top", **{m: m for m in _STATUSBAR_MODES}},
                       lambda: "top" if _coerce_statusbar(_display_cfg().get("tui_statusbar", "top")) == "off" else "off",
                       lambda v: v),
@@ -446,6 +464,10 @@ def _set_cwd(rid, params, key, value, session):
 
 @_cfgset_guarded
 def _set_prompt(rid, params, key, value, session):
+    from hermes_cli.config_backend import supports_file_tooling
+    if not supports_file_tooling():  # one explicit key: refused when locked, never silently dropped
+        _write_config_changes({}, ("custom_prompt",)) if value == "clear" else _write_config_changes({"custom_prompt": value})
+        return _kv(rid, key, "" if value == "clear" else value)
     cfg = _load_cfg_raw()  # write-back round-trip
     if value == "clear":
         cfg.pop("custom_prompt", None)
@@ -489,7 +511,7 @@ _CONFIG_SETTERS = {
     "model": _set_model, "fast": _set_fast, "busy": _set_busy, "verbose": _set_verbose, "focus": _set_focus,
     "approval_mode": _set_approval_mode, "approvals.mode": _set_word, "yolo": _set_yolo,
     "reasoning": _set_reasoning, "details_mode": _set_word, "thinking_mode": _set_word,
-    "density": _set_toggle, "battery": _set_toggle, "theme": _set_word,
+    "density": _set_toggle, "battery": _set_toggle, "timestamps": _set_toggle, "theme": _set_word,
     "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word, "voice.voice_chat_mode": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
     "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
@@ -516,7 +538,11 @@ def _(rid, params: dict) -> dict:
         handler = _set_display_toggle
     if handler is None:
         return _err(rid, 4002, f"unknown config key: {key}")
-    return handler(rid, params, key, value, session)
+    from hermes_cli.config_backend import ConfigWriteError
+    try:
+        return handler(rid, params, key, value, session)
+    except ConfigWriteError as exc:  # a locked key or a value the config backend refused: nothing saved
+        return _err(rid, 4002, str(exc))
 
 
 def register(server) -> None:

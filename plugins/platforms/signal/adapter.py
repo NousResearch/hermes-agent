@@ -180,6 +180,7 @@ class SignalAdapter(BasePlatformAdapter):
     platform = Platform.SIGNAL
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     splits_long_messages = True  # send() chunks after markdown → Signal formatting conversion
+    serial_receive_loop = True  # _sse_listener awaits each envelope before reading the next
     # No real edit API; declaring it lets streaming suppress the cursor instead of a stale tofu square.
     SUPPORTS_MESSAGE_EDITING = False
 

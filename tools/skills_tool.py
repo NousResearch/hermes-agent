@@ -101,7 +101,7 @@ _secret_capture_callback = None
 _LOOKUP_HINT = "Use a skill name or relative path within the skills directory."
 
 
-def _skill_lookup_path_error(name: str) -> Optional[str]:
+def skill_lookup_path_error(name: str) -> Optional[str]:
     """Error if lookup *name* could escape the search roots it is joined onto. Windows drive
     paths are rejected too: their ``:`` would be misread as a plugin namespace separator."""
     from tools.path_security import has_traversal_component
@@ -216,7 +216,7 @@ def _is_skill_disabled(*names: str, platform: str | None = None) -> bool:
         return False
 
 
-def _skill_search_dirs() -> tuple[list[tuple[int, Path]], Path]:
+def skill_search_dirs() -> tuple[list[tuple[int, Path]], Path]:
     """(``(tier, dir)`` roots in precedence order, active_skills_dir) — the shared
     ``agent.skill_utils.get_skill_search_roots`` order with the live profile dir (dropped if absent)."""
     from agent.skill_utils import TIER_LOCAL, get_skill_search_roots
@@ -235,7 +235,7 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
         TIER_PROJECT, is_disabled_entry, iter_project_skill_files, iter_skill_index_files, resolve_skill_catalog)
     cache_key = ("with_disabled" if skip_disabled else "filtered", include_hidden)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
-    roots, _ = _skill_search_dirs()
+    roots, _ = skill_search_dirs()
     signature = _skills_scan_signature([d for _t, d in roots], disabled)
     now = time.monotonic()
     cached = _SKILLS_CACHE.get(cache_key)
@@ -274,7 +274,7 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
     return [dict(s) for s in skills]
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
+def find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
     """Loadable skills (name, description, category): ``name`` is what skill_view() accepts —
     the declared name, or the exact relative path for a same-tier duplicate. Shadowed and
     unloadable copies are left out. ``skip_disabled=True`` ignores disabled state (config UI)."""
@@ -282,7 +282,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
             for s in _skill_catalog(skip_disabled=skip_disabled) if s["load_name"]]
 
 
-def _sort_skills(skills: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def sort_skills(skills: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep every skill listing path ordered the same way."""
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
@@ -291,7 +291,7 @@ def skills_list(category: str | None = None, task_id: str | None = None) -> str:
     """Tier 1 listing: name + description (+ category) only; ``task_id`` is handler parity."""
     try:
         _skills_dir().mkdir(parents=True, exist_ok=True)
-        all_skills = _find_all_skills()
+        all_skills = find_all_skills()
         try:
             from hermes_cli.plugins import discover_plugins, get_plugin_manager
             discover_plugins()
@@ -307,7 +307,7 @@ def skills_list(category: str | None = None, task_id: str | None = None) -> str:
                           "message": "No skills found in skills/ directory."})
         if category:
             all_skills = [s for s in all_skills if s.get("category") == category]
-        all_skills = _sort_skills(all_skills)
+        all_skills = sort_skills(all_skills)
         categories = sorted({s.get("category") for s in all_skills if s.get("category")})
         return _json({
             "success": True, "skills": all_skills, "categories": categories,
@@ -317,6 +317,18 @@ def skills_list(category: str | None = None, task_id: str | None = None) -> str:
         return tool_error(str(e), success=False)
 
 
+def _legacy_portable_skill_name(pm, namespace, bare):
+    """Portable plugin skills were named ``agent-plugin-<slug>-<sha8>:<skill>`` before they took the
+    plugin's own name; prompts and cron jobs saved since then may still carry that form. Resolved
+    through what that exact plugin registered, so a skill it lost to a name clash is not found."""
+    if not namespace.startswith("agent-plugin-"):
+        return None
+    keys = {key for key, loaded in pm._plugins.items()
+            if loaded.manifest.portable and loaded.manifest.data_namespace == namespace}
+    return next((qualified for qualified, entry in pm._plugin_skills.items()
+                 if entry.get("plugin_key") in keys and entry.get("bare_name") == bare), None)
+
+
 def _resolve_plugin_skill(name, file_path, task_id, preprocess):
     """``plugin:skill`` dispatch: ``(result_json, None)`` when answered, else ``(None,
     local_category_name)`` to fall through to the flat-tree scan — categorized local skills also use
@@ -324,10 +336,19 @@ def _resolve_plugin_skill(name, file_path, task_id, preprocess):
     from agent.skill_utils import is_valid_namespace, parse_qualified_name
     from hermes_cli.plugins import discover_plugins, get_plugin_manager
     namespace, bare = parse_qualified_name(name)
+    if namespace == "plugin" and ":" in bare:
+        # The skills index lists plugin skills under a "plugin" heading, and models write that
+        # heading as a prefix ("plugin:agent-plugin-blender-5a80e4ba:blender"). A bare skill name
+        # never holds a colon, so the remainder is the real qualified name.
+        name = bare
+        namespace, bare = parse_qualified_name(name)
     if not is_valid_namespace(namespace):
         return _fail(f"Invalid namespace '{namespace}' in '{name}'. Namespaces must match [a-zA-Z0-9_-]+."), None
     discover_plugins()  # idempotent
     pm = get_plugin_manager()
+    if legacy := _legacy_portable_skill_name(pm, namespace, bare):
+        name = legacy
+        namespace = legacy.partition(":")[0]
     active_memory_provider = None
     try:
         from plugins.memory import _get_active_memory_provider, _prune_inactive_memory_provider_skills
@@ -510,7 +531,7 @@ def _owning_search_dir(skill_md: Path, all_dirs) -> Optional[Path]:
     return max(owners, key=lambda d: len(d.parts), default=None)
 
 
-def _locate_skill(name: str, local_category_name: Optional[str], roots):
+def locate_skill(name: str, local_category_name: Optional[str], roots):
     """Unique on-disk skill for *name* over ``(tier, dir)`` *roots*: cross-tier precedence
     (project > local > create_dir > external, shadowed copies logged), same-tier collision refusal,
     same-root identical-copy ranking, quarantine gate, not-found listing. ``(error_json, skill_dir,
@@ -559,7 +580,7 @@ def _locate_skill(name: str, local_category_name: Optional[str], roots):
                 hint="Inspect the skill in the repo checkout, or untrust the repo with "
                 "`hermes skills untrust`."), None, None
     if not skill_md or not skill_md.exists():
-        available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
+        available = [s["name"] for s in sort_skills(find_all_skills())[:20]]
         return _fail(f"Skill '{name}' not found.", available_skills=available,
                      hint="Use skills_list to see all available skills"), None, None
     return None, skill_dir, skill_md
@@ -592,13 +613,13 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
 def skill_view(
     name: str, file_path: str | None = None, task_id: str | None = None, preprocess: bool = True) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name
-    or path ("axolotl", "03-fine-tuning/axolotl"); "plugin:skill" resolves plugin-provided
+    or path ("axolotl", "03-fine-tuning/axolotl"); "<plugin>:<skill>" resolves plugin-provided
     skills. ``preprocess`` applies the configured SKILL.md template / inline shell rendering;
     slash/preload callers render the message themselves."""
     try:
         # Validate before the ':' dispatch so a Windows drive path (C:\skills\foo) can't be
         # reinterpreted as a plugin namespace.
-        if lookup_error := _skill_lookup_path_error(name):
+        if lookup_error := skill_lookup_path_error(name):
             return _fail(lookup_error, hint=_LOOKUP_HINT)
         local_category_name: str | None = None
         if ":" in name:  # plugin registry; bare names use the flat-tree scan below
@@ -607,11 +628,11 @@ def skill_view(
                 return served
         # The fall-through form (namespace/bare) joins onto each search dir too; re-validate it
         # since `bare` is not namespace-checked.
-        if local_category_name and (lookup_error := _skill_lookup_path_error(local_category_name)):
+        if local_category_name and (lookup_error := skill_lookup_path_error(local_category_name)):
             return _fail(lookup_error, hint=_LOOKUP_HINT)
-        roots, active_skills_dir = _skill_search_dirs()
+        roots, active_skills_dir = skill_search_dirs()
         all_dirs = [d for _t, d in roots]
-        error, skill_dir, skill_md = _locate_skill(name, local_category_name, roots)
+        error, skill_dir, skill_md = locate_skill(name, local_category_name, roots)
         if error is not None:
             return error
         try:  # read once — reused for platform check and main content
@@ -711,13 +732,13 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Load a skill's SKILL.md, or one of its linked references, templates or scripts. The first call returns SKILL.md plus a 'linked_files' dict; call again with file_path to read one.",
     "parameters": {
         "type": "object",
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill' (e.g. 'superpowers:writing-plans').",
+                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill'.",
             },
             "file_path": {
                 "type": "string",

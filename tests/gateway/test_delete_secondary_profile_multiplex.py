@@ -144,7 +144,7 @@ def test_a_failed_shared_fence_fails_the_canonical_delete_not_the_prune(monkeypa
                    'gateway.session_worker_construct.release_session_prefill'):
         monkeypatch.setattr(target, lambda *a, **k: None)
 
-    def broken(ids):
+    def broken(ids, **_):
         raise OSError('disk gone')
     store = SimpleNamespace(retire_runtime_sessions=lambda ids: None, fence_retired_routes=broken,
                             _routing_db=SimpleNamespace(db_path='/launch/state.db'))

@@ -6,6 +6,7 @@ maintainer: ClawReefAntenna
 tier: community
 category: automation
 title: Antenna for Hermes
+image: https://raw.githubusercontent.com/ClawReefAntenna/antenna-hermes/c3285e552389d4e117ed9e4dd959aa888c813570/docs/assets/antenna-hermes-feature-header-v1.jpg
 version: "1.7.0"
 docs_url: https://github.com/ClawReefAntenna/antenna-hermes/blob/f1fe906ea3b7292dcec5e59754cf4a50f84d737b/references/USER-GUIDE.md
 platforms: [linux]

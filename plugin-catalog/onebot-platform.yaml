@@ -1,0 +1,24 @@
+name: onebot-platform
+repo: https://github.com/mario841859784/hermes-plugin-onebot
+sha: 086dd7e5c13004e41301f5cea1f352c46b0f3c50
+version: "1.3.0"
+title: QQ (OneBot)
+maintainer: mario841859784
+tier: community
+category: platform
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/mario841859784/hermes-plugin-onebot/blob/086dd7e5c13004e41301f5cea1f352c46b0f3c50/README.md
+platforms: []
+description: "QQ bot via the OneBot 11 protocol: connects Hermes to your own self-hosted NapCat, Lagrange, LLOneBot or go-cqhttp deployment over WebSocket — the plugin hosts a reverse-WS server inside the Hermes gateway, or dials an existing forward-WS endpoint — and adds the qq toolset (qq_send_image, qq_send_voice, qq_send_video, qq_send_file, qq_send_forward, qq_napcat_api, qq_group_history) for DM and group chats with admin allowlists, group mention gating, per-member soft limits, and cron/notification delivery to a configured home channel. Inbound images are downloaded and (with Pillow) downscaled before the vision tool sees them; long replies are split at sentence boundaries or rendered locally into a text image with fonttools/Pillow. Disclosure — talks only to the user's own OneBot deployment; the plugin's listener (default port 8643) is a long-running background server inside the Hermes gateway process that accepts the bridge's reverse WebSocket and also serves the qq_* tools' local HTTP API, refuses a non-loopback bind without an access token, and limits tool sends from a QQ session to that chat or the configured home channel unless the session is an admin user's private chat; inbound message images are downloaded from that deployment into the plugin's data directory for the vision tool; text-to-image rendering runs locally (fonttools, Pillow, system CJK fonts) with no third-party calls; credentials (the OneBot access token, allowed-user lists, home channel) reach the plugin only through Hermes's secret scope and ONEBOT_* config and go nowhere but your own OneBot deployment; no telemetry or usage reporting."
+capabilities:
+  provides_tools:
+    - qq_send_image
+    - qq_send_voice
+    - qq_send_video
+    - qq_send_file
+    - qq_send_forward
+    - qq_napcat_api
+    - qq_group_history
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

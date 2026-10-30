@@ -148,8 +148,8 @@ def _warm_gateway_module() -> None:
     """
     for mod in (
         "hermes_cli.gateway",
-        "hermes_cli.auth",  # provider auth state → copilot_auth → subprocess
-        "hermes_cli.copilot_auth",
+        "hermes_cli.auth",  # provider auth state
+        "providers",  # provider plugin discovery (below) imports every profile's module chain
         "hermes_cli.runtime_provider",
         "hermes_cli.skin_engine",  # resolve_skin() config + skin engine init
         "hermes_cli.inventory",  # provider catalogs + models.dev cache
@@ -157,8 +157,14 @@ def _warm_gateway_module() -> None:
     ):
         try:
             __import__(mod)
-        except Exception:
-            pass
+        except Exception:  # health: allow BLE001 -- best-effort warm-up; the real import reports
+            _log.debug("warm-up import of %s failed", mod, exc_info=True)
+    try:
+        # Provider plugins carry their own auth chains (token exchange, CLI probes): warm them too.
+        import providers
+        providers.list_providers()
+    except Exception:  # health: allow BLE001 -- best-effort warm-up; discovery reports on real use
+        _log.debug("warm-up provider discovery failed", exc_info=True)
 
 
 def _resolve_restart_drain_timeout() -> float:
@@ -519,6 +525,33 @@ def _dashboard_forwarded_allow_ips(dashboard_config: dict[str, Any]) -> list[str
     return trusted
 
 
+def _uvicorn_console_logging() -> None:
+    """uvicorn's default console logging, without its ``dictConfig``.
+
+    ``uvicorn.Config``'s default ``log_config`` runs ``dictConfig``, which calls
+    ``logging.shutdown()`` on every live handler: a multiplexed gateway's profile log routers are
+    already installed when its listener is built, and a closed router stays closed. The listeners
+    pass ``log_config=None`` and get uvicorn's handlers here instead: ``uvicorn`` to stderr,
+    ``uvicorn.access`` to stdout, neither propagating into the Hermes log files.
+    """
+    from uvicorn.config import LOGGING_CONFIG
+    from uvicorn.logging import AccessFormatter, DefaultFormatter
+
+    formats = LOGGING_CONFIG["formatters"]
+    for name, stream, formatter in (
+        ("uvicorn", sys.stderr, DefaultFormatter(formats["default"]["fmt"])),
+        ("uvicorn.access", sys.stdout, AccessFormatter(formats["access"]["fmt"])),
+    ):
+        logger = logging.getLogger(name)
+        logger.propagate = False
+        if not logger.handlers:  # a second listener in this process keeps the first one's
+            handler = logging.StreamHandler(stream)
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+    # LOGGING_CONFIG's level for the parent; uvicorn.Config sets only the child loggers' levels.
+    logging.getLogger("uvicorn").setLevel(logging.INFO)
+
+
 def build_listener_server(served_app, host: str, port: int, *, auth_required: bool,
                           ws_ping: Optional[tuple[float, float]] = None,
                           timeout_graceful_shutdown: Optional[float] = 3, lifespan: str = "auto"):
@@ -551,8 +584,9 @@ def build_listener_server(served_app, host: str, port: int, *, auth_required: bo
     if ws_ping is None:
         ws_ping = (None, None) if host in _LOOPBACK_HOST_VALUES else (
             _ws_ping_setting("ws_ping_interval"), _ws_ping_setting("ws_ping_timeout"))
+    _uvicorn_console_logging()
     config = uvicorn.Config(
-        served_app, host=host, port=port, log_level="warning",
+        served_app, host=host, port=port, log_level="warning", log_config=None,
         # Off by default so _ws_client_is_allowed sees the real peer, not
         # X-Forwarded-For. Gated mode runs behind a TLS terminator and needs
         # X-Forwarded-Proto for cookie Secure flags.

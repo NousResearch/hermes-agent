@@ -56,6 +56,33 @@ def test_non_chat_agent_command_still_registers_hooks(monkeypatch):
     assert calls == ["hooks", "webhooks"]
 
 
+@pytest.mark.parametrize(("command", "subcommand", "interactive"), [
+    ("gateway", {"gateway_command": "run"}, False),  # a service: a hidden console is not a person (#127822)
+    ("cron", {"cron_command": "tick"}, False),       # scheduled: nobody at the console
+    ("acp", {}, False),                              # stdin carries the protocol stream
+    ("rl", {}, True),                                # a foreground command may still ask at its terminal
+])
+def test_only_foreground_commands_may_prompt_for_hook_consent(monkeypatch, command, subcommand, interactive):
+    from hermes_cli import main as main_mod
+    seen = []
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", types.SimpleNamespace(
+        discover_plugins=lambda: None, start_background_plugin_discovery=lambda: None))
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", types.SimpleNamespace(
+        load_config=dict, read_raw_config=dict))
+    monkeypatch.setitem(sys.modules, "agent.shell_hooks", types.SimpleNamespace(
+        register_from_config=lambda *a, **k: seen.append(k)))
+    monkeypatch.setitem(sys.modules, "agent.outbound_webhooks", types.SimpleNamespace(
+        register_from_config=lambda *a, **k: None))
+    from hermes_cli import mcp_startup
+    monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", lambda **k: None)
+    args = _args(command)
+    args.accept_hooks = False
+    for name, value in subcommand.items():
+        setattr(args, name, value)
+    main_mod._prepare_agent_startup(args)
+    assert seen == [{"accept_hooks": False, "interactive": interactive}]
+
+
 def test_deferred_first_turn_discovers_no_plugins_spawns_no_mcp_and_registers_no_hooks(monkeypatch):
     # Termux's deferred startup ran plugin discovery before the first turn; the gateway runs the turn
     # and loads the plugins (PLG-7).

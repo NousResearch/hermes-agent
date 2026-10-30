@@ -13,6 +13,7 @@ from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
+from hermes_cli.cli_render import _prepend_note_to_message
 
 
 @pytest.fixture
@@ -51,17 +52,34 @@ async def _prepare(runner, event):
         event=event, source=event.source, history=[], session_key='key')
 
 
+# The classic CLI's API-only prefixes: a voice turn, and the one-shot /model and /reload-skills notes
+# (hermes_cli/cli_chat_turn_mixin.py puts them in front through _prepend_note_to_message).
+_API_ONLY_PREFIXES = {
+    'voice': lambda text: f'[voice] {text}',
+    'model': lambda text: _prepend_note_to_message(
+        text, '[Note: model was just switched from a to b via x. Adjust your self-identification accordingly.]'),
+    'reload-skills': lambda text: _prepend_note_to_message(
+        text, '[USER INITIATED SKILLS RELOAD:\n\nAdded Skills:\n    - demo: a demo skill\n\n'
+              'Use skills_list to see the updated catalog.]'),
+}
+
+
 @pytest.mark.asyncio
-async def test_cli_api_text_reaches_the_model_expanded_and_the_stored_row_stays_as_typed(project, monkeypatch):
+@pytest.mark.parametrize('route', sorted(_API_ONLY_PREFIXES))
+async def test_cli_api_text_reaches_the_model_expanded_and_the_stored_row_keeps_the_content(project, monkeypatch, route):
     from gateway.session_cli_turn import cli_turn_scope
     from gateway.run_turn_runner import TurnRunner
     from gateway.turn_context import TurnContext
     from tests.gateway.test_local_viewer_events_submit import _RecordingAgent, _gateway_runner
 
+    typed = await _prepare(_runner(monkeypatch, 128_000), _event('read @file:notes.txt'))
+    api_text = _API_ONLY_PREFIXES[route]('read @file:notes.txt')
     event = _event('read @file:notes.txt')
-    with cli_turn_scope('adm-1', {'api_text': '[voice] read @file:notes.txt'}):
+    with cli_turn_scope('adm-1', {'api_text': api_text}):
         prepared = await _prepare(_runner(monkeypatch, 128_000), event)
-        assert prepared == 'read @file:notes.txt'
+        # The stored row is exactly what a typed turn stores (the file once, no prefix or note), so a
+        # later turn that reads the row's content without the api_content sidecar still has the file.
+        assert prepared == typed and 'PROJECT-NOTES' in prepared
         monkeypatch.setattr(session_policy, 'policy_for_source', lambda runner, source: None)  # the turn's own read
         ctx = TurnContext(
             source=event.source, message=prepared, history=[], session_id='sid', session_key='key',
@@ -71,9 +89,9 @@ async def test_cli_api_text_reaches_the_model_expanded_and_the_stored_row_stays_
         # The turn runs on an executor thread with a copy of this context, as run_sync does.
         await asyncio.to_thread(TurnRunner(_gateway_runner(), ctx).run_sync)
     [(message, kwargs)] = ctx.agent_holder[0].calls
-    assert message.startswith('[voice] read @file:notes.txt') and 'PROJECT-NOTES' in message
+    assert message.startswith(api_text) and message.count('PROJECT-NOTES') == 1
     assert 'DECOY-NOTES' not in message
-    assert kwargs['persist_user_message'] == 'read @file:notes.txt'
+    assert kwargs['persist_user_message'] == prepared
 
 
 @pytest.mark.asyncio

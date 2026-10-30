@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
     _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression,
-    _RESET_CHILD_SQL, _sql_json_extract, _sql_session_last_active, is_automatic_end_reason)
+    _RESET_CHILD_SQL, _non_continuation_child_sql, _sql_json_extract, _sql_session_last_active,
+    is_automatic_end_reason)
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -83,7 +84,9 @@ _CHAIN_CAP = 1000
 
 # model_config keys that belong to the whole conversation, not one compression segment: a rotation
 # carries them onto the child (per-segment keys such as usage anchors stay behind).
-_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run",)
+# ``prompt_refresh_epoch`` too: without it a rotated child looks older than any past
+# ``hermes sessions refresh-prompts`` request and rebuilds its prompt once more after eviction.
+_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "prompt_refresh_epoch")
 
 
 def _walk_compression_chain(session_id: str, step) -> list[str]:
@@ -103,6 +106,76 @@ def _walk_compression_chain(session_id: str, step) -> list[str]:
         current = child_id
         chain.append(child_id)
     return chain
+
+
+# created_source values that are not creation provenance: unset, the accounting placeholder
+# ``unknown`` and the routing label ``local`` (the store-side copy of session_policy._NOT_A_SURFACE).
+# The creator upsert, the managed-worker heal and the ancestor stamp may replace them, nothing else.
+_UNSET_CREATED_SOURCES = frozenset({None, "", "unknown", "local"})
+_UNSET_CREATED_SQL = "COALESCE({col}, '') IN ('', 'unknown', 'local')"
+_CREATED_ROW_SQL = "SELECT parent_session_id, created_source FROM sessions WHERE id = ?"
+# Is any ancestor unset, walking up parent_session_id through compressed parents on the same
+# surface? One query, so a fully stamped chain is skipped without the per-hop validated walk below.
+# A parent that did not end by compression (a reset or branch source) is not a chain edge, so an
+# unset row behind one does not send every write down that walk.
+# CROSS JOIN keeps ``up`` the outer loop: without ANALYZE stats SQLite otherwise scans sessions
+# and probes ``up`` for each row, a full-table read on every stamped write.
+_UNSET_ANCESTOR_SQL = """
+    WITH RECURSIVE up(pid, n) AS (
+        SELECT parent_session_id, 1 FROM sessions WHERE id = ?
+        UNION ALL
+        SELECT s.parent_session_id, up.n + 1 FROM up JOIN sessions s ON s.id = up.pid
+        WHERE s.end_reason = 'compression' AND s.created_source = ? AND up.n < ?
+    )
+    SELECT 1 FROM up CROSS JOIN sessions s ON s.id = up.pid
+    WHERE s.end_reason = 'compression' AND """ + _UNSET_CREATED_SQL.format(col="s.created_source") + """
+    LIMIT 1
+"""
+
+
+def stamp_compression_ancestors(conn, session_id: str) -> None:
+    """Copy *session_id*'s ``created_source`` onto compression ancestors that have none.
+
+    A list page shows a compressed conversation as its root, painted as the tip, and filters on
+    the root's ``created_source``. Automatic compression publishes the child before any writer
+    knows the surface, so the turn's usage write stamps only the tip. Stamping the chain here,
+    in that same transaction, keeps the root matchable without a list-time chain walk. Each hop
+    must be the parent's preferred continuation (``_CHAIN_STEP_SQL``); ``unknown`` and ``local``
+    count as unset, as in the creator upsert. An ancestor already on the same surface is walked through
+    (a NULL root behind a stamped mid segment still gets stamped); another surface stops it.
+    A chain with no unset ancestor returns after one query (``_UNSET_ANCESTOR_SQL``).
+    """
+    row = conn.execute(_CREATED_ROW_SQL, (session_id,)).fetchone()
+    surface = row["created_source"] if row else None
+    if surface in _UNSET_CREATED_SOURCES:
+        return
+    if conn.execute(_UNSET_ANCESTOR_SQL, (session_id, surface, _CHAIN_CAP)).fetchone() is None:
+        return
+    current, parent_id = session_id, row["parent_session_id"]
+    for _ in range(_CHAIN_CAP):
+        parent = parent_id and conn.execute(_CREATED_ROW_SQL, (parent_id,)).fetchone()
+        if not parent or parent["created_source"] not in (*_UNSET_CREATED_SOURCES, surface):
+            return
+        step = conn.execute(_CHAIN_STEP_SQL, (parent_id,)).fetchone()
+        if step is None or step["id"] != current:
+            return
+        if parent["created_source"] != surface:
+            conn.execute("UPDATE sessions SET created_source = ? WHERE id = ?", (surface, parent_id))
+        current, parent_id = parent_id, parent["parent_session_id"]
+
+
+# Compression edges whose parent is unset and whose continuation child carries a real surface: what
+# a store from before write-time stamping still hides from ``sessions list --source``. A child
+# forked from that parent (branch, delegate or reset marker naming it) or a tool child is no
+# continuation (as in prune) and never matches. A stamped store, or one whose unset chains have no
+# stamped segment, answers with no rows after one scan of sessions. A stamped child the stamp walk
+# does not follow (a non-preferred sibling, or one with a fork marker inherited from an earlier row)
+# still matches; the walk stops at its first hop.
+_UNSTAMPED_EDGE_CHILD_SQL = f"""
+    SELECT child.id FROM sessions parent JOIN sessions child ON child.parent_session_id = parent.id
+    WHERE parent.end_reason = 'compression' AND {_UNSET_CREATED_SQL.format(col="parent.created_source")}
+      AND NOT {_UNSET_CREATED_SQL.format(col="child.created_source")}
+{_non_continuation_child_sql("child.", "parent.id")}"""
 
 
 class SessionCompressionMixin:
@@ -150,6 +223,20 @@ class SessionCompressionMixin:
                 "Session %s carried a stale %r end stamp while %s; cleared so the conversation can "
                 "compress and a later close is recorded (#106459)", session_id, reason, provenance)
         return reason
+
+    def stamp_legacy_compression_chains(self) -> int:
+        """Stamp the unset ancestors of chains compressed before write-time stamping from their
+        stamped segments, through ``stamp_compression_ancestors`` (same edge checks; a known value
+        is never replaced). One write transaction and idempotent, so the owner runs it on every
+        start: a store with nothing to repair pays one scan of sessions under the write lock, plus
+        a one-hop walk per stamped child of an unset compression parent that the walk does not
+        follow (a non-preferred sibling). Returns the rows stamped."""
+        def _do(conn):
+            before = conn.total_changes
+            for row in conn.execute(_UNSTAMPED_EDGE_CHILD_SQL).fetchall():
+                stamp_compression_ancestors(conn, row["id"])
+            return conn.total_changes - before
+        return self._execute_write(_do)
 
     def find_live_compression_child(self, parent_session_id: str) -> Optional[dict[str, Any]]:
         """The unique live direct child of a compression-ended session, else None. A stale
@@ -242,26 +329,34 @@ class SessionCompressionMixin:
         _insert_session_row's compression-fork backfill: the child stays on the parent's profile and keeps
         gateway routing/origin columns; no owner on either side -> this store's profile."""
         from hermes_state_sessions import _parse_model_config
+        # Pin/archive and the conversation keys are compression-lineage state; canonical branch/reset
+        # verbs also publish through here, and their child is its own conversation.
+        continuation = not any(k in (model_config or {}) for k in ("_branched_from", "_reset_from"))
         carried = {key: value for key, value in _parse_model_config(parent["model_config"]).items()
-                   if key in _CONVERSATION_MODEL_CONFIG_KEYS}
+                   if continuation and key in _CONVERSATION_MODEL_CONFIG_KEYS}
         model_config = {**carried, **(model_config or {})}
         system_prompt_hash = self._store_system_prompt(conn, system_prompt)
-        # Pin/archive are compression-lineage flags; canonical branch/reset verbs also publish through
-        # here, and their child is its own conversation, so it starts unpinned and visible.
-        continuation = not any(k in (model_config or {}) for k in ("_branched_from", "_reset_from"))
+        # Copy a real creating surface. Automatic compression passes the parent's live
+        # label (``local`` after the peer refresh); reset, branch and the compress
+        # mutation pass the policy label. ``local`` and ``unknown`` are not surfaces,
+        # so those stay NULL. Compression sets ``_session_db_created`` and does not
+        # create the child again. The turn's ``update_token_counts(source=...)`` fills
+        # that NULL; auxiliary usage must not write ``unknown`` into it first.
+        from gateway.session_policy import created_surface
+        created_source = created_surface(parent["created_source"]) or created_surface(source)
         # The child continues the parent's tools[] pin (the compaction refresh re-pinned it just
         # before publish), or its first hop to another surface re-derives the array.
         conn.execute(
             """INSERT INTO sessions (
-                   id, source, model, model_config, system_prompt,
+                   id, source, created_source, model, model_config, system_prompt,
                    system_prompt_hash, tool_names,
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
                    thread_id, display_name, origin_json, pinned, started_at,
                    archived, auto_archived
-                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                child_session_id, source, model, json.dumps(model_config) if model_config else None,
+                child_session_id, source, created_source, model, json.dumps(model_config) if model_config else None,
                 system_prompt_hash, parent["tool_names"], parent_session_id, cwd or parent["cwd"], parent["git_branch"],
                 parent["git_repo_root"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
@@ -330,7 +425,7 @@ class SessionCompressionMixin:
             """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                       user_id, session_key, chat_id, chat_type,
                       thread_id, display_name, origin_json, profile_name, tool_names,
-                      archived, auto_archived, pinned, model_config
+                      archived, auto_archived, pinned, model_config, created_source
                FROM sessions WHERE id = ?""",
             (parent_session_id,),
         ).fetchone()
@@ -378,6 +473,9 @@ class SessionCompressionMixin:
             "WHERE id = ? AND ended_at IS NULL", (time.time(), parent_session_id))
         if updated.rowcount != 1:
             raise RuntimeError(f"Compression parent changed during publication: {parent_session_id}")
+        # A child on a real surface stamps the chain's unset ancestors, so compressing a conversation
+        # whose root predates write-time stamping lists it again under its surface.
+        stamp_compression_ancestors(conn, child_session_id)
         from hermes_state_local_lineage import advance_local_target
         advance_local_target(conn, parent_session_id, child_session_id)
         if parent["archived"]:

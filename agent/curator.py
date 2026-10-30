@@ -33,6 +33,10 @@ DEFAULT_STALE_AFTER_DAYS, DEFAULT_ARCHIVE_AFTER_DAYS = 14, 30
 # The LLM consolidation fork is opt-in; the deterministic inactivity prune
 # (apply_automatic_transitions) always runs when the curator is enabled.
 DEFAULT_CONSOLIDATE = False
+# Hard ceiling on how many skills one automatic pass may archive. A forward clock jump makes
+# every inactivity anchor look past archive_cutoff at once; without a ceiling that single tick
+# archives the entire library. 0 disables the ceiling.
+DEFAULT_MAX_ARCHIVES_PER_RUN = 10
 
 
 # --- .curator_state — persistent scheduler + status ---
@@ -143,6 +147,16 @@ def get_archive_after_days() -> int:
     return _bounded_count("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS)
 
 
+def get_max_archives_per_run() -> int:
+    """``curator.max_archives_per_run`` — ceiling on archives per automatic pass.
+
+    Deliberately NOT ``_bounded_count``: 0 is meaningful here (ceiling off), and a
+    negative value is treated the same way rather than silently becoming 1, because
+    flooring it to 1 would make the curator archive one skill per pass forever.
+    """
+    return max(0, _config_number("max_archives_per_run", DEFAULT_MAX_ARCHIVES_PER_RUN, int))
+
+
 def get_consolidate() -> bool:
     """LLM consolidation pass — OFF by default (prune only, no aux-model fork); ``hermes curator run --consolidate`` overrides per invocation."""
     return bool(_load_config().get("consolidate", DEFAULT_CONSOLIDATE))
@@ -218,7 +232,8 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
     # Cron-referenced skills are in use by definition (usage only bumps when a
     # job fires, so paused/rare jobs would age them out). Treat as pinned.
     protected = _cron_referenced_skills()
-    counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0}
+    archive_cap = get_max_archives_per_run()
+    counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0, "capped": 0}
 
     def _set(name: str, state: str, key: str) -> None:
         _u.set_state(name, state)
@@ -252,6 +267,10 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
                 _set(name, _u.STATE_ACTIVE, "reactivated")
             continue
         if anchor <= archive_cutoff and current != _u.STATE_ARCHIVED:
+            if archive_cap and counts["archived"] >= archive_cap:
+                # Clock-jump / ledger-corruption guard: stop the pass instead of mass-archiving.
+                counts["capped"] += 1
+                continue
             if _archive_as_curator(_u, name):
                 counts["archived"] += 1
         elif anchor <= stale_cutoff and current == _u.STATE_ACTIVE:
@@ -945,7 +964,7 @@ def run_curator_review(
                 curator_backup.prune_old_snapshots()
         counts = apply_automatic_transitions(now=start)
     auto_summary = ", ".join(
-        f"{counts[key]} {label}" for key, label in (("marked_stale", "marked stale"), ("archived", "archived"), ("reactivated", "reactivated")) if counts[key]
+        f"{counts.get(key, 0)} {label}" for key, label in (("marked_stale", "marked stale"), ("archived", "archived"), ("reactivated", "reactivated"), ("capped", "capped by archive ceiling")) if counts.get(key)
     ) or "no changes"
 
     # Persist before the LLM pass so a crash mid-review still records the run.

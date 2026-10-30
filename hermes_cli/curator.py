@@ -173,7 +173,8 @@ def _cmd_run(args) -> int:
             f"auto: checked={auto.get('checked', 0)} "
             f"stale={auto.get('marked_stale', 0)} "
             f"archived={auto.get('archived', 0)} "
-            f"reactivated={auto.get('reactivated', 0)}")
+            f"reactivated={auto.get('reactivated', 0)}"
+            + (f" capped={auto['capped']}" if auto.get("capped") else ""))
     if not synchronous:
         print("llm pass running in background — check `hermes curator status` later")
     if dry:

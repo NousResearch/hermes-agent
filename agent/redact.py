@@ -1050,9 +1050,16 @@ _HOME_PREFIXES = ("$HOME/", "${HOME}/")
 
 
 def _command_segments(command: str) -> list[str]:
-    """Pipeline/sequence segments, split only on unquoted ``| ; &`` so an
+    """Pipeline/sequence segments, split only on unquoted ``| ; &`` and newlines so an
     ``awk '{print $1; print $2}'`` program or ``grep 'foo|bar'`` pattern stays one
-    segment. Backslash is not an escape (Windows ``C:\\Users\\...``)."""
+    segment. Backslash is not an escape (Windows ``C:\\Users\\...``).
+
+    Newlines split because a multi-line script is a sequence of independent commands: a
+    heredoc or ``echo`` preamble on line 1 must not hide a ``cat secret.env`` on line 3.
+    Without this, a script that reads a secret file was classified as a single segment
+    whose first token (``echo``) is not a reader, so the ENV/assignment passes stayed
+    disabled and the file's contents printed verbatim.
+    """
     segments: list[str] = []
     buf: list[str] = []
     quote: str | None = None
@@ -1066,7 +1073,7 @@ def _command_segments(command: str) -> list[str]:
             quote = ch
             buf.append(ch)
             continue
-        if ch in "|;&":
+        if ch in "|;&\n":
             seg = "".join(buf).strip()
             if seg:
                 segments.append(seg)

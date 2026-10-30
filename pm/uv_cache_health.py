@@ -7,15 +7,21 @@ survive while the files read back as NUL bytes. uv then reuses that entry on
 every later sync and fails at install time with "The wheel is invalid", and
 retrying cannot help. These helpers recognise that failure and name the
 packages to purge. Deletion always goes through ``uv cache clean`` (the caller),
-which takes uv's cache lock, so a concurrent sync never loses files mid-read.
+which takes uv's cache lock, so a concurrent sync never loses files mid-read;
+the leftover-archive sweep takes that same lock itself.
 
 Stdlib only: the bootstrap runner imports pm.environment on an older system
 python.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
+import shutil
+import sys
+
+from pm.filesystem import is_junction, lock_fd
 
 # uv's install step names the wheel it was linking from the cache:
 #   error: Failed to install: lxml-6.1.3-cp314-...whl (lxml==6.1.3)
@@ -64,34 +70,62 @@ def failed_cached_packages(output: str) -> set[str]:
     return names
 
 
-def _readable(path: Path, marker: bytes, limit: int = 65536) -> bool:
+_HEAD = 65536
+# How long a sweep waits for uv's cache lock before leaving the leftovers for later.
+_LOCK_WAIT_SECONDS = 10.0
+_WHEEL_VERSION = re.compile(rb"(?im)^wheel-version[ \t]*:")
+
+
+def _damaged(path: Path, header: re.Pattern | None = None) -> bool:
+    """True only on positive evidence of a torn write: missing, empty or NUL bytes.
+
+    A file that cannot be read for another reason (permissions) proves
+    nothing and counts as healthy: a false positive would delete an entry uv
+    can still use.
+    """
     try:
         with path.open("rb") as stream:
-            head = stream.read(limit)
+            head = stream.read(_HEAD)
+    except FileNotFoundError:
+        return True
     except OSError:
         return False
-    return marker in head and b"\0" not in head
+    if not head or b"\0" in head:
+        return True
+    return header is not None and not header.search(head)
 
 
-def corrupt_cache_entries(cache: Path) -> dict[str, list[Path]]:
-    """Unpacked cache entries uv cannot install from, by package.
-
-    Checks the three files uv reads first (WHEEL, METADATA, RECORD); an
-    interrupted write leaves them empty or NUL-filled. Entries without a
-    .dist-info (unknown layouts) and symlinked entries are skipped, never
-    guessed at. Read-only.
-    """
+def _archive_root(cache: Path) -> Path | None:
+    """``cache/archive-v0`` when it is a real directory inside the cache, else None."""
     archive = cache / "archive-v0"
-    found: dict[str, list[Path]] = {}
+    if archive.is_symlink() or is_junction(archive) or not archive.is_dir():
+        return None
+    return archive
+
+
+def corrupt_cache_entries(cache: Path) -> dict[str, list[str]]:
+    """Unpacked cache entries uv cannot install from, as package -> archive entry names.
+
+    Checks the three files uv reads first. An interrupted write leaves them
+    missing, empty or NUL-filled, and a torn WHEEL loses its Wheel-Version
+    line. Nothing else counts: unknown layouts, symlinked or junctioned
+    entries and a symlinked ``archive-v0`` are skipped, never guessed at.
+    Read-only.
+    """
+    found: dict[str, list[str]] = {}
+    archive = _archive_root(cache)
+    if archive is None:
+        return found
     try:
         buckets = list(archive.iterdir())
     except OSError:
         return found
     for bucket in buckets:
         try:
-            if bucket.is_symlink() or not bucket.is_dir():
+            if bucket.is_symlink() or is_junction(bucket) or not bucket.is_dir():
                 continue
-            infos = [entry for entry in bucket.iterdir() if entry.name.endswith(".dist-info")]
+            infos = [entry for entry in bucket.iterdir()
+                     if entry.name.endswith(".dist-info") and not entry.is_symlink() and entry.is_dir()]
         except OSError:
             continue
         for info in infos:
@@ -99,10 +133,9 @@ def corrupt_cache_entries(cache: Path) -> dict[str, list[Path]]:
             name = match and _valid(match.group("name"))
             if not name:
                 continue
-            if not (_readable(info / "WHEEL", b"Wheel-Version:")
-                    and _readable(info / "METADATA", b"Name:")
-                    and _readable(info / "RECORD", b",")):
-                found.setdefault(name, []).append(bucket)
+            if (_damaged(info / "WHEEL", _WHEEL_VERSION) or _damaged(info / "METADATA")
+                    or _damaged(info / "RECORD")):
+                found.setdefault(name, []).append(bucket.name)
     return found
 
 
@@ -111,21 +144,49 @@ def corrupt_cached_packages(cache: Path) -> set[str]:
     return set(corrupt_cache_entries(cache))
 
 
-def remove_corrupt_entries(cache: Path, names: set[str]) -> None:
+def remove_corrupt_entries(cache: Path, names: set[str]) -> bool:
     """Delete the corrupt archive entries of *names* that ``uv cache clean`` left behind.
 
     Where uv links a wheel to its archive by symlink (Linux), clean drops the
-    link and leaves the archive, which nothing uses again. ``uv cache prune``
-    is not an option: PM seeds this cache from a bundle copy whose links are
-    real directories, and prune treats their archives as unreachable, so the
-    next install fails. An archive entry is never rewritten once uv renames it
-    into place, so deleting one that fails validation cannot take a good copy
-    from a concurrent install. rmtree refuses a symlinked root and does not
-    follow links inside it.
-    """
-    import shutil
+    link and leaves the archive, which nothing uses again but ``hermes pm
+    doctor`` would keep reporting. ``uv cache prune`` is not an option: PM
+    seeds this cache from a bundle copy whose links are real directories, and
+    prune treats their archives as unreachable, so the next install fails.
 
-    for name, buckets in corrupt_cache_entries(cache).items():
-        if name in names:
-            for bucket in buckets:
-                shutil.rmtree(bucket, ignore_errors=True)
+    The sweep holds uv's own cache lock, so no uv process runs while it
+    deletes, and it only takes entries the validation above proves torn.
+    Deletion is anchored to a descriptor of the real ``archive-v0`` where the
+    platform allows it, so a symlink swapped in above it cannot redirect the
+    delete. Returns False when the lock stayed busy (the leftovers are
+    harmless and the next sweep or ``hermes pm doctor --repair`` takes them).
+    """
+    archive = _archive_root(cache)
+    if archive is None or not names:
+        return True
+    try:
+        lock = os.open(cache / ".lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o666)
+    except OSError:
+        return False
+    try:
+        if not lock_fd(lock, wait=True, timeout=_LOCK_WAIT_SECONDS):
+            return False
+        doomed = [bucket for name, buckets in corrupt_cache_entries(cache).items()
+                  if name in names for bucket in buckets]
+        if not doomed:
+            return True
+        # rmtree's dir_fd is 3.11+; the bootstrap runner may be older.
+        if sys.version_info >= (3, 11) and shutil.rmtree.avoids_symlink_attacks and hasattr(os, "O_DIRECTORY"):
+            directory = os.open(archive, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                for bucket in doomed:
+                    shutil.rmtree(bucket, dir_fd=directory, ignore_errors=True)
+            finally:
+                os.close(directory)
+        else:
+            for bucket in doomed:
+                path = archive / bucket
+                if not (path.is_symlink() or is_junction(path)):
+                    shutil.rmtree(path, ignore_errors=True)
+        return True
+    finally:
+        os.close(lock)

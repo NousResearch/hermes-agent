@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 
 import pytest
@@ -204,3 +205,98 @@ def test_doctor_reports_then_repairs_corrupt_cache_entries(project, tmp_path, mo
     assert "removed corrupt entries for alpha-dep" in capsys.readouterr().out
     assert corrupt_cached_packages(cache) == set()
     assert cli._doctor_uv_cache(repair=False) == 0
+
+
+def _bucket(cache: Path, name: str = "alpha_dep", files=None) -> Path:
+    """An archive entry by hand: ``files`` maps dist-info file name -> bytes."""
+    info = cache / "archive-v0" / "bucket" / f"{name}-1.0.dist-info"
+    info.mkdir(parents=True)
+    for file, body in (files or {"WHEEL": b"\0" * 20, "METADATA": b"Name: x\n", "RECORD": b"a,,\n"}).items():
+        (info / file).write_bytes(body)
+    return info.parent
+
+
+@pytest.mark.parametrize("files", [
+    {"WHEEL": b"wheel-version: 1.0\n", "METADATA": b"metadata-version: 2.1\nname: alpha-dep\n", "RECORD": b"a,,\n"},
+    {"WHEEL": b"Wheel-Version: 1.0\n", "METADATA": b"Metadata-Version: 2.1\n" + b"X: y\n" * 20000 + b"Name: a\n",
+     "RECORD": b"a,,\n"},
+])
+def test_valid_entries_uv_accepts_are_never_flagged(tmp_path, files):
+    """Header names are case-insensitive and METADATA may be long; only torn writes count."""
+    _bucket(tmp_path, files=files)
+    assert corrupt_cached_packages(tmp_path) == set()
+
+
+@pytest.mark.parametrize("damage", ["WHEEL", "METADATA", "RECORD", "missing-RECORD", "WHEEL-without-version"])
+def test_torn_writes_are_flagged(tmp_path, damage):
+    files = {"WHEEL": b"Wheel-Version: 1.0\n", "METADATA": b"Name: alpha-dep\n", "RECORD": b"a,,\n"}
+    if damage == "missing-RECORD":
+        del files["RECORD"]
+    elif damage == "WHEEL-without-version":
+        files["WHEEL"] = b"Root-Is-Purelib: true\n"
+    else:
+        files[damage] = b"\0" * 152
+    _bucket(tmp_path, files=files)
+    assert corrupt_cached_packages(tmp_path) == {"alpha-dep"}
+
+
+@pytest.mark.platforms("linux", "macos")
+@pytest.mark.parametrize("link", ["archive", "bucket", "dist-info"])
+def test_sweep_never_deletes_through_a_symlink(tmp_path, link):
+    from pm.uv_cache_health import remove_corrupt_entries
+
+    cache = tmp_path / "cache"
+    outside = tmp_path / "outside"
+    victim = _bucket(outside)  # a corrupt-looking tree outside the cache
+    (victim / "user-data").write_text("must survive", encoding="utf-8")
+    archive = cache / "archive-v0"
+    if link == "archive":
+        cache.mkdir()
+        archive.symlink_to(outside / "archive-v0", target_is_directory=True)
+    elif link == "bucket":
+        archive.mkdir(parents=True)
+        (archive / "bucket").symlink_to(victim, target_is_directory=True)
+    else:
+        (archive / "bucket").mkdir(parents=True)
+        info = next(victim.glob("*.dist-info"))
+        (archive / "bucket" / info.name).symlink_to(info, target_is_directory=True)
+
+    assert corrupt_cached_packages(cache) == set()
+    assert remove_corrupt_entries(cache, {"alpha-dep"})
+    assert (victim / "user-data").is_file() and next(victim.glob("*.dist-info")).is_dir()
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_sweep_waits_for_uv_and_leaves_entries_while_uv_holds_the_cache(tmp_path, monkeypatch):
+    """uv holds a shared flock on <cache>/.lock while it runs; the sweep must not delete under it."""
+    import fcntl
+
+    import pm.uv_cache_health as health
+
+    monkeypatch.setattr(health, "_LOCK_WAIT_SECONDS", 0.2)
+    bucket = _bucket(tmp_path)
+    with open(tmp_path / ".lock", "w", encoding="utf-8") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_SH)
+        assert health.remove_corrupt_entries(tmp_path, {"alpha-dep"}) is False
+        assert bucket.is_dir()
+    assert health.remove_corrupt_entries(tmp_path, {"alpha-dep"}) is True
+    assert not bucket.exists()
+
+
+def test_a_failed_purge_keeps_the_original_install_error(project, tmp_path, monkeypatch):
+    source, uv, env, _ = project
+    _nul_fill(_cached(tmp_path / "cache", "alpha_dep") / "WHEEL")
+    real = PythonEnvironment._run
+
+    def refuse_clean(self, args, *, cwd, timeout):
+        if args[:2] == ["cache", "clean"]:
+            return subprocess.CompletedProcess(args, 2, "", "error: cache is read-only")
+        return real(self, args, cwd=cwd, timeout=timeout)
+
+    monkeypatch.setattr(PythonEnvironment, "_run", refuse_clean)
+    second = _environment(uv, tmp_path, "second", env)
+    second.create()
+    with pytest.raises(InstallError) as caught:
+        second.sync(source, timeout=120)
+    assert "cache is read-only" in str(caught.value)
+    assert "The wheel is invalid" in str(caught.value)

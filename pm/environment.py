@@ -479,7 +479,13 @@ class PythonEnvironment:
             if self.output is not None:
                 self.output.write(f"The cached copy of {', '.join(names)} is corrupt; "
                                   "removing it from the uv cache and retrying the install.\n")
-            self.purge_cached_packages(names)
+            try:
+                self.purge_cached_packages(names)
+            except InstallError as exc:
+                # Keep the install failure that started this; the clean error alone hides it.
+                original = f"{result.stderr or ''}\n{result.stdout or ''}".strip()[-600:]
+                raise InstallError(exc.package, f"{exc.cause}; uv {stage} had failed with: {original}",
+                                   exc.remedy) from exc
             purged.update(names)
             result = attempt()
         if not result.returncode or not purged:

@@ -149,3 +149,61 @@ def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeyp
     monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
     assert kb.release_stale_claims(conn, signal_fn=sig) == 1
     assert killed == [] and kb.get_task(conn, tid2).status == "ready"
+
+
+def _live_child_fingerprint(pid: int) -> str:
+    fingerprint = kbd._process_fingerprint(pid)
+    assert fingerprint is not None and kbd._worker_alive(pid, fingerprint) is True
+    return fingerprint
+
+
+def test_max_runtime_keeps_the_claim_when_the_kill_is_refused(board):
+    """A refused SIGTERM/SIGKILL on a worker whose fingerprint still matches must NOT release the
+    claim: the task stays ``running`` with its worker_pid, the reclaim is deferred, and no
+    ``timed_out`` run is closed — otherwise the next dispatch starts a second worker against the
+    same task and worktree while the first one is still running."""
+    from gateway.status import get_process_start_time
+
+    conn = board
+    signals = []
+
+    def refuse(pid, sig):
+        signals.append((pid, sig))
+        raise PermissionError("not permitted")
+
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=get_process_start_time(os.getpid()),
+                           max_runtime=1)
+
+    assert kbd.enforce_max_runtime(conn, signal_fn=refuse) == []
+    task = kb.get_task(conn, tid)
+    assert task.status == "running" and task.worker_pid == os.getpid()
+    kinds = [e.kind for e in kb.list_events(conn, tid)]
+    assert "reclaim_deferred" in kinds and "timed_out" not in kinds
+    assert signals[0] == (os.getpid(), signal.SIGTERM)
+
+    # The next tick retries the same kill and still holds the claim (no duplicate spawn).
+    assert kbd.enforce_max_runtime(conn, signal_fn=refuse) == []
+    assert kb.get_task(conn, tid).status == "running"
+
+
+def test_max_runtime_releases_once_when_the_worker_actually_exits(board):
+    """The surviving-worker guard must not hold a claim whose worker really died: a worker that
+    exits on TERM settles once — task back to its source phase, run closed ``timed_out``, no
+    deferral event."""
+    import subprocess
+
+    conn = board
+    child = subprocess.Popen(["sleep", "30"])
+    try:
+        fingerprint = _live_child_fingerprint(child.pid)
+        tid = _claimed_running(conn, pid=child.pid, started_at=fingerprint, max_runtime=1)
+
+        assert kbd.enforce_max_runtime(conn, signal_fn=os.kill) == [tid]
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready" and task.worker_pid is None
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "timed_out" in kinds and "reclaim_deferred" not in kinds
+    finally:
+        child.kill()
+        child.wait(timeout=5)
+

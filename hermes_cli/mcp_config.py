@@ -208,11 +208,30 @@ def _print_tools(tools: list[tuple[str, str]], width: int, desc_max: int) -> Non
 
 
 def _get_mcp_servers(config: Optional[dict] = None) -> dict[str, dict]:
-    """Return the ``mcp_servers`` dict from config, or empty dict."""
+    """Return the ``mcp_servers`` dict from config, or empty dict.
+
+    Malformed entries (non-dict values, or entries missing both ``command`` and
+    ``url``) are filtered out with a warning so one bad row cannot break
+    ``hermes mcp`` list / test (#33119).
+    """
     if config is None:
         config = load_config()
     servers = config.get("mcp_servers")
-    return servers if servers and isinstance(servers, dict) else {}
+    if not servers or not isinstance(servers, dict):
+        return {}
+    from tools.mcp_tool_config import _validate_mcp_entry
+    validated: Dict[str, dict] = {}
+    for name, cfg in servers.items():
+        ok, reason = _validate_mcp_entry(name, cfg)
+        if not ok:
+            logger.warning(
+                "Skipping malformed mcp_servers entry %r: %s. "
+                "Fix or remove this entry in ~/.hermes/config.yaml.",
+                name, reason,
+            )
+            continue
+        validated[name] = cfg
+    return validated
 
 
 def _tool_filters(cfg: dict) -> tuple[Optional[list], Optional[list]]:

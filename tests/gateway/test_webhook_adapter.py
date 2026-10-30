@@ -1,7 +1,7 @@
 """Unit tests for the generic webhook platform adapter.
 
 Covers:
-- HMAC signature validation (GitHub, GitLab, generic)
+- Signature and token validation (GitHub, GitLab, generic, Bearer)
 - Prompt rendering with dot-notation template variables
 - Event type filtering
 - HTTP handler behaviour (404, 202, health)
@@ -131,6 +131,31 @@ class TestValidateSignature:
     """Tests for WebhookAdapter._validate_signature."""
 
 
+    def test_validate_bearer_token(self):
+        """Authorization Bearer token matching the route secret is accepted."""
+        adapter = _make_adapter()
+        secret = "bearer-token-value"
+        req = _mock_request(headers={"Authorization": f"Bearer {secret}"})
+        assert adapter._validate_signature(req, b"{}", secret) is True
+
+    def test_validate_bearer_token_wrong(self):
+        """Wrong Authorization Bearer token is rejected."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={"Authorization": "Bearer wrong"})
+        assert adapter._validate_signature(req, b"{}", "correct") is False
+
+    def test_non_ascii_bearer_token_rejects_without_raising(self):
+        """Hostile non-ASCII Bearer input must fail closed instead of raising."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={"Authorization": "Bearer tökén"})
+        assert adapter._validate_signature(req, b"{}", "correct") is False
+
+    def test_surrogateescaped_bearer_token_rejects_without_raising(self):
+        """Raw non-UTF-8 header bytes decoded by aiohttp must fail closed."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={"Authorization": "Bearer \udcff"})
+        assert adapter._validate_signature(req, b"{}", "correct") is False
+
     def test_validate_no_signature_with_secret_rejects(self):
         """Secret configured but no recognised signature header → reject."""
         adapter = _make_adapter()
@@ -243,6 +268,49 @@ class TestValidateSignature:
             "X-Webhook-Signature-V2": v2_sig,
             "X-Webhook-Signature": v1_sig,
             # X-Webhook-Timestamp deliberately omitted.
+        })
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_generic_v2_missing_timestamp_does_not_fall_back_to_bearer(self):
+        """A V2 header commits to V2 even when a valid Bearer token is present."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        timestamp = str(int(time.time()))
+        v2_sig = _generic_v2_signature(body, secret, timestamp)
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": v2_sig,
+            # X-Webhook-Timestamp deliberately omitted.
+            "Authorization": f"Bearer {secret}",
+        })
+        assert adapter._validate_signature(req, body, secret) is False
+
+    @pytest.mark.parametrize("auth_headers", [
+        {"svix-signature": ""},
+        {"webhook-signature": ""},
+        {"linear-signature": ""},
+        {"X-Hub-Signature-256": ""},
+        {"X-Gitlab-Token": ""},
+        {"X-Webhook-Signature-V2": ""},
+        {"X-Webhook-Signature": ""},
+        {"svix-signature": "v1,invalid"},
+        {"webhook-signature": "v1,invalid"},
+        {"linear-signature": "0" * 64},
+        {"X-Hub-Signature-256": "sha256=" + "0" * 64},
+        {"X-Gitlab-Token": "wrong"},
+        {"X-Webhook-Signature-V2": "0" * 64},
+        {"X-Webhook-Signature-V2": "0" * 64, "X-Webhook-Timestamp": "invalid"},
+        {"X-Webhook-Signature-V2": "0" * 64, "X-Webhook-Timestamp": "1"},
+        {"X-Webhook-Signature": "0" * 64},
+    ])
+    def test_invalid_signature_does_not_fall_back_to_bearer(self, auth_headers):
+        """Each recognized earlier auth scheme must validate rather than use Bearer."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        req = _mock_request(headers={
+            **auth_headers,
+            "Authorization": f"Bearer {secret}",
         })
         assert adapter._validate_signature(req, body, secret) is False
 
@@ -500,10 +568,56 @@ class TestHTTPHandling:
             resp = await cli.post("/webhooks/nonexistent", json={"a": 1})
             assert resp.status == 404
 
+    @pytest.mark.asyncio
+    async def test_raw_non_utf8_bearer_header_returns_401(self):
+        """Invalid raw header bytes are rejected instead of crashing with 500."""
+        routes = {"raw": {"secret": "correct", "prompt": "x"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+        server = TestServer(_create_app(adapter))
+        await server.start_server()
+        writer = None
+        try:
+            reader, writer = await asyncio.open_connection(server.host, server.port)
+            body = b"{}"
+            request = (
+                b"POST /webhooks/raw HTTP/1.1\r\n"
+                + f"Host: {server.host}:{server.port}\r\n".encode()
+                + b"Content-Type: application/json\r\n"
+                + b"Authorization: Bearer bad\xff\r\n"
+                + b"Content-Length: 2\r\n"
+                + b"Connection: close\r\n\r\n"
+                + body
+            )
+            writer.write(request)
+            await writer.drain()
+            response = await reader.read()
+            assert response.split(b"\r\n", 1)[0] == b"HTTP/1.1 401 Unauthorized"
+        finally:
+            if writer is not None:
+                writer.close()
+                await writer.wait_closed()
+            await server.close()
+
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_signature_header_does_not_fall_back_to_bearer_over_http(self):
+        """An actual empty HTTP header must not authorize a weaker fallback."""
+        secret = "http-route-secret"
+        adapter = _make_adapter(routes={"test": {"secret": secret, "prompt": "hi"}})
+        adapter.handle_message = AsyncMock()
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            response = await cli.post("/webhooks/test", json={"data": "value"}, headers={
+                "X-Webhook-Signature-V2": "",
+                "Authorization": f"Bearer {secret}",
+            })
+            assert response.status == 401
+        adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_route_without_secret_rejects_unsigned_request(self):
-        """Missing HMAC secret must fail closed even if connect() was bypassed."""
+        """Missing webhook secret must fail closed even if connect() was bypassed."""
         routes = {"test": {"prompt": "hi"}, "blank": {"prompt": "hi", "secret": "   "}}
         adapter = _make_adapter(routes=routes, secret="")
         adapter.handle_message = AsyncMock()
@@ -512,6 +626,8 @@ class TestHTTPHandling:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/webhooks/test", json={"data": "value"})
             assert resp.status == 403
+            data = await resp.json()
+            assert data["error"] == "Webhook route is missing a webhook secret"
             # A whitespace-only secret is unset too, even when the request is signed with it.
             body = b'{"data": "value"}'
             resp = await cli.post("/webhooks/blank", data=body, headers={

@@ -511,7 +511,7 @@ test('every named Profiles-screen route mints for its profile; collection routes
 
   expect(route('/api/profiles/default/soul')).toBe(endpoint.profile_id)
 
-  for (const p of ['/api/profiles/active', '/api/profiles/import', '/api/profiles/projects/tree', '/api/profiles/sessions']) {
+  for (const p of ['/api/profiles/active', '/api/profiles/import', '/api/profiles/projects/tree', '/api/profiles/projects/sessions', '/api/profiles/sessions']) {
     expect(route(p)).toBe(endpoint.profile_id)
   }
 

@@ -43,6 +43,18 @@ function copyTool(from, to) {
 }
 
 /**
+ * electron-builder's bundled icon-tool.js is CommonJS (uses require()).
+ * The desktop package.json declares "type":"module", which would make Node
+ * treat icon-tool.js as a module and die with 'require is not defined in ES
+ * module scope'. The icons package.json overrides the parent type for that
+ * directory only, so the script runs as CommonJS (#132172).
+ * @param {string} out packaged tools output root
+ */
+export function markIconsToolsetCommonJS(out) {
+  fs.writeFileSync(path.join(out, 'icons', 'package.json'), '{"type":"commonjs"}\n')
+}
+
+/**
  * Acquire bytes without signing credentials. Builder modules are loaded only
  * after the explicit cache root has been selected, before their lazy state runs.
  * @param {{ source: string, out: string, cache: string, target?: string, formats?: string[], dmgbuild?: string }} options
@@ -96,6 +108,7 @@ async function acquirePackagingTools({ source, out, cache, target, formats, buil
     sevenZip: copyTool(path.dirname(path.dirname(archiveTool)), path.join(out, 'sevenZip')),
     icons: copyTool(iconTools, path.join(out, 'icons')),
   }
+  markIconsToolsetCommonJS(out)
   let windows = null
   if (process.platform === 'win32') {
     const builder = await load('toolsets/winCodeSign.js')

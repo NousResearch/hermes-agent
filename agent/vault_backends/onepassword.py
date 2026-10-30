@@ -63,7 +63,7 @@ class OnePasswordLoginBackend(LoginBackend):
             env["OP_ACCOUNT"] = account
         if self._service_token:
             env["OP_SERVICE_ACCOUNT_TOKEN"] = self._service_token
-        elif session_token:
+        elif session_token and session_token != "__desktop_app__":
             # op signin --raw prints the bare token; the env var name carries the account shorthand,
             # which op also accepts as plain OP_SESSION for the default account.
             env[f"OP_SESSION_{account}" if account else "OP_SESSION"] = session_token
@@ -79,9 +79,11 @@ class OnePasswordLoginBackend(LoginBackend):
         if account := str(self.cfg.get("account") or ""):
             cmd += ["--account", account]
         proc = run_with_stdin_secret(cmd, env=self._env(None), secret=master_password, timeout=_TIMEOUT, label="op")
-        token = (proc.stdout or "").strip()
-        if proc.returncode != 0 or not token:
+        if proc.returncode != 0:
             raise RuntimeError(f"1Password unlock failed: {_scrub(proc.stderr or '')[:200] or 'no session token'}")
+        # In 1Password Desktop App integration mode, `op signin --raw` authenticates via IPC/biometrics
+        # and exits 0 with empty stdout instead of emitting an OP_SESSION token.
+        token = (proc.stdout or "").strip() or "__desktop_app__"
         if not _unlock.store_session_token(self.name, token, generation):
             raise RuntimeError("1Password was locked while unlocking; try again")
 

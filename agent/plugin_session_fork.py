@@ -66,7 +66,8 @@ class PluginForkHandle:
 
     ``outcome``: ``deferred`` (queued for machine idle), ``running``, then one of ``ok``,
     ``cancelled``, ``superseded`` (a newer deferred fork of the same plugin replaced it),
-    ``timeout``, ``budget_exhausted``, ``error``, ``refused:<reason>``."""
+    ``timeout``, ``budget_exhausted``, ``error``, ``error:spawn`` (its worker thread could not
+    start), ``refused:<reason>``."""
 
     def __init__(self, plugin_id: str, cancel: Callable[[], None]):
         self.plugin_id = plugin_id
@@ -185,7 +186,8 @@ def start_session_fork(
     expired lease, another profile's lease, a tool outside :func:`fork_tool_allowlist`, a tool the
     session does not advertise, a task the plugin does not own). The lease is consumed by every
     call except another profile's and one naming a tool outside the allowlist. ``own_tools``
-    returns the plugin's own tool names; it is read here and again when the fork starts."""
+    returns the plugin's own tool names; it is read here and again when the fork starts. Never
+    raises: a fork whose worker thread cannot start returns its handle settled ``error:spawn``."""
     from agent.background_review import _BackgroundReviewRun
     from agent.side_question_lease import take_lease
 
@@ -276,9 +278,19 @@ def _launch(job: _ForkJob) -> None:
         job.handle._settle(refusal)
         finish_background_review_run(parent, job.run)
         return
-    # Spawned inside the captured turn context, so the worker binds that profile + secret scope.
-    job.capture.context.copy().run(lambda: spawn_context_thread(
-        _run_job, name=f"plugin-fork:{job.plugin_id}", args=(job,)).start())
+    try:
+        # Built inside the captured turn context, so the worker binds that profile + secret scope.
+        worker = job.capture.context.copy().run(
+            spawn_context_thread, _run_job, name=f"plugin-fork:{job.plugin_id}", args=(job,))
+        worker.start()
+    except Exception:
+        # No worker will settle this admitted job: unregister it, publish its request exit (so the
+        # next turn's cancellation does not wait on it) and settle it here, never raising.
+        logger.warning("session fork error:spawn (plugin=%s)", job.plugin_id, exc_info=True)
+        with _lock:
+            _unregister_locked(parent, job)
+        finish_background_review_run(parent, job.run)
+        job.handle._settle("error:spawn")
 
 
 def _launch_refusal(parent: Any, job: _ForkJob) -> Optional[str]:

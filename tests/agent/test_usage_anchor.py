@@ -322,5 +322,36 @@ class TestCodexAppServerAnchor:
         assert agent._usage_anchor is prior
 
 
+@pytest.mark.parametrize(
+    "last_user",
+    [
+        "Scene 9 follows.\n\nNobody walks out of here clean.\n\n",
+        "  padded  ",
+        "What did we decide?\n\n<memory-context>the operator prefers H3</memory-context>",
+    ],
+)
+@pytest.mark.parametrize("loader", ["get_messages_as_conversation", "get_resume_conversations"])
+def test_anchor_captured_live_matches_after_reload(tmp_path, last_user, loader):
+    from hermes_state import SessionDB
+
+    live = [_msg("user", "Scene 8 follows.\n\n"), _msg("assistant", "Scene 8 received."), _msg("user", last_user)]
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s", source="desktop")
+    for m in live:
+        db.append_message("s", m["role"], m["content"])
+    set_usage_anchor(
+        SimpleNamespace(session_id="s", _session_db=db, _persist_disabled=False, _usage_anchor=None),
+        capture_usage_anchor(80_000, 40, live),
+    )
+    history = (
+        db.get_messages_as_conversation("s")
+        if loader == "get_messages_as_conversation"
+        else [m for m in db.get_resume_conversations("s")[0] if m.get("role") != "session_meta"]
+    )
+    fresh = SimpleNamespace(session_id="s", _session_db=db, _persist_disabled=False, _usage_anchor=None)
+    restore_usage_anchor(fresh, history)
+    assert fresh._usage_anchor is not None
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

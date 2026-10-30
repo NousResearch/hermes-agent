@@ -21,7 +21,7 @@ os.environ["HERMES_TOOL_PROGRESS"] = "0"
 os.environ["HERMES_ENABLE_PROJECT_PLUGINS"] = "0"
 sys.path.insert(0, str(repo))
 
-import yaml
+import hermes_yaml as yaml
 
 from tests.waiting import wait_until
 from tools import mcp_tool as core

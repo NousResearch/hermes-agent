@@ -54,7 +54,7 @@ def _reopen_refusal():
 @pytest.fixture
 def turn_env(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: True)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *a, **kw: True)
     monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
     monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
     # Production gives the turn thread 5 s before finalizing; the outcome is the same when it gives up at once.

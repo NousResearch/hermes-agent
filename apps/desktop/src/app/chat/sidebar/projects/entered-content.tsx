@@ -1,3 +1,4 @@
+import type { useSensors } from '@dnd-kit/core'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useMemo, useState } from 'react'
@@ -9,11 +10,13 @@ import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
+import { cn } from '@/lib/utils'
 import { $dismissedWorktreeIds, $removedWorktreeIds, dismissWorktree, setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { removeWorktreePath } from '@/store/projects'
 
 import { SidebarRowStack } from '../chrome'
+import { ReorderableList, useSortableBindings } from '../reorderable-list'
 
 import { PROJECT_SESSION_PAGE, useRevealedRows, useWorkspaceNodeOpen } from './model'
 import { SidebarWorkspaceGroup } from './workspace-group'
@@ -35,17 +38,21 @@ export function EnteredProjectContent({
   renderRows,
   onNewSession,
   onNewSessionSplit,
+  onReorderRepos,
   repoWorktrees,
   liveSessions,
-  removedSessionIds
+  removedSessionIds,
+  sensors
 }: {
   project: SidebarProjectTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
   onNewSessionSplit?: NewSessionSplitHandler
+  onReorderRepos?: (ids: string[]) => void
   repoWorktrees?: Record<string, HermesGitWorktree[]>
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
+  sensors?: ReturnType<typeof useSensors>
 }) {
   if (!project.repos.length) {
     return null
@@ -58,24 +65,36 @@ export function EnteredProjectContent({
   }
 
   const single = project.repos.length === 1
+  const reposDraggable = project.repos.length > 1 && !!onReorderRepos
+  const Row = reposDraggable ? SortableRepoFlatSection : RepoFlatSection
 
-  return (
-    <>
-      {project.repos.map(repo => (
-        <RepoFlatSection
-          discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}
-          key={repo.id}
-          liveSessions={liveSessions}
-          onNewSession={onNewSession}
-          onNewSessionSplit={onNewSessionSplit}
-          removedSessionIds={removedSessionIds}
-          renderRows={renderRows}
-          repo={repo}
-          showHeader={!single}
-        />
-      ))}
-    </>
-  )
+  const rows = project.repos.map(repo => (
+    <Row
+      discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}
+      key={repo.id}
+      liveSessions={liveSessions}
+      onNewSession={onNewSession}
+      onNewSessionSplit={onNewSessionSplit}
+      removedSessionIds={removedSessionIds}
+      renderRows={renderRows}
+      repo={repo}
+      showHeader={!single}
+    />
+  ))
+
+  if (reposDraggable && onReorderRepos) {
+    return (
+      <ReorderableList ids={project.repos.map(repo => repo.id)} onReorder={onReorderRepos} sensors={sensors}>
+        {rows}
+      </ReorderableList>
+    )
+  }
+
+  return <>{rows}</>
+}
+
+function SortableRepoFlatSection(props: React.ComponentProps<typeof RepoFlatSection>) {
+  return <RepoFlatSection {...props} {...useSortableBindings(props.repo.id)} />
 }
 
 function HomeSessions({
@@ -107,7 +126,12 @@ function RepoFlatSection({
   onNewSessionSplit,
   discoveredWorktrees,
   liveSessions,
-  removedSessionIds
+  removedSessionIds,
+  reorderable = false,
+  dragging = false,
+  dragHandleProps,
+  ref,
+  style
 }: {
   repo: SidebarWorkspaceTree
   showHeader: boolean
@@ -117,6 +141,11 @@ function RepoFlatSection({
   discoveredWorktrees?: HermesGitWorktree[]
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
+  reorderable?: boolean
+  dragging?: boolean
+  dragHandleProps?: React.HTMLAttributes<HTMLElement>
+  ref?: React.Ref<HTMLDivElement>
+  style?: React.CSSProperties
 }) {
   const { t } = useI18n()
   const s = t.sidebar
@@ -263,7 +292,7 @@ function RepoFlatSection({
   }
 
   return (
-    <SidebarRowStack>
+    <SidebarRowStack className={cn(dragging && 'relative z-10')} ref={ref} style={style}>
       <WorkspaceHeader
         action={
           onNewSession && (
@@ -296,11 +325,14 @@ function RepoFlatSection({
             />
           )
         }
+        dragging={dragging}
+        dragHandleProps={dragHandleProps}
         emphasis
         icon={<Codicon className="shrink-0 text-(--ui-text-tertiary)" name="repo" size="0.75rem" />}
         label={repo.label}
         onToggle={toggleOpen}
         open={open}
+        reorderable={reorderable}
         title={repo.path ? displayPath(repo.path) : undefined}
       />
       {open && <SidebarRowStack className="pl-2.5">{body}</SidebarRowStack>}

@@ -7,6 +7,7 @@ import {
   type SyntaxHighlighterProps,
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
+import { useStore } from '@nanostores/react'
 import type { code as streamdownCode } from '@streamdown/code'
 import {
   Children,
@@ -20,6 +21,7 @@ import {
 } from 'react'
 import { defaultRemarkPlugins } from 'streamdown'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
@@ -28,6 +30,7 @@ import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { useContributions } from '@/contrib'
 import { useMediaImage } from '@/hooks/use-media-image'
+import { useMediaPlaybackSrc } from '@/hooks/use-media-playback-src'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
@@ -43,7 +46,6 @@ import {
   mediaKind,
   mediaName,
   mediaPathFromMarkdownHref,
-  resolveMediaPlaybackSrc,
   validImageDimensions
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
@@ -124,12 +126,18 @@ function preprocessWithTailRepair(text: string): string {
 }
 
 function useOpenMediaFile(path: string) {
+  const view = useSessionView()
+  const storedId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
+  const sessionId = storedId || runtimeId || ''
   const [openFailed, setOpenFailed] = useState(false)
 
   const open = () => {
     if (window.hermesDesktop && isRemoteGateway()) {
       setOpenFailed(false)
-      void downloadGatewayMediaFile(path).catch(() => setOpenFailed(true))
+      void downloadGatewayMediaFile(path, sessionId ? { sessionId } : undefined).catch(() =>
+        setOpenFailed(true)
+      )
     } else {
       openExternalLink(mediaExternalUrl(path))
     }
@@ -172,59 +180,22 @@ function MediaAttachment({ path }: { path: string }) {
 }
 
 function MediaPlaybackAttachment({ path }: { path: string }) {
-  const [src, setSrc] = useState('')
-  const [failed, setFailed] = useState(false)
+  const { failed, kind, onError, onLoadedMetadata, src } = useMediaPlaybackSrc(path)
   const { open, openFailed } = useOpenMediaFile(path)
-  const kind = mediaKind(path)
   const name = mediaName(path)
-
-  useEffect(() => {
-    let cancelled = false
-    let objectUrl = ''
-
-    setFailed(false)
-    setSrc('')
-
-    if (kind === 'file') {
-      setFailed(true)
-
-      return () => {
-        cancelled = true
-      }
-    }
-
-    void resolveMediaPlaybackSrc(path)
-      .then(value => {
-        if (value.startsWith('blob:')) {
-          objectUrl = value
-        }
-
-        if (!cancelled) {
-          setSrc(value)
-        } else if (objectUrl) {
-          URL.revokeObjectURL(objectUrl)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setFailed(true)
-        }
-      })
-
-    return () => {
-      cancelled = true
-
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl)
-      }
-    }
-  }, [kind, path])
 
   if (kind === 'audio' && src) {
     return (
       <span className="my-3 block max-w-md rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3">
         <span className="mb-2 block truncate text-xs font-medium text-muted-foreground">{name}</span>
-        <audio className="block w-full" controls onError={() => setFailed(true)} preload="metadata" src={src} />
+        <audio
+          className="block w-full"
+          controls
+          onError={onError}
+          onLoadedMetadata={onLoadedMetadata}
+          preload="metadata"
+          src={src}
+        />
         {failed && <OpenMediaButton kind="audio" path={path} />}
       </span>
     )
@@ -237,7 +208,8 @@ function MediaPlaybackAttachment({ path }: { path: string }) {
         <TranscriptVideo
           className="block max-h-112 w-full rounded-lg bg-black"
           controls
-          onError={() => setFailed(true)}
+          onError={onError}
+          onLoadedMetadata={onLoadedMetadata}
           src={src}
         />
         {failed && <OpenMediaButton kind="video" path={path} />}

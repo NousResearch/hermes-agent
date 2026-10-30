@@ -217,7 +217,7 @@ def enabled_plugin_entries(*, proposed_home=None, enabled=None, disabled=None,
 
     The key is what the home's config names, so a caller can edit that home's selection.
     """
-    from pm.plugins_state import _is_directory, enabled_plugins_ordered
+    from pm.plugins_state import enabled_plugins_ordered
 
     selection = enabled_plugins_ordered(
         proposed_home=proposed_home, enabled=enabled, disabled=disabled, installing=installing,
@@ -226,16 +226,25 @@ def enabled_plugin_entries(*, proposed_home=None, enabled=None, disabled=None,
     entries = []
     for plugins_dir, names in selection.items():
         for name in names:
-            relative = Path(name)
-            if relative.is_absolute() or ".." in relative.parts:
-                raise InstallError("venv", f"invalid plugin key: {name}")
-            plugin_dir = plugins_dir / relative
-            proposed = installing is not None and plugin_dir.resolve() == installing.resolve()
-            if not proposed and not _is_directory(plugin_dir):
-                plugin_dir = paths.repo_root() / "plugins" / relative
-            if proposed or _is_directory(plugin_dir):
+            plugin_dir = selected_plugin_dir(plugins_dir, name, installing=installing)
+            if plugin_dir is not None:
                 entries.append((plugins_dir, name, plugin_dir))
     return entries
+
+
+def selected_plugin_dir(plugins_dir: Path, name: str, *, installing: Path | None = None) -> Path | None:
+    """The tree a home's selection key names: its own plugins dir first, then core's, else None."""
+    from pm.plugins_state import _is_directory
+
+    relative = Path(name)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise InstallError("venv", f"invalid plugin key: {name}")
+    plugin_dir = plugins_dir / relative
+    if installing is not None and plugin_dir.resolve() == installing.resolve():
+        return plugin_dir
+    if not _is_directory(plugin_dir):
+        plugin_dir = paths.repo_root() / "plugins" / relative
+    return plugin_dir if _is_directory(plugin_dir) else None
 
 
 def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None,

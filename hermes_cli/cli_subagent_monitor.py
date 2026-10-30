@@ -177,10 +177,15 @@ class SubagentMonitor:
             return
         self._last_poll = now
         self._plugin_dirty = False
-        changed = self.refresh()
-        if self.tips is not None and not self.has_rows and self.tips.due():
-            changed = self.tips.rotate() or changed  # repaint only when the tip text changed
-        if self._poll_tail() or changed:
+        try:
+            changed = self.refresh()
+            if self.tips is not None and not self.has_rows and self.tips.due():
+                changed = self.tips.rotate() or changed  # repaint only when the tip text changed
+            changed = self._poll_tail() or changed
+        except Exception:  # health: allow BLE001 -- the spinner thread runs this tick; one raise would end that thread for the session
+            logger.debug("subagent monitor tick failed", exc_info=True)
+            return
+        if changed:
             self.repaint()
 
     def repaint(self, *, now=False):

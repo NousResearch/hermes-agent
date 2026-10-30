@@ -6,8 +6,11 @@ import { ruBoot } from './ru_boot'
 import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
+import { ruCronControl } from './ru_cron_control'
 import { ruErrorCodes } from './ru_error_codes'
 import { ruFirstRun } from './ru_first_run'
+import { ruGatewayHost } from './ru_gateway_host'
+import { ruMemoryLayers } from './ru_memory_layers'
 import { ruModelMenu } from './ru_model_menu'
 import { ruModelSettings } from './ru_model_settings'
 import { ruNotices } from './ru_notices'
@@ -15,31 +18,12 @@ import { ruNotifications } from './ru_notifications'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginPreviewAccess } from './ru_plugin_preview_access'
 import { ruPluginSettings, ruPluginsTab } from './ru_plugins'
+import { RU_NOUN, RU_PLURAL } from './ru_plural'
+import { ruPreviewWeb } from './ru_preview_web'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
 import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
-
-// RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
-// RU_NOUN: (count, one, few, many) — формы род. множественного
-// count может быть number или string (часть подписей en.ts передаёт строки)
-const ruNum = (count: number | string) => (typeof count === 'string' ? Number(count) || 0 : count)
-
-const RU_PLURAL = (count: number | string, one: string, few: string, many: string) => {
-  const c = ruNum(count)
-  const n = Math.abs(c) % 10
-  const nn = Math.abs(c) % 100
-
-  return n === 1 && nn !== 11 ? one : n >= 2 && n <= 4 && (nn < 12 || nn > 14) ? few : many
-}
-
-const RU_NOUN = (count: number | string, one: string, few: string, many: string) => {
-  const c = ruNum(count)
-  const n = Math.abs(c) % 10
-  const nn = Math.abs(c) % 100
-
-  return n === 1 && nn !== 11 ? one : n >= 2 && n <= 4 && (nn < 12 || nn > 14) ? few : many
-}
 
 export const ruOverrides = {
   catalog: ruCatalog,
@@ -165,6 +149,8 @@ export const ruOverrides = {
       microphoneConstraintsUnsupported: 'Ограничения микрофона не поддерживаются этим устройством.',
       microphoneFailed: 'Ошибка микрофона',
       microphoneInUse: 'Микрофон уже используется другим приложением.',
+      microphoneNeedsHttps:
+        'Микрофону нужно защищённое соединение. Откройте Webapp по HTTPS или через SSH-туннель к 127.0.0.1, чтобы им пользоваться.',
       microphonePermissionDenied: 'Доступ к микрофону запрещён.',
       microphoneStartFailed: 'Не удалось начать запись с микрофона.',
       microphoneUnsupported: 'Это окружение не поддерживает запись с микрофона.',
@@ -348,6 +334,7 @@ export const ruOverrides = {
     noResults: 'Языки не найдены'
   },
   settings: {
+    memoryLayers: ruMemoryLayers,
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {
       keepGoingOnCredits: {
@@ -1079,8 +1066,7 @@ export const ruOverrides = {
     },
     gateway: {
       loading: 'Загрузка настроек шлюза…',
-      unavailableTitle: 'Настройки шлюза недоступны',
-      unavailableDesc: 'IPC-мост приложения не предоставляет настройки шлюза.',
+      ...ruGatewayHost,
       title: 'Подключение шлюза',
       envOverride: 'переопределение переменными окружения',
       intro:
@@ -1335,8 +1321,8 @@ export const ruOverrides = {
       defaultDirTitle: 'Папка проекта по умолчанию',
       defaultDirDesc:
         'Новые сеансы начинаются в этой папке, если вы не выбрали другую. Оставьте пустым, чтобы использовать домашнюю директорию.',
-      defaultDirUpdated:
-        'Папка проекта по умолчанию обновлена — начните новый чат (Ctrl/⌘+N), чтобы она вступила в силу',
+      defaultDirUpdated: shortcut =>
+        `Папка проекта по умолчанию обновлена — начните новый чат${shortcut ? ` (${shortcut})` : ''}, чтобы она вступила в силу`,
       defaultsTo: label => `По умолчанию: ${label}.`,
       change: 'Изменить',
       choose: 'Выбрать',
@@ -1787,9 +1773,6 @@ export const ruOverrides = {
       resume: 'Продолжить',
       runNow: 'Запустить сейчас',
       memoryData: 'Данные памяти',
-      memoryDataDesc: 'Встроенные файлы памяти, внедряемые в каждый сеанс',
-      memoryProvider: name => `Активный провайдер: ${name}`,
-      builtinMemory: 'встроенный',
       memoryFile: 'Память агента (MEMORY.md)',
       userFile: 'Профиль пользователя (USER.md)',
       bytes: size => size,
@@ -2089,8 +2072,11 @@ export const ruOverrides = {
     exported: 'Профиль экспортирован',
     failedImport: 'Не удалось импортировать профиль',
     failedExport: 'Не удалось экспортировать профиль',
+    exportNeedsHost: name =>
+      `Браузер не может сохранить архив профиля. На хосте Hermes выполните: hermes profile export ${name}`,
     allProfiles: 'Все профили',
     showAllProfiles: 'Показать все профили',
+    notServedHere: 'Здесь не обслуживается',
     switchToProfile: name => `Переключиться на ${name}`,
     switchToConnection: name => `Переключиться на ${name}`,
     switchConnectionFailed: name => `Не удалось подключиться к ${name}`,
@@ -2190,6 +2176,7 @@ export const ruOverrides = {
   },
 
   cron: {
+    control: ruCronControl,
     close: 'Закрыть cron',
     title: 'Запланированные задачи',
     count: count => `${count} ${RU_PLURAL(count, 'задача', 'задачи', 'задач')}`,
@@ -2930,6 +2917,8 @@ export const ruOverrides = {
     gitUnusable: 'Hermes не удалось запустить Git на этом компьютере, поэтому проверить обновления не получилось.',
     latestBody: 'У вас последняя версия.',
     versionDetailsDistributionStore: 'Microsoft Store',
+    versionDetailsClient: 'Это устройство',
+    versionDetailsBackend: 'Подключённый бэкенд',
     latestBodyBackend: 'Бэкенд работает на последней версии.',
     allSetTitle: 'Всё готово',
     availableTitle: 'Доступно новое обновление',
@@ -3302,6 +3291,7 @@ export const ruOverrides = {
     }
   },
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `Эти имена нельзя безопасно ввести в ${shell}: ${paths}`,
     terminalReadOnly: 'Вывод только для чтения',
     terminalReadOnlyHelp:
       'Чтобы ответить на запрос, остановите фоновую команду и запустите её в новом терминале. Он откроет отдельную оболочку и не подключится к этому процессу.',
@@ -3404,51 +3394,7 @@ export const ruOverrides = {
       sentMessage: count =>
         `${count} ${RU_NOUN(count, 'запись лога', 'записи лога', 'записей лога')} добавлено в композер`
     },
-    web: {
-      appFailedToBoot: 'Приложение предпросмотра не запустилось',
-      serverNotFound: 'Сервер не найден',
-      remoteLoopback:
-        'Этот адрес указывает на машину, на которой работает ваш агент, а не на эту. Панель браузера загружает страницы локально, поэтому для удалённого dev-сервера нужен порт-форвардинг или доступный hostname.',
-      failedToLoad: 'Не удалось загрузить предпросмотр',
-      tryAgain: 'Попробовать снова',
-      restarting: 'Hermes перезапускается...',
-      askRestart: 'Попросить Hermes перезапустить сервер',
-      lookingRestart: taskId => `Hermes ищет сервер предпросмотра для перезапуска (${taskId})`,
-      restartingTitle: 'Перезапуск сервера предпросмотра',
-      restartingMessage: 'Hermes работает в фоне. Следите за прогрессом в консоли предпросмотра.',
-      startRestartFailed: message => `Не удалось запустить перезапуск сервера: ${message}`,
-      restartFailed: 'Перезапуск сервера не удался',
-      hideConsole: 'Скрыть консоль предпросмотра',
-      showConsole: 'Показать консоль предпросмотра',
-      hideDevTools: 'Скрыть DevTools предпросмотра',
-      openDevTools: 'Открыть DevTools предпросмотра',
-      goBack: 'Назад',
-      goForward: 'Вперёд',
-      reload: 'Перезагрузить страницу',
-      address: 'Адрес',
-      addressPlaceholder: 'Введите адрес',
-      blankPageBody: 'Введите адрес выше, чтобы просматривать, или попросите Hermes открыть страницу.',
-      finishedRestarting: message => `Hermes завершил перезапуск сервера предпросмотра${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `Перезапуск сервера не удался: ${message}`,
-      unknownError: 'неизвестная ошибка',
-      restartedTitle: 'Сервер предпросмотра перезапущен',
-      reloadingNow: 'Перезагружаем предпросмотр.',
-      restartFailedTitle: 'Перезапуск предпросмотра не удался',
-      restartFailedMessage: 'Hermes не смог перезапустить сервер.',
-      stillWorking:
-        'Hermes всё ещё работает, но результата перезапуска пока нет. Команда сервера может выполняться в foreground.',
-      workspaceReloading: 'Рабочее пространство изменилось, перезагружаем предпросмотр',
-      fileChanged: url => `Файл изменился, перезагружаем предпросмотр: ${url}`,
-      filesChanged: (count, url) =>
-        `${count} ${RU_NOUN(count, 'изменение файла', 'изменения файла', 'изменений файла')}, перезагружаем предпросмотр: ${url}`,
-      watchFailed: message => `Не удалось отслеживать файл предпросмотра: ${message}`,
-      moduleMimeDescription:
-        'Модульные скрипты раздаются с неверным MIME-типом. Обычно это значит, что статический файл-сервер раздаёт Vite/React-приложение вместо dev-сервера проекта.',
-      loadFailedConsole: (code, message) => `Не удалось загрузить${code ? ` (${code})` : ''}: ${message}`,
-      unreachableDescription: 'Страница предпросмотра недоступна.',
-      openTarget: url => `Открыть ${url}`,
-      fallbackTitle: 'Предпросмотр'
-    }
+    web: ruPreviewWeb
   },
   interfaceMode: {
     title: 'Режим интерфейса',
@@ -3512,7 +3458,8 @@ export const ruOverrides = {
     saveApply: 'Сохранить и применить',
     notExpressible: 'эта расстановка зацеплена (pinwheel) — пока не выразима как вложенные разделения',
     zoneCount: count => `${count} ${RU_NOUN(count, 'зона', 'зоны', 'зон')}`,
-    tabCount: count => `${count} ${RU_NOUN(count, 'вкладка', 'вкладки', 'вкладок')}`
+    tabCount: count => `${count} ${RU_NOUN(count, 'вкладка', 'вкладки', 'вкладок')}`,
+    tabActions: title => `Действия: ${title}`
   },
   contextMenu: {
     link: {
@@ -3546,6 +3493,18 @@ export const ruOverrides = {
       errorUseCreditsFailed: 'Не удалось включить «Продолжать за кредиты»',
       errorAddCredits: 'Пополнить кредиты',
       errorOpenBillingSettings: 'Открыть настройки оплаты',
+      errorHideDetails: 'Скрыть подробности ошибки',
+      errorDetailsCopy: 'Копировать подробности',
+      errorCopyRaw: 'Копировать ошибку',
+      errorContinue: 'Продолжить',
+      errorOpenProviderSettings: provider => `Открыть настройки ${provider}`,
+      errorOpenSetupGuide: 'Открыть руководство по настройке',
+      errorSetupGuideLink: 'Руководство по настройке',
+      errorOpenModelSettings: 'Открыть настройки модели',
+      errorStartNewChatLink: 'Начать новый чат',
+      errorChooseModelLink: 'Выбрать другую модель',
+      errorRetryAtResetShort: time => `Повторить в ${time}`,
+      errorRateLimitResetBody: (provider, time) => `Вы достигли лимита запросов ${provider}. Он сбросится в ${time}.`,
       loadingSession: 'Загрузка сеанса',
       showEarlier: 'Показать ранние сообщения',
       loadingResponse: 'Hermes загружает ответ',
@@ -3848,11 +3807,13 @@ export const ruOverrides = {
     imageAttach: 'Прикрепление изображения',
     imageWriteFailed: 'Не удалось записать изображение на диск.',
     imageAttachFailed: 'Прикрепление изображения не удалось',
+    attachFailed: 'Прикрепление не удалось',
     attachImages: 'Прикрепить изображения',
     clipboard: 'Буфер обмена',
     noClipboardImage: 'Изображение в буфере обмена не найдено',
     clipboardPasteFailed: 'Вставка из буфера обмена не удалась',
     dropFiles: 'Перетащите файлы',
+    dropFilesMore: (count: number) => `и ещё ${count}`,
     handoff: {
       pickPlatform: 'Выберите назначение',
       success: platform => `Передаём в ${platform}. Возобновите здесь в любой момент.`,

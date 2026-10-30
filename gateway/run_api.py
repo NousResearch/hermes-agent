@@ -8,13 +8,15 @@ The native session WebSocket (ticketed ``/api/ws`` — every local CLI/TUI/Deskt
 without the dashboard app: importing ``hermes_cli.web_server`` (about 690 routes, ~0.6 s) before the
 listener bound stalled every cold start and the control socket's identify. The dashboard is mounted
 on its first request (imported off the event loop) or warmed after READY for a supervised gateway
-(``warm_gateway_dashboard``); a gated listener (non-loopback bind or ``dashboard.public_url``) and a
+(``warm_gateway_dashboard``); a gated listener (non-loopback bind, ``webapp.public_url`` on the Webapp's,
+``dashboard.public_url`` on the private one) and a
 process that already imported it mount it before the listener starts, exactly as before.
 """
 
 import asyncio
 from dataclasses import dataclass
 import logging
+import os
 import socket
 import sys
 import types
@@ -24,6 +26,13 @@ logger = logging.getLogger(__name__)
 
 # One listener per process: the dashboard routers share one process-local app.
 _ACTIVE_RUNNER: Any = None
+# A fixed port (the Webapp's) has to bind again while the last gateway's closed connections sit in
+# TIME_WAIT. POSIX allows that with SO_REUSEADDR; on Windows that option lets another process bind
+# the same port, and a rebind there does not wait on TIME_WAIT anyway.
+_REUSE_FIXED_PORT = os.name != "nt"
+# On Windows a fixed port is held for exclusive use instead: otherwise another process may bind it with
+# SO_REUSEADDR, and a more specific address (127.0.0.1 under a 0.0.0.0 bind) then takes its connections.
+_EXCLUSIVE_FIXED_PORT = os.name == "nt"
 
 
 @dataclass
@@ -40,7 +49,8 @@ class GatewayDashboardMount:
 
     ``state`` is the listener's boundary state (``bound_host``, ``bound_port``, ``auth_required``,
     ``trusted_public_hosts``, ``gateway_runner``, ``session_authority``) — what the native WebSocket
-    path checks, mirrored onto the dashboard app state once it is mounted.
+    path checks, mirrored onto the dashboard app state once it is mounted. ``state.webapp`` (a
+    ``gateway.webapp_listener.WebappMount``) makes the mount serve the browser-hosted Desktop.
     """
 
     def __init__(self, runner, state):
@@ -49,6 +59,8 @@ class GatewayDashboardMount:
         self._lock: asyncio.Lock | None = None
         self._lifespan = None
         self._closed = False
+        self._replaced_session_token = None
+        self._undo_own_sign_in = None
 
     @property
     def loaded(self) -> bool:
@@ -61,21 +73,57 @@ class GatewayDashboardMount:
         return self.web.app.state if self.web is not None else self._state
 
     def _bind_state(self, web) -> None:
+        webapp = getattr(self._state, "webapp", None)
+        # The browser credential before any app state: one the home cannot store fails the mount
+        # with nothing set, and the gateway falls back to its private listener.
+        token = None
+        if webapp is not None:
+            from gateway.webapp_listener import browser_session_token
+            token = browser_session_token(webapp.home)
         # Local clients authenticate with tickets minted on the owner-only control socket. The SPA
         # session token is a bearer credential any loopback peer (any OS user) could read from
         # GET /, so the gateway-hosted listener never publishes it.
         web.app.state.withhold_session_token = True
+        own_url = _listener_public_url(webapp)
+        if own_url is not None:
+            web.app.state.listener_public_url = own_url
+        elif hasattr(web.app.state, "listener_public_url"):
+            delattr(web.app.state, "listener_public_url")
+        if webapp is not None:  # before the gate looks for a sign-in provider
+            from gateway.webapp_listener import use_own_sign_in
+            self._undo_own_sign_in = use_own_sign_in(webapp)
         web._configure_auth_gate(self._state.bound_host, False, None, None)
         web.app.state.gateway_runner = self.runner
         web.app.state.session_authority = getattr(self.runner, "session_authority", None)
         web.app.state.bound_host = self._state.bound_host
         web.app.state.bound_port = self._state.bound_port
+        if webapp is not None:
+            # The browser-hosted Desktop: its bundle at /, its routes (launch handoff, socket tickets,
+            # host terminal) on, and the browser credential kept in the home so tabs survive a restart.
+            # The page itself still never carries the credential (the webapp surface withholds it).
+            web.app.state.ui_surface = "webapp"
+            web.app.state.web_dist = webapp.dist
+            web.app.state.webapp_home = webapp.home
+            self._replaced_session_token = web._SESSION_TOKEN
+            web._SESSION_TOKEN = token
 
     def _unbind_state(self) -> None:
+        undo_own_sign_in, self._undo_own_sign_in = self._undo_own_sign_in, None
+        if undo_own_sign_in is not None:  # a listener mounted next signs in with the configured client
+            undo_own_sign_in()
         if self.web is not None:
             self.web.app.state.gateway_runner = None
             self.web.app.state.session_authority = None
             self.web.app.state.withhold_session_token = False
+            if hasattr(self.web.app.state, "listener_public_url"):
+                delattr(self.web.app.state, "listener_public_url")
+            if self._replaced_session_token is not None:
+                # Removed, not cleared: a listener mounted next (the private one the gateway falls back
+                # to) must find the app as main's listener does, with no surface, bundle or home set.
+                for name in ("ui_surface", "web_dist", "webapp_home"):
+                    if hasattr(self.web.app.state, name):
+                        delattr(self.web.app.state, name)
+                self.web._SESSION_TOKEN, self._replaced_session_token = self._replaced_session_token, None
 
     async def ensure(self):
         """Import (off the loop), bind and start the dashboard app once; returns ``web_server``."""
@@ -95,9 +143,12 @@ class GatewayDashboardMount:
                 raise RuntimeError("gateway API stopped")
             if getattr(web.app.state, "gateway_runner", None) not in (None, self.runner):
                 raise RuntimeError("gateway API already started")
-            self._bind_state(web)
-            lifespan = web.app.router.lifespan_context(web.app)
             try:
+                # A bind that fails partway (the auth gate refusing a gated bind, or the Webapp's
+                # browser credential that cannot be read or written) is undone like a failed lifespan:
+                # the listener the gateway falls back to finds the app as main's does.
+                self._bind_state(web)
+                lifespan = web.app.router.lifespan_context(web.app)
                 await lifespan.__aenter__()
                 if self._closed:  # close() won while the lifespan started; it never saw this mount
                     await lifespan.__aexit__(None, None, None)
@@ -135,9 +186,37 @@ class GatewayDashboardMount:
         await web.app(scope, receive, send)
 
 
-async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0) -> GatewayAPIHandle:
+def _listener_socket(family, kind, proto, port: int, *, dual_stack: bool = False) -> socket.socket:
+    """The listener's unbound socket; a fixed *port* may bind again at once (``_REUSE_FIXED_PORT``)
+    or is held exclusively (``_EXCLUSIVE_FIXED_PORT``). A *dual_stack* IPv6 socket (the ``::``
+    wildcard) takes IPv4 connections too."""
+    listener = socket.socket(family, kind, proto)
+    if dual_stack:
+        # "::" means every address, as Linux binds it by default. Windows binds IPv6 only otherwise:
+        # IPv4 clients would never reach the Webapp, and the exclusive hold below would cover the
+        # IPv6 port alone, leaving 0.0.0.0 on the same port to another program.
+        listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+    if port and _REUSE_FIXED_PORT:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    elif port and _EXCLUSIVE_FIXED_PORT:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    return listener
+
+
+def _listener_public_url(webapp) -> str | None:
+    """The public URL the listener answers to: the Webapp's own ``webapp.public_url`` ("" for none),
+    never ``dashboard.public_url``, which describes ``hermes dashboard``. None leaves main's listener
+    reading ``dashboard.public_url``."""
+    return None if webapp is None else webapp.public_url
+
+
+async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, webapp=None) -> GatewayAPIHandle:
     global _ACTIVE_RUNNER
-    from hermes_cli.web_server_boundary import _dashboard_public_hosts, listener_auth_required
+    from gateway.webapp_listener import dial_origin
+    from hermes_cli.web_server_boundary import (
+        _dashboard_public_hosts, listener_auth_required, public_hosts_engage_gate, public_url_hosts,
+        should_require_auth,
+    )
     from hermes_cli.web_server_lifecycle import build_listener_server
 
     # Existing routers/auth helpers share one process-local app. Never rebind it
@@ -146,11 +225,18 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0) -
     if _ACTIVE_RUNNER is not None or (
             loaded_web is not None and getattr(loaded_web.app.state, "gateway_runner", None) is not None):
         raise RuntimeError("gateway API already started")
-    trusted = _dashboard_public_hosts()
+    public_url = _listener_public_url(webapp)
+    if public_url is None:
+        trusted = _dashboard_public_hosts()
+        auth_required = listener_auth_required(host, trusted)
+    else:
+        # What web_server._configure_auth_gate decides for a listener that declares its public URL.
+        trusted = public_url_hosts(public_url)
+        auth_required = should_require_auth(host) or public_hosts_engage_gate(trusted)
     state = types.SimpleNamespace(
-        bound_host=host, bound_port=None, auth_required=listener_auth_required(host, trusted),
+        bound_host=host, bound_port=None, auth_required=auth_required,
         trusted_public_hosts=trusted, gateway_runner=runner,
-        session_authority=getattr(runner, "session_authority", None))
+        session_authority=getattr(runner, "session_authority", None), webapp=webapp)
     mount = GatewayDashboardMount(runner, state)
     # Lifespan off: the dashboard's own lifespan runs when it is mounted (GatewayDashboardMount).
     config, server = build_listener_server(mount, host, port, auth_required=state.auth_required,
@@ -158,10 +244,16 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0) -
     family, kind, proto, _, address = socket.getaddrinfo(
         host, port, type=socket.SOCK_STREAM,
     )[0]
-    listener = socket.socket(family, kind, proto)
+    listener = _listener_socket(family, kind, proto, port,
+                                dual_stack=family == socket.AF_INET6 and address[0] == "::")
     _ACTIVE_RUNNER = runner
     try:
         listener.bind(address)
+        if port:
+            # Under SO_REUSEADDR another socket may bind a fixed port too, and the first to listen
+            # owns it. Listening now settles that before the dashboard mounts, so a lost race falls
+            # back at once instead of after the mount is up.
+            listener.listen(config.backlog)
         listener.setblocking(False)
         state.bound_port = listener.getsockname()[1]
         # Loading the ASGI graph may fail too; it owns the same bound socket.
@@ -169,8 +261,9 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0) -
             config.load()
         config.loaded_app = GatewayRuntimeAPI(config.loaded_app, runner, mount)
         # A gated listener needs the dashboard's auth providers (and refuses to start without one);
-        # an already-imported dashboard costs nothing to mount now.
-        if state.auth_required or loaded_web is not None:
+        # an already-imported dashboard costs nothing to mount now; the Webapp serves its page and
+        # mints launch links from the start.
+        if state.auth_required or loaded_web is not None or webapp is not None:
             await mount.ensure()
         server.lifespan = config.lifespan_class(config)
         await server.startup(sockets=[listener])
@@ -197,9 +290,10 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0) -
                     _ACTIVE_RUNNER = None
 
     task = asyncio.create_task(serve(), name="gateway-api")
-    origin_host = f"[{host}]" if ":" in host else host
     return GatewayAPIHandle(
-        api_origin=f"http://{origin_host}:{state.bound_port}",
+        # The address the socket bound, never a name: native clients accept only a numeric loopback
+        # origin, and ``localhost`` may resolve to either family.
+        api_origin=dial_origin(listener.getsockname()[0], state.bound_port),
         server=server, task=task, app=mount, socket=listener,
     )
 
@@ -241,6 +335,12 @@ def _embedded_chat_enabled() -> bool:
 def _restart_wait_read(runner, scope) -> bool:
     from gateway.drain_control import restart_wait_read
     return scope['type'] == 'http' and restart_wait_read(runner, scope.get('method'), scope.get('path'))
+
+
+def _restart_wait_socket_ticket(runner, scope) -> bool:
+    from gateway.drain_control import restart_wait_socket_ticket
+    return scope['type'] == 'http' and restart_wait_socket_ticket(
+        runner, scope.get('method'), scope.get('path'), scope.get('query_string', b'').decode('latin-1'))
 
 
 class GatewayRuntimeAPI:
@@ -287,7 +387,8 @@ class GatewayRuntimeAPI:
             and (self.runner._draining or descriptor['state'] == 'draining')
             and scope['type'] == 'websocket' and scope['path'] == '/api/ws')
         if ((descriptor['state'] != 'ready' or self.runner._draining) and not draining_socket
-                and not _restart_wait_read(self.runner, scope)):
+                and not _restart_wait_read(self.runner, scope)
+                and not _restart_wait_socket_ticket(self.runner, scope)):
             if scope['type'] == 'websocket':
                 await send({'type': 'websocket.close', 'code': 1013})
             else:
@@ -327,8 +428,16 @@ class GatewayRuntimeAPI:
         ticket, reason = _gateway_ws_ticket_from_subprotocol(ws)
         if reason == 'none' or ws.headers.get('origin'):
             if draining_socket:
-                await ws.close(code=1013)
-                return
+                # Let a Webapp tab's ticket reach its normal upgrade gate during restart wait: only a
+                # surface that mints browser tickets redeems one there (elsewhere the loopback gate
+                # takes ``?token=``).
+                from hermes_cli.web_server_surface import policy
+                admitted_in_wait = (reason == 'ok' and 'internal' not in ws.query_params
+                                    and policy(state).gateway_ticket
+                                    and restart_wait_open(self.runner))
+                if not admitted_in_wait:
+                    await ws.close(code=1013)
+                    return
             return await self.app(scope, receive, send)
         if (reason != 'ok' or not _embedded_chat_enabled()
                 or ws_host_origin_reason(ws, state) is not None or ws_client_reason(ws, state) is not None
@@ -350,7 +459,10 @@ class GatewayRuntimeAPI:
                     return
                 return await self.app(scope, receive, send)
         allow_draining = not operator
-        admitted_in_wait = restart_wait_open(self.runner)
+        # Decided here, at admission, not at the mint: a restart wait that opened after the client's
+        # discovery still refuses the machine poller that asked to stay out of it (a Kanban worker),
+        # which would otherwise hold the turn the wait is waiting on.
+        admitted_in_wait = restart_wait_open(self.runner) and not grant.get('refuse_restart_wait')
         # A restart's after-turn wait still owns its turns: an interactive client attaches to answer
         # a parked approval/clarify (#139041); stop() closes this window.
         if ((descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining

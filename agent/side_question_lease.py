@@ -64,7 +64,7 @@ def _purge_locked(now: float, agent: Any = None) -> None:
         del _leases[stale]
 
 
-def _unattended(agent: Any) -> bool:
+def is_unattended_turn(agent: Any) -> bool:
     """A turn nobody is waiting on: a persistence-detached fork, a cron run, a delegated child."""
     return (getattr(agent, "_persist_disabled", False) or getattr(agent, "platform", None) == "cron"
             or getattr(agent, "_delegate_depth", 0) > 0)
@@ -76,7 +76,7 @@ def issue_side_question_token(agent: Any, messages: list[dict[str, Any]], turn_i
     only: the captured context and profile are the turn's."""
     from hermes_constants import hermes_home_key
 
-    if _unattended(agent) or not _consented_plugin_loaded():
+    if is_unattended_turn(agent) or not _consented_plugin_loaded():
         return None
     capture = SideQuestionCapture(
         parent_ref=weakref.ref(agent),

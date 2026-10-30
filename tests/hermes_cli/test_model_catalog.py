@@ -361,7 +361,7 @@ class TestDefaultModelFromCache:
             fetch.assert_not_called()
 
 
-    def test_shipped_manifest_labels_glm52_default(self, isolated_home):
+    def test_shipped_manifest_labels_the_silent_default(self, isolated_home):
         """Contract with the in-repo manifest: both provider blocks label the
         same default entry the code constant points at."""
         from hermes_cli import model_catalog
@@ -432,12 +432,10 @@ class TestRefreshCadence:
         with patch.object(model_catalog, "_load_catalog_config", return_value={
             "enabled": True, "url": "http://master", "ttl_hours": 1.0, "providers": {},
         }), patch.object(model_catalog, "get_catalog", return_value=_valid_manifest()) as gc, \
-             patch("hermes_cli.models.fetch_openrouter_models") as orm, \
-             patch("hermes_cli.models.fetch_nous_recommended_models") as nous:
+             patch("hermes_cli.models.fetch_openrouter_models") as orm:
             assert model_catalog.refresh_catalogs() is True
         gc.assert_called_once_with(force_refresh=True)
         orm.assert_called_once_with(force_refresh=True)
-        nous.assert_called_once_with(force_refresh=True)
 
 
 class TestIntegrationWithModelsModule:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import contextvars
 import logging
 import weakref
 from pathlib import Path
@@ -25,9 +26,11 @@ logger = logging.getLogger("gateway.run")
 
 class GatewayPluginInjectionMixin:
     def _install_plugin_message_injector(self) -> None:
-        """Publish this live gateway's plugin message scheduler process-wide."""
+        """Publish this live gateway's plugin message scheduler process-wide. Runs on the gateway
+        loop at startup: its context is the one every plugin-triggered turn starts from."""
         from hermes_cli.plugins import publish_gateway_message_host
 
+        self._plugin_injection_context = contextvars.copy_context()
         publish_gateway_message_host(self, self._schedule_plugin_message_injection)
 
     def _clear_plugin_message_injector(self) -> None:
@@ -78,9 +81,15 @@ class GatewayPluginInjectionMixin:
         except RuntimeError:
             current_loop = None
 
+        # The dispatch, the FIFO drain it may start and every turn that drain runs begin from the
+        # gateway's own context, never the caller's: called from a plugin's session fork (its tool
+        # handler) or from inside a turn, the caller's context carries the fork's turn origin and
+        # that turn's scopes, which the injected turn would otherwise inherit.
+        context = getattr(self, "_plugin_injection_context", None)
+        context = contextvars.Context() if context is None else context.copy()
         if current_loop is loop:
             try:
-                future = loop.create_task(coro)
+                future = loop.create_task(coro, context=context)
             except Exception:
                 coro.close()
                 logger.warning("Plugin message injection scheduling failed", exc_info=True)
@@ -88,9 +97,11 @@ class GatewayPluginInjectionMixin:
             self._background_tasks.add(future)
             future.add_done_callback(self._background_tasks.discard)
         else:
-            future = safe_schedule_threadsafe(
-                coro, loop, logger=logger, log_message="Plugin message injection scheduling failed",
-                log_level=logging.WARNING,
+            # The loop runs the scheduling callback, and so the task, in the context it was
+            # submitted from.
+            future = context.run(
+                safe_schedule_threadsafe, coro, loop, logger=logger,
+                log_message="Plugin message injection scheduling failed", log_level=logging.WARNING,
             )
             if future is None:
                 return False

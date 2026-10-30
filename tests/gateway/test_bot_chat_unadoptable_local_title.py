@@ -2,15 +2,15 @@
 refuse every Bot Chat delivery for good (#141243).
 
 A crash or reconnect can leave a CLI/TUI/Desktop row titled "Bot Chat" with a route column but no
-local binding (or another profile's stamp). ``adopt_legacy_session`` refuses it for every caller, so
-a cron ``deliver: bot-chat`` failed ``not_found`` on every beat. The door now moves it aside, as it
-does an API or messaging row, and mints the profile's local Bot Chat; adoptable history stays put.
+local binding (or another profile's stamp). ``adopt_legacy_session`` refuses such a row for every
+caller, so a cron ``deliver: bot-chat`` failed ``not_found`` on every beat. The door now moves it
+aside, as it does an API or messaging row, and mints the profile's local Bot Chat; adoptable history
+stays put — an unrouted Bot Chat is adopted in place whatever login stamped it, because the
+forever-chat belongs to the profile and has no private owner to be refused for.
 """
 from pathlib import Path
 
 import pytest
-
-from hermes_state_runtime import RuntimeStoreError
 
 from tests.gateway import test_peer_dm_bot_chat_headless as _headless_gateway
 
@@ -64,15 +64,14 @@ async def test_an_unadoptable_local_bot_chat_is_moved_aside_and_the_delivery_lan
 @pytest.mark.parametrize('column, value', [(None, None), ('user_id', 'github:alice')])
 @pytest.mark.asyncio
 async def test_kept_local_bot_chat_history_is_never_moved_aside(headless, column, value):
-    # A plain pre-upgrade TUI Bot Chat is adopted in place; a row a login stamped as its own stays
-    # that login's (refused, never renamed). Neither loses its title.
+    # A pre-upgrade TUI Bot Chat is adopted in place — including one a login stamped, because the
+    # canonical Bot Chat is the PROFILE's (its identity is the title) and so cannot be anyone's
+    # private chat: refusing it for every caller left it a black hole no surface could ever open.
+    # Either way the row keeps its id and its title: never renamed, never replaced.
     db = headless.authority.db
     old = _squatter(db, 'tui_bot_chat', column=column, value=value)
     db.append_message(old, 'user', 'earlier')
-    try:
-        record = await _deliver(headless.authority, 'c')
-    except RuntimeStoreError as exc:
-        assert column == 'user_id' and exc.reason == 'not_found'
-    else:
-        assert column is None and record['session_id'] == old
+    record = await _deliver(headless.authority, 'c')
+    assert record['session_id'] == old
+    assert str(db.get_session(old)['chat_id']) == old
     assert db.get_session_by_title('Bot Chat')['id'] == old and len(db._read_all('SELECT id FROM sessions')) == 1

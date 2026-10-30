@@ -236,7 +236,8 @@ def adopt_legacy_session(authority, actor, row):
             or not {'session:read', 'session:create'} <= actor.capabilities):
         raise RuntimeStoreError('not_found')
     from hermes_state_local_migration import LEGACY_CREATION_SOURCES, validate_legacy_row
-    validate_legacy_row(authority.db, row, subject=actor.subject)
+    validate_legacy_row(authority.db, row, subject=actor.subject,
+                        operator='session:operator' in actor.capabilities)
     authority._require_admission_open()
     from gateway.run import _load_gateway_config, _resolve_gateway_model
     from gateway.session_policy import build_policy, bind_launch_key
@@ -248,6 +249,15 @@ def adopt_legacy_session(authority, actor, row):
     sid = row['id']
     params, api_mode = legacy_launch_params(row)
     params['source'] = LEGACY_CREATION_SOURCES.get(row['source'], row['source'])
+    if bot_chat_row(row):
+        from gateway.session_policy import SURFACES
+        if params['source'] not in SURFACES:
+            # The Bot Chat follows its profile whoever minted it (``session_bot._create_bot_chat``
+            # mints under ``cli``). A surface with no creation policy of its own — the dashboard's
+            # basic-auth login, a mobile client — stamped only a provenance label on this row;
+            # adopting the profile's own chat is not minting a second one, and the profile's policy
+            # is what it resumes on.
+            params['source'] = 'cli'
     private = {}
     config = _load_gateway_config()
     params, api_mode = legacy_bot_chat_launch(row, params, api_mode, config)
@@ -304,7 +314,12 @@ def adopt_legacy_session(authority, actor, row):
     entry = SessionEntry(route, row['id'], now, now, origin=source, platform=Platform.LOCAL)
     receipt = {'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
                'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy),
-               'legacy_session_id': row['id'], 'lineage': [row['id']]}
+               'legacy_session_id': row['id'], 'lineage': [row['id']],
+               # The entry decision above was this operator's; the commit re-validates the same row
+               # with the receipt's principal as the subject, which for the canonical Bot Chat is
+               # not the surface that wrote it. Carry the decision so the bind does not re-litigate
+               # it (and no other path can claim it: only an authorized adoption stages this key).
+               **({'canonical_adoption': True} if bot_chat_row(row) else {})}
     try:
         # Same lock order as old Bot Chat: mailbox (if any), liveness, SQLite.
         with active_session_liveness_guard(row['id'], registry_home=Path(authority.db.db_path).parent) as active:

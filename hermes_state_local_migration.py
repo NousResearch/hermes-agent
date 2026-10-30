@@ -41,18 +41,38 @@ def login_owned_by(row, subject):
     return _login_label(subject) == user_id
 
 
-def validate_legacy_row(db, row, *, subject=None):
+def canonical_bot_chat_row(row):
+    """Whether *row* holds the canonical ``Bot Chat`` title — the profile's forever-chat.
+
+    Bot Mode identifies that chat by NAME on every open (Desktop re-resolves the exact title and
+    fails closed rather than mint a second one), so the chat belongs to the PROFILE, not to the
+    principal or the surface that happened to write it. The surfaces that are not local creation
+    lanes stamp their own provenance label and their own login on the row they write; neither names
+    an owner of the Bot Chat.
+    """
+    from tools.bot_mode_probe import BOT_CHAT_TITLE
+    return str(row.get('title') or '').strip() == BOT_CHAT_TITLE
+
+
+def validate_legacy_row(db, row, *, subject=None, operator=False):
     # Unrouted old local history only. Existing identity, foreign profile,
     # API, messaging, delegate and canonical rows require their own authority.
     # ``subject``: the adopting caller, whose own login stamp is not a foreign identity. A ``user_id``
     # stamp equal to ``subject`` itself names that principal: it is already its history by
     # ``authorize_history``'s rule, so it adopts like an unstamped row.
+    # ``operator``: a verified transport gate of this profile (never identity data). The canonical
+    # ``Bot Chat`` belongs to the PROFILE — its identity is the title, resolved on every open — so
+    # the operator may adopt it whoever wrote it, including a surface with no creation lane of its
+    # own (the dashboard's basic-auth login, a mobile client) whose only trace is a provenance
+    # label and a login stamp. Without this, such a row is refused by every caller, the restore
+    # chain has nothing to rebuild from, and the forever-chat can never open on any surface again.
+    # A non-operator caller still meets a login-stamped chat as its owner's (#140183 F1).
     user_id = row.get('user_id')
-    if (row['source'] not in LEGACY_LOCAL_SOURCES
+    foreign = bool(user_id) and user_id != subject and not legacy_account_label(row) and not login_owned_by(row, subject)
+    canonical = canonical_bot_chat_row(row) and (operator or not foreign)
+    if (row.get('profile_name') not in (None, '', db._own_profile_name() or 'default')
             or any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))
-            or (user_id and user_id != subject and not legacy_account_label(row)
-                and not login_owned_by(row, subject))
-            or row.get('profile_name') not in (None, '', db._own_profile_name() or 'default')):
+            or (not canonical and (row['source'] not in LEGACY_LOCAL_SOURCES or foreign))):
         raise RuntimeStoreError('not_found')
 
 
@@ -63,7 +83,8 @@ def bind_legacy_target(db, conn, receipt):
     row = conn.execute('SELECT * FROM sessions WHERE id=?', (target,)).fetchone()
     if row is None:
         raise RuntimeStoreError('not_found')
-    validate_legacy_row(db, dict(row), subject=receipt['principal_id'])
+    validate_legacy_row(db, dict(row), subject=receipt['principal_id'],
+                        operator=bool(receipt.get('canonical_adoption')))
     from hermes_state_mutation_binding import BINDING_PREFIX
     imported = conn.execute('SELECT value FROM state_meta WHERE key=?', (BINDING_PREFIX + target,)).fetchone()
     if imported and json.loads(imported[0]) != [receipt['profile_id'], receipt['principal_id']]:

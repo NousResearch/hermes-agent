@@ -35,3 +35,21 @@ def test_album_preserves_legacy_and_explicit_inlining_flags(flags, tmp_path):
     assert album.media_text_inlined == [value for flag in flags for value in (flag or [None])]
     assert album.media_filenames == ["file-0", "file-1"]
     assert album.text == "caption-0\n\ncaption-1"
+
+
+def test_zip_and_two_inlined_markdown_documents_keep_their_flags(tmp_path):
+    adapter = SimpleNamespace(_merge_caption=TelegramAdapter._merge_caption)
+    pending = {}
+    names = ["archive.zip", "first.md", "second.md"]
+    paths = [str(tmp_path / name) for name in names]
+    types = ["application/zip", "text/markdown", "text/markdown"]
+    for path, name, mime, inlined in zip(paths, names, types, [False, True, True]):
+        event = MessageEvent(text="", media_urls=[path], media_types=[mime],
+                             media_filenames=[name], media_text_inlined=[inlined])
+        TelegramAdapter._merge_into_pending(adapter, pending, "album", event)
+    album = pending["album"]
+    assert _media_clause(album) is None
+    assert album.media_urls == paths
+    assert album.media_types == types
+    assert album.media_filenames == names
+    assert album.media_text_inlined == [False, True, True]

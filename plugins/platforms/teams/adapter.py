@@ -57,6 +57,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
+    utf16_len,
 )
 from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
 from agent.i18n import t
@@ -336,6 +337,24 @@ def _truncate(text: str, limit: int) -> str:
     return text[:limit] + "..." if len(text) > limit else text
 
 
+def _valid_message_id(message_id: Optional[str]) -> bool:
+    """Teams thread roots are non-zero numeric ids (what ``to_threaded_conversation_id`` accepts)."""
+    return bool(message_id) and message_id.isdigit() and message_id != "0"
+
+
+def _thread_root_of(chat_id: str) -> Optional[str]:
+    """Root message id when ``chat_id`` already points into a channel thread (``…;messageid=<id>``)."""
+    _, sep, rest = (chat_id or "").partition(";messageid=")
+    return rest.split(";", 1)[0] if sep else None
+
+
+def _is_channel_conversation(chat_id: str) -> bool:
+    """Channel conversation ids end in ``@thread.tacv2`` (classic: ``@thread.skype``); group and meeting
+    chats end in ``@thread.v2`` and personal chats look different, and neither has reply threads."""
+    base = (chat_id or "").split(";", 1)[0]
+    return base.startswith("19:") and base.endswith(("@thread.tacv2", "@thread.skype"))
+
+
 def _approval_body(cmd: str, desc: str, *, always: bool = False) -> list:
     """Adaptive Card body blocks for an approval prompt; unless ``always``, empty ``cmd``/``desc`` omit their blocks."""
     body = []
@@ -352,8 +371,11 @@ class TeamsAdapter(BasePlatformAdapter):
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
 
-    MAX_MESSAGE_LENGTH = 28000  # Teams text message limit (~28 KB)
-    splits_long_messages = True  # send() chunks via truncate_message()
+    # Chunk budget in UTF-16 code units. Teams refuses a bot message over ~100 KB counted in UTF-16
+    # (413 MessageSizeTooBig) and advises staying under 80 KB; 28,000 units is ~56 KB, which leaves
+    # room for the markup Teams renders from markdown, mentions and the activity envelope.
+    MAX_MESSAGE_LENGTH = 28000
+    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH, utf16_len)
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
@@ -710,23 +732,40 @@ class TeamsAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
+        # Pass the limit: truncate_message() is a staticmethod whose 4096 default otherwise wins, which
+        # cut ordinary replies and reports into several posts.
+        chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
         last_message_id = None
-        for chunk in self.truncate_message(self.format_message(content)):
+        thread_root: Optional[str] = None  # where continuation chunks go, once known
+        for index, chunk in enumerate(chunks):
             try:
-                if reply_to and reply_to.isdigit() and reply_to != "0":
-                    try:
-                        result = await self._app.reply(chat_id, reply_to, chunk)
-                    except Exception as reply_err:
-                        # Group chats 400 on threaded sends; the SDK has no typed HTTP errors → fall back on any.
-                        logger.debug("Teams reply() failed, falling back to flat send: %s", reply_err)
-                        result = await self._app.send(chat_id, chunk)
+                if index and thread_root:
+                    result = await self._send_threaded(chat_id, thread_root, chunk)
+                elif _valid_message_id(reply_to):
+                    result = await self._send_threaded(chat_id, reply_to, chunk)
+                    thread_root = reply_to
                 else:
                     result = await self._app.send(chat_id, chunk)
+                    # A channel post opens a thread: the rest of the message goes there as replies,
+                    # not as more top-level posts. Chats have no threads, so they stay flat.
+                    thread_root = _thread_root_of(chat_id) or (
+                        getattr(result, "id", None) if _is_channel_conversation(chat_id) else None)
+                    if not _valid_message_id(thread_root):
+                        thread_root = None
                 last_message_id = getattr(result, "id", None)
                 self._remember_sent(result)
             except Exception as e:
                 return SendResult(success=False, error=str(e), retryable=True)
         return SendResult(success=True, message_id=last_message_id)
+
+    async def _send_threaded(self, chat_id: str, root_id: str, chunk: str) -> Any:
+        """Reply in the thread under ``root_id``; a conversation without threads gets a flat send."""
+        try:
+            return await self._app.reply(chat_id, root_id, chunk)
+        except Exception as reply_err:
+            # Group chats 400 on threaded sends; the SDK has no typed HTTP errors → fall back on any.
+            logger.debug("Teams reply() failed, falling back to flat send: %s", reply_err, exc_info=True)
+            return await self._app.send(chat_id, chunk)
 
     async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
         if self._app:

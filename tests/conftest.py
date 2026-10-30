@@ -168,14 +168,33 @@ def _looks_like_credential(name: str) -> bool:
 
 
 def _read_real_kanban_task_count(db_path: Path) -> int | None:
-    """Read the developer Kanban DB without ever opening it for writes."""
+    """Read the developer Kanban DB without ever opening it for writes.
+
+    Returns the task count, or ``None`` when the DB file does not exist
+    (guard skipped — normal in CI).
+
+    Limitation: this is a count-only guard.  Tests that update existing
+    tasks rather than inserting/deleting rows would pass the count check
+    even if they write to the real DB.  The per-fixture ``HERMES_KANBAN_DB``
+    pin (``pin_kanban_db()`` in ``_kanban_isolation.py``) is the primary
+    defense; this guard is a last-resort backstop.
+
+    Intentional fail-closed: if the file exists but cannot be read (locked,
+    corrupt, permission error) we raise rather than returning ``None``.
+    A developer machine where the DB exists should always be readable; a
+    ``None`` fail-open here would silently hide real isolation failures.
+    """
     if not db_path.is_file():
         return None
     try:
         with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
             return int(conn.execute("SELECT count(*) FROM tasks").fetchone()[0])
-    except (OSError, sqlite3.Error):
-        return None
+    except (OSError, sqlite3.Error) as exc:
+        # The file exists but we can't read it — surface the problem rather
+        # than masking it with a None that would bypass the post-test check.
+        raise RuntimeError(
+            f"_read_real_kanban_task_count: {db_path} exists but is unreadable: {exc}"
+        ) from exc
 
 
 # HERMES_* vars that change test behavior by being set. Unset all of these

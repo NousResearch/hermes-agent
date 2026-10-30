@@ -215,12 +215,21 @@ async function resolveWindowsLauncher(ssh: any, runtime: any) {
     const output = await ssh.exec(compressedPowerShellCommand(script))
     resolved = JSON.parse(stripPowerShellNoise(output).pop() || 'null')
 
-    if (!Array.isArray(resolved?.runtimeCommand) || !resolved.runtimeCommand.every(part => typeof part === 'string' && !part.includes('\0')) || typeof resolved.python !== 'string' || !/^[a-z]:[\\/]/i.test(resolved.python)) {
+    if (
+      !Array.isArray(resolved?.runtimeCommand) ||
+      !resolved.runtimeCommand.every(part => typeof part === 'string' && !part.includes('\0')) ||
+      typeof resolved.python !== 'string' ||
+      !/^[a-z]:[\\/]/i.test(resolved.python)
+    ) {
       throw new Error('Invalid Windows launcher runtime response.')
     }
   } catch (cause: any) {
-    if (TRANSPORT_KINDS.has(cause?.kind)) {throw cause}
-    const error: any = new Error('Refresh the remote Windows Hermes launcher: its boot-selecting runtime could not be resolved.')
+    if (TRANSPORT_KINDS.has(cause?.kind)) {
+      throw cause
+    }
+    const error: any = new Error(
+      'Refresh the remote Windows Hermes launcher: its boot-selecting runtime could not be resolved.'
+    )
     error.kind = 'update-required'
     error.cause = cause
     throw error
@@ -463,9 +472,7 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}, payload?: str
         'if(-not $p.HasExited){[ordered]@{existing=$true}|ConvertTo-Json -Compress;exit 0}}catch{}finally{if($p){$p.Dispose()}}}; ' +
         `& ${helper('remove-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)}|Out-Null}`
       : '',
-    reservation.ownershipId
-      ? `  $spawnLines=@(${invokeSpawn}); $spawnExit=$LASTEXITCODE`
-      : `  ${invokeSpawn}`,
+    reservation.ownershipId ? `  $spawnLines=@(${invokeSpawn}); $spawnExit=$LASTEXITCODE` : `  ${invokeSpawn}`,
     reservation.ownershipId
       ? '  if($spawnExit -ne 0){exit $spawnExit}'
       : '  if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}',
@@ -745,7 +752,10 @@ function windowsHelperOwnsRuntime(runtime, inspection) {
 async function inspectWindowsSupport(ssh, runtime) {
   const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
 
-  return { version: inspection.version, supported: inspection.supported && windowsHelperOwnsRuntime(runtime, inspection) }
+  return {
+    version: inspection.version,
+    supported: inspection.supported && windowsHelperOwnsRuntime(runtime, inspection)
+  }
 }
 
 async function connectWindowsRemote(deps) {
@@ -771,7 +781,9 @@ async function connectWindowsRemote(deps) {
   const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
 
   if (!windowsHelperOwnsRuntime(runtime, inspection)) {
-    const error: any = new Error('The remote Windows SSH helper must be updated with boot-selecting runtime ownership support before connecting.')
+    const error: any = new Error(
+      'The remote Windows SSH helper must be updated with boot-selecting runtime ownership support before connecting.'
+    )
     error.kind = 'update-required'
     throw error
   }

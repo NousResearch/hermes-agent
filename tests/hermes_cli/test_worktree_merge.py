@@ -204,7 +204,7 @@ def test_failing_gate_that_switches_branch_moves_only_the_original_branch_back(r
 
     code, result = _merge(repo, capsys, "child", "--gate", "git switch -q elsewhere; exit 1")
 
-    assert code == 1 and result["reset_to"] == before
+    assert code == 1 and result["reset_to"] == before and result["restored_ref"] == "refs/heads/main"
     assert _git(repo, "rev-parse", "refs/heads/main") == before
     assert _git(repo, "symbolic-ref", "HEAD") == "refs/heads/elsewhere"
 
@@ -244,7 +244,7 @@ def test_failing_gate_that_commits_is_reported_and_nothing_is_reset(repo, capsys
 
     code, result = _merge(repo, capsys, "child", "--gate", "git add -A; git commit -q -m gate; exit 1")
 
-    assert code == 1 and result["reset_to"] == "" and "nothing was reset" in result["error"]
+    assert code == 1 and result["reset_to"] == "" and "rollback was skipped" in result["error"]
     assert _git(repo, "log", "-1", "--format=%s") == "gate"
     assert (repo / "scratch.txt").read_text(encoding="utf-8-sig") == "USER WORK\n"
 
@@ -308,6 +308,62 @@ def test_gate_timeout_kills_a_detached_child_that_ignores_sigterm(repo, capsys, 
     assert code == 1 and result["gate"]["timed_out"] is True
     leaf_pid = int(pidfile.read_text(encoding="utf-8-sig"))
     assert wait_until(lambda: not _alive(leaf_pid), timeout=5), "the detached gate child outlived the timeout"
+
+
+@pytest.mark.parametrize("obstacle", ["ignored file", "dangling symlink"])
+def test_untracked_non_directory_where_the_merge_needs_a_directory_refuses(repo, capsys, obstacle):
+    if obstacle == "dangling symlink" and os.name != "posix":
+        pytest.skip("symlink creation needs privileges on Windows")
+    _child(repo, [("obstacle/new.py", "x = 1\n")])
+    _commit(repo, ".gitignore", "obstacle\n", "ignore obstacle")
+    target = repo / "obstacle"
+    if obstacle == "ignored file":
+        target.write_text("USER\n", encoding="utf-8")
+    else:
+        os.symlink("does-not-exist", target)
+    before = _git(repo, "rev-parse", "HEAD")
+
+    code, result = _merge(repo, capsys, "child", "--gate", "exit 1")
+
+    assert code == 1 and result["untracked_collisions"] == ["obstacle"]
+    assert os.path.lexists(target)
+    if obstacle == "ignored file":
+        assert target.read_text(encoding="utf-8-sig") == "USER\n"
+    _unchanged(repo, before)
+
+
+@pytest.mark.parametrize("directory_renames", ["conflict", "true"])
+def test_path_relocated_by_a_directory_rename_is_checked_where_git_writes_it(repo, capsys, directory_renames):
+    _git(repo, "config", "merge.directoryRenames", directory_renames)  # "true": a clean merge writes new/extra.py
+    _commit(repo, "old/keep.py", "k = 1\n", "add old/")
+    _child(repo, [("old/extra.py", "e = 1\n")])
+    _git(repo, "mv", "old", "new")
+    _git(repo, "commit", "-q", "-m", "rename old/ to new/")
+    _commit(repo, ".gitignore", "new/extra.py\n", "ignore")
+    (repo / "new" / "extra.py").write_text("USER\n", encoding="utf-8")
+    before = _git(repo, "rev-parse", "HEAD")
+
+    code, result = _merge(repo, capsys, "child", "--gate", "exit 1")
+
+    assert code == 1 and result["merged"] is False
+    assert (repo / "new" / "extra.py").read_text(encoding="utf-8-sig") == "USER\n"
+    _unchanged(repo, before)
+
+
+@pytest.mark.platforms("posix")
+def test_hidden_edit_check_is_not_fooled_by_a_carriage_return_name(repo, capsys):
+    _commit(repo, "a\rb", "base\n", "cr name")
+    _child(repo, [("src/util.py", "y = 1\n")])
+    _git(repo, "update-index", "--assume-unchanged", "a\rb")
+    (repo / "a\rb").write_text("USER WORK\n", encoding="utf-8")
+    (repo / "a\nb").write_text("base\n", encoding="utf-8")  # same bytes as the index entry, other name
+    before = _git(repo, "rev-parse", "HEAD")
+
+    code, result = _merge(repo, capsys, "child", "--gate", "exit 1")
+
+    assert code == 1 and "assume-unchanged" in result["error"]
+    assert (repo / "a\rb").read_text(encoding="utf-8-sig") == "USER WORK\n"
+    assert _git(repo, "rev-parse", "HEAD") == before
 
 
 def test_conflict_aborts_and_lists_the_files(repo, capsys):

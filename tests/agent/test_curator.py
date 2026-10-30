@@ -343,6 +343,67 @@ def test_unreferenced_skill_is_still_archived(curator_env, monkeypatch):
 
 
 
+def test_write_approval_stages_inactivity_archive_until_approved(curator_env):
+    """skills.write_approval on: the deterministic pass must not move a skill on its own.
+    It stages ONE pending archive (re-runs do not duplicate it); approving applies it."""
+    import hermes_cli.config as cfg
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    c, u = curator_env["curator"], curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "orphan")
+    _backdate(u, "orphan", 200)
+    conf = cfg.load_config()
+    conf.setdefault("skills", {})["write_approval"] = True
+    cfg.save_config(conf)
+
+    c.apply_automatic_transitions()
+    c.apply_automatic_transitions()
+
+    assert (skills_dir / "orphan" / "SKILL.md").exists()
+    assert u.load_usage()["orphan"]["state"] != u.STATE_ARCHIVED
+    pending = wa.list_pending(wa.SKILLS)
+    assert [r["payload"] for r in pending] == [{"action": "archive", "name": "orphan"}]
+
+    handle_pending_subcommand(wa.SKILLS, ["approve", pending[0]["id"]])
+    assert not (skills_dir / "orphan").exists()
+    assert u.load_usage()["orphan"]["state"] == u.STATE_ARCHIVED
+    assert wa.list_pending(wa.SKILLS) == []
+
+
+def test_approving_a_staged_archive_rechecks_the_curator_guards(curator_env, monkeypatch):
+    """A skill pinned, cron-referenced or used after its archive was staged must not be archived on
+    approve: the approval is refused with the reason and the entry stays pending."""
+    import hermes_cli.config as cfg
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    c, u = curator_env["curator"], curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "orphan")
+    _backdate(u, "orphan", 200)
+    conf = cfg.load_config()
+    conf.setdefault("skills", {})["write_approval"] = True
+    cfg.save_config(conf)
+    c.apply_automatic_transitions()
+    pid = wa.list_pending(wa.SKILLS)[0]["id"]
+
+    def approve_is_refused(reason):
+        out = handle_pending_subcommand(wa.SKILLS, ["approve", pid])
+        assert "Approved 0" in out and reason in out, out
+        assert (skills_dir / "orphan" / "SKILL.md").exists() and u.load_usage()["orphan"]["state"] != u.STATE_ARCHIVED
+        assert [r["id"] for r in wa.list_pending(wa.SKILLS)] == [pid]
+
+    u.set_pinned("orphan", True)
+    approve_is_refused("is pinned")
+    u.set_pinned("orphan", False)
+    jobs = _write_cron_job(curator_env["home"], "orphan", monkeypatch)
+    approve_is_refused("referenced by a cron job")
+    (curator_env["home"] / "cron" / "jobs.json").write_text("[]", encoding="utf-8")
+    importlib.reload(jobs)
+    u.bump_use("orphan")
+    approve_is_refused("was active")
+
+
 # ---------------------------------------------------------------------------
 # prune_builtins: curator may archive bundled built-ins after inactivity
 # ---------------------------------------------------------------------------

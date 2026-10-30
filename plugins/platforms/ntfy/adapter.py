@@ -274,8 +274,18 @@ class NtfyAdapter(BasePlatformAdapter):
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
-        """Publish a message to the configured publish topic."""
-        publish_topic = (metadata or {}).get("publish_topic") or self._publish_topic or chat_id
+        """Publish a message to ntfy.
+
+        Topic precedence: ``metadata["publish_topic"]``; then, for a reply to the
+        inbound subscription topic (empty ``chat_id`` or ``chat_id == topic``),
+        the configured publish topic; otherwise the explicit destination ``chat_id``.
+        """
+        publish_topic = (metadata or {}).get("publish_topic")
+        if not publish_topic:
+            if not chat_id or chat_id == self._topic:
+                publish_topic = self._publish_topic or self._topic
+            else:
+                publish_topic = chat_id
         if not self._http_client:
             return SendResult(success=False, error="HTTP client not initialized")
         headers = _publish_headers(self._token, bool((self.config.extra or {}).get("markdown", False)))

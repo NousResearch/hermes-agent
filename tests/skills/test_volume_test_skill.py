@@ -69,6 +69,7 @@ def test_ambiguous_partial_batch_reconciles_then_resumes(fixture_app):
     with pytest.raises(TimeoutError):
         runner.prepare(partial, plan["run"], 10, 42, runner.Budget(30), manifest, lambda: None)
     assert manifest["reconciled_ids"] == [0, 1]
+    assert manifest["confirmed_products"] == 2
     runner.prepare(call, plan["run"], 10, 42, runner.Budget(30), manifest, lambda: None)
     assert app.counts(plan["run"])["products"] == 10
     conflicting = data.record(42, 0)

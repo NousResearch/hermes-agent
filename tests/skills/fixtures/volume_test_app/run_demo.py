@@ -71,6 +71,8 @@ def prepare(call, run, target, seed, budget, manifest, save, batch_size=250):
             try:
                 known = read_ids(call, run, budget)
                 manifest["reconciled_ids"] = sorted(known)
+                manifest["confirmed_products"] = len(known)
+                manifest["confirmed_logical_prefix"] = len(known) if known == set(range(len(known))) else None
             finally:
                 save()
             raise
@@ -130,6 +132,8 @@ def measure(call, run, volume, operation, phase):
             observed, total_correct = data["rows"], data["total"] == total
         sample.update(SUPPORT.compare_rows(observed, expected, FIELDS))
         sample["correct"] = sample["correct"] and total_correct
+        if not sample["correct"] and phase == "first-request":
+            sample["response_excerpt"] = raw[:2000]  # Synthetic fixture evidence, not generic target logging.
     except (OSError, ValueError, KeyError, TypeError, URLError) as error:
         sample["duration_ms"] = (time.perf_counter() - start) * 1000
         sample["error"] = f"{type(error).__name__}: {error}"
@@ -198,6 +202,8 @@ def execute(call, plan, output, injected=False, budget=None, browser=None):
     SUPPORT.checkpoint(output / "plan.json", plan)
     save()
     try:
+        manifest["initial_counts"] = json.loads(call("/counts?" + urlencode({"run": plan["run"]})))
+        save()
         for target in plan["volumes"]:
             budget.check()
             if target > plan["max_records"]:
@@ -265,7 +271,13 @@ def main():
     plan = {"run": "volume-" + uuid.uuid4().hex, "seed": args.seed, "volumes": args.volumes, "samples": 10,
             "timeout_seconds": 3, "duration_seconds": args.duration, "max_records": 10000, "max_errors": 50,
             "concurrency": 1, "page_size": 50, "batch_size": 250, "counted_entity": "products",
-            "cleanup": "Delete only products/categories with this exact run; verify unrelated sentinel"}
+            "cleanup": "Delete only products/categories with this exact run; verify unrelated sentinel",
+            "dataset": {"fields": list(FIELDS), "relationships": "8 run-owned categories; enforced product category foreign key",
+                        "distribution": "Repeated Unicode names and prices; skewed categories; seed/index-stable prefix"},
+            "operations": [{"name": name, "endpoint": endpoint, "parameters": args} for name, endpoint, args, _, _ in operations([])],
+            "criteria": "Exact independently generated ordered content, totals, complete pagination/export, no orphans; zero residuals and intact sentinel",
+            "cache_policy": "First request follows preparation/page verification; no OS/SQLite cache flush; 1 warmup + 10 warm samples",
+            "performance_sla": None}
     SUPPORT.checkpoint(args.output / "plan.json", plan)
     with tempfile.TemporaryDirectory(prefix="volume-catalog-") as directory:
         catalog = Catalog(Path(directory) / "catalog.sqlite", args.inject_export_bug)

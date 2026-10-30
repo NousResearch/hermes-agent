@@ -100,6 +100,8 @@ def server_for(catalog):
         def do_GET(self):
             parsed = urlparse(self.path)
             args = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+            if parsed.path == "/favicon.ico":
+                return self.respond(204, "", "image/x-icon")
             if parsed.path == "/":
                 return self.respond(200, (Path(__file__).with_name("index.html")).read_text(encoding="utf-8"), "text/html")
             try:

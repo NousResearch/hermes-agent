@@ -281,6 +281,63 @@ class TestExtractText:
         msg.rich_text = None
         assert DingTalkAdapter._extract_text(msg) == ""
 
+    # --- Quoted reply (引用回复): content.isReplyMsg + content.repliedMsg ---
+    # DingTalk puts the quoted message inside the ``content`` sub-dict, which
+    # ChatbotMessage.from_dict() does not map — it lands in ``extensions['content']``.
+
+    def test_quoted_reply_text(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.rich_text_content = [{"text": "why is this empty"}]
+        msg.message_type = "richText"
+        msg.extensions = {
+            "content": {
+                "isReplyMsg": True,
+                "repliedMsg": {"msgType": "text", "content": {"text": "the build failed"}},
+            }
+        }
+        assert DingTalkAdapter._extract_text(msg) == "[引用] the build failed\n\nwhy is this empty"
+
+    def test_quoted_reply_rich_text_payload(self):
+        """Quoted message itself may be rich text (list of text items)."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.rich_text_content = [{"text": "ok"}]
+        msg.message_type = "richText"
+        msg.extensions = {
+            "content": {
+                "isReplyMsg": True,
+                "repliedMsg": {"content": {"richText": [{"text": "a "}, {"text": "b"}]}},
+            }
+        }
+        assert DingTalkAdapter._extract_text(msg) == "[引用] a b\n\nok"
+
+    def test_quoted_reply_without_content_does_not_prefix(self):
+        """isReplyMsg without a usable repliedMsg must not add an empty prefix."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.rich_text_content = [{"text": "plain"}]
+        msg.message_type = "richText"
+        msg.extensions = {"content": {"isReplyMsg": True}}
+        assert DingTalkAdapter._extract_text(msg) == "plain"
+
+    def test_quote_present_but_not_a_reply(self):
+        """repliedMsg alone (no isReplyMsg) is ignored — forward compatibility."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.rich_text_content = [{"text": "plain"}]
+        msg.message_type = "richText"
+        msg.extensions = {"content": {"repliedMsg": {"content": {"text": "old"}}}}
+        assert DingTalkAdapter._extract_text(msg) == "plain"
+
     # --- Card / interactiveCard message handling (文档分享卡片) ---
 
     def test_card_with_dict_content_and_url(self):

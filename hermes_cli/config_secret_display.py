@@ -35,3 +35,14 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, list):
         return [redact_config_value(v, _depth + 1) for v in value]
     return value
+
+
+def config_set_display_value(key: str, value: Any) -> Any:
+    """What ``config set`` echoes for ``value`` written at ``key``: a scalar under a credential key
+    is masked, and a mapping or list gets its nested credential keys masked as ``config get`` does."""
+    from agent.redact import mask_secret
+    from hermes_cli.config import _is_secret_config_key
+
+    if not (text := _maskable_secret_text(value)):
+        return redact_config_value(value)
+    return mask_secret(text) if _is_secret_config_key(key) else value

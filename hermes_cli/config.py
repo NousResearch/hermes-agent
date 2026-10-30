@@ -612,7 +612,8 @@ from hermes_cli.personality import (
 
 from hermes_cli.config_version_stamp import (
     check_config_version, newer_stamp_message, note_first_stamp, read_config_version_stamp, stamp_missing_config)
-from hermes_cli.config_secret_display import _maskable_secret_text, redact_config_value
+from hermes_cli.config_secret_display import (
+    _maskable_secret_text, config_set_display_value, redact_config_value)
 
 
 # ---- Config Migration System ----
@@ -3402,13 +3403,9 @@ def set_config_value(key: str, value: str, force: bool = False):
         from agent.i18n import reset_language_cache
         reset_language_cache()
 
-    # Mask the echoed value when the (possibly nested) key is credential-shaped, e.g.
-    # ``model.api_key`` (lowercase, so it misses the .env routing above).
-    _display_value = value
-    if _is_secret_config_key(key) and (_secret_text := _maskable_secret_text(value)):
-        from agent.redact import mask_secret
-        _display_value = mask_secret(_secret_text)
-    print(f"✓ Set {key} = {_display_value} in {config_destination(config_path)}")
+    # Mask credentials in the echo, e.g. ``model.api_key`` (lowercase, so it misses the .env
+    # routing above) or a nested password inside a mapping value.
+    print(f"✓ Set {key} = {config_set_display_value(key, value)} in {config_destination(config_path)}")
     if _route_notice:
         print(_route_notice)
 

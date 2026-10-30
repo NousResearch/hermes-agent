@@ -486,6 +486,16 @@ class TestSecretRedactionInDisplay:
         for out in (set_output, leaf_output, section_output):
             assert secret not in out
 
+    def test_set_mapping_value_masks_nested_secret(self, _isolated_hermes_home, capsys):
+        secret = "48213977261"
+        set_config_value("mcp_servers.db.env", f'{{"DB_PASSWORD": {secret}, "PORT": 5432}}')
+        out = capsys.readouterr().out
+
+        assert secret not in out
+        assert "5432" in out
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["mcp_servers"]["db"]["env"]["DB_PASSWORD"] == int(secret)
+
 
 
 # ---------------------------------------------------------------------------

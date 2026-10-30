@@ -158,8 +158,9 @@ def take_housekeeping_reply_line(agent: Any) -> Optional[str]:
     # Do NOT modify the assistant message content (injected text poisoned history).
     # The final IS the response streamed before the housekeeping tool: name that identity
     # so a client settles the text it already shows instead of painting it a second time.
-    # A held turn never showed it: its rewrite goes out as a new final.
-    if getattr(agent, "_hold_stream", False) is not True:
+    # A held or reviewed turn never showed it: the reply goes out as a new final.
+    from agent.turn_end_hooks import defers_text_delivery
+    if getattr(agent, "_hold_stream", False) is not True and not defers_text_delivery():
         agent._response_was_previewed = True
         agent._reused_response_text = final_response
     return final_response

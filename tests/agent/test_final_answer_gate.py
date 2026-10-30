@@ -6,6 +6,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from tests.agent import test_hold_stream_exits as _held_exits
+from tests.fakes.fake_llm_provider import Text, ToolCall
+
+held = _held_exits.held
+
 
 _PLUGIN = '''
 import json
@@ -365,6 +370,36 @@ def test_review_sees_one_held_stream_rewrite(gate_runtime, streaming):
     assert seen["final_response"] == "Public held answer."
     assert not any(delivered)
     assert "PRIVATE_DRAFT" not in json.dumps(db.get_messages("completion-session"))
+
+
+_REVIEW_ONLY = '''
+import json
+from pathlib import Path
+
+def register(ctx):
+    def review(**payload):
+        with (Path(__file__).parent / "seen.jsonl").open("a") as output:
+            output.write(json.dumps(payload["final_response"]) + "\\n")
+    ctx.register_hook("before_turn_end", review)
+'''
+
+
+@pytest.mark.parametrize("terminal", ["", "NO_REPLY"], ids=["empty", "marker"])
+def test_withheld_housekeeping_reply_is_not_reported_as_shown(held, monkeypatch, terminal):
+    # The gate withheld the line written beside a housekeeping tool, so a client must paint it as a new final.
+    import os
+    from pathlib import Path
+    from run_agent import AIAgent
+
+    monkeypatch.setattr(AIAgent, "_silence_marker_needs_reply", True, raising=False)
+    answer = "Your meeting is at 3pm."
+    result, shown, _displayed, _server, _db = held(
+        [ToolCall("todo_list", {}, text=answer), Text(terminal)], plugin_body=_REVIEW_ONLY)
+    seen = Path(os.environ["HERMES_HOME"]) / "plugins" / "redactor" / "seen.jsonl"
+    assert result["final_response"] == answer
+    assert [json.loads(line) for line in seen.read_text().splitlines()] == [answer]
+    assert shown == []
+    assert not result["response_previewed"] and not result["response_reused"]
 
 
 @pytest.mark.parametrize("mode", ["allow", "fail", "invalid", "error", "timeout", "mutate"])

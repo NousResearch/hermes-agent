@@ -330,3 +330,4 @@ class TestStoreIsolation:
         weird.write_bytes(b"not really")
         with pytest.raises(ValueError, match="unsupported archive"):
             extract(weird, tmp_path / "dest")
+        assert list((tmp_path / "dest").iterdir()) == []

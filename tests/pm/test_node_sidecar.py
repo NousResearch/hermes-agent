@@ -38,8 +38,7 @@ def test_acquisition_receives_consent_and_reports_refusal(tmp_path, monkeypatch,
     assert calls == [("npm", {"explicit": explicit})]
 
 
-@pytest.mark.platforms("posix")
-def test_real_npm_uses_paired_node_with_empty_ambient_path(tmp_path, monkeypatch):
+def _prepare_paired_node_environment(tmp_path, monkeypatch):
     npm, node = shutil.which("npm"), shutil.which("node")
     if not npm or not node:
         pytest.skip("npm and node are required")
@@ -65,9 +64,11 @@ def test_real_npm_uses_paired_node_with_empty_ambient_path(tmp_path, monkeypatch
         {"PATH": [str(node_bin)]}, {"PATH": [str(npm_bin)]},
     ]))
     calls = []
+
     def acquire(name, **kwargs):
         calls.append((name, kwargs))
         return context
+
     monkeypatch.setattr(pm, "ensure", acquire)
     dependency, plugin = tmp_path / "side-dep", tmp_path / "plugin"
     dependency.mkdir()
@@ -76,6 +77,12 @@ def test_real_npm_uses_paired_node_with_empty_ambient_path(tmp_path, monkeypatch
     (dependency / "index.js").write_text("module.exports = 'isolated';")
     manifest = {"name": "plugin", "version": "1.0.0", "dependencies": {"side-dep": "file:../side-dep"}}
     (plugin / "package.json").write_text(json.dumps(manifest))
+    return context, plugin, calls
+
+
+@pytest.mark.platforms("posix")
+def test_real_npm_uses_paired_node_with_empty_ambient_path(tmp_path, monkeypatch):
+    context, plugin, calls = _prepare_paired_node_environment(tmp_path, monkeypatch)
     ambient = dict(os.environ)
     assert install_node_sidecar(plugin, explicit=True) is None
     lock = (plugin / "package-lock.json").read_bytes()

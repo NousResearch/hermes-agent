@@ -38,7 +38,7 @@ def test_slow_worker_observer_does_not_hold_range_writers(client, dl_server):
                 if stream.read(1) == b"x":
                     advanced.append(True)
                     break
-            time.sleep(0.01)
+            threading.Event().wait(0.01)
         else:
             advanced.append(False)
 

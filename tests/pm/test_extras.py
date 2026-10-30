@@ -59,36 +59,56 @@ def test_sync_refuses_python_gated_extra_before_touching_environment(monkeypatch
         engine.sync_venv(["unavailable-engine"], explicit=True)
 
 
-def test_declared_extra_gates_match_dependency_selection():
-    import tomllib
-    from pathlib import Path
-    from packaging.markers import default_environment
-    from packaging.requirements import Requirement
-
-    root = Path(__file__).resolve().parents[2]
-    metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    optional = metadata["project"]["optional-dependencies"]
-    targets = [
+_TARGET_PYTHONS = [
+    (sys_plat, plat_sys, mach, py)
+    for (sys_plat, plat_sys, mach) in [
         ("linux", "Linux", "x86_64"), ("linux", "Linux", "aarch64"),
         ("darwin", "Darwin", "x86_64"), ("darwin", "Darwin", "arm64"),
         ("win32", "Windows", "AMD64"), ("win32", "Windows", "ARM64"),
         ("android", "Android", "aarch64"),
     ]
-    for system, platform_system, machine in targets:
-        for python in ("3.12", "3.13", "3.14"):
-            environment = {**default_environment(), "sys_platform": system,
-                           "platform_system": platform_system, "platform_machine": machine,
-                           "python_version": python, "python_full_version": python + ".0"}
-            for extra in metadata["tool"]["hermes"]["extras-platforms"]:
-                selected = any(req.marker is None or req.marker.evaluate(environment)
-                               for req in map(Requirement, optional[extra]))
-                assert extras.extra_supported(extra, environment=environment,
-                                              importable=lambda _: False) == selected, (
-                    extra, system, machine, python,
-                )
+    for py in ("3.12", "3.13", "3.14")
+]
 
 
-def test_faster_whisper_targets_are_gated(monkeypatch):
+def _find_extras_mismatches(extras_platforms, optional, environment):
+    from packaging.requirements import Requirement
+    mismatches = []
+    for extra in extras_platforms:
+        selected = any(req.marker is None or req.marker.evaluate(environment) for req in map(Requirement, optional[extra]))
+        if extras.extra_supported(extra, environment=environment, importable=lambda _: False) != selected:
+            mismatches.append((extra, selected))
+    return mismatches
+
+
+@pytest.mark.parametrize("system,platform_system,machine,python", _TARGET_PYTHONS)
+def test_declared_extra_gates_match_dependency_selection(system, platform_system, machine, python):
+    import tomllib
+    from pathlib import Path
+    from packaging.markers import default_environment
+
+    root = Path(__file__).resolve().parents[2]
+    metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    optional = metadata["project"]["optional-dependencies"]
+    environment = {**default_environment(), "sys_platform": system,
+                   "platform_system": platform_system, "platform_machine": machine,
+                   "python_version": python, "python_full_version": python + ".0"}
+    mismatches = _find_extras_mismatches(metadata["tool"]["hermes"]["extras-platforms"], optional, environment)
+    assert mismatches == [], (mismatches, system, machine, python)
+
+
+_WHISPER_TARGETS = [
+    ("win32-arm64", {"sys_platform": "win32", "platform_system": "Windows",
+                     "platform_machine": "ARM64", "os_name": "nt"}, False),
+    ("darwin-x64", {"sys_platform": "darwin", "platform_system": "Darwin",
+                    "platform_machine": "x86_64", "os_name": "posix"}, False),
+    ("linux-x64", {"sys_platform": "linux", "platform_system": "Linux",
+                   "platform_machine": "x86_64", "os_name": "posix"}, True),
+]
+
+
+@pytest.mark.parametrize("target,environment,expected", _WHISPER_TARGETS)
+def test_faster_whisper_targets_are_gated(monkeypatch, target, environment, expected):
     """The local-STT extra's anchor is faster-whisper, which has no win_arm64 or darwin-x64 build.
 
     An extra whose anchor can never import there must be refused up front: without the gate,
@@ -98,20 +118,8 @@ def test_faster_whisper_targets_are_gated(monkeypatch):
     ``stt-whisper``, the extra that carries only faster-whisper.
     """
     monkeypatch.setattr(extras, "_PLATFORM_GATES", None)
-    targets = {
-        "win32-arm64": {"sys_platform": "win32", "platform_system": "Windows",
-                        "platform_machine": "ARM64", "os_name": "nt"},
-        "darwin-x64": {"sys_platform": "darwin", "platform_system": "Darwin",
-                       "platform_machine": "x86_64", "os_name": "posix"},
-        "linux-x64": {"sys_platform": "linux", "platform_system": "Linux",
-                      "platform_machine": "x86_64", "os_name": "posix"},
-    }
-    supported = {
-        target: extras.extra_supported("stt-whisper", environment=environment,
-                                       importable=lambda _: False)
-        for target, environment in targets.items()
-    }
-    assert supported == {"win32-arm64": False, "darwin-x64": False, "linux-x64": True}
+    assert extras.extra_supported("stt-whisper", environment=environment,
+                                  importable=lambda _: False) == expected
 
 
 @pytest.fixture
@@ -184,8 +192,9 @@ def test_ensure_import_propagates_install_error(monkeypatch):
 
     monkeypatch.setattr(client, "sync_venv", boom)
     monkeypatch.setattr(extras, "available", lambda e: False)
-    with pytest.raises(pm.InstallError):
+    with pytest.raises(pm.InstallError) as exc_info:
         extras.ensure_import("fal")
+    assert "lazy installs are disabled" in str(exc_info.value)
 
 
 @pytest.mark.parametrize("failure", [None, "install", "import"])

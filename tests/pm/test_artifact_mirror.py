@@ -14,8 +14,7 @@ from pm.store import Store, current_target
 from tests.pm._range_server import RangeHandler, dl_server, url
 
 
-@pytest.mark.parametrize("mode", ["install", "stage", "library"])
-def test_cold_consumers_recover_after_upstream_removal(tmp_path, dl_server, monkeypatch, mode):
+def _assert_cold_consumers_recover_after_upstream_removal(tmp_path, dl_server, monkeypatch, mode):
     from pm import artifact_mirror
 
     engine = importlib.import_module("pm.install")
@@ -54,6 +53,14 @@ def test_cold_consumers_recover_after_upstream_removal(tmp_path, dl_server, monk
             result = engine.stage_only(package.name, "linux-arm64-bionic")
         assert (result / "tool.txt").read_bytes() == b"pinned and preserved"
     assert any(path == "/archive/" + digest for path, *_ in RangeHandler.ranges_seen)
+    return result
+
+
+@pytest.mark.parametrize("mode", ["install", "stage", "library"])
+def test_cold_consumers_recover_after_upstream_removal(tmp_path, dl_server, monkeypatch, mode):
+    assert _assert_cold_consumers_recover_after_upstream_removal(
+        tmp_path, dl_server, monkeypatch, mode
+    ).exists()
 
 
 def test_npm_artifacts_follow_the_users_npm_registry(tmp_path, monkeypatch):
@@ -63,8 +70,10 @@ def test_npm_artifacts_follow_the_users_npm_registry(tmp_path, monkeypatch):
     digest = "a" * 64
     lock_url = "https://registry.npmjs.org/npm/-/npm-10.9.2.tgz"
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-    for key in [k for k in os.environ if k.lower().startswith("npm_config_")]:
-        monkeypatch.delenv(key)
+    monkeypatch.delenv("NPM_CONFIG_REGISTRY", raising=False)
+    monkeypatch.delenv("npm_config_registry", raising=False)
+    monkeypatch.delenv("NPM_CONFIG_USERCONFIG", raising=False)
+    monkeypatch.delenv("npm_config_userconfig", raising=False)
     assert pinned_source(lock_url, tmp_path / "npm.tgz", digest).url == lock_url
     (tmp_path / ".npmrc").write_text("; corp\nregistry = https://npm.corp.example/npm/\n", encoding="utf-8")
     assert pinned_source(lock_url, tmp_path / "npm.tgz", digest).url == "https://npm.corp.example/npm/npm/-/npm-10.9.2.tgz"

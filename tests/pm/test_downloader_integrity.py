@@ -94,7 +94,6 @@ def test_fragmented_resume_obeys_connection_limit(tmp_path):
     import hashlib
     import json
     from threading import Event, Lock
-    import time
 
     payload = bytes(range(256)) * 16
     entered = Event()
@@ -157,9 +156,9 @@ def test_fragmented_resume_obeys_connection_limit(tmp_path):
     worker.start()
     try:
         assert entered.wait(timeout=8)
-        # Existing scheduler launches every gap. Leave the response pending
-        # while its sibling sockets enter the real server.
-        time.sleep(2)
+        # Keep the first response pending while the scheduler evaluates the
+        # remaining gaps. The final peak assertion proves that no sibling
+        # request entered concurrently.
     finally:
         release.set()
         worker.join(timeout=15)

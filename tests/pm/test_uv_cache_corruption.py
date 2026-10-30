@@ -220,6 +220,7 @@ def _bucket(cache: Path, name: str = "alpha_dep", files=None) -> Path:
     {"WHEEL": b"wheel-version: 1.0\n", "METADATA": b"metadata-version: 2.1\nname: alpha-dep\n", "RECORD": b"a,,\n"},
     {"WHEEL": b"Wheel-Version: 1.0\n", "METADATA": b"Metadata-Version: 2.1\n" + b"X: y\n" * 20000 + b"Name: a\n",
      "RECORD": b"a,,\n"},
+    {"WHEEL": b"X: y\n" * 20000 + b"Wheel-Version: 1.0\n", "METADATA": b"Name: a\n", "RECORD": b"a,,\n"},
 ])
 def test_valid_entries_uv_accepts_are_never_flagged(tmp_path, files):
     """Header names are case-insensitive and METADATA may be long; only torn writes count."""
@@ -265,8 +266,32 @@ def test_sweep_never_deletes_through_a_symlink(tmp_path, link):
         (archive / "bucket" / info.name).symlink_to(info, target_is_directory=True)
 
     assert corrupt_cached_packages(cache) == set()
-    assert remove_corrupt_entries(cache, {"alpha-dep"})
+    remove_corrupt_entries(cache, {"alpha-dep"})
     assert (victim / "user-data").is_file() and next(victim.glob("*.dist-info")).is_dir()
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_sweep_stays_in_the_cache_it_opened_when_the_path_is_swapped(tmp_path, monkeypatch):
+    """Replacing the cache path with a link mid-sweep must not redirect the delete."""
+    import pm.uv_cache_health as health
+
+    cache = tmp_path / "cache"
+    torn = _bucket(cache)
+    outside = tmp_path / "outside"
+    victim = _bucket(outside)
+    (victim / "user-data").write_text("must survive", encoding="utf-8")
+    moved = tmp_path / "cache-original"
+    real_lock = health.lock_fd
+
+    def swap_then_lock(fd, **kwargs):
+        cache.rename(moved)
+        cache.symlink_to(outside, target_is_directory=True)
+        return real_lock(fd, **kwargs)
+
+    monkeypatch.setattr(health, "lock_fd", swap_then_lock)
+    assert health.remove_corrupt_entries(cache, {"alpha-dep"}) is True
+    assert (victim / "user-data").is_file()
+    assert not (moved / "archive-v0" / torn.name).exists()
 
 
 @pytest.mark.platforms("linux", "macos")

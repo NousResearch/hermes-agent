@@ -86,8 +86,8 @@ def _make_runner(store, adapter):
     return runner
 
 
-def _set_loop(**overrides):
-    state = loops.LoopState(prompt="poll CI", interval_seconds=60,
+def _set_loop(prompt="poll CI", **overrides):
+    state = loops.LoopState(prompt=prompt, interval_seconds=60,
                             route={"platform": "discord", "chat_id": "chat-coalesce"})
     state.next_due_at = time.time() - 1
     for k, v in overrides.items():
@@ -173,6 +173,48 @@ async def test_pre_persist_failure_still_rolls_back_and_recovers_the_tick(loop_e
     assert len(_wakeup_turns(store, 1)) == 1
     state = loops.load_loop(SID)
     assert state.ticks_fired == 1 and state.awaiting_response is True
+
+
+@pytest.mark.asyncio
+async def test_re_set_loop_pre_persist_failure_rolls_back_despite_stale_identical_turn(loop_env):
+    """Review fix (sys-8xces5): the landed probe is attempt-scoped. A re-set loop restarts at
+    '#1', so the OLD loop's byte-identical '#1' turn sits in the transcript tail; a pre-persist
+    failure must roll the tick back, NOT false-land on that stale turn and wedge
+    awaiting_response (persisted, so the wedge would survive restarts)."""
+    store = _FakeStore()
+    adapter = _Adapter(store, fail="after")
+    runner = _make_runner(store, adapter)
+    _set_loop()
+    await _watcher_pass(runner)  # old loop: '#1' persists, then raise -> landed
+    assert len(_wakeup_turns(store, 1)) == 1
+
+    loops.LoopManager(session_id=SID).clear()
+    _set_loop()  # re-set the same prompt: fresh state, ticks_fired back to 0
+    adapter.fail = "before"  # genuine pre-persist failure this time
+    await _watcher_pass(runner)
+
+    state = loops.load_loop(SID)
+    assert state.ticks_fired == 0 and state.awaiting_response is False  # rolled back, not burned
+    assert state.landed_tick == 0  # and NOT false-landed on the stale '#1'
+    assert len(_wakeup_turns(store, 1)) == 1  # the stale turn is still the only one
+
+
+@pytest.mark.asyncio
+async def test_slash_wakeup_pre_persist_failure_skips_the_landed_probe(loop_env):
+    """Review fix (sys-8xces5): a slash wakeup is the SAME raw command every tick, so the digest
+    cannot distinguish attempts at all — the probe is skipped for slash wakeups and any raise
+    rolls the tick back, even with a byte-identical '/recap' user turn in the tail."""
+    store = _FakeStore()
+    store.turns.append({"role": "user", "content": "/recap"})  # a past /recap command turn
+    runner = _make_runner(store, _Adapter(store, fail="before"))
+    _set_loop(prompt="/recap")
+
+    await _watcher_pass(runner)
+
+    state = loops.load_loop(SID)
+    assert state.ticks_fired == 0 and state.awaiting_response is False
+    assert state.landed_tick == 0
+    assert store.turns == [{"role": "user", "content": "/recap"}]
 
 
 class TestLoopManagerCoalesce:

@@ -1134,12 +1134,6 @@ def _review_tool_whitelist(
             configured_extra_tools = {name.strip() for name in extra_raw if isinstance(name, str) and name.strip()}
     except Exception:
         logger.debug("background_review extra_tools parse failed", exc_info=True)
-    # An agent-spawning tool would start a loop outside this whitelist and the auto-deny callback.
-    from agent.plugin_session_fork import AGENT_SPAWNING_TOOLS
-    if configured_extra_tools & AGENT_SPAWNING_TOOLS:
-        logger.warning("background_review extra_tools: ignoring agent-spawning tools %s",
-                       sorted(configured_extra_tools & AGENT_SPAWNING_TOOLS))
-        configured_extra_tools -= AGENT_SPAWNING_TOOLS
     return whitelist | configured_extra_tools, configured_extra_tools
 
 

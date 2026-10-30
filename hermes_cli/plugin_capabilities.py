@@ -49,7 +49,7 @@ _CAPABILITY_ROWS = (
      "whole session, including memory, and spends your main model's tokens."),
     ("llm.session_fork", (),
      "Run a background copy of your agent after a turn. It sees the whole session, including "
-     "memory, can use the agent's tools the plugin names, and spends your main model's tokens."),
+     "memory, can use the plugin's own tools, and spends your main model's tokens."),
     ("gateway.platform_actions", ("allow_platform_actions",),
      "Act on connected chat platforms as the gateway bot "
      "(add reactions, rename threads) via ctx.platform_actions"))

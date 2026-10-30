@@ -54,10 +54,11 @@ class PluginCapabilityCtxMixin:
 
         ``token`` is ``post_llm_call``'s ``side_question_token`` (same lease rules as
         :meth:`side_question`). The fork sees the whole session (memory included) on its warm
-        prompt cache, may call only ``tools`` (names the session already advertises, e.g. this
-        plugin's own), runs at most ``max_iterations`` (<= 16) loop iterations within the review's
-        input-token budget (``input_budget`` can only lower it), auto-denies dangerous commands,
-        writes nothing to the transcript, and is cancelled when the session starts its next turn.
+        prompt cache, may call only ``tools`` (this plugin's own registered tools the session
+        already advertises; naming any other tool returns None and leaves the token unspent), runs
+        at most ``max_iterations`` (<= 16) loop iterations within the review's input-token budget
+        (``input_budget`` can only lower it), auto-denies dangerous commands, writes nothing to
+        the transcript, and is cancelled when the session starts its next turn.
         ``task`` routes it through one of this plugin's ``register_auxiliary_task`` lanes. Needs
         ``llm.session_fork``; without it this returns None and leaves the token unspent."""
         from agent.plugin_session_fork import start_session_fork
@@ -72,7 +73,18 @@ class PluginCapabilityCtxMixin:
         owned = [key for key, entry in self._manager._aux_tasks.items() if entry.get("plugin") == self.plugin_id]
         return start_session_fork(
             token, prompt, plugin_id=self.plugin_id, home=self._manager.home_path, tools=tools,
-            max_iterations=max_iterations, input_budget=input_budget, task=task, timeout=timeout, owned_tasks=owned)
+            max_iterations=max_iterations, input_budget=input_budget, task=task, timeout=timeout, owned_tasks=owned,
+            own_tools=self._own_tool_names)
+
+    def _own_tool_names(self) -> frozenset:
+        """Tool names whose live registration is this plugin's: per name, the newest active ``tool``
+        entry in the manager's ledger decides (a later re-registration by another plugin owns it).
+        Core and MCP tools never appear here: they are not registered through a plugin context."""
+        owners: dict[str, str] = {}
+        for registration in reversed(list(self._manager._registration_order)):
+            if registration.kind == "tool" and registration.active:
+                owners.setdefault(registration.key, registration.plugin_key)
+        return frozenset(name for name, owner in owners.items() if owner == self.plugin_id)
 
     def _granted_in_own_home(self, capability: str) -> bool:
         """Consent read from THIS manager's profile home: plugins call from their own threads,

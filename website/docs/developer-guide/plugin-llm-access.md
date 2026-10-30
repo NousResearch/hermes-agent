@@ -636,8 +636,8 @@ plugin, and the turn-scoped `pre_api_request` /
 `ctx.side_question` gets one text reply. `ctx.fork_session` runs a
 bounded background copy of the session's agent instead: the same
 system prompt, `tools[]`, memory and conversation, on the warm prompt
-cache, working through a multi-step prompt that may call the tools the
-plugin names. It is the pattern Hermes uses for its own background
+cache, working through a multi-step prompt that may call the plugin's
+own tools it names. It is the pattern Hermes uses for its own background
 memory/skill review, opened to plugins. A typical use: after a turn
 that created or edited a skill, ask the fork whether the skill is worth
 sharing, and let it call the plugin's own tool that offers the share.
@@ -677,8 +677,8 @@ capabilities:
 ```
 
 The consent screen shows: "Run a background copy of your agent after a
-turn. It sees the whole session, including memory, can use the agent's
-tools the plugin names, and spends your main model's tokens."
+turn. It sees the whole session, including memory, can use the
+plugin's own tools, and spends your main model's tokens."
 
 ### Signature and rules
 
@@ -691,26 +691,34 @@ when nothing was started.
   per turn, a side question *or* a fork, shared by every plugin;
   unattended turns (cron, subagents) get none; another profile's plugin
   gets `None` and does not spend it. A plugin without `llm.session_fork`
-  gets `None` and does not spend it either, nor does a request naming an
-  agent-spawning tool (below); every other `None` spends it.
+  gets `None` and does not spend it either, nor does a request naming a
+  tool outside the fork allowlist (below); every other `None` spends it.
 * `prompt` is a non-empty string of at most **8192 characters**, sent as
   the fork's user message. The system prompt and `tools[]` stay
   byte-identical to the session's, so the first request is mostly cache
   reads.
-* `tools` lists the tool names the fork may call. Each must already be
-  advertised to the session (a tool the plugin registered with
-  `register_tool` qualifies), else the call returns `None`. The fork still
-  *sees* every session tool (cache parity); calls outside the list are
-  refused at dispatch with a message naming the allowed tools. An empty
-  list means a tool-less fork.
-* A fork never holds a tool that starts another agent loop:
-  `delegate_task`, `message_agent`, `cronjob_manage`, and the Kanban
-  moves that hand a task to a dispatched worker (`kanban_create`,
-  `kanban_unblock`, `kanban_complete`, `kanban_request_review`,
-  `kanban_request_changes`). That loop would run outside the fork's tool
-  list and its auto-denied approvals. Naming one returns `None` without
-  spending the token, and the fork's dispatch refuses them however they
-  are reached. The background review's `extra_tools` ignores them too.
+* `tools` lists the tool names the fork may call, drawn from the fork
+  allowlist: the tools this plugin registered with `register_tool` (the
+  name's current registration is this plugin's), plus the core tools
+  Hermes marks fork-safe in one central list (currently none). Every
+  other tool is outside it: another plugin's tools, every MCP tool, and
+  every core tool not marked fork-safe, including `delegate_task`,
+  `message_agent`, `cronjob_manage` and the Kanban tools. A name Hermes
+  dispatches before the tool registry (an agent-level tool, a legacy
+  alias, the Tool Search bridge) never counts as the plugin's own, even
+  when the plugin registered it. Naming a tool outside the allowlist
+  returns `None` without spending the token. A tool's handler can start
+  work the fork cannot follow (a subagent, a remote agent task, a cron
+  run, a detached worker, an MCP server's sampling request), and that
+  work would keep neither the fork's tool list nor its auto-denied
+  approvals; a plugin's own handler already runs the plugin's code.
+* Each named tool must also be advertised to the session, else the call
+  returns `None` and spends the token. The fork still *sees* every
+  session tool (cache parity); calls outside the list are refused at
+  dispatch with a message naming the allowed tools. When the fork
+  starts, the allowlist is read again and a tool that stopped being the
+  plugin's own is refused at dispatch too. An empty list means a
+  tool-less fork.
 * `max_iterations` caps the fork's loop (1 to 16). The fork's aggregate
   input tokens are bounded like the background review's
   (`auxiliary.background_review.max_input_tokens`, default 75% of the

@@ -1,0 +1,39 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: levea
+description: Autonomous AI video editing — captions, clips, B-roll, reframe, motion graphics, export.
+source: https://github.com/brajendrak00068/agentic-ai-video-production
+
+# Official vendor-hosted remote MCP (Streamable HTTP, stateless). Hermes sends
+# the key as `Authorization: Bearer ${MCP_LEVEA_API_KEY}`. Tool listing works
+# without a key; edits require one.
+transport:
+  type: http
+  url: https://api.livecore.ai/api/v1/misc/mcp
+
+auth:
+  type: api_key
+  env:
+    - name: MCP_LEVEA_API_KEY
+      prompt: "Levea API key (free at https://livecore.ai)"
+      required: true
+      secret: true
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - levea
+    - video editing
+    - edit video
+    - captions
+  hosts:
+    - livecore.ai
+
+post_install: |
+  Sign up at https://livecore.ai and generate an API key, then paste it when
+  prompted. Describe the edit you want in plain language (e.g. "cut this into
+  three vertical clips with captions"); Levea plans, edits, verifies and
+  returns the exported result. Long renders run async; the tools poll status.
+  Start a new session or use /reload-mcp after setup.

@@ -22,7 +22,7 @@ from hermes_cli.process_identity import worker_birth
 from hermes_state import SessionDB
 from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
-from tests.waiting import async_wait_until
+from tests.waiting import async_wait_until, kill_if_alive
 
 LAUNCHER = ('import subprocess, sys\n'
             'child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=sys.stdin)\n'
@@ -69,8 +69,7 @@ def test_owner_binds_reservation_to_verified_descendant_of_the_handle_only(tmp_p
     finally:
         # The real interpreter first, while it is still the launcher's child: killing the launcher
         # first reparents it outside the test subtree, where the conftest kill guard refuses it.
-        if psutil.pid_exists(real):
-            psutil.Process(real).kill()
+        kill_if_alive(real)
         for proc in (launcher, stranger):
             proc.stdin.close()
             if proc.poll() is None:

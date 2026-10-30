@@ -13,7 +13,7 @@ import time
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import daemon, rpc, websocket
-from tests.waiting import async_wait_until
+from tests.waiting import async_wait_until, pid_gone
 
 
 class Model(BaseHTTPRequestHandler):
@@ -248,8 +248,7 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
             # The next admission's worker adopts it from the profile checkpoint (process_manage).
             assert started['pid'] in [e['pid'] for e in json.loads((home / 'processes.json').read_text())]
             gate.touch()
-            await async_wait_until(lambda: not psutil.pid_exists(background.pid)
-                                   or psutil.Process(background.pid).status() == psutil.STATUS_ZOMBIE,
+            await async_wait_until(lambda: pid_gone(background.pid),
                                    timeout=10, interval=.05, what='background process exited')
         else:
             assert any(role == 'tool' and 'MANAGED_TOOL_EFFECT' in content for role, content in rows), rows

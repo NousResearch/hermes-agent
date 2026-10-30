@@ -246,18 +246,20 @@ def split_parts(path: Path) -> list[Path] | None:
 
 def _read_part(path: Path) -> GGUFHeader:
     """One file's own header: metadata and that file's tensor table."""
-    def read(f, fmt: str):
+    def read_exact(f, size: int) -> bytes:
         # A header cut short raises ValueError, which every caller already treats as "skip this
         # model"; struct.error would escape them and take the whole preset pass down.
-        size = struct.calcsize(fmt)
         data = f.read(size)
         if len(data) != size:
             raise ValueError(f"truncated GGUF header: {path}")
-        return struct.unpack(fmt, data)
+        return data
+
+    def read(f, fmt: str):
+        return struct.unpack(fmt, read_exact(f, struct.calcsize(fmt)))
 
     def read_str(f) -> str:
         (n,) = read(f, "<Q")
-        return f.read(n).decode("utf-8", errors="replace")
+        return read_exact(f, n).decode("utf-8", errors="replace")
 
     def read_value(f, vtype: int):
         if vtype == _V_STRING:
@@ -288,7 +290,7 @@ def _read_part(path: Path) -> GGUFHeader:
             (n_dims,) = read(f, "<I")
             dims = read(f, f"<{n_dims}Q")
             (ttype,) = read(f, "<I")
-            f.read(8)  # offset
+            read(f, "<Q")  # offset
             size = _GGML_TYPE_SIZES.get(ttype)
             if size is None:
                 raise ValueError(f"unknown ggml tensor type {ttype} in {path}")

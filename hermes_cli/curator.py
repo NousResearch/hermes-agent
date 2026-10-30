@@ -410,6 +410,8 @@ def _cmd_ledger(args) -> int:
             f"{r.get('id', '?'):<14} {_fmt_ts(r.get('ts')):<12} "
             f"{r.get('actor', '?'):<8} {r.get('action', '?'):<12} "
             f"{r.get('skill', '?')}{extra}")
+        if evidence.get("reason"):
+            print(f"{'':<14} why: {evidence['reason']}")
     print(
         "\nRoll back a single mutation with `hermes curator rollback <id>`; "
         "whole-tree snapshots remain available via `hermes curator rollback --list`.")

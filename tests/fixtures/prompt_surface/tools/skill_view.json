@@ -1,5 +1,5 @@
 {
-  "description": "Load a skill's SKILL.md, or one of its linked references, templates or scripts. The first call returns SKILL.md plus a 'linked_files' dict; call again with file_path to read one.",
+  "description": "Load a skill's SKILL.md, or one of its linked references, templates or scripts. The first call returns SKILL.md plus a 'linked_files' dict; call again with file_path to read one. A remote MCP skill is qualified 'server::skill' in the index — load it by that name, or by passing server and uri together.",
   "name": "skill_view",
   "parameters": {
     "properties": {
@@ -8,13 +8,19 @@
         "type": "string"
       },
       "name": {
-        "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill'.",
+        "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill'; for a remote MCP skill, the qualified form shown in the skills index or server+uri.",
+        "type": "string"
+      },
+      "server": {
+        "description": "OPTIONAL: Name of the MCP server publishing a remote skill. Pass together with uri; a remote skill is loaded once and its content is verified against what the server declared.",
+        "type": "string"
+      },
+      "uri": {
+        "description": "OPTIONAL: The SKILL.md resource URI of a remote skill (e.g. 'skill://group/name/SKILL.md'). Pass together with server.",
         "type": "string"
       }
     },
-    "required": [
-      "name"
-    ],
+    "required": [],
     "type": "object"
   }
 }

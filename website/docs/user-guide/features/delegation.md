@@ -729,7 +729,7 @@ With isolation on:
   edits.
 - When a child finishes, its result entry gains a `worktree` field reporting
   `path`, `branch`, `commits` (ahead of the base), and `dirty`. The parent
-  reviews or merges each branch (`git log <branch>`, `git merge <branch>`).
+  reviews each branch and merges it with `hermes worktree merge` (below).
 - A worktree left with **no commits and a clean tree is pruned automatically**
   (`pruned: true`); anything holding work is kept.
 - Pruning requires proof. If a git inspection probe fails — or finalization
@@ -737,6 +737,33 @@ With isolation on:
   `inspection_failed: true` plus a `note` — `commits`/`dirty` are then
   defaults, not measurements, so inspect the worktree rather than assuming
   the child produced nothing.
+
+### Merging a child's branch
+
+`hermes worktree merge <branch>` merges into the current worktree only when the
+branch passes the checks you give it; otherwise HEAD and the tree are left as
+they were:
+
+```bash
+hermes worktree merge hermes-subagent/subagent-<id> \
+  --allow src/auth/ --allow tests/auth/ \
+  --tested <sha the child reported> \
+  --gate "scripts/run_tests.sh tests/auth/"
+```
+
+- `--allow PATH` (repeatable): every file the branch changes, counting both
+  sides of a rename, must be that path or under that directory.
+- `--tested SHA`: the commit the child says it verified. Each child is told to
+  report it. It must be the branch tip; commits after it refuse the merge.
+- `--gate CMD`: runs after the merge commit. A non-zero exit, or running past
+  `--gate-timeout` (default 1800 s, which kills the gate's whole process tree),
+  resets to the pre-merge commit.
+- Tracked files must be clean first, and a conflict aborts the merge and lists
+  the conflicting files. `--json` prints the full result.
+
+A useful pattern for a fan-out: commit shared scaffolding (types, stubs,
+tests) first, so every child branches from it, then merge each child's branch
+as it comes back and start the next wave from the merged result.
 
 Scope: opt-in, git-only, and local-terminal-backend-only. In a non-git
 directory, on docker/ssh/modal backends, or if worktree creation fails, the

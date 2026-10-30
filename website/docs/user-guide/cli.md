@@ -93,6 +93,7 @@ hermes worktree restore <name>    # recreate an archived tree (add --path DIR to
 hermes worktree prune --older-than 7   # only reap trees idle for 7+ days
 hermes worktree prune --trees-only     # leave local branches alone
 hermes worktree prune --branches-only  # leave worktrees alone
+hermes worktree merge <branch> --allow src/ --tested <sha> --gate "make test"  # merge only if every check passes
 ```
 
 Worktrees registered **outside** `.worktrees/` (created by hand or by another

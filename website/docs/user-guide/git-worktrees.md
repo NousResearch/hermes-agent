@@ -245,6 +245,7 @@ hermes worktree list                 # trees plus archives (name, age, branch, r
 hermes worktree prune --dry-run      # every archive/remove/skip decision and why; changes nothing
 hermes worktree restore lane-x       # recreate .worktrees/lane-x with its branch, staged and untracked files
 hermes worktree restore lane-x --path ../lane-x-review
+hermes worktree merge lane-x --allow src/ --gate "make test"   # merge only if it passes; else no change
 ```
 
 Restore puts the branch back when it is missing or still points at the

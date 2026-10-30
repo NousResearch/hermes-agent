@@ -562,7 +562,10 @@ class InProcessCronScheduler(CronScheduler):
             if profile_name is None or profile_name == default_profile:
                 return adapters
             tick_adapters = (profile_adapters or {}).get(profile_name) or {}
-            if not tick_adapters and adapters:
+            # Local sessions install an internal adapter even for credentialless satellites.
+            # It is not an owned messaging bot and must not suppress exact-route sharing.
+            from gateway.config import Platform
+            if not any(platform != Platform.LOCAL for platform in tick_adapters) and adapters:
                 return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
             return tick_adapters
 

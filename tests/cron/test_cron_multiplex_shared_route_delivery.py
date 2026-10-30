@@ -11,6 +11,7 @@ from concurrent.futures import Future
 from unittest.mock import MagicMock, patch
 
 import hermes_yaml as yaml
+import pytest
 
 from cron.scheduler import _deliver_result
 from cron.scheduler_preflight import SharedRouteAdapters, _primary_profile_routes_for_current_home
@@ -161,6 +162,58 @@ def test_user_scoped_route_keeps_disabled_and_bot_profile_boundaries():
                          replace(route, chat_id=None)):
         shared = SharedRouteAdapters({Platform.DISCORD: object()}, [denied_route])
         assert shared.get(Platform.DISCORD, target, origin=origin) is None
+
+
+@pytest.mark.parametrize("owned_platform", [None, Platform.DISCORD, Platform.TELEGRAM])
+def test_local_session_adapter_does_not_hide_shared_cron_routes(tmp_path, monkeypatch, owned_platform):
+    """A local session does not give a credentialless profile its own messaging bot."""
+    import threading
+    from types import SimpleNamespace
+    from cron import scheduler
+    from cron.scheduler_delivery import _resolve_target_transport
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    root = tmp_path / "root"
+    home = root / "profiles" / "fitness"
+    home.mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {"profile_routes": [
+        {"platform": "discord", "profile": "fitness", "chat_id": "C1",
+         "guild_id": "G1", "user_id": "U1"}]} }), encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    primary = object()
+    stop = threading.Event()
+    outcomes = []
+    target = {"platform": "discord", "chat_id": "C1"}
+    origin = dict(target, user_id="U1", scope_id="G1")
+    own = {Platform.LOCAL: object()}
+    if owned_platform is not None:
+        own[owned_platform] = object()
+
+    def tick(**kwargs):
+        stop.set()
+        if owned_platform is not None:
+            outcomes.append(kwargs["adapters"])
+            return
+        outcomes.append(_resolve_target_transport(
+            {"origin": origin}, Platform.DISCORD, "discord", target,
+            kwargs["adapters"], SimpleNamespace(platforms={})))
+        denied, error = _resolve_target_transport(
+            {"origin": dict(origin, user_id="wrong")}, Platform.DISCORD, "discord",
+            target, kwargs["adapters"], SimpleNamespace(platforms={}))
+        assert denied is None and error == "platform 'discord' not configured/enabled"
+
+    monkeypatch.setattr(scheduler, "tick", tick)
+    InProcessCronScheduler()._start_multiplex(
+        stop, profile_homes=[("fitness", home)], default_profile="default",
+        adapters={Platform.DISCORD: primary},
+        profile_adapters={"fitness": own}, interval=0)
+    assert len(outcomes) == 1
+    if owned_platform is not None:
+        assert outcomes[0] is own  # Never replace a profile's actual messaging bot.
+        return
+    resolved, error = outcomes[0]
+    assert error is None, error
+    assert resolved[2] is primary
 
 
 def test_shared_view_is_falsy_without_routes_or_primary_adapters():

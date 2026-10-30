@@ -113,9 +113,14 @@ def _parse_elements_from_structured(raw_elements: list[dict[str, Any]]) -> list[
         with contextlib.suppress(TypeError, ValueError):
             if isinstance(frame, dict) and frame:
                 bounds = tuple(int(frame.get(k, 0)) for k in ("x", "y", "w", "h"))  # type: ignore[assignment]
+        screenshot_frame = raw.get("screenshot_frame")
+        rect = [screenshot_frame.get(k) for k in ("x", "y", "w", "h")] if isinstance(screenshot_frame, dict) else []
+        screenshot_bounds = (rect if len(rect) == 4 and all(isinstance(v, int) and not isinstance(v, bool) for v in rect)
+                             and min(rect[:2]) >= 0 and min(rect[2:]) > 0 else None)
         elements.append(UIElement(
             index=idx, role=role if isinstance(role, str) else "", label=label if isinstance(label, str) else "",
             bounds=bounds,
+            attributes={"screenshot_bounds": screenshot_bounds} if screenshot_bounds else {},
             # Opaque `s{snapshot_hex}:{index}` token — the driver owns parse + LRU semantics.
             element_token=token if isinstance(token, str) and token else None,
         ))

@@ -1,14 +1,14 @@
 # Scene Planning Reference
 
-## Narrative Arc Structures (from 3Blue1Brown's actual patterns)
+## Narrative Arc Structures
 
-### The "Build-Up" Arc (most common for Grant)
+### The "Build-Up" Arc
 1. **Seed** — Show a simple, familiar case (activates prior knowledge)
 2. **Perturb** — Change one parameter, show what happens (builds curiosity)
 3. **Generalize** — Reveal the pattern that connects all cases (the aha moment)
 4. **Apply** — Use the pattern to solve something previously impossible
 
-This maps to: *simple → broken → fixed → payoff*. Most of Grant's videos follow this.
+This structure moves from a familiar example to a useful generalization.
 
 ### The "Mystery" Arc
 1. **Question** — Pose a puzzle or apparent paradox
@@ -27,13 +27,8 @@ This maps to: *simple → broken → fixed → payoff*. Most of Grant's videos f
 
 A scene should contain **exactly one conceptual point**. If you can't describe it in one sentence, the scene is doing too much.
 
-**Grant's actual numbers** (from ManiBench analysis of 12 videos):
-- Colliding Blocks: 16 scenes, 2,193 lines — ~137 lines/scene
-- Gradient Descent: 16 scenes, 8,598 lines — ~537 lines/scene (dense with math)
-- Convolution: 13 scenes, 3,309 lines — ~254 lines/scene
-- Eigenvectors: 13 scenes, 5,120 lines — ~394 lines/scene
-
-Typical scene length: **30–90 seconds**. Each scene is a single `.py` file in `active_projects/<video_name>/`.
+Choose scene length from the explanation, narration and audience. Keep one conceptual
+point per scene, and preview transitions before committing to a final duration.
 
 ## Scene Transitions
 

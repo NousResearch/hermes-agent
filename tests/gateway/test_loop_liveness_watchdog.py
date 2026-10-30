@@ -12,6 +12,7 @@ from gateway.shutdown_watchdog import (
     loop_heartbeat_forever,
     start_loop_liveness_watchdog,
 )
+from hermes_loop_dump import LOOP_THREAD_HEADER, capture_loop_thread_ident
 
 def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
@@ -360,3 +361,43 @@ def test_heartbeat_write_does_not_block_the_loop_it_monitors():
     assert ticks >= 5, (
         f'the loop made only {ticks:d} tick(s) while the heartbeat was writing — the write is blocking the loop again'
     )
+
+
+def _start_blocked_threads(count: int = 160):
+    """Threads that keep the process well past faulthandler's 100-thread cap."""
+    release = threading.Event()
+    threads = [threading.Thread(target=release.wait, args=(30.0,), daemon=True) for _ in range(count)]
+    for thread in threads:
+        thread.start()
+    return release
+
+
+def test_dump_names_the_loop_thread_past_the_faulthandler_cap(tmp_path):
+    from gateway import shutdown_watchdog as watchdog
+
+    release = _start_blocked_threads()
+    try:
+        assert threading.active_count() > 100  # the cap the dump has to work around is live
+
+        async def dump_from_the_loop() -> None:
+            ident = capture_loop_thread_ident(asyncio.get_running_loop())
+            assert ident == threading.get_ident()
+            watchdog._write_watchdog_dump(
+                tmp_path / "watchdog.log", delay_s=0.0,
+                snapshot={"threads": threading.active_count()},
+                event="loop_liveness_watchdog_fired", loop_thread_ident=ident,
+            )
+
+        asyncio.run(dump_from_the_loop())
+
+        dump = (tmp_path / "watchdog.log").read_text(encoding="utf-8")
+        assert LOOP_THREAD_HEADER in dump
+        # Emitted FIRST: ahead of the all-threads section the cap truncates.
+        loop_block = dump.split(LOOP_THREAD_HEADER, 1)[1].split("--- faulthandler dump", 1)[0]
+        assert "dump_from_the_loop" in loop_block
+        assert "run_forever" in loop_block
+        # Proof the cap really drops this thread: the truncated dump does not carry it.
+        all_threads_section = dump.split("--- faulthandler dump", 1)[1]
+        assert "dump_from_the_loop" not in all_threads_section
+    finally:
+        release.set()

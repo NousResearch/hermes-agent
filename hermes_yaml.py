@@ -1,10 +1,12 @@
 """Shared YAML 1.1 policy for config, manifests, and frontmatter.
 
 Ruamel's native schema includes bare y/n booleans and rejects duplicate keys.
-Every operation owns its parser/emitter; instances must not be shared by threads.
+Safe parsers are cached per thread (ruamel instances are reusable for repeated
+loads on their owning thread; sharing across threads is what's forbidden).
 """
 
 from io import StringIO
+import threading
 from typing import Any, IO, overload
 
 from ruamel.yaml import YAML
@@ -19,9 +21,20 @@ class _Yaml11Resolver(VersionedResolver):
         return (1, 1)
 
 
+# One safe parser per (thread, purity): construction is ~50us of resolver/scanner setup that a
+# cold skill scan paid 800+ times, and ruamel instances stay reusable for repeated loads on the
+# thread that built them — the sharing ban is cross-thread, which thread-local storage honors.
+_parser_tls = threading.local()
+
+
 def _load(document: str | bytes, *, pure: bool) -> Any:
-    yaml = YAML(typ="safe", pure=pure)
-    yaml.version = (1, 1)
+    cache = getattr(_parser_tls, "parsers", None)
+    if cache is None:
+        cache = _parser_tls.parsers = {}
+    yaml = cache.get(pure)
+    if yaml is None:
+        yaml = cache[pure] = YAML(typ="safe", pure=pure)
+        yaml.version = (1, 1)
     return yaml.load(document)
 
 

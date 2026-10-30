@@ -96,7 +96,8 @@ function catalogLinks(kind: CatalogKind, row: any, rawName: string, source: stri
         : null,
     sourceUrl: webUrl(row.repo || row.sourceUrl),
     docsUrl:
-      webUrl(row.docsUrl) || (text(row.docsPath) ? `${CATALOG_ORIGIN}/docs/user-guide/skills/${text(row.docsPath)}` : null),
+      webUrl(row.docsUrl) ||
+      (text(row.docsPath) ? `${CATALOG_ORIGIN}/docs/user-guide/skills/${text(row.docsPath)}` : null),
     imageUrl: curationOwnsArtwork(kind, row) ? officialCatalogArtwork(kind, row) : catalogImageUrl(row.image),
     screenshots:
       kind === 'plugins'
@@ -262,7 +263,9 @@ export async function fetchCatalog(kind: CatalogKind): Promise<CatalogEntry[]> {
     // Chromium can turn our abort into "The user aborted a request." The
     // controller, not that browser-dependent exception name, owns the cause.
     if (controller.signal.aborted) {
-      throw new Error(`Catalog download timed out after ${CATALOG_STALL_MS / 1000} seconds without progress. Please try again.`)
+      throw new Error(
+        `Catalog download timed out after ${CATALOG_STALL_MS / 1000} seconds without progress. Please try again.`
+      )
     }
 
     throw error

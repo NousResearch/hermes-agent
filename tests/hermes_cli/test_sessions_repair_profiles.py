@@ -62,6 +62,16 @@ def _seed_crossings(homes):
     _session(root, "stray-child", "agent:acme:telegram:dm:202", profile="acme", parent="stray-parent")
     #    …and a legacy agent:main row inside acme's store (reported, not repaired by default)
     _session(acme, "legacy-main", "agent:main:telegram:dm:203", profile="default")
+    #    …and a legacy local session with state_meta receipt in acme's store
+    local_key = "agent:main:local:dm:legacy-local"
+    _session(acme, "legacy-local", local_key, profile="default", source="local")
+    from hermes_state_local import POLICY_PREFIX
+    acme.set_meta(POLICY_PREFIX + "legacy-local", json.dumps({
+        "session_id": "legacy-local",
+        "route": local_key,
+        "entry": {"session_id": "legacy-local", "session_key": local_key, "origin": {"chat_id": "legacy-local", "platform": "local", "profile": "default"}},
+        "policy": {"source": "local"}
+    }))
     #    …and a row keyed to a profile that does not exist
     _session(root, "ghost", GHOST_KEY, profile="ghost")
     # 3. parent crossing namespaces inside beta's store: beta's own child forked from an acme row
@@ -122,7 +132,7 @@ def _report() -> dict:
 def test_dry_run_names_every_crossing_and_changes_nothing(homes, capsys):
     _seed_crossings(homes)
     before = {name: _dump(home / "state.db") for name, home in homes.items()}
-    files_before = {p.name: p.read_text() for p in (homes["default"] / "gateway_voice_mode.json",
+    files_before = {p.name: p.read_text(encoding="utf-8-sig") for p in (homes["default"] / "gateway_voice_mode.json",
                                                     homes["default"] / "sessions" / "sessions.json")}
 
     report = _report()
@@ -150,7 +160,7 @@ def test_dry_run_names_every_crossing_and_changes_nothing(homes, capsys):
     assert by_kind["unclaimed_namespace"]["action"] is None and "ghost" in by_kind["unclaimed_namespace"]["reason"]
 
     assert {name: _dump(home / "state.db") for name, home in homes.items()} == before
-    assert {p.name: p.read_text() for p in (homes["default"] / "gateway_voice_mode.json",
+    assert {p.name: p.read_text(encoding="utf-8-sig") for p in (homes["default"] / "gateway_voice_mode.json",
                                             homes["default"] / "sessions" / "sessions.json")} == files_before
 
 
@@ -189,10 +199,10 @@ def test_apply_settles_every_repairable_crossing_and_is_idempotent(homes, monkey
         # 5. topic binding carries acme; voice key prefixed only for acme's chat
         assert acme.get_telegram_topic_binding(chat_id="200", thread_id="7", profile_name="acme") is not None
         assert acme.get_telegram_topic_binding(chat_id="200", thread_id="7", profile_name="default") is None
-        voice = json.loads((homes["default"] / "gateway_voice_mode.json").read_text())
+        voice = json.loads((homes["default"] / "gateway_voice_mode.json").read_text(encoding="utf-8-sig"))
         assert voice == {"acme:telegram:200": "all", "telegram:100": "voice_only"}
         # 6. ghost mirror entry dropped, the default's kept
-        mirror = json.loads((homes["default"] / "sessions" / "sessions.json").read_text())
+        mirror = json.loads((homes["default"] / "sessions" / "sessions.json").read_text(encoding="utf-8-sig"))
         assert set(mirror) == {"_README", ROOT_KEY}
         # controls untouched
         assert root.get_session("ok-root")["profile_name"] == "default"
@@ -231,8 +241,103 @@ def test_legacy_main_rekey_adopts_a_standalone_gateways_history(homes, monkeypat
     try:
         row = acme.get_session("legacy-main")
         assert row["session_key"] == "agent:acme:telegram:dm:203" and row["profile_name"] == "acme"
+        local_row = acme.get_session("legacy-local")
+        assert local_row["session_key"] == "agent:acme:local:dm:legacy-local" and local_row["profile_name"] == "acme"
+        from hermes_state_local import POLICY_PREFIX
+        receipt = json.loads(acme.get_meta(POLICY_PREFIX + "legacy-local"))
+        assert receipt["route"] == "agent:acme:local:dm:legacy-local"
+        assert receipt["entry"]["session_key"] == "agent:acme:local:dm:legacy-local"
+        assert receipt["entry"]["origin"]["profile"] == "acme"
     finally:
         acme.close()
+    assert not any(f["kind"] == "legacy_main" for f in _report()["findings"])
+
+
+def test_legacy_main_rekey_for_named_main_profile_is_idempotent(tmp_path, monkeypatch):
+    """Rekeying legacy sessions inside a profile explicitly named 'main'.
+    It must rekey 'agent:main:...' to 'agent:main~:...', update state_meta receipts,
+    rekey routing rows, and be completely idempotent on repeated runs."""
+    from hermes_cli.profiles import create_profile
+    from hermes_state_local import POLICY_PREFIX
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
+
+    create_profile("main", no_alias=True, no_skills=True)
+    main_db = SessionDB(root / "profiles" / "main" / "state.db")
+    try:
+        sid = "main-local-1"
+        legacy_key = f"agent:main:local:dm:{sid}"
+        _session(main_db, sid, legacy_key, profile="default", source="local")
+        main_db.set_meta(POLICY_PREFIX + sid, json.dumps({
+            "session_id": sid,
+            "route": legacy_key,
+            "entry": {"session_id": sid, "session_key": legacy_key, "origin": {"chat_id": sid, "platform": "local", "profile": "default"}},
+            "policy": {"source": "local"}
+        }))
+        main_db.save_gateway_routing_entry(legacy_key, json.dumps({"session_key": legacy_key, "session_id": sid}), scope="")
+
+        # Also test a session whose route uses a local-<hash> chat_id different from sid
+        sid_hashed = "20261022_143447_custom"
+        legacy_hash_route = "agent:main:local:dm:local-f4b94d70f2379fd8f8d877267f2198c6"
+        _session(main_db, sid_hashed, legacy_hash_route, profile="default", source="local", chat_id="local-f4b94d70f2379fd8f8d877267f2198c6")
+        main_db.set_meta(POLICY_PREFIX + sid_hashed, json.dumps({
+            "session_id": sid_hashed,
+            "route": legacy_hash_route,
+            "entry": {"session_id": sid_hashed, "session_key": legacy_hash_route, "origin": {"chat_id": "local-f4b94d70f2379fd8f8d877267f2198c6", "platform": "local", "profile": "default"}},
+            "policy": {"source": "local"}
+        }))
+        main_db.save_gateway_routing_entry(legacy_hash_route, json.dumps({"session_key": legacy_hash_route, "session_id": sid_hashed}), scope="")
+    finally:
+        main_db.close()
+
+    # First run: apply rekey
+    assert _run(apply=True, legacy_main="rekey") == 0
+
+    main_db = SessionDB(root / "profiles" / "main" / "state.db")
+    try:
+        row = main_db.get_session(sid)
+        expected_key = f"agent:main~:local:dm:{sid}"
+        assert row["session_key"] == expected_key
+        assert row["profile_name"] == "main"
+
+        receipt = json.loads(main_db.get_meta(POLICY_PREFIX + sid))
+        assert receipt["route"] == expected_key
+        assert receipt["entry"]["session_key"] == expected_key
+        assert receipt["entry"]["origin"]["profile"] == "main"
+
+        # Verify hashed route session
+        row_hashed = main_db.get_session(sid_hashed)
+        expected_hash_key = "agent:main~:local:dm:local-f4b94d70f2379fd8f8d877267f2198c6"
+        assert row_hashed["session_key"] == expected_hash_key
+        assert row_hashed["profile_name"] == "main"
+
+        receipt_hashed = json.loads(main_db.get_meta(POLICY_PREFIX + sid_hashed))
+        assert receipt_hashed["route"] == expected_hash_key
+        assert receipt_hashed["entry"]["session_key"] == expected_hash_key
+        assert receipt_hashed["entry"]["origin"]["profile"] == "main"
+    finally:
+        main_db.close()
+
+    # Second run: must be idempotent and report 0 legacy_main findings
+    assert _run(apply=True, legacy_main="rekey") == 0
+    main_db = SessionDB(root / "profiles" / "main" / "state.db")
+    try:
+        row = main_db.get_session(sid)
+        assert row["session_key"] == expected_key
+        assert row["profile_name"] == "main"
+        receipt = json.loads(main_db.get_meta(POLICY_PREFIX + sid))
+        assert receipt["route"] == expected_key
+
+        row_hashed = main_db.get_session(sid_hashed)
+        assert row_hashed["session_key"] == expected_hash_key
+        receipt_hashed = json.loads(main_db.get_meta(POLICY_PREFIX + sid_hashed))
+        assert receipt_hashed["route"] == expected_hash_key
+    finally:
+        main_db.close()
     assert not any(f["kind"] == "legacy_main" for f in _report()["findings"])
 
 

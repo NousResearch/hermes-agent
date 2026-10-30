@@ -22,7 +22,7 @@ from pathlib import Path
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
 from gateway.run_busy import approval_input_words
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
@@ -45,6 +45,10 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+# ``RelayMediaClient.download`` temp-file prefix: the rest of such a basename is random, not a name.
+_RELAY_MEDIA_PREFIX = "relay_media_"
+_UNKNOWN_ATTACHMENT_NAME = "(original filename unknown)"
 
 
 def discord_triggering_note(message_id: Any) -> str:
@@ -1229,6 +1233,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                     return True, _consumer_reply
                 if getattr(event, "_fifo_only", False) and event._stop_epoch != self._route_stop_epoch(_quick_key):
                     return True, None  # a /stop or /new came after its command, as it clears the slot
+                # A failed admit stays the authority's answer (refusal notice or turn error), never a
+                # pending legacy turn: that would run unadmitted, outside the FIFO's order.
                 return True, await admit_message(authority, event)
         if (authority is None and not is_internal and not event.get_command()
                 and getattr(self, 'session_authority', None) is not None):
@@ -1488,23 +1494,41 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         return message_text
 
     @staticmethod
-    def _inbound_attachment_display_name(path: str) -> tuple[str, str]:
-        """``(display_name, agent_visible_path)``: cache filename is ``<id>_<id>_<original>``; the
-        path is translated to the in-container mount under a Docker backend."""
+    def _inbound_attachment_display_name(path: str, original_name: str = "") -> tuple[str, str]:
+        """``(display_name, agent_visible_path)``. The display name is the adapter-supplied
+        original name when known (``MessageEvent.media_filenames``), else parsed from the native
+        cache filename ``<id>_<id>_<original>``. A relay temp file (``relay_media_<random>``)
+        carries no name, so it is labelled unknown rather than shown as the random basename.
+        The path is translated to the in-container mount under a Docker backend."""
         from tools.credential_files import to_agent_visible_cache_path
         basename = os.path.basename(path)
-        parts = basename.split("_", 2)
-        return re.sub(r'[^\w.\- ]', '_', parts[2] if len(parts) >= 3 else basename), to_agent_visible_cache_path(path)
+        name = clean_attachment_filename(original_name)
+        if not name and basename.startswith(_RELAY_MEDIA_PREFIX):
+            return _UNKNOWN_ATTACHMENT_NAME, to_agent_visible_cache_path(path)
+        if not name:
+            parts = basename.split("_", 2)
+            name = parts[2] if len(parts) >= 3 else basename
+        return re.sub(r'[^\w.\- ]', '_', name), to_agent_visible_cache_path(path)
+
+    @staticmethod
+    def _inbound_original_names(event: MessageEvent) -> dict[str, str]:
+        """``{path: original_name}`` for the attachments whose original name the adapter kept."""
+        names = getattr(event, "media_filenames", None) or []
+        return {p: n for p, n in zip(event.media_urls or [], names) if n}
 
     @classmethod
-    def _prepend_inbound_media_file_notes(cls, message_text: str, audio_file_paths: list[str], video_paths: list[str]) -> str:
+    def _prepend_inbound_media_file_notes(
+        cls, message_text: str, audio_file_paths: list[str], video_paths: list[str],
+        original_names: Optional[dict[str, str]] = None,
+    ) -> str:
         """Prepend a path-pointing note per audio-file / video attachment (content is not inlined)."""
+        names = original_names or {}
         for kind, noun, verb, tool, paths in (
             ("an audio file attachment", "audio", "transcribe or process", "a transcription or media tool", audio_file_paths),
             ("a video attachment", "video", "inspect or process", "a video analysis or media tool", video_paths),
         ):
             for _path in paths:
-                _display, _agent_path = cls._inbound_attachment_display_name(_path)
+                _display, _agent_path = cls._inbound_attachment_display_name(_path, names.get(_path, ""))
                 message_text = (
                     f"[The user sent {kind}: '{_display}'. "
                     f"It is saved at: {_agent_path}. "
@@ -1530,6 +1554,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
 
         _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
         inline_flags = getattr(event, "media_text_inlined", None) or []
+        names = getattr(event, "media_filenames", None) or []
         for i, path in enumerate(event.media_urls):
             # A document mixed into a PHOTO/VOICE message (message-level type != DOCUMENT) still
             # reaches the agent; only genuine non-media files get a note.
@@ -1541,7 +1566,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 mtype = "text/plain" if _is_text else (_mimetypes.guess_type(path)[0] or "application/octet-stream")
             # Every accepted file gets a note — a non-text/non-application MIME (font/*, model/*)
             # must still tell the agent the file exists.
-            display_name, agent_path = cls._inbound_attachment_display_name(path)
+            display_name, agent_path = cls._inbound_attachment_display_name(
+                path, names[i] if i < len(names) else "")
             inline_flag = inline_flags[i] if i < len(inline_flags) else None
             context_note = _build_document_context_note(
                 display_name, agent_path, mtype, content_inlined=inline_flag is not False,
@@ -1670,7 +1696,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
         if audio_paths:
             message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
-        message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
+        message_text = self._prepend_inbound_media_file_notes(
+            message_text, audio_file_paths, video_paths, self._inbound_original_names(event))
         message_text = self._prepend_inbound_document_notes(event, message_text)
         from gateway.session_context_refs import turn_references
         message_text = await turn_references(self, event, source, session_key, message_text)

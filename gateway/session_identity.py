@@ -15,6 +15,7 @@ receiving bot's own profile — so nothing here changes the wire format or any h
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import logging
 from contextlib import suppress
@@ -307,3 +308,22 @@ def authenticated_subject(identity):
     return AUTH_SUBJECT_PREFIX + json.dumps(
         [identity.get('provider') or '', identity.get('issuer') or '', subject],
         separators=(',', ':'), ensure_ascii=True)
+
+
+def is_authenticated_identity(identity: object) -> bool:
+    """True for a server-minted, non-internal ``{user_id, provider}`` WS-upgrade identity."""
+    from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER, INTERNAL_USER_ID
+    if not isinstance(identity, dict):
+        return False
+    user_id, provider = identity.get("user_id"), identity.get("provider")
+    if not isinstance(user_id, str) or not user_id.strip():
+        return False
+    if not isinstance(provider, str) or not provider.strip():
+        return False
+    return not (user_id == INTERNAL_USER_ID and provider == INTERNAL_PROVIDER)
+
+
+def authenticated_principal_digest(identity: dict) -> str:
+    """Server-derived principal id: stable per login, unspoofable without the minted identity."""
+    raw = authenticated_subject(identity)
+    return f"principal:dashboard:{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:32]}"

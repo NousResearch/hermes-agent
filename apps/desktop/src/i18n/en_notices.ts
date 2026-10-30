@@ -21,9 +21,10 @@ export const enNotices = {
   promptNotices: {
     legacySendUnconfirmed:
       'This server could not confirm the earlier send of this message, so it may already have run. Check the conversation before sending it again.',
+    restoredDraftAttachmentsDropped:
+      "Attachments from your unsent message weren't restored. Attach them again before you send it.",
     mcpReloadDeferred:
       'This chat is busy: the MCP change applies once its turn finishes and MCP reloads again, or when you reopen the chat',
-    mcpReloadNotInChat: server => `${server} is not enabled in this chat`,
     mcpReloadUnavailable: servers => `Did not connect: ${servers}`,
     compactedTurnUnavailable:
       "That message was summarized when the chat was compressed, so it can't be restored or edited anymore.",
@@ -36,5 +37,12 @@ export const enNotices = {
     message:
       'Hermes can keep your computer awake while a task runs. The screen still turns off, and on battery your computer may still sleep.',
     action: 'Keep awake while working'
+  },
+  connectorOffer: {
+    heading: 'Keep your connected apps',
+    body: 'Sign in with a free Nous account to keep the apps you connected, like Gmail or Slack, on your account.'
   }
-} satisfies Pick<Translations, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer'>
+} satisfies Pick<
+  Translations,
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'connectorOffer'
+>

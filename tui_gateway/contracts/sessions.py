@@ -506,6 +506,7 @@ class SessionUsageParams(SessionParams):
 
 class SessionUsageResult(Usage):
     credits_lines: list[str] | None = None
+    credits_usage_window: bool | None = None
 
 
 method("session.usage", params=SessionUsageParams, result=SessionUsageResult,

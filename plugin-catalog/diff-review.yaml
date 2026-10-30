@@ -1,8 +1,10 @@
 name: diff-review
 repo: https://github.com/sprmn24/hermes-plugin-diff-review
-sha: f238271c1f63ac59b43b99290ec6143f50b780f3
+sha: ba7bb0e1c5c1e7cfc36bf627b960910c816cc697
+version: "1.1.0"
 description: Analyze git diffs for common code quality issues — debug prints, hardcoded secrets, bare
-  except clauses, and unresolved TODOs.
+  except clauses, and unresolved TODOs, in a diff you pass, the working tree (untracked files included) or
+  a branch against its merge base.
 maintainer: sprmn24
 tier: community
 category: tools

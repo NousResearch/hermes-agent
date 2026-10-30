@@ -4,8 +4,6 @@ Mixin on ``HermesCLI``; cli.py symbols are imported lazily inside methods (impor
 from __future__ import annotations
 
 import logging
-import os
-import shutil
 import threading
 import time
 
@@ -126,21 +124,19 @@ class CLILoopsMixin:
         out.cursor_goto(0, 0)
         out.flush()
         cc = ChatConsole()
-        if self.compact or shutil.get_terminal_size().columns < 80:
+        # The banner plan startup uses (show_banner): a gateway session's banner is the new
+        # session's snapshot (its tools, MCP included, and main's short label), never this
+        # process's registry.
+        from hermes_cli.cli_info_mixin import banner_plan
+        plan = banner_plan(self, cc)
+        if plan.banner_kw is None:
             cc.print(_build_compact_banner())
+        elif plan.inventory is not None:
+            self._show_gateway_banner(build_welcome_banner, plan.inventory, plan.banner_kw)
         else:
             tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
                                          disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
-            agent = getattr(self, "agent", None)
-            ctx_len = None
-            if agent and hasattr(agent, "context_compressor"):
-                ctx_len = agent.context_compressor.context_length
-            from agent.context_pin import is_context_pinned
-            build_welcome_banner(
-                console=cc, model=self.model, cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
-                tools=tools, enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
-                context_length=ctx_len, provider=self.provider,
-                context_pinned=is_context_pinned(ctx_len, getattr(agent, "_config_context_length", None)))
+            build_welcome_banner(tools=tools, **plan.banner_kw)
         _cprint(_fresh_start())
         self._print_random_tip()
 
@@ -662,6 +658,7 @@ class CLILoopsMixin:
         if getattr(self, "_heartbeat_watchdog_started", False):
             return
         self._heartbeat_watchdog_started = True
+        from hermes_cli.gateway_automation import GatewayHeartbeatManager
         from hermes_cli.heartbeat import POLL_SECONDS
 
         def _loop():
@@ -670,6 +667,10 @@ class CLILoopsMixin:
                     time.sleep(POLL_SECONDS)
                     try:
                         mgr = self._get_heartbeat_manager()
+                        if isinstance(mgr, GatewayHeartbeatManager):
+                            # The gateway poller stands down while this watchdog runs, so a resume,
+                            # set or re-anchor from another viewer must reach this copy.
+                            mgr.refresh()
                         if mgr is None or not mgr.is_active():
                             continue
                         busy = (
@@ -810,7 +811,8 @@ class CLILoopsMixin:
                 pass
             _cprint(f"  {_DIM}{t('cli.loop.paused_interrupted')}{_RST}")
             return
-        decision = mgr.complete_tick(self._last_assistant_response_text())
+        decision = mgr.complete_tick("" if getattr(self, "_last_turn_failed", False)
+                                     else self._last_assistant_response_text())
         # With the live-work dock up its loop row carries the countdown; the one-shot line would go stale.
         if (not _print_decision_message(decision) and decision.get("status") == "active"
                 and mgr.state is not None and getattr(self, "_subagent_monitor", None) is None):
@@ -855,6 +857,10 @@ class CLILoopsMixin:
 
         # Empty/whitespace responses are almost always transient failures (API error,
         # empty stream): judging would say "continue" and trip the parse-failure backstop.
+        # A failed turn (a refused one: its folder is gone) never reached the model, so the judge
+        # would grade the previous reply and burn the whole budget; same rule as the TUI's hook.
+        if getattr(self, "_last_turn_failed", False):
+            return
         last_response = self._last_assistant_response_text()
         if not last_response.strip():
             return

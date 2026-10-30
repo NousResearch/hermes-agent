@@ -210,6 +210,32 @@ When `workdir` is set:
 Each agent run binds its `workdir` to that run's unique task identity. Workdir jobs therefore use the normal parallel pool without mutating process-global terminal state or leaking paths between concurrent runs. Set `cron.max_parallel_jobs` if you want to limit total cron concurrency.
 :::
 
+## Per-job timezone
+
+By default a job's cron expression is read in your profile's timezone (`timezone:` in `config.yaml`). A job can pin its own zone instead, so one profile can serve several markets:
+
+```bash
+hermes cron create "0 9 * * 1-5" --timezone Asia/Hong_Kong "HK market open brief"
+hermes cron create "0 9 * * 1-5" --timezone America/New_York "US market open brief"
+```
+
+- The expression is the pinned zone's **wall clock**: `0 9 * * *` fires at 09:00 in that zone, and stays at 09:00 across that zone's DST changes.
+- Omit it (or pass `--timezone ""` on edit) to inherit the profile timezone. A job without the field behaves exactly as before.
+- An offset-less one-shot timestamp (`2026-06-01T09:00:00`) is also read in the job's zone; a timestamp that carries its own offset is already an instant.
+- Changing the zone recomputes `next_run_at` immediately, so the next fire happens at the new zone's wall clock.
+- An `interval` job has a fixed duration and no wall clock, so a pin has no effect on it.
+
+## Catch-up window
+
+A missed cron occurrence is run late only inside a catch-up window: half the job's period, clamped to 2 minutes–2 hours. `--grace-minutes` overrides that per job (0–1440):
+
+```bash
+hermes cron edit market-open --grace-minutes 0    # never catch up: skip a missed occurrence
+hermes cron edit market-open --grace-minutes 180  # run up to 3h late
+```
+
+`0` means never catch up; `--grace-minutes ""` restores the computed window. It only applies to cron expressions — `once` and `interval` schedules have no missed wall clock to catch up on.
+
 ## Editing jobs
 
 You do not need to delete and recreate jobs just to change them.
@@ -277,7 +303,7 @@ What they do:
 
 - `pause` — keep the job but stop scheduling it
 - `resume` — re-enable the job. A recurring job whose slot came due while it was paused keeps that slot due, so the next tick fires one catch-up run (or logs the skip when `cron.catch_up_missed: false`) instead of silently jumping to the next occurrence; otherwise the next future run is computed
-- `run` — trigger the job on the next scheduler tick
+- `run` — trigger the job on the next scheduler tick. A manual run is an extra fire: the scheduled run still happens and the `repeat` count is not spent, so test-firing an `in 30m` reminder keeps the real one (a run once the slot is already due is that scheduled run)
 - `remove` — delete it entirely
 - `edit` — modify schedule, prompt, delivery, etc.
 - `tick` — run one scheduler pass and exit (for a system crontab or other external

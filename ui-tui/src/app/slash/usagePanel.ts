@@ -1,3 +1,6 @@
+import { formatResetsIn } from '@hermes/shared/plan-usage'
+
+import type { BillingStateResponse } from '../../gatewayTypes.js'
 import { t } from '../../i18n/runtime.js'
 import type { PanelSection } from '../../types.js'
 
@@ -47,4 +50,43 @@ export function usageTotalsSections(r: UsageTotals): PanelSection[] {
   }
 
   return sections
+}
+
+/** Usage-window plans: the CLI's `/usage` allowance rows (`agent/account_usage.py`
+ *  `_render_usage_window_lines`): plan name, then `Today  [|||       ]  31% used  ·  resets in 5h`.
+ *  Plain English like the CLI's lines; `[]` for every other account. */
+export function planUsageLines(plan: BillingStateResponse['plan_usage'], nowMs: number = Date.now()): string[] {
+  if (plan?.kind !== 'usage_window') {
+    return []
+  }
+
+  const rows = (plan.gauges ?? []).flatMap(g => {
+    const left = Number(g.left_fraction)
+
+    if (!Number.isFinite(left)) {
+      return []
+    }
+
+    const used = Math.max(0, Math.min(1, 1 - left))
+    // Same cells as `render_bar`: any use shows one, only a full allowance fills all ten.
+    const filled = Math.min(used < 1 ? 9 : 10, Math.max(used > 0 ? 1 : 0, Math.round(used * 10)))
+    // Same percent as the CLI / Desktop (`format_percent_used` / `formatPercentUsed`): floor, so a nearly
+    // full allowance reads 99% beside its 9 cells; 100% only once it is spent. Micro-rounded first:
+    // `1 - left` can land a hair under an exact basis point.
+    const bp = Math.floor(Math.round(used * 10_000 * 1e6) / 1e6)
+    const pct = bp <= 0 ? '0%' : bp < 100 ? '<1%' : `${Math.floor(bp / 100)}%`
+    const when = formatResetsIn(g.resets_at_ms, nowMs)
+    const reset = when === 'soon' ? 'resets soon' : when ? `resets in ${when}` : ''
+
+    return [
+      {
+        label: g.title || g.label,
+        rest: `[${'|'.repeat(filled)}${' '.repeat(10 - filled)}]  ${pct} used${reset ? `  ·  ${reset}` : ''}`
+      }
+    ]
+  })
+
+  const width = Math.max(0, ...rows.map(r => r.label.length))
+
+  return rows.length ? [...(plan.plan ? [plan.plan] : []), ...rows.map(r => `${r.label.padEnd(width)}  ${r.rest}`)] : []
 }

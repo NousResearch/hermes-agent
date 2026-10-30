@@ -2,11 +2,14 @@ import { GatewayReauthRequiredError } from '@hermes/shared'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 import { $notifications } from '@/store/notifications'
 import { deferred } from '@/test/deferred'
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 // Collect the component graph before the behavioral test deadline starts.
 import { GatewaySettings } from './gateway-settings'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
 
 const { registry, activeId, selectConnection } = vi.hoisted(() => ({
   registry: { value: null as any },
@@ -57,6 +60,8 @@ const localConnection = {
 }
 
 beforeEach(() => {
+  registry.value = null
+  selectConnection.mockReset().mockResolvedValue(undefined)
   getConnectionConfig.mockResolvedValue(localConnection)
   saveConnectionConfig.mockResolvedValue(localConnection)
   cloudStatus.mockResolvedValue({ portalBaseUrl: 'https://portal.nousresearch.com', signedIn: true })
@@ -76,6 +81,11 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  Reflect.deleteProperty(window, '__HERMES_AUTH_REQUIRED__')
+  Reflect.deleteProperty(window, 'hermesDesktop')
+  window.document.documentElement.removeAttribute('data-hermes-desktop-host')
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   vi.clearAllMocks()
 })
 
@@ -413,6 +423,62 @@ describe('GatewaySettings', () => {
     })
   })
 
+  // The Webapp is served by one Hermes host and can only reach that host, so no
+  // mode switch, Cloud sign-in or saved connection can act there. What applies
+  // is which host this is and, behind the sign-in gate, signing out of it.
+  describe('in the Webapp', () => {
+    // A gated host signs its browser in with a cookie; an unauthenticated one through its private launch link.
+    const installWebapp = (credential: 'gated' | 'launch-link') => {
+      Reflect.deleteProperty(window, 'hermesDesktop')
+
+      if (credential === 'gated') {
+        Object.assign(window, { __HERMES_AUTH_REQUIRED__: true })
+      } else {
+        seedWebappSession('served-token')
+      }
+
+      const fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 200 }))
+      vi.stubGlobal('fetch', fetchMock)
+      expect(installBrowserDesktopBridge()).toBe(true)
+
+      return fetchMock
+    }
+
+    afterEach(() => {
+      Reflect.deleteProperty(window, '__HERMES_AUTH_REQUIRED__')
+      clearWebappSession()
+    })
+
+    it.each([false, true])('offers the serving host and its sign-out only (embedded: %s)', async embedded => {
+      const fetchMock = installWebapp('gated')
+      const toLogin = vi.fn((event: Event) => event.preventDefault())
+      window.addEventListener('hermes:browser-reauth-required', toLogin, { once: true })
+
+      render(<GatewaySettings embedded={embedded} />)
+
+      const signOut = await screen.findByRole('button', { name: 'Sign out' })
+      expect(screen.getByText(window.location.origin)).toBeTruthy()
+      expect(screen.getAllByRole('button')).toEqual([signOut])
+      expect(fetchMock).not.toHaveBeenCalled()
+
+      fireEvent.click(signOut)
+
+      await waitFor(() => expect(toLogin).toHaveBeenCalledTimes(1))
+      const [requestUrl, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect(requestUrl.pathname).toBe('/auth/logout')
+      expect(init.method).toBe('POST')
+    })
+
+    it('has nothing to sign out of on a launch-link host', async () => {
+      installWebapp('launch-link')
+
+      render(<GatewaySettings />)
+
+      expect(await screen.findByText(window.location.origin)).toBeTruthy()
+      expect(screen.queryAllByRole('button')).toEqual([])
+    })
+  })
+
   it('loads the machine-level connection config (no profile scoping)', async () => {
     render(<GatewaySettings />)
     expect(await screen.findByText('Local gateway')).toBeTruthy()
@@ -426,6 +492,26 @@ describe('GatewaySettings', () => {
     expect(screen.queryByText('Applies to')).toBeNull()
     expect(screen.queryByText('All profiles')).toBeNull()
     expect(screen.queryByText('Use default gateway')).toBeNull()
+
+    // Browser-host mode has no native secret store, so a bridge without that
+    // capability must not advertise a keychain toggle that cannot work.
+    expect(screen.queryByText('Encrypt saved secrets with the OS keychain')).toBeNull()
+  }, 30_000)
+
+  it('keeps native keychain encryption writable at its settings deep-link target', async () => {
+    const setSecretStorageEncryption = vi.fn().mockResolvedValue({ on: true })
+    Object.assign(window.hermesDesktop, {
+      getSecretStorageEncryption: vi.fn().mockResolvedValue({ on: false }),
+      setSecretStorageEncryption
+    })
+
+    render(<GatewaySettings />)
+    const toggle = await screen.findByRole('switch', { name: 'Encrypt saved secrets with the OS keychain' })
+    const target = window.document.getElementById(settingElementId(SETTING_IDS.gateway.keychainEncryption))
+    expect(target?.contains(toggle)).toBe(true)
+    fireEvent.click(toggle)
+    await waitFor(() => expect(setSecretStorageEncryption).toHaveBeenCalledExactlyOnceWith(true))
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
   })
 
   // A saved cloud connection on a local-primary device has exactly one
@@ -547,6 +633,38 @@ describe('GatewaySettings', () => {
       expect(window.hermesDesktop!.cloud!.agentSignIn).toHaveBeenCalledWith(saved.url)
       registry.value = null
     })
+  })
+
+  it('shows the remote cause for an unclassified SSH test failure, not the generic copy', async () => {
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'ssh',
+      sshHost: 'build-box',
+      sshUser: '',
+      sshPort: 22,
+      sshKeyPath: '',
+      sshRemoteHermesPath: '',
+      sshRemoteProfile: ''
+    })
+    const cause = 'The Windows remote probe failed. (probe: Path was not found: C:\\h\\bin\\python.exe)'
+    const testConnectionConfig = vi.fn().mockResolvedValue({ reachable: false, sshError: 'unknown', error: cause })
+    Object.assign(window.hermesDesktop, { testConnectionConfig })
+
+    render(<GatewaySettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Test SSH' }))
+
+    try {
+      await waitFor(() =>
+        expect($notifications.get()).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: 'error', message: expect.stringContaining('Path was not found') })
+          ])
+        )
+      )
+      expect($notifications.get().some((n: { message?: string }) => n.message === 'SSH connection failed.')).toBe(false)
+    } finally {
+      $notifications.set([])
+    }
   })
 
   it('surfaces the Tailscale browser-check guidance for an interactive-auth SSH test failure', async () => {

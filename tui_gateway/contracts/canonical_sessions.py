@@ -9,6 +9,7 @@ from pydantic import RootModel
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
+from .sessions import OpenRequestEntry, TodoState
 from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
 from .registry import canonical_method
 
@@ -137,6 +138,8 @@ class CanonicalSnapshot(Result):
     session_id: str
     stored_session_id: str
     messages: list[TranscriptMessage]
+    # True when the resume asked ``omit_messages``: ``messages`` is empty and the client pages the transcript.
+    messages_omitted: bool | None = None
     # Present only when ``display_projection`` was asked: the rows as main's TUI rendered them.
     display_messages: list[TranscriptMessage] | None = None
     message_count: int
@@ -152,6 +155,10 @@ class CanonicalSnapshot(Result):
     info: CanonicalSnapshotInfo
     # The open ``manage_connections`` card, so a resume restores it while the tool waits.
     pending_connection: ConnectionRequestPayload | None = None
+    # The session's todo snapshot (its transcript's newest todo result); null when it has none.
+    todo_state: TodoState | None = None
+    # The owner's server→client requests still unanswered (``session_server_requests.open_requests``).
+    open_requests: list[OpenRequestEntry] | None = None
 
 
 class CanonicalListParams(ProfileParams):
@@ -268,6 +275,9 @@ class CanonicalCorrectionAck(Result):
     text: str
     execution_generation: int
     authority_epoch: int
+    # Only on a 'rejected' no agent ever saw (none was live): safe to admit as the next prompt. A plain
+    # 'rejected' may follow delivery (a Codex steer whose ACK timed out), so clients never re-send it.
+    delivered: Literal[False] | None = None
 
 
 class CanonicalCorrectionResult(RootModel):
@@ -308,6 +318,7 @@ class CanonicalEventsResult(Result):
     truncated: bool
     snapshot_required: bool
     count: int
+    open_requests: list[OpenRequestEntry] | None = None
 
 
 for _name, _params, _result in (

@@ -92,6 +92,14 @@ export const it: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Provider di memoria attivo",
+    noProvider: "nessuno — solo integrata",
+    builtinLayer: "Livello integrato",
+    builtinNote: "MEMORY.md e USER.md sono la memoria propria di Hermes, indipendente da qualsiasi provider esterno. Entrambi vengono caricati nelle sessioni per impostazione predefinita; le opzioni di configurazione (memory.memory_enabled / memory.user_profile_enabled) disattivano ciascuno. Un provider si aggiunge a essi; non li sostituisce mai.",
+  },
+
   status: {
     actionFailed: "Azione non riuscita",
     actionFinished: "Completata",

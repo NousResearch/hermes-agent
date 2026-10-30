@@ -1,0 +1,21 @@
+name: skill-lineage
+title: Skill Lineage
+repo: https://github.com/simin-yuan/hermes-skill-lineage
+sha: c21178d4578680297b6100638fff59b75d1b572e
+version: "0.1.8"
+description: "Records where each skill version's content came from, so a skill that rewrites itself can be audited afterwards. For every skill write — a foreground skill_manage call, a background-review edit, or a curator consolidation — it stores the skill content fingerprint before and after, the sources present earlier in the same session (the text the user typed, tool results such as a fetched page or a file, and skills that were read), how each source is linked to the added lines — strong (at least three shared 8-word shingles), anchor (a shared operative token: a URL or host, a shell command with its first argument, a package install, a file path, an environment variable, an IP or e-mail address, that is not common across sources), or context (seen in the session, nothing measurable shared; recorded, not followed by default) — and a seq -> prev_hash -> hash chain over the entries. Text is never stored: hashes are keyed per install and the key stays in plugin-data/skill-lineage. `hermes skill-lineage trace <skill>` shows where the newest version came from, `descendants <url|skill>` lists every skill a source produced, `report` lists versions carrying operative lines of no traceable origin, `verify` re-walks the chain, and `head` prints a value to record elsewhere so a later `verify --head` can tell truncation from an intact chain; a key reset is recorded in the chain and shown in `status` rather than happening silently. The plugin does not stop a write and does not judge a skill: it records and it verifies, and it does not claim a source caused an edit. Prior work on memory lineage (MemLineage, arXiv:2605.14421) is acknowledged in the README. Measured on 2026-10-22 against Hermes 3166d61: Python 3.14 62 passed; Python 3.11 54 passed, 1 skipped; `hermes plugins validate` reports no warning other than one known false positive (a test template that quotes a \"curl | sh\" instruction as data and never runs it). Evaluation (generated scenarios and 120 real-model runs) in the README; raw output in eval/. A manual end-to-end run in an isolated HERMES_HOME (one real session creating a skill through skill_manage, then status/trace/descendants/report/verify/head) passed, raw output in tests/smoke-2026-10-21.txt. Disclosure — four read-only hooks (on_session_start, pre_llm_call, pre_tool_call, post_tool_call); reads tool results, user messages and skill files (in this profile, every other profile's skills folder, the project's .hermes/skills and the skills.external_dirs it reads from config.yaml) to compute keyed hashes; keeps hashes (no text) for 7 days per session and the lineage chain (hashes and skill names) under plugin-data/skill-lineage; no network, no credentials, never blocks or changes a tool call."
+maintainer: simin-yuan
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/simin-yuan/hermes-skill-lineage#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

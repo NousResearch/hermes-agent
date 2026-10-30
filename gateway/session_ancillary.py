@@ -6,6 +6,7 @@ reconciles only the requesting profile's MCP servers; ``file.attach`` stages for
 """
 import asyncio
 from functools import partial
+from pathlib import Path
 import sys
 
 from gateway.session_busy_controls import authorize
@@ -87,7 +88,8 @@ async def show_tools(connection, ref, params):
                 enabled = list(policy.current_toolsets(config)) if policy is not None else None
                 disabled = session_disabled_toolsets(parse_config_string_list(
                     (config.get('agent') or {}).get('disabled_toolsets')) or None,
-                    policy.platform if policy is not None else 'cli')
+                    policy.platform if policy is not None else 'cli',
+                    oneshot=policy is not None and policy.source == 'oneshot')
             tools = model_tools.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled,
                                                      quiet_mode=True, skip_tool_search_assembly=True)
             sections = {}
@@ -136,13 +138,21 @@ async def attach_file(connection, ref, params):
     """Desktop's non-image attachment: stage the file for this session (its frozen launch cwd and
     the owner profile's ``attachments/``) and hand back the ``@file:`` ref its next submit carries.
     The sidecar handler looked the session up in its own table, which never holds an authority
-    session, so every file drop failed with ``session not found``."""
-    if (set(params) - {'session_id', 'profile', 'path', 'data_url', 'name'} or not ref.session_id
-            or any(not isinstance(value, str) for value in params.values())):
+    session, so every file drop failed with ``session not found``.
+
+    A browser pick arrives as ``staged_upload`` (the Webapp upload route's receipt,
+    ``hermes_cli/staged_uploads.py``): it is copied out of the profile it was uploaded to, which must
+    be one this connection may reach."""
+    staged_upload = params.get('staged_upload')
+    if (set(params) - {'session_id', 'profile', 'path', 'data_url', 'name', 'staged_upload'} or not ref.session_id
+            or any(not isinstance(value, str) for key, value in params.items() if key != 'staged_upload')
+            or (staged_upload is not None and not isinstance(staged_upload, dict))):
         raise RuntimeStoreError('invalid_params')
     if ref.session_id not in connection.subscriptions:
         raise RuntimeStoreError('permission_denied')
     authorize(connection, ref, params, 'session:submit')
+    if staged_upload is not None and not _reachable_upload_home(connection, staged_upload.get('profile_home')):
+        raise RuntimeStoreError('permission_denied')
     from gateway.session_policy import policy_for_source
     authority = connection.authority
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
@@ -151,17 +161,41 @@ async def attach_file(connection, ref, params):
     # The staging helpers are bound onto the sidecar module's globals (method_ctx.bind_module).
     from tui_gateway import server
     session = {'cwd': policy.cwd, 'profile_home': authority.profile_id}
+
+    def stage():
+        if staged_upload is not None:
+            # Only the receipt is read: a supplied path/data_url never stands in for a missing upload.
+            return server._stage_browser_file_attachment(session, staged_upload, params.get('name', ''))
+        return server._stage_session_file_attachment(
+            session, raw_path=params.get('path', ''), data_url=params.get('data_url', ''),
+            name=params.get('name', ''))
     try:
-        stored, uploaded = await asyncio.to_thread(
-            server._stage_session_file_attachment, session, raw_path=params.get('path', ''),
-            data_url=params.get('data_url', ''), name=params.get('name', ''))
-    except ValueError as exc:
+        stored, uploaded = await asyncio.to_thread(stage)
+    except (ValueError, OverflowError) as exc:
         raise RuntimeStoreError('invalid_params') from exc
     except OSError as exc:
         raise RuntimeStoreError('storage_unavailable') from exc
     ref_path = server._attachment_ref_path(session, stored)
     return {'attached': True, 'name': stored.name, 'path': str(stored), 'ref_path': ref_path,
             'ref_text': f'@file:{server._format_ref_value(ref_path)}', 'uploaded': uploaded}
+
+
+def _reachable_upload_home(connection, raw_home) -> bool:
+    """A staged upload's source profile: this authority's own home or, for a host-scoped grant, a
+    sibling this process serves (an owner-routed tile can receive a foreground browser pick). Never
+    any other profile on disk, whatever its descriptor names."""
+    from pathlib import Path
+    if not isinstance(raw_home, str) or not raw_home:
+        return False
+    homes = {connection.authority.profile_id}
+    if connection.host_scoped:
+        registry = getattr(getattr(connection.authority, 'runner', None), 'session_authorities', None)
+        homes |= {sibling.profile_id for sibling in (registry or ())}
+    try:
+        target = Path(raw_home).resolve()
+        return any(Path(home).resolve() == target for home in homes)
+    except (OSError, ValueError):
+        return False
 
 
 async def approvals(connection, ref, params, *, ack=False):
@@ -257,7 +291,8 @@ async def reload_mcp(connection, ref, params):
     session's MCP servers then change as a new policy generation when it is idle (``session``: applied,
     unchanged or busy); other sessions take theirs when next attached. A configured server that did not
     connect is named: a refusal when nothing took effect (no server registered or removed, no session
-    generation), else ``unavailable`` beside the success."""
+    generation), else ``unavailable`` beside the success. A call naming ``rev``, the revision the session
+    already holds, is that same nothing-left-to-load, answered as success with ``loaded_rev``."""
     if set(params) - {'session_id', 'confirm', 'rev', 'profile'}:
         raise RuntimeStoreError('invalid_params')
     if 'session:control' not in connection.actor.capabilities:
@@ -279,7 +314,12 @@ async def reload_mcp(connection, ref, params):
     multiplex = bool(getattr(runner.config, 'multiplex_profiles', False))
     runner._mcp_reload_refresh_cached_agents(multiplex, served_profile_name(connection.authority.profile_id))
     session = await _commit_session_mcp(connection, ref, params)
-    if failed and session != 'applied' and not (result.get('removed') or result['added']):
+    held_rev = await _held_mcp_rev(connection, ref) if params.get('rev') else ''
+    # Refuse only a reload whose own work did not take effect: a call that names the revision the session
+    # already holds has nothing left to load, and refusing it leaves a client that acknowledges on
+    # ``reloaded`` retrying a parked server at poll rate with no way to close the handshake (#141769).
+    if (failed and session != 'applied' and not (result.get('removed') or result['added'])
+            and params.get('rev') != held_rev):
         raise RuntimeStoreError('mcp_servers_unavailable', field='mcp_servers',
                                 detail=f'did not connect: {", ".join(failed)}')
     changed = ', '.join(f'{k}: {", ".join(v)}' for k, v in result.items() if v) or 'no server changes'
@@ -290,7 +330,30 @@ async def reload_mcp(connection, ref, params):
     selected = {'session_servers': await asyncio.to_thread(_session_servers, connection.authority, ref.session_id,
                                                            ready)} if session else {}
     return {'status': 'reloaded', 'message': f'MCP servers reconciled ({changed}){note}{unavailable}',
+            **({'loaded_rev': held_rev} if held_rev else {}),
             **({'session': session} if session else {}), **({'unavailable': failed} if failed else {}), **selected}
+
+
+async def _held_mcp_rev(connection, ref):
+    """The ``mcp_rev`` this session's committed policy already holds — the value ``config.get mtime`` shipped
+    the client — or ``''`` when the call names no live local session. The policy is read on the loop (it
+    walks ``authority.sessions`` and the adapter's maps, which only the loop mutates); only the config read
+    and hash go to a worker thread."""
+    sid = getattr(ref, 'session_id', None)
+    live = connection.authority.sessions.get(sid) if sid else None
+    if live is None or live.source is None:
+        return ''
+    from gateway.session_policy import policy_for_source
+    policy = policy_for_source(connection.authority.runner, live.source)
+    return await asyncio.to_thread(_mcp_revision_in_scope, Path(connection.authority.profile_id), policy)
+
+
+def _mcp_revision_in_scope(home, policy):
+    from gateway.run import _profile_runtime_scope
+    from gateway.session_config import mcp_revision
+    from hermes_cli.config import load_config
+    with _profile_runtime_scope(home):
+        return mcp_revision(policy, load_config())
 
 
 def _session_servers(authority, sid, ready):
@@ -380,7 +443,8 @@ def _owner_objects(authority, ref, *, include_fallback_evicted=False):
 
 def physical_target(authority, ref):
     from gateway.config import Platform
-    if authority.sessions[ref.session_id].source.platform == Platform.LOCAL:
+    source = authority.sessions[ref.session_id].source  # None: a history mount
+    if source is not None and source.platform == Platform.LOCAL:
         from hermes_state_local import local_receipt
         return local_receipt(authority.db, ref.session_id)['entry']['session_id']
     return ref.session_id
@@ -453,10 +517,23 @@ def subagent_records(parent, session_id=None, *, session_db=None, route=None, in
     # A rotating /compress moves the conversation to a new stored id; an evicted parent keeps its earlier one.
     target_sids = _compression_lineage(expected_db, target_sid)
     with registry._active_subagents_lock:
-        # Deliberately no unconditional durable-ID fallback: only a parent evicted by this session's own fallback keeps its children visible in the read-only roster.
         return [dict(record) for record in registry._active_subagents.values()
                 if (parent is not None and registry._is_descendant_of(record.get('agent'), parent))
-                or _has_fallback_evicted_ancestor(record.get('agent'), target_sids, expected_db, effective_route, registry)]
+                or _has_fallback_evicted_ancestor(record.get('agent'), target_sids, expected_db, effective_route, registry)
+                or _owned_by_lineage(record, target_sids, expected_db)]
+
+
+def _owned_by_lineage(record, target_sids, expected_db):
+    """The read-only roster follows the conversation, as ``delegate_task(action="list")`` does: a
+    child whose durable owner id is in this session's compression lineage, written to the same
+    session database file. Without it every cached-agent rebuild (``/reasoning``, ``/model``, a
+    policy refresh, idle eviction) hid still-running children from the dock while the status bar
+    kept counting them. Control and tail stay pinned to the resident parent."""
+    if not target_sids or record.get('owner_agent_session_id') not in target_sids:
+        return False
+    expected_path = getattr(expected_db, 'db_path', None)
+    child_path = getattr(getattr(record.get('agent'), '_session_db', None), 'db_path', None)
+    return expected_path is not None and child_path is not None and str(child_path) == str(expected_path)
 
 
 def _compression_lineage(db, session_id):

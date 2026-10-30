@@ -117,6 +117,7 @@ class TestFeishuFallbackThreadRouting:
 
         # We test the _send_raw_message method directly by mocking the client
         adapter = MagicMock(spec=FeishuAdapter)
+        adapter.config = SimpleNamespace(extra={})
 
         # Set up the real _send_raw_message logic manually
         mock_client = MagicMock()

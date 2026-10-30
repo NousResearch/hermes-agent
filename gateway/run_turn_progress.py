@@ -166,6 +166,8 @@ class GatewayTurnProgressMixin:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             preview_str = f' "{preview}"' if preview else ""
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
+        if getattr(ctx, "native_cot", None) is not None and event_type in {"tool.started", "tool.completed"}:
+            return
         if not ctx.progress_queue or not ctx._run_still_current():
             return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
@@ -851,6 +853,7 @@ class GatewayTurnProgressMixin:
             local_viewer_events.note_tool_start(self, call_id, tool_name, args)
         self._publish_execution("tool.start", _tool_lifecycle_payload(call_id, tool_name, args))
         self._publish_api_tool("tool.start", call_id, tool_name, args)
+        self._native_cot_event("tool_started", call_id, tool_name, args)
         if self._ctx._voice_ack_guild[0] is not None:
             self.voice_ack_callback(call_id, tool_name, args)
         if self._ctx._native_slack_task_cards:
@@ -872,11 +875,81 @@ class GatewayTurnProgressMixin:
             # Task state is application data, not tool chrome: the full snapshot, as the TUI gateway emits it.
             self._publish_execution("todo.updated", {"todos": payload["todos"], "revision": payload.get("revision", 0)})
         self._publish_api_tool("tool.complete", call_id, tool_name, args, result)
+        self._native_cot_event("tool_completed", call_id, tool_name, args, result)
         if local_viewer_turn(self):
             from gateway import local_viewer_events
             local_viewer_events.publish_control_if_changed(self)
         if self._ctx._native_slack_task_cards:
             self.native_tool_complete_callback(call_id, tool_name, args, result)
+
+    def _native_cot_event(self, method, *args) -> None:
+        ctx = self._ctx
+        if getattr(ctx, "native_cot", None) is None or not ctx._run_still_current() or self._agent_interrupted():
+            return
+        try:
+            getattr(ctx.native_cot, method)(*args)
+        except Exception as exc:  # health: allow BLE001 -- optional display must not fail the turn; log only the type to avoid credential-bearing transport errors
+            logger.warning("Native COT event failed: type=%s", type(exc).__name__)
+
+    def native_cot_commentary(self, text: str) -> None:
+        cot = self._ctx.native_cot
+        if cot is not None:
+            self._native_cot_event("commentary", text)
+
+    async def start_native_cot(self) -> None:
+        ctx = self._ctx
+        from hermes_cli.plugins_dispatch import stream_held
+        from gateway.run_turn_runner import _finite_viewer_turn
+        if (ctx.native_cot_mode == "off" or ctx.scheduled_heartbeat
+                or ctx.mute_notification_reply or stream_held() or _finite_viewer_turn()
+                or (ctx._run_still_current is not None and not ctx._run_still_current())):
+            return
+        if getattr(ctx, "native_cot", None) is not None:
+            # One native card per live turn, even if a caller retries setup.
+            return
+        try:
+            adapter = self._runner._delivery_adapter_for(ctx.source)
+            start_native_cot = adapter.start_native_cot
+            ctx.native_cot = await start_native_cot(
+                ctx.source.chat_id,
+                ctx.inbound_message_id or ctx.event_message_id,
+                ctx.native_cot_mode,
+                str(ctx.message or ""),
+            )
+        except Exception as exc:  # health: allow BLE001 -- optional display must not fail the turn; log only the type to avoid credential-bearing transport errors
+            logger.warning("Native COT create failed: type=%s", type(exc).__name__)
+
+    async def finish_native_cot(self, result) -> None:
+        cot, self._ctx.native_cot = self._ctx.native_cot, None
+        if cot is None:
+            return
+        reason = "error"
+        if isinstance(result, dict) and self._ctx._run_still_current():
+            if result.get("interrupted"):
+                reason = "interrupted"
+            elif not result.get("failed") and not result.get("error"):
+                reason = "done"
+        # finish closes event admission synchronously; I/O runs under gateway shutdown ownership.
+        try:
+            task = cot.finish(reason)
+        except Exception as exc:  # health: allow BLE001 -- optional display must not fail the turn; log only the type to avoid credential-bearing transport errors
+            logger.warning("Native COT finish failed: type=%s", type(exc).__name__)
+            return
+        self._runner._retain_background_task(task)
+        # Bridge-compatible COT requests have a 15s per-call budget. Finalization can
+        # require one pending update plus complete, so do not cancel it at the old 3s cap.
+        deadline = asyncio.get_running_loop().call_later(35.0, task.cancel)
+
+        def finished(task):
+            deadline.cancel()
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                logger.warning("Native COT finish cancelled (shutdown or timeout)")
+            except Exception as exc:  # health: allow BLE001 -- optional display must not fail the turn; log only the type to avoid credential-bearing transport errors
+                logger.warning("Native COT finish failed: type=%s", type(exc).__name__)
+
+        task.add_done_callback(finished)
 
     # ── hook / status bridges (agent thread → gateway loop) ────────────────────────────────
 
@@ -890,11 +963,10 @@ class GatewayTurnProgressMixin:
             # bar from the agent's counters right then (the last call is covered at turn end).
             from gateway.session_usage import publish_usage
             publish_usage(self, ctx.agent_holder[0])
+        names = [(t.get("name") or "") if isinstance(t, dict) else str(t) for t in (prev_tools or [])]
+        self._native_cot_event("step", iteration, names)
         if not ctx._hooks_ref.loaded_hooks:
             return
-        # prev_tools may be list[str] or list[dict] with "name"/"result" keys. Normalise so
-        # "tool_names" stays backward-compatible for user hooks that do ', '.join(tool_names).
-        names = [(t.get("name") or "") if isinstance(t, dict) else str(t) for t in (prev_tools or [])]
         self._schedule(
             ctx._hooks_ref.emit("agent:step", {
                 "platform": ctx.source.platform.value if ctx.source.platform else "",

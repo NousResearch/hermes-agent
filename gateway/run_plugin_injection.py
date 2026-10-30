@@ -23,6 +23,26 @@ from gateway.session import SessionSource
 
 logger = logging.getLogger("gateway.run")
 
+# First element of the identity a plugin's FIFO admission carries (``_admit_plugin_injection``).
+_PLUGIN_PRODUCER = "plugin"
+
+
+def admission_turn_scope(row):
+    """The scope one claimed FIFO admission executes in. A plugin's message waits for the session's
+    running background review and plugin forks instead of superseding them
+    (:func:`agent.background_review.turn_waits_for_background_work`); every other admission, a
+    person's above all, runs unscoped and supersedes them at once."""
+    import json
+    request_id, identity = row.get("request_id"), None
+    if (isinstance(request_id, str) and request_id.startswith("[")
+            and str(row.get("principal_id")).startswith("automation:")):
+        with contextlib.suppress(ValueError):
+            identity = json.loads(request_id)
+    if isinstance(identity, list) and identity[:1] == [_PLUGIN_PRODUCER]:
+        from agent.background_review import turn_waits_for_background_work
+        return turn_waits_for_background_work()
+    return contextlib.nullcontext()
+
 
 class GatewayPluginInjectionMixin:
     def _install_plugin_message_injector(self) -> None:
@@ -386,7 +406,7 @@ class GatewayPluginInjectionMixin:
         import json
         import uuid
         from hermes_state_runtime import RuntimeStoreError
-        identity = json.dumps(["plugin", plugin_id, session_key, uuid.uuid4().hex], separators=(",", ":"))
+        identity = json.dumps([_PLUGIN_PRODUCER, plugin_id, session_key, uuid.uuid4().hex], separators=(",", ":"))
         event = MessageEvent(
             text=content, message_type=MessageType.TEXT, source=source, internal=True,
             allow_gateway_control=False, message_id=identity,

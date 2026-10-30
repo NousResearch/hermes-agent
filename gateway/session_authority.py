@@ -1303,8 +1303,10 @@ class SessionAuthority:
                     continue
                 return
             admission_id = row['admission_id']
+            from gateway.run_plugin_injection import admission_turn_scope
             try:
-                response, outcome = await self._execute_claimed(ref, live, row)
+                with admission_turn_scope(row):
+                    response, outcome = await self._execute_claimed(ref, live, row)
                 if outcome == 'settled_unknown':
                     self.deferred_resets.pop(live.route, None)  # no settlement follows, as below
                     continue

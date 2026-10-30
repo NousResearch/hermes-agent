@@ -545,7 +545,10 @@ class LoopManager:
         s.next_due_at = s.last_fired_at + (s.current_delay or s.interval_seconds or self_paced_floor_seconds())
         if message is not None and s.landed_tick == next_index and wakeup_payload_digest(message) == s.landed_digest:
             # The prompt for this index already persisted as a role=user turn — claim, don't re-inject.
+            # Release the claim too: no completion can ever arrive for an injection that never
+            # happened, so a True awaiting_response here would wedge the loop (persisted).
             s.landed_tick, s.landed_digest = 0, ""
+            s.awaiting_response = False
             self._save()
             return None
         self._save()
@@ -566,14 +569,18 @@ class LoopManager:
         """Roll back a fired tick whose injection failed (nothing ran).
 
         Pass the fired ``payload`` when the raise came AFTER the prompt persisted as a role=user
-        turn (sys-8xces5): the tick is NOT rolled back — re-firing it would duplicate the turn —
-        the (index, digest) is recorded as landed so the next ``fire_tick`` coalesces the re-fire.
+        turn (sys-8xces5): the tick rolls back WITH the (index, digest) stamped landed, so the
+        next ``fire_tick`` re-fires index #N and coalesces to a claim-without-injection — one
+        persisted turn per index. ``awaiting_response`` is cleared: no completion can arrive for
+        the dead turn, and a persisted True would skip the loop forever (manual resume only).
         """
         s = self._state
         if s is None or not s.awaiting_response:
             return
         if payload is not None:
             s.landed_tick, s.landed_digest = s.ticks_fired, wakeup_payload_digest(payload)
+            s.ticks_fired = max(0, s.ticks_fired - 1)
+            s.awaiting_response = False
             self._save()
             return
         s.awaiting_response = False

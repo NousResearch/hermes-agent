@@ -68,6 +68,46 @@ Merge methods: `"merge"`, `"squash"`, `"rebase"`
 
 Note: The Issues API also returns PRs. Filter with `"pull_request" not in item` when parsing.
 
+## Notifications / Watching
+
+### Notifications
+
+Action | Method | Endpoint
+--- | --- | ---
+List notifications | GET | `/notifications`
+Mark notifications as read | PUT | `/notifications`
+Get notification thread | GET | `/notifications/threads/{thread_id}`
+Mark thread as read | PATCH | `/notifications/threads/{thread_id}`
+Mark thread as done | DELETE | `/notifications/threads/{thread_id}`
+List repository notifications | GET | `/repos/{owner}/{repo}/notifications`
+
+### Thread subscriptions
+
+Action | Method | Endpoint
+--- | --- | ---
+Get thread subscription | GET | `/notifications/threads/{thread_id}/subscription`
+Set thread subscription | PUT | `/notifications/threads/{thread_id}/subscription`
+Delete thread subscription | DELETE | `/notifications/threads/{thread_id}/subscription`
+
+### Repository watching
+
+Action | Method | Endpoint
+--- | --- | ---
+Get repository subscription | GET | `/repos/{owner}/{repo}/subscription`
+Set repository subscription | PUT | `/repos/{owner}/{repo}/subscription`
+Delete repository subscription | DELETE | `/repos/{owner}/{repo}/subscription`
+List watched repositories | GET | `/user/subscriptions`
+
+### Notes
+
+- Marking all notifications as read uses `PUT /notifications`.
+- Marking an individual notification thread as read uses `PATCH /notifications/threads/{thread_id}`.
+- `DELETE /notifications/threads/{thread_id}` marks the notification thread as done; this is different from marking it as read.
+- Repository watching/subscription is separate from notification read state.
+- `DELETE /repos/{owner}/{repo}/subscription` stops watching the repository.
+- `GET /user/subscriptions` lists repositories the authenticated user is watching.
+- Notification endpoints require authentication with a classic personal access token. GitHub documents the `notifications` or `repo` scopes for these endpoints.
+
 ## CI / GitHub Actions
 
 | Action | Method | Endpoint |

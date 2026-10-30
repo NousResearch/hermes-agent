@@ -57,7 +57,7 @@ def test_each_new_session_reads_its_profiles_prefill_once_and_workers_match(tmp_
     from gateway.session_worker_construct import construct_inputs
     monkeypatch.delenv('HERMES_PREFILL_MESSAGES_FILE', raising=False)
     _prefill(tmp_path, 'prefill.json', 'FIRST')
-    runner = SimpleNamespace(config=None, _prefill_messages=STALE, _refresh_fallback_model=lambda: None,
+    runner = SimpleNamespace(config=None, _prefill_messages=STALE, _fallback_chain_for=lambda source: None,
                              _get_system_prompt_for_channel=lambda *a: None)
     authority = SimpleNamespace(runner=runner, profile_id=str(tmp_path))
     launch = {'cwd': str(tmp_path), **LAUNCH}
@@ -86,7 +86,7 @@ def _in_process_prefill(authority, policy, monkeypatch, chat_id):
     built = {}
     turn = GatewaySessionAgentMixin.__new__(GatewaySessionAgentMixin)
     turn._runner = SimpleNamespace(session_authority=authority, _prefill_messages=STALE, _service_tier=None,
-                                   _session_db=None, _refresh_fallback_model=lambda: None)
+                                   _session_db=None, _fallback_chain_for=lambda source: None)
     source = SimpleNamespace(chat_id=chat_id, user_id='u', user_id_alt=None, user_name=None, chat_name=None,
                              chat_type='dm', thread_id=None)
     turn._ctx = SimpleNamespace(source=source, user_config={}, enabled_toolsets=[], disabled_toolsets=None,
@@ -102,7 +102,7 @@ def test_an_open_sessions_prefill_survives_cache_pressure_and_file_edits(tmp_pat
     from gateway.session_worker_construct import construct_inputs, session_prefill
     monkeypatch.delenv('HERMES_PREFILL_MESSAGES_FILE', raising=False)
     _prefill(tmp_path, 'prefill.json', 'ORIGINAL')
-    runner = SimpleNamespace(config=None, _prefill_messages=STALE, _refresh_fallback_model=lambda: None,
+    runner = SimpleNamespace(config=None, _prefill_messages=STALE, _fallback_chain_for=lambda source: None,
                              _get_system_prompt_for_channel=lambda *a: None)
     authority = SimpleNamespace(runner=runner, profile_id=str(tmp_path))
     policy = build_policy({'cwd': str(tmp_path), **LAUNCH}, {'prefill_messages_file': 'prefill.json'})

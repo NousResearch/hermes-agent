@@ -336,6 +336,10 @@ def register_task_env_overrides(task_id: str, overrides: dict[str, Any]):
     (host workspaces are tracked there on purpose); only the live-env write is
     sanitized, since a host cwd can never be a container workdir.
 
+    ``host_workspace`` is host-side only: a Desktop session's own folder when its ``cwd`` is left
+    empty because an unmounted Docker sandbox cannot see it (project tools read it; the terminal
+    never does).
+
     Keyed like ``_session_cwd`` — routed-profile qualified (:func:`_qualify_task_key`) — so two
     profiles registering the same task id never read each other's image/cwd (#123989).
     """

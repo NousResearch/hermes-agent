@@ -539,8 +539,9 @@ def _register_session_cwd(session: dict | None) -> None:
                 # A host cwd is not a directory in this sandbox. An empty cwd leaves its configured cwd
                 # and a later in-container cd intact; host-side readers (project tools) still find the
                 # session's own folder under ``host_workspace``.
-                host = cwd if cwd_source == "session" else ""
-                overrides = {"cwd": "", "cwd_source": "process", "host_workspace": host}
+                overrides = {"cwd": "", "cwd_source": "process"}
+                if cwd_source == "session":
+                    overrides["host_workspace"] = cwd
             register_task_env_overrides(session["session_key"], overrides)
 
 

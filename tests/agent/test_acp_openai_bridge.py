@@ -347,3 +347,11 @@ def test_pipeline_empty_and_no_calls():
     calls, cleaned = extract_tool_calls_from_text("<tool_call>{bad}</tool_call>keep me")
     assert calls == []
     assert cleaned == "keep me"
+
+
+def test_bare_tool_call_after_unbalanced_prose_brace():
+    from agent.acp_openai_bridge import extract_tool_calls_from_text
+    raw = '{"id":"later","type":"function","function":{"name":"example","arguments":{"nested":{"x":1}}}}'
+    calls, cleaned = extract_tool_calls_from_text("unfinished { prose\n" + raw)
+    assert [call.id for call in calls] == ["later"]
+    assert cleaned == "unfinished { prose"

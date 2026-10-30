@@ -176,10 +176,84 @@ function splitTrailingTags(base: string): { base: string; variant: string; quant
   return { base, variant, quant }
 }
 
+/** How a supplier name is rendered when the provider route is a GATEWAY
+ *  (several vendors behind one OpenAI-compatible endpoint, e.g. magpie).
+ *  `label` is the supplier segment of the model id (`workbuddy-ai`), `name`
+ *  its spelling for the row. */
+export type SupplierNamer = (segment: string) => string
+
+/** True when a provider's catalog is a GATEWAY catalog: several distinct
+ *  leading id segments that are KNOWN gateway suppliers (`workbuddy/…`,
+ *  `qoder-cn/…`), which is what makes the segment a supplier rather than part
+ *  of a model name.
+ *
+ *  A slash alone is not the signal: every aggregator id is `vendor/model`
+ *  (`anthropic/claude-sonnet-5` on OpenRouter, on Nous Portal, …) and there the
+ *  provider row already answers "whose model is this?" — promoting `anthropic`
+ *  to a supplier would put a "· Anthropic" on every row of every aggregator.
+ *  The known-supplier set is the gate; `isKnownSupplier` supplies it. */
+export function isGatewayCatalog(
+  models: readonly string[],
+  isKnownSupplier: (segment: string) => boolean
+): boolean {
+  const segments = new Set<string>()
+
+  for (const model of models) {
+    const id = String(model || '').trim()
+    const slash = id.indexOf('/')
+
+    if (slash > 0) {
+      const segment = id.slice(0, slash).toLowerCase()
+
+      if (isKnownSupplier(segment)) {
+        segments.add(segment)
+      }
+    }
+
+    if (segments.size > 1) {
+      return true
+    }
+  }
+
+  return false
+}
+
 /** Split a model id into a clean display name plus an optional grayed variant
- *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
-export function modelDisplayParts(model: string): { name: string; tag: string } {
-  let { base, variant, quant } = splitTrailingTags(modelBaseId(model))
+ *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse.
+ *
+ *  `supplier` is set for a GATEWAY catalog (`isGatewayCatalog`): the id's
+ *  leading segment names the vendor the row is really served by, so it is
+ *  appended to the name and the variant tag is dropped — on a router the row
+ *  must read "DeepSeek V4.1 Flash · WorkBuddy AI", where "FLASH" is part of
+ *  the model name the user picks, not a separate chip competing with it. */
+export function modelDisplayParts(
+  model: string,
+  options?: { supplier?: SupplierNamer | null }
+): { name: string; tag: string } {
+  const id = String(model || '').trim()
+  const slash = id.indexOf('/')
+  const gatewaySegment = slash > 0 ? id.slice(0, slash) : ''
+  // The namer is the authority, not the presence of a slash: a surface without
+  // a provider row (the pill, a session row) passes a namer that only answers
+  // for known gateway suppliers, and an empty answer must leave the id on the
+  // ordinary path — tag chip and all.
+  const supplierName = gatewaySegment && options?.supplier ? options.supplier(gatewaySegment).trim() : ''
+
+  let { base, variant, quant } = splitTrailingTags(modelBaseId(id))
+
+  // On a gateway the variant suffix is part of the model's NAME
+  // (`glm-5.3-flashx-max` is one model, not "GLM 5.3 Flashx" + a "Max" chip):
+  // the row shows the name the vendor actually calls the model. What tells two
+  // look-alike rows apart is the supplier appended here.
+  if (supplierName) {
+    // The variant suffix stays IN the name (it is what the vendor calls the
+    // model: "DeepSeek V4.1 Flash"), it just no longer becomes a separate
+    // chip — on a router the supplier appended after it is the axis that tells
+    // two rows apart, and a second chip only steals the width it needs.
+    const fullName = [prettifyBase(base), variant, quant].filter(Boolean).join(' ')
+
+    return { name: `${fullName} · ${supplierName}`, tag: '' }
+  }
 
   const tags = [variant, quant].filter(Boolean)
 
@@ -201,9 +275,15 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
 
 /** Friendly one-line model name for menus and the status bar. The variant
  *  tag is part of the name: `…-4.8` vs `…-4.8-thinking` must never collapse
- *  to the same label on any surface (#88597). */
-export function displayModelName(model: string): string {
-  const { name, tag } = modelDisplayParts(model)
+ *  to the same label on any surface (#88597).
+ *
+ *  Pass `supplier` for a GATEWAY catalog (`isGatewayCatalog`): the label then
+ *  reads `DeepSeek V4.1 Flash · WorkBuddy AI` and carries no variant tag. */
+export function displayModelName(
+  model: string,
+  options?: { supplier?: SupplierNamer | null }
+): string {
+  const { name, tag } = modelDisplayParts(model, options)
 
   return tag ? `${name} ${tag}` : name
 }
@@ -225,16 +305,34 @@ export function modelVariantTag(model: string): string {
  *  own pill (`ReasoningPill`), so a long model name can no longer push the
  *  effort out of the truncating span. Fast shows when the speed=fast param is
  *  on OR the active model is a `…-fast` variant — never both. */
-export function formatModelPillLabel(model: string, options?: { fastMode?: boolean; serviceTier?: string }): string {
-  const name = modelDisplayParts(model).name
+export function formatModelPillLabel(
+  model: string,
+  options?: { fastMode?: boolean; serviceTier?: string; supplier?: SupplierNamer | null }
+): string {
+  const parts = modelDisplayParts(model, { supplier: options?.supplier })
 
-  const tag = model.trim()
-    ? options?.serviceTier === 'ultrafast'
+  // The gateway branch already spent the `·` separator on the supplier, so the
+  // speed indication appends as a THIRD segment instead of replacing it. It is
+  // still owed: `fastMode` and `ultrafast` describe how the request runs, not
+  // which model it is — dropping them would leave the composer showing no sign
+  // that the turn rides a fast tier (#143357 review).
+  const speedTag = !model.trim()
+    ? ''
+    : options?.serviceTier === 'ultrafast'
       ? 'Ultrafast'
       : options?.fastMode
         ? 'Fast'
-        : modelVariantTag(model)
-    : ''
+        : ''
+
+  // On a gateway the variant suffix is already part of the name
+  // ("DeepSeek V4.1 Flash"), so only the speed tag can still add anything.
+  if (!parts.tag && parts.name.includes(' · ')) {
+    return speedTag ? `${parts.name} · ${speedTag}` : parts.name
+  }
+
+  const name = parts.name
+
+  const tag = speedTag || modelVariantTag(model)
 
   return tag ? `${name} · ${tag}` : name
 }

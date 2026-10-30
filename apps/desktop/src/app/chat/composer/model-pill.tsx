@@ -14,6 +14,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { formatModelPillLabel, providerDisplayName } from '@/lib/model-status-label'
+import { knownSupplierNamer } from '@/lib/model-suppliers'
 import { cn } from '@/lib/utils'
 import { $currentModelSource, setModelPickerOpen } from '@/store/session'
 
@@ -144,7 +145,16 @@ export function ModelPill({
   ) : (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">{pillLabel ?? formatModelPillLabel(currentModel, { fastMode, serviceTier })}</span>
+        <span className="truncate">
+          {pillLabel ??
+            formatModelPillLabel(currentModel, {
+              fastMode,
+              serviceTier,
+              // No provider row on this surface: answer only for a known
+              // gateway supplier, so a normal provider keeps its own label.
+              supplier: knownSupplierNamer
+            })}
+        </span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}

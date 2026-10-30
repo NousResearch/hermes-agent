@@ -101,7 +101,23 @@ export function useHudClickThrough(rootRef: RefObject<HTMLElement | null>): void
     // dialog. Listing those instead is how links and dialogs ended up
     // unclickable, since portalled overlays live outside the shell.
     const apply = () => {
-      const hit = point ? document.elementFromPoint(point.x, point.y) : null
+      // Before the first pointer observation the window has no idea whether it
+      // is under the cursor. Deciding "nothing there" from a missing point is
+      // what made a freshly opened HUD swallow its first clicks: it armed
+      // click-through immediately, so the click that landed on the bar before
+      // any mousemove existed went to the app behind it. Stay solid until the
+      // pointer has actually been seen — `onLost` below hands the window back
+      // once we stop knowing, so "unknown" is only ever momentary.
+      if (!point) {
+        if (ignoring !== false) {
+          ignoring = false
+          setIgnoreMouse(false)
+        }
+
+        return
+      }
+
+      const hit = document.elementFromPoint(point.x, point.y)
       const next = hudIgnoresMouse(root, hit, document.activeElement, document.hasFocus())
 
       if (ignoring !== next) {

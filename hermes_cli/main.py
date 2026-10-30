@@ -2898,7 +2898,7 @@ def _prepare_agent_startup(args) -> None:
     if not (_is_tui_chat_launch(args) or _chat_runs_at_gateway(args)):
         # The TUI backend and the gateway (chat turns, plugin commands, pre_command) discover their own.
         try:
-            from hermes_cli.plugins import start_background_plugin_discovery
+            from hermes_cli.plugins_discovery import start_background_plugin_discovery
 
             # Daemon thread: ~150ms of manifest scanning overlaps the rest of
             # startup. Every synchronous reader goes through discover_plugins(),

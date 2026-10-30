@@ -135,8 +135,13 @@ class PluginHost:
         env[HOST_PROCESS_ENV] = "1"
         return env
 
+    def _ensure_manager_active(self) -> None:
+        if getattr(self._manager, "_retired", False):
+            raise PluginHostUnavailable("plugin manager has been retired")
+
     def ensure_started(self) -> Channel:
         with self._lock:
+            self._ensure_manager_active()
             if self.alive:
                 return self._channel  # type: ignore[return-value]
             self._stopping = False
@@ -326,7 +331,10 @@ class PluginHost:
         channel = self._channel
         if channel is None or channel.closed_reason is not None:
             return
-        errors = (channel.call("unload", {"plugin_key": plugin_key}) or {}).get("errors") or []
+        errors = (
+            channel.call("unload", {"plugin_key": plugin_key}, timeout=_SHUTDOWN_GRACE_SECS)
+            or {}
+        ).get("errors") or []
         for error in errors:
             logger.warning("Plugin '%s' on_unload callback failed in the plugin host: %s", plugin_key, error)
 
@@ -334,6 +342,7 @@ class PluginHost:
     def _call(self, method: str, params: dict[str, Any], *, generation: Optional[int] = None,
               timeout: Optional[float] = None, returns: Any = None) -> Any:
         """``returns`` is the type a core ABC declares for the result; the reply is rebuilt as it."""
+        self._ensure_manager_active()
         channel = self._channel
         try:
             if channel is None:

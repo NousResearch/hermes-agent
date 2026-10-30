@@ -229,12 +229,18 @@ class HostRuntime:
             return asyncio.run_coroutine_threadsafe(_on_behalf_of(result, serving_request()), self.loop).result()
         return result
 
-    def _encode_result(self, plugin_key: str, value: Any) -> Any:
+    def _encode_result(
+        self, plugin_key: str, value: Any, *, memory_prefetch: bool = False
+    ) -> Any:
         def refs(obj: Any) -> Optional[dict]:
             if _provider_base(obj) is not None:  # e.g. the engine ``clone_for_agent`` returns
                 return self._describe_object(plugin_key, obj)
             return self.ref_for(plugin_key, obj, allow_objects=False)
 
+        if memory_prefetch:
+            from hermes_cli.plugin_host_wire_memory import encode_memory_prefetch_result
+
+            return encode_memory_prefetch_result(value, refs, 0)
         return encode(value, refs)
 
     def _decode_args(self, params: dict[str, Any]):
@@ -356,7 +362,15 @@ class HostRuntime:
         base = _provider_base(obj)
         if base is not None:  # the ABC's annotations say what Hermes passed (``home_path: Path``)
             args, kwargs = restore_arguments(declared_member(base, method), args, kwargs)
-        return self._encode_result(self.owners.get(ref, ""), self._run(getattr(obj, method)(*args, **kwargs)))
+        value = self._run(getattr(obj, method)(*args, **kwargs))
+        memory_prefetch = False
+        if method == "prefetch":
+            from agent.memory_provider import MemoryProvider
+
+            memory_prefetch = isinstance(obj, MemoryProvider)
+        return self._encode_result(
+            self.owners.get(ref, ""), value, memory_prefetch=memory_prefetch
+        )
 
     def op_obj_getattr(self, params: dict[str, Any]) -> Any:
         obj = self.refs.get(int(params["ref"]))

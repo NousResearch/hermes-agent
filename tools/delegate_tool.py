@@ -407,7 +407,7 @@ def _run_single_child(
                 child_progress_cb._flush()
 
         duration = run.elapsed()
-        entry = _build_result_entry(child, result, task_index, duration, schema)
+        entry = _build_result_entry(child, result, task_index, duration, schema, streamed=run.partial_output())
         run.append_sibling_write_reminder(entry)
         run.account_background_processes(entry)
         run.emit_complete(result, entry, duration)
@@ -417,10 +417,9 @@ def _run_single_child(
         _late_pending_steer = run.close_steering()
         logging.exception(f"[subagent-{task_index}] failed")
         # Entry status "error" (contract), progress event status "failed" (UI vocabulary).
-        return run.finish_failed(
-            _fabricated_entry(task_index, "error", str(exc), child, run.elapsed()), _late_pending_steer,
-            preview=str(exc), summary=str(exc), status="failed",
-        )
+        entry = _fabricated_entry(task_index, "error", str(exc), child, run.elapsed())
+        entry["summary"] = run.partial_output() or None
+        return run.finish_failed(entry, _late_pending_steer, preview=str(exc), summary=str(exc), status="failed")
     finally:
         run.cleanup(heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id, close_deferred=_child_close_deferred)
 

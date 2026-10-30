@@ -1,0 +1,31 @@
+manifest_version: 1
+
+name: coinbase
+description: Trade crypto and equities, manage portfolios, and make x402 payments.
+source: https://docs.cdp.coinbase.com/coinbase-for-agents/overview
+
+transport:
+  type: http
+  url: https://agents.coinbase.com/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - coinbase
+    - crypto trade
+    - equities trade
+    - x402
+    - x402 payments
+    - portfolio balance
+  hosts:
+    - coinbase.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with Coinbase
+  (or run `hermes mcp login coinbase`). Select only the portfolios you
+  intend to expose, then restart the session so tools load.
+
+  CAUTION: this server can place real trades and transfer funds between
+  portfolios. Review every action before approving it.

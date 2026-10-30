@@ -70,11 +70,11 @@ async def worker_delegation_request(connection, ref, params):
     from gateway.session_worker import _SCOPE, _claim, _verify
     if set(params) != _SCOPE | {'epoch', 'sequence', 'operation', 'payload'}:
         raise AuthorityRefusal('invalid_params')
-    claim = _claim(connection, ref, params)
+    claim = await asyncio.to_thread(_claim, connection, ref, params)
     authority = connection.authority
     if 'worker:adopt' not in connection.actor.capabilities:
         raise AuthorityRefusal('permission_denied')
-    _verify(connection, ref, params, claim)
+    await asyncio.to_thread(_verify, connection, ref, params, claim)
 
     from gateway.session_persistence import authority_persistence
     store = authority_persistence(authority)

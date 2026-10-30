@@ -19,7 +19,11 @@ it('never redispatches an ambiguous legacy attempt after native journal reload',
   const destination = captureDestination()
 
   const item: QueueItem = {
-    submissionId: randomUUID(), text: 'exact Ω', display: 'exact Ω', destination, inFlight: true
+    submissionId: randomUUID(),
+    text: 'exact Ω',
+    display: 'exact Ω',
+    destination,
+    inFlight: true
   }
 
   item.settle = accepted => {
@@ -29,13 +33,19 @@ it('never redispatches an ambiguous legacy attempt after native journal reload',
   }
 
   const request = vi.fn(async (_method: string, params: Record<string, unknown>) => {
-    if (params.submission_id) { throw Object.assign(new Error('unsupported'), { code: 4094 }) }
+    if (params.submission_id) {
+      throw Object.assign(new Error('unsupported'), { code: 4094 })
+    }
     throw new Error('lost legacy ACK')
   })
 
   const deps = {
-    gw: { request }, appendMessage: vi.fn(), enqueue: vi.fn(), expand: (value: string) => value,
-    setLastUserMsg: vi.fn(), sys: vi.fn()
+    gw: { request },
+    appendMessage: vi.fn(),
+    enqueue: vi.fn(),
+    expand: (value: string) => value,
+    setLastUserMsg: vi.fn(),
+    sys: vi.fn()
   } as unknown as SubmitPromptDeps
 
   try {

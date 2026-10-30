@@ -33,6 +33,7 @@ it('renders and resumes stored history alongside live canonical sessions', async
             }
           ]
   }))
+
   const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: vi.fn(), ref: vi.fn(), unref: vi.fn() })
   const stdout = Object.assign(new PassThrough(), { columns: 100, rows: 30, isTTY: false })
   let output = ''
@@ -40,6 +41,7 @@ it('renders and resumes stored history alongside live canonical sessions', async
     output += chunk.toString()
   })
   const onResume = vi.fn()
+
   const element = (
     <ActiveSessionSwitcher
       currentSessionId="live"
@@ -53,12 +55,14 @@ it('renders and resumes stored history alongside live canonical sessions', async
       t={DEFAULT_THEME}
     />
   )
+
   const instance = renderSync(element, {
     stdin: stdin as any,
     stdout: stdout as any,
     stderr: new PassThrough() as any,
     patchConsole: false
   })
+
   try {
     await vi.waitFor(() => expect(request).toHaveBeenCalledWith('session.list', { limit: 200, scope: 'stored' }))
     instance.rerender(element)

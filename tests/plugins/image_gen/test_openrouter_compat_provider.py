@@ -571,17 +571,19 @@ class TestImageApiSurface:
     # -- per-model parameter filtering ------------------------------------
 
     def test_aspect_ratio_is_mapped_per_model(self):
-        from plugins.image_gen.openrouter import _build_image_api_payload
+        from plugins.image_gen.openrouter import _IMAGE_API_MODELS, _build_image_api_payload, _image_api_model
 
         gemini, _ = _build_image_api_payload(
             model_id="google/gemini-3.1-flash-lite-image", prompt="p",
             semantic_aspect="landscape", references=[], config_key="openrouter", kwargs={},
         )
-        mini, _ = _build_image_api_payload(
-            model_id="openai/gpt-image-1-mini", prompt="p",
-            semantic_aspect="landscape", references=[], config_key="openrouter", kwargs={},
-        )
-        # gpt-image-1-mini has no 16:9 at all, so landscape degrades to 3:2.
+        no_wide = _image_api_model("No 16:9", "fixture", aspect_ratios=("1:1", "3:2", "2:3", "auto"))
+        with patch.dict(_IMAGE_API_MODELS, {"test/no-16x9": no_wide}):
+            mini, _ = _build_image_api_payload(
+                model_id="test/no-16x9", prompt="p",
+                semantic_aspect="landscape", references=[], config_key="openrouter", kwargs={},
+            )
+        # A model with no 16:9 at all degrades landscape to 3:2.
         assert gemini["aspect_ratio"] == "16:9"
         assert mini["aspect_ratio"] == "3:2"
 
@@ -597,7 +599,7 @@ class TestImageApiSurface:
         assert any("background" in n for n in notes)
 
         payload, notes = _build_image_api_payload(
-            model_id="openai/gpt-image-1-mini", prompt="p", semantic_aspect="square",
+            model_id="openai/gpt-image-2.5-flare", prompt="p", semantic_aspect="square",
             references=[], config_key="openrouter", kwargs={"background": "transparent"},
         )
         assert payload["background"] == "transparent"

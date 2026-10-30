@@ -34,8 +34,8 @@ from tools.fal_common import (
     _normalize_fal_queue_url_format, submit_managed_fal_with_rate_limit_retry, wait_fal_queue_result,
 )
 from tools.image_generation_catalog import (
-    DEFAULT_ASPECT_RATIO, DEFAULT_MODEL, FAL_MODELS, UPSCALER_CREATIVITY, UPSCALER_DEFAULT_PROMPT,
-    UPSCALER_FACTOR, UPSCALER_GUIDANCE_SCALE, UPSCALER_MODEL, UPSCALER_NEGATIVE_PROMPT,
+    DEFAULT_ASPECT_RATIO, DEFAULT_MODEL, FAL_MODELS, RETIRED_FAL_MODELS, UPSCALER_CREATIVITY,
+    UPSCALER_DEFAULT_PROMPT, UPSCALER_FACTOR, UPSCALER_GUIDANCE_SCALE, UPSCALER_MODEL, UPSCALER_NEGATIVE_PROMPT,
     UPSCALER_NUM_INFERENCE_STEPS, UPSCALER_RESEMBLANCE, UPSCALER_SAFETY_CHECKER, VALID_ASPECT_RATIOS,
 )
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
@@ -169,8 +169,9 @@ def _read_image_gen_key(key: str) -> Optional[str]:
 
 
 def _read_configured_image_model():
-    """``image_gen.model`` from config.yaml, or None."""
-    return _read_image_gen_key("model")
+    """``image_gen.model`` from config.yaml (a retired id read as its successor), or None."""
+    model_id = _read_image_gen_key("model")
+    return RETIRED_FAL_MODELS.get(model_id, model_id)
 
 
 def _read_configured_image_provider():
@@ -197,7 +198,7 @@ def _plugin_provider_name() -> Optional[str]:
 def _resolve_fal_model() -> tuple:
     """Return ``(model_id, meta)`` for the configured FAL model, falling back to DEFAULT_MODEL (warned) when unknown."""
     # FAL_IMAGE_MODEL is an undocumented escape hatch (backward-compat for tests/scripts).
-    model_id = _read_image_gen_key("model") or os.getenv("FAL_IMAGE_MODEL", "").strip()
+    model_id = _read_configured_image_model() or os.getenv("FAL_IMAGE_MODEL", "").strip()
     if model_id and model_id not in FAL_MODELS:
         logger.warning("Unknown FAL model '%s' in config; falling back to %s", model_id, DEFAULT_MODEL)
         model_id = None
@@ -205,8 +206,7 @@ def _resolve_fal_model() -> tuple:
     return model_id, FAL_MODELS[model_id]
 
 
-_SIZE_KEY_BY_STYLE = {"image_size_preset": "image_size", "gpt_literal": "image_size",
-                      "aspect_ratio": "aspect_ratio"}
+_SIZE_KEY_BY_STYLE = {"image_size_preset": "image_size", "aspect_ratio": "aspect_ratio"}
 
 
 def _build_payload(model_id, prompt, aspect_ratio, seed, overrides, image_urls=None) -> dict[str, Any]:

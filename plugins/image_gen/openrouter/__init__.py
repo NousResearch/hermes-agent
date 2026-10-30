@@ -100,12 +100,13 @@ _IMAGE_API_MODELS: dict[str, dict[str, Any]] = {
         aspect_ratios=("1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "auto"),
         quality=_OPENAI_QUALITY, background=("auto", "opaque"), compression=True, max_n=10, max_refs=16,
     ),
-    "openai/gpt-image-1-mini": _image_api_model(
-        "OpenAI GPT Image 1 Mini",
-        "The only model here with background=transparent (cut-out PNG)",
-        aspect_ratios=("1:1", "3:2", "2:3", "auto"),
-        quality=_OPENAI_QUALITY, background=("auto", "transparent", "opaque"), compression=True,
-        max_n=10, max_refs=16),
+    # Replaces gpt-image-1-mini (OpenAI shutdown 2026-12-01) as the transparent-background pick.
+    "openai/gpt-image-2.5-flare": _image_api_model(
+        "OpenAI GPT Image 2.5 Flare",
+        "The only model here with background=transparent (cut-out PNG); fast everyday tier",
+        aspect_ratios=("1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "auto"),
+        quality=(*_OPENAI_QUALITY, "xhigh", "max"), background=("auto", "transparent", "opaque"),
+        compression=True, max_n=10, max_refs=16),
     "microsoft/mai-image-2.5": _image_api_model(
         "Microsoft MAI-Image-2.5", "Standard ratios; a good second opinion next to Gemini",
         aspect_ratios=_MAI_RATIOS, max_n=1, max_refs=1),

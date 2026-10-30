@@ -80,5 +80,64 @@ class TestBrowseShSource(unittest.TestCase):
         self.assertEqual(meta.extra["install_count"], 42)
 
 
+# A catalog entry whose detail endpoint has been dropped: /api/skills/{slug} 404s (None here),
+# while the skill itself lives on in the repo its sourceUrl points at.
+MOVED_ENTRY = {
+    "slug": "browserbase.com/cookie-sync",
+    "name": "cookie-sync",
+    "title": "Cookie Sync",
+    "description": "Sync cookies from local Chrome to a Browserbase context.",
+    "hostname": "browserbase.com",
+    "category": "browser",
+    "tags": [],
+    "sourceUrl": "https://github.com/browserbase/skills/blob/main/skills/cookie-sync/SKILL.md",
+    "externalUrl": "https://github.com/browserbase/skills/blob/main/skills/cookie-sync/SKILL.md",
+    "installCount": 0,
+}
+MOVED_RAW_URL = "https://raw.githubusercontent.com/browserbase/skills/main/skills/cookie-sync/SKILL.md"
+MOVED_SKILL_MD = "---\nname: cookie-sync\ndescription: Sync cookies.\n---\n\n# Cookie Sync\n"
+
+
+class TestBrowseShDroppedDetailEntry(unittest.TestCase):
+    """The catalog outlives the detail endpoint; the entry's own GitHub link must still install."""
+
+    def setUp(self):
+        self.src = BrowseShSource()
+
+    @patch.object(BrowseShSource, "_fetch_catalog", return_value=[MOVED_ENTRY])
+    @patch("tools.skills_hub_sources._get_text")
+    @patch("tools.skills_hub_sources._get_json", return_value={"error": "no skill found"})
+    def test_fetch_falls_back_to_source_url(self, _mock_json, mock_text, _mock_catalog):
+        mock_text.return_value = MOVED_SKILL_MD
+        bundle = self.src.fetch("browse-sh/browserbase.com/cookie-sync")
+        assert bundle is not None
+        self.assertEqual(bundle.files["SKILL.md"], MOVED_SKILL_MD)
+        self.assertEqual(bundle.name, "cookie-sync")
+        self.assertEqual(bundle.metadata["skill_md_url"], MOVED_RAW_URL)
+
+    @patch.object(BrowseShSource, "_fetch_catalog", return_value=[MOVED_ENTRY])
+    @patch("tools.skills_hub_sources._get_text", return_value=None)
+    @patch("tools.skills_hub_sources._get_json", return_value=None)
+    def test_fetch_none_when_fallback_url_is_unfetchable(self, _mock_json, _mock_text, _mock_catalog):
+        self.assertIsNone(self.src.fetch("browse-sh/browserbase.com/cookie-sync"))
+
+    @patch.object(BrowseShSource, "_fetch_catalog", return_value=SAMPLE_CATALOG)
+    @patch("tools.skills_hub_sources._get_text")
+    @patch("tools.skills_hub_sources._get_json",
+           return_value={"skillMdUrl": "https://cdn.example/skill.md"})
+    def test_skill_md_url_prefers_detail_endpoint(self, _mock_json, mock_text, _mock_catalog):
+        mock_text.return_value = MOVED_SKILL_MD
+        bundle = self.src.fetch("browse-sh/airbnb.com/search-listings-ddgioa")
+        assert bundle is not None
+        self.assertEqual(bundle.metadata["skill_md_url"], "https://cdn.example/skill.md")
+
+    def test_github_raw_url_conversions(self):
+        from tools.skills_hub_sources import _github_raw_url
+        self.assertEqual(_github_raw_url(MOVED_ENTRY["sourceUrl"]), MOVED_RAW_URL)
+        self.assertEqual(_github_raw_url(MOVED_RAW_URL), MOVED_RAW_URL)
+        self.assertIsNone(_github_raw_url("https://example.com/browserbase/skills/blob/main/x/SKILL.md"))
+        self.assertIsNone(_github_raw_url(""))
+
+
 if __name__ == "__main__":
     unittest.main()

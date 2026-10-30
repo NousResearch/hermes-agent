@@ -617,11 +617,12 @@ def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optiona
         enabled = False
     if enabled:
         raise LocalRuntimeUnavailableError("The local model server isn't running. It may still be "
-                                           "starting — try again in a moment, or check Settings → "
-                                           "Providers → Local models.", retryable=True)
-    raise LocalRuntimeUnavailableError("The local model server is turned off. Turn it back on in "
-                                       "Settings → Providers → Local models, or switch to another "
-                                       "model.")
+                                           "starting — try again in a moment, or switch to another "
+                                           "model with /model.", retryable=True)
+    # Every chat surface (messaging, TUI, Webapp) shows this sentence, so it names no Desktop-only
+    # pane; the Desktop client links its Local models pane itself.
+    raise LocalRuntimeUnavailableError("The local model server is turned off. Turn it back on in the "
+                                       "Hermes desktop app, or switch to another model with /model.")
 
 
 def _custom_runtime(rp, base_url: str, api_key: Any, api_mode: Optional[str], **extra: Any) -> dict[str, Any]:

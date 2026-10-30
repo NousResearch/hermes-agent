@@ -43,6 +43,17 @@ describe('describeTurnFailure', () => {
     expect(text).toContain('/retry')
   })
 
+  it('names the local model server when the managed local runtime is down, not a custom endpoint', () => {
+    const text = describeTurnFailure({
+      error: "The local model server isn't running. It may still be starting.",
+      error_surface: { code: 'local_runtime_unavailable', layer: 'endpoint', provider: 'llamacpp', retryable: true }
+    })
+
+    expect(text.split('\n')[0]).toContain('local model server')
+    expect(text).not.toContain('custom model endpoint')
+    expect(text).toContain('/model')
+  })
+
   it('falls back to the layer copy, and to a generic title, when the code is unknown', () => {
     const streaming = describeTurnFailure({
       error: 'peer closed connection',

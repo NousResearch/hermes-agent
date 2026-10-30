@@ -31,6 +31,9 @@ _TURN_ERROR_CODE_COPY: dict[str, tuple[str, str]] = {
     "content_policy_blocked": ("The model provider refused this request (content policy)", "Rephrase and send again."),
     "provider_policy_blocked": ("The model provider refused this request (account policy)", "Switch with /model."),
     "format_error": ("The model provider rejected the request format", "Try /retry; if it persists, switch with /model."),
+    # The managed local model server (llama.cpp) is down: starting, or switched off.
+    "local_runtime_unavailable": ("The local model server is not running",
+                                  "Try /retry once it is up, or switch with /model."),
     "ssl_cert_verification": ("The connection to the model provider could not be verified (TLS)",
                               "Check the endpoint's certificate, then /retry."),
 }

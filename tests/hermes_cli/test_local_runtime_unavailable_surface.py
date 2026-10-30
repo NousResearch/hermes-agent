@@ -74,3 +74,29 @@ def test_turn_failure_is_an_endpoint_failure_not_a_rejected_key(llamacpp_home, e
     assert surface["layer"] == "endpoint"
     assert surface["code"] == "local_runtime_unavailable"
     assert "auth_kind" not in surface
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_chat_text_names_the_local_server_and_no_desktop_only_pane(llamacpp_home, enabled):
+    """The messaging reply and the TUI/dashboard turn text both name the local model server, and
+    neither points at Settings → Providers → Local models, a pane only the Desktop app has."""
+    from agent.error_surface import build_error_surface_from_result
+    from gateway.config import Platform
+    from gateway.run_turn_runner import _resolution_failure_reply
+    from tui_gateway.user_messages import turn_error_text
+
+    llamacpp_home({"enabled": enabled})
+    exc = _resolution_error()
+    reply, reason, retryable = _resolution_failure_reply(exc, Platform.TELEGRAM)
+    surface = build_error_surface_from_result(
+        {"failed": True, "error": str(exc), "failure_reason": reason, "failure_retryable": retryable},
+        provider="llamacpp")
+    tui = turn_error_text(str(exc), surface, recoverable=retryable)
+
+    title = tui.splitlines()[0]
+    assert "local model server" in title
+    assert "custom model endpoint" not in tui
+    for text in (reply, tui):
+        assert "local model server" in text
+        assert "Settings" not in text and "Local models" not in text
+        assert "/model" in text

@@ -11,6 +11,7 @@ Auth supports:
 """
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -1561,7 +1562,15 @@ def _get_shared_hermes_oauth_file() -> Path:
 
 
 def _shared_pkce_label_filename(label: Optional[str]) -> str:
-    """Return the safe filename used for one shared PKCE grant."""
+    """Return the collision-resistant filename used for one shared PKCE grant.
+
+    The human-readable prefix is sanitized for the filesystem, so distinct
+    labels such as ``"team a"`` and ``"team_a"`` would otherwise collide; a
+    digest of the exact label keeps every grant in its own file.  The exact
+    label is also stored inside the payload (see
+    ``write_shared_hermes_oauth_credentials``) so discovery never has to
+    reverse the filename.
+    """
     value = str(label or "default").strip() or "default"
     if value in {".", ".."} or value.startswith(".") or "/" in value or "\\" in value:
         raise ValueError("Invalid shared PKCE label")
@@ -1570,7 +1579,8 @@ def _shared_pkce_label_filename(label: Optional[str]) -> str:
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", value)
     if not safe or safe in {".", ".."}:
         raise ValueError("Invalid shared PKCE label")
-    return f"{safe}.json"
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
+    return f"{safe[:48]}-{digest}.json"
 
 
 def _get_shared_hermes_oauth_dir() -> Path:
@@ -1579,6 +1589,24 @@ def _get_shared_hermes_oauth_dir() -> Path:
 
 def _get_shared_hermes_oauth_label_file(label: Optional[str]) -> Path:
     return _get_shared_hermes_oauth_dir() / _shared_pkce_label_filename(label)
+
+
+def shared_hermes_oauth_lock_target(label: Optional[str]) -> Path:
+    """Canonical path whose ``.lock`` sibling serializes one labelled grant.
+
+    Every sync→refresh→publish sequence for a label (any profile, any
+    process) must take ``_auth_store_lock(target_path=...)`` on this exact
+    path; ``write_shared_hermes_oauth_credentials`` locks the same path, so
+    the two never race on a single refresh token.  The parent directory is
+    created up front so the lock file can exist before the first publish.
+    """
+    path = _get_shared_hermes_oauth_label_file(label)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.chmod(0o700)
+    except OSError as exc:
+        logger.debug("Failed to prepare shared Hermes OAuth directory: %s", exc)
+    return path
 
 
 def read_shared_hermes_oauth_credentials(label: Optional[str] = None) -> Optional[Dict[str, Any]]:

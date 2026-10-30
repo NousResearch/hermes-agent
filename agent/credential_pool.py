@@ -1176,8 +1176,13 @@ class CredentialPool:
         # the lock, the in-lock re-sync below picks up the rotated token the
         # winner persisted and skips the POST.
         if self.provider == "anthropic" and entry.source == "hermes_pkce_shared":
-            from agent.anthropic_adapter import _get_shared_hermes_oauth_file
-            with _auth_store_lock(target_path=_get_shared_hermes_oauth_file()):
+            # Lock the label's own grant file -- the same target the publisher
+            # (write_shared_hermes_oauth_credentials) locks -- not the legacy
+            # singleton path, so two profiles refreshing one label contend on
+            # one flock.  The lock is reentrant per path, so the nested
+            # publish inside _refresh_entry_impl does not deadlock.
+            from agent.anthropic_adapter import shared_hermes_oauth_lock_target
+            with _auth_store_lock(target_path=shared_hermes_oauth_lock_target(entry.label)):
                 original_refresh = entry.refresh_token
                 entry = self._sync_anthropic_entry_from_shared_file(entry)
                 if entry.refresh_token != original_refresh:
@@ -2317,6 +2322,21 @@ def _migrate_legacy_hermes_pkce_entries(entries: List[PooledCredential]) -> bool
                 expires_at_ms=shared.get("expiresAt"),
             )
             changed = True
+    # A profile may already contain a reference row alongside its old copied
+    # row (for example after an interrupted migration).  Once the copy is
+    # converted, retain one reference per label so selection cannot rotate a
+    # stale duplicate or expose ambiguous credentials.
+    seen_shared_labels: Set[str] = set()
+    deduplicated: List[PooledCredential] = []
+    for entry in entries:
+        if entry.source == "hermes_pkce_shared":
+            if entry.label in seen_shared_labels:
+                changed = True
+                continue
+            seen_shared_labels.add(entry.label)
+        deduplicated.append(entry)
+    if len(deduplicated) != len(entries):
+        entries[:] = deduplicated
     return changed
 
 
@@ -2392,16 +2412,20 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             read_claude_code_credentials,
             read_hermes_oauth_credentials,
         )
+        from agent.credential_sources import shared_pkce_suppression_key
 
         # Shared PKCE grants are keyed by label: seed one reference row per
         # label so a fresh profile with no pool rows discovers every grant the
         # default root published.  Reference rows never carry token material;
-        # they hydrate from the shared store at selection time.
+        # they hydrate from the shared store at selection time.  Suppression
+        # is honoured at both granularities: the whole source, or one label
+        # retired via `hermes auth remove anthropic <N>` in this profile.
         if not _is_suppressed(provider, "hermes_pkce_shared"):
             shared_grants = list_shared_hermes_oauth_credentials()
-            if shared_grants:
-                active_sources.add("hermes_pkce_shared")
             for shared_label in shared_grants:
+                if _is_suppressed(provider, shared_pkce_suppression_key(shared_label)):
+                    continue
+                active_sources.add("hermes_pkce_shared")
                 changed |= _upsert_entry(
                     entries,
                     provider,

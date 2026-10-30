@@ -72,8 +72,11 @@ def _load(monkeypatch, home: Path):
 
 
 def _shared_file(root: Path, label: str = LABEL) -> Path:
-    safe = label.replace(" ", "_")
-    return root / ".anthropic_oauth" / f"{safe}.json"
+    # Resolve through the adapter so the test follows the real (sanitized +
+    # digest-suffixed) filename instead of re-implementing it.
+    from agent.anthropic_adapter import _shared_pkce_label_filename
+
+    return root / ".anthropic_oauth" / _shared_pkce_label_filename(label)
 
 
 def _mock_refresh(monkeypatch, *, valid: set, counter: list):
@@ -346,3 +349,118 @@ def test_empty_profile_discovers_legacy_grants_map_file(homes, monkeypatch):
     assert picked is not None
     assert picked.label == LABEL and picked.access_token == "legacy-access"
     assert _read_store(worker)[0]["source"] == "hermes_pkce_shared"
+
+
+def _publish(monkeypatch, root: Path, label: str, access: str, refresh: str) -> None:
+    from agent.anthropic_adapter import write_shared_hermes_oauth_credentials
+
+    _use_home(monkeypatch, root)
+    assert write_shared_hermes_oauth_credentials(
+        {"accessToken": access, "refreshToken": refresh, "expiresAt": FUTURE_MS}, label=label
+    )
+
+
+def test_auth_remove_retires_one_shared_label_without_reseeding(homes, monkeypatch, capsys):
+    """`hermes auth remove anthropic <N>` on a shared row must suppress exactly
+    that label for this profile: the next load_pool() must not resurrect it,
+    the other label keeps seeding, and the grant file stays for other profiles."""
+    import types
+
+    from hermes_cli.auth_commands import auth_remove_command
+
+    root, worker = homes
+    other = "second-account"
+    _publish(monkeypatch, root, LABEL, "a-access", "a-refresh")
+    _publish(monkeypatch, root, other, "b-access", "b-refresh")
+    _write_store(worker, [])
+
+    pool = _load(monkeypatch, worker)
+    assert {e.label for e in pool._available_entries()} == {LABEL, other}
+
+    auth_remove_command(types.SimpleNamespace(provider="anthropic", target=LABEL))
+    out = capsys.readouterr().out
+    assert "Suppressed shared Anthropic OAuth grant" in out
+
+    store = json.loads((worker / "auth.json").read_text())
+    assert store["suppressed_sources"]["anthropic"] == [f"hermes_pkce_shared:{LABEL}"]
+    assert _shared_file(root, LABEL).exists(), "removing from one profile must not revoke the grant"
+
+    pool2 = _load(monkeypatch, worker)
+    assert {e.label for e in pool2._available_entries()} == {other}
+    assert [r["label"] for r in _read_store(worker)] == [other]
+
+    # The grant is untouched for every other profile.
+    sibling = root / "profiles" / "sibling"
+    sibling.mkdir(parents=True)
+    _write_store(sibling, [])
+    assert {e.label for e in _load(monkeypatch, sibling)._available_entries()} == {LABEL, other}
+
+
+def test_sanitized_labels_never_share_a_file(homes, monkeypatch):
+    """`team a` and `team_a` sanitize to the same prefix; they must still live
+    in distinct files, round-trip their own tokens, and both be discovered."""
+    from agent.anthropic_adapter import (
+        _shared_pkce_label_filename,
+        list_shared_hermes_oauth_credentials,
+        read_shared_hermes_oauth_credentials,
+    )
+
+    root, worker = homes
+    a, b = "team a", "team_a"
+    assert _shared_pkce_label_filename(a) != _shared_pkce_label_filename(b)
+    _publish(monkeypatch, root, a, "a-access", "a-refresh")
+    _publish(monkeypatch, root, b, "b-access", "b-refresh")
+
+    assert read_shared_hermes_oauth_credentials(a)["accessToken"] == "a-access"
+    assert read_shared_hermes_oauth_credentials(b)["accessToken"] == "b-access"
+    listed = list_shared_hermes_oauth_credentials()
+    assert set(listed) == {a, b}
+    assert listed[a]["refreshToken"] == "a-refresh" and listed[b]["refreshToken"] == "b-refresh"
+
+    _write_store(worker, [])
+    pool = _load(monkeypatch, worker)
+    assert {e.label: e.access_token for e in pool._available_entries()} == {a: "a-access", b: "b-access"}
+
+
+def test_refresh_and_publish_lock_the_same_label_target_from_every_profile(homes, monkeypatch):
+    """Two profiles refreshing one label must serialize on one flock, and it
+    must be the same lock the publisher takes -- not the legacy singleton path."""
+    import agent.credential_pool as pool_mod
+    from agent.anthropic_adapter import (
+        _get_shared_hermes_oauth_file,
+        _get_shared_hermes_oauth_label_file,
+    )
+
+    root, worker = homes
+    _publish(monkeypatch, root, LABEL, "old-access", "old-refresh")
+    for home in (root, worker):
+        _write_store(home, [])
+
+    counter: list = []
+    _mock_refresh(monkeypatch, valid={"old-refresh"}, counter=counter)
+
+    observed: list = []
+    real_lock = pool_mod._auth_store_lock
+
+    def spy(*args, **kwargs):
+        observed.append(kwargs.get("target_path"))
+        return real_lock(*args, **kwargs)
+
+    monkeypatch.setattr(pool_mod, "_auth_store_lock", spy)
+
+    targets = []
+    for home in (root, worker):
+        pool = _load(monkeypatch, home)
+        entry = next(e for e in pool._available_entries() if e.label == LABEL)
+        observed.clear()
+        assert pool._refresh_entry(entry, force=True) is not None
+        label_targets = [p for p in observed if p is not None]
+        assert label_targets, "shared refresh must take a target-path lock"
+        targets.append(label_targets[0])
+        # The second profile syncs the rotated grant from the shared file
+        # before refreshing, so no re-publish is needed here.
+
+    expected = _get_shared_hermes_oauth_label_file(LABEL)
+    assert targets[0] == targets[1] == expected
+    assert expected != _get_shared_hermes_oauth_file()
+    assert expected.with_suffix(".lock").exists()

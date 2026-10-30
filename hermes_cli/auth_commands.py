@@ -514,7 +514,7 @@ def auth_remove_command(args) -> None:
     for line in result.cleaned:
         print(line)
     if result.suppress:
-        suppress_credential_source(provider, removed.source)
+        suppress_credential_source(provider, result.suppress_source or removed.source)
     for line in result.hints:
         print(line)
 

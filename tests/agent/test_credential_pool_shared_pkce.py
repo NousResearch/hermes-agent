@@ -115,12 +115,19 @@ def test_shared_grants_use_independent_label_files_and_safe_names(shared_home):
     write_shared_hermes_oauth_credentials({"accessToken": "a-access"}, label="team a")
     write_shared_hermes_oauth_credentials({"accessToken": "b-access"}, label="team-b")
     files = sorted((shared_home / ".anthropic_oauth").glob("*.json"))
-    assert [path.name for path in files] == ["team-b.json", "team_a.json"]
+    assert sorted(path.name for path in files) == sorted(
+        [_shared_pkce_label_filename("team a"), _shared_pkce_label_filename("team-b")]
+    )
+    # Sanitized prefixes are human-readable but never the whole name: labels
+    # that collapse to the same prefix must still get distinct files.
+    assert _shared_pkce_label_filename("team a") != _shared_pkce_label_filename("team_a")
+    assert _shared_pkce_label_filename("team a").startswith("team_a-")
     first = read_shared_hermes_oauth_credentials("team a")
     second = read_shared_hermes_oauth_credentials("team-b")
     assert first and first["accessToken"] == "a-access"
     assert second and second["accessToken"] == "b-access"
-    assert _shared_pkce_label_filename("") == "default.json"
+    assert _shared_pkce_label_filename("") == _shared_pkce_label_filename("default")
+    assert _shared_pkce_label_filename("").startswith("default-")
     for unsafe in ("../escape", ".hidden", "a/b", "a\\b"):
         with pytest.raises(ValueError):
             _shared_pkce_label_filename(unsafe)
@@ -140,6 +147,8 @@ def test_legacy_grant_map_migrates_only_matching_labels(shared_home):
     for entry in entries:
         entry.source = "manual:hermes_pkce"
     assert _migrate_legacy_hermes_pkce_entries(entries)
-    assert (shared_home / ".anthropic_oauth" / "one.json").exists()
-    assert (shared_home / ".anthropic_oauth" / "two.json").exists()
+    from agent.anthropic_adapter import _shared_pkce_label_filename
+
+    assert (shared_home / ".anthropic_oauth" / _shared_pkce_label_filename("one")).exists()
+    assert (shared_home / ".anthropic_oauth" / _shared_pkce_label_filename("two")).exists()
     assert {entry.access_token for entry in entries} == {"one-access", "two-access"}

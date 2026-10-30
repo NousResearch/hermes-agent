@@ -222,4 +222,9 @@ class StreamingWaitMonitor:
             if self.agent._interrupt_requested:
                 self._abort_for_interrupt(_stale_elapsed)
                 return
+            if getattr(self.agent, "_first_byte_budget", None) is not None:
+                from agent.first_byte_budget import should_cut
+                if should_cut(self.agent):
+                    self._cut_for_first_byte_budget()
+                    return
 

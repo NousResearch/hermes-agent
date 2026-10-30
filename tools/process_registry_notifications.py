@@ -206,6 +206,10 @@ def _recovery_lines(evt: dict) -> list[str]:
             lines += [f"--- last lines of task {index} transcript ---", tails[index], "--- end ---"]
     if evt.get("git_state_hint"):
         lines.append(f"Owner working tree at recovery: {evt['git_state_hint']}")
+    if unfinished := evt.get("unfinished_tasks"):
+        lines.append(f"RE-DISPATCH: {len(unfinished)} task(s) did not finish. Keep the recorded results and "
+                     "re-dispatch only these, each resuming from its transcript tail and existing worktree:")
+        lines += [f"  - task {t['task_index'] + 1}: {t['goal']}" for t in unfinished]
     return lines
 
 

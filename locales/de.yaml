@@ -332,6 +332,7 @@ gateway:
   restart:
     in_progress: "⏳ Gateway-Neustart läuft bereits..."
     restarting: "♻ Gateway wird neu gestartet. Falls Sie nicht innerhalb von 60 Sekunden benachrichtigt werden, starten Sie über die Konsole mit `hermes gateway restart` neu."
+    blocked: "⚠️ Not restarting: work is still running. Send `/restart force` to restart anyway — in-flight work is interrupted."
   resume:
     db_unavailable: "Sitzungsdatenbank nicht verfügbar."
     parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."

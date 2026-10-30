@@ -332,6 +332,7 @@ gateway:
   restart:
     in_progress: "⏳ 网关重启已在进行中……"
     restarting: "♻ 正在重启网关。如果 60 秒内没有收到通知，请在控制台运行 `hermes gateway restart` 重启。"
+    blocked: "⚠️ Not restarting: work is still running. Send `/restart force` to restart anyway — in-flight work is interrupted."
   resume:
     db_unavailable: "会话数据库不可用。"
     parse_error: "⚠️ 无法解析 `/resume` 参数：{error}。\n含空格的标题请加引号，例如：`/resume \"Project A Plan\"`。"

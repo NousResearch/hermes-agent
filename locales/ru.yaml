@@ -332,6 +332,7 @@ gateway:
   restart:
     in_progress: "⏳ Перезапуск шлюза уже выполняется..."
     restarting: "♻ Перезапуск шлюза. Если уведомление не придёт в течение 60 секунд, перезапустите из консоли командой `hermes gateway restart`."
+    blocked: "⚠️ Not restarting: work is still running. Send `/restart force` to restart anyway — in-flight work is interrupted."
   resume:
     db_unavailable: "База данных сеансов недоступна."
     parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."

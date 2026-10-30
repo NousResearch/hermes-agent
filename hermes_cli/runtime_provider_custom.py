@@ -682,6 +682,24 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
     return None
 
 
+def recover_main_custom_request(requested_provider: str, explicit_base_url: Optional[str],
+                                target_model: Optional[str]) -> str:
+    """Recover a flattened main-model route before identity-dependent runtime selection."""
+    rp = _rp()
+    if requested_provider != "custom" or explicit_base_url or rp._get_named_custom_provider("custom"):
+        return requested_provider
+    model_cfg = rp._get_model_config()
+    if model_cfg.get("base_url") or get_secret_str("CUSTOM_BASE_URL", "").strip():
+        return requested_provider
+    model = str(model_cfg.get("default") or "").strip()
+    if not model or not target_model or str(target_model).strip() != model:
+        return requested_provider
+    provider = str(model_cfg.get("provider") or "").strip()
+    if not provider or provider.lower() in {"auto", "custom"}:
+        return requested_provider
+    return provider if rp._get_named_custom_provider(provider) else requested_provider
+
+
 def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: Optional[str] = None,
                                   explicit_base_url: Optional[str] = None,
                                   target_model: Optional[str] = None, config=None) -> Optional[dict[str, Any]]:

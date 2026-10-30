@@ -34,3 +34,7 @@ It exited with status 1 before an agent session: `Hermes isn't configured yet --
 ## Upstream and review scope
 
 Normative files were read at base `2d2808ee84549f9836b0056750265058e5488a8a`; the applicable root/skills/tests instructions, contribution guide and PR template were rechecked against subsequently observed main `bff22bde93db8d9fd57b63ee1bcb47947ed04fd2`, with no differences in those files. PR #138936 was also inspected: it changes the internal execute_code batching contract, not a volume-testing skill. No equivalent exact-name PR was found in the final duplicate search. Maintainer placement/acceptance remains open; no merge is requested or performed.
+
+## Contributor local HTTP rerun
+
+A separate [local rerun on 2026-10-30](local-rerun-2026-10-30/README.md) adds unedited completed healthy/injected HTTP evidence from code commit `bdd3ac64af2363ab73f7e78e694d23b0060f229b`. Each has 252 HTTP samples; healthy has zero incorrect samples and injected has 36 expected incorrect export samples. Both verified scoped cleanup. This rerun contains no browser or real Hermes agent evidence and does not resolve the agent E2E blocker above.

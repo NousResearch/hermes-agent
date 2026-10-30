@@ -23,6 +23,11 @@ from pm.plugin_declarations import read_python_declaration, manifest_version_err
 
 _MEMBER_EXCLUDE = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__"})
 
+# Top-level directories that are data, not Python packages, yet are read from
+# beside the core package roots at runtime. ``packages.find.include`` never
+# matches them, so the snapshot copy below has to name them explicitly.
+BARE_DATA_DIRS = ("locales",)
+
 
 def _member_ignored(directory, names):
     return [name for name in names if name in _MEMBER_EXCLUDE or name.endswith(".egg-info")]
@@ -117,6 +122,19 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         return [name for name in names if name in nested_excluded or name.startswith(".")
                 or name in published or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
 
+    # Bare data directories the runtime reads from beside the package roots.
+    # ``agent/i18n.py::_locales_dir`` resolves ``<snapshot>/locales``, so a
+    # snapshot without it makes every catalog string fall back to its raw key
+    # (``gateway.kanban.ping.completed`` reaches the chat). A project can only
+    # add such a directory here; the set stays closed so a snapshot never
+    # silently absorbs arbitrary top-level folders. A name that some project
+    # also lists as a package is left to the package loop below, so the two
+    # passes can never race for the same destination.
+    for name in BARE_DATA_DIRS:
+        entry = source / name
+        if (name not in package_roots and entry.is_dir() and not entry.is_symlink()
+                and not (destination / name).exists()):
+            shutil.copytree(entry, destination / name, ignore=ignore)
     for entry in source.iterdir():
         if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded
                 and not entry.name.startswith(".") and entry.resolve() != destination.resolve()

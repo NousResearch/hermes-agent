@@ -1,9 +1,8 @@
 """Unit tests for the Kimi/Moonshot provider profile's reasoning wiring.
 
-Moonshot's OpenAI-compat endpoint (``api.moonshot.ai/v1``) treats
-``extra_body.thinking`` and a top-level ``reasoning_effort`` as mutually
-exclusive. The profile must send at most one of them — never both — so a
-request can't trip "cannot specify both 'thinking' and 'reasoning_effort'".
+The profile sends an explicit effort when requested and otherwise uses the
+thinking toggle. Kimi Code accepts medium directly; the profile must not
+silently upgrade it to high.
 
 This mirrors the kimi-k2 handling already shipped for the opencode-go relay
 (see ``tests/plugins/model_providers/test_opencode_go_profile.py``).
@@ -48,7 +47,7 @@ class TestKimiReasoningWireShape:
         [
             ("low", "low"),
             ("minimal", "low"),
-            ("medium", "high"),
+            ("medium", "medium"),
             ("high", "high"),
             ("xhigh", "max"),
             ("max", "max"),
@@ -56,7 +55,7 @@ class TestKimiReasoningWireShape:
         ],
     )
     def test_effort_mapped_to_k3_vocabulary(self, kimi_profile, effort, expected):
-        """Hermes' wider effort vocabulary is mapped onto K3's low/high/max."""
+        """Hermes' wider effort vocabulary is mapped onto K3's low/medium/high/max."""
         extra_body, top_level = kimi_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort}
         )

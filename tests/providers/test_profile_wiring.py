@@ -100,3 +100,25 @@ class TestRequestOverridesParity:
             request_overrides={"top_p": 0.9},
         )
         assert kw["top_p"] == 0.9
+
+    def test_kimi_k3_medium_is_served_directly_not_upgraded(self, transport):
+        # Endpoint evidence 2026-10-21 (#142365): the Kimi Code endpoints accept
+        # ``medium`` — silently upgrading it to ``high`` spends more reasoning
+        # tokens/latency than the user asked for.
+        kw = transport.build_kwargs(
+            model="k3", messages=_msgs(), tools=None,
+            provider_profile=get_provider_profile("kimi-coding"),
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert kw["reasoning_effort"] == "medium"
+
+    def test_kimi_k3_none_disables_thinking(self, transport):
+        # ``reasoning_effort="none"`` is a real off switch on the Kimi Code
+        # endpoints (#142365) — it must disable thinking, not enable it.
+        kw = transport.build_kwargs(
+            model="k3", messages=_msgs(), tools=None,
+            provider_profile=get_provider_profile("kimi-coding"),
+            reasoning_config={"enabled": True, "effort": "none"},
+        )
+        assert kw["extra_body"]["thinking"] == {"type": "disabled"}
+        assert "reasoning_effort" not in kw

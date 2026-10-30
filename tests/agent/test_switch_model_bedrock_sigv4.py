@@ -65,6 +65,23 @@ def test_switch_to_bedrock_runtime_wires_binds_region_and_sdk(_ctx, aws_env, mod
 
 
 @pytest.mark.parametrize("api_mode", ["anthropic_messages", "bedrock_converse"])
+def test_bind_without_runtime_url_uses_configured_region(aws_env, monkeypatch, api_mode):
+    """Bedrock stores no ``model.base_url``, so a caller can bind with none (managed Kanban workers did,
+    #143093). The wire must land in ``bedrock.region``, where startup lands, not us-east-1."""
+    from agent.bedrock_adapter import bind_bedrock_runtime
+    from hermes_constants import get_hermes_home
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    (get_hermes_home() / "config.yaml").write_text("bedrock:\n  region: eu-west-3\n")
+    agent = _agent()
+    agent.provider = "bedrock"
+
+    bind_bedrock_runtime(agent, "", api_mode)
+
+    assert agent._bedrock_region == "eu-west-3"
+
+
+@pytest.mark.parametrize("api_mode", ["anthropic_messages", "bedrock_converse"])
 def test_fallback_to_bedrock_binds_runtime_not_generic_client(aws_env, api_mode):
     from agent.client_lifecycle import _swap_fallback_clients
     agent = _agent()

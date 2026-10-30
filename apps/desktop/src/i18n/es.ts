@@ -4928,7 +4928,7 @@ export const esOverrides = {
         truncated: {
           title: 'La respuesta quedó incompleta',
           body: (_provider: string, model: string) =>
-            `${model || 'El modelo'} se detuvo antes de terminar, así que su último paso no se ejecutó. Continúa para retomarlo donde se detuvo.`
+            `${model || 'El modelo'} se detuvo antes de terminar su respuesta. Continúa para retomarlo donde se detuvo.`
         },
         invalid_response: {
           title: 'No se pudo leer la respuesta',

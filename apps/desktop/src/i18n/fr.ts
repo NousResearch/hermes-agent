@@ -4950,7 +4950,7 @@ export const frOverrides = {
         truncated: {
           title: 'La réponse a été écourtée',
           body: (_provider, model) =>
-            `${model || 'Le modèle'} s'est arrêté avant la fin ; sa dernière étape n'a donc pas été exécutée. Continuez pour reprendre là où il s'est arrêté.`
+            `${model || 'Le modèle'} s'est arrêté avant d'avoir fini sa réponse. Continuez pour reprendre là où il s'est arrêté.`
         },
         invalid_response: {
           title: 'Impossible de lire la réponse',

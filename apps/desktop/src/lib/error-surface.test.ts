@@ -345,6 +345,8 @@ describe('error card actions: one main action, at most one second option', () =>
       primary: 'open_billing',
       secondary: 'retry_at_reset'
     })
+    // Too far ahead for a browser timer (a monthly window): no Retry until it passes.
+    expect(at({ ...limit('add_credits', []), resets_at: later + 30 * 86_400 })).toEqual({ primary: 'open_billing' })
     // The reset has passed: the allowance is back, so a plain Retry.
     expect(at({ ...limit('add_credits', []), resets_at: later - 1200 })).toEqual({
       primary: 'open_billing',

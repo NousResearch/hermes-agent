@@ -426,7 +426,14 @@ function usageWindowActions(surface: ErrorSurface): ErrorCardActions {
     return { primary: credits }
   }
 
-  return { primary: credits, secondary: scheduledRetryDelayMs(surface.resetsAt) === null ? 'retry' : 'retry_at_reset' }
+  if (surface.resetsAt * 1000 <= Date.now()) {
+    return { primary: credits, secondary: 'retry' }
+  }
+
+  // Still ahead: Retry at the reset, unless it is too far off for a browser timer (a monthly window).
+  return scheduledRetryDelayMs(surface.resetsAt) === null
+    ? { primary: credits }
+    : { primary: credits, secondary: 'retry_at_reset' }
 }
 
 export function errorCardActions(surface: ErrorSurface | null | undefined): ErrorCardActions {

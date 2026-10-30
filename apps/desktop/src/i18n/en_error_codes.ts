@@ -87,7 +87,7 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
   truncated: {
     title: 'The reply was cut short',
     body: (_provider, model) =>
-      `${model || 'The model'} stopped before finishing, so its last step didn't run. Continue to pick up where it stopped.`
+      `${model || 'The model'} stopped before finishing its reply. Continue to pick up where it stopped.`
   },
   invalid_response: {
     title: "Couldn't read the reply",

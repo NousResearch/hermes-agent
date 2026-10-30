@@ -132,7 +132,8 @@ export function useComposerSubmit({
     text: string,
     attachments?: ComposerAttachment[],
     displayKind?: 'hidden',
-    target?: Parameters<ChatBarProps['onSubmit']>[1]
+    target?: Parameters<ChatBarProps['onSubmit']>[1],
+    onRejected?: () => void
   ) => {
     // A fresh chat's composer is keyed by its per-lifecycle fresh-draft key
     // (`__new__:<uuid>`), but the submit contract spells "no session yet" as
@@ -180,8 +181,10 @@ export function useComposerSubmit({
     }
 
     // A hidden submit is machine text (a setup note, never something the user
-    // typed), so a rejection drops it instead of loading it into the draft.
-    const rejected = displayKind ? () => {} : restore
+    // typed), so a rejection drops it instead of loading it into the draft. An
+    // external request brings its own (it never took the draft, so it must not
+    // overwrite it).
+    const rejected = onRejected ?? (displayKind ? () => {} : restore)
 
     // A synchronous throw takes the rejection path too: the caller has already cleared the
     // composer, so a send that fails while it is being prepared must not take the words with it.
@@ -235,18 +238,19 @@ export function useComposerSubmit({
           !inputDisabled
         ) {
           const current = externalSubmitRef.current
-
-          if (!current.busy) {
-            current.dispatchSubmit(text, undefined, displayKind)
-
-            return
-          }
-
           const queueKey = activeQueueSessionKeyRef.current
 
           // External requests contain only text; the unsent draft and its attachments stay in the composer.
           const enqueue = () =>
             void enqueueQueuedPrompt(queueKey, { text, attachments: [], ...(displayKind ? { displayKind } : {}) })
+
+          if (!current.busy) {
+            // Explicitly no attachments: the send must not pick up the draft's files. A rejected
+            // visible request goes to the queue (sendable, editable), never over the user's draft.
+            current.dispatchSubmit(text, [], displayKind, undefined, displayKind ? () => {} : enqueue)
+
+            return
+          }
 
           // A hidden note never becomes a user turn: it rides session.steer into
           // the model's next tool result, and keeps its kind if it has to queue.

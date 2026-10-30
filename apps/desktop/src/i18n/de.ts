@@ -4942,7 +4942,7 @@ export const deOverrides = {
         truncated: {
           title: 'Die Antwort wurde abgeschnitten',
           body: (_provider, model) =>
-            `${model || 'Das Modell'} hat vor dem Ende aufgehört, daher wurde sein letzter Schritt nicht ausgeführt. Wählen Sie „Fortsetzen“, um dort weiterzumachen, wo es aufgehört hat.`
+            `${model || 'Das Modell'} hat seine Antwort vor dem Ende abgebrochen. Wählen Sie „Fortsetzen“, um dort weiterzumachen, wo es aufgehört hat.`
         },
         invalid_response: {
           title: 'Antwort nicht lesbar',

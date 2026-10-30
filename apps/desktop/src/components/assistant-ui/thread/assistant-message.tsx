@@ -83,7 +83,7 @@ import { $touchPointer } from '@/lib/touch-interaction'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
-import { requestBillingSettings } from '@/store/billing-block'
+import { $billingBlock, requestBillingSettings, runBillingRecovery } from '@/store/billing-block'
 import { DESKTOP_BUTTON_ACTIONS, recordAction } from '@/store/desktop-metrics'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { notifyError } from '@/store/notifications'
@@ -1095,6 +1095,26 @@ const textButton = (className: string, onClick: () => void, label: ReactNode) =>
   </button>
 )
 
+// Out of credits runs the same recovery as the banner and toast: the failing provider's own
+// billing page (Nous → Settings → Billing). A plan limit is Nous billing. Without this chat's
+// billing descriptor Hermes doesn't know where a third-party provider bills, so no button.
+const OpenBillingAction: FC<{ className: string; label: string; surface?: ErrorSurface }> = ({
+  className,
+  label,
+  surface
+}) => {
+  const runtimeId = useStore(useSessionView().$runtimeId)
+  const wall = useStore($billingBlock)
+  const block = surface?.code !== 'usage_window' && wall?.sessionId === runtimeId ? wall.block : null
+  const nousBilling = surface?.code === 'usage_window' || (surface?.provider || 'nous').toLowerCase() === 'nous'
+
+  if (!block && !nousBilling) {
+    return null
+  }
+
+  return textButton(className, () => (block ? runBillingRecovery(block) : requestBillingSettings()), label)
+}
+
 // One renderer per action (Error System Overhaul action table → the app's existing handlers).
 const ERROR_ACTION_RENDERERS: Record<ErrorActionId, (ctx: ErrorActionContext) => ReactNode> = {
   switch_to_model: ({ className, surface }) => {
@@ -1103,7 +1123,9 @@ const ERROR_ACTION_RENDERERS: Record<ErrorActionId, (ctx: ErrorActionContext) =>
     return suggestion ? <SwitchToModelAction className={className} suggestion={suggestion} /> : null
   },
   use_credits: ({ className }) => <UseCreditsAction className={className} />,
-  open_billing: ({ className, copy }) => textButton(className, requestBillingSettings, copy.errorOpenBillingSettings),
+  open_billing: ({ className, copy, surface }) => (
+    <OpenBillingAction className={className} label={copy.errorOpenBillingSettings} surface={surface} />
+  ),
   retry: ({ className, copy }) => (
     <ActionBarPrimitive.Reload asChild>
       <button

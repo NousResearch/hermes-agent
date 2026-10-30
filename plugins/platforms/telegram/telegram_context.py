@@ -6,6 +6,8 @@ must be stable for the life of a session (username only — never a per-message 
 
 from typing import TYPE_CHECKING, Optional
 
+from gateway.platforms.event import MessageEvent, MessageType
+
 if TYPE_CHECKING:
     from telegram import Message
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -51,3 +53,20 @@ def group_identity_prompt(
         "Mentions of other bots are not requests for you to relay the message."
     )
     return f"{channel_prompt}\n\n{identity}" if channel_prompt else identity
+
+
+def gate_or_observe(adapter, msg, update, msg_type: MessageType) -> bool:
+    """Group trigger gate; observes unmentioned chatter when configured. True = proceed."""
+    if adapter._should_process_message(msg):
+        return True
+    if adapter._should_observe_unmentioned_group_message(msg):
+        adapter._observe_unmentioned_group_message(msg, msg_type, update_id=update.update_id)
+    return False
+
+
+async def build_triggered_event(adapter, msg, update, msg_type: MessageType) -> MessageEvent:
+    """Addressed text/command with trigger cleanup, replied-to media and attribution."""
+    event = adapter._build_message_event(msg, msg_type, update_id=update.update_id)
+    event.text = group_trigger_text(adapter, msg, event.text)
+    await adapter._cache_replied_media(msg, event)
+    return adapter._apply_telegram_group_observe_attribution(event)

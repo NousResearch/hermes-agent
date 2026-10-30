@@ -136,14 +136,32 @@ command/media handling, observed group-history writes and plugin observers.
 The receiving adapter and numeric bot ID scope this check; it does not deduplicate
 by text or `message_id`. A genuine edit with a new update ID can still be processed.
 
-This is bounded, **in-memory** protection, not an exactly-once guarantee:
+For addressed text and commands, Hermes also compares an edited message with its
+latest successfully handed-off content. An unchanged edit does not trigger another
+agent reply, even with a new update ID. Actual text changes, changed hidden link or
+mention targets, and reversions such as A → B → A remain valid edits, including
+edits within the same second. Reactions and `message_edited` plugin hooks remain
+available; passive observed-group history is not filtered. No setting is required.
 
-- The adapter remembers the most recent 4096 completed admissions, with no time
-  expiry. Active updates stay claimed until dispatch and its scheduled PTB handler
-  tasks finish, including nonblocking native plugins and registered error callbacks.
-- Reconnecting the same adapter retains that history. Eviction, adapter replacement
-  or a process restart can allow an old update through again. Nothing is written
-  to a replay ledger on disk.
+This check relies on the existing per-chat FIFO update processor and blocking
+built-in text/command handlers. It does not add locks or change dispatch scheduling.
+Overriding these core handlers to run nonblocking, or bypassing the processor with
+concurrent direct dispatch, is outside this content-check guarantee.
+
+This is bounded protection, not an exactly-once guarantee:
+
+- The adapter remembers the most recent 4096 completed update admissions and 4096
+  latest text fingerprints. Active updates stay claimed until dispatch and its
+  scheduled PTB handler tasks finish, including nonblocking native plugins and
+  registered error callbacks.
+- Per-bot receipt files persist completed update IDs and text digests (not copies
+  of message text) for 24 hours. Reconnecting retains the in-memory history;
+  replacement/restart loads fresh persisted receipts. Evicted, expired, and unknown
+  pre-upgrade text baselines fail open and can be handled once before being recorded.
+- The additional check covers built-in addressed text/command handoff, including
+  batch/hold queues. Observer acceptance alone does not record a text baseline;
+  failed preparation can retry. Media replacement, native plugin-owned effects,
+  and cross-process coordination are outside this content check.
 - Failed or cancelled preparation releases its claim if nothing has been handed
   off. Once an update enters a batch/hold queue, gateway dispatch, an observer or
   a native plugin, a later error does not reopen it. Native plugins own their own

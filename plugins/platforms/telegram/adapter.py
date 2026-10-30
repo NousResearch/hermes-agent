@@ -181,6 +181,7 @@ _MEDIA_KIND_KEYS = {
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
+from plugins.platforms.telegram.telegram_context import build_triggered_event, gate_or_observe
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
@@ -587,6 +588,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         extra = self.config.extra
         self._app: Optional[Application] = None
         self._seen_update_ids: dict = {}
+        self._latest_text_receipts: dict = {}
         self._inflight_update_ids: dict = {}
         self._update_admission = None
         # Completed update IDs survive adapter replacement and restarts (update_admission.py).
@@ -2877,6 +2879,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         claim = admission.get() if admission is not None else None
         if claim is not None:
             claim.accepted = True
+            if claim.text_receipt is not None:
+                from plugins.platforms.telegram.update_admission import accept_text
+                accept_text(self, claim)
 
     def _fail_update_preparation(self) -> None:
         """A caught preparation error is not a successful no-op or an auth refusal."""
@@ -6473,23 +6478,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             level, "[Telegram] Blocked %s %s in chat %s", what, getattr(getattr(msg, "from_user", None), "id", None),
             getattr(getattr(msg, "chat", None), "id", None))
 
-    def _gate_or_observe(self, msg, update, msg_type: MessageType) -> bool:
-        """Group trigger gate; observes unmentioned chatter when configured. True = proceed."""
-        if self._should_process_message(msg):
-            return True
-        if self._should_observe_unmentioned_group_message(msg):
-            self._observe_unmentioned_group_message(msg, msg_type, update_id=update.update_id)
-        return False
-
-    async def _build_triggered_event(self, msg, update, msg_type: MessageType) -> MessageEvent:
-        """Event for an addressed text/command: trigger text cleaned (sole addressee only), replied-to
-        media cached, attribution applied."""
-        from plugins.platforms.telegram.telegram_context import group_trigger_text
-        event = self._build_message_event(msg, msg_type, update_id=update.update_id)
-        event.text = group_trigger_text(self, msg, event.text)
-        await self._cache_replied_media(msg, event)
-        return self._apply_telegram_group_observe_attribution(event)
-
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text; buffers client-split chunks into one MessageEvent."""
         msg = self._effective_update_message(update)
@@ -6499,10 +6487,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
             return
-        if not self._gate_or_observe(msg, update, MessageType.TEXT):
+        if not gate_or_observe(self, msg, update, MessageType.TEXT):
+            return
+        from plugins.platforms.telegram.update_admission import unchanged_text
+        if unchanged_text(self, update):
             return
         await self._ensure_forum_commands(update.message)
-        self._enqueue_text_event(await self._build_triggered_event(msg, update, MessageType.TEXT))
+        self._enqueue_text_event(await build_triggered_event(self, msg, update, MessageType.TEXT))
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
@@ -6514,8 +6505,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
             return
+        from plugins.platforms.telegram.update_admission import unchanged_text
+        if unchanged_text(self, update):
+            return
         await self._ensure_forum_commands(msg)
-        event = await self._build_triggered_event(msg, update, MessageType.COMMAND)
+        event = await build_triggered_event(self, msg, update, MessageType.COMMAND)
         # A >4096-char command paste arrives as a near-limit COMMAND chunk plus TEXT continuations; dispatching
         # immediately would orphan them. Near-limit commands go through text batching.
         if len(event.text or "") >= self._SPLIT_THRESHOLD:
@@ -6531,7 +6525,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
             return
-        if not self._gate_or_observe(msg, update, MessageType.LOCATION):
+        if not gate_or_observe(self, msg, update, MessageType.LOCATION):
             return
         venue = getattr(msg, "venue", None)
         location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)

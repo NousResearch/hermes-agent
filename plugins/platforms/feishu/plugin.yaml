@@ -1,0 +1,44 @@
+name: feishu-platform
+label: Feishu / Lark
+kind: platform
+version: 1.0.0
+description: >
+  Feishu / Lark gateway adapter for Hermes Agent.
+  Connects to Feishu (China) or Lark (International) via the official
+  lark-oapi SDK over WebSocket or webhook and relays messages between
+  Feishu/Lark chats and the Hermes agent. Supports text, images, video,
+  voice, documents, threads, DM pairing, group @mention gating, drive
+  comment events, and meeting invites.
+author: NousResearch
+requires_env:
+  - name: FEISHU_APP_ID
+    description: "Feishu/Lark app ID"
+    prompt: "Feishu App ID"
+    url: "https://open.feishu.cn/"
+    password: false
+  - name: FEISHU_APP_SECRET
+    description: "Feishu/Lark app secret"
+    prompt: "Feishu App Secret"
+    url: "https://open.feishu.cn/"
+    password: true
+optional_env:
+  - name: FEISHU_DOMAIN
+    description: "Domain: 'feishu' (China) or 'lark' (International)"
+    prompt: "Domain (feishu/lark)"
+    password: false
+  - name: FEISHU_ALLOWED_USERS
+    description: "Comma-separated Feishu user IDs allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: FEISHU_ALLOW_ALL_USERS
+    description: "Allow any Feishu user to trigger the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: FEISHU_HOME_CHANNEL
+    description: "Default chat ID for cron / notification delivery"
+    prompt: "Home channel ID"
+    password: false
+  - name: FEISHU_HOME_CHANNEL_NAME
+    description: "Display name for the Feishu home channel"
+    prompt: "Home channel display name"
+    password: false

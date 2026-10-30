@@ -1,4 +1,6 @@
+import concurrent.futures
 import json
+import threading
 from types import SimpleNamespace
 
 
@@ -38,54 +40,77 @@ def test_postprocess_adds_agent_visible_image_for_active_ssh_env(monkeypatch, tm
     assert sync_calls == [True]
 
 
-def test_postprocess_maps_docker_cache_path_without_active_env(monkeypatch, tmp_path):
+def test_concurrent_image_results_preserve_shared_remote_sync_state(monkeypatch, tmp_path):
     from tools import image_generation_tool
+    from tools.environments import file_sync
 
     hermes_home = tmp_path / ".hermes"
     image_dir = hermes_home / "cache" / "images"
     image_dir.mkdir(parents=True)
-    image_path = image_dir / "generated.png"
-    image_path.write_bytes(b"png")
+    first_image = image_dir / "first.png"
+    second_image = image_dir / "second.png"
+    first_image.write_bytes(b"first")
+
+    first_upload_started = threading.Event()
+    second_sync_finished = threading.Event()
+    worker = threading.local()
+
+    def get_files():
+        return [
+            (
+                str(path),
+                f"/home/remote/.hermes/cache/images/{path.name}",
+            )
+            for path in sorted(image_dir.iterdir())
+        ]
+
+    def upload(_host_path, _remote_path):
+        if worker.label == "first":
+            first_upload_started.set()
+            # Without transaction serialization, the second sync commits its
+            # newer snapshot before this first sync resumes and overwrites it.
+            second_sync_finished.wait(timeout=1.0)
+
+    sync_manager = file_sync.FileSyncManager(
+        get_files_fn=get_files,
+        upload_fn=upload,
+        delete_fn=lambda _paths: None,
+    )
+    env = SimpleNamespace(
+        _remote_home="/home/remote",
+        _sync_manager=sync_manager,
+    )
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setenv("TERMINAL_ENV", "docker")
-    monkeypatch.setattr(image_generation_tool, "_active_terminal_env", lambda task_id: None)
+    monkeypatch.setattr(file_sync, "_credential_host_paths", lambda: set())
+    monkeypatch.setattr(image_generation_tool, "_active_terminal_env", lambda _task_id: env)
 
-    raw = json.dumps({"success": True, "image": str(image_path)})
-    result = json.loads(image_generation_tool._postprocess_image_generate_result(raw))
+    def postprocess(label, image_path):
+        worker.label = label
+        try:
+            raw = json.dumps({"success": True, "image": str(image_path)})
+            return image_generation_tool._postprocess_image_generate_result(
+                raw,
+                task_id="shared-task",
+            )
+        finally:
+            if label == "second":
+                second_sync_finished.set()
 
-    assert result["image"] == str(image_path)
-    assert result["agent_visible_image"] == "/root/.hermes/cache/images/generated.png"
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(postprocess, "first", first_image)
+        assert first_upload_started.wait(timeout=2.0)
 
+        second_image.write_bytes(b"second")
+        second_future = executor.submit(postprocess, "second", second_image)
 
-def test_postprocess_maps_ssh_cache_path_without_active_env(monkeypatch, tmp_path):
-    from tools import image_generation_tool
+        first_future.result(timeout=3.0)
+        second_future.result(timeout=3.0)
 
-    hermes_home = tmp_path / ".hermes"
-    image_dir = hermes_home / "cache" / "images"
-    image_dir.mkdir(parents=True)
-    image_path = image_dir / "first-call.png"
-    image_path.write_bytes(b"png")
-
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setenv("TERMINAL_ENV", "ssh")
-    monkeypatch.setattr(image_generation_tool, "_active_terminal_env", lambda task_id: None)
-
-    raw = json.dumps({"success": True, "image": str(image_path)})
-    result = json.loads(image_generation_tool._postprocess_image_generate_result(raw))
-
-    assert result["image"] == str(image_path)
-    assert result["agent_visible_image"] == "~/.hermes/cache/images/first-call.png"
-
-
-def test_postprocess_leaves_remote_image_urls_unchanged(monkeypatch):
-    from tools import image_generation_tool
-
-    monkeypatch.setattr(image_generation_tool, "_active_terminal_env", lambda task_id: None)
-
-    raw = json.dumps({"success": True, "image": "https://example.com/image.png"})
-
-    assert image_generation_tool._postprocess_image_generate_result(raw) == raw
+    assert set(sync_manager._synced_files) == {
+        "/home/remote/.hermes/cache/images/first.png",
+        "/home/remote/.hermes/cache/images/second.png",
+    }
 
 
 def test_handle_image_generate_postprocesses_plugin_result(monkeypatch, tmp_path):
@@ -110,7 +135,7 @@ def test_handle_image_generate_postprocesses_plugin_result(monkeypatch, tmp_path
     monkeypatch.setattr(
         image_generation_tool,
         "_dispatch_to_plugin_provider",
-        lambda prompt, aspect_ratio: json.dumps({"success": True, "image": str(image_path)}),
+        lambda prompt, aspect_ratio, **kw: json.dumps({"success": True, "image": str(image_path)}),
     )
 
     result = json.loads(

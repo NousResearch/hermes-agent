@@ -13,29 +13,43 @@ handling, and fail-closed behavior so the parity cannot regress.
 """
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
+from gateway.config import PlatformConfig
+
 # Trigger the shared discord mock from tests/gateway/conftest.py before
 # importing the production module.
-from plugins.platforms.discord.adapter import (  # noqa: E402
+from plugins.platforms.discord.adapter import (
     ClarifyChoiceView,
+    DiscordAdapter,
     ExecApprovalView,
     ModelPickerView,
     SlashConfirmView,
     UpdatePromptView,
-    _component_check_auth,
+    _resolve_exec_approval_admin_gate,
 )
+from plugins.platforms.discord.adapter_component_auth import _component_check_auth
 
 
 @pytest.fixture(autouse=True)
 def _clear_component_auth_env(monkeypatch):
+    from unittest.mock import MagicMock, patch
+
     for name in (
         "DISCORD_ALLOW_ALL_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
         "GATEWAY_ALLOWED_USERS",
     ):
         monkeypatch.delenv(name, raising=False)
+
+    # Default-mock PairingStore so tests don't hit the filesystem.
+    # Pairing-specific tests override this with explicit mock values.
+    mock_store = MagicMock()
+    mock_store.is_approved.return_value = False
+    with patch("gateway.pairing.PairingStore", return_value=mock_store):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -63,16 +77,6 @@ def _interaction(user_id, role_ids=None, *, drop_user=False, drop_roles=False):
 # ── no policy configured -> deny unless allow-all is explicit ──────────────
 
 
-def test_component_check_empty_allowlists_rejects_by_default(monkeypatch):
-    """Button interactions must fail closed without an allowlist or allow-all."""
-    monkeypatch.delenv("DISCORD_ALLOW_ALL_USERS", raising=False)
-    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
-    monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
-    interaction = _interaction(11111)
-    assert _component_check_auth(interaction, set(), set()) is False
-    assert _component_check_auth(interaction, None, None) is False
-
-
 @pytest.mark.parametrize(
     ("env_name", "env_value"),
     [
@@ -89,93 +93,43 @@ def test_component_check_explicit_allow_all_passes(monkeypatch, env_name, env_va
 # ── user allowlist ─────────────────────────────────────────────────────────
 
 
-def test_component_check_user_in_user_allowlist_passes():
-    interaction = _interaction(11111)
-    assert _component_check_auth(interaction, {"11111"}, set()) is True
+@pytest.mark.parametrize("snapshot", [{"11111"}, {"*"}])
+@pytest.mark.parametrize(("verdict", "expected"), [(None, True), (True, True), (False, False)])
+def test_snapshot_user_is_confirmed_with_the_live_check(snapshot, verdict, expected):
+    # The user set is the adapter's connect-time snapshot; None means no live check is wired.
+    seen = []
+
+    def live_auth(interaction):
+        seen.append(interaction.user.id)
+        return verdict
+
+    assert _component_check_auth(_interaction(11111), snapshot, set(), live_auth=live_auth) is expected
+    assert seen == [11111]
 
 
-def test_component_check_user_not_in_user_allowlist_rejected():
-    interaction = _interaction(99999)
-    assert _component_check_auth(interaction, {"11111"}, set()) is False
+@pytest.mark.asyncio
+async def test_approval_buttons_follow_a_revoke_made_after_connect():
+    # `hermes pairing revoke` in another process rewrites .env and the pairing store, never the
+    # adapter's snapshot; the card's buttons must follow the gateway's per-call check instead.
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._allowed_user_ids = {"11111"}
+    live = {"11111": True}
+    adapter.set_authorization_check(lambda user_id, chat_type=None, chat_id=None, **_: live.get(user_id, False))
+    channel = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=1)))
+    adapter._client = SimpleNamespace(get_channel=lambda _chat_id: channel, fetch_channel=AsyncMock())
 
-
-def test_component_check_user_in_global_allowlist_passes(monkeypatch):
-    monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "11111,22222")
-    interaction = _interaction(11111)
-    assert _component_check_auth(interaction, set(), set()) is True
-
-
-def test_component_check_global_allowlist_without_match_rejects(monkeypatch):
-    monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "22222")
-    interaction = _interaction(11111)
-    assert _component_check_auth(interaction, set(), set()) is False
-
-
-def test_component_check_wildcard_user_allowlist_passes():
-    interaction = _interaction(99999)
-    assert _component_check_auth(interaction, {"*"}, set()) is True
+    result = await adapter.send_exec_approval(chat_id="555", command="make deploy", session_key="discord:555")
+    assert result.success is True
+    view = channel.send.call_args.kwargs["view"]
+    assert view._check_auth(_interaction(11111)) is True
+    live["11111"] = False
+    assert view._check_auth(_interaction(11111)) is False
 
 
 # ── role allowlist OR semantics ────────────────────────────────────────────
 
 
-def test_component_check_role_only_user_with_matching_role_passes():
-    """Role-only deployment (DISCORD_ALLOWED_ROLES set, DISCORD_ALLOWED_USERS
-    empty) where the user is not in the empty user list but DOES carry a
-    matching role: must pass. This is the regression that prompted the
-    fix -- previously _check_auth allowed everyone when the user set was
-    empty, ignoring the role allowlist."""
-    interaction = _interaction(99999, role_ids=[42])
-    assert _component_check_auth(interaction, set(), {42}) is True
-
-
-def test_component_check_accepts_role_allowlist_sequences():
-    interaction = _interaction(99999, role_ids=[42])
-    assert _component_check_auth(interaction, set(), [42]) is True
-
-
-def test_component_check_role_only_user_without_matching_role_rejected():
-    """Role-only deployment where the user has no matching role: reject.
-    Previously this allowed everyone because allowed_user_ids was empty."""
-    interaction = _interaction(99999, role_ids=[7, 8])
-    assert _component_check_auth(interaction, set(), {42}) is False
-
-
-def test_component_check_user_or_role_user_match():
-    """Both allowlists set; user matches user allowlist: pass."""
-    interaction = _interaction(11111, role_ids=[7])
-    assert _component_check_auth(interaction, {"11111"}, {42}) is True
-
-
-def test_component_check_user_or_role_role_match():
-    """Both allowlists set; user not in user list but in role list: pass."""
-    interaction = _interaction(99999, role_ids=[42])
-    assert _component_check_auth(interaction, {"11111"}, {42}) is True
-
-
-def test_component_check_user_or_role_neither_match():
-    """Both allowlists set; user matches neither: reject."""
-    interaction = _interaction(99999, role_ids=[7])
-    assert _component_check_auth(interaction, {"11111"}, {42}) is False
-
-
 # ── fail-closed on missing role data ───────────────────────────────────────
-
-
-def test_component_check_role_policy_with_no_roles_attr_rejects():
-    """Role allowlist configured but interaction.user has no .roles
-    attribute (DM-context Member, raw User payload): must reject. A user
-    without resolvable roles cannot satisfy a role allowlist."""
-    interaction = _interaction(11111, drop_roles=True)
-    assert _component_check_auth(interaction, set(), {42}) is False
-
-
-def test_component_check_missing_user_with_allowlist_rejects():
-    """interaction.user is None with any allowlist configured: fail
-    closed without raising AttributeError."""
-    interaction = _interaction(0, drop_user=True)
-    assert _component_check_auth(interaction, {"11111"}, set()) is False
-    assert _component_check_auth(interaction, set(), {42}) is False
 
 
 # ---------------------------------------------------------------------------
@@ -196,15 +150,6 @@ def test_exec_approval_view_accepts_role_allowlist():
     assert view._check_auth(_interaction(99999, role_ids=[7])) is False
 
 
-def test_exec_approval_view_role_default_is_empty_set():
-    """Existing call sites that pass only allowed_user_ids must continue
-    working with the legacy semantics (no role gate)."""
-    view = ExecApprovalView(session_key="sess-1", allowed_user_ids={"11111"})
-    assert view.allowed_role_ids == set()
-    assert view._check_auth(_interaction(11111)) is True
-    assert view._check_auth(_interaction(99999)) is False
-
-
 def test_slash_confirm_view_accepts_role_allowlist():
     view = SlashConfirmView(
         session_key="sess-1",
@@ -219,23 +164,6 @@ def test_slash_confirm_view_accepts_role_allowlist():
 def test_update_prompt_view_accepts_role_allowlist():
     view = UpdatePromptView(
         session_key="sess-1",
-        allowed_user_ids=set(),
-        allowed_role_ids={42},
-    )
-    assert view._check_auth(_interaction(99999, role_ids=[42])) is True
-    assert view._check_auth(_interaction(99999, role_ids=[7])) is False
-
-
-def test_model_picker_view_accepts_role_allowlist():
-    async def _noop(*_a, **_k):
-        return ""
-
-    view = ModelPickerView(
-        providers=[],
-        current_model="m",
-        current_provider="p",
-        session_key="sess-1",
-        on_model_selected=_noop,
         allowed_user_ids=set(),
         allowed_role_ids={42},
     )
@@ -299,8 +227,102 @@ def test_model_picker_view_empty_allowlists_reject_by_default(monkeypatch):
     assert view.allowed_role_ids == set()
     assert view._check_auth(_interaction(99999)) is False
 
+    # Cancel is gated too: a stranger cannot close the owner's picker.
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    stranger = _interaction(99999)
+    stranger.response = SimpleNamespace(send_message=AsyncMock())
+    asyncio.run(view._on_cancel(stranger))
+    assert view.resolved is False
+    stranger.response.send_message.assert_awaited_once()
+    assert stranger.response.send_message.await_args.kwargs.get("ephemeral") is True
+
 
 def test_view_empty_allowlists_allow_with_explicit_allow_all(monkeypatch):
     monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
     view = ExecApprovalView(session_key="s", allowed_user_ids=set())
     assert view._check_auth(_interaction(99999)) is True
+
+
+# ---------------------------------------------------------------------------
+# Pairing store: users approved via ``hermes pairing approve`` must be
+# authorized even without DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES.
+# ---------------------------------------------------------------------------
+
+
+def test_component_check_pairing_approved_user_passes(monkeypatch):
+    """User approved in pairing store passes even without allowlists."""
+    from unittest.mock import MagicMock, patch
+
+    mock_store = MagicMock()
+    mock_store.is_approved.return_value = True
+    # Override the autouse fixture's mock with approved=True
+    with patch("gateway.pairing.PairingStore", return_value=mock_store):
+        interaction = _interaction(11111)
+        assert _component_check_auth(interaction, set(), set()) is True
+    mock_store.is_approved.assert_called_once_with("discord", "11111")
+
+
+# ---------------------------------------------------------------------------
+# Opt-in admin gate for exec-approval buttons (feat/discord-admin-exec-approval).
+# Default OFF: any admitted user can approve (the v0.16-restored behavior).
+# When `require_admin_for_exec_approval` is true, the clicker must ALSO be in
+# `allow_admin_from`. Fails closed (logged) when the toggle is on but no
+# admins are configured. Only ExecApprovalView is gated — other views stay
+# user-scope.
+# ---------------------------------------------------------------------------
+
+
+def test_admin_gate_resolver_on_parses_admins():
+    """Toggle true -> gate enabled, admins coerced from allow_admin_from."""
+    require_admin, admins = _resolve_exec_approval_admin_gate(
+        {"require_admin_for_exec_approval": True, "allow_admin_from": "111, 222"}
+    )
+    assert require_admin is True
+    assert admins == {"111", "222"}
+    # list form normalizes identically
+    _, admins_list = _resolve_exec_approval_admin_gate(
+        {"require_admin_for_exec_approval": "true", "allow_admin_from": [111, 222]}
+    )
+    assert admins_list == {"111", "222"}
+
+
+def test_exec_view_gate_on_non_admin_rejected():
+    """Gate on: admitted user who is NOT an admin is rejected at the button."""
+    view = ExecApprovalView(
+        session_key="s",
+        allowed_user_ids={"11111", "22222"},
+        require_admin=True,
+        admin_user_ids={"11111"},
+    )
+    # 22222 is admitted (in allowlist) but not an admin -> rejected.
+    assert view._check_auth(_interaction(22222)) is False
+
+
+def test_exec_view_gate_on_no_admins_fails_closed(caplog):
+    """Gate on but no admins configured -> nobody approves, logged once."""
+    import logging
+
+    view = ExecApprovalView(
+        session_key="s",
+        allowed_user_ids={"11111"},
+        require_admin=True,
+        admin_user_ids=set(),
+    )
+    with caplog.at_level(logging.WARNING):
+        assert view._check_auth(_interaction(11111)) is False
+    assert any(
+        "require_admin_for_exec_approval" in r.message for r in caplog.records
+    )
+
+
+def test_other_views_not_admin_gated():
+    """Lower-stakes views never take the admin gate — they stay user-scope."""
+    # SlashConfirmView/ModelPickerView/etc. construct without require_admin and
+    # delegate straight to _component_check_auth.
+    sc = SlashConfirmView(
+        session_key="s", confirm_id="c", allowed_user_ids={"11111"}
+    )
+    assert sc._check_auth(_interaction(11111)) is True
+

@@ -2,12 +2,31 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
-import { hydrateLiveSessionInflight, liveSessionInflightMessages, writeActiveSessionFile } from '../app/useSessionLifecycle.js'
+import {
+  hydrateLiveSessionInflight,
+  liveSessionInflightMessages,
+  signalFreshSessionBoundary,
+  writeActiveSessionFile
+} from '../app/useSessionLifecycle.js'
+
+describe('fresh session boundary', () => {
+  it('signals only when a live session is replaced by a different session', () => {
+    const onFreshSessionStarted = vi.fn()
+
+    expect(signalFreshSessionBoundary('old-session', 'new-session', onFreshSessionStarted)).toBe(true)
+    expect(signalFreshSessionBoundary(null, 'first-session', onFreshSessionStarted)).toBe(false)
+    expect(signalFreshSessionBoundary('same-session', 'same-session', onFreshSessionStarted)).toBe(false)
+    expect(signalFreshSessionBoundary('old-session', null, onFreshSessionStarted)).toBe(false)
+    expect(signalFreshSessionBoundary('old-session', 'new-session')).toBe(false)
+    expect(onFreshSessionStarted).toHaveBeenCalledOnce()
+    expect(onFreshSessionStarted).toHaveBeenCalledWith('new-session')
+  })
+})
 
 describe('writeActiveSessionFile', () => {
   let dir = ''
@@ -29,7 +48,6 @@ describe('writeActiveSessionFile', () => {
   })
 })
 
-
 describe('live session activation in-flight state', () => {
   beforeEach(() => {
     resetUiState()
@@ -47,6 +65,24 @@ describe('live session activation in-flight state', () => {
 
     expect(turnController.bufRef).toBe('partial answer')
     expect(getTurnState().streaming).toBe('partial answer')
+  })
+
+  it('preserves synthetic turn display metadata while rebuilding live history', () => {
+    const inflight = {
+      assistant: '',
+      display_kind: 'process_complete',
+      display_metadata: { display_text: 'Finished syncing the workspace' },
+      streaming: true,
+      user: 'process completed'
+    }
+
+    expect(liveSessionInflightMessages(inflight)).toEqual([
+      {
+        kind: 'event',
+        role: 'system',
+        text: 'Finished syncing the workspace'
+      }
+    ])
   })
 
   it('ignores empty in-flight payloads', () => {

@@ -43,7 +43,9 @@ interface Gateway {
 function stubGateway(gateway: Gateway) {
   const fetchMock = vi.fn(async (url: URL, init?: RequestInit) => {
     if (url.pathname.endsWith('/api/status')) {
-      return new Response(JSON.stringify({ gateway_running: true, gateway_shared_with: gateway.served }), { status: 200 })
+      return new Response(JSON.stringify({ gateway_running: true, gateway_shared_with: gateway.served }), {
+        status: 200
+      })
     }
 
     if (url.pathname.endsWith('/api/webapp/socket-ticket')) {

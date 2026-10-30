@@ -37,7 +37,19 @@ export type ToolsetThemeId = 'work' | 'create' | 'recall' | 'connect' | 'more'
 export const TOOLSET_THEMES: ReadonlyArray<{ id: Exclude<ToolsetThemeId, 'more'>; names: readonly string[] }> = [
   {
     id: 'work',
-    names: ['browser', 'computer_use', 'web', 'terminal', 'file', 'code_execution', 'cronjob', 'kanban', 'delegation', 'todo', 'clarify']
+    names: [
+      'browser',
+      'computer_use',
+      'web',
+      'terminal',
+      'file',
+      'code_execution',
+      'cronjob',
+      'kanban',
+      'delegation',
+      'todo',
+      'clarify'
+    ]
   },
   {
     id: 'create',
@@ -62,7 +74,8 @@ export const TOOLSET_FEATURE_MIN = 8
 /** The feature row before there's usage to rank by. */
 export const TOOLSET_ESSENTIALS: readonly string[] = ['browser', 'file', 'code_execution', 'memory']
 
-export const toolsetTheme = (name: string): { id: ToolsetThemeId } => TOOLSET_THEMES.find(theme => theme.names.includes(name)) ?? TOOLSET_MORE_THEME
+export const toolsetTheme = (name: string): { id: ToolsetThemeId } =>
+  TOOLSET_THEMES.find(theme => theme.names.includes(name)) ?? TOOLSET_MORE_THEME
 
 export function filteredToolsets(
   toolsets: ToolsetInfo[],

@@ -37,7 +37,7 @@ def add_outcome_parser(sessions_subparsers) -> None:
     add.add_argument("--ref", "--url", dest="ref", default="", help="PR/commit/ticket URL or id (max 512 chars)")
     add.add_argument("--note", default="", help="One-line note (max 500 chars)")
     add.add_argument("--observed-at", default=None, help="When it happened: a duration ago ('2h') or an ISO time "
-        "(default: now)")
+        "(default: now for a new outcome; a re-record without it keeps the stored time)")
     add_json_flag(add, "Print the recorded outcome as JSON")
 
     lst = actions.add_parser("list", help="List effective outcomes (a later signal on the same ref replaces an "

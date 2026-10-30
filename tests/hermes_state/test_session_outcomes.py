@@ -128,6 +128,27 @@ def test_a_later_signal_on_the_same_ref_supersedes_without_deleting_history(db):
         (revert["id"], True, None), (merged["id"], False, revert["id"])]
 
 
+def test_re_recording_without_observed_at_keeps_the_stored_time_so_a_revert_stays_effective(db):
+    merged = _rec(db, "s1", ref=PR, observed_at=1_700_000_000.0)
+    _rec(db, "s1", "pr.reverted", ref=PR, observed_at=1_700_000_100.0)
+    again = _rec(db, "s1", ref=PR, note="re-polled")  # bare re-add: no observed_at
+
+    assert again["id"] == merged["id"]
+    assert again["observed_at"] == 1_700_000_000.0  # kept, not reset to now
+    assert again["note"] == "re-polled" and again["recorded_at"] >= merged["recorded_at"]
+    assert _effective(db) == [("pr.reverted", "cli")]
+
+
+def test_re_recording_with_a_later_observed_at_moves_it_and_supersession_follows(db):
+    merged = _rec(db, "s1", ref=PR, observed_at=1_700_000_000.0)
+    _rec(db, "s1", "pr.reverted", ref=PR, observed_at=1_700_000_100.0)
+    again = _rec(db, "s1", ref=PR, observed_at=1_700_000_200.0)  # merged again, after the revert
+
+    assert again["id"] == merged["id"]
+    assert again["observed_at"] == 1_700_000_200.0
+    assert _effective(db) == [("merged", "cli")]
+
+
 def test_the_newest_observation_wins_and_a_tie_goes_to_the_higher_id(db):
     _rec(db, "s1", "pr.reverted", ref=PR, observed_at=1_700_000_100.0)
     _rec(db, "s1", ref=PR, observed_at=1_700_000_000.0)  # recorded later, observed earlier

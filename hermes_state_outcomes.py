@@ -73,7 +73,9 @@ def _missing_outcomes_table(exc: sqlite3.OperationalError) -> bool:
 
 
 def outcome_domain(signal: str) -> str:
-    """The artifact kind a signal speaks about: the prefix before the first dot (``pr.merged`` -> ``pr``)."""
+    """The artifact kind a signal speaks about: a legacy unprefixed name folds to its dotted form's prefix
+    (``merged`` -> ``pr``, ``ticket_closed`` -> ``task``); any other signal's is the text before its first dot
+    (``pr.merged`` -> ``pr``), or the whole signal when it has no dot."""
     return _LEGACY_SIGNALS.get(signal, signal).split(".", 1)[0]
 
 
@@ -117,10 +119,13 @@ class SessionOutcomesMixin:
         """Record (or update) one outcome on the physical *session_id*; returns the stored row.
 
         ``(session_id, signal, source, ref, recorder)`` is the identity: recording it again updates verdict,
-        note and both timestamps, so a poller can re-report idempotently. *verdict* defaults to the signal's.
-        *recorder* is ``cli``, ``agent`` or ``plugin:<id>``. Raises ValueError for an unknown session or an
-        invalid field.
+        note and ``recorded_at`` in place. ``observed_at`` defaults to now for a new row; on a re-record it
+        changes only when *observed_at* is passed, so re-reporting a signal without one keeps its place in
+        supersession (a re-added ``pr.merged`` does not undo a later ``pr.reverted``). *verdict* defaults to
+        the signal's. *recorder* is ``cli``, ``agent`` or ``plugin:<id>``. Raises ValueError for an unknown
+        session or an invalid field.
         """
+        explicit_observed_at = observed_at is not None
         verdict, observed_at = _validate_outcome(signal, verdict, source, recorder, ref, note, observed_at)
 
         def _write(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -129,10 +134,11 @@ class SessionOutcomesMixin:
             row = conn.execute(
                 f"INSERT INTO session_outcomes ({', '.join(OUTCOME_COLUMNS[1:])}) VALUES (?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT (session_id, signal, source, ref, recorder) DO UPDATE SET verdict = excluded.verdict, "
-                "note = excluded.note, observed_at = excluded.observed_at, recorded_at = excluded.recorded_at "
+                "note = excluded.note, recorded_at = excluded.recorded_at, observed_at = CASE WHEN ? "
+                "THEN excluded.observed_at ELSE session_outcomes.observed_at END "
                 f"RETURNING {', '.join(OUTCOME_COLUMNS)}",
                 (session_id, signal, verdict, source, recorder, ref, note, observed_at,
-                 time.time())).fetchone()
+                 time.time(), explicit_observed_at)).fetchone()
             return {**dict(zip(OUTCOME_COLUMNS, row)), "domain": outcome_domain(signal)}
         return self._execute_write(_write)
 

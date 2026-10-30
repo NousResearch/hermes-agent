@@ -95,6 +95,17 @@ _RESPONSES_FINGERPRINT_KEYS = (
 )
 
 
+def _responses_request_error(body):
+    from gateway.platforms.api_server import _coerce_request_bool, _error_response
+    if body.get("input") is None:
+        return _error_response("Missing 'input' field", 400)
+    if body.get("public_commentary") is True and not _coerce_request_bool(body.get("stream"), default=False):
+        return _error_response("'public_commentary' requires stream: true", 400)
+    if body.get('conversation') and body.get('previous_response_id'):
+        return _error_response("Cannot use both 'conversation' and 'previous_response_id'", 400)
+    return None
+
+
 def _settled(record):
     """A stored idempotency record that carries its answer. A claim written without one (an
     older release recorded the claim before the run) has an unknown outcome and never replays."""
@@ -104,7 +115,9 @@ def _settled(record):
 def _responses_fingerprint_keys(body):
     """``truncation`` joins the fingerprint only when sent, so an exact retry of a request
     recorded before it was fingerprinted keeps matching its stored key."""
-    return _RESPONSES_FINGERPRINT_KEYS + (("truncation",) if body.get("truncation") is not None else ())
+    keys = _RESPONSES_FINGERPRINT_KEYS + (("truncation",) if body.get("truncation") is not None else ())
+    # Keep legacy generic fingerprints, but never replay a private projection as speech.
+    return keys + (("public_commentary",) if body.get("public_commentary") is True else ())
 
 
 async def _response_identity(store, durable_key):
@@ -1381,15 +1394,12 @@ class OpenAICompatRoutesMixin:
             body = await request.json()
         except Exception:
             return _invalid_request("Invalid JSON in request body")
-        raw_input = body.get("input")
-        if raw_input is None:
-            return _error_response("Missing 'input' field", 400)
+        input_error = _responses_request_error(body)
+        if input_error is not None:
+            return input_error
         instructions = body.get("instructions")
-        previous_response_id = body.get("previous_response_id")
         conversation = body.get("conversation")
         store = _coerce_request_bool(body.get("store"), default=True)
-        if conversation and previous_response_id:
-            return _error_response("Cannot use both 'conversation' and 'previous_response_id'", 400)
         stream = _coerce_request_bool(body.get("stream"), default=False)
         durable_key, idempotency_scope, idempotency_key, replayed = await self._responses_durable_replay(
             request, body, stream)
@@ -1415,6 +1425,15 @@ class OpenAICompatRoutesMixin:
         if durable_key:
             response_model = await response_store.off_loop(response_store.request_model, durable_key[0], response_model)
         if stream:
+            if body.get("public_commentary") is True:
+                return await self._start_public_responses_speech(
+                    request, body=body, run_kwargs=run_kwargs,
+                    conversation_history=conversation_history, user_message=user_message,
+                    instructions=instructions, conversation=conversation, store=store,
+                    session_id=session_id, gateway_session_key=gateway_session_key,
+                    run_agent=run_agent, response_id=response_id, created_at=created_at,
+                    response_model=response_model, durable_key=durable_key,
+                    terminal_replay=context.get('terminal_replay', False))
             _stream_q = ThreadSafeAsyncQueue()
 
             def _on_tool_progress(event_type, name, preview, args, **kwargs):

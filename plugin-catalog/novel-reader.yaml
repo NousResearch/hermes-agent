@@ -1,0 +1,30 @@
+name: novel-reader
+repo: https://github.com/bingochen87/hermes-novel-reader
+sha: 3c5cf9b2a6c2f3a09749e10801e9ef14df5ea773
+title: Novel Reader
+version: "0.1.0"
+description: 'Read local .txt/.md novels beside the conversation while the agent
+  works: chapter detection from CJK and latin headings, leading table-of-contents
+  trimming, UTF-8 / GBK / GB18030 sniffing, and a per-book progress mark, so
+  reopening a book resumes where you stopped. Four entry points — a sidebar row
+  with a /novel page, a status-bar chip, a title-bar button that opens a floating
+  panel or a docked right-edge column, and a contributed layout pane. Disclosure —
+  opens only the files the user picks (a granted folder through the Hermes file
+  door, or individual files from the OS dialog) and never writes outside Hermes
+  plugin storage, where the shelf (absolute paths and names), typography settings
+  and one progress mark per book are kept; no network access, no telemetry, no
+  update checks. Desktop-only (desktop/plugin.js inside the plugin SDK surface);
+  no agent tools, hooks, middleware or env vars.'
+maintainer: bingochen87
+tier: community
+category: desktop
+docs_url: https://github.com/bingochen87/hermes-novel-reader
+platforms: []
+image: https://raw.githubusercontent.com/bingochen87/hermes-novel-reader/3c5cf9b2a6c2f3a09749e10801e9ef14df5ea773/assets/panel.png
+screenshots:
+  - https://raw.githubusercontent.com/bingochen87/hermes-novel-reader/3c5cf9b2a6c2f3a09749e10801e9ef14df5ea773/assets/page.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

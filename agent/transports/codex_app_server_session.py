@@ -189,6 +189,7 @@ class _ServerRequestRouting:
 
     auto_approve_exec: bool = False
     auto_approve_apply_patch: bool = False
+    auto_approve_mcp_tool_call: bool = False
 
 
 class CodexThreadResumeError(CodexAppServerError):
@@ -716,22 +717,35 @@ class CodexAppServerSession:
         client.respond(rid, handler(self, params))
 
     def _respond_elicitation(self, params: dict) -> dict:
-        """Route tool-call approvals to the owning session; unsupported forms fail closed."""
+        """Codex forwards MCP tool-call approvals here, and a decline blocks the call outright, so tool calls ask
+        the session's approval surface. hermes-tools is accepted (enabling the runtime opted in); others fail closed."""
+        return {"action": self._decide_elicitation(params), "content": None, "_meta": None}
+
+    def _decide_elicitation(self, params: dict) -> str:
         server = params.get("serverName") or ""
         if server == HERMES_TOOLS_MCP_SERVER_NAME:
-            return {"action": "accept", "content": None, "_meta": None}
-        meta = params.get("_meta") or {}
+            return "accept"
+        meta = params.get("_meta")
         if (params.get("mode") != "form" or not isinstance(meta, dict)
                 or meta.get("codex_approval_kind") != "mcp_tool_call"):
-            return {"action": "decline", "content": None, "_meta": None}
+            return "decline"
+        return self._decide_mcp_tool_call(server, params.get("message"), meta)
+
+    def _decide_mcp_tool_call(self, server: str, message: Optional[str], meta: dict) -> str:
+        from tools.approval import is_approved
+        from tools.approval_context import get_current_session_key
         from tools.approval_prompt import request_elicitation_consent
+        title = meta.get("tool_title")
+        # Without a tool name a session/always answer could only be filed under the whole server.
+        remember_key = "mcp:" + "/".join(filter(None, (server, meta.get("connector_id"), title))) if title else None
+        if self._routing.auto_approve_mcp_tool_call or (
+                remember_key and is_approved(get_current_session_key(), remember_key)):
+            return "accept"
+        title = title or "MCP tool call"
         details = meta.get("tool_params_display") or meta.get("tool_params") or {}
-        description = json.dumps(details, ensure_ascii=False, indent=2)
-        title = meta.get("tool_title") or "MCP tool call"
-        message = params.get("message") or f"Approve {title}?"
-        action = request_elicitation_consent(message, f"{server}: {title}\n{description}",
-                                             surface=f"mcp-elicitation/{server}")
-        return {"action": action, "content": None, "_meta": None}
+        description = f"{server}: {title}\n{json.dumps(details, ensure_ascii=False, indent=2)}"
+        return request_elicitation_consent(message or f"Approve {title}?", description,
+                                           surface=f"mcp-elicitation/{server}", remember_key=remember_key)
 
     _SERVER_REQUEST_HANDLERS: dict[str, Callable[..., dict]] = {
         "item/commandExecution/requestApproval": lambda self, p: {"decision": self._decide_exec_approval(p)},

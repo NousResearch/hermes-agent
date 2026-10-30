@@ -754,11 +754,11 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
     def _factory(server_name: str, tool_timeout: float):
         def _handler(args: dict, **kwargs) -> str:
             from tools import mcp_tool_discovery as _discovery  # lazy: import cycle
+            if required and not args.get(required):
+                return tool_error(f"Missing required parameter '{required}'")
             server = _discovery._get_connected_server_for_call(server_name)
             if not server or not server.session:
                 return tool_error(f"MCP server '{server_name}' is not connected")
-            if required and not args.get(required):
-                return tool_error(f"Missing required parameter '{required}'")
 
             async def _call():
                 async with server._rpc_lock:

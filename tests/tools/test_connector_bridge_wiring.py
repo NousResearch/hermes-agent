@@ -136,6 +136,62 @@ def test_normalize_parses_string_envelope_single_dict():
     assert entries == [{"name": "session_search", "arguments": {"query": "x"}}]
 
 
+def test_normalize_repairs_malformed_string_envelope_once(monkeypatch):
+    from agent import message_sanitization
+
+    calls = []
+    original = message_sanitization._repair_tool_call_arguments
+
+    def repair_once(raw, tool_name="?", **kwargs):
+        calls.append((raw, tool_name))
+        assert kwargs == {"log_payload": False}
+        return original(raw, tool_name, **kwargs)
+
+    monkeypatch.setattr(message_sanitization, "_repair_tool_call_arguments", repair_once)
+    entries, err = normalize_tool_call_entries({
+        "calls": '[{"name":"connectors__gmail__SEND_EMAIL","arguments":{},}]',
+    })
+
+    assert err is None
+    assert entries == [{"name": "connectors__gmail__SEND_EMAIL", "arguments": {}}]
+    assert len(calls) == 1
+    assert calls[0][1] == "tool_call calls envelope"
+
+
+def test_normalize_repairs_truncated_nested_string_envelope():
+    query = 'truncated with a "quoted" value'
+    calls = json.dumps([{"name": "session_search", "arguments": {"query": query}}])
+
+    entries, err = normalize_tool_call_entries({"calls": calls[:-1]})
+
+    assert err is None
+    assert entries == [{"name": "session_search", "arguments": {"query": query}}]
+
+
+def test_normalize_actual_helper_sentinel_preserves_json_error():
+    entries, err = normalize_tool_call_entries({"calls": '{"name":"session_search","arguments":"unterminated'})
+
+    assert entries == []
+    assert "tool_call 'calls' is not valid JSON" in err
+
+
+def test_normalize_keeps_original_json_error_when_envelope_unrepairable(monkeypatch):
+    from agent import message_sanitization
+
+    calls = []
+
+    def repair_once(raw, tool_name="?", **kwargs):
+        calls.append(raw)
+        return "not repaired"
+
+    monkeypatch.setattr(message_sanitization, "_repair_tool_call_arguments", repair_once)
+    entries, err = normalize_tool_call_entries({"calls": "nope"})
+
+    assert entries == []
+    assert "tool_call 'calls' is not valid JSON" in err
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize(
     "bad,expected_fragment",
     [

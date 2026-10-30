@@ -1,0 +1,46 @@
+# Vendor-hosted remote MCP; catalog admission requires maintainer review.
+manifest_version: 1
+
+name: brek-direct-booking
+description: "Find property-manager direct booking pages for specific Airbnb vacation rentals."
+source: https://www.brek.ai/help/connectors
+
+transport:
+  type: http
+  url: https://api.brek.ai/mcp
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - lookup_direct_booking
+
+suggest:
+  keywords:
+    - "brek direct booking"
+    - "direct booking"
+  hosts:
+    - airbnb.com
+    - brek.ai
+  examples:
+    - "Find a direct-booking page for https://www.airbnb.com/rooms/13208131."
+    - "Can I book this Airbnb rental directly through its property manager?"
+
+post_install: |
+  No account, API key, payment details or PMS access is required.
+  Restart the session after installation to discover lookup_direct_booking.
+
+  Provide 1–10 full Airbnb room URLs or exact listing IDs as strings.
+  The lookup reads existing property mappings and returns operator booking
+  links, with property names and images when available. Coverage varies;
+  no match is a normal completed lookup, not a service error.
+  Follow next_offset only when more links are requested.
+
+  This connector does not search destinations, compare rates, check live
+  availability, guarantee savings, make reservations or process payments.
+  Travelers check prices and terms on the returned booking website.
+
+  Documentation: https://www.brek.ai/help/connectors
+  Privacy: https://www.brek.ai/privacy#direct-booking-mcp
+  Contact: leo@pageonelab.com.

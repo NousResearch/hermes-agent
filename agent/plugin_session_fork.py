@@ -4,9 +4,10 @@ The background-review pattern, for plugins: after a turn, a plugin redeems the t
 (``post_llm_call``'s ``side_question_token``, :mod:`agent.side_question_lease`) to fork the live
 session agent (same system prompt, ``tools[]``, memory and warm prompt cache) and run one bounded
 multi-step prompt in the background. Guardrails are the review's own: a dispatch-side tool
-whitelist of the tools the plugin names (already advertised to the session), dangerous-command
-approvals auto-denied, an aggregate input budget, an iteration cap, cancellation when the parent
-starts its next live turn, idle deferral on the managed local runtime, persistence fully detached.
+whitelist of the tools the plugin names (its own, already advertised to the session),
+dangerous-command approvals auto-denied, an aggregate input budget, an iteration cap, cancellation
+when the parent starts its next live turn, idle deferral on the managed local runtime, persistence
+fully detached.
 Usage is billed to the session as ``plugin_fork:<plugin id>``; each loop request reports through
 ``pre/post_auxiliary_call`` (``aux_task="plugin_fork"`` + ``plugin_id``), never the turn-scoped
 ``pre/post_api_request``. Tool handlers called inside the fork receive
@@ -32,15 +33,27 @@ MAX_TIMEOUT_SECONDS = 1800.0
 
 _TURN_ORIGIN: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("hermes_turn_origin", default=None)
 
-# Tools that start another agent loop: in-process subagents (``delegate_task``), a teammate agent
-# (``message_agent``), scheduled or immediately fired cron runs (``cronjob_manage``) and Kanban
-# moves that hand a task to a dispatched worker. That loop runs outside this thread's dispatch
-# guard, so it keeps neither the fork's tool whitelist nor its auto-denied approvals; a fork never
-# holds one of them.
-AGENT_SPAWNING_TOOLS = frozenset({
-    "delegate_task", "message_agent", "cronjob_manage",
-    "kanban_create", "kanban_unblock", "kanban_complete", "kanban_request_review", "kanban_request_changes",
-})
+# The one place a core tool is marked fork-safe. A plugin fork holds only the requesting plugin's
+# own tools plus these; every other tool (another plugin's, any MCP tool, any unmarked core tool)
+# is refused, because a handler may start work (a subagent, a remote agent task, a cron run, a
+# detached worker, a server-initiated sampling call) that runs outside the fork thread's dispatch
+# guard, keeping neither its tool whitelist nor its auto-denied approvals. Admission: the handler
+# only reads, needs no approval, and starts no process, agent loop, remote task or worker. Empty:
+# the read-only candidates fail it (``skill_view`` can render a skill's inline shell).
+FORK_SAFE_CORE_TOOLS: frozenset[str] = frozenset()
+
+
+def fork_tool_allowlist(own_tools: Iterable[Any]) -> frozenset[str]:
+    """The tools a plugin fork may hold: ``own_tools`` (the names whose live registration is the
+    requesting plugin's) plus :data:`FORK_SAFE_CORE_TOOLS`. A name dispatch reroutes before the
+    registry (an agent-level inline tool such as ``delegate_task``, a legacy alias, a Tool Search
+    bridge tool) is never the plugin's own: calling it would run core code, not the plugin's."""
+    from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS
+    from model_tools import _LEGACY_TOOL_ALIASES
+    from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
+
+    rerouted = set(INLINE_TOOL_EXECUTORS) | set(_LEGACY_TOOL_ALIASES) | BRIDGE_TOOL_NAMES
+    return frozenset(n for n in own_tools if isinstance(n, str) and n not in rerouted) | FORK_SAFE_CORE_TOOLS
 
 
 def current_turn_origin() -> Optional[str]:
@@ -112,6 +125,8 @@ class _ForkJob:
     task_cfg: dict
     timeout: Optional[float]
     run: Any  # background_review._BackgroundReviewRun
+    # The requesting plugin's own tool names, read at request time and again at dispatch.
+    own_tools: Callable[[], Iterable[str]] = frozenset
     handle: PluginForkHandle = field(init=False)
     # Guarded by ``_lock``: the idle-queue slot while deferred; ``launched`` once ``_launch``
     # admitted the job, after which only its worker settles the handle.
@@ -164,19 +179,22 @@ def _resolve_task_cfg(task: Optional[str], owned_tasks: Iterable[str]) -> Option
 def start_session_fork(
     token: Any, prompt: Any, *, plugin_id: str, home: Any, tools: Any = (), max_iterations: Any = DEFAULT_MAX_ITERATIONS,
     input_budget: Any = None, task: Optional[str] = None, timeout: Any = None, owned_tasks: Iterable[str] = (),
+    own_tools: Callable[[], Iterable[str]] = frozenset,
 ) -> Optional[PluginForkHandle]:
     """Spend the lease behind ``token`` on one background fork; its handle, or None (bad token,
-    expired lease, another profile's lease, a tool the session does not advertise, an
-    agent-spawning tool, a task the plugin does not own). The lease is consumed by every call
-    except another profile's."""
+    expired lease, another profile's lease, a tool outside :func:`fork_tool_allowlist`, a tool the
+    session does not advertise, a task the plugin does not own). The lease is consumed by every
+    call except another profile's and one naming a tool outside the allowlist. ``own_tools``
+    returns the plugin's own tool names; it is read here and again when the fork starts."""
     from agent.background_review import _BackgroundReviewRun
     from agent.side_question_lease import take_lease
 
     names = frozenset(tools) if isinstance(tools, (list, tuple, set, frozenset)) else None
-    if names is not None and names & AGENT_SPAWNING_TOOLS:
+    refused = names - fork_tool_allowlist(own_tools()) if names is not None else None
+    if refused:
         # A request no session could satisfy: refused before the lease, so the token stays usable.
-        logger.info("session_fork plugin=%s outcome=rejected:agent_spawning_tool %s", plugin_id,
-                    sorted(map(str, names & AGENT_SPAWNING_TOOLS)))
+        logger.info("session_fork plugin=%s outcome=rejected:tool_not_fork_safe %s", plugin_id,
+                    sorted(map(str, refused)))
         return None
     lease = take_lease(token, prompt, plugin_id=plugin_id, home=home, kind="session_fork",
                        max_prompt_chars=MAX_PROMPT_CHARS)
@@ -194,7 +212,7 @@ def start_session_fork(
         return None
     run = _BackgroundReviewRun()
     job = _ForkJob(plugin_id, capture, prompt, names, _bounded_int(max_iterations, 1, MAX_ITERATIONS) or DEFAULT_MAX_ITERATIONS,
-                   _bounded_int(input_budget, 1), task_cfg, _clamped_timeout(timeout), run)
+                   _bounded_int(input_budget, 1), task_cfg, _clamped_timeout(timeout), run, own_tools)
     job.handle = PluginForkHandle(plugin_id, lambda: _cancel_job(job))
     parent = capture.parent_ref()
     if parent is not None and capture.context.copy().run(_should_defer, parent, task_cfg):
@@ -409,8 +427,9 @@ def _run_job(job: _ForkJob) -> None:
             fork._review_input_token_budget = budget
             fork._loop_aux_task = (PLUGIN_FORK_TASK, {"plugin_id": job.plugin_id})
             _track_child(parent, fork, register=True)
-            # The dispatch guard refuses agent-spawning tools however the job was built.
-            allowed = set(job.tools) - AGENT_SPAWNING_TOOLS
+            # The allowlist is read again here: the dispatch guard holds only tools that are still
+            # the plugin's own (or marked fork-safe), however the job was built.
+            allowed = set(job.tools) & fork_tool_allowlist(job.own_tools())
             set_thread_tool_whitelist(allowed, deny_msg_fmt=(
                 "This background task may only call: " + (", ".join(sorted(allowed)) or "no tools")
                 + ". {tool_name} was denied; do not retry it."))
@@ -425,7 +444,7 @@ def _run_job(job: _ForkJob) -> None:
             if job.run.begin_request(fork):
                 result = fork.run_conversation(
                     user_message=job.prompt, conversation_history=_digest_history(snapshot) if routed else snapshot)
-                actions = _tool_calls_after((result or {}).get("messages") or [], snapshot, job.tools)
+                actions = _tool_calls_after((result or {}).get("messages") or [], snapshot, frozenset(allowed))
         outcome = _outcome(job, fork, result, timed_out)
     except Exception:
         # Boundary: a plugin's fork settles its handle, it never raises into the plugin.

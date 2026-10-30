@@ -479,10 +479,7 @@ The tool must already be available to the parent agent; this setting only adds
 it to the review fork's runtime whitelist. It does not enable arbitrary tools,
 and tools not listed here remain denied. Keep the list narrow and prefer tools
 that stage a proposal for human review rather than applying external or
-destructive changes directly. The default is an empty list. Tools that start
-another agent loop (`delegate_task`, `message_agent`, `cronjob_manage`, and the
-Kanban moves that dispatch a worker) are ignored with a warning: that loop
-would run outside the review's whitelist and its auto-denied approvals.
+destructive changes directly. The default is an empty list.
 
 ### Local models: reviews wait for an idle GPU (`defer`)
 

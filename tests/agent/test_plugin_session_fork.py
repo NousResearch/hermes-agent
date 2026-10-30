@@ -111,11 +111,20 @@ def forks(monkeypatch):
     side_question_lease._leases.clear()
 
 
+def _registers(*names: str) -> str:
+    return ("import json\n\n\ndef register(ctx):\n"
+            f"    for name in {list(names)!r}:\n"
+            "        ctx.register_tool(name, 'cw', {'name': name, 'description': name, 'parameters': {\n"
+            "            'type': 'object', 'properties': {}}}, lambda args, **kw: json.dumps({'ok': True}))\n")
+
+
 @pytest.fixture
 def consented():
-    """``wisdom`` declares and is granted ``llm.session_fork``; ``bystander`` declares it only."""
-    _install_plugin(PLUGIN, declares=True)
-    _install_plugin("bystander", declares=True)
+    """``wisdom`` declares and is granted ``llm.session_fork`` and registers ``cw_offer``,
+    ``cw_hidden`` and ``message_agent`` (a name dispatch intercepts before the registry);
+    ``bystander`` declares the capability only and registers ``a2a_call`` and ``meet_join``."""
+    _install_plugin(PLUGIN, declares=True, body=_registers("cw_offer", "cw_hidden", "message_agent"))
+    _install_plugin("bystander", declares=True, body=_registers("a2a_call", "meet_join"))
     return _load([PLUGIN, "bystander"], granted=[PLUGIN])
 
 
@@ -193,8 +202,9 @@ def test_another_profile_cannot_fork_the_session(forks, consented, tmp_path):
 # ── 2. what the fork may do ──────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("tools", [["not_advertised"], ["cw_offer", "missing"], "cw_offer", [42]])
+@pytest.mark.parametrize("tools", [["cw_hidden"], ["cw_offer", "cw_hidden"], "cw_offer"])
 def test_tools_must_already_be_in_the_session(forks, consented, tools):
+    """The plugin's own ``cw_hidden`` is not advertised to this session: refused, token spent."""
     parent = _agent()
     token = issue_side_question_token(parent, [], "turn-1")
     assert _ctx(consented).fork_session(token, "q", tools=tools) is None
@@ -209,53 +219,113 @@ def test_task_must_be_the_plugins_own(forks, consented):
     assert forks.built == []
 
 
-@pytest.mark.parametrize("spawning", sorted(plugin_session_fork.AGENT_SPAWNING_TOOLS))
-def test_agent_spawning_tools_are_refused_and_the_token_stays_usable(forks, consented, spawning):
-    """A subagent, teammate, cron or Kanban worker loop runs outside the fork's whitelist and
-    auto-deny, so naming one refuses the fork even when the session advertises it."""
-    parent = _agent(tools=[_tool("cw_offer"), _tool(spawning)])
+@pytest.fixture
+def mcp_tool():
+    """A live MCP registration (dynamic name, ``mcp-<server>`` toolset), as discovery makes one."""
+    from tools.registry import registry
+
+    name = "mcp_srv_lookup"
+    registry.register(name=name, toolset="mcp-srv", schema={"name": name, "description": name, "parameters": {
+        "type": "object", "properties": {}}}, handler=lambda args, **kw: "{}")
+    yield name
+    registry.deregister(name)
+
+
+@pytest.mark.parametrize("foreign", [
+    "a2a_call", "meet_join",  # another plugin's tools (remote agent task, detached worker)
+    "mcp_srv_lookup",  # an MCP tool: its call can trigger server-initiated sampling
+    "delegate_task", "terminal", "cronjob_manage", "kanban_create",  # unmarked core tools
+    "message_agent",  # registered by this plugin, but dispatch runs the core inline executor
+    42,
+])
+def test_a_tool_outside_the_fork_allowlist_is_refused_and_the_token_stays_usable(forks, consented, mcp_tool, foreign):
+    """A fork holds only its plugin's own tools plus core tools marked fork-safe. Naming any
+    other tool, even one the session advertises, refuses the fork before the lease; the same
+    token then backs a fork of the plugin's own tool."""
+    parent = _agent(tools=[_tool("cw_offer"), _tool(str(foreign))])
     token = issue_side_question_token(parent, [], "turn-1")
-    assert _ctx(consented).fork_session(token, "q", tools=["cw_offer", spawning]) is None
+    assert _ctx(consented).fork_session(token, "q", tools=["cw_offer", foreign]) is None
     assert forks.built == []
     assert _settled(_ctx(consented).fork_session(token, "q", tools=["cw_offer"])).outcome == "ok"
 
 
-def test_the_fork_dispatch_guard_refuses_agent_spawning_tools_however_the_job_was_built(forks, consented):
-    """Second fence: a job holding delegate_task (built past start_session_fork) still cannot
-    dispatch it from the fork thread; its whitelisted tool still can."""
+def test_a_name_dispatch_reroutes_is_never_the_plugins_own(consented):
+    """``message_agent`` (registered by wisdom), ``cronjob`` (a legacy alias of ``cronjob_manage``)
+    and ``tool_call`` (the Tool Search bridge) dispatch to core code before the registry."""
+    own = _ctx(consented)._own_tool_names() | {"cronjob", "tool_call"}
+    assert {"cw_offer", "message_agent"} <= own
+    assert plugin_session_fork.fork_tool_allowlist(own) - plugin_session_fork.FORK_SAFE_CORE_TOOLS == {
+        "cw_offer", "cw_hidden"}
+
+
+def test_a_core_tool_is_held_only_when_marked_fork_safe(forks, consented, monkeypatch):
+    parent = _agent(tools=[_tool("cw_offer"), _tool("skills_list")])
+    token = issue_side_question_token(parent, [], "turn-1")
+    assert _ctx(consented).fork_session(token, "q", tools=["skills_list"]) is None
+    monkeypatch.setattr(plugin_session_fork, "FORK_SAFE_CORE_TOOLS", frozenset({"skills_list"}))
+    assert _settled(_ctx(consented).fork_session(token, "q", tools=["skills_list", "cw_offer"])).outcome == "ok"
+
+
+def test_a_tool_belongs_to_the_plugin_whose_registration_is_live(forks, consented):
+    """``bystander`` re-registers ``cw_offer`` in the same toolset, replacing wisdom's entry: the
+    name is now bystander's, so a wisdom fork may no longer hold it."""
+    _ctx(consented, "bystander").register_tool("cw_offer", "cw", _tool("cw_offer")["function"],
+                                               lambda args, **kw: "{}")
+    assert "cw_offer" not in _ctx(consented)._own_tool_names()
+    assert "cw_offer" in _ctx(consented, "bystander")._own_tool_names()
+    parent = _agent()
+    token = issue_side_question_token(parent, [], "turn-1")
+    assert _ctx(consented).fork_session(token, "q", tools=["cw_offer"]) is None
+    assert forks.built == []
+
+
+def _job_holding(parent, tools, own_tools):
+    """A job built past ``start_session_fork`` (no request-time check ran)."""
     import contextvars
     import weakref
 
     from agent.side_question_request import SideQuestionCapture, runtime_key
-    from hermes_cli.plugins import get_pre_tool_call_directive
 
-    parent = _agent(tools=[_tool("cw_offer"), _tool("delegate_task")])
     capture = SideQuestionCapture(parent_ref=weakref.ref(parent), messages=[], system_prompt="sys",
                                   system_prompt_static=None, tools=parent.tools, session_id="sess",
                                   turn_id="turn-1", runtime=runtime_key(parent), context=contextvars.copy_context())
-    forks.script = lambda fork: {"final_response": json.dumps({
-        name: get_pre_tool_call_directive(name, {}) for name in ("delegate_task", "cw_offer")}), "messages": []}
-    job = plugin_session_fork._ForkJob(PLUGIN, capture, "q", frozenset({"delegate_task", "cw_offer"}), 1, None, {},
-                                       None, background_review._BackgroundReviewRun())
+    job = plugin_session_fork._ForkJob(PLUGIN, capture, "q", frozenset(tools), 1, None, {}, None,
+                                       background_review._BackgroundReviewRun(), own_tools)
     job.handle = plugin_session_fork.PluginForkHandle(PLUGIN, lambda: None)
+    return job
+
+
+_HELD = ("cw_offer", "delegate_task", "a2a_call", "meet_join", "mcp_srv_lookup", "message_agent")
+
+
+def test_the_fork_dispatch_guard_holds_only_the_allowlist_however_the_job_was_built(forks, consented, mcp_tool):
+    """Second fence: a job naming tools outside the allowlist still cannot dispatch them from the
+    fork thread; its plugin's own tool still can."""
+    from hermes_cli.plugins import get_pre_tool_call_directive
+
+    parent = _agent(tools=[_tool(name) for name in _HELD])
+    forks.script = lambda fork: {"final_response": json.dumps({
+        name: get_pre_tool_call_directive(name, {}) for name in _HELD}), "messages": []}
+    job = _job_holding(parent, _HELD, _ctx(consented)._own_tool_names)
     plugin_session_fork._launch(job)
     seen = json.loads(_settled(job.handle).result)
-    assert seen["delegate_task"][0] == "block" and "may only call: cw_offer." in seen["delegate_task"][1]
-    assert seen["cw_offer"] == [None, None]
+    assert seen.pop("cw_offer") == [None, None]
+    assert all(verdict[0] == "block" and "may only call: cw_offer." in verdict[1] for verdict in seen.values()), seen
 
 
-def test_the_background_review_whitelist_holds_no_agent_spawning_tool(caplog):
-    """The review fork has the same thread-local guard: neither its default whitelist nor an
-    operator's ``extra_tools`` admits a tool that spawns an agent loop."""
-    review_agent = SimpleNamespace(_memory_enabled=True, _user_profile_enabled=True)
-    for review_memory in (False, True):
-        whitelist, _extra = background_review._review_tool_whitelist(review_agent, None, review_memory)
-        assert not whitelist & plugin_session_fork.AGENT_SPAWNING_TOOLS
-    task_cfg = {"extra_tools": ["delegate_task", "cronjob_manage", "propose_change"]}
-    whitelist, extra = background_review._review_tool_whitelist(review_agent, task_cfg)
-    assert extra == {"propose_change"} and "propose_change" in whitelist
-    assert not whitelist & plugin_session_fork.AGENT_SPAWNING_TOOLS
-    assert "ignoring agent-spawning tools ['cronjob_manage', 'delegate_task']" in caplog.text
+def test_the_fork_dispatch_guard_reads_the_allowlist_again_when_the_fork_starts(forks, consented):
+    """A tool that stopped being the plugin's own between the request and the fork's start (the
+    plugin was unloaded, or another plugin took the name) is refused at dispatch."""
+    from hermes_cli.plugins import get_pre_tool_call_directive
+
+    parent = _agent()
+    reads: list = []
+    forks.script = lambda fork: {"final_response": json.dumps(get_pre_tool_call_directive("cw_offer", {})),
+                                 "messages": []}
+    job = _job_holding(parent, ["cw_offer"], lambda: reads.append(1) or frozenset())
+    plugin_session_fork._launch(job)
+    verdict = json.loads(_settled(job.handle).result)
+    assert reads and verdict[0] == "block" and "may only call: no tools." in verdict[1]
 
 
 @pytest.mark.parametrize("granted", [True, False])

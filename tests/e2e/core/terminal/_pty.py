@@ -14,6 +14,7 @@ from __future__ import annotations
 import fcntl
 import os
 import re
+import shutil
 import signal
 import sqlite3
 import struct
@@ -125,6 +126,14 @@ class PtyHermes:
             TMPDIR=str(root / "tmp"), TERM="xterm-256color", COLORTERM="truecolor",
             PYTHONUNBUFFERED="1", HERMES_STATE_DB_GUARD_BYPASS="1",
         )
+        if "--tui" in argv_tail:
+            # This suite exercises the built UI, not PM provisioning in a fresh HOME.
+            # Without an explicit bundle, freshness checks look for isolated PM tools
+            # and can download a whole toolchain before the terminal becomes ready.
+            node = shutil.which("node")
+            if node is None or not (REPO_ROOT / "ui-tui/dist/entry.js").is_file():
+                raise RuntimeError("TUI PTY tests require Node and a built ui-tui/dist/entry.js")
+            env.update(HERMES_TUI_DIR=str(REPO_ROOT / "ui-tui"), HERMES_NODE=node)
         master, slave = os.openpty()
         self._set_winsize(master, rows, cols)
         self.master = master

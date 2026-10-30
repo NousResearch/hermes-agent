@@ -188,6 +188,7 @@ function Harness({ pendingScope, suspend, onSubmit }: HarnessProps) {
     drainNextQueued: async () => false,
     exitQueuedEdit: () => false,
     onCancel: () => {},
+    onInterruptTurn: () => {},
     onSteer: actions.redirectPrompt,
     onSteerHidden: actions.injectHiddenPrompt,
     onSubmit: onSubmit ?? actions.submitText,

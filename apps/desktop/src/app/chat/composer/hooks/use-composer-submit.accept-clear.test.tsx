@@ -67,6 +67,7 @@ function Harness({ scope }: { scope: string }) {
     exitQueuedEdit: () => false,
     inputDisabled: false,
     onCancel: () => {},
+    onInterruptTurn: () => {},
     onSteer: async () => true,
     onSteerHidden: async () => true,
     onSubmit: () => new Promise<boolean>(resolve => (accept = resolve)),

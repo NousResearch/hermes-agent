@@ -8,6 +8,8 @@ that just failed — so the retry re-fails and later attempts abort without a se
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.context_compressor import ContextCompressor, pin_summary_route
 
 
@@ -41,6 +43,35 @@ def test_access_failed_aux_falls_back_to_named_main_route():
     first, second = mock_call.call_args_list
     assert first.kwargs.get("model") == "quota-exhausted-aux"
     assert (second.kwargs.get("model"), second.kwargs.get("provider")) == ("main-model", "main-provider")
+
+
+@pytest.mark.parametrize("refusal_type", ["auxiliary", "primary"])
+def test_local_admission_refusal_does_not_fallback_to_main_model(refusal_type):
+    from agent.auxiliary_client import LocalAuxiliaryAdmissionRequired
+    from hermes_cli.middleware import LocalModelAdmissionBlockedError
+
+    compressor = _compressor()
+    refusal_class = (LocalAuxiliaryAdmissionRequired if refusal_type == "auxiliary"
+                     else LocalModelAdmissionBlockedError)
+    refusal = refusal_class("local model admission refused before provider I/O")
+    with patch.object(compressor, "_transcript_has_real_user_turn", return_value=False), patch(
+        "agent.context_compressor.call_llm", side_effect=refusal,
+    ) as mock_call:
+        try:
+            compressor._generate_summary([
+                {"role": "assistant", "content": "do something"},
+            ])
+        except LocalAuxiliaryAdmissionRequired as exc:
+            assert "local model admission refused" in str(exc)
+        except LocalModelAdmissionBlockedError as exc:
+            assert "local model admission refused" in str(exc)
+        else:
+            raise AssertionError("admission refusal must stop compression without fallback")
+
+    assert mock_call.call_count == 1
+    assert mock_call.call_args.kwargs.get("model") == "quota-exhausted-aux"
+    assert compressor.summary_model == "quota-exhausted-aux"
+    assert compressor._last_summary_error == str(refusal)
 
 
 def test_fallen_back_route_names_main_for_micro_and_never_rides_into_a_pin():

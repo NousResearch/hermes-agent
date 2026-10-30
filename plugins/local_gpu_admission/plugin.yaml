@@ -1,0 +1,17 @@
+name: local_gpu_admission
+version: "0.1.0"
+description: "Fail-closed local GPU task admission through Resource Balancer with pinned JSON artifact verification."
+author: "Local deployment"
+config_schema:
+  resource_balancer_python_path:
+    type: string
+    required: true
+  resource_balancer_state_dir:
+    type: string
+    required: true
+  capability_registry_path:
+    type: string
+    required: true
+  capability_registry_sha256:
+    type: string
+    required: true

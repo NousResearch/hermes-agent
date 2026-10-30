@@ -4095,9 +4095,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Classify a summary-call failure; retry once on the main model (returning its result) or arm a cooldown (None)."""
         # A detached stale attempt must not arm a failure cooldown or stamp error state the fallback
         # attempt owns; unwind as a cancellation so none of the shared-state writes below can land.
-        from agent.conversation_compression import _raise_if_stale_attempt
+        from agent.local_auxiliary_admission import raise_if_stale_attempt_or_admission_refusal
 
-        _raise_if_stale_attempt(self)
+        raise_if_stale_attempt_or_admission_refusal(self, e, _short_error_text)
         # Only a genuine no-provider RuntimeError gets the long cooldown; empty/invalid-response
         # RuntimeErrors are transient and must get the main-model retry below first.
         # ``call_llm`` raises ``RuntimeError`` for two very different cases: 1. 2. An empty/invalid response

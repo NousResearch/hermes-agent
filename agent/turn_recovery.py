@@ -1001,6 +1001,7 @@ def _welcome_outage_copy(agent: Any, base_url: Any, classified: Any) -> str:
 
 # Terminal status label per non-retryable reason (default names the HTTP status).
 _NONRETRYABLE_LABELS = {
+    FailoverReason.local_admission_blocked: "Local model admission refused this request before inference",
     FailoverReason.content_policy_blocked: "The provider's safety filter refused this request",
     FailoverReason.upstream_blocked: "A firewall/CDN in front of the provider blocked this request",
     FailoverReason.ssl_cert_verification: "The provider's security certificate could not be verified",

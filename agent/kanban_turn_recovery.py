@@ -69,6 +69,7 @@ _NON_RECOVERABLE_REASONS = frozenset({
     FailoverReason.rate_limit.value,
     FailoverReason.billing.value,
     FailoverReason.upstream_rate_limit.value,
+    "local_admission_blocked",
 })
 
 #: ``turn_exit_reason`` prefixes that mean the turn already went through a

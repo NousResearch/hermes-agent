@@ -68,7 +68,8 @@ class _LoopbackProvider:
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
-        self.base_url = f"http://127.0.0.1:{self._server.server_port}/v1"
+        self.base_url = "http://api.test.invalid/v1"
+        self.proxy_url = f"http://127.0.0.1:{self._server.server_port}"
 
     def shutdown(self) -> None:
         self._server.shutdown()
@@ -89,8 +90,29 @@ class _RecordingConn:
 def acp(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_DISABLE_PLUGINS", "1")
-    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     provider = _LoopbackProvider()
+    # This fake OpenAI-compatible server is not a local model route. Route the
+    # reserved .invalid hostname through its explicit loopback proxy; if the
+    # proxy is ignored, DNS fails instead of sending a test prompt externally.
+    monkeypatch.setenv("HTTP_PROXY", provider.proxy_url)
+    monkeypatch.setenv("http_proxy", provider.proxy_url)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost,::1")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost,::1")
+
+    # This test proxy only transports the remote-provider fixture to its loopback
+    # test server; it does not serve a local model. Proxy-to-local-model routing
+    # is covered by the admission classifier tests.
+    from hermes_cli import local_gpu_admission_middleware
+    import hermes_cli.middleware as middleware_facade
+    classify_route = local_gpu_admission_middleware._is_local_llm_route
+
+    def classify_test_route(provider_name, endpoint):
+        if "api.test.invalid" in str(endpoint):
+            return False
+        return classify_route(provider_name, endpoint)
+
+    monkeypatch.setattr(local_gpu_admission_middleware, "_is_local_llm_route", classify_test_route)
+    monkeypatch.setattr(middleware_facade, "_is_local_llm_route", classify_test_route)
 
     import acp_adapter.session as acp_session
     import hermes_cli.config as cli_config

@@ -1,0 +1,54 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: clutch
+description: Find B2B service providers on Clutch.co with verified client reviews.
+source: https://clutch.co/about-mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> account.clutch.co
+# AS metadata with registration_endpoint). Search, profile, review and package
+# tools work anonymously; only send_message_to_provider returns 401 until the
+# user signs in, which is when Hermes's mcp_oauth_manager starts the flow.
+# `hermes mcp login clutch` cannot start it: the login probe (initialize +
+# tools/list) is served anonymously and never sees a 401.
+
+transport:
+  type: http
+  url: https://bot.clutch.co/mcp
+
+auth:
+  type: oauth
+
+tools:
+  # Start with the read-only lookups (readOnlyHint: true). Messaging providers
+  # (send_message_to_provider, destructiveHint: true) stays disabled until the
+  # user explicitly selects it in mcp configure.
+  default_enabled:
+    - recommend_service_providers
+    - get_provider_info
+    - get_service_provider_reviews
+    - get_service_packages
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - clutch
+    - clutch.co
+  hosts:
+    - clutch.co
+
+post_install: |
+  No account needed to search providers, read verified reviews, or browse
+  service packages — tools load when the session restarts.
+
+  Messaging a provider (send_message_to_provider) is disabled by default.
+  Enable it with:
+    hermes mcp configure clutch
+  The first message you send from an interactive session opens a browser to
+  sign in to Clutch; the token is cached for later sessions.
+
+  Headless setups (gateway, cron) connect only once a token is cached, so
+  send one message from an interactive `hermes` session first.

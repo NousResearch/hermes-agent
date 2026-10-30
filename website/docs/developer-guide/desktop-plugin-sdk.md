@@ -250,6 +250,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
 | Model menu rows | `MODEL_MENU_ROW_AREA` | `data: ModelMenuRowContribution` — a leading icon / trailing badge per model |
 | Kanban card badges | `KANBAN_CARD_AREAS.badges` | `data: KanbanCardBadgeContribution` — short text labels per card, painted by the board |
+| Agent rows | `AGENT_ROWS_AREA` (`'agents.rows'`) | `data: AgentRowsContribution` — agents your plugin runs, counted by the status bar's Agents item and listed on the Agents page |
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
 | Tool media | `TOOL_MEDIA_RENDERER_AREA` (`'transcript.toolMedia'`) | `data: { tools, render }` — draw the `MEDIA:` files your package's own tools produced ([Tool media renderers](#tool-media-renderers)) |
 | Plugin settings page | `SETTINGS_PLUGINS_AREA` (`'settings.plugins'`) | Use `ctx.registerSettingsPage({ id, title, render, icon?, order?, children? })` — your own entry (with sub-pages) under Settings → Plugins |
@@ -943,6 +944,60 @@ reads of the Kanban plugin's query cache. The whole decoration becomes the
 `board.tenants` instead of the query-cache snapshot, and its color pins map to
 `KANBAN_CARD_BADGE_HUES` (its twelve hues are the same `hsl(n×30 68% 58%)`
 set, in the same order).
+
+#### Agent rows {#agent-rows}
+
+`AGENT_ROWS_AREA` lets a plugin report agents it runs outside `delegate_task`
+(a workflow's workers on the Kanban board, a coding harness and its own
+subagents), so the user sees all their agents in one place: their running and
+queued rows join the status bar's Agents count, and the Agents page lists them
+under the plugin's name, with the same row the page uses for Hermes's own
+subagents (status, model, elapsed time, tokens, cost, current tool, files and
+the latest thinking, tool and progress lines).
+
+```ts
+import { AGENT_ROWS_AREA, type AgentRowsContribution, type PluginAgentRow } from '@hermes/plugin-sdk'
+
+let rows: PluginAgentRow[] = []
+
+function publish(ctx) {
+  // The same id again replaces the earlier rows; keep the latest disposer.
+  ctx.register({ area: AGENT_ROWS_AREA, id: 'agents', data: { rows } satisfies AgentRowsContribution })
+}
+
+rows = [
+  { id: 'job-1:research', goal: 'research · job 1', status: 'running', model: 'deepseek/deepseek-flash',
+    startedAt: Date.now() - 42_000, currentTool: 'web_search',
+    stream: [{ at: Date.now(), kind: 'thinking', text: 'Start with the primary sources.' }] },
+  { id: 'job-1:research:sub', parentId: 'job-1:research', goal: 'subagent', status: 'running' }
+]
+publish(ctx)
+```
+
+A row (`PluginAgentRow`) is the page's own row shape: `id` (stable within your
+plugin), `goal` (its title) and `status` (`queued`, `running`, `completed`,
+`failed`, `interrupted`) are required; `parentId`, `model`, `startedAt` and
+`updatedAt` (epoch ms), `durationSeconds`, `costUsd`, `inputTokens`,
+`outputTokens`, `toolCount`, `currentTool`, `filesRead`, `filesWritten`,
+`stream` (`{ at, kind: 'thinking' | 'tool' | 'progress' | 'summary', text }`)
+and `summary` are optional. Report the rows you want listed: finished rows stay
+on the page until you drop them; only running and queued rows are counted.
+
+**What the host accepts** (`AGENT_ROWS_LIMITS`): text only, cleaned like Kanban
+badge labels and shortened past its limit; at most 200 rows per plugin, 24
+stream lines and 50 file paths per row; numbers must be finite and not
+negative. A row with a missing id, goal or unknown status is dropped. Ids are
+namespaced by plugin, and `parentId` nests a row only under another row of the
+same plugin, so a plugin cannot replace, nest under or hide another plugin's
+rows or Hermes's own. A contribution whose `rows` cannot be read contributes
+nothing (logged once). On disable, reload or unload the rows go with the
+plugin.
+
+The page shows the stream lines you report as they are; Hermes's own
+reasoning display setting is applied where Hermes produces its subagents'
+lines, so a plugin decides for its rows (leave thinking lines out when your
+users should not see them). Steering a plugin's agents from the page is not
+part of this area; keep your own controls in your plugin's UI.
 
 ### Appearance settings
 
@@ -2486,8 +2541,8 @@ pipeline as a trust boundary.
 |----------|---------|
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.spellcheck`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginFiles`, `PluginFolder`, `PluginFileEntry`, `PluginFilesResult`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
-| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `AGENT_ROWS_AREA`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
+| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `AgentRowsContribution` (+ `PluginAgentRow`, `AGENT_ROWS_LIMITS`), `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |

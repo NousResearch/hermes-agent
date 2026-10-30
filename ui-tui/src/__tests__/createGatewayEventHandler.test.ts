@@ -303,7 +303,7 @@ describe('createGatewayEventHandler', () => {
     expect(getUiState().info?.stored_session_id).toBe('durable-2')
   })
 
-  it('archives incomplete todos into transcript flow at end of turn', () => {
+  it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
     const appended: Msg[] = []
 
     const todos = [
@@ -328,9 +328,7 @@ describe('createGatewayEventHandler', () => {
     // Todo archive must sit ABOVE the final assistant text so the panel
     // doesn't visibly jump across the final answer at end-of-turn.
     expect(appended.indexOf(trail!)).toBeLessThan(appended.indexOf(finalText!))
-    // The live panel persists across turns (pinned between the transcript
-    // and the composer); only the trail message carries turn history.
-    expect(getTurnState().todos).toEqual(todos)
+    expect(getTurnState().todos).toEqual([])
   })
 
   it('opens a billing confirm dialog routing Nous to /topup', () => {
@@ -394,9 +392,7 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
     onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
 
-    // The live panel persists across turns (pinned between the transcript
-    // and the composer); the trail message alone archives the turn.
-    expect(getTurnState().todos).toEqual(todos)
+    expect(getTurnState().todos).toEqual([])
     expect(appended).toContainEqual({
       kind: 'trail',
       role: 'system',

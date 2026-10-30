@@ -59,7 +59,9 @@ export const archiveTodosAtTurnEnd = () => {
     ...(done ? { todoCollapsedByDefault: true } : { todoIncomplete: true })
   }
 
-  patchTurnState({ todoCollapsed: false })
+  // The trail message now owns this list. Clearing the live copy keeps the
+  // pinned panel from rendering the same todos beside the archived trail.
+  patchTurnState({ todoCollapsed: false, todos: [] })
 
   return [msg]
 }

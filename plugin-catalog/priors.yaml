@@ -1,0 +1,18 @@
+name: priors
+repo: https://github.com/priors-agents/priors
+sha: 284f480f0568d175cc93e6dd01943ffac9ce3a9b
+subdir: integrations/hermes
+title: Priors
+description: "Pay HTTP 402 (x402) APIs on credit: when the agent's wallet is short, it borrows the gap in USDG from its Priors credit line on Robinhood Chain, pays, and repays; before paying another ERC-8004 agent it reads that agent's repayment record. Portable Agent Plugins v1 package (mcp.json + skills/), no Python or executables. Disclosure — payments plugin for Priors: the priors-wallet server runs the local priors-mcp command (npm @priors/mcp, installed by the user, not bundled) and signs payments, loans and repayments in USDG on Robinhood Chain mainnet with the key named by PRIORS_KEY_FILE in the profile's .env; both servers are marked untrusted, so Hermes asks before every write-capable call, and where nobody can answer (chat -q, cron, the gateway without a prompt) the call is declined and nothing is paid; pay_url pays only the hosts in PRIORS_PAY_HOSTS, at most max_price_usd a call, and borrows only when max_borrow_usd is given (a loan is at least the pool's minimum, 5 USDG today); a loan more than three days late can be marked defaulted, which ends the agent's record on Priors; the hosted read-only server (https://mcp.priors.trade/mcp) receives the tools' public arguments (agent ids, addresses) and counts connections by the client's runtime name only; the tool sets are served by @priors/mcp and the hosted server at runtime and are not covered by the pinned sha."
+maintainer: priors-agents
+tier: community
+category: tools
+docs_url: https://github.com/priors-agents/priors/tree/main/integrations/hermes#readme
+version: "0.1.0"
+requires_hermes: ">=0.22.5"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

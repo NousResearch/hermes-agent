@@ -4224,10 +4224,18 @@ class SlackAdapter(BasePlatformAdapter):
                 chat_type="dm" if is_dm else "group")
         return True
 
+    @staticmethod
+    def _slack_changed_file_ids(msg: dict) -> list:
+        """File ids attached to a (possibly ``previous_message``) payload, for diffing across
+        a ``message_changed`` edit."""
+        files = msg.get("files") if isinstance(msg, dict) else None
+        if not isinstance(files, list):
+            return []
+        return [f.get("id") if isinstance(f, dict) else f for f in files if f is not None]
+
     def _normalize_changed_message(self, event: dict) -> Optional[dict]:
-        """Turn a ``message_changed`` envelope into a plain message event.
-        None if malformed or the original was already routed to the agent. The edit's own ts rides
-        along as ``_slack_changed_event_ts`` for dedup."""
+        """Turn a ``message_changed`` envelope into a plain message event, or None if malformed,
+        already routed, or a non-edit replay (unfurl refresh, thread metadata bump)."""
         updated_message = event.get("message")
         if not isinstance(updated_message, dict):
             return None
@@ -4235,28 +4243,27 @@ class SlackAdapter(BasePlatformAdapter):
         if original_message_ts and original_message_ts in self._processed_message_ts:
             return None
         edited = updated_message.get("edited")
-        explicit_edit = isinstance(edited, dict)
-        previous_message = event.get("previous_message")
-        if isinstance(previous_message, dict) and (
-            updated_message.get("text") == previous_message.get("text")):
-            # Same text: Slack re-emits on thread-reply metadata (reply_count / latest_reply /
-            # reply_users) and unfurls. Only an explicit edit that changed something counts.
-            edited_changed = edited != previous_message.get("edited")
-            content_changed = explicit_edit and any(
-                updated_message.get(key) != previous_message.get(key)
-                for key in ("attachments", "files", "blocks"))
-            if not (edited_changed or content_changed):
-                return None
-        if not explicit_edit and (
-            updated_message.get("reply_count") is not None
-            or updated_message.get("latest_reply") is not None):
-            # Thread-root metadata update without a user edit (previous_message may be omitted).
-            return None
         edited_ts = str(edited.get("ts") or "") if isinstance(edited, dict) else ""
         outer_event_ts = str(event.get("ts") or "")
-        changed_event_ts = (
-            str(event.get("event_ts") or edited_ts or "")
+        envelope_ts = str(
+            event.get("event_ts")
             or (outer_event_ts if outer_event_ts != original_message_ts else "")
+            or "")
+        previous_message = event.get("previous_message")
+        if isinstance(previous_message, dict):
+            # Slack re-emits message_changed on thread-reply metadata and link unfurls while
+            # keeping any older edited marker. Only a text or attached-file change is a user edit.
+            if (
+                updated_message.get("text") == previous_message.get("text")
+                and self._slack_changed_file_ids(updated_message)
+                == self._slack_changed_file_ids(previous_message)
+            ):
+                return None
+        elif not edited_ts or (envelope_ts and edited_ts != envelope_ts):
+            # Without previous_message, require an edited.ts matching this event's envelope ts.
+            return None
+        changed_event_ts = str(
+            event.get("event_ts") or edited_ts or envelope_ts
             or (f"{original_message_ts}:changed" if original_message_ts else ""))
         normalized_event = dict(updated_message)
         for key in ("channel", "channel_type", "team", "team_id"):

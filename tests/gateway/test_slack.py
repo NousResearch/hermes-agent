@@ -2323,6 +2323,47 @@ class TestMessageRouting:
         }
         assert adapter._normalize_changed_message(event) is not None
 
+    @pytest.mark.parametrize(
+        "variant", ["retained_edit", "no_previous", "no_previous_retained_edit"])
+    def test_unfurl_metadata_change_dropped_after_restart(self, adapter, variant):
+        """An unfurl refresh is not a user edit, even when the message carries an
+        older ``edited`` marker or Slack omits ``previous_message``."""
+        message = {
+            "type": "message", "user": "U_USER", "client_msg_id": "c1",
+            "text": "<@U_BOT> see https://example.com/a", "ts": "1700000000.000100",
+            "attachments": [{"title": "unfurled"}],
+        }
+        previous = {key: value for key, value in message.items() if key != "attachments"}
+        if variant.endswith("retained_edit"):
+            # An edit made earlier; Slack keeps the marker on every later update.
+            message["edited"] = previous["edited"] = {"user": "U_USER", "ts": "1700000020.000000"}
+        event = {
+            "type": "message", "subtype": "message_changed", "channel": "C123",
+            "channel_type": "channel", "team": "T123",
+            "ts": "1700000050.000900", "event_ts": "1700000050.000900", "message": message,
+        }
+        if not variant.startswith("no_previous"):
+            event["previous_message"] = previous
+        assert adapter._processed_message_ts == {}
+        assert adapter._normalize_changed_message(event) is None
+
+    def test_genuine_edit_without_previous_message_still_routes(self, adapter):
+        """Slack sometimes omits ``previous_message`` on a real edit; the edit marker's ts
+        matching the envelope ts (``event_ts``/``ts``) is the only signal available then."""
+        event = {
+            "type": "message", "subtype": "message_changed", "channel": "C123",
+            "channel_type": "channel", "team": "T123",
+            "ts": "1700000050.000900", "event_ts": "1700000050.000900",
+            "message": {
+                "type": "message", "user": "U_USER", "client_msg_id": "c1",
+                "text": "<@U_BOT> edited text", "ts": "1700000000.000100",
+                "edited": {"user": "U_USER", "ts": "1700000050.000900"},
+            },
+        }
+        normalized = adapter._normalize_changed_message(event)
+        assert normalized is not None
+        assert normalized["text"] == "<@U_BOT> edited text"
+
 
 # ---------------------------------------------------------------------------
 # TestSendTyping — assistant.threads.setStatus

@@ -1,4 +1,10 @@
 <p align="center">
+  <img src="assets/my-h-logo.png" alt="My-H" width="144">
+</p>
+
+<p align="center"><b>My-H</b> — fork by Hermes Agent · upstream <a href="https://github.com/NousResearch/hermes-agent">NousResearch/hermes-agent</a></p>
+
+<p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>
 

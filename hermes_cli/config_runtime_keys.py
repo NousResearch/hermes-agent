@@ -8,7 +8,7 @@ Four owners supply them:
   :func:`tools.tool_backend_helpers.selection_config_keys`, built from ``read_selection``'s tables.
 * Core-owned unseeded keys outside that table, each listed with its reader (:data:`CORE_RUNTIME_KEYS`).
 * MoA preset fields under any preset name (:func:`hermes_cli.moa_config.is_preset_field_path`). Only a
-  preset's own fields qualify, not arbitrary descendants of ``moa.presets``.
+  preset's own fields and its aggregator slot fields qualify, not arbitrary descendants of ``moa.presets``.
 * ACTIVE plugins: a ``config_keys`` list in ``plugin.yaml`` (or ``extensions.com.nousresearch.hermes``
   in a portable ``plugin.json``) names core-section paths the plugin's code reads, e.g.
   ``memory.retaindb``. Plugins are found and gated by the loader's own discovery

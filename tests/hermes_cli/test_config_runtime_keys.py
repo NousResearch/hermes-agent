@@ -86,6 +86,19 @@ def test_moa_preset_fields_set_and_get_without_notice(name, hermes_home, capsys)
     assert (preset["fanout"], preset["reference_timeout"]) == ("every_n:5", 900)
 
 
+@pytest.mark.parametrize("name", ["default", "review"])
+def test_moa_aggregator_slot_fields_set_without_notice(name, hermes_home, capsys):
+    from hermes_cli.config import load_config
+    from hermes_cli.moa_config import resolve_moa_preset
+
+    slot = {"provider": "openrouter", "model": "test/actor"}
+    _write_config(hermes_home, {"moa": {"presets": {name: {"reference_models": [slot], "aggregator": slot}}}})
+    for field, value in (("provider", "anthropic"), ("model", "test/judge"), ("reasoning_effort", "high")):
+        assert not _set_notice(_moa_key(name, "aggregator." + field), value, capsys), field
+    aggregator = resolve_moa_preset(load_config()["moa"], name)["aggregator"]
+    assert aggregator == {"provider": "anthropic", "model": "test/judge", "reasoning_effort": "high"}
+
+
 @pytest.mark.parametrize("key", [
     pytest.param("moa.presets.default.fanoutt", id="field-typo"),
     pytest.param("moa.presets.review.reference_timeot", id="field-typo-custom"),
@@ -95,6 +108,10 @@ def test_moa_preset_fields_set_and_get_without_notice(name, hermes_home, capsys)
     # The normalizer strips names, so this entry would replace the ``review`` preset.
     pytest.param("moa.presets. review .fanout", id="space-padded-name"),
     pytest.param("moa.presets.review", id="whole-preset"),
+    pytest.param("moa.presets.review.aggregator.bogus", id="unknown-slot-field"),
+    pytest.param("moa.presets.review.enabled.x", id="scalar-field-subpath"),
+    # ``n`` only takes effect beside ``mode: every_n``; alone it normalizes to user_turn.
+    pytest.param("moa.presets.review.fanout.n", id="fanout-mapping-half"),
 ])
 def test_moa_non_field_paths_still_notice(key, hermes_home, monkeypatch, capsys):
     # Only the schema walk and the MoA rule decide these keys; skip the plugin scan they would fall through to.

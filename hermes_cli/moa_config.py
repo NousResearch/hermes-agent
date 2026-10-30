@@ -238,15 +238,27 @@ _FLAT_PRESET_KEYS = (
     "fanout", "enabled")
 
 
+# Aggregator slot fields ``_clean_slot`` reads, accepted under any preset name (the schema walk only
+# knows the seeded ``default`` preset's provider/model). As there, a slot left without provider or model
+# is dropped by the normalizer and the default aggregator applies. The ``fanout`` mapping keys keep the
+# notice: ``n`` only takes effect beside ``mode: every_n`` (either one alone normalizes to ``user_turn``),
+# and ``fanout every_n:N`` sets the cadence in one write.
+_AGGREGATOR_SLOT_FIELDS = frozenset({"provider", "model", "reasoning_effort"})
+
+
 def is_preset_field_path(parts: list[str]) -> bool:
-    """True for a split ``moa.presets.<name>.<field>`` path whose field ``_normalize_preset`` reads.
+    """True for a split ``moa.presets.<name>.<field>`` path whose field ``_normalize_preset`` reads, or
+    ``moa.presets.<name>.aggregator.<slot field>``.
 
     ``<name>`` may be anything except blank or whitespace-padded: :func:`normalize_moa_config` strips
     names, so a ``" review "`` entry would silently replace the ``review`` preset. Such a path is
     not a field path and keeps the unknown-key notice.
     """
-    return (len(parts) == 4 and parts[:2] == ["moa", "presets"]
-            and bool(parts[2]) and parts[2] == parts[2].strip() and parts[3] in _FLAT_PRESET_KEYS)
+    if len(parts) not in (4, 5) or parts[:2] != ["moa", "presets"] or parts[3] not in _FLAT_PRESET_KEYS:
+        return False
+    if not parts[2] or parts[2] != parts[2].strip():
+        return False
+    return len(parts) == 4 or (parts[3] == "aggregator" and parts[4] in _AGGREGATOR_SLOT_FIELDS)
 
 
 # When the reference fan-out runs. "user_turn" (default) runs the advisors ONCE per user turn (the original

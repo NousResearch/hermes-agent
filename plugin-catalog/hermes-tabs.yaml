@@ -1,15 +1,15 @@
 name: hermes-tabs
 repo: https://github.com/ai-ag2026/hermes-tabs
-sha: ab6dbb3089fdcfa14d8b7539402d893afc45cfb0
+sha: 35a8c4c1a4cbb64f744e3d4796511088d9ed3a9c
 subdir: hermes-plugin
 title: "Hermes in the Browser"
-description: "Settings page (in the language set in Hermes, nine languages; incl. which browser Hermes works in) and guard rails for hermes-tabs, which lets Hermes work in individual tabs of your real, signed-in Chromium browser through an extension and an MCP relay. Disclosure — talks only to the hermes-tabs relay you configure (HERMES_TABS_RELAY, default 127.0.0.1:8766) with HERMES_TABS_ADMIN_TOKEN (paths /admin/settings and /admin/select, the latter picks the browser when several are connected); caches the last seen settings in plugin-data/hermes-tabs/settings.json; the pre_tool_call hook rejects the tabs tools while switched off and blocked sites in Hermes' own browser tools and web_extract. No shell, no background processes, no telemetry."
+description: "Settings page (in the language set in Hermes, nine languages; incl. which browser Hermes works in and its safety level; loosening must be confirmed in the browser) and guard rails for hermes-tabs, which lets Hermes work in individual tabs of your real, signed-in Chromium browser through an extension and an MCP relay. Disclosure — talks only to the hermes-tabs relay you configure (HERMES_TABS_RELAY, default 127.0.0.1:8766) with HERMES_TABS_ADMIN_TOKEN (paths /admin/settings and /admin/select, the latter picks the browser when several are connected); caches the last seen settings in plugin-data/hermes-tabs/settings.json; the pre_tool_call hook rejects the tabs tools while switched off and blocked sites in Hermes' own browser tools and web_extract. No shell, no background processes, no telemetry."
 maintainer: ai-ag2026
 tier: community
 category: tools
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/ai-ag2026/hermes-tabs#readme
-version: "0.3.0"
+version: "0.4.0"
 platforms: []
 known_issues:
   - Needs the hermes-tabs relay and browser extension from the same repository, and the relay registered as the MCP server named tabs. The plugin alone does nothing.

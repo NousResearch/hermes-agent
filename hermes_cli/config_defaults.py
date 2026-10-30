@@ -1784,10 +1784,7 @@ DEFAULT_CONFIG = {
         "allow_lazy_installs": True,
     },
 
-    # `hermes send`: also append each sent message to the target chat's session transcript, so the
-    # chat's agent sees it as its own reply. False keeps script and agent notifications out of the
-    # model history (cron output has the same knob, cron.mirror_delivery, off by default).
-    "send": {"mirror_delivery": True},
+    "send": {"mirror_delivery": True},  # False: `hermes send` skips the chat's session mirror (cf. cron)
     "cron": {
         "catch_up_missed": True,  # False skips recurring misses beyond the local grace window.
         # Let cron-spawned agents use the cronjob toolset (the "cron-librarian" pattern). Off by
@@ -2727,11 +2724,10 @@ from hermes_cli.config_defaults_env import _base_url, _env, _msg, _prov, _settin
 OPTIONAL_ENV_VARS = {
     # ── Provider (handled in provider selection, not shown in checklists) ──
     "NOUS_BASE_URL": _base_url("Nous Portal"),
-    "HERMES_ANON_API_SECRET": _env(
+    "HERMES_ANON_API_SECRET": _prov(
         "Shared secret for the Nous free-tier sign-up endpoints while they are in their gated "
         "integration phase (not needed once the gate is removed)",
-        "Nous free-tier shared secret (leave empty unless given one)", password=True,
-        category="provider", advanced=True),
+        "Nous free-tier shared secret (leave empty unless given one)"),
     "OPENROUTER_API_KEY": _env("OpenRouter API key (for vision, web scraping helpers, and MoA)",
         "OpenRouter API key", url="https://openrouter.ai/keys", password=True, tools=["vision_analyze"],
         category="provider", advanced=True),

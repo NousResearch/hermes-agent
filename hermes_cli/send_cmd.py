@@ -195,11 +195,9 @@ def _load_hermes_env() -> None:
 def _mirror_delivery_enabled() -> bool:
     """``send.mirror_delivery`` (default True): append the sent text to the target chat's session.
     Off keeps script and agent notifications out of that chat's model history."""
-    try:
-        from hermes_cli.config import load_config_readonly
-        return (load_config_readonly().get("send") or {}).get("mirror_delivery", True) is not False
-    except Exception:
-        return True
+    from hermes_cli.config import load_config_readonly  # fails open: a broken config.yaml reads as defaults
+    send_cfg = load_config_readonly().get("send")
+    return not isinstance(send_cfg, dict) or send_cfg.get("mirror_delivery", True) is not False
 
 
 def cmd_send(args: argparse.Namespace) -> None:

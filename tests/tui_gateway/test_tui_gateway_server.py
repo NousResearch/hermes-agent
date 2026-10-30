@@ -13681,6 +13681,52 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_truncation_resets_read_dedup_for_the_active_task(monkeypatch):
+    """Regression for #139793: a rewind must not leave read stubs pointing at archived output."""
+    agent = types.SimpleNamespace(_current_task_id="dedup-task")
+    history = [
+        {"_row_id": 101, "role": "user", "content": "first"},
+        {"_row_id": 102, "role": "assistant", "content": "first reply"},
+        {"_row_id": 103, "role": "user", "content": "second"},
+        {"_row_id": 104, "role": "assistant", "content": "second reply"},
+    ]
+    session = _session(agent=agent, history=list(history))
+    server._sessions["dedup-truncate-sid"] = session
+
+    class _FakeDb:
+        def replace_messages(self, *_args, **_kwargs):
+            pass
+
+    resets = []
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDb())
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "agent.conversation_compression._reset_read_dedup_caches",
+        lambda task_id, **kwargs: resets.append((task_id, kwargs)),
+    )
+    monkeypatch.setattr(
+        server.threading, "Thread", lambda *_args, **_kwargs: types.SimpleNamespace(start=lambda: None)
+    )
+
+    try:
+        response = server.handle_request({
+            "id": "dedup-reset",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "dedup-truncate-sid",
+                "text": "edited second",
+                "truncate_before_user_ordinal": 1,
+                "truncate_before_row_id": 103,
+                "confirm_truncate": True,
+            },
+        })
+
+        assert response.get("result"), response.get("error")
+        assert resets == [("dedup-task", {"session_id": "session-key"})]
+    finally:
+        server._sessions.pop("dedup-truncate-sid", None)
+
+
 def test_prompt_submit_truncation_signals_busy_instead_of_queueing(monkeypatch):
     """#113942: editing a message while the turn it belongs to is still running
 

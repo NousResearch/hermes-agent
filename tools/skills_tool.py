@@ -8,6 +8,7 @@ import contextvars
 import json
 import logging
 import os
+import threading
 import time
 from contextlib import contextmanager, suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -39,6 +40,13 @@ _SKILLS_CACHE: dict = {}
 _SKILLS_CACHE_TTL_SECONDS = 30.0
 # Deepest directory the signature descends to below a root (a skill sits at <cat>/<sub>/<skill>/).
 _SIGNATURE_MAX_DEPTH = 6
+
+
+# Single-flight for the catalog scan: completion RPCs run on asyncio.to_thread workers, so a
+# keystroke burst on a cold palette spawns several simultaneous scans that serialize on the GIL
+# (measured: 6 concurrent complete.slash on an 855-skill install took 8-9 s wall, ~13x one scan).
+# Every waiter re-checks the cache under the lock, so only the first caller scans.
+_SCAN_LOCK = threading.Lock()
 
 
 def clear_skills_cache() -> None:
@@ -237,40 +245,49 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
     roots, _ = skill_search_dirs()
     signature = _skills_scan_signature([d for _t, d in roots], disabled)
-    now = time.monotonic()
-    cached = _SKILLS_CACHE.get(cache_key)
-    if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
-        # Shallow copies: callers mutate the returned dicts (web_server annotates
-        # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
-        return [dict(s) for s in cached[2]]
-    scanned = []
-    for tier, scan_dir in roots:  # project dirs go through the quarantine chokepoint
-        _iter = iter_project_skill_files if tier == TIER_PROJECT else lambda d: iter_skill_index_files(d, "SKILL.md")
-        for skill_md in _iter(scan_dir):
-            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
-                continue
-            try:
-                frontmatter, body = _parse_frontmatter(_read_skill_text(skill_md)[:4000])
-                description = frontmatter.get("description", "")
-                if not description:  # first non-heading body line (a null value stays null)
-                    description = next((ln for ln in map(str.strip, body.strip().split("\n"))
-                                        if ln and not ln.startswith("#")), description)
-                scanned.append({
-                    "name": frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH],
-                    "description": _truncate_description(description),
-                    "category": _get_category_from_path(skill_md), "tier": tier, "root": scan_dir,
-                    "path": skill_md, "visible": bool(skill_matches_platform(frontmatter)
-                                                      and skill_matches_environment(frontmatter)
-                                                      and skill_matches_apps(frontmatter))})
-            except (UnicodeDecodeError, PermissionError) as e:
-                logger.debug("Failed to read skill file %s: %s", skill_md, e)
-            except Exception as e:
-                logger.debug("Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True)
-    skills = [s for s in resolve_skill_catalog(scanned)
-              if (s.pop("visible") or include_hidden) and not is_disabled_entry(s, disabled)]
-    # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the
-    # signature, so the next call re-scans instead of serving a torn result.
-    _SKILLS_CACHE[cache_key] = (signature, now, skills)
+
+    def _cached_result() -> list[dict[str, Any]] | None:
+        cached = _SKILLS_CACHE.get(cache_key)
+        if cached is not None and cached[0] == signature and (time.monotonic() - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
+            # Shallow copies: callers mutate the returned dicts (web_server annotates
+            # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
+            return [dict(s) for s in cached[2]]
+        return None
+
+    if (hit := _cached_result()) is not None:
+        return hit
+    with _SCAN_LOCK:
+        # Single-flight: a caller that waited while another thread scanned must not rescan.
+        if (hit := _cached_result()) is not None:
+            return hit
+        scanned = []
+        for tier, scan_dir in roots:  # project dirs go through the quarantine chokepoint
+            _iter = iter_project_skill_files if tier == TIER_PROJECT else lambda d: iter_skill_index_files(d, "SKILL.md")
+            for skill_md in _iter(scan_dir):
+                if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+                    continue
+                try:
+                    frontmatter, body = _parse_frontmatter(_read_skill_text(skill_md)[:4000])
+                    description = frontmatter.get("description", "")
+                    if not description:  # first non-heading body line (a null value stays null)
+                        description = next((ln for ln in map(str.strip, body.strip().split("\n"))
+                                            if ln and not ln.startswith("#")), description)
+                    scanned.append({
+                        "name": frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH],
+                        "description": _truncate_description(description),
+                        "category": _get_category_from_path(skill_md), "tier": tier, "root": scan_dir,
+                        "path": skill_md, "visible": bool(skill_matches_platform(frontmatter)
+                                                          and skill_matches_environment(frontmatter)
+                                                          and skill_matches_apps(frontmatter))})
+                except (UnicodeDecodeError, PermissionError) as e:
+                    logger.debug("Failed to read skill file %s: %s", skill_md, e)
+                except Exception as e:
+                    logger.debug("Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True)
+        skills = [s for s in resolve_skill_catalog(scanned)
+                  if (s.pop("visible") or include_hidden) and not is_disabled_entry(s, disabled)]
+        # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the
+        # signature, so the next call re-scans instead of serving a torn result.
+        _SKILLS_CACHE[cache_key] = (signature, time.monotonic(), skills)
     return [dict(s) for s in skills]
 
 

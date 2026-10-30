@@ -8,6 +8,8 @@ import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { Codicon } from '@/components/ui/codicon'
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { agentRowsPluginName, usePluginAgentRows } from '@/contrib/agent-rows'
+import { $pluginRecords } from '@/contrib/plugins-store'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
@@ -85,15 +87,18 @@ export function AgentsView({ onClose }: AgentsViewProps) {
   const { t } = useI18n()
   const subagentsBySession = useStore($subagentsBySession)
   const activeSessionId = useStore($activeSessionId)
+  const pluginRows = usePluginAgentRows()
 
   // Aggregate every session for live work, terminal rows only for the
   // session the user is in — matching the status-bar indicator, so a subagent
   // running in a background session stays visible (the two can never desync,
   // "Agents N running" vs an empty tree) while finished history from inactive
-  // sessions no longer accumulates forever (#75505).
+  // sessions no longer accumulates forever (#75505). Rows plugins report
+  // (`agents.rows`) join the tree as the plugin lists them, each plugin's under
+  // its own heading.
   const tree = useMemo(
-    () => buildSubagentTree(subagentsForPanel(subagentsBySession, activeSessionId)),
-    [subagentsBySession, activeSessionId]
+    () => buildSubagentTree([...subagentsForPanel(subagentsBySession, activeSessionId), ...pluginRows]),
+    [subagentsBySession, activeSessionId, pluginRows]
   )
 
   return (
@@ -153,6 +158,8 @@ interface RootGroup {
   id: string
   delegationIndex: number
   nodes: SubagentNode[]
+  /** The plugin that reported these rows (`plugin:<id>`), for its heading. */
+  source?: string
   taskCount: number
 }
 
@@ -161,6 +168,25 @@ function groupDelegations(roots: readonly SubagentNode[]): RootGroup[] {
   let n = 0
 
   for (const node of roots) {
+    // A plugin's rows (`agents.rows`) stay together under the plugin's name.
+    if (node.source) {
+      const own = groups.find(g => g.source === node.source)
+
+      if (own) {
+        own.nodes.push(node)
+      } else {
+        groups.push({
+          id: `source:${node.source}`,
+          delegationIndex: 0,
+          nodes: [node],
+          source: node.source,
+          taskCount: 1
+        })
+      }
+
+      continue
+    }
+
     // Exact grouping when the backend tags workers with their batch id —
     // concurrent or nested fan-outs of the same shape must not merge.
     if (node.delegationId) {
@@ -280,8 +306,32 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
   )
 }
 
+function PluginGroup({ group, nowMs }: { group: RootGroup; nowMs: number }) {
+  const { t } = useI18n()
+  const records = useStore($pluginRecords)
+  const activeWorkers = group.nodes.filter(n => n.status === 'running' || n.status === 'queued').length
+
+  return (
+    <section className="grid min-w-0 gap-3" data-slot="agents-plugin-group">
+      <p className="text-[0.66rem] font-medium uppercase tracking-wider text-muted-foreground/70">
+        {agentRowsPluginName(group.source ?? '', records)}
+        {activeWorkers > 0 ? <span className="text-primary/85"> · {t.agents.workersActive(activeWorkers)}</span> : null}
+      </p>
+      <div className="grid min-w-0 gap-4">
+        {group.nodes.map(node => (
+          <SubagentRow key={node.id} node={node} nowMs={nowMs} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function DelegationGroup({ group, nowMs }: { group: RootGroup; nowMs: number }) {
   const { t } = useI18n()
+
+  if (group.source) {
+    return <PluginGroup group={group} nowMs={nowMs} />
+  }
 
   if (group.nodes.length === 1 && group.taskCount <= 1) {
     return <SubagentRow node={group.nodes[0]!} nowMs={nowMs} />

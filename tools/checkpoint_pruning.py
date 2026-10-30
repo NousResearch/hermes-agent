@@ -110,10 +110,18 @@ class Pruner:
             self._rewrite(ref, commits, commits[-keep_count:], gc=False)
 
     def drop_one_round(self, cap_bytes: int) -> bool:
-        """Over the cap on the take path: drop the oldest snapshot of every project once and
-        defer the gc. One round per checkpoint converges over turns; the full loop measured
-        against an unchanging pack once flattened every project to a single snapshot."""
-        if cap_bytes <= 0 or self.dir_size(self.store) <= cap_bytes:
+        """On a take, reclaim a prior deferred drop before deciding whether another is needed.
+
+        If still over cap, drop at most one oldest snapshot per project and defer the next gc.
+        """
+        if cap_bytes <= 0:
+            return False
+        if self.dir_size(self.store) > cap_bytes and self.gc_pending():
+            # Reclaim only when the decision needs it: a marker may have been
+            # created moments ago by this take's own trim, and an unconditional
+            # gc here would put a full repack on every capped project's take path.
+            self.reclaim()
+        if self.dir_size(self.store) <= cap_bytes:
             return False
         changed = False
         for ref in self._git(["for-each-ref", "--format=%(refname)", self.refs_prefix]).splitlines():

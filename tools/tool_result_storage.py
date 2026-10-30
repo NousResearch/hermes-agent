@@ -394,10 +394,14 @@ def extract_persisted_path(content: str) -> str | None:
 
 def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, env=None,
                               config: BudgetConfig = DEFAULT_BUDGET,
-                              threshold: float | None = None) -> str:
+                              threshold: float | None = None,
+                              parent_tool_use_id: str | None = None) -> str:
     """Layer 2: persist an oversized result, return preview + path. ``threshold`` overrides
     ``config.resolve_threshold(tool_name)``; falls back to inline truncation when no write
     location succeeds."""
+    from tools.scoped_result_access import current_result_access
+
+    access = current_result_access(tool_name, tool_use_id, parent_tool_use_id)
     if threshold is None:
         threshold = config.resolve_threshold(tool_name)
     if threshold == float("inf") or len(content) <= threshold:
@@ -405,6 +409,8 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     # The size decision above stays on the raw inline result (that is what cost context); the file
     # and the preview carry the pageable text inside an MCP envelope (#90426).
     persisted_content = _pageable_text(content)
+    if access is not None:
+        return access.persist(persisted_content)
     filename = _safe_result_filename(tool_use_id)
     preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
 
@@ -452,7 +458,8 @@ def _spill_largest_text_part(parts: list, tool_use_id: str, env, config: BudgetC
         return parts, 0
     idx, text = max(texts, key=lambda t: len(t[1]))
     replacement = maybe_persist_tool_result(content=text, tool_name=_BUDGET_TOOL_NAME,
-                                            tool_use_id=f"{tool_use_id}_part{idx}", env=env, config=config, threshold=0)
+                                            tool_use_id=f"{tool_use_id}_part{idx}", env=env, config=config, threshold=0,
+                                            parent_tool_use_id=tool_use_id)
     if replacement == text:
         return parts, 0
     return [*parts[:idx], {**parts[idx], "text": replacement}, *parts[idx + 1:]], len(text) - len(replacement)

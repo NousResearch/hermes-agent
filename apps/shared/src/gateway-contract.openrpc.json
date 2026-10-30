@@ -40194,6 +40194,18 @@
             "default": null,
             "title": "Error"
           },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Code"
+          },
           "free_tier_route": {
             "anyOf": [
               {

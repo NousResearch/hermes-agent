@@ -19,6 +19,9 @@ export interface SetupStatusSnapshot {
 
 export interface RuntimeCheckSnapshot {
   error?: string
+  /** Why the check failed, when the backend names it (`local_runtime_unavailable`: the managed
+   *  local model server is down). Absent on older backends and for unclassified failures. */
+  error_code?: string
   /** True when the resolved route is the free tier rather than a credential of
    *  the user's own. Absent on older backends. */
   free_tier_route?: boolean
@@ -42,6 +45,8 @@ export interface RuntimeReadinessOptions {
 
 export interface RuntimeReadinessResult {
   checksDisagree: boolean
+  /** Passed through from `setup.runtime_check.error_code`. */
+  errorCode?: string
   /** Passed through from `setup.runtime_check`: the resolved route is the free
    *  tier. Undefined when the check did not answer (older backend, transport
    *  fallback) — never read it as "not free tier". */
@@ -148,6 +153,7 @@ export function interpretRuntimeReadiness(
   // (free-tier chrome) don't have to re-issue setup.runtime_check. Left
   // undefined when the check said nothing — "absent" and "false" differ.
   const route = {
+    errorCode: normalizeMessage(signals.runtime?.error_code) ?? undefined,
     freeTier: typeof signals.runtime?.free_tier_route === 'boolean' ? signals.runtime.free_tier_route : undefined,
     model: normalizeMessage(signals.runtime?.model) ?? undefined
   }
@@ -168,7 +174,8 @@ export function interpretRuntimeReadiness(
 
     let reason = failure.runtime ?? defaultReason
 
-    if (checksDisagree && setupConfigured) {
+    // A coded failure names its own cause; the suffix exists to explain an uncoded disagreement.
+    if (checksDisagree && setupConfigured && !route.errorCode) {
       reason = `${reason} setup.status reports configured credentials, but runtime resolution still failed.`
     }
 

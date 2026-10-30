@@ -449,6 +449,12 @@ export function errorCardActions(surface: ErrorSurface | null | undefined): Erro
     }
   }
 
+  // The managed local model server is down: another model is the fix the card can offer, and a
+  // server that is still starting (retryable) is worth one more try.
+  if (surface.code === 'local_runtime_unavailable') {
+    return surface.retryable ? { primary: 'retry', secondary: 'switch_provider' } : { primary: 'switch_provider' }
+  }
+
   const key = errorCardKey(surface)
 
   // errorCardKey routes a custom/local server's timeout or TLS failure to the endpoint copy.

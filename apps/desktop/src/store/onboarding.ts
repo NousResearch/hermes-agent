@@ -34,6 +34,7 @@ import { setMainModelAssignment } from '@/store/model-assignment'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { afterOnboardingSurfaceClear, onboardingSurfaceOpen } from '@/store/onboarding-presence'
 import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
+import { requestRoute } from '@/store/recovery-requests'
 import type { AppHandoffStatus, OAuthPollResponse, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
@@ -301,6 +302,29 @@ function shouldPreserveConfiguredOnBootRace(runtime: RuntimeReadinessResult, sta
     !state.requested &&
     isInsideBootRaceWindow()
   )
+}
+
+// The selected model is the managed local runtime and its server is down (Desktop closed and took
+// its server with it, still loading, or switched off). The provider IS set up, and provider sign-in
+// cannot start a local server, so this never opens onboarding: the app stays usable, the status bar
+// reads "inference unavailable", and a notice names the cause with the way forward.
+const LOCAL_RUNTIME_UNAVAILABLE = 'local_runtime_unavailable'
+const LOCAL_MODELS_ROUTE = '/settings?tab=providers&pview=local'
+
+function isLocalRuntimeDown(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
+  return runtime.source === 'runtime_check' && runtime.errorCode === LOCAL_RUNTIME_UNAVAILABLE && !state.requested
+}
+
+function keepConfiguredWithLocalRuntimeDown(reason: string) {
+  writeCachedConfigured(true)
+  patch({ configured: true, reason })
+  notify({
+    action: { label: 'Open Local models', onClick: () => requestRoute(LOCAL_MODELS_ROUTE) },
+    id: 'local-runtime-unavailable',
+    kind: 'warning',
+    message: reason,
+    title: 'Local model unavailable'
+  })
 }
 
 function notifyReady(provider: string) {
@@ -748,6 +772,7 @@ export function closeManualOnboarding() {
 export function completeDesktopOnboarding(connected = false) {
   clearPoll()
   dismissNotification('runtime-not-ready')
+  dismissNotification('local-runtime-unavailable')
   writeCachedConfigured(true)
 
   if (connected) {
@@ -849,6 +874,12 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
   }
 
   const reason = runtime.reason || state.reason || DEFAULT_ONBOARDING_REASON
+
+  if (isLocalRuntimeDown(runtime, state)) {
+    keepConfiguredWithLocalRuntimeDown(reason)
+
+    return false
+  }
 
   if (shouldPreserveConfiguredOnBootRace(runtime, state)) {
     // The backend answered inside its boot window with a not-ready that is

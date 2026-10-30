@@ -835,6 +835,23 @@ class AuthorityConnection:
         return {**replay, 'open_requests': open_requests(stream, ref.session_id)}
 
     async def submit(self, ref, params):
+        if ref.session_id not in self.subscriptions:
+            # A first submit — a prompt, or a stop phrase ending voice chat — may land on
+            # a sibling connection of the same subject: session.create rode another
+            # socket, so its server-side resume subscribed only that transport. An actor
+            # entitled to read the session attaches here (the exact grant session.resume
+            # gives any viewer) before the voice-stop checks below, so a first-prompt
+            # stop phrase is answered ``voice_stopped`` (TUI-26), not admitted as a turn.
+            # Best-effort: a refused attach (e.g. a receipt check that fails on a live
+            # LOCAL session) falls through to the voice-stop / permission checks below
+            # unchanged, which still answer ``permission_denied`` for an unentitled actor.
+            self.authority.authorize(self.actor, ref, 'session:read')
+            try:
+                snapshot = await self.authority.attach(self.actor, ref)
+            except AuthorityRefusal:
+                snapshot = None
+            if snapshot is not None:
+                self.subscriptions[ref.session_id] = snapshot.subscription_id
         if self._voice_stop_replay(ref, params) or await self._typed_voice_stop(ref, params):
             self._record_voice_stop(ref, params)
             return {'voice_stopped': True}
@@ -857,7 +874,7 @@ class AuthorityConnection:
         if key is None or key not in getattr(self.authority, '_consumed_voice_stops', {}):
             return False
         if ref.session_id not in self.subscriptions:
-            return False  # submission() refuses it as permission_denied
+            return False  # unreachable from submit(): the auto-attach above subscribed us
         self.authority.authorize(self.actor, ref, 'session:submit')
         return True
 
@@ -882,7 +899,7 @@ class AuthorityConnection:
         if not isinstance(text, str):
             return False
         if ref.session_id not in self.subscriptions:
-            return False  # submission() refuses it as permission_denied
+            return False  # submit() auto-attaches first; only the busy steer path lands here unattached
         self.authority.authorize(self.actor, ref, 'session:submit')
         live = self.authority.sessions.get(ref.session_id)
         source = getattr(live, 'source', None)

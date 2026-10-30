@@ -204,6 +204,21 @@ def _verification_evidence(command, cwd, session_id, returncode, output, pipelin
     return None
 
 
+# The complete key vocabulary of the terminal result envelope: what
+# ``finalize_foreground_result`` below builds, plus "status" from the
+# ``tools/terminal_tool.py::_error_json`` path. ``tools/tool_result_storage.py``
+# shape-matches spilled results against these sets to persist the raw output
+# text instead of the JSON envelope; a key emitted into the envelope without
+# being added here silently downgrades affected results to verbatim JSON
+# persistence (the pre-#79818-fix behavior), so extend this set in the same
+# change that adds the key.
+RESULT_ENVELOPE_REQUIRED = frozenset({"output", "exit_code"})
+RESULT_ENVELOPE_KEYS = frozenset({
+    "output", "exit_code", "error", "status", "cwd", "environment_recreated",
+    "output_total_chars", "full_output_path", "truncation_note", "verification_evidence",
+    "approval", "exit_code_meaning", "hint", "sudo_auth_failed", "sudo_cache_cleared"})
+
+
 def finalize_foreground_result(
     *, command: str, result: dict, env: Any, env_type: str, effective_task_id: str,
     task_id: Optional[str], session_id: Optional[str], session_key: str,

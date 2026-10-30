@@ -18,6 +18,7 @@ import threading
 import time
 
 from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAULT_BUDGET
+from tools.terminal_tool_result import RESULT_ENVELOPE_KEYS, RESULT_ENVELOPE_REQUIRED
 
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
@@ -31,13 +32,16 @@ _BUDGET_TOOL_NAME = "__budget_enforcement__"
 # The exact key set tools/mcp_tool_handlers.py::_render_call_tool_result emits. A JSON object whose
 # keys stay inside this set is that handler's own envelope, never an arbitrary tool's JSON payload.
 _MCP_ENVELOPE_KEYS = frozenset({"result", "structuredContent", "_meta"})
-# The terminal/execute_code result envelope (tools/terminal_tool_result.py), recognized by
-# shape exactly like the MCP envelope: both required keys present, no key outside the set.
-_TERMINAL_ENVELOPE_REQUIRED = frozenset({"output", "exit_code"})
-_TERMINAL_ENVELOPE_KEYS = frozenset({
-    "output", "exit_code", "error", "status", "cwd", "environment_recreated",
-    "output_total_chars", "full_output_path", "truncation_note", "verification_evidence",
-    "approval", "exit_code_meaning", "hint", "sudo_auth_failed", "sudo_cache_cleared"})
+# The terminal/execute_code result envelope, recognized by shape exactly like the MCP
+# envelope: both required keys present, no key outside the set. The key sets are declared
+# next to their emitter (tools.terminal_tool_result, stdlib-only at import time, so no
+# cycle) so the envelope and its recognizer cannot drift apart.
+_TERMINAL_ENVELOPE_REQUIRED = RESULT_ENVELOPE_REQUIRED
+_TERMINAL_ENVELOPE_KEYS = RESULT_ENVELOPE_KEYS
+# Per-field bound for the inline <result-fields> block: sibling fields are hints and
+# metadata, small by construction, but nothing upstream enforces that — without a cap a
+# pathological field would ride into the conversation context in full.
+_RESULT_FIELD_CHAR_CAP = 2048
 _ENVELOPE_METADATA_TAG = "<mcp-result-metadata>"
 _ENVELOPE_METADATA_CLOSING_TAG = "</mcp-result-metadata>"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -345,7 +349,17 @@ def _unwrap_terminal_envelope(content: str):
     text = payload.get("output")
     if not isinstance(text, str) or not text:
         return content, None
-    extras = {key: value for key, value in payload.items() if key != "output"}
+    extras = {}
+    for key, value in payload.items():
+        if key == "output":
+            continue
+        try:
+            blob = json.dumps(value, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            blob = repr(value)
+        if len(blob) > _RESULT_FIELD_CHAR_CAP:
+            value = blob[:_RESULT_FIELD_CHAR_CAP] + f" ... [field truncated; {len(blob)} chars total]"
+        extras[key] = value
     try:
         return text, json.dumps(extras, ensure_ascii=False, indent=1, sort_keys=True, default=str)
     except (TypeError, ValueError):

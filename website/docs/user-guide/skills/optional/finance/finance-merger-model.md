@@ -1,14 +1,14 @@
 ---
-title: "Merger Model — Build accretion/dilution (merger) models in Excel — pro-forma P&L, synergies, financing mix, EPS impact"
+title: "Merger Model — Build M&A accretion/dilution workbooks in Excel"
 sidebar_label: "Merger Model"
-description: "Build accretion/dilution (merger) models in Excel — pro-forma P&L, synergies, financing mix, EPS impact"
+description: "Build M&A accretion/dilution workbooks in Excel"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Merger Model
 
-Build accretion/dilution (merger) models in Excel — pro-forma P&L, synergies, financing mix, EPS impact. Pairs with excel-author. Use for M&A pitches, board materials, or deal evaluation.
+Build M&A accretion/dilution workbooks in Excel.
 
 ## Skill metadata
 
@@ -21,7 +21,7 @@ Build accretion/dilution (merger) models in Excel — pro-forma P&L, synergies, 
 | License | Apache-2.0 |
 | Platforms | linux, macos, windows |
 | Tags | `finance`, `m-and-a`, `merger`, `accretion-dilution`, `excel`, `openpyxl`, `modeling`, `investment-banking` |
-| Related skills | [`excel-author`](/docs/user-guide/skills/optional/finance/finance-excel-author), [`pptx-author`](/docs/user-guide/skills/optional/finance/finance-pptx-author), [`dcf-model`](/docs/user-guide/skills/optional/finance/finance-dcf-model), [`3-statement-model`](/docs/user-guide/skills/optional/finance/finance-3-statement-model) |
+| Related skills | [`excel-author`](../../optional/finance/finance-excel-author.md), [`pptx-author`](../../optional/finance/finance-pptx-author.md), [`dcf-model`](../../optional/finance/finance-dcf-model.md), [`3-statement-model`](../../optional/finance/finance-3-statement-model.md) |
 
 ## Reference: full SKILL.md
 
@@ -153,7 +153,7 @@ Many passages below say "use the S&P Kensho MCP / Daloopa MCP / FactSet MCP". Th
 - **Otherwise**, fall back to:
   - `web_search` / `web_extract` against SEC EDGAR (`https://www.sec.gov/cgi-bin/browse-edgar`) for US filings
   - Company IR pages for press releases, earnings decks
-  - `browser_navigate` for interactive data portals
+  - `browser_exec` for interactive data portals
   - User-provided data (explicitly ask when the context doesn't have it)
 - **Never fabricate**. If a multiple, precedent, or filing number can't be sourced, flag the cell as `[UNSOURCED]` and surface it to the user.
 

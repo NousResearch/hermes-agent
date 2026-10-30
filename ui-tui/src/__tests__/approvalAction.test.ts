@@ -49,8 +49,7 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
   })
 
   it('respects a reduced option set when permanent allow is disabled', () => {
-    // tirith content-security warning present → no "always"; the 3-item set is
-    // once/session/deny, so 3 maps to deny and 4 is out of range.
+    // No "always": the 3-item set is once/session/deny, so 3 maps to deny and 4 is out of range.
     const opts = ['once', 'session', 'deny'] as const
 
     expect(approvalAction('3', {}, 0, opts)).toEqual({ kind: 'choose', choice: 'deny' })
@@ -60,7 +59,12 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
   })
 
   it('offers only once and deny for Smart DENY owner override', () => {
-    const opts = approvalOptions({ allowPermanent: true, command: 'rm -rf /', description: 'blocked', smartDenied: true })
+    const opts = approvalOptions({
+      allowPermanent: true,
+      command: 'rm -rf /',
+      description: 'blocked',
+      smartDenied: true
+    })
 
     expect(opts).toEqual(['once', 'deny'])
     expect(approvalAction('2', {}, 0, opts)).toEqual({ kind: 'choose', choice: 'deny' })
@@ -76,5 +80,9 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
         description: 'blocked'
       })
     ).toEqual(['once', 'deny'])
+    // Canonical owners send ['once', 'deny', 'session', 'always']: allowed set, not numbering.
+    expect(
+      approvalOptions({ choices: ['once', 'deny', 'session', 'always'], command: 'rm -rf /', description: 'blocked' })
+    ).toEqual(['once', 'session', 'always', 'deny'])
   })
 })

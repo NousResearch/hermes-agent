@@ -20,7 +20,8 @@ import {
 
 export function useApprovalModeStatusbarItem(
   profile: string,
-  requestGateway: ApprovalModeRequester
+  requestGateway: ApprovalModeRequester,
+  gatewayState: string
 ): StatusbarItem {
   const { t } = useI18n()
   const copy = t.shell.approvalMode
@@ -42,8 +43,18 @@ export function useApprovalModeStatusbarItem(
   )
 
   useEffect(() => {
+    // The shell (and this chip) mount before the gateway socket opens at
+    // boot, and a sync issued that early rejects with "Hermes gateway
+    // unavailable" — the swallow below then leaves the chip on its
+    // optimistic 'smart' default until some later session event reconciles
+    // it. Gate on the open socket and re-run when it opens (or a reconnect
+    // lands), the same way useStatusSnapshot does.
+    if (gatewayState !== 'open') {
+      return
+    }
+
     void syncApprovalModeForProfile(requestGateway, profile).catch(() => undefined)
-  }, [profile, requestGateway])
+  }, [gatewayState, profile, requestGateway])
 
   return {
     className: mode === 'off' ? 'bg-(--chrome-action-hover) text-foreground' : undefined,
@@ -66,9 +77,7 @@ export function useApprovalModeStatusbarItem(
             <DropdownMenuRadioItem className="items-start gap-2" key={value} value={value}>
               <span className="flex min-w-0 flex-col gap-0.5">
                 <span className="text-xs text-foreground">{labels[value]}</span>
-                <span className="text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">
-                  {descriptions[value]}
-                </span>
+                <span className="text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{descriptions[value]}</span>
               </span>
             </DropdownMenuRadioItem>
           ))}

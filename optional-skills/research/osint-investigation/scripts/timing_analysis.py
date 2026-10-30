@@ -198,7 +198,7 @@ def analyze(
         "results": results,
     }
 
-    Path(out_path).write_text(json.dumps(payload, indent=2))
+    Path(out_path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return payload
 
 

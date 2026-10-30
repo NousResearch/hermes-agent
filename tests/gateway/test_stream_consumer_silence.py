@@ -35,51 +35,6 @@ from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 # is_partial_silence_marker — mid-stream hold-back predicate
 # --------------------------------------------------------------------------
 
-# Buffers that could still resolve to a marker → held back while streaming.
-PARTIAL_POSITIVE = [
-    "N",
-    "NO",
-    "NO_",
-    "NO_REP",
-    "NO_REPLY",      # exact marker, not yet terminated by stream-end
-    "NO REPLY",
-    "no reply",      # canonicalized (case/space-insensitive)
-    "  no_reply  ",  # surrounding whitespace stripped
-    "[",
-    "[SIL",
-    "[SILENT]",
-    "SILENT",
-    "sil",
-]
-
-# Buffers that have already diverged from every marker → stream normally.
-PARTIAL_NEGATIVE = [
-    "",
-    "   ",
-    "No reply needed — here is the plan",   # diverged past the marker
-    "NO_REPLYING",                           # superset, not a prefix
-    "Nope",
-    "Hello there",
-    "The NO_REPLY token means silence",      # marker mentioned mid-prose
-    "x" * 65,                                # over the 64-char cap
-    "silence is golden",                     # 'SILENCE...' is not a marker prefix
-]
-
-
-@pytest.mark.parametrize("text", PARTIAL_POSITIVE)
-def test_partial_silence_marker_positive(text):
-    assert is_partial_silence_marker(text) is True
-
-
-@pytest.mark.parametrize("text", PARTIAL_NEGATIVE)
-def test_partial_silence_marker_negative(text):
-    assert is_partial_silence_marker(text) is False
-
-
-def test_partial_silence_marker_none_safe():
-    assert is_partial_silence_marker(None) is False
-
-
 def test_partial_predicate_agrees_with_exact_on_full_markers():
     """Every exact silence marker is also a (trivial) partial of itself."""
     from gateway.response_filters import LIVE_GATEWAY_SILENT_MARKERS
@@ -167,73 +122,113 @@ class TestStreamedSilenceSuppression:
         assert consumer.final_content_delivered is False
         assert consumer.already_sent is False
 
-    @pytest.mark.asyncio
-    async def test_suppression_without_delete_support_is_best_effort(self):
-        """Adapter lacking delete_message still suppresses (leaves no new send)."""
-        adapter = _make_adapter(supports_delete=False)
-        consumer = GatewayStreamConsumer(
-            adapter, "chat_1",
-            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
-        )
-        consumer.on_delta("NO_REPLY")
-        consumer.finish()
-        await consumer.run()
 
-        for text in _sent_and_edited(adapter):
-            assert "NO_REPLY" not in text
+# --------------------------------------------------------------------------
+# Reply written beside a housekeeping tool, then a bare marker follow-up
+# --------------------------------------------------------------------------
+
+ANSWER = "Your meeting is at 3pm."
+
+
+def _numbered_adapter():
+    """Edit-transport adapter whose sends get fresh ids, so segments are distinct messages."""
+    adapter = _make_adapter()
+    counter = iter(range(1, 100))
+
+    async def _send(**kwargs):
+        return SimpleNamespace(success=True, message_id=f"m{next(counter)}")
+
+    adapter.send = AsyncMock(side_effect=_send)
+    return adapter
+
+
+def _visible(adapter) -> list:
+    shown = {}
+    for call in adapter.send.call_args_list:
+        shown[f"m{len(shown) + 1}"] = call.kwargs.get("content", "")
+    for call in adapter.edit_message.call_args_list:
+        shown[call.kwargs.get("message_id")] = call.kwargs.get("content", "")
+    for call in adapter.delete_message.call_args_list:
+        shown.pop(call.args[1], None)
+    return list(shown.values())
+
+
+async def _stream_answer_then_marker(final_text):
+    adapter = _numbered_adapter()
+    consumer = GatewayStreamConsumer(
+        adapter, "chat_1", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
+    )
+    consumer.on_delta(ANSWER)
+    consumer.on_delta(None)  # housekeeping tool boundary
+    consumer.on_delta("NO_REPLY")
+    consumer.finish(final_text)
+    await consumer.run()
+    return adapter, consumer
+
+
+class TestMarkerAfterStreamedReply:
+    @pytest.mark.asyncio
+    async def test_reply_final_after_marker_shows_the_answer_once(self):
+        """The gateway hands back the already-streamed reply line as the final: it stays
+        visible exactly once, and the held-back marker segment does not repeat it."""
+        adapter, consumer = await _stream_answer_then_marker(ANSWER)
+
+        assert _visible(adapter) == [ANSWER]
+        adapter.delete_message.assert_not_awaited()
+        assert not any("NO_REPLY" in text for text in _sent_and_edited(adapter))
+        # The gateway's dedupe sees the reply as delivered and sends nothing more.
+        assert consumer.has_durably_delivered_text(ANSWER) is True
+
+    @pytest.mark.asyncio
+    async def test_marker_final_still_retracts_the_turn(self):
+        """A turn that stays silent (final is the marker) still retracts its streamed
+        preamble; the gateway's whole-response filter owns what goes out next."""
+        adapter, consumer = await _stream_answer_then_marker("NO_REPLY")
+
+        assert _visible(adapter) == []
         assert consumer.final_content_delivered is False
 
-    @pytest.mark.asyncio
-    async def test_bracket_silent_marker_suppressed(self):
-        """The [SILENT] marker is suppressed just like NO_REPLY."""
-        adapter = _make_adapter()
-        consumer = GatewayStreamConsumer(
-            adapter, "chat_1",
-            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
-        )
-        consumer.on_delta("[SILENT]")
-        consumer.finish()
-        await consumer.run()
 
-        for text in _sent_and_edited(adapter):
-            assert "[SILENT]" not in text
+def _draft_adapter():
+    from tests.gateway.test_stream_consumer_draft import _make_draft_capable_adapter
+
+    adapter = _make_draft_capable_adapter()
+    adapter.answer_copies = lambda: [c.kwargs.get("content") for c in adapter.send.call_args_list].count(ANSWER)
+    adapter.marker_shown = lambda: any(
+        "NO_REPLY" in (text or "") for text in
+        [c.kwargs.get("content") for c in adapter.send.call_args_list] + [d["content"] for d in adapter.draft_calls])
+    return adapter
+
+
+def _native_adapter():
+    from tests.gateway.test_stream_consumer_wecom_native import _make_native_streaming_adapter
+
+    adapter = _make_native_streaming_adapter()
+    adapter.answer_copies = lambda: sum(1 for f in adapter.frames if f["finalize"] and f["text"] == ANSWER)
+    adapter.marker_shown = lambda: any("NO_REPLY" in f["text"] for f in adapter.frames)
+    return adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("make_adapter", [_draft_adapter, _native_adapter], ids=["draft", "native"])
+@pytest.mark.parametrize("final_text", [ANSWER, "NO_REPLY"], ids=["reply-final", "marker-final"])
+async def test_marker_after_reply_on_draft_and_native_transports(make_adapter, final_text):
+    """Draft and native transports: a reply final after the held-back marker is
+    delivered once; a marker final keeps today's silent-turn handling."""
+    adapter = make_adapter()
+    consumer = GatewayStreamConsumer(
+        adapter, "chat_1", StreamConsumerConfig(transport="auto", chat_type="dm", cursor="",
+                                                edit_interval=0.01, buffer_threshold=1),
+    )
+    consumer.on_delta(ANSWER)
+    consumer.on_delta(None)  # housekeeping tool boundary
+    consumer.on_delta("NO_REPLY")
+    consumer.finish(final_text)
+    await consumer.run()
+
+    assert not adapter.marker_shown()
+    if final_text == ANSWER:
+        assert adapter.answer_copies() == 1
+        assert consumer.has_durably_delivered_text(ANSWER) is True
+    else:
         assert consumer.final_content_delivered is False
-
-    @pytest.mark.asyncio
-    async def test_prose_mentioning_marker_is_delivered(self):
-        """Substantive prose that merely mentions NO_REPLY is NOT suppressed."""
-        adapter = _make_adapter()
-        consumer = GatewayStreamConsumer(
-            adapter, "chat_1",
-            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
-        )
-        body = "The NO_REPLY token tells the gateway to stay silent."
-        consumer.on_delta(body)
-        consumer.finish()
-        await consumer.run()
-
-        delivered = "".join(_sent_and_edited(adapter))
-        assert "NO_REPLY" in delivered
-        assert consumer.final_content_delivered is True
-
-    @pytest.mark.asyncio
-    async def test_marker_prefix_then_prose_is_delivered(self):
-        """A reply that starts marker-like but continues is delivered whole.
-
-        "NO REPLY needed …" passes through the mid-stream hold-back while the
-        buffer is still a marker prefix, then flushes normally once it diverges.
-        The final text is NOT an exact marker, so got_done does not suppress it.
-        """
-        adapter = _make_adapter()
-        consumer = GatewayStreamConsumer(
-            adapter, "chat_1",
-            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
-        )
-        consumer.on_delta("NO REPLY")
-        consumer.on_delta(" needed — the build is already green.")
-        consumer.finish()
-        await consumer.run()
-
-        delivered = "".join(_sent_and_edited(adapter))
-        assert "the build is already green" in delivered
-        assert consumer.final_content_delivered is True

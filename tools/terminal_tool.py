@@ -38,6 +38,7 @@ def _redact_terminal_error_text(value: Any) -> str:
 
     return redact_sensitive_text("" if value is None else str(value), force=True)
 
+    return redact_sensitive_text("" if value is None else str(value), force=True)
 
 from tools.registry import tool_error
 from tools.terminal_tool_lifecycle import (
@@ -1147,6 +1148,104 @@ _PROMOTED_NOTE = (
     "process(action=\"poll\", session_id=...) if you need it sooner."
 )
 
+    Exception text can embed the failing command line (and any secrets inline
+    in it), so both fields are force-redacted before reaching the model.
+    """
+    import traceback
+    tb_str = traceback.format_exc()
+    logger.error("terminal_tool exception:\n%s", tb_str)
+    return json.dumps({
+        "output": "",
+        "exit_code": -1,
+        "error": _redact_terminal_error_text(f"Failed to execute command: {e}"),
+        "traceback": _redact_terminal_error_text(tb_str),
+        "status": "error"
+    }, ensure_ascii=False)
+
+
+class _Rejected(Exception):
+    """Carries a finished tool-result JSON out of the planning/guard helpers, so
+    each early-return site is one ``raise`` instead of an isinstance-checked
+    ``str | plan`` union at the caller."""
+
+    def __init__(self, result_json: str):
+        super().__init__(result_json)
+        self.result_json = result_json
+
+
+@dataclass
+class _ApprovalVerdict:
+    """Outcome of the pre-exec guard pass.
+
+    ``note`` is the audit note attached to the result. ``approved_run`` is True
+    when the user explicitly approved (or pre-confirmed via ``force``); it drives
+    the clean-interrupt-slate clear before ``env.execute`` so an approved command
+    can't be SIGINT-killed by a bit that landed during the approval-wait.
+    """
+    note: Optional[str] = None
+    approved_run: bool = False
+
+
+def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *, force: bool) -> _ApprovalVerdict:
+    """Run the command guards; ``force`` skips them entirely.
+    Raises :class:`_Rejected` when the command may not run (denied, or pending
+    gateway approval)."""
+    if force:
+        return _ApprovalVerdict(approved_run=True)
+    approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
+    if not approval["approved"]:
+        if approval.get("status") == "pending_approval":  # gateway ask mode
+            raise _Rejected(_error_json(
+                "", status="pending_approval",
+                approval_pending=True,
+                command=approval.get("command", command),
+                description=approval.get("description", "command flagged"),
+                pattern_key=approval.get("pattern_key", ""),
+                smart_denied=approval.get("smart_denied", False),
+                allow_permanent=approval.get("allow_permanent", True),
+            ))
+        desc = approval.get("description", "command flagged")
+        fallback_msg = (
+            f"Command denied: {desc}. "
+            "Use the approval prompt to allow it, or rephrase the command."
+        )
+        raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked",
+                                    **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {})))
+    desc = approval.get("description", "flagged as dangerous")
+    if approval.get("user_approved"):
+        return _ApprovalVerdict(
+            note=f"Command required approval ({desc}) and was approved by the user.",
+            approved_run=True,
+        )
+    if approval.get("smart_approved"):
+        return _ApprovalVerdict(note=f"Command was flagged ({desc}) and auto-approved by smart approval.")
+    return _ApprovalVerdict()
+
+
+@dataclass
+class _ExecPlan:
+    """Per-call execution parameters resolved before any environment is touched."""
+    config: dict[str, Any]
+    env_type: str
+    effective_task_id: str
+    image: str
+    cwd: str
+    host_cwd: Optional[str]
+    effective_timeout: int
+    # Set when a foreground call asked for more than FOREGROUND_MAX_TIMEOUT and was promoted to a
+    # tracked background process instead of being refused (the requested seconds, for the note).
+    promoted_from_foreground_timeout: Optional[int] = None
+    # Set when a foreground `cmd &` (the trailing `&` its only backgrounding) is run as
+    # terminal(command="cmd", background=true) instead of being refused: the command to run.
+    auto_background_command: Optional[str] = None
+
+
+_PROMOTED_NOTE = (
+    "Requested foreground timeout {requested}s exceeds the {cap}s cap, so this command was started as a "
+    "tracked background process with notify_on_complete=true instead of being refused. Do NOT re-run it. "
+    "Its completion (exit code + output tail) arrives as a notification; poll with "
+    "process(action=\"poll\", session_id=...) if you need it sooner."
+)
 
 def _plan_execution(
     command: Any, *, task_id: Optional[str], timeout: Optional[int],

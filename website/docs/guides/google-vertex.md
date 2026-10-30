@@ -6,7 +6,7 @@ description: "Use Hermes Agent with Gemini on Google Cloud Vertex AI — OAuth2 
 
 # Google Vertex AI
 
-Hermes Agent supports **Gemini models on Google Cloud Vertex AI** through Vertex's OpenAI-compatible endpoint. Unlike the [Google AI Studio provider](/guides/google-gemini) (which uses a static API key against `generativelanguage.googleapis.com`), Vertex gives you **enterprise-grade rate limits and GCP billing/credits**, and is the right choice when you want Gemini usage to draw on your Google Cloud account rather than an AI Studio key.
+Hermes Agent supports **Gemini models on Google Cloud Vertex AI** through Vertex's OpenAI-compatible endpoint. Unlike the [Google AI Studio provider](./google-gemini.md) (which uses a static API key against `generativelanguage.googleapis.com`), Vertex gives you **enterprise-grade rate limits and GCP billing/credits**, and is the right choice when you want Gemini usage to draw on your Google Cloud account rather than an AI Studio key.
 
 :::info Vertex authenticates with OAuth2, not an API key
 Vertex has **no static API key** for the standard endpoint. Every request needs a short-lived **OAuth2 access token** (≈1 hour TTL) minted from either a service-account JSON or Application Default Credentials (ADC). Hermes mints and **auto-refreshes** these tokens for you — you never paste a token by hand. This is why pasting a temporary token into a custom provider's `api_key` field does not work: it expires mid-session.
@@ -18,7 +18,7 @@ Vertex has **no static API key** for the standard endpoint. Every request needs 
 - **Credentials**, one of:
   - a **service-account JSON** key file with the `roles/aiplatform.user` role, or
   - **Application Default Credentials** via `gcloud auth application-default login` (or the metadata server when running on a GCP VM).
-- **`google-auth`** — installed automatically the first time you select Vertex (lazy install), or explicitly with `pip install 'hermes-agent[vertex]'`.
+- **`google-auth`** — installed automatically the first time you select Vertex (lazy install). Run `hermes setup` to repair a managed install if that fails.
 
 ## Quick Start
 
@@ -88,6 +88,8 @@ Vertex requires the `google/` vendor prefix on model IDs. The `hermes model` pic
 
 | Model | ID |
 |-------|----|
+| Gemini 3.8 Flash | `google/gemini-3.8-flash` |
+| Gemini 3.7 Flash | `google/gemini-3.7-flash` |
 | Gemini 3.1 Pro Preview | `google/gemini-3.1-pro-preview` |
 | Gemini 3 Pro Preview | `google/gemini-3-pro-preview` |
 | Gemini 3 Flash Preview | `google/gemini-3-flash-preview` |
@@ -128,7 +130,7 @@ Hermes found neither a service-account JSON nor working ADC. Either set `VERTEX_
 
 ### `google-auth` not installed
 
-Install the extra: `pip install 'hermes-agent[vertex]'`. Hermes also lazy-installs it the first time you select the Vertex provider.
+Hermes lazy-installs it the first time you select the Vertex provider. If that fails, run `hermes setup` to repair the managed install.
 
 ### 404 on Gemini 3.x models
 
@@ -140,7 +142,7 @@ The service account (or your ADC identity) needs the `roles/aiplatform.user` rol
 
 ## Related
 
-- [Google Gemini (AI Studio)](/guides/google-gemini) — static-API-key Gemini without GCP
-- [AWS Bedrock](/guides/aws-bedrock) — another native cloud-provider integration
-- [AI Providers](/integrations/providers)
-- [Configuration](/user-guide/configuration)
+- [Google Gemini (AI Studio)](./google-gemini.md) — static-API-key Gemini without GCP
+- [AWS Bedrock](./aws-bedrock.md) — another native cloud-provider integration
+- [AI Providers](../integrations/providers.md)
+- [Configuration](../user-guide/configuration.md)

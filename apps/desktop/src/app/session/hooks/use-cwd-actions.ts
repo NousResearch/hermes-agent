@@ -1,29 +1,31 @@
 import { type MutableRefObject, useCallback } from 'react'
 
-import { useI18n } from '@/i18n'
+import { translateNow, useI18n } from '@/i18n'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $currentCwd,
   $newChatWorkspaceTargetGeneration,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentCwdExplicit,
   setNewChatWorkspaceTarget
 } from '@/store/session'
 import type { SessionRuntimeInfo } from '@/types/hermes'
 
 interface CwdActionsOptions {
-  activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
-  onSessionRuntimeInfo?: (info: Pick<SessionRuntimeInfo, 'branch' | 'cwd'>) => void
+  onSessionRuntimeInfo?: (sessionId: string, info: Pick<SessionRuntimeInfo, 'branch' | 'cwd'>) => void
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
-export function useCwdActions({
-  activeSessionId,
-  activeSessionIdRef,
-  onSessionRuntimeInfo,
-  requestGateway
-}: CwdActionsOptions) {
+// The shared owner refuses a re-home while a turn runs (its frozen policy would change under it).
+function cwdChangeError(err: unknown): unknown {
+  const busy = (err as { data?: { reason?: string } } | null)?.data?.reason === 'session_busy'
+
+  return busy ? new Error(translateNow('sidebar.projects.moveBusy')) : err
+}
+
+export function useCwdActions({ activeSessionIdRef, onSessionRuntimeInfo, requestGateway }: CwdActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
 
@@ -52,15 +54,28 @@ export function useCwdActions({
   )
 
   const changeSessionCwd = useCallback(
-    async (cwd: string) => {
+    async (cwd: string, targetSessionId?: string) => {
       const trimmed = cwd.trim()
 
       if (!trimmed) {
         return
       }
 
-      if (!activeSessionId) {
+      // A focused tile names its own runtime id. Otherwise the ref, not the
+      // closure-captured prop: this hook's consumers are memoized on a stable
+      // actions object, so the prop can still name the previously focused
+      // chat. Re-anchoring the wrong session's workspace would point that
+      // agent's terminal/file tools at another conversation's project.
+      const sessionId = targetSessionId || activeSessionIdRef.current
+      // The primary-scoped readouts ($currentCwd/$currentBranch) follow only
+      // the primary chat; a tile's own state arrives via onSessionRuntimeInfo.
+      const primary = sessionId === activeSessionIdRef.current
+
+      if (!sessionId) {
         setCurrentCwd(trimmed)
+        // A folder chosen here is a deliberate workspace pick (#52589) — the
+        // gateway must let it beat a named profile's configured terminal.cwd.
+        setCurrentCwdExplicit(true)
         const workspaceGeneration = setNewChatWorkspaceTarget(trimmed)
 
         try {
@@ -92,24 +107,30 @@ export function useCwdActions({
 
       try {
         const info = await requestGateway<SessionRuntimeInfo>('session.cwd.set', {
-          session_id: activeSessionId,
+          session_id: sessionId,
           cwd: trimmed
         })
 
-        setCurrentCwd(info.cwd || trimmed)
-        setCurrentBranch(info.branch || '')
-        onSessionRuntimeInfo?.({ branch: info.branch || '', cwd: info.cwd || trimmed })
+        if (primary) {
+          setCurrentCwd(info.cwd || trimmed)
+          setCurrentBranch(info.branch || '')
+        }
+
+        onSessionRuntimeInfo?.(sessionId, { branch: info.branch || '', cwd: info.cwd || trimmed })
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
 
         if (!message.includes('unknown method')) {
-          notifyError(err, copy.cwdChangeFailed)
+          notifyError(cwdChangeError(err), copy.cwdChangeFailed)
 
           return
         }
 
-        setCurrentCwd(trimmed)
-        setCurrentBranch('')
+        if (primary) {
+          setCurrentCwd(trimmed)
+          setCurrentBranch('')
+        }
+
         notify({
           kind: 'warning',
           title: copy.cwdStagedTitle,
@@ -117,7 +138,7 @@ export function useCwdActions({
         })
       }
     },
-    [activeSessionId, activeSessionIdRef, copy, onSessionRuntimeInfo, requestGateway]
+    [activeSessionIdRef, copy, onSessionRuntimeInfo, requestGateway]
   )
 
   return { changeSessionCwd, refreshProjectBranch }

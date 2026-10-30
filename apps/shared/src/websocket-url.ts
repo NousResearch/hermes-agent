@@ -12,8 +12,13 @@ export interface ResolveGatewayWsUrlDeps {
    * OAuth-gated gateways use single-use tickets, so callers should mint
    * immediately before opening the socket.
    */
-  getGatewayWsUrl?: (profile?: null | string) => Promise<string>
+  getGatewayWsUrl?: (profile?: null | string) => Promise<GatewayWsUrlResult>
 }
+
+export type GatewayWsUrlResult =
+  | string
+  | { ok: true; wsUrl: string }
+  | { error: string; needsOauthLogin?: boolean; ok: false }
 
 export class GatewayReauthRequiredError extends Error {
   readonly needsOauthLogin = true
@@ -37,30 +42,81 @@ export async function resolveGatewayWsUrl(deps: ResolveGatewayWsUrlDeps, conn: G
 
   if (conn.authMode === 'oauth') {
     if (!mint) {
-      throw new GatewayReauthRequiredError(
-        'Your remote gateway session needs to be refreshed. Open Settings -> Gateway and click "Sign in" again.'
-      )
+      throw new Error('This Desktop build cannot refresh OAuth WebSocket tickets. Update Hermes Desktop and try again.')
     }
 
     try {
-      return await mint(profile)
+      const result = await mint(profile)
+
+      if (typeof result === 'string') {
+        return result
+      }
+
+      if (result.ok) {
+        return result.wsUrl
+      }
+
+      if (result.needsOauthLogin) {
+        throw new GatewayReauthRequiredError(
+          'Your remote gateway session has expired. Open Settings -> Gateway and click "Sign in" again.',
+          { cause: new Error(result.error) }
+        )
+      }
+
+      throw new Error(result.error || 'Could not refresh the remote gateway WebSocket ticket.')
     } catch (error) {
-      throw new GatewayReauthRequiredError(
-        'Your remote gateway session has expired. Open Settings -> Gateway and click "Sign in" again.',
-        { cause: error }
-      )
+      if (isGatewayReauthRequired(error)) {
+        throw error instanceof GatewayReauthRequiredError
+          ? error
+          : new GatewayReauthRequiredError(
+              'Your remote gateway session has expired. Open Settings -> Gateway and click "Sign in" again.',
+              { cause: error }
+            )
+      }
+
+      throw error
     }
   }
 
-  if (mint) {
-    const fresh = await mint(profile).catch(() => null)
+  // The Webapp's descriptor URL carries no credential of its own, so a failed mint IS the answer
+  // (a gateway that cannot attach says why); falling back to that URL only fails later, nameless.
+  // Every other descriptor falls back to its cached URL and leaves the retry to the reconnect loop.
+  const mintRequired = nativeDialOf(conn.wsUrl) === BROWSER_NATIVE_DIAL
 
-    if (fresh) {
+  if (mint) {
+    const fresh = await mint(profile).catch((error: unknown) => {
+      if (mintRequired) {
+        throw error
+      }
+
+      return null
+    })
+
+    if (typeof fresh === 'string') {
       return fresh
+    }
+
+    if (fresh?.ok) {
+      return fresh.wsUrl
+    }
+
+    if (fresh && mintRequired) {
+      throw new Error(fresh.error || 'Could not mint a gateway WebSocket ticket.')
     }
   }
 
   return conn.wsUrl
+}
+
+/** The `native_dial` value on the browser-hosted Desktop's own socket URL. */
+export const BROWSER_NATIVE_DIAL = 'browser'
+
+function nativeDialOf(wsUrl: string): null | string {
+  try {
+    return new URL(wsUrl).searchParams.get('native_dial')
+  } catch {
+    return null
+  }
 }
 
 export type WebSocketAuthParam = readonly [name: string, value: string]
@@ -88,12 +144,13 @@ function readWindowLocation(): { host: string; protocol: string } {
   return { host: window.location.host, protocol: window.location.protocol }
 }
 
-function normalizeBasePath(basePath: string | undefined): string {
+export function normalizeBasePath(basePath: string | undefined): string {
   if (!basePath) {
     return ''
   }
 
   const withLead = basePath.startsWith('/') ? basePath : `/${basePath}`
+
   return withLead.replace(/\/+$/, '')
 }
 

@@ -142,7 +142,10 @@ export function modelToZones(model: GridLayout): GridZone[] | null {
     }
 
     // Each zone must occupy a full rectangle of cells.
-    if (indexCount[index] !== (indexRowHigh[index] - indexRowLow[index] + 1) * (indexColHigh[index] - indexColLow[index] + 1)) {
+    if (
+      indexCount[index] !==
+      (indexRowHigh[index] - indexRowLow[index] + 1) * (indexColHigh[index] - indexColLow[index] + 1)
+    ) {
       return null
     }
   }
@@ -185,7 +188,7 @@ export function modelToResizers(model: GridLayout): GridResizer[] {
 
   // Horizontal
   for (let row = 1; row < rows; row++) {
-    for (let startCol = 0; startCol < cols; ) {
+    for (let startCol = 0; startCol < cols;) {
       if (grid[row - 1][startCol] !== grid[row][startCol]) {
         let endCol = startCol
 
@@ -216,7 +219,7 @@ export function modelToResizers(model: GridLayout): GridResizer[] {
 
   // Vertical
   for (let col = 1; col < cols; col++) {
-    for (let startRow = 0; startRow < rows; ) {
+    for (let startRow = 0; startRow < rows;) {
       if (grid[startRow][col - 1] !== grid[startRow][col]) {
         let endRow = startRow
 

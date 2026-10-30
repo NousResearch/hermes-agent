@@ -1,5 +1,7 @@
+import { randomUuid } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 import { capitalize } from '@/lib/text'
 import { $gateway } from '@/store/gateway'
@@ -181,12 +183,6 @@ export const $petGenInput = atom('')
 export const $petGenRefImage = atom<string | null>(null)
 export const $petGenRefName = atom('')
 
-function isMissingMethod(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-
-  return /method not found|-32601|unknown method|no such method/i.test(message)
-}
-
 /** Clear all generation state (before a fresh run). */
 export function resetPetGen(): void {
   $petGenStatus.set('idle')
@@ -366,8 +362,9 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
   // Stream drafts in as the backend finishes each one (pet.generate.progress),
   // so the grid fills live instead of sitting on placeholders until all N land.
   const off =
-    $gateway.get()?.on<PetDraft & { token: string; count: number }>('pet.generate.progress', event => {
-      const draft = event.payload
+    $gateway.get()?.on('pet.generate.progress', event => {
+      // Shared map types this payload as an open record; the pet backend's draft shape is desktop-owned.
+      const draft = event.payload as (PetDraft & { count: number; token: string }) | undefined
 
       // Token-only init event (no draft yet): learn the token immediately so an
       // early Stop can still tell the backend to cancel this run.
@@ -439,7 +436,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
       return false
     }
 
-    if (isMissingMethod(e)) {
+    if (isMissingRpcMethod(e)) {
       $petGenStatus.set('stale')
     } else {
       $petGenStatus.set('error')
@@ -480,7 +477,7 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
   // Hatch cancellation rides its own token (not the draft token): hatching
   // mid-generation leaves pet.generate releasing that token, which would race
   // the arm. The draft token still locates the staged image server-side.
-  const cancelToken = crypto.randomUUID()
+  const cancelToken = randomUuid()
   const hatchRunId = hatch.begin()
   const controller = new AbortController()
   hatch.arm(() => {
@@ -495,28 +492,26 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
   // Stream the hatch steps (which row is drawing, then compose/save) to the egg
   // screen so a multi-minute hatch shows live progress instead of a black box.
   const offProgress =
-    $gateway
-      .get()
-      ?.on<{ event: string; state?: string; done?: string; total?: string }>('pet.hatch.progress', event => {
-        const p = event.payload
+    $gateway.get()?.on('pet.hatch.progress', event => {
+      const p = event.payload as { done?: string; event: string; state?: string; total?: string } | undefined
 
-        if (!p || !hatch.isCurrent(hatchRunId) || $petGenStatus.get() !== 'hatching') {
-          return
-        }
+      if (!p || !hatch.isCurrent(hatchRunId) || $petGenStatus.get() !== 'hatching') {
+        return
+      }
 
-        if (p.event === 'row' && p.state) {
-          $petGenStage.set({
-            phase: 'row',
-            state: p.state,
-            done: Number(p.done) || undefined,
-            total: Number(p.total) || undefined
-          })
-        } else if (p.event === 'compose') {
-          $petGenStage.set({ phase: 'compose' })
-        } else if (p.event === 'save') {
-          $petGenStage.set({ phase: 'save' })
-        }
-      }) ?? (() => {})
+      if (p.event === 'row' && p.state) {
+        $petGenStage.set({
+          phase: 'row',
+          state: p.state,
+          done: Number(p.done) || undefined,
+          total: Number(p.total) || undefined
+        })
+      } else if (p.event === 'compose') {
+        $petGenStage.set({ phase: 'compose' })
+      } else if (p.event === 'save') {
+        $petGenStage.set({ phase: 'save' })
+      }
+    }) ?? (() => {})
 
   try {
     const result = await request<{ ok: boolean; slug: string; displayName: string; pet?: PetInfo }>(

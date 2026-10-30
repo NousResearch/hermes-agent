@@ -732,10 +732,11 @@ class PluginLoaderMixin:
                 except Exception as exc:
                     logger.warning("Agent Plugin '%s' skill '%s' skipped: %s", lookup_key, skill.name, exc)
             from hermes_cli.agent_plugins import _clear_liveness, _set_liveness
+            from hermes_cli.plugins_mcp_env import portable_mcp_configs_with_env
             from hermes_platform import declaration
             registered: list[str] = []
             try:
-                for server_name, config in package.mcp_servers.items():
+                for server_name, config in portable_mcp_configs_with_env(lookup_key, package.mcp_servers).items():
                     internal_name = portable_mcp_server_name(lookup_key, server_name)
                     if internal_name in self._portable_mcp_servers:
                         logger.warning("Agent Plugin '%s' MCP server '%s' skipped: name already taken by plugin '%s'; rename one server",

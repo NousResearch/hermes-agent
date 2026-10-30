@@ -328,3 +328,18 @@ def test_a_failed_purge_keeps_the_original_install_error(project, tmp_path, monk
         second.sync(source, timeout=120)
     assert "cache is read-only" in str(caught.value)
     assert "The wheel is invalid" in str(caught.value)
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("odd", ["WHEEL", "METADATA", "RECORD"])
+def test_sweep_closes_every_descriptor_when_a_file_is_a_directory(tmp_path, odd):
+    from pm.uv_cache_health import remove_corrupt_entries
+
+    files = {"WHEEL": b"Wheel-Version: 1.0\n", "METADATA": b"Name: alpha-dep\n", "RECORD": b"a,,\n"}
+    del files[odd]
+    info = next(_bucket(tmp_path, files=files).glob("*.dist-info"))
+    (info / odd).mkdir()
+    before = len(os.listdir("/proc/self/fd"))
+    for _ in range(20):
+        remove_corrupt_entries(tmp_path, {"alpha-dep"})
+    assert len(os.listdir("/proc/self/fd")) == before

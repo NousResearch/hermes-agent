@@ -368,6 +368,14 @@ class ToolCallGuardrailController:
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
 
+    def halt_repeat_count(self, signature: ToolCallSignature) -> int:
+        """How many times this exact call has ended a turn this session (#146494).
+
+        0/1 = first halt; >1 means the model replayed a call the guardrail already
+        stopped — the user-facing reply must say so instead of repeating the canned advice.
+        """
+        return self._session_halted.get(signature, 0)
+
     def _decide(
         self, action: str, code: str, tool_name: str, count: int, signature: ToolCallSignature,
         *, message: str | None = None, **fmt: Any,
@@ -666,6 +674,33 @@ def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
         "Try different arguments, a narrower query/path, an absolute path when relevant, "
         "or a different tool that can make progress. If the blocker is external, report "
         "the blocker after one diagnostic attempt instead of repeating the same failing path."
+    )
+
+
+def toolguard_halt_response(decision: ToolGuardrailDecision, repeat_count: int = 1) -> str:
+    """The user-facing reply when a guardrail halts a turn (run_agent delegates here).
+
+    ``repeat_count`` is the controller's session-wide count of turn-ending halts for this
+    exact call (#146494). ``> 1`` means the model REPLAYED a call the guardrail had already
+    stopped — usually because the user sent `continue` and nothing changed. Repeating the
+    identical canned advice reads to the model as fresh, untried advice and re-arms the
+    loop, so the second halt must name what happened.
+    """
+    tool = decision.tool_name or "the same tool"
+    if repeat_count > 1:
+        return (
+            f"I stopped AGAIN because {tool} was replayed even though this exact call "
+            f"already ended the previous {repeat_count - 1} turn(s) with identical "
+            "arguments and identical results. Nothing changed between attempts, so running "
+            "it once more hits the same guardrail and is not progress. The blocker is in "
+            "the last result above. Send `continue` only to have me try a genuinely "
+            "different approach — a different command, path, or tool."
+        )
+    return (
+        f"I stopped retrying because I kept running {tool} "
+        f"{decision.count} times without making progress. The last result above shows what "
+        "blocked it. Tell me how you'd like to proceed, or send `continue` and I'll try a "
+        "different approach."
     )
 
 

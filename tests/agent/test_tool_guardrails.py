@@ -577,3 +577,28 @@ def test_replay_gate_is_off_when_hard_stop_disabled():
         c.after_call("terminal", args, "a\n", failed=False)
         c.observe_call("terminal", args, "a\n", failed=False)
     assert c.halt_decision is None
+
+
+from agent.tool_guardrails import toolguard_halt_response
+
+
+def test_halt_response_says_stopped_again_on_the_second_halt_of_the_same_call():
+    c = _HARD()
+    args = {"command": "hermes config get memory.provider"}
+    first_halt = _streak_halt(c, "terminal", args, "local\n")
+    assert c.halt_repeat_count(first_halt.signature) == 1
+    first = toolguard_halt_response(first_halt, c.halt_repeat_count(first_halt.signature))
+    assert "AGAIN" not in first
+    assert "kept running terminal" in first
+
+    # The user sends `continue`; the model replays the very same call: the next
+    # turn-ending decision must NOT repeat the same canned advice.
+    c.reset_for_turn()
+    assert c.before_call("terminal", args).allows_execution
+    again = c.before_call("terminal", args)
+    assert again.should_halt
+    assert c.halt_repeat_count(again.signature) == 2
+    repeat = toolguard_halt_response(again, c.halt_repeat_count(again.signature))
+    assert repeat != first
+    assert "AGAIN" in repeat
+    assert "`continue`" in repeat

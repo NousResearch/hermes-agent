@@ -4,7 +4,8 @@ The background-review pattern, for plugins: after a turn, a plugin redeems the t
 (``post_llm_call``'s ``side_question_token``, :mod:`agent.side_question_lease`) to fork the live
 session agent (same system prompt, ``tools[]``, memory and warm prompt cache) and run one bounded
 multi-step prompt in the background. Guardrails are the review's own: a dispatch-side tool
-whitelist of the tools the plugin names (its own, already advertised to the session),
+whitelist of the tools the plugin names (its own, already advertised to the session or
+deferred there behind Tool Search, then reached through the session's ``tool_call`` bridge),
 dangerous-command approvals auto-denied, an aggregate input budget, an iteration cap, cancellation
 when the parent starts its next live turn, idle deferral on the managed local runtime, persistence
 fully detached.
@@ -17,6 +18,7 @@ Usage is billed to the session as ``plugin_fork:<plugin id>``; each loop request
 from __future__ import annotations
 
 import contextvars
+import json
 import logging
 import threading
 import time
@@ -188,7 +190,9 @@ def start_session_fork(
 ) -> Optional[PluginForkHandle]:
     """Spend the lease behind ``token`` on one background fork; its handle, or None (bad token,
     expired lease, another profile's lease, a tool outside :func:`fork_tool_allowlist`, a tool the
-    session does not advertise, a task the plugin does not own). The lease is consumed by every
+    session neither advertises nor defers behind Tool Search, a task the plugin does not own).
+    When a named tool is deferred, one line appended to ``prompt`` says to call it through
+    ``tool_call`` (:func:`_deferred_call_note`); ``tools[]`` stays the session's. The lease is consumed by every
     call except another profile's and one naming a tool outside the allowlist. ``own_tools``
     returns the plugin's own tool names; it is read here and again when the fork starts. Never
     raises: a fork whose worker thread cannot start returns its handle settled ``error:spawn``."""
@@ -207,11 +211,13 @@ def start_session_fork(
     if lease is None:
         return None
     capture = lease.capture
-    advertised = {t.get("function", {}).get("name") for t in capture.tools if isinstance(t, dict)}
-    if names is None or not all(isinstance(n, str) for n in names) or not names <= advertised:
+    deferred, unreached = _session_reach(capture, names)
+    if unreached is not None:
         logger.info("session_fork plugin=%s outcome=rejected:tools_not_in_session %s", plugin_id,
-                    sorted(map(str, (names or set()) - advertised)) if names is not None else tools)
+                    sorted(map(str, unreached)) if names is not None else tools)
         return None
+    if deferred:
+        prompt = prompt + _deferred_call_note(deferred)
     task_cfg = capture.context.copy().run(_resolve_task_cfg, task, owned_tasks)
     if task_cfg is None:
         logger.info("session_fork plugin=%s outcome=rejected:task_not_owned (%r)", plugin_id, task)
@@ -226,6 +232,54 @@ def start_session_fork(
     else:
         _launch(job)
     return job.handle
+
+
+def _session_reach(capture: Any, names: Optional[frozenset]) -> tuple[frozenset, Optional[frozenset]]:
+    """``(deferred, unreached)`` for the requested ``names`` in the captured session. A name is
+    reachable when the captured ``tools[]`` advertises it, or when the session defers it behind
+    Tool Search: those ``tools[]`` carry the ``tool_call`` bridge and the name is in the session's
+    deferred catalog, read with the classification the session's own ``tool_call`` unwrap uses
+    (:func:`agent.tool_executor._tool_search_scoped_names`). ``unreached`` is None when every name
+    is reachable; ``deferred`` holds the names reached only through the bridge."""
+    from tools.tool_search_catalog import TOOL_CALL_NAME
+
+    if names is None or not all(isinstance(n, str) for n in names):
+        return frozenset(), frozenset(names or ())
+    advertised = {t.get("function", {}).get("name") for t in capture.tools if isinstance(t, dict)}
+    rest = names - advertised
+    if not rest:
+        return frozenset(), None
+    in_catalog = (capture.context.copy().run(_session_deferred_tools, capture.parent_ref())
+                  if TOOL_CALL_NAME in advertised else frozenset())
+    unreached = rest - in_catalog
+    return (frozenset(rest), None) if not unreached else (frozenset(), unreached)
+
+
+def _session_deferred_tools(parent: Any) -> frozenset:
+    if parent is None:
+        return frozenset()
+    from agent.tool_executor import _tool_search_scoped_names
+
+    return _tool_search_scoped_names(parent)
+
+
+def _deferred_call_note(names: Iterable[str]) -> str:
+    """The line core appends to a fork's prompt when Tool Search defers a requested tool: the
+    fork's ``tools[]`` (the session's, byte for byte) holds only the bridge, so the model is told
+    to reach the tool through ``tool_call`` and given the parameters ``tool_call`` validates
+    against. ``tool_describe`` and ``tool_search`` are therefore never needed, and stay refused."""
+    from tools.registry import registry
+    from tools.tool_search_catalog import TOOL_CALL_NAME
+
+    def _parameters(name: str) -> str:
+        schema = registry.get_schema(name) or {}
+        fn = schema.get("function") if schema.get("type") == "function" else schema
+        params = fn.get("parameters") if isinstance(fn, dict) else None
+        return json.dumps(params if isinstance(params, dict) else {}, ensure_ascii=False,
+                          separators=(",", ":"), sort_keys=True)
+
+    return (f"\n\nCall {', '.join(sorted(names))} through {TOOL_CALL_NAME} with name=<tool> and arguments "
+            "matching its parameters: " + "; ".join(f"{n} {_parameters(n)}" for n in sorted(names)) + ".")
 
 
 def _should_defer(parent: Any, task_cfg: dict) -> bool:
@@ -378,12 +432,30 @@ def _pin_capture(fork: Any, capture: Any) -> None:
     fork._prompt_cache_fork_tag = PLUGIN_FORK_TASK
 
 
+def _called_tool(tc: dict) -> Optional[str]:
+    """The tool a call runs: its own name, or a ``tool_call`` carrier's single target (the only
+    form the executor unwraps; the dispatch guard then checks the target, never the bridge)."""
+    from tools.tool_search_catalog import TOOL_CALL_NAME
+    from tools.tool_search_validation import normalize_tool_call_entries
+
+    fn = tc.get("function") or {}
+    name = fn.get("name")
+    if name != TOOL_CALL_NAME:
+        return name
+    try:
+        args = json.loads(fn.get("arguments") or "{}")
+        entries, err = normalize_tool_call_entries(args if isinstance(args, dict) else {})
+    except (TypeError, ValueError):
+        return None
+    return entries[0]["name"] if not err and len(entries) == 1 else None
+
+
 def _tool_calls_after(messages: list, snapshot: list, allowed: frozenset) -> tuple[str, ...]:
     seen = {tc.get("id") for m in snapshot if isinstance(m, dict) for tc in (m.get("tool_calls") or ()) if isinstance(tc, dict)}
     return tuple(
         name for m in messages if isinstance(m, dict) and m.get("role") == "assistant"
         for tc in (m.get("tool_calls") or ()) if isinstance(tc, dict) and tc.get("id") not in seen
-        for name in [(tc.get("function") or {}).get("name")] if name in allowed
+        for name in [_called_tool(tc)] if name in allowed
     )
 
 
@@ -445,7 +517,10 @@ def _run_job(job: _ForkJob) -> None:
             _track_child(parent, fork, register=True)
             # The allowlist is read again here, against the live session agent and the fork that
             # dispatches: the guard holds only tools that are still the plugin's own and still
-            # reach its handler (or are marked fork-safe), however the job was built.
+            # reach its handler (or are marked fork-safe), however the job was built. It never
+            # holds a Tool Search bridge: a ``tool_call`` reaches the guard unwrapped to its
+            # target (after the fork's own scope check), so the bridge is only a carrier for
+            # these names, and a call the executor does not unwrap is denied as ``tool_call``.
             allowed = set(job.tools) & fork_tool_allowlist(job.own_tools(), parent, fork)
             set_thread_tool_whitelist(allowed, deny_msg_fmt=(
                 "This background task may only call: " + (", ".join(sorted(allowed)) or "no tools")

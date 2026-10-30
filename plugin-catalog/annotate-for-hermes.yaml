@@ -1,6 +1,6 @@
 name: annotate-for-hermes
 repo: https://github.com/LarryLemonBot/annotate-for-hermes
-sha: e2b7db76d01556a78f5f87e29be9f02a0793ca6a
+sha: ae9dca1613317de7647eae542cc16fc63dcff4c0
 title: "Annotate for Hermes"
 description: >-
   Collect comments on selected assistant passages in one attachment inside the
@@ -17,7 +17,7 @@ requires_hermes: ">=0.22.5"
 docs_url: https://github.com/LarryLemonBot/annotate-for-hermes#readme
 platforms: [linux, macos, windows]
 screenshots:
-  - https://raw.githubusercontent.com/LarryLemonBot/annotate-for-hermes/e2b7db76d01556a78f5f87e29be9f02a0793ca6a/docs/annotation-preview.png
+  - https://raw.githubusercontent.com/LarryLemonBot/annotate-for-hermes/ae9dca1613317de7647eae542cc16fc63dcff4c0/docs/annotation-preview.png
 known_issues:
   - "Development preview: requires the response-annotations v1 Desktop API from PR #146959. Stock Hermes 0.22.5 does not provide it. Do not merge this entry until the API is released and both compatibility floors are updated."
   - "Unsaved popover comments and source highlights do not survive an app reload. Draft attachments do."

@@ -19,7 +19,11 @@ from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_
 # stored-row CAS digest and the durable row adopted onto the live dict. Never transcript payload.
 DB_ROW_SNAPSHOT = "_db_row_snapshot"
 CANONICAL_ROW = "_canonical_row"
-REPAIR_BOOKKEEPING_FIELDS = frozenset({DB_ROW_SNAPSHOT, CANONICAL_ROW})
+# Set by the agent flush on a batch row (never a live dict) whose ``message_uid`` the agent itself saw durable in
+# this session (written by an earlier flush, or loaded from the store with its marker). Only such a row, with no
+# row address or snapshot, may be skipped as a re-insert of an ACTIVE uid; a bare copied uid proves nothing.
+RESTORED_FROM_STORE = "_restored_from_store"
+REPAIR_BOOKKEEPING_FIELDS = frozenset({DB_ROW_SNAPSHOT, CANONICAL_ROW, RESTORED_FROM_STORE})
 # Unanswered text a merged user row held before the current turn was absorbed
 # (agent_runtime_helpers._merge_consecutive_users); the persist override keeps it.
 # It repeats the row's own content, so pricing it would double the estimate.

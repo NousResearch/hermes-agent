@@ -1,0 +1,26 @@
+name: composio-connections
+title: Composio Connections
+repo: https://github.com/luisced/hermes-composio-connections
+sha: 4d707f7cfef14db6996bb25ee934193f921a5df5
+subdir: ""
+description: "Connect and disconnect Composio accounts from Hermes Desktop and the web dashboard. Lists every row the Composio CLI returns, including expired, duplicate, and unaliased accounts, opens OAuth in the user's browser, and disconnects one exact account after confirmation. No agent tools or hooks. Catalog metadata uses COMPOSIO_USER_API_KEY through agent.secret_scope.get_secret and requests only https://backend.composio.dev. Disclosure — inventory, connect, and disconnect run the composio CLI already logged in on the gateway; the API key never reaches the browser. Removing a Composio connection does not revoke every permission at the provider. The bundled service logos include an Ngrok mark; the plugin does not open a tunnel."
+maintainer: luisced
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+version: "0.1.7"
+docs_url: https://github.com/luisced/hermes-composio-connections
+screenshots:
+  - https://raw.githubusercontent.com/luisced/hermes-composio-connections/4d707f7cfef14db6996bb25ee934193f921a5df5/docs/images/catalog.png
+  - https://raw.githubusercontent.com/luisced/hermes-composio-connections/4d707f7cfef14db6996bb25ee934193f921a5df5/docs/images/dashboard-catalog.png
+  - https://raw.githubusercontent.com/luisced/hermes-composio-connections/4d707f7cfef14db6996bb25ee934193f921a5df5/docs/images/dashboard-connections.png
+  - https://raw.githubusercontent.com/luisced/hermes-composio-connections/4d707f7cfef14db6996bb25ee934193f921a5df5/docs/images/dashboard-disconnect.png
+  - https://raw.githubusercontent.com/luisced/hermes-composio-connections/4d707f7cfef14db6996bb25ee934193f921a5df5/docs/images/mobile.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - COMPOSIO_USER_API_KEY

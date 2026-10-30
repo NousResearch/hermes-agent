@@ -18,6 +18,12 @@
       "name",
       "phone",
       "address"
+    ],
+    "url_patterns": {
+      "phone": "https://www.cyberbackgroundchecks.com/phone/{digits10}"
+    },
+    "url_format_quirks": [
+      "Reverse-phone page is static HTML readable by web_extract (verified live 2026-10-26); person pages link the dashed variant, the digits form is the verified-live one. The owner card carries an in-flow 'This is me...Remove My Record' control."
     ]
   },
   "optout": {
@@ -40,6 +46,7 @@
     ],
     "notes": "Free people-search. Opt-out at /removal: find the record, submit email, confirm link.",
     "quirks": [
+      "ACCESS (verified live 2026-10-26): /removal sits behind a Cloudflare interstitial ('Just a moment...') that did NOT auto-clear for the automation browser (stuck >1 min), while their static phone pages fetch fine via web_extract. Present the removal as a manual step for the operator's everyday browser; the owner card also carries the in-flow 'This is me...Remove My Record' control.",
       "Opt-out URL is the documented public endpoint; datacenter IPs get 403 (anti-bot), so confirm the live flow via the operator's residential browser before the first submission, then set last_verified.",
       "Needs the confirmed profile_url.",
       "Email verification required."
@@ -47,7 +54,7 @@
     "est_processing_days": 3,
     "reappearance_risk": "medium"
   },
-  "last_verified": null,
+  "last_verified": "2026-10-26",
   "source": "curated",
   "confidence": "documented"
 }

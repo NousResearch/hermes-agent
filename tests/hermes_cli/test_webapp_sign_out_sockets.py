@@ -2,8 +2,8 @@
 
 ``hermes webapp --sign-out`` (control verb ``webapp-sign-out``) replaces the session token and closes
 the live sockets that token authenticated, directly or through a ticket minted with it: each tab's
-host terminal and event stream close at once with code 4401, and the media links it minted stop
-streaming. A socket opened with another credential stays connected. The verb runs on a
+host terminal and event stream close at once with code 4401, and the media and download links it
+minted stop working. A socket opened with another credential stays connected. The verb runs on a
 control-socket worker thread, not on the sockets' event loops.
 """
 import json
@@ -87,20 +87,25 @@ def test_signing_out_with_no_open_tabs_still_replaces_the_credential(webapp, sig
     assert client.post("/api/webapp/socket-ticket?socket=gateway", headers={"X-Hermes-Session-Token": _TOKEN}).status_code == 401
 
 
-def test_signing_out_ends_the_media_links_the_session_token_minted(webapp, sign_out, tmp_path, monkeypatch):
-    """A media element's stream link is reusable for an hour; after sign-out it streams nothing."""
+@pytest.mark.parametrize("route", ["stream", "download"])
+def test_signing_out_ends_the_file_links_the_session_token_minted(webapp, sign_out, tmp_path, monkeypatch, route):
+    """A media element's stream link is reusable for an hour and a download link for a few retries;
+    after sign-out, with uses left, neither reads anything."""
+    from hermes_cli import web_server_file_tickets
+
     client = webapp.client
     root = tmp_path / "files"
     root.mkdir()
     (root / "clip.mp4").write_bytes(b"hello")
     monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(root))
-    minted = client.post("/api/files/ticket", json={"route": "stream", "path": str(root / "clip.mp4")},
+    minted = client.post("/api/files/ticket", json={"route": route, "path": str(root / "clip.mp4")},
                          headers={"X-Hermes-Session-Token": _TOKEN})
     assert minted.status_code == 200, minted.text
-    stream = {"path": str(root / "clip.mp4"), "ticket": minted.json()["ticket"]}
-    assert client.get("/api/files/stream", params=stream).content == b"hello"
+    link = {"path": str(root / "clip.mp4"), "ticket": minted.json()["ticket"]}
+    endpoint = web_server_file_tickets.ROUTES[route]
+    assert client.get(endpoint, params=link).content == b"hello"
     sign_out()
-    assert client.get("/api/files/stream", params=stream).status_code == 401
+    assert client.get(endpoint, params=link).status_code == 401
 
 
 def test_a_media_link_minted_while_signing_out_streams_nothing(webapp, sign_out, tmp_path, monkeypatch):
@@ -127,10 +132,11 @@ def test_a_media_link_minted_while_signing_out_streams_nothing(webapp, sign_out,
     assert client.get("/api/files/stream", params=stream).status_code == 401
 
 
-def test_a_media_link_another_credential_minted_keeps_streaming_after_sign_out(webapp, sign_out, tmp_path,
-                                                                             monkeypatch):
+@pytest.mark.parametrize("route", ["stream", "download"])
+def test_a_file_link_another_credential_minted_keeps_working_after_sign_out(webapp, sign_out, tmp_path,
+                                                                          monkeypatch, route):
     """Signing out ends the links minted under the browser credential and no others: a link minted
-    with another credential (a service token, a native client's grant) keeps streaming."""
+    with another credential (a service token, a native client's grant) keeps working."""
     from hermes_cli import web_server_file_tickets
 
     client = webapp.client
@@ -140,11 +146,12 @@ def test_a_media_link_another_credential_minted_keeps_streaming_after_sign_out(w
     monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(root))
     path = str(root / "clip.mp4")
     ticket = web_server_file_tickets.mint(
-        "stream", {"path": path}, authority=web_server_file_tickets.FileAuthority(root / "clip.mp4", ()))
-    stream = {"path": path, "ticket": ticket}
-    assert client.get("/api/files/stream", params=stream).content == b"hello"
+        route, {"path": path}, authority=web_server_file_tickets.FileAuthority(root / "clip.mp4", ()))
+    link = {"path": path, "ticket": ticket}
+    endpoint = web_server_file_tickets.ROUTES[route]
+    assert client.get(endpoint, params=link).content == b"hello"
     sign_out()
-    assert client.get("/api/files/stream", params=stream).content == b"hello"
+    assert client.get(endpoint, params=link).content == b"hello"
 
 
 def test_a_socket_admitted_while_the_token_is_replaced_closes_at_once(monkeypatch):

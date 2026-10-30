@@ -16,6 +16,9 @@ export interface WebAccessStatus {
   nous_signed_in: boolean
   port: number
   public_url: string
+  /** The newest restart of this gateway exited without replacing it; `pid` is the `restart_pid` that
+   *  restart answered, `reason` the last line it wrote (or its exit code). */
+  restart_failure?: null | { exit_code: number; pid: number; reason: string }
 }
 
 /** Start/stop save the config and restart the gateway; a refused restart keeps the config.
@@ -23,6 +26,7 @@ export interface WebAccessStatus {
 export interface WebAccessChange extends WebAccessStatus {
   restart_busy?: boolean
   restart_error?: string
+  restart_pid?: number
   restart_started: boolean
 }
 

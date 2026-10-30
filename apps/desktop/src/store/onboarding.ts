@@ -16,9 +16,11 @@ import {
   validateProviderCredential
 } from '@/hermes'
 import { translateNow } from '@/i18n'
+import { writeClipboardText } from '@/lib/clipboard'
 import { restOfLongPollGap } from '@/lib/long-poll'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { readKey, writeKey } from '@/lib/storage'
 import {
   $freeTierStatus,
   ackFreeTierNotice,
@@ -154,31 +156,15 @@ function writeCachedConfigured(value: boolean) {
   }
 }
 
+// Through the storage choke point: the skip is a machine-level preference,
+// so every browser and origin of this machine honours it (#145600).
 function readCachedSkipped(): boolean {
-  if (typeof window === 'undefined') {
-    return false
-  }
-
-  try {
-    return window.localStorage.getItem(SKIP_CACHE_KEY) === '1'
-  } catch {
-    return false
-  }
+  return typeof window !== 'undefined' && readKey(SKIP_CACHE_KEY) === '1'
 }
 
 function writeCachedSkipped(value: boolean) {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  try {
-    if (value) {
-      window.localStorage.setItem(SKIP_CACHE_KEY, '1')
-    } else {
-      window.localStorage.removeItem(SKIP_CACHE_KEY)
-    }
-  } catch {
-    // localStorage unavailable — degrade silently.
+  if (typeof window !== 'undefined') {
+    writeKey(SKIP_CACHE_KEY, value ? '1' : null)
   }
 }
 
@@ -1125,7 +1111,7 @@ export function cancelOnboardingFlow() {
 
 async function copyAndFlash(text: string, predicate: (flow: OnboardingFlow) => boolean) {
   try {
-    await navigator.clipboard.writeText(text)
+    await writeClipboardText(text)
   } catch {
     return
   }

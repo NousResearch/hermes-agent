@@ -23,6 +23,10 @@ const launchFlags: { localModels?: boolean; assumeFreshInstall?: boolean } | und
 // the built-in palette over the skin configured on this machine.
 const localSkin = ipcRenderer.sendSync('hermes:skin:local')
 
+// This machine's UI preferences store (#145213), read before the first paint so
+// a preference set in another window or in this machine's Webapp paints at once.
+const uiPreferencesSnapshot = ipcRenderer.sendSync('hermes:ui-preferences:snapshot')
+
 import { unwrapExpectedNotFound } from './api-expected-404'
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
@@ -35,6 +39,17 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // onboarding treats this launch as a fresh install. Always false when packaged.
   assumeFreshInstall: launchFlags?.assumeFreshInstall === true,
   localSkin: localSkin && typeof localSkin === 'object' ? localSkin : null,
+  uiPreferences: {
+    snapshot: uiPreferencesSnapshot && typeof uiPreferencesSnapshot === 'object' ? uiPreferencesSnapshot : null,
+    read: () => ipcRenderer.invoke('hermes:ui-preferences:read'),
+    write: payload => ipcRenderer.invoke('hermes:ui-preferences:write', payload),
+    onChanged: callback => {
+      const listener = (_event, snapshot) => callback(snapshot)
+      ipcRenderer.on('hermes:ui-preferences:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:ui-preferences:changed', listener)
+    }
+  },
   getConnection: (profile, opts) => ipcRenderer.invoke('hermes:connection', profile, opts),
   // Loopback origin that hosts YouTube's player for the file:// renderer.
   getEmbedHostOrigin: () => ipcRenderer.invoke('hermes:embed-host:origin'),
@@ -473,7 +488,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),
   openDir: dirPath => ipcRenderer.invoke('hermes:fs:openDir', dirPath),
   desktopPluginsRoot: () => ipcRenderer.invoke('hermes:fs:desktopPluginsRoot'),
-  reconcileDesktopPlugins: () => ipcRenderer.invoke('hermes:fs:reconcileDesktopPlugins'),
+  reconcileDesktopPlugins: async () => (await ipcRenderer.invoke('hermes:fs:reconcileDesktopPlugins')).published,
+  reconcileDesktopPluginsReport: () => ipcRenderer.invoke('hermes:fs:reconcileDesktopPlugins'),
   logsRoot: (profile?: string) => ipcRenderer.invoke('hermes:fs:logsRoot', profile),
   renamePath: (targetPath, newName) => ipcRenderer.invoke('hermes:fs:rename', targetPath, newName),
   writeTextFile: (filePath, content) => ipcRenderer.invoke('hermes:fs:writeText', filePath, content),
@@ -668,7 +684,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:bootstrap:event', listener)
   },
-  getVersion: () => ipcRenderer.invoke('hermes:version'),
+  getVersion: (scope?: { connectionId?: string; profile?: string }) => ipcRenderer.invoke('hermes:version', scope),
   relaunchApp: () => ipcRenderer.invoke('hermes:app:relaunch'),
   getMachineProfile: () => ipcRenderer.invoke('hermes:machine:profile'),
   getRemoteDisplayReason: () => ipcRenderer.invoke('hermes:get-remote-display-reason'),

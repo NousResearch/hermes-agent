@@ -121,6 +121,10 @@ def _make_loopback_callback_handler(
     result: dict[str, Any] = {"code": None, "state": None, "error": None, "error_description": None}
 
     class _LoopbackCallbackHandler(BaseHTTPRequestHandler):
+        # One connection at a time: an idle browser preconnect (Chrome holds one ~60 s) would park the
+        # serve loop ahead of the real redirect and expire short-lived codes. Same fix as tools/mcp_oauth.py.
+        timeout = 2
+
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path != expected_path:

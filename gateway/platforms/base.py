@@ -4198,7 +4198,14 @@ class BasePlatformAdapter(ABC):
                 redeliver = getattr(
                     self.gateway_runner, "_redeliver_failed_obligations_for_platform", None)
                 live = self._final_delivery_adapter(event.source)
-                if live is not delivery_adapter and callable(redeliver):
+                # Health may have won the race with the ledger write. When the same adapter is already
+                # healthy, replay once through the existing atomic runtime sweep; a failed replay marks
+                # the adapter degraded again, so this seam cannot recurse without a new health edge.
+                same_healthy_adapter = (
+                    live is delivery_adapter
+                    and not getattr(live, "send_path_degraded", False)
+                )
+                if callable(redeliver) and (live is not delivery_adapter or same_healthy_adapter):
                     await redeliver(event.source.platform,
                                     profile=getattr(delivery_adapter, "_owner_profile", None))
             elif classify_dead_error(error) is None:  # a dead chat is never retried: no timer to wake

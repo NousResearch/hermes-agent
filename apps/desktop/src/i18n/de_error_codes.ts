@@ -22,6 +22,8 @@ export const deErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   },
   local_runtime_unavailable: {
     title: 'Lokaler Modellserver nicht erreichbar',
-    body: 'Der lokale Modellserver läuft nicht: Er startet möglicherweise noch oder wurde ausgeschaltet. Versuchen Sie es gleich noch einmal oder wechseln Sie zu einem anderen Modell.'
+    body: 'Der lokale Modellserver läuft noch nicht: Er startet möglicherweise noch. Versuchen Sie es gleich noch einmal oder wechseln Sie zu einem anderen Modell.',
+    bodyNoRetry:
+      'Der lokale Modellserver ist ausgeschaltet. Starten Sie ihn in der Hermes-Desktop-App oder mit `hermes model` im Terminal, oder wechseln Sie zu einem anderen Modell.'
   }
 }

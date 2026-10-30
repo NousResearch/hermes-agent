@@ -98,5 +98,26 @@ def test_chat_text_names_the_local_server_and_no_desktop_only_pane(llamacpp_home
     assert "custom model endpoint" not in tui
     for text in (reply, tui):
         assert "local model server" in text
-        assert "Settings" not in text and "Local models" not in text
+        assert "Settings" not in text
         assert "/model" in text
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_chat_text_suggests_retry_only_while_the_server_can_come_up(llamacpp_home, enabled):
+    """A switched-off server never comes up on its own: the TUI/dashboard text (built from the
+    error surface, as a turn builds it) names where to start it, never /retry."""
+    from agent.error_surface import build_error_surface_from_result
+    from tui_gateway.user_messages import turn_error_text
+
+    llamacpp_home({"enabled": enabled})
+    exc = _resolution_error()
+    surface = build_error_surface_from_result(
+        {"failed": True, "error": str(exc), "failure_reason": exc.error_code, "failure_retryable": exc.retryable},
+        provider="llamacpp")
+    hint = turn_error_text(str(exc), surface).splitlines()[-1]
+
+    assert ("/retry" in hint) is enabled
+    if not enabled:
+        assert "hermes model" in hint and "/model" in hint
+        # Surface-neutral: the backend sentence names the terminal path too, not only the Desktop app.
+        assert "hermes model" in str(exc)

@@ -336,7 +336,7 @@ export function settleLocalRuntimeNotice(runtime: RuntimeReadinessResult) {
 // The Webapp has no Local models pane (the flag is Electron-only), so there the way forward it can
 // offer is another model, and the sentence must not send the user to a pane they cannot open.
 const WEBAPP_LOCAL_RUNTIME_DOWN =
-  "The local model server isn't serving. Start it from the Hermes desktop app, or choose another model."
+  "The local model server isn't serving. Start it from the Hermes desktop app or `hermes model` in a terminal, or choose another model."
 
 // Desktop has the pane, so its notice names it next to the button that opens it.
 const DESKTOP_LOCAL_RUNTIME_DOWN =

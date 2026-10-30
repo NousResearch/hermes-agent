@@ -50,6 +50,9 @@ export type Locale = string
 export interface ErrorCardCopy {
   title: string | ((provider: string, model: string) => string)
   body: string | ((provider: string, model: string) => string)
+  /** Body when the failure says a retry will not help (`retryable: false`), for a code whose body
+   *  otherwise tells the user to retry. */
+  bodyNoRetry?: string | ((provider: string, model: string) => string)
 }
 
 export type ToolTitleKey =

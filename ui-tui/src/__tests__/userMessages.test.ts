@@ -54,6 +54,16 @@ describe('describeTurnFailure', () => {
     expect(text).toContain('/model')
   })
 
+  it('names where to start a switched-off local model server, and never suggests /retry', () => {
+    const text = describeTurnFailure({
+      error: 'The local model server is turned off.',
+      error_surface: { code: 'local_runtime_unavailable', layer: 'endpoint', provider: 'llamacpp', retryable: false }
+    })
+
+    expect(text).not.toContain('/retry')
+    expect(text).toContain('hermes model')
+  })
+
   it('falls back to the layer copy, and to a generic title, when the code is unknown', () => {
     const streaming = describeTurnFailure({
       error: 'peer closed connection',

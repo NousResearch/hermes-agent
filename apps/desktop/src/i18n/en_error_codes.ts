@@ -123,7 +123,9 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
   },
   local_runtime_unavailable: {
     title: "Can't reach the local model server",
-    body: "The local model server isn't running: it may still be starting, or it was turned off. Retry in a moment, or switch to another model."
+    body: "The local model server isn't serving yet: it may still be starting. Retry in a moment, or switch to another model.",
+    bodyNoRetry:
+      'The local model server is turned off. Start it from the Hermes desktop app or `hermes model` in a terminal, or switch to another model.'
   },
   SESSION_OWNER_UNCONFIRMED: {
     title: 'Your message may already be queued',

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { TRANSLATIONS } from '@/i18n'
 import { en } from '@/i18n/en'
 
 import {
@@ -222,6 +223,20 @@ describe('managed local model server down', () => {
     const surface = parseErrorSurface({ layer: 'endpoint', code: 'local_runtime_unavailable', retryable: true })
 
     expect(errorCardActions(surface)).toEqual({ primary: 'retry', secondary: 'switch_provider' })
+  })
+
+  it('says Retry only while the server is starting, in every locale', () => {
+    const card = (retryable: boolean, thread = en.assistant.thread) =>
+      errorCardText(thread, parseErrorSurface({ layer: 'endpoint', code: 'local_runtime_unavailable', retryable }))
+
+    expect(card(true).body).toMatch(/retry/i)
+    expect(card(false).body).not.toMatch(/retry/i)
+    expect(card(false).body).toContain('hermes model')
+
+    for (const copy of Object.values(TRANSLATIONS)) {
+      expect(card(false, copy.assistant.thread).body).not.toBe(card(true, copy.assistant.thread).body)
+      expect(card(false, copy.assistant.thread).body).toContain('hermes model')
+    }
   })
 })
 

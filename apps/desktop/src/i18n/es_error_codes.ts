@@ -22,6 +22,8 @@ export const esErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   },
   local_runtime_unavailable: {
     title: 'No se puede acceder al servidor de modelos local',
-    body: 'El servidor de modelos local no está en ejecución: puede que aún se esté iniciando o que se haya apagado. Reintenta en un momento o cambia a otro modelo.'
+    body: 'El servidor de modelos local aún no está en ejecución: puede que todavía se esté iniciando. Reintenta en un momento o cambia a otro modelo.',
+    bodyNoRetry:
+      'El servidor de modelos local está apagado. Inícialo desde la app de escritorio de Hermes o con `hermes model` en una terminal, o cambia a otro modelo.'
   }
 }

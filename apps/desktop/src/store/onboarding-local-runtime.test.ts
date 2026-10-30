@@ -9,7 +9,7 @@ import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext
 markOnboardingDecided()
 
 const SERVER_OFF =
-  'The local model server is turned off. Turn it back on in the Hermes desktop app, or switch to another model with /model.'
+  'The local model server is turned off. Start it from the Hermes desktop app or `hermes model` → Local models, or switch to another model with /model.'
 
 function coldState(): DesktopOnboardingState {
   return {

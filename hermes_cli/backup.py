@@ -520,6 +520,8 @@ def _write_zip_entries(
     for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
         try:
             if abs_path.suffix == ".db":
+                if not abs_path.exists():
+                    continue
                 size = _zip_sqlite_snapshot(zf, abs_path, rel_path, out_path)
                 if size is None:
                     on_db_failure(rel_path)
@@ -529,6 +531,11 @@ def _write_zip_entries(
                 _write_zip_file(zf, abs_path, str(rel_path))
                 if track_bytes:
                     total_bytes += abs_path.stat().st_size
+        except FileNotFoundError:
+            # Vanished between the scan and this read (Hermes deletes its own short-lived
+            # process/cron files while the archive runs). The file is not missing from the
+            # archive — it no longer exists — so the run is not incomplete (#144066).
+            continue
         except (PermissionError, OSError, ValueError) as exc:
             on_error(rel_path, exc)
             continue
@@ -652,6 +659,8 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
             try:
                 _write_zip_file(zf, abs_path, arcname)
                 total_bytes += abs_path.stat().st_size
+            except FileNotFoundError:
+                continue  # vanished since the scan; see _write_zip_entries
             except (PermissionError, OSError, ValueError) as exc:
                 errors.append(f"{arcname}: {exc}")
     elapsed = time.monotonic() - t0

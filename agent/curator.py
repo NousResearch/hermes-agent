@@ -49,6 +49,7 @@ def load_state() -> dict[str, Any]:
     base: dict[str, Any] = {
         "last_run_at": None, "last_run_duration_seconds": None, "last_run_summary": None,
         "last_run_summary_shown_at": None, "last_report_path": None, "paused": False, "run_count": 0,
+        "archive_hold": None,
     }
     path = _state_file()
     try:
@@ -157,6 +158,64 @@ def get_max_archives_per_run() -> int:
     return max(0, _config_number("max_archives_per_run", DEFAULT_MAX_ARCHIVES_PER_RUN, int))
 
 
+# --- Archive hold — the ceiling alone cannot contain a mass transition ---
+
+ARCHIVE_HOLD_KEY = "archive_hold"
+
+
+def get_archive_hold() -> Optional[dict[str, Any]]:
+    """Return the persisted archive hold, if one is active.
+
+    A per-pass ceiling bounds one invocation, not the incident. After a forward clock jump (or a
+    corrupt ledger) every skipped skill stays equally past ``archive_cutoff``, so the next
+    unattended pass would archive the remainder — two intervals were enough to empty a 15-skill
+    library in testing. The hold therefore freezes *automatic archiving* until a human either
+    corrects the anomaly (the hold lifts itself once nothing is left to archive) or states
+    explicit intent with ``hermes curator run --force-archive``. Stale marking and reactivation
+    keep running under a hold: they are reversible bookkeeping, not the destructive step.
+    """
+    hold = load_state().get(ARCHIVE_HOLD_KEY)
+    return hold if isinstance(hold, dict) else None
+
+
+def set_archive_hold(capped: int, when: datetime) -> None:
+    """Persist (or refresh) the hold after an automatic pass hit the ceiling."""
+    if capped <= 0:
+        return
+    state = load_state()
+    previous = state.get(ARCHIVE_HOLD_KEY)
+    previous = previous if isinstance(previous, dict) else {}
+    state[ARCHIVE_HOLD_KEY] = {
+        "since": previous.get("since") or when.isoformat(),
+        "at": when.isoformat(),
+        "capped": int(capped),
+        "passes": int(previous.get("passes", 0) or 0) + 1,
+    }
+    save_state(state)
+
+
+def touch_archive_hold(when: datetime) -> None:
+    """Record that another pass ran under an existing hold, so ``hermes curator status`` shows
+    how long automatic archiving has been frozen instead of a single stale timestamp."""
+    state = load_state()
+    hold = state.get(ARCHIVE_HOLD_KEY)
+    if not isinstance(hold, dict):
+        return
+    state[ARCHIVE_HOLD_KEY] = {**hold, "at": when.isoformat(),
+                               "passes": int(hold.get("passes", 0) or 0) + 1}
+    save_state(state)
+
+
+def clear_archive_hold() -> bool:
+    """Drop the hold (explicit manual archive, or the anomaly resolved). True when one was active."""
+    state = load_state()
+    if ARCHIVE_HOLD_KEY not in state:
+        return False
+    state.pop(ARCHIVE_HOLD_KEY, None)
+    save_state(state)
+    return True
+
+
 def get_consolidate() -> bool:
     """LLM consolidation pass — OFF by default (prune only, no aux-model fork); ``hermes curator run --consolidate`` overrides per invocation."""
     return bool(_load_config().get("consolidate", DEFAULT_CONSOLIDATE))
@@ -220,10 +279,17 @@ def _archive_as_curator(_u, name: str) -> bool:
                 reset_ledger_actor(tok)
 
 
-def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int]:
+def apply_automatic_transitions(
+    now: Optional[datetime] = None, *, max_archives: Optional[int] = None, respect_hold: bool = False
+) -> dict[str, int]:
     """Move every curator-managed skill between active/stale/archived based on its latest real activity; pinned skills are
     never touched. Built-ins are seeded with a baseline record on first sight so their inactivity clock starts NOW, not at epoch.
-    Returns a counter dict."""
+    Returns a counter dict.
+
+    *max_archives* overrides ``curator.max_archives_per_run`` for this call (0 = no ceiling); an explicit
+    ``hermes curator run --force-archive`` passes 0 because the human asked for the archive. *respect_hold*
+    honours a persisted archive hold and reports every withheld skill as ``held`` instead of archiving it.
+    """
     from tools import skill_usage as _u
 
     now = now or datetime.now(UTC)
@@ -232,8 +298,10 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
     # Cron-referenced skills are in use by definition (usage only bumps when a
     # job fires, so paused/rare jobs would age them out). Treat as pinned.
     protected = _cron_referenced_skills()
-    archive_cap = get_max_archives_per_run()
-    counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0, "capped": 0}
+    archive_cap = get_max_archives_per_run() if max_archives is None else max(0, int(max_archives))
+    hold = get_archive_hold() if respect_hold else None
+    counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0,
+              "capped": 0, "held": 0}
 
     def _set(name: str, state: str, key: str) -> None:
         _u.set_state(name, state)
@@ -267,6 +335,10 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
                 _set(name, _u.STATE_ACTIVE, "reactivated")
             continue
         if anchor <= archive_cutoff and current != _u.STATE_ARCHIVED:
+            if hold is not None:
+                # A previous automatic pass hit the ceiling: the mass transition is not adjudicated yet.
+                counts["held"] += 1
+                continue
             if archive_cap and counts["archived"] >= archive_cap:
                 # Clock-jump / ledger-corruption guard: stop the pass instead of mass-archiving.
                 counts["capped"] += 1
@@ -277,6 +349,10 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
             _set(name, _u.STATE_STALE, "marked_stale")
         elif anchor > stale_cutoff and current == _u.STATE_STALE:
             _set(name, _u.STATE_ACTIVE, "reactivated")  # used again after going stale
+    # Nothing left to archive under a hold means the anomaly cleared (clock corrected, ledger
+    # re-anchored): lift it so automatic archiving resumes without waiting for a human.
+    if hold is not None and counts["held"] == 0:
+        clear_archive_hold()
     return counts
 
 
@@ -934,13 +1010,16 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
 def run_curator_review(
     on_summary: Optional[Callable[[str], None]] = None, synchronous: bool = False,
     dry_run: bool = False, consolidate: Optional[bool] = None, trigger: str = "manual",
+    force_archive: bool = False,
 ) -> dict[str, Any]:
     """Execute a single curator review pass: (1) automatic state transitions (no LLM); (2) if *consolidate* and there are
     candidates, fork an AIAgent on the review prompt; (3) update .curator_state; (4) call *on_summary*.
     *synchronous* runs the LLM review in the calling thread (default: daemon thread). *consolidate* ``None`` reads
     ``curator.consolidate`` (OFF by default); when off only the deterministic prune runs — no fork, no aux cost.
     *dry_run* SKIPS the stale/archive transitions and instructs the fork to report only; REPORT.md is still written and
-    recorded in ``state.last_report_path`` so users can read what WOULD have happened."""
+    recorded in ``state.last_report_path`` so users can read what WOULD have happened.
+    *force_archive* is the human taking responsibility for a mass transition: it lifts an active archive hold and
+    runs this pass without the per-pass ceiling. Every other pass — scheduled or manual — honours the hold."""
     consolidate = get_consolidate() if consolidate is None else consolidate
     start = datetime.now(UTC)
     hermes_home = get_hermes_home()  # the LLM pass may run on a thread with no profile binding
@@ -962,9 +1041,16 @@ def run_curator_review(
         else:
             with contextlib.suppress(Exception):
                 curator_backup.prune_old_snapshots()
-        counts = apply_automatic_transitions(now=start)
+        counts = apply_automatic_transitions(
+            now=start, max_archives=0 if force_archive else None, respect_hold=not force_archive)
+        if force_archive:
+            clear_archive_hold()  # explicit intent outranks a hold left by an earlier capped pass
+        elif counts.get("capped"):
+            set_archive_hold(counts["capped"], start)
+        elif counts.get("held"):
+            touch_archive_hold(start)
     auto_summary = ", ".join(
-        f"{counts.get(key, 0)} {label}" for key, label in (("marked_stale", "marked stale"), ("archived", "archived"), ("reactivated", "reactivated"), ("capped", "capped by archive ceiling")) if counts.get(key)
+        f"{counts.get(key, 0)} {label}" for key, label in (("marked_stale", "marked stale"), ("archived", "archived"), ("reactivated", "reactivated"), ("capped", "capped by archive ceiling"), ("held", "held by archive hold")) if counts.get(key)
     ) or "no changes"
 
     # Persist before the LLM pass so a crash mid-review still records the run.

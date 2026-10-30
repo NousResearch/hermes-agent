@@ -105,6 +105,10 @@ def _cmd_status(args) -> int:
     from agent import curator
     from tools import skill_usage
     _print_curator_config(curator)
+    hold = curator.get_archive_hold()
+    if hold:
+        print(f"  archive hold:  active since {hold.get('since', 'unknown')} "
+              f"({hold.get('capped', '?')} withheld; `hermes curator run --force-archive` to override)")
     rows = skill_usage.curated_report()
     if not rows:
         print("\nno curator-managed skills")
@@ -153,6 +157,16 @@ def _cmd_run(args) -> int:
     # --consolidate forces the LLM umbrella pass on; absent => None so run_curator_review reads
     # curator.consolidate from config.
     consolidate = True if getattr(args, "consolidate", False) else None
+    force_archive = bool(getattr(args, "force_archive", False))
+    hold = curator.get_archive_hold()
+    if hold and not force_archive:
+        print(
+            "curator: ARCHIVE HOLD active since "
+            f"{hold.get('since', 'unknown')} (a pass hit the archive ceiling with "
+            f"{hold.get('capped', '?')} skill(s) withheld). Automatic archiving stays "
+            "frozen until you confirm the transition is genuine — a forward clock jump "
+            "or a corrupt skills/.usage.json looks exactly like this. Inspect, then "
+            "re-run with --force-archive.")
     print(
         "curator: running DRY-RUN (report only, no mutations)..." if dry
         else "curator: running review pass...")
@@ -162,7 +176,8 @@ def _cmd_run(args) -> int:
             "(deterministic stale/archive). Pass --consolidate or set "
             "`curator.consolidate: true` to enable the LLM merge pass.")
     result = curator.run_curator_review(
-        on_summary=print, synchronous=synchronous, dry_run=dry, consolidate=consolidate)
+        on_summary=print, synchronous=synchronous, dry_run=dry, consolidate=consolidate,
+        force_archive=force_archive)
     auto = result.get("auto_transitions", {})
     if auto and dry:
         print(
@@ -174,7 +189,16 @@ def _cmd_run(args) -> int:
             f"stale={auto.get('marked_stale', 0)} "
             f"archived={auto.get('archived', 0)} "
             f"reactivated={auto.get('reactivated', 0)}"
-            + (f" capped={auto['capped']}" if auto.get("capped") else ""))
+            + (f" capped={auto['capped']}" if auto.get("capped") else "")
+            + (f" held={auto['held']}" if auto.get("held") else ""))
+        if auto.get("held"):
+            print(
+                "curator: this pass archived nothing because an archive hold is active. "
+                "Confirm the mass transition is genuine, then re-run with --force-archive.")
+        elif auto.get("capped"):
+            print(
+                "curator: archive ceiling reached — the remaining candidates are now on hold "
+                "and automatic archiving is frozen until you adjudicate them.")
     if not synchronous:
         print("llm pass running in background — check `hermes curator status` later")
     if dry:
@@ -642,7 +666,11 @@ _SUBCOMMANDS = (
         _arg("--consolidate", dest="consolidate", **_STORE_TRUE,
              help="Force the LLM umbrella-building consolidation pass on for this "
                   "run, overriding the config default (off). Without this flag the "
-                  "run is prune-only unless `curator.consolidate: true` is set.")),
+                  "run is prune-only unless `curator.consolidate: true` is set."),
+        _arg("--force-archive", dest="force_archive", **_STORE_TRUE,
+             help="Override an active archive hold and run this pass without the "
+                  "per-pass archive ceiling. Use only after confirming a mass "
+                  "archive is genuine, not a clock jump or a corrupt usage ledger.")),
     ("pause", "Pause the curator until resumed", _cmd_pause),
     ("resume", "Resume a paused curator", _cmd_resume),
     ("pin", "Pin a skill so the curator never auto-transitions it", _cmd_pin, _SKILL),

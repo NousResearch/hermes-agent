@@ -10,6 +10,12 @@ isolation via `scripts/run_tests_parallel.py` (no xdist; workers scale with CPU 
 module-level dicts/ContextVars cannot leak between files. Direct `pytest` on a big machine
 with API keys set has caused repeated "works locally, fails in CI" incidents (and the reverse).
 
+The runner owns each attempt's temporary root and removes it on success and failure.
+Do not pass an external `--basetemp`: it escapes that lifecycle and is rejected.
+Keep named failure diagnostics (command, revision, traceback and necessary small
+reproducer inputs) outside scratch; retain execution machinery only for a specific
+unresolved recovery question. Retries use the existing runner lifecycle.
+
 Prepare a test interpreter with the checkout's bootstrapped Python:
 
 ```bash

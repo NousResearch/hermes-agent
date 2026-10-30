@@ -28,6 +28,40 @@ def _put(root, name, content):
     return path
 
 
+def _stage_selected_source(destination):
+    # A real selected checkout needs source bytes, never ignored build/runtime
+    # estates that happen to live below a package in the developer workspace.
+    packages = {"hermes_cli", "hermes_platform", "pm", "agent", "gateway", "tools", "cron"}
+    tracked = subprocess.check_output(
+        ["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")
+    for name in filter(None, tracked):
+        relative = Path(name)
+        if ((len(relative.parts) == 1 and relative.suffix == ".py")
+                or relative.parts[0] in packages
+                or relative.parts[:2] == ("scripts", "build")):
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / relative, target)
+
+
+def test_source_snapshot_excludes_untracked_execution_estate(tmp_path, monkeypatch):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _put(checkout, "hermes_cli/main.py", "VALUE = 1\n")
+    _put(checkout, "cli.py", "VALUE = 2\n")
+    _put(checkout, "hermes_cli/node_modules/cache/ignored", "disposable")
+    _put(checkout, "scratch.py", "unreviewed scratch")
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(["git", "add", "--", "hermes_cli/main.py", "cli.py"], cwd=checkout, check=True)
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", checkout)
+    destination = tmp_path / "selected"
+    _stage_selected_source(destination)
+    assert (destination / "hermes_cli/main.py").read_text() == "VALUE = 1\n"
+    assert not (destination / "hermes_cli/node_modules").exists()
+    assert not (destination / "scratch.py").exists()
+    assert (checkout / "scratch.py").read_text() == "unreviewed scratch"
+
+
 @pytest.fixture
 def completion(tmp_path, monkeypatch):
     from hermes_cli.config_defaults import DEFAULT_CONFIG
@@ -40,15 +74,7 @@ def completion(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "store"))
     source = tmp_path / "selected source"
     source.mkdir()
-    # Copies give bootstrap/main a genuine selected checkout identity. No file
-    # in the working checkout is modified, even by import-time self-heals.
-    for path in ROOT.glob("*.py"):
-        shutil.copy2(path, source / path.name)
-    for name in ("hermes_cli", "hermes_platform", "pm", "agent", "gateway", "tools", "cron"):
-        shutil.copytree(ROOT / name, source / name,
-                        ignore=shutil.ignore_patterns("__pycache__", "web_dist", "tui_dist"))
-    shutil.copytree(ROOT / "scripts/build", source / "scripts/build",
-                    ignore=shutil.ignore_patterns("__pycache__"))
+    _stage_selected_source(source)
     _put(source, "pyproject.toml", '[project]\nname="takeover-fixture"\nversion="2.0"\n')
     # Successful completion stamps the selected checkout's own git identity.
     git_env = {**os.environ, "GIT_AUTHOR_NAME": "fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",

@@ -851,6 +851,23 @@ def _assignment_sub(render, *, check_keyword: bool):
     return _sub
 
 
+def _sub_skipping_url_lines(pattern, repl, text: str) -> str:
+    """Apply ``pattern`` to every line that does not carry ``://``.
+
+    The URL gate used to be whole-text (``if "://" not in text``): a single relay URL
+    anywhere in a dump disabled the lowercase/YAML passes for EVERY line, so
+    ``network_secret = "…"`` printed verbatim as soon as the same output also held
+    ``ET_PEERS=wss://…``. The gate exists so web-URL query params (``?token=``) survive,
+    which is a per-line property — apply it per line instead.
+    """
+    if "://" not in text:
+        return pattern.sub(repl, text)
+    return "\n".join(
+        line if "://" in line else pattern.sub(repl, line)
+        for line in text.split("\n")
+    )
+
+
 def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     """ENV / config / JSON / YAML assignment passes (skipped for code files). Passes
     that would match ``token=``/``key=`` URL params skip ``://`` text (web-URL query
@@ -864,12 +881,11 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     if "=" in text:
         _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
-        if "://" not in text:  # lowercase names would match URL params
-            # Skip URLs — the query string may contain ``token=``/``key=`` params that are intentionally
-            # passed through (see note near the bottom of this function; _redact_strict_url_credentials
-            # handles the opt-in case). The uppercase regex above is all-caps-only, so it never matches URL
-            # params; the lowercase one would (issue #77484).
-            text = _ENV_ASSIGN_LOWER_RE.sub(_redact_env, text)
+        # Skip URL lines only — the query string may contain ``token=``/``key=`` params that are
+        # intentionally passed through (see note near the bottom of this function;
+        # _redact_strict_url_credentials handles the opt-in case). The uppercase regex above is
+        # all-caps-only, so it never matches URL params; the lowercase one would (issue #77484).
+        text = _sub_skipping_url_lines(_ENV_ASSIGN_LOWER_RE, _redact_env, text)
         # The keyword pre-gate is exact and matters: _CFG_DOTTED_RE backtracks
         # quadratically on long unbroken [A-Za-z0-9_.\-] runs.
         # Lowercase/dotted config keys (issue #16413). Skip URLs entirely — web-URL query params are
@@ -879,9 +895,9 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
         # because _CFG_DOTTED_RE backtracks quadratically on long unbroken [A-Za-z0-9_.\-] runs (e.g.
         # base64/hex blobs in compaction payloads); the linear keyword scan prevents that pathological path
         # on secret-free text.
-        if "://" not in text and _CFG_SECRET_WORD_RE.search(text):
-            text = _CFG_DOTTED_RE.sub(_redact_env, text)
-            text = _CFG_ANCHORED_RE.sub(_redact_env, text)
+        if _CFG_SECRET_WORD_RE.search(text):
+            text = _sub_skipping_url_lines(_CFG_DOTTED_RE, _redact_env, text)
+            text = _sub_skipping_url_lines(_CFG_ANCHORED_RE, _redact_env, text)
 
     if ":" in text and '"' in text:
         text = _JSON_FIELD_RE.sub(
@@ -896,9 +912,12 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
         text = _redact_python_repr_fields(text)
 
     # YAML after JSON: quoted values are handled there (_YAML_ASSIGN_RE skips quotes).
-    if ":" in text and "://" not in text:
-        text = _YAML_ASSIGN_RE.sub(
-            _assignment_sub(lambda g: f"{g[0]}{g[1]}{mask(g[2])}", check_keyword=True), text)
+    if ":" in text:
+        text = _sub_skipping_url_lines(
+            _YAML_ASSIGN_RE,
+            _assignment_sub(lambda g: f"{g[0]}{g[1]}{mask(g[2])}", check_keyword=True),
+            text,
+        )
     return text
 
 
@@ -1059,6 +1078,10 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 # to avoid mangling legitimate source/config dumps (``MAX_TOKENS=100``, ``"apiKey": "x"`` fixtures,
 # ``postgresql://{user}`` f-string templates). See issue #43025.
 _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
+# Commands that print OTHER processes' argv. Those dumps carry whatever flags a daemon was
+# started with — ``--network-secret <hex>`` and relay URLs whose path segment is a bearer
+# token — so they need the strict pass even though no file is read.
+_ARGV_DUMP_COMMANDS = frozenset({"ps", "top", "pgrep"})
 
 # Commands that read file contents to stdout, plus the filter readers (``grep``/``awk``/``sed``)
 # the model reaches for on config files. A secret-bearing target (``.env`` per AGENTS.md,
@@ -1068,6 +1091,10 @@ _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
 _FILE_READ_COMMANDS = frozenset({
     "cat", "head", "tail", "type", "bat", "less", "more", "nl",
     "zcat", "tac", "view", "batcat", "grep", "awk", "sed",
+    # Recursive searchers (``rg``/``ag``/``ack`` recurse by default). Their operand is a
+    # directory, so the positional check alone can never spot a secret file — see
+    # _command_reads_secret_file.
+    "rg", "ag", "ack",
 })
 _SHELL_RC_BASENAMES = frozenset({
     ".bashrc", ".bash_profile", ".bash_login", ".profile",
@@ -1075,7 +1102,10 @@ _SHELL_RC_BASENAMES = frozenset({
 })
 # Filter readers take a PATTERN/program as their first positional; only the operands after
 # it are files, so ``grep .bashrc app.py`` must not gate on the pattern.
-_PATTERN_FIRST_COMMANDS = frozenset({"grep", "awk", "sed"})
+_PATTERN_FIRST_COMMANDS = frozenset({"grep", "awk", "sed", "rg", "ag", "ack"})
+# Searchers that walk directories unless told otherwise — their operand is a directory, so
+# the positional secret-file test can never fire; treat them as a secret-file read.
+_RECURSIVE_BY_DEFAULT = frozenset({"rg", "ag", "ack"})
 _HERMES_HOME_PREFIXES = ("$HERMES_HOME/", "${HERMES_HOME}/")
 # ``$HOME/.hermes/config.yaml`` keeps the ``.hermes`` segment, so stripping the prefix is
 # enough to gate it; ``~/`` already survives the ``$``-bearing-path bail-out.
@@ -1188,6 +1218,25 @@ def _is_secret_file_arg(arg: str) -> bool:
     return hermes_home or ".hermes" in parts[:-1] or _is_under_hermes_home(path)
 
 
+def _grep_searches_recursively(tokens: list[str]) -> bool:
+    """True if a ``grep`` invocation recurses into directories (``-r``/``-R``/``--recursive``).
+
+    ``grep -r password .`` takes a DIRECTORY as its operand, so ``_is_secret_file_arg`` can
+    never see the ``.env``/``.toml`` basenames the command will actually read — and its
+    output is ``file:content`` lines, so ``a.env:DB_PASSWORD=…`` printed verbatim through
+    the lenient path. Flag scanning stops at ``--`` so a pattern that happens to look like
+    ``-r`` (``grep -- -r file``) is not mistaken for the flag.
+    """
+    for arg in tokens[1:]:
+        if arg == "--":
+            return False
+        if arg == "--recursive":
+            return True
+        if len(arg) > 1 and arg[0] == "-" and not arg.startswith("--") and ("r" in arg or "R" in arg):
+            return True
+    return False
+
+
 def _command_reads_secret_file(command: str | None) -> bool:
     """True if ``command`` reads a secret-bearing file (see ``_is_secret_file_arg``) to
     stdout. Defense-in-depth, not a boundary: indirect reads (``sudo cat .env``, ``$(cat
@@ -1201,6 +1250,13 @@ def _command_reads_secret_file(command: str | None) -> bool:
         reader = tokens[0].rsplit("/", 1)[-1].lower()
         if reader not in _FILE_READ_COMMANDS:
             continue
+        # A recursive search takes a DIRECTORY operand (``grep -r pw .``), so no positional
+        # ever looks like a secret file — yet the output is ``file:content`` lines that can
+        # carry ``.env`` values verbatim.
+        if reader in _RECURSIVE_BY_DEFAULT or (
+            reader == "grep" and _grep_searches_recursively(tokens)
+        ):
+            return True
         positional = [arg for arg in tokens[1:] if not arg.startswith("-")]
         if reader in _PATTERN_FIRST_COMMANDS:
             positional = positional[1:]
@@ -1220,6 +1276,25 @@ def is_env_dump_command(command: str | None) -> bool:
         except ValueError:
             tokens = seg.split()
         if tokens and tokens[0] in _ENV_DUMP_COMMANDS:
+            return True
+    return False
+
+
+def _command_dumps_argv(command: str | None) -> bool:
+    """True if any segment runs an _ARGV_DUMP_COMMANDS tool (``ps``/``top``/``pgrep``).
+
+    Those print other processes' argv, which is exactly where a daemon's
+    ``--network-secret`` and relay-URL path token end up. No file is read, so
+    ``_command_reads_secret_file`` stays False — the strict pass has to be requested
+    separately.
+    """
+    if not command or not isinstance(command, str):
+        return False
+    for seg in _command_segments(command):
+        tokens = seg.split()
+        if not tokens:
+            continue
+        if tokens[0].rsplit("/", 1)[-1].lower() in _ARGV_DUMP_COMMANDS:
             return True
     return False
 
@@ -1254,9 +1329,17 @@ def redact_terminal_output(output: str, command: str | None = None, *, force: bo
     if not output:
         return output
     secret_file = _command_reads_secret_file(command)
-    code_file = not (is_env_dump_command(command) or secret_file)
+    # ``ps``/``top`` print other processes' argv: no file is read, but the same class of
+    # secret lands in the output (``--network-secret <hex>``, relay-URL path token), so they
+    # need the strict pass too. Same for env dumps, which hold relay URLs verbatim.
+    argv_dump = _command_dumps_argv(command)
+    env_dump = is_env_dump_command(command)
+    code_file = not (env_dump or secret_file or argv_dump)
     redacted = redact_sensitive_text(
-        output, force=force, code_file=code_file, secret_file=secret_file
+        output,
+        force=force,
+        code_file=code_file,
+        secret_file=secret_file or argv_dump or env_dump,
     )
     # Source-preserving output still gets the Python-repr pass on high-confidence
     # diagnostic lines (pytest ``E   `` introspection, final exception lines): that is

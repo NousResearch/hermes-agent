@@ -347,6 +347,29 @@ def test_merge_that_departs_from_the_prediction_is_reported(repo, capsys):
     assert f"git reset --keep {before}" in result["error"]
 
 
+def test_repo_given_as_a_subdirectory_still_guards_untracked_files(repo, capsys):
+    _child(repo, [("src/notes.txt", "CHILD\n")])
+    _commit(repo, ".gitignore", "src/notes.txt\n", "ignore notes")
+    (repo / "src" / "notes.txt").write_text("USER WORK\n", encoding="utf-8")
+    before = _git(repo, "rev-parse", "HEAD")
+
+    code, result = _merge(repo / "src", capsys, "child")
+
+    assert code == 1 and result["untracked_collisions"] == ["src/notes.txt"]
+    assert (repo / "src" / "notes.txt").read_text(encoding="utf-8-sig") == "USER WORK\n"
+    _unchanged(repo, before)
+
+
+def test_gate_that_moves_head_gets_no_reset_suggestion(repo, capsys):
+    _child(repo, [("src/app.py", "x = 2\n")])
+    _git(repo, "branch", "elsewhere")
+
+    code, result = _merge(repo, capsys, "child", "--gate", "git switch -q elsewhere; exit 1")
+
+    assert code == 1 and "git reset --keep" not in result["error"]
+    assert "review `git log`" in result["error"] and "refs/heads/elsewhere" in result["error"]
+
+
 def test_conflict_refuses_and_lists_the_files(repo, capsys):
     _child(repo, [("src/app.py", "x = 2\n")])
     _commit(repo, "src/app.py", "x = 99\n", "parent moved on")

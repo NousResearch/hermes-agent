@@ -14,8 +14,9 @@ coordinator asked for, and refuses without changing anything when a check fails:
   of one, that holds something untracked here: git silently overwrites ignored files.
 
 Then it runs an ordinary ``git merge --no-ff`` of the checked commit, so hooks, signing and the
-repository's merge config apply as they would by hand. ``--gate CMD`` runs after the merge (a timeout
-kills the gate's whole process tree). A failing gate does NOT roll back: undoing a merge inside a
+repository's merge config apply as they would by hand. ``--gate CMD`` runs after the merge; a timeout
+kills the gate's process tree (a process that detaches into its own session and is reparented before
+the timeout is no longer part of that tree and is not tracked). A failing gate does NOT roll back: undoing a merge inside a
 live worktree cannot be made safe against every checkout filter, sparse pattern and concurrent
 change, so the merge commit is kept and the result names the ``git reset --keep`` that undoes it.
 """
@@ -242,6 +243,7 @@ def merge_branch(repo: str, branch: str, *, allowed: Optional[list[str]] = None,
             return result
         _check_branch(repo, result, allowed, tested)
         result.before = _out(repo, "rev-parse", "HEAD")
+        head_ref = _git(repo, "symbolic-ref", "-q", "HEAD", check=False).stdout.strip()
         tree = _predict(repo, result, result.before)
         result.untracked_collisions = _unsafe_destinations(repo, result.before, tree)
         if result.untracked_collisions:
@@ -256,10 +258,19 @@ def merge_branch(repo: str, branch: str, *, allowed: Optional[list[str]] = None,
         if result.gate.timed_out or result.gate.exit_code != 0:
             result.error = "the gate timed out" if result.gate.timed_out else "the gate failed"
     if result.error:
-        result.error += (f"; the merge commit {result.merge_commit[:12]} is kept. To undo it: "
-                         f"`git reset --keep {result.before}`")
+        result.error += "; " + _undo_hint(repo, result, head_ref)
     result.merged = not result.error
     return result
+
+
+def _undo_hint(repo: str, result: MergeResult, head_ref: str) -> str:
+    """How to undo the kept merge, offered only while the checkout is where the merge left it."""
+    now_ref = _git(repo, "symbolic-ref", "-q", "HEAD", check=False).stdout.strip()
+    if now_ref == head_ref and _out(repo, "rev-parse", "HEAD") == result.merge_commit:
+        return f"the merge commit {result.merge_commit[:12]} is kept. To undo it: `git reset --keep {result.before}`"
+    return (f"the merge commit {result.merge_commit[:12]} was made on {head_ref or 'a detached HEAD'}, and the gate "
+            f"then moved HEAD (now {now_ref or _out(repo, 'rev-parse', '--short', 'HEAD')}); review `git log` "
+            f"before undoing anything (the pre-merge commit was {result.before})")
 
 
 def _print_human(result: MergeResult) -> None:
@@ -297,6 +308,11 @@ def cmd_merge(_worktree_gc, repo_root: str, args) -> int:
     if timeout <= 0:
         print("--gate-timeout must be a positive number of seconds.")
         return 1
+    top = _git(repo_root, "rev-parse", "--show-toplevel", check=False)
+    if top.returncode != 0:
+        print(f"Not inside a git worktree: {repo_root}")
+        return 1
+    repo_root = top.stdout.strip()  # filesystem checks join repo-relative paths to this
     result = merge_branch(repo_root, branch, allowed=getattr(args, "allow", None) or [],
                           tested=getattr(args, "tested", None), gate=getattr(args, "gate", None),
                           gate_timeout=timeout)

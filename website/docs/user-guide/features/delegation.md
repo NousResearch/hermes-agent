@@ -755,10 +755,11 @@ hermes worktree merge hermes-subagent/subagent-<id> \
 - `--tested SHA`: the commit the child says it verified. Each child is told to
   report it. It must be the branch tip; commits after it refuse the merge.
 - `--gate CMD`: runs in the worktree after the merge commit; running past
-  `--gate-timeout` (default 1800 s) kills the gate's whole process tree. A
-  failing gate does **not** roll back: the merge commit is kept, the command
-  exits non-zero, and the result names the `git reset --keep <sha>` that
-  undoes it.
+  `--gate-timeout` (default 1800 s) kills the gate's process tree (a process
+  that daemonizes into its own session is not tracked). A failing gate does
+  **not** roll back: the merge commit is kept, the command exits non-zero,
+  and the result names the `git reset --keep <sha>` that undoes it, or tells
+  you to review `git log` first if the gate itself moved HEAD.
 - It refuses before merging when tracked files have uncommitted changes
   (including ones hidden by assume-unchanged or skip-worktree), or when a file
   the branch writes already exists here untracked or git-ignored. A conflict

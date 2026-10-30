@@ -163,6 +163,9 @@ _GOOGLE_URL = "https://ai.google.dev/pricing"
 _OPUS = ("5.00", "25.00", "0.50", "6.25")
 _SONNET = ("3.00", "15.00", "0.30", "3.75")
 _OPUS_5_5 = ("4.00", "20.00", "0.20", "5.00")
+# Sonnet 5.5 is $2/$10 per MTok; a single cache-write bucket stores the higher 1h rate
+# ($4) so the daily MoA estimate is conservative when 5m/1h usage cannot be split.
+_SONNET_5_5 = ("2.00", "10.00", "0.10", "4.00")
 _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     # OpenAI GPT-5.6 (Sol/Terra/Luna). Cache write = 1.25x input, cache read =
     # 0.10x input. "-pro" high-effort modes bill at the same per-token rates
@@ -190,6 +193,12 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     # (matching Sonnet 4.6). Update this entry when the intro window closes.
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-06-intro", {
         "claude-sonnet-5": ("2.00", "10.00", "0.20", "2.50"),
+    }),
+    # Sonnet 5.5 official API pricing: $2 input / $10 output per MTok. The
+    # cache-write bucket uses the 1h rate ($4) conservatively because the
+    # canonical usage shape does not separate 5m and 1h cache writes.
+    ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-10-28", {
+        "claude-sonnet-5-5": _SONNET_5_5,
     }),
     # Opus 5.5 cache hits are 0.05x input (every other Opus: 0.1x).
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-09", {

@@ -45,6 +45,60 @@ def _loop_mod():
     return _cl
 
 
+def _record_moa_daily_budget(agent: Any, response: Any, *, api_call_count: int, cost_usd: float | None) -> None:
+    """Persist MoA spend and emit an advisory threshold alarm; never veto the response."""
+    if str(getattr(agent, "provider", "") or "").lower() != "moa":
+        return
+    response_id = str(getattr(response, "id", "") or "")
+    session_id = str(getattr(agent, "session_id", "") or "no-session")
+    model = getattr(response, "model", None) or getattr(agent, "model", "unknown")
+    event_id = f"{session_id}:{api_call_count}:{response_id or model}"
+    if cost_usd is None:
+        try:
+            from agent.moa_budget import record_unknown_moa_spend
+            from hermes_constants import get_hermes_home
+
+            result = record_unknown_moa_spend(
+                event_id, model=str(model), reason="response_usage_unavailable", home=get_hermes_home(),
+            )
+        except Exception:
+            logger.exception("ALARM: MoA unknown-spend event could not be persisted")
+            return
+        logger.error(
+            "ALARM: MoA daily spend estimate unavailable for model=%s; unknown event %s",
+            model, "recorded" if result.event_added else "already recorded",
+        )
+        return
+
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.moa_config import normalize_moa_config
+
+        config = load_config() or {}
+        budget = float(normalize_moa_config(config.get("moa") or {}).get("daily_budget_usd") or 0.0)
+        if budget <= 0:
+            return
+    except Exception:
+        logger.exception("ALARM: MoA daily budget config could not be read; spend is unmonitored")
+        return
+
+    try:
+        from agent.moa_budget import record_moa_spend
+        from hermes_constants import get_hermes_home
+
+        result = record_moa_spend(
+            cost_usd, budget, event_id, home=get_hermes_home(),
+        )
+        if result.alarm_emitted:
+            logger.error(
+                "ALARM: MoA daily estimated spend exceeded $%.2f: $%.4f (%s)",
+                result.budget_usd, result.total_usd, result.day,
+            )
+    except Exception:
+        # Observability failure must never block the model turn; make the missing gate loud.
+        logger.exception("ALARM: MoA daily spend ledger failed; budget may be understated")
+
+
 def _fold_moa_usage(agent, canonical_usage):
     """MoA: fold advisor fan-out usage into REPORTED token counts (only aggregator usage is
     returned, so advisor spend would be invisible) and flush the full-turn trace when
@@ -96,6 +150,7 @@ def record_response_usage(
             "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
             agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
         )
+        _record_moa_daily_budget(agent, response, api_call_count=api_call_count, cost_usd=None)
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
     canonical_usage = with_served_service_tier(
@@ -250,6 +305,7 @@ def record_response_usage(
             _cost_delta = (_cost_delta or 0.0) + _moa_cost
     agent.session_cost_status = cost_result.status
     agent.session_cost_source = cost_result.source
+    _record_moa_daily_budget(agent, response, api_call_count=api_call_count, cost_usd=_cost_delta)
 
     # Persist per-call token deltas for any session_id so non-CLI runs can't lose
     # accounting; gateway/session-store writes use absolute totals and safely overwrite

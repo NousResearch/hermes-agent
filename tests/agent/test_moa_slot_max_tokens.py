@@ -33,3 +33,24 @@ class TestRunReferenceSlotMaxTokens:
             _run_reference(slot, [{"role": "user", "content": "hi"}], max_tokens=2000)
 
         assert captured_kwargs.get("max_tokens") == 2000
+
+
+def test_persistent_moa_fanout_uses_preset_reference_max_tokens(monkeypatch):
+    from agent.moa_loop import MoAChatCompletions
+
+    client = MoAChatCompletions("default")
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr("agent.moa_loop._run_references_parallel", fake_run)
+    client._run_fanout(
+        {"reference_max_tokens": 512}, [],
+        [{"provider": "openrouter", "model": "openai/gpt-5.5"}],
+        {"provider": "anthropic", "model": "claude-sonnet-5-5"},
+        None, ("cache-key",),
+    )
+
+    assert captured["max_tokens"] == 512

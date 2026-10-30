@@ -8,8 +8,9 @@ import { getStatus } from '@/hermes'
 import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
 import { $freeTierStatus } from '@/store/free-tier'
 import { $setupReadyTick, notifySetupReady } from '@/store/live-sync'
-import { clearNotifications } from '@/store/notifications'
-import { $desktopOnboarding } from '@/store/onboarding'
+import { $notifications, clearNotifications } from '@/store/notifications'
+import { $desktopOnboarding, refreshOnboarding } from '@/store/onboarding'
+import { markOnboardingDecided } from '@/store/onboarding-presence'
 
 import { deferred } from '../../../test/deferred'
 
@@ -404,6 +405,43 @@ describe('useStatusSnapshot', () => {
     expect(methods.filter(method => method === 'setup.runtime_check')).toHaveLength(0)
     expect(getStatus).toHaveBeenCalledTimes(3)
     expect(result.current.inferenceStatus).toMatchObject({ ready: true, source: 'runtime_check' })
+  })
+
+  it('clears the "Local model unavailable" notice once the local server recovers', async () => {
+    // The Webapp opened while the local server was still starting: onboarding stayed exempt
+    // (configured) and raised the notice. Recovery must take it down, not leave "ready" beside it.
+    let serving = false
+
+    const requestGatewayMock = vi.fn(async (method: string) => {
+      if (method === 'setup.runtime_check') {
+        return (
+          serving
+            ? { ok: true }
+            : { error: 'The local model server is not running.', error_code: 'local_runtime_unavailable', ok: false }
+        ) as never
+      }
+
+      return { provider_configured: true } as never
+    })
+
+    const requestGateway = requestGatewayMock as unknown as GatewayRequester
+    markOnboardingDecided()
+    await refreshOnboarding({ requestGateway })
+    const notice = () => $notifications.get().find(item => item.id === 'local-runtime-unavailable')
+    expect(notice()).toBeTruthy()
+
+    const { result } = renderHook(() => useStatusSnapshot('open', requestGateway))
+    await flushAsync()
+    expect(result.current.inferenceStatus).toMatchObject({ errorCode: 'local_runtime_unavailable', ready: false })
+
+    // A starting server announces nothing to this window: the ambient tick keeps checking.
+    serving = true
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+
+    expect(result.current.inferenceStatus).toMatchObject({ ready: true })
+    expect(notice()).toBeUndefined()
   })
 
   it('re-reads readiness and the free-tier verdict once per setup.ready, off the status tick', async () => {

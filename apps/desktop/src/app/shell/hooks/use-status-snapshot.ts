@@ -7,7 +7,7 @@ import { isSignedOutStatus } from '@/lib/signed-out-status'
 import { $freeTierStatus, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { $setupReadyTick } from '@/store/live-sync'
 import { dismissNotification, notify } from '@/store/notifications'
-import { $desktopOnboarding } from '@/store/onboarding'
+import { $desktopOnboarding, isLocalRuntimeUnavailable, settleLocalRuntimeNotice } from '@/store/onboarding'
 import type { StatusResponse } from '@/types/hermes'
 
 // Statusbar health is ambient chrome, not live data — nothing the user acts on
@@ -43,7 +43,8 @@ export function useStatusSnapshot(
     let readinessAnswered = false
 
     const publishInferenceStatus = (next: RuntimeReadinessResult | null): void => {
-      readinessAnswered = next !== null
+      // A down local model server is not settled: it may be starting, so the tick keeps checking.
+      readinessAnswered = next !== null && !isLocalRuntimeUnavailable(next)
       setInferenceStatus(next)
     }
 
@@ -119,6 +120,7 @@ export function useStatusSnapshot(
         // became unconfigured. Keep the last authoritative result instead
         // of flashing "Inference not ready" during a gateway flap.
         publishInferenceStatus(inference)
+        settleLocalRuntimeNotice(inference)
         setFreeTierRoute(inference.freeTier)
       }
     }

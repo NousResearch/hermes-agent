@@ -313,8 +313,24 @@ function shouldPreserveConfiguredOnBootRace(runtime: RuntimeReadinessResult, sta
 const LOCAL_RUNTIME_UNAVAILABLE = 'local_runtime_unavailable'
 const LOCAL_MODELS_ROUTE = '/settings?tab=providers&pview=local'
 
+const LOCAL_RUNTIME_NOTICE_ID = 'local-runtime-unavailable'
+
 function isLocalRuntimeDown(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
   return runtime.source === 'runtime_check' && runtime.errorCode === LOCAL_RUNTIME_UNAVAILABLE && !state.requested
+}
+
+/** True while the verdict is "the local model server is down": a server that is starting or being
+ *  switched back on announces nothing to this window, so the readiness tracker keeps re-checking. */
+export function isLocalRuntimeUnavailable(runtime: RuntimeReadinessResult | null): boolean {
+  return runtime?.ready === false && runtime.errorCode === LOCAL_RUNTIME_UNAVAILABLE
+}
+
+/** Readiness answered ready: the server came up, so the notice raised while it was down goes. The
+ *  onboarding exemption means no onboarding round runs on recovery to clear it there. */
+export function settleLocalRuntimeNotice(runtime: RuntimeReadinessResult) {
+  if (runtime.ready) {
+    dismissNotification(LOCAL_RUNTIME_NOTICE_ID)
+  }
 }
 
 // The Webapp has no Local models pane (the flag is Electron-only), so there the way forward it can
@@ -331,7 +347,7 @@ function keepConfiguredWithLocalRuntimeDown(reason: string) {
     action: pane
       ? { label: 'Open Local models', onClick: () => requestRoute(LOCAL_MODELS_ROUTE) }
       : { label: 'Choose another model', onClick: () => setModelPickerOpen(true) },
-    id: 'local-runtime-unavailable',
+    id: LOCAL_RUNTIME_NOTICE_ID,
     kind: 'warning',
     message: pane ? reason : WEBAPP_LOCAL_RUNTIME_DOWN,
     title: 'Local model unavailable'
@@ -783,7 +799,7 @@ export function closeManualOnboarding() {
 export function completeDesktopOnboarding(connected = false) {
   clearPoll()
   dismissNotification('runtime-not-ready')
-  dismissNotification('local-runtime-unavailable')
+  dismissNotification(LOCAL_RUNTIME_NOTICE_ID)
   writeCachedConfigured(true)
 
   if (connected) {

@@ -977,3 +977,87 @@ def test_long_decode_continues_across_hops_and_reports_first_hop_prompt(monkeypa
     assert [c.choices[0].finish_reason for c in finishes] == ["stop"]  # CONTINUATION is not the end
     assert "".join(c.choices[0].delta.content or "" for c in chunks) == "part one part two"
     assert (finishes[0].usage.prompt_tokens, finishes[0].usage.initial_prompt_tokens) == (32968, 100)
+
+
+_VERTEX_NATIVE_BASE = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/publishers/google"
+
+
+@pytest.mark.parametrize("api_key,base_url,bearer", [
+    ("ya29.token", _VERTEX_NATIVE_BASE, True),
+    ("opaque-oauth-token", _VERTEX_NATIVE_BASE, True),
+    ("AIzaExpressKey", "https://aiplatform.googleapis.com/v1/projects/p/locations/global", False),
+    ("AQ.ExpressKey", "https://aiplatform.googleapis.com/v1/projects/p/locations/global", False),
+    ("AIzaStudioKey", "https://generativelanguage.googleapis.com/v1beta", False),
+])
+def test_vertex_oauth_token_sent_as_bearer_but_api_keys_are_not(api_key, base_url, bearer):
+    from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+
+    assert is_native_gemini_base_url(base_url)
+    headers = GeminiNativeClient(api_key=api_key, base_url=base_url)._headers()
+    if bearer:
+        assert headers["Authorization"] == f"Bearer {api_key}"
+        assert "x-goog-api-key" not in headers
+    else:
+        assert headers["x-goog-api-key"] == api_key
+        assert "Authorization" not in headers
+
+
+def test_callable_vertex_key_is_resolved_per_request_not_at_construction():
+    """Under ``deferred_token_mint`` the Vertex runtime's api_key is ``vertex_access_token`` (a
+    callable). Building the client must not mint (or crash on ``.strip()``); each request mints."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    mints: list[int] = []
+
+    def token() -> str:
+        mints.append(1)
+        return f"ya29.tok{len(mints)}"
+
+    client = GeminiNativeClient(api_key=token, base_url=_VERTEX_NATIVE_BASE)
+    assert mints == []
+    assert client._headers()["Authorization"] == "Bearer ya29.tok1"
+    assert client._headers()["Authorization"] == "Bearer ya29.tok2"
+
+
+def test_callable_key_that_resolves_empty_raises_missing_key_error():
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    client = GeminiNativeClient(api_key=lambda: "  ", base_url=_VERTEX_NATIVE_BASE)
+    with pytest.raises(RuntimeError, match="GOOGLE_API_KEY"):
+        client._headers()
+
+
+def test_agent_builds_native_vertex_client_from_deferred_callable_key(monkeypatch):
+    """``AIAgent`` construction with the deferred Vertex callable (CLI ``/background`` off-gateway)
+    used to fail with "'function' object has no attribute 'strip'"."""
+    from types import SimpleNamespace
+
+    from agent.agent_runtime_helpers import _gemini_native_client
+    from agent.gemini_native_adapter import GeminiNativeClient
+    from agent.vertex_adapter import vertex_access_token
+
+    agent = SimpleNamespace(_build_keepalive_http_client=lambda *_a, **_k: None, _client_log_context=lambda: "")
+    client = _gemini_native_client(
+        agent, {"api_key": vertex_access_token, "base_url": _VERTEX_NATIVE_BASE}, True, reason="t", shared=True)
+    assert isinstance(client, GeminiNativeClient) and client.api_key is vertex_access_token
+
+
+@pytest.mark.parametrize(
+    ("model", "thinking_config", "expected"),
+    [
+        # Gemini 3+ always thinks: no thinking_config must not leave a small cap for thoughts to eat.
+        ("google/gemini-4-argon", None, "ceiling"),
+        ("gemini-3.8-flash", None, "ceiling"),
+        # Explicitly hidden thoughts keep the caller's small cap (title generation's budget).
+        ("gemini-4-argon", {"includeThoughts": False, "thinkingLevel": "low"}, 100),
+        # Pre-3 models without thinking_config keep the cap.
+        ("gemini-2.0-flash", None, 100),
+    ],
+)
+def test_small_cap_gets_thinking_headroom_on_always_thinking_models(model, thinking_config, expected):
+    from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS, build_gemini_request
+
+    req = build_gemini_request(model=model, messages=[{"role": "user", "content": "hi"}],
+                               max_tokens=100, thinking_config=thinking_config)
+    want = GEMINI_DEFAULT_MAX_OUTPUT_TOKENS if expected == "ceiling" else expected
+    assert req["generationConfig"]["maxOutputTokens"] == want

@@ -58,6 +58,19 @@ def thought_signature(extra: Any) -> Optional[str]:
     return sig if isinstance(sig, str) and sig.strip() else None
 
 
+def is_google_thought(extra: Any) -> bool:
+    """True when a Gemini/Vertex OpenAI-compat delta marks its ``content`` as a thought summary."""
+    if not isinstance(extra, dict):
+        return False
+    google = extra.get("google")
+    return (google.get("thought") if isinstance(google, dict) else extra.get("thought")) is True
+
+
+def delta_is_google_thought(delta: Any) -> bool:
+    """True when ``delta`` carries ``extra_content.google.thought = true``."""
+    return is_google_thought(field(delta, "extra_content"))
+
+
 def carrier_record(assistant_message: Any) -> Optional[dict]:
     """The private ``reasoning_details`` record for one response message, or None when it has no carrier."""
     record: dict[str, Any] = {}
@@ -82,8 +95,10 @@ class StreamCarriers:
         self.text_parts: dict[str, list[str]] = {}
 
     def feed(self, delta: Any, reasoning: Optional[str]) -> Optional[str]:
-        """Absorb one delta; returns ``reasoning``, else its first declared text-carrier fragment (readable reasoning)."""
-        self.signature = thought_signature(field(delta, _GEMINI_KEY)) or self.signature
+        """Absorb one delta; returns ``reasoning``, else its first declared text-carrier fragment or Google
+        thought fragment (readable reasoning)."""
+        extra = field(delta, _GEMINI_KEY)
+        self.signature = thought_signature(extra) or self.signature
         for key in self.opaque_keys:
             opaque = field(delta, key)
             if isinstance(opaque, str) and opaque:
@@ -93,6 +108,12 @@ class StreamCarriers:
             if isinstance(text, str) and text:
                 self.text_parts.setdefault(key, []).append(text)
                 reasoning = text if reasoning is None else reasoning
+        if reasoning is None and is_google_thought(extra):
+            from agent.message_content import flatten_message_text
+
+            thought = flatten_message_text(getattr(delta, "content", None), sep="")
+            if thought:
+                return thought
         return reasoning
 
     def apply(self, response: Any) -> None:

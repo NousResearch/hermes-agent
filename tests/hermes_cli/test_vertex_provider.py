@@ -102,7 +102,7 @@ def test_gateway_backed_cli_resolves_vertex_route_without_minting(monkeypatch, t
     assert mints == [], "the CLI process minted a Vertex token the gateway mints again"
     assert shell.provider == "vertex"
     assert shell.base_url == (
-        "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/sa-proj/locations/us-central1/endpoints/openapi")
+        "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/sa-proj/locations/us-central1/publishers/google")
     assert callable(shell.api_key)
     # A caller that really sends from this process still gets a token, minted once and reused.
     assert shell.api_key() == shell.api_key() == "ya29.minted-1"
@@ -117,3 +117,22 @@ def test_gateway_backed_cli_keeps_vertex_credential_failure_copy(monkeypatch, tm
     err = capsys.readouterr().err
     assert "Vertex AI credentials could not be resolved" in err and "VERTEX_CREDENTIALS_PATH" in err, err
     assert mints == []
+
+
+def test_resolve_vertex_runtime_uses_target_model_over_config_default(monkeypatch):
+    """A model override (MoA slot, --model flag) must decide the native vs. OpenAI-compat
+    Vertex base URL rather than falling back to model.default."""
+    import hermes_cli.runtime_provider as rp
+
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "vertex", "default": "google/gemini-3-pro"})
+    monkeypatch.setattr(
+        "agent.vertex_adapter.get_vertex_config",
+        lambda: ("ya29.tok", "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/publishers/google"),
+    )
+
+    non_gemini = rp.resolve_runtime_provider(requested="vertex", target_model="meta/llama-4-maverick")
+    assert non_gemini["base_url"].endswith("/endpoints/openapi")
+
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "vertex", "default": "meta/llama-4-maverick"})
+    gemini_override = rp.resolve_runtime_provider(requested="vertex", target_model="google/gemini-2.5-pro")
+    assert gemini_override["base_url"].endswith("/publishers/google")

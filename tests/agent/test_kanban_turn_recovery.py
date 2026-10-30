@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._fixtures import kanban_authority as kanban_fixtures
 from agent.kanban_turn_recovery import (
     DEFAULT_MAX_RECOVERY_ATTEMPTS,
     RECOVERY_DELAYS_SECONDS,
@@ -471,10 +472,11 @@ def owner_worker(tmp_path, clear_kanban_env, monkeypatch):
             task_id = kb.create_task(conn, title="recover", assignee="default")
             task = kb.claim_task(conn, task_id, claimer="private-host:owner")
             assert task is not None
-            with kb.write_txn(conn):
-                kb._append_event(conn, task_id, "worker_bound",
-                                 {"pid": os.getpid(), "claim_lock": task.claim_lock}, run_id=task.current_run_id)
-                if expires is not None:  # status/run/lock all still match: only the lease moves
+            # The adopted exec's binding: the submitter's registration, this interpreter's
+            # ``worker_bound`` event, and the same frozen grant production builds from them.
+            candidate, _coords = kanban_fixtures.bind_managed_owner(conn, task_id)
+            if expires is not None:  # status/run/lock all still match: only the lease moves
+                with kb.write_txn(conn):
                     conn.execute("UPDATE tasks SET claim_expires = ? WHERE id = ?", (expires, task_id))
                     conn.execute("UPDATE task_runs SET claim_expires = ? WHERE id = ?",
                                  (expires, task.current_run_id))
@@ -502,7 +504,8 @@ def owner_worker(tmp_path, clear_kanban_env, monkeypatch):
         frame = {"text": "work", "policy": {"kanban_json": json.dumps(context)}}
 
         def run() -> int:
-            session_kanban.run_worker_turns(_Agent(), frame, [])
+            with session_kanban.managed_execution_scope(candidate):
+                session_kanban.run_worker_turns(_Agent(), frame, [])
             return session_kanban.worker_exit_code(path, context)
 
         return run, entered, context

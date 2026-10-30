@@ -3,10 +3,12 @@ import asyncio
 import contextlib
 from contextlib import closing
 from dataclasses import asdict, replace
+import os
 import threading
 import json
 from pathlib import Path
 import sqlite3
+import time
 
 from hermes_state_runtime import RuntimeStoreError
 
@@ -103,7 +105,6 @@ async def run_task(connection, params):
                                    trusted_policy=policy, trusted_secrets=private)
     from hermes_cli.kanban_db_connect import connect_closing
     from hermes_cli import kanban_db as kb
-    import os
     import psutil
     from hermes_cli.process_identity import worker_birth
     context = json.loads(policy.kanban_json)
@@ -152,14 +153,50 @@ async def run_task(connection, params):
     return {'session_id': ref.session_id, 'receipt': asdict(receipt)}
 
 
-def bind_worker_context(frame):
-    """Only the adopted private exec calls this, before tool discovery imports."""
-    import os
+def bind_worker_context(frame, adopted, *, wait_seconds=None):
+    """The adopted private exec's Kanban bootstrap: bind ``OWNER`` here, or refuse.
+
+    Only the adopted private exec calls this, before tool discovery imports, and only
+    with the ``worker.adopt`` result its owner just returned — that verified adoption
+    is the sole issuer precondition (:func:`_require_adopted_scope`).  The frame's
+    coordinates are lookup input, never authority: the grant is built from the rows
+    read here.
+
+    The claim check and this run's ``worker_bound`` append share ONE board write
+    transaction, and every denial precedes the append, so a refused binding leaves no
+    board residue.  Returns the frozen candidate for :func:`managed_execution_scope`,
+    or ``None`` for a frame that is not a card.
+    """
     context = json.loads(frame['policy'].get('kanban_json') or 'null')
     if context is None:
-        return
+        return None
     if frame['policy']['source'] != 'kanban':
         raise ValueError('invalid_kanban_policy')
+    _require_adopted_scope(frame, adopted)
+    from hermes_cli.kanban_db_dispatch import _process_fingerprint
+    from hermes_cli.kanban_db_connect import connect_closing
+    from hermes_cli import kanban_db as kb
+    env = _worker_env(context)
+    _await_submitter_registration(Path(context['db']), context, wait_seconds)
+    with connect_closing(Path(context['db'])) as conn:
+        with kb.write_txn(conn):
+            candidate = _bind_claim_owner(conn, context, frame['home'],
+                                          _process_fingerprint(os.getpid()))
+            claimed = conn.execute("SELECT payload, created_at FROM task_events WHERE task_id=? AND run_id=? AND kind='claimed' ORDER BY id DESC LIMIT 1",
+                                   (context['task_id'], context['run_id'])).fetchone()
+    # Heartbeats extend the claim by the TTL the dispatcher claimed it with (a spawned worker
+    # inherited it from the dispatcher's environment); this daemon's own default is not that.
+    expires = json.loads(claimed[0]).get('expires') if claimed else None
+    if isinstance(expires, int) and claimed[1]:
+        env['HERMES_KANBAN_CLAIM_TTL_SECONDS'] = str(max(1, expires - int(claimed[1])))
+    _watch_submitter(Path(context['db']), context['run_id'])
+    os.environ.update(env)
+    os.chdir(context['workspace'])
+    return candidate
+
+
+def _worker_env(context):
+    """The lookup/git/terminal environment a Kanban worker runs with (no authority)."""
     env = {'HERMES_KANBAN_TASK': context['task_id'], 'HERMES_KANBAN_BOARD': context['board'],
         'HERMES_KANBAN_DB': context['db'], 'HERMES_KANBAN_RUN_ID': str(context['run_id']),
         'HERMES_KANBAN_CLAIM_LOCK': context['claim_lock'], 'HERMES_KANBAN_WORKSPACE': context['workspace'],
@@ -175,31 +212,178 @@ def bind_worker_context(frame):
         value = _worker_terminal_timeout_env(context['max_runtime_seconds'], os.environ.get(key))
         if value:
             env[key] = value
-    from hermes_cli.kanban_db_connect import connect_closing
+    return env
+
+
+def _require_adopted_scope(frame, adopted):
+    """The frame's private scope and adoption row must describe THIS interpreter.
+
+    The owner verified this process's live pid and kernel birth plus an unguessable
+    secret against the durable assignment before returning ``adopted``; re-checking
+    the returned row and the frame's own scope here means the bootstrap cannot be
+    driven by a hand-built frame, and a recycled pid cannot re-adopt an assignment.
+    """
+    import psutil
+    from hermes_cli.process_identity import worker_birth
+    scope, home = frame.get('scope'), frame.get('home')
+    if (not isinstance(scope, dict) or not isinstance(adopted, dict) or not isinstance(home, str)
+            or not Path(home).is_absolute() or scope.get('pid') != os.getpid()
+            or scope.get('profile_id') != home
+            or adopted.get('status') != 'running'
+            or adopted.get('owner_epoch') != scope.get('epoch')
+            or adopted.get('execution_id') != scope.get('execution_id')
+            or adopted.get('generation') != scope.get('generation')):
+        raise RuntimeStoreError('stale_kanban_claim')
+    try:
+        birth = worker_birth(psutil.Process())
+    except (psutil.Error, OSError) as exc:
+        raise RuntimeStoreError('stale_kanban_claim') from exc
+    if birth != scope.get('birth'):
+        raise RuntimeStoreError('stale_kanban_claim')
+
+
+def _submitter_pending(db_path, context) -> bool:
+    """True while the dispatcher has not recorded this attempt's spawned worker yet."""
+    try:
+        with closing(sqlite3.connect(Path(db_path).resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+            row = conn.execute('SELECT status, current_run_id, claim_lock, worker_pid FROM tasks WHERE id=?',
+                               (context['task_id'],)).fetchone()
+    except sqlite3.Error:
+        return False
+    if row is None or row[0] != 'running' or row[1] != context['run_id'] or row[2] != context['claim_lock']:
+        return False
+    return row[3] is None
+
+
+def _await_submitter_registration(db_path, context, wait_seconds=None):
+    """Wait out the dispatcher's spawn/registration race, read-only and bounded.
+
+    The launcher writes the spawned worker's pid and boot/start fingerprint right
+    after ``Popen``; a managed run that starts faster waits here instead of relaxing
+    the proof its grant is built from.
+    """
+    from agent.kanban_execution_identity import REGISTRATION_POLL_SECONDS, REGISTRATION_WAIT_SECONDS
+    deadline = time.monotonic() + (REGISTRATION_WAIT_SECONDS if wait_seconds is None
+                                   else max(0.0, float(wait_seconds)))
+    while _submitter_pending(db_path, context):
+        if time.monotonic() >= deadline:
+            raise RuntimeStoreError('stale_kanban_claim')
+        time.sleep(REGISTRATION_POLL_SECONDS)
+
+
+def _bind_claim_owner(conn, context, home, fingerprint):
+    """Validate this frame against the live board, append the binding, return the grant.
+
+    Caller holds the board write transaction.  Every denial raises BEFORE the
+    ``worker_bound`` append, so a refused binding leaves no trace.  The board is
+    named by its canonical file — never re-resolved from this worker's environment,
+    which is exactly the isolation the dispatcher's pins exist to prevent.
+    """
+    from agent.kanban_execution_identity import (
+        PROVENANCE_MANAGED_BOUND, ROLE_OWNER, KanbanExecutionContext, connection_db_path,
+    )
     from hermes_cli import kanban_db as kb
-    with connect_closing(Path(context['db'])) as conn:
-        with kb.write_txn(conn):
-            task = kb.get_task(conn, context['task_id'])
-            if (task is None or task.status != 'running' or task.current_run_id != context['run_id']
-                    or task.claim_lock != context['claim_lock']):
-                raise RuntimeStoreError('stale_kanban_claim')
-            # The dispatcher's spawned worker stays the run's pid (reclaim, timeout and operator
-            # kills target it; ``_watch_submitter`` ties this interpreter's life to it). The bound
-            # interpreter is recorded beside it so a sweep can tell when the attempt is truly gone.
-            from hermes_cli.kanban_db_dispatch import UNVERIFIED_WORKER_FINGERPRINT, _process_fingerprint
-            fingerprint = _process_fingerprint(os.getpid()) or UNVERIFIED_WORKER_FINGERPRINT
-            kb._append_event(conn, task.id, 'worker_bound', {'pid': os.getpid(), 'claim_lock': context['claim_lock'],
-                             'started_at': fingerprint}, run_id=context['run_id'])
-            claimed = conn.execute("SELECT payload, created_at FROM task_events WHERE task_id=? AND run_id=? AND kind='claimed' ORDER BY id DESC LIMIT 1",
-                                   (task.id, context['run_id'])).fetchone()
-    # Heartbeats extend the claim by the TTL the dispatcher claimed it with (a spawned worker
-    # inherited it from the dispatcher's environment); this daemon's own default is not that.
-    expires = json.loads(claimed[0]).get('expires') if claimed else None
-    if isinstance(expires, int) and claimed[1]:
-        env['HERMES_KANBAN_CLAIM_TTL_SECONDS'] = str(max(1, expires - int(claimed[1])))
-    _watch_submitter(Path(context['db']), context['run_id'])
-    os.environ.update(env)
-    os.chdir(context['workspace'])
+    from hermes_cli.kanban_db_dispatch import UNVERIFIED_WORKER_FINGERPRINT
+    from hermes_cli.profiles import resolve_profile_env
+    now = int(time.time())
+    task = conn.execute(
+        'SELECT id, assignee, status, claim_lock, claim_expires, current_run_id, worker_pid, worker_started_at '
+        'FROM tasks WHERE id=?', (context['task_id'],)).fetchone()
+    run = conn.execute('SELECT task_id, ended_at, claim_lock, claim_expires, worker_pid, worker_started_at '
+                       'FROM task_runs WHERE id=?', (int(context['run_id']),)).fetchone()
+    if (task is None or task['status'] != 'running' or task['current_run_id'] != context['run_id']
+            or task['claim_lock'] != context['claim_lock'] or run is None
+            or run['task_id'] != task['id'] or run['ended_at'] is not None
+            or run['claim_lock'] != context['claim_lock']):
+        raise RuntimeStoreError('stale_kanban_claim')
+    if _canonical_board_file(context['db']) != _canonical_board_file(connection_db_path(conn)):
+        raise RuntimeStoreError('stale_kanban_claim')
+    try:
+        kb._require_slug(context['board'])
+    except ValueError as exc:
+        raise RuntimeStoreError('stale_kanban_claim') from exc
+    if (task['assignee'] != context['profile']
+            or _canonical_board_file(resolve_profile_env(task['assignee'])) != _canonical_board_file(home)):
+        raise RuntimeStoreError('profile_mismatch')
+    # The recorded process fields stay the SUBMITTER's: this interpreter is recorded
+    # beside them, in the event the reconciliation compares against.
+    submitter_pid, submitter_started_at = _submitter_registration(task, run)
+    for expires in (task['claim_expires'], run['claim_expires']):
+        if expires is None or int(expires) < now:
+            raise RuntimeStoreError('stale_kanban_claim')
+    if not fingerprint or fingerprint == UNVERIFIED_WORKER_FINGERPRINT:
+        raise RuntimeStoreError('stale_kanban_claim')
+    _require_unconflicted_binding(conn, task['id'], int(context['run_id']), context['claim_lock'], fingerprint)
+    kb._append_event(conn, task['id'], 'worker_bound', {'pid': os.getpid(), 'claim_lock': context['claim_lock'],
+                     'started_at': fingerprint}, run_id=int(context['run_id']))
+    return KanbanExecutionContext(
+        role=ROLE_OWNER, provenance=PROVENANCE_MANAGED_BOUND,
+        db_path=_canonical_board_file(context['db']), board=context['board'], task_id=task['id'],
+        run_id=int(context['run_id']), claim_lock=context['claim_lock'],
+        worker_pid=os.getpid(), worker_started_at=fingerprint,
+        submitter_pid=submitter_pid, submitter_started_at=submitter_started_at)
+
+
+def _canonical_board_file(path):
+    try:
+        return str(Path(str(path)).expanduser().resolve())
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return ""
+
+
+def _submitter_registration(task, run):
+    """The dispatcher-registered submitter of this attempt: ``(pid, boot-start fingerprint)``."""
+    pid, started_at = task['worker_pid'], task['worker_started_at']
+    if not pid or not started_at:
+        raise RuntimeStoreError('stale_kanban_claim')
+    if run['worker_pid'] is not None and int(run['worker_pid']) != int(pid):
+        raise RuntimeStoreError('stale_kanban_claim')
+    registered = run['worker_started_at']
+    if registered is not None and str(registered) != str(started_at):
+        raise RuntimeStoreError('stale_kanban_claim')
+    return int(pid), str(started_at)
+
+
+def _require_unconflicted_binding(conn, task_id, run_id, claim_lock, fingerprint):
+    """A binding already recorded for this run may only be superseded by a gone interpreter.
+
+    This process's own binding (a resumed turn) is fine.  A binding naming a still-live
+    interpreter is a conflict: another execution holds this run, and this one must not
+    take it over.  A dead or recycled one is the previous attempt's, which this
+    execution supersedes — that is the same liveness rule the dispatcher's crash
+    recovery already applies to a gone bound interpreter, and it is why an owner
+    restart's fresh interpreter can still bind.
+    """
+    from agent.kanban_execution_identity import _latest_worker_binding
+    from hermes_cli.kanban_db_dispatch import _worker_alive
+    bound, parsed_ok = _latest_worker_binding(conn, task_id, run_id)
+    if not parsed_ok:
+        raise RuntimeStoreError('stale_kanban_claim')
+    if bound is None:
+        return
+    if (int(bound['pid']) == os.getpid()
+            and bound['claim_lock'] == claim_lock and bound['started_at'] == fingerprint):
+        return
+    if _worker_alive(bound['pid'], bound['started_at']):
+        raise RuntimeStoreError('stale_kanban_claim')
+
+
+@contextlib.contextmanager
+def managed_execution_scope(candidate):
+    """Scope the adopted exec's identity around the rest of its turn.
+
+    A Kanban card scopes the grant its bootstrap verified; every other managed turn
+    scopes an explicit detached role instead of inheriting whatever an ambient slot
+    held.  Context-local only: no process-wide identity is installed, so the owner
+    daemon and its other runs acquire nothing.
+    """
+    from agent.kanban_execution_identity import (
+        ROLE_FOREIGN_INSPECTOR, KanbanExecutionContext, scoped_execution_context,
+    )
+    ctx = candidate if candidate is not None else KanbanExecutionContext(
+        role=ROLE_FOREIGN_INSPECTOR, reason='managed_non_kanban')
+    with scoped_execution_context(ctx) as installed:
+        yield installed
 
 
 _TURNS_DONE = threading.Event()
@@ -210,7 +394,6 @@ def _watch_submitter(db, run_id):
     timeout, an OOM kill) must end the attempt, as it did when the worker ran the agent itself.
     Exiting hard leaves no ``worker_result``, so the dead-worker sweep books this run's crash.
     The run row is re-read each tick: the dispatcher records the pid only after its spawn returns."""
-    import os
     from hermes_cli.kanban_db_dispatch import _worker_alive
 
     def watch():
@@ -300,7 +483,6 @@ def record_start_failure(frame, exc):
 
 def _record_worker_result(context, code, last_output):
     _TURNS_DONE.set()
-    import os
     from hermes_cli.kanban_db_connect import connect_closing
     from hermes_cli import kanban_db as kb
     with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
@@ -340,7 +522,6 @@ def record_worker_loss(policy, reason, *, pid=None, bound=False):
 
 
 def _bound_worker_matches(conn, context):
-    import os
     row = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='worker_bound' ORDER BY id DESC LIMIT 1",
         (context['task_id'], context['run_id'])).fetchone()
     bound = json.loads(row[0]) if row else {}
@@ -348,16 +529,24 @@ def _bound_worker_matches(conn, context):
 
 
 def _bound_claim_is_live(context):
-    """Retry proof for a managed worker: the frame's exact run/claim lease is live and unexpired,
-    and THIS interpreter is the one ``bind_worker_context`` bound to it. The run's worker_pid is
-    the dispatcher's spawned submitter here, so pid identity comes from ``worker_bound`` instead."""
-    from agent.kanban_turn_recovery import worker_claim_is_live
-    if not worker_claim_is_live(task_id=context['task_id'], db_path=context['db'], run_id=str(context['run_id']),
-                                claim_lock=context['claim_lock'], verify_pid=False):
+    """Retry proof for a managed worker: the SAME reconciliation the authorizer uses.
+
+    The run's ``worker_pid``/``worker_started_at`` are the dispatcher's spawned
+    submitter here, so the executing interpreter is proven by the grant's
+    ``worker_bound`` event.  Re-entering the model requires a live, unexpired lease,
+    and an unreadable board is never proof of ownership.  There is deliberately no
+    second, weaker (pid-only) grant predicate beside this one.
+    """
+    from agent.kanban_execution_identity import ROLE_OWNER, current_execution_context, reconcile_owner
+    ctx = current_execution_context()
+    if ctx is None or ctx.role != ROLE_OWNER:
+        return False
+    if str(ctx.task_id or '') != str(context['task_id']) or ctx.run_id != context['run_id']:
         return False
     try:
         with closing(sqlite3.connect(Path(context['db']).resolve().as_uri() + '?mode=ro', uri=True)) as conn:
-            return _bound_worker_matches(conn, context)
+            conn.row_factory = sqlite3.Row
+            return reconcile_owner(conn, ctx, require_lease=True).ok
     except sqlite3.Error:
         return False
 

@@ -310,6 +310,14 @@ def _backup_label(backup_path: Optional[Path]) -> str:
     return str(backup_path) if backup_path is not None else "<backup failed>"
 
 
+class KanbanDbUnavailable(RuntimeError):
+    """A read-only inspection target is missing or unreadable.
+
+    Reads never create, migrate or repair a board: an observational listing must report
+    the real state (no DB yet, incompatible schema) instead of silently minting one.
+    """
+
+
 def _prune_corrupt_backups(parent: Path, base_name: str, keep: Optional[Path] = None) -> None:
     """Keep only the ``_CORRUPT_BACKUP_RETENTION`` newest (by mtime)
     ``<db>.corrupt.<hash>.bak`` files plus their ``-wal``/``-shm`` copies.
@@ -793,6 +801,47 @@ def connect_closing(db_path: Optional[Path] = None, *, board: Optional[str] = No
     See #33159 for the production incident.
     """
     conn = connect(db_path=db_path, board=board)
+    try:
+        yield conn
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
+
+
+def connect_readonly(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
+    """Open an EXISTING board strictly read-only.
+
+    Listing and inspection are observation, not scheduling: this path never creates a
+    database, never runs the schema script, never backfills and never writes readiness.
+    A missing or schema-incompatible board raises :class:`KanbanDbUnavailable` so a read
+    reports the real problem instead of silently minting an empty board.
+    """
+    path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    resolved = path.expanduser()
+    if not resolved.exists():
+        raise KanbanDbUnavailable(
+            f"kanban database {resolved} does not exist yet; create or initialize a task first "
+            "(reads never create a board)"
+        )
+    conn = sqlite3.connect(resolved.resolve().as_uri() + "?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.text_factory = _kb._lossy_text
+    try:
+        if not _schema_is_present(conn):
+            raise KanbanDbUnavailable(
+                f"kanban database {resolved} has no readable schema (wrong file, mid-migration or "
+                "an incompatible version); inspect it before mutating"
+            )
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
+@contextlib.contextmanager
+def connect_readonly_closing(db_path: Optional[Path] = None, *, board: Optional[str] = None):
+    """``connect_readonly`` with guaranteed close (sqlite3's own context manager does not)."""
+    conn = connect_readonly(db_path=db_path, board=board)
     try:
         yield conn
     finally:

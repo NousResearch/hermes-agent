@@ -32,6 +32,14 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_ops
+from tests._fixtures.kanban_authority import admin_authority
+
+
+# This suite drives the board's own kernel from the seat that advances cards
+# (dispatcher-side mechanics), so it declares that seat explicitly. The fixture
+# is never autouse: a write from a scope that did not ask for it still fails
+# closed with KanbanAuthorizationError.
+pytestmark = pytest.mark.usefixtures("kanban_maintenance_authority")
 
 
 @pytest.fixture
@@ -557,7 +565,11 @@ def test_active_pr_guard_holds_through_same_profile_reassign_and_unassign(
         _backdate_comments(conn, tid)
         assert kb.assign_task(conn, tid, "dev") is True
         assert kbd.check_respawn_guard(conn, tid) == "active_pr"
-        assert kb.reassign_task(conn, tid, "dev", reclaim_first=True) is True
+        # ``reassign`` is an administrative recovery operation: in production only
+        # the authenticated dashboard performs it, so the test declares that seat
+        # for this one call instead of borrowing dispatcher authority.
+        with admin_authority(action="reassign"):
+            assert kb.reassign_task(conn, tid, "dev", reclaim_first=True) is True
         assert kbd.check_respawn_guard(conn, tid) == "active_pr"
 
         assert kb.assign_task(conn, tid, None) is True

@@ -1576,6 +1576,36 @@ def _forbid_real_hermes_home_io(monkeypatch, request):
 
 
 @pytest.fixture
+def kanban_maintenance_authority():
+    """The board's own maintenance service scope, explicitly requested.
+
+    A suite that drives ``kanban_db`` lifecycle mutators directly stands in for
+    the process that advances cards (the dispatcher), not for a spawned worker.
+    It has to say so: this fixture is never autouse, so a suite that omits it
+    still fails closed with ``KanbanAuthorizationError`` instead of silently
+    inheriting authority it did not ask for.
+    """
+    from agent.kanban_execution_identity import dispatcher_maintenance_scope
+
+    with dispatcher_maintenance_scope(reason="pytest: dispatcher-side lifecycle mechanics"):
+        yield
+
+
+@pytest.fixture
+def kanban_admin_authority():
+    """An authenticated administrative request, explicitly requested.
+
+    For suites whose writes are what the authenticated dashboard performs
+    (reclaim/reassign/unblock and operator review decisions). The mutation lands
+    with the same ``admin_recovery`` audit event production writes.
+    """
+    from tests._fixtures.kanban_authority import admin_authority
+
+    with admin_authority():
+        yield
+
+
+@pytest.fixture
 def real_bash() -> str:
     """A bash that runs shell scripts: on the Windows runners PATH resolves ``bash`` to
     System32's WSL launcher, which prints a UTF-16 "no installed distributions" notice and

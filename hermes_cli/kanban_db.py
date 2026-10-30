@@ -293,14 +293,6 @@ DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 RECLAIM_DEFER_GRACE_SECONDS = 120
 
 
-def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
-    """Explicit ``ttl_seconds`` > ``HERMES_KANBAN_CLAIM_TTL_SECONDS`` > default."""
-    if ttl_seconds is not None:
-        return max(1, int(ttl_seconds))
-
-    return _env_int("HERMES_KANBAN_CLAIM_TTL_SECONDS", DEFAULT_CLAIM_TTL_SECONDS, minimum=1)
-
-
 # ``detect_crashed_workers`` skips ``_pid_alive`` this long after start: the
 # fork -> /proc window can report a fresh worker dead.
 DEFAULT_CRASH_GRACE_SECONDS = 30
@@ -2288,32 +2280,6 @@ def goal_run_status(
     return task.status
 
 
-def heartbeat_claim(
-    conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
-) -> bool:
-    """Extend a running claim; True if we still own it."""
-    expires = int(time.time()) + _resolve_claim_ttl_seconds(ttl_seconds)
-    lock = claimer or _claimer_id()
-    with write_txn(conn):
-        cur = conn.execute(
-            "UPDATE tasks SET claim_expires = ? "
-            "WHERE id = ? AND status = 'running' AND claim_lock = ?", (expires, task_id, lock),
-        )
-        if cur.rowcount != 1:
-            return False
-        _extend_run_claim(conn, task_id, expires)
-        return True
-
-
-def _extend_run_claim(conn: sqlite3.Connection, task_id: str, expires: int) -> Optional[int]:
-    """Mirror a task claim extension onto its active run row; returns that run id."""
-    run_id = _current_run_id(conn, task_id)
-    if run_id is not None:
-        conn.execute("UPDATE task_runs SET claim_expires = ? WHERE id = ?", (expires, run_id))
-    return run_id
-
-
 def release_stale_claims(
     conn: sqlite3.Connection, *, signal_fn=None, failure_limit: Optional[int] = None,
 ) -> int:
@@ -2429,56 +2395,20 @@ def release_stale_claims(
     return reclaimed
 
 
-def _record_reclaim(
-    conn: sqlite3.Connection, task_id: str, termination: dict, *, error: str, payload: dict,
-) -> Optional[int]:
-    """Close the active run as ``reclaimed`` and emit the ``reclaimed`` event
-    (payload merged with the termination report). Caller holds the txn."""
-    run_id = _end_run(
-        conn, task_id, outcome="reclaimed", status="reclaimed", error=error, metadata=termination,
-    )
-    payload.update(termination)
-    _append_event(conn, task_id, "reclaimed", payload, run_id=run_id)
-    return run_id
-
-
-def _extend_live_stale_claim(conn: sqlite3.Connection, row: sqlite3.Row, now: int) -> None:
-    """TTL-expired claim whose host-local worker is alive: extend instead of
-    reclaiming (``claim_extended`` event). CAS on the same expired lock so a
-    concurrent reclaimer wins cleanly."""
-    new_expires = now + _resolve_claim_ttl_seconds()
-    with write_txn(conn):
-        cur = conn.execute(
-            "UPDATE tasks SET claim_expires = ? "
-            "WHERE id = ? AND status = 'running' "
-            "  AND claim_lock IS ? "
-            "  AND claim_expires IS NOT NULL "
-            "  AND claim_expires < ?", (new_expires, row["id"], row["claim_lock"], now),
-        )
-        if cur.rowcount != 1:
-            return
-        run_id = _extend_run_claim(conn, row["id"], new_expires)
-        _append_event(
-            conn, row["id"], "claim_extended",
-            {
-                "reason": "pid_alive",
-                "worker_pid": int(row["worker_pid"]),
-                "claim_lock": row["claim_lock"],
-                "claim_expires_was": _to_epoch(row["claim_expires"]),
-                "claim_expires_now": new_expires,
-                "last_heartbeat_at": _to_epoch(row["last_heartbeat_at"]),
-            },
-            run_id=run_id,
-        )
-
-
 def reclaim_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None, signal_fn=None,
+    _auth_operation: str = "reclaim",
 ) -> bool:
     """Operator reclaim regardless of TTL: release the claim, restore the source
-    phase, reset the failure counter. False when not running."""
+    phase, reset the failure counter. False when not running.
+
+    Termination stays OUTSIDE the SQLite transaction (snapshot the old
+    pid/fingerprint/run, kill only that fingerprint) while the release re-checks
+    the SAME expected claim inside it — a reclaim can therefore never kill or
+    mutate a successor."""
+    authorize_lifecycle(conn, task_id=task_id, operation=_auth_operation)
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?", (task_id,),
+        "SELECT status, claim_lock, worker_pid, worker_started_at, current_run_id FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
     if not row:
         return False
@@ -2486,9 +2416,11 @@ def reclaim_task(
         # Nothing to reclaim — already ready / blocked / done.
         return False
     prev_lock = row["claim_lock"]
+    prev_run_id = row["current_run_id"]
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn, started_at=row["worker_started_at"])
     with write_txn(conn):
+        auth = authorize_lifecycle(conn, task_id=task_id, operation=_auth_operation)
         retry_status = _retry_status_for_run(conn, task_id)
         cur = conn.execute(
             "UPDATE tasks SET status = ?, claim_lock = NULL, "
@@ -2503,6 +2435,10 @@ def reclaim_task(
             error=f"manual_reclaim: {reason}" if reason else f"manual_reclaim lock={prev_lock}",
             payload={"manual": True, "reason": reason, "prev_lock": prev_lock, "retry_status": retry_status},
         )
+        _append_admin_audit(
+            conn, auth, task_id=task_id,
+            new={"status": retry_status, "previous_run_id": prev_run_id, "claim_lock_present": False},
+        )
     # Operator intervention = fresh retry budget (own txn, runs after commit).
     _clear_failure_counter(conn, task_id)
     return True
@@ -2513,10 +2449,15 @@ def reassign_task(
     reason: Optional[str] = None,
 ) -> bool:
     """Reassign (None unassigns); a running task is refused unless
-    ``reclaim_first`` releases its claim — the "this profile's model is broken" path."""
+    ``reclaim_first`` releases its claim — the "this profile's model is broken" path.
+
+    Authorized once as ``reassign`` so the reclaim leg carries the same scoped
+    administrative action instead of a second, differently-scoped grant.
+    """
+    authorize_lifecycle(conn, task_id=task_id, operation="reassign")
     if reclaim_first:
         # Safe to call even if nothing to reclaim.
-        reclaim_task(conn, task_id, reason=reason or "reassign")
+        reclaim_task(conn, task_id, reason=reason or "reassign", _auth_operation="reassign")
     # assign_task handles its own txn + the still-running guard.
     try:
         return assign_task(conn, task_id, profile)
@@ -2623,20 +2564,6 @@ class LiveClaimError(ValueError):
         )
 
 
-def _claim_is_live(trow) -> bool:
-    """True when a ``running`` task's claim still protects a run: the worker process
-    it spawned exists (PID + start-time fingerprint). A claim whose worker is gone,
-    or a library/CLI claim that never spawned one, has no run to protect. TTL expiry
-    is deliberately not consulted: ``reclaim_stale_tasks`` extends, not reclaims, the
-    claim of a live worker, so the process is the liveness authority here too."""
-    return bool(
-        trow["status"] == "running"
-        and trow["claim_lock"] is not None
-        and trow["worker_pid"]
-        and _worker_alive(trow["worker_pid"], trow["worker_started_at"])
-    )
-
-
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
@@ -2661,6 +2588,9 @@ def complete_task(
     auditable event. Approving a card out of ``review`` stays exempt.
     """
     now = int(time.time())
+    # Authorization first: a foreign/unauthorized caller must not even reach the
+    # pre-checks below, because they append audit events of their own.
+    authorize_lifecycle(conn, task_id=task_id, operation="complete")
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
@@ -2675,6 +2605,8 @@ def complete_task(
     if acceptance is False:
         return False
     with write_txn(conn):
+        # Authoritative re-check: reconciliation and mutation now serialize.
+        auth = authorize_lifecycle(conn, task_id=task_id, operation="complete")
         # Hard invariant even for human review approval: a parent may have
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
@@ -2732,6 +2664,10 @@ def complete_task(
             conn, task_id, "completed",
             _completed_event_payload(result, event_summary, verified_cards, metadata),
             run_id=run_id,
+        )
+        _append_admin_audit(
+            conn, auth, task_id=task_id, run_id=run_id,
+            new={"status": "done", "previous_run_id": expected_run_id},
         )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
@@ -3142,7 +3078,9 @@ def block_task(
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
+    authorize_lifecycle(conn, task_id=task_id, operation="block")
     with write_txn(conn):
+        auth = authorize_lifecycle(conn, task_id=task_id, operation="block")
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
@@ -3169,6 +3107,7 @@ def block_task(
             _append_event(conn, task_id, "blocked", {
                 "kind": kind, "reason": reason, "classified_in_place": True,
             })
+            _append_admin_audit(conn, auth, task_id=task_id, new={"block_kind": kind, "classified_in_place": True})
             return True
         source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
         requested_kind = kind
@@ -3207,6 +3146,10 @@ def block_task(
             conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
         )
         _append_event(conn, task_id, event_kind, payload, run_id=run_id)
+        _append_admin_audit(
+            conn, auth, task_id=task_id, run_id=run_id,
+            new={"status": new_status, "block_kind": kind},
+        )
         blocked_task = get_task(conn, task_id)
         if kind == "dependency":
             # Historical ordering: the dependency lane fires inside the txn.
@@ -3286,6 +3229,7 @@ def request_review(
     def _ret(ok: bool, reason: Optional[str] = None):
         return (ok, reason) if with_reason else ok
 
+    authorize_lifecycle(conn, task_id=task_id, operation="request_review")
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
     # Declared (metadata["artifacts"]) and prose-referenced files
@@ -3298,6 +3242,7 @@ def request_review(
     staged_copies: list[Path] = []
     try:
         with write_txn(conn):
+            auth = authorize_lifecycle(conn, task_id=task_id, operation="request_review")
             if not _parents_satisfied(conn, task_id):
                 return _ret(False, "parent dependencies are not satisfied")
             trow = conn.execute(
@@ -3382,6 +3327,10 @@ def request_review(
             if staged:
                 payload["artifacts"] = staged
             _append_event(conn, task_id, "review_requested", payload, run_id=run_id)
+            _append_admin_audit(
+                conn, auth, task_id=task_id, run_id=run_id,
+                new={"status": "review", "reviewer": reviewer},
+            )
     except Exception:
         if staged_copies:
             _discard_staged_copies(staged_copies, staged_copies[0].parent)
@@ -3419,7 +3368,9 @@ def request_changes(
     if not reason:
         return False, "reason is required"
 
+    authorize_lifecycle(conn, task_id=task_id, operation="request_changes")
     with write_txn(conn):
+        auth = authorize_lifecycle(conn, task_id=task_id, operation="request_changes")
         task_row = conn.execute(
             "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
@@ -3475,6 +3426,10 @@ def request_changes(
                 "status": new_status,
             },
             run_id=run_id,
+        )
+        _append_admin_audit(
+            conn, auth, task_id=task_id, run_id=run_id,
+            new={"status": new_status, "implementer": implementer},
         )
     return True, implementer
 
@@ -3562,7 +3517,9 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
     when that is where it left off), closing any leaked run first."""
     now = int(time.time())
+    authorize_lifecycle(conn, task_id=task_id, operation="unblock")
     with write_txn(conn):
+        auth = authorize_lifecycle(conn, task_id=task_id, operation="unblock")
         resume_status = (
             _resume_status_from_events(conn, task_id)
             if _task_status(conn, task_id) == "blocked"
@@ -3598,6 +3555,10 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
                 if new_status != "ready" or resume_status != "ready"
                 else None
             ),
+        )
+        _append_admin_audit(
+            conn, auth, task_id=task_id,
+            new={"status": new_status, "resume_status": resume_status},
         )
         return True
 
@@ -3872,7 +3833,9 @@ def schedule_task(
 ) -> bool:
     """Park in ``scheduled`` (waiting on time, not a human; not dispatchable)
     until ``unblock_task`` re-gates it."""
+    authorize_lifecycle(conn, task_id=task_id, operation="schedule")
     with write_txn(conn):
+        auth = authorize_lifecycle(conn, task_id=task_id, operation="schedule")
         params: list[Any] = [task_id]
         sql = """
             UPDATE tasks
@@ -3892,6 +3855,7 @@ def schedule_task(
             conn, task_id, outcome="scheduled", status="scheduled", summary=reason, synthesize=bool(reason),
         )
         _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
+        _append_admin_audit(conn, auth, task_id=task_id, run_id=run_id, new={"status": "scheduled"})
         return True
 
 
@@ -3906,13 +3870,14 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if not task:
         raise ValueError(f"unknown task {task_id}")
     from hermes_cli.kanban_db_context import (
-        _ctx_attachments, _ctx_comments, _ctx_header, _ctx_parent_results, _ctx_prior_attempts,
-        _ctx_role_history,
+        _ctx_attachments, _ctx_comments, _ctx_header, _ctx_identity, _ctx_parent_results,
+        _ctx_prior_attempts, _ctx_role_history,
     )
     # One clock reading so every relative age in this rendering agrees.
     now = int(time.time())
     lines: list[str] = []
     _ctx_header(lines, task)
+    _ctx_identity(lines, conn)
     _ctx_attachments(lines, list_attachments(conn, task_id))
     _ctx_prior_attempts(lines, conn, task_id, now)
     _ctx_parent_results(lines, conn, task_id, now)
@@ -4219,6 +4184,16 @@ from hermes_cli.kanban_db_workspace import (
     _is_managed_scratch_path,
     _managed_scratch_path_info,
     _scratch_workspace,
+)
+from hermes_cli.kanban_db_authority import (
+    _append_admin_audit,
+    _claim_is_live,
+    _extend_live_stale_claim,
+    _extend_run_claim,
+    _record_reclaim,
+    _resolve_claim_ttl_seconds,
+    authorize_lifecycle,
+    heartbeat_claim,
 )
 from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,

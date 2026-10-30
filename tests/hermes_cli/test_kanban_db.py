@@ -21,8 +21,8 @@ from hermes_cli import kanban_db_workspace as kbw
 
 
 @pytest.fixture
-def kanban_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME with an empty kanban DB."""
+def kanban_home(tmp_path, monkeypatch, kanban_maintenance_authority):
+    """Isolated HERMES_HOME with an empty kanban DB, driven from the dispatcher-side seat."""
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))

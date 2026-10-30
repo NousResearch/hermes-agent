@@ -24,6 +24,12 @@ from fastapi.testclient import TestClient
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 
+
+# Writes here are what the authenticated dashboard performs (operator review,
+# reclaim/reassign/unblock), so the suite declares that administrative seat
+# explicitly. Never autouse; without it every write fails closed.
+pytestmark = pytest.mark.usefixtures("kanban_admin_authority")
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -43,6 +49,25 @@ def _load_plugin_router():
     spec.loader.exec_module(mod)
     return mod.router
 
+
+def _dashboard_authenticated(app: FastAPI) -> FastAPI:
+    """Stand in for the dashboard's ``/api/`` auth middleware.
+
+    ``kanban_admin_authority`` mints ``ADMIN_RECOVERY`` only for a
+    middleware-verified request; a bare ``TestClient`` app has no middleware, so
+    without this every lifecycle write is (correctly) refused as an unauthenticated
+    dashboard request. The real ``hermes_cli/web_server.py`` sets exactly this
+    ``request.state.session`` after it verifies the session cookie / OAuth session.
+    """
+    from types import SimpleNamespace
+
+    @app.middleware("http")
+    async def _dashboard_session(request, call_next):
+        request.state.session = SimpleNamespace(email="operator@example.test")
+        return await call_next(request)
+
+    return app
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty kanban DB."""
@@ -55,7 +80,7 @@ def kanban_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client(kanban_home):
-    app = FastAPI()
+    app = _dashboard_authenticated(FastAPI())
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
     return TestClient(app)
 
@@ -526,7 +551,7 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "hermes_cli.web_server_chat", stub)
     monkeypatch.setattr(hermes_cli, "web_server_chat", stub, raising=False)
 
-    app = FastAPI()
+    app = _dashboard_authenticated(FastAPI())
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
     c = TestClient(app)
 
@@ -1075,7 +1100,7 @@ def test_specify_resolves_each_profiles_key_under_multiplex(kanban_home, tmp_pat
         return resp
 
     monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
-    app = FastAPI()
+    app = _dashboard_authenticated(FastAPI())
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban",
                        dependencies=[Depends(_plugin_route_secret_scope)])
     client = TestClient(app)
@@ -1199,7 +1224,7 @@ def test_ws_events_for_archived_board_does_not_recreate_it(tmp_path, monkeypatch
     monkeypatch.setitem(sys.modules, "hermes_cli.web_server_chat", stub)
     monkeypatch.setattr(hermes_cli, "web_server_chat", stub, raising=False)
 
-    app = FastAPI()
+    app = _dashboard_authenticated(FastAPI())
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
     c = TestClient(app)
 

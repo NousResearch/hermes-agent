@@ -192,10 +192,20 @@ export function conflictsFor(actionId: string, combo: string, bindings = $bindin
   const actions = allKeybindActions()
   const self = actions.findIndex(action => action.id === actionId)
   const key = canonicalizeCombo(combo)
+  // Two shipped defaults spelled differently (`ctrl+1` vs `mod+1`) overlap by
+  // design off macOS; the alias only conflicts once a user binding (or a combo
+  // being proposed for this action) is involved.
+  const proposed = explicitIds.has(actionId) || !bindingsFor(actionId, bindings).includes(combo)
 
   return actions
     .filter((action, index) => {
-      if (index === self || !bindingsFor(action.id, bindings).some(other => canonicalizeCombo(other) === key)) {
+      const userSide = proposed || explicitIds.has(action.id)
+
+      const clashes = bindingsFor(action.id, bindings).some(
+        other => other === combo || (userSide && canonicalizeCombo(other) === key)
+      )
+
+      if (index === self || !clashes) {
         return false
       }
 

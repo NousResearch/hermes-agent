@@ -175,3 +175,16 @@ it('reports an app-window Ctrl default as a conflict for the same chord spelled 
 
   expect(conflictsFor('session.focusSearch', 'mod+tab')).toEqual(['session.next'])
 })
+
+it('factory defaults spelled ctrl and mod do not warn against each other', async () => {
+  setPlatform('Win32')
+  stubDisplayMode('standalone')
+  const { conflictsFor, bindingsFor } = await import('@/store/keybinds')
+  const { allKeybindActions } = await import('@/lib/keybinds/actions')
+
+  const warned = allKeybindActions().filter(action =>
+    bindingsFor(action.id).some(combo => conflictsFor(action.id, combo).length > 0)
+  )
+
+  expect(warned.map(action => action.id).filter(id => /^(profile\.switch|session\.slot)\./.test(id))).toEqual([])
+})

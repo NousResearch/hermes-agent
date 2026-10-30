@@ -3006,6 +3006,17 @@ def _try_azure_foundry(
             model_cfg = {}
     except Exception:
         model_cfg = {}
+    # An explicit caller ``api_mode`` must reach the runtime resolver, not just the returned label.
+    # ``_resolve_azure_foundry_runtime`` re-derives the wire from ``model_cfg`` via
+    # ``_azure_inferred_api_mode``, and the top-level ``model`` block describes the PRIMARY route.
+    # Passing only that block therefore discards a fallback entry's declared route: an entry with
+    # ``api_mode: codex_responses`` resolves back to ``chat_completions``, and a Responses-only
+    # Azure deployment (gpt-6-luna) 400s on every tool-using turn --
+    #   "Function tools with reasoning_effort are not supported for gpt-6-luna in
+    #    /v1/chat/completions. To use function tools, use /v1/responses ..."
+    # Overlay the explicit mode onto the cfg so the resolver agrees with the caller.
+    if api_mode:
+        model_cfg = {**model_cfg, "provider": "azure-foundry", "api_mode": api_mode}
     try:
         runtime = _resolve_azure_foundry_runtime(
             requested_provider="azure-foundry", model_cfg=model_cfg,

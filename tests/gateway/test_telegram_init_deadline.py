@@ -85,7 +85,7 @@ async def test_blocked_loop_after_expiry_dumps_diagnostics(monkeypatch):
     monkeypatch.setattr(
         _deadline,
         "_dump_blocked_loop_diagnostics",
-        lambda label, timeout_s: dumps.append((label, timeout_s)),
+        lambda label, timeout_s, **_kw: dumps.append((label, timeout_s)),
     )
     monkeypatch.setattr(_deadline, "_LOOP_BLOCKED_DUMP_GRACE_S", 0.15)
 

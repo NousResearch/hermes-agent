@@ -16,6 +16,8 @@ import json
 import logging
 import os
 import shutil
+import socket
+import stat
 import subprocess
 import time
 from logging.handlers import RotatingFileHandler
@@ -99,6 +101,43 @@ def _tree_bytes(path: Path) -> int:
     return total
 
 
+def _in_use(path: str | os.PathLike[str], st: os.stat_result, cutoff: float) -> bool:
+    """Written at or after *cutoff*, or a UNIX socket a server may still listen on: a
+    listening socket keeps the mtime of its bind, so a daemon serving for days looks idle,
+    and deleting the path cuts every new client off from a server that is still running."""
+    if st.st_mtime >= cutoff:
+        return True
+    return stat.S_ISSOCK(st.st_mode) and not _nobody_listens(path)
+
+
+def _nobody_listens(path: str | os.PathLike[str]) -> bool:
+    """True only when a connection to the socket at *path* is refused: no server listens
+    there any more, so the path is a leftover that must not pin its tree. Any other outcome
+    (accepted, backlog full, an unreachable path) does not prove that, so the socket is
+    kept. The probe sends nothing and closes at once."""
+    if not hasattr(socket, "AF_UNIX"):
+        return False
+    parent, name = os.path.split(os.fspath(path))
+    try:
+        dir_fd = os.open(parent or ".", os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        # Through the directory's fd the address stays under the AF_UNIX length limit on
+        # Linux however deep the tree is; elsewhere the full path is tried as is.
+        via_fd = f"/proc/self/fd/{dir_fd}/{name}"
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.setblocking(False)
+            probe.connect(via_fd if os.path.exists(via_fd) else os.fspath(path))
+    except ConnectionRefusedError:
+        return True
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+    return False
+
+
 _TOUCHED = "touched"
 _SCAN_FAILED = "scan-failed"
 _IDLE = "idle"
@@ -110,7 +149,8 @@ def subtree_touch_state(path: Path, cutoff: float) -> str:
     a failed scan is not activity and is never reported as such), or ``idle``.
     Same walk, same stop-at-first-recent shortcut, same symlink rules. A hardlinked file
     (``st_nlink > 1``) does not count either: its mtime is the inode's, and
-    ``git clone --local`` hardlinks packs that git freshens from the source repo."""
+    ``git clone --local`` hardlinks packs that git freshens from the source repo. A UNIX
+    socket counts as touched unless nothing listens on it (``_in_use``)."""
     return _scan_subtree(path, cutoff)[0]
 
 
@@ -118,7 +158,7 @@ def _scan_subtree(path: Path, cutoff: float) -> tuple[str, str | None]:
     """``(state, denied_dir)``: *denied_dir* is the directory below *path* that refused
     listing with EACCES/EPERM when that is why the scan failed (else None)."""
     try:
-        if os.lstat(path).st_mtime >= cutoff:
+        if _in_use(path, os.lstat(path), cutoff):
             return _TOUCHED, None
         if not path.is_dir() or path.is_symlink():
             return _IDLE, None
@@ -134,7 +174,7 @@ def _scan_subtree(path: Path, cutoff: float) -> tuple[str, str | None]:
                         st = child.stat(follow_symlinks=False)
                     except OSError as exc:
                         return _SCAN_FAILED, current if stuck.is_permission_error(exc) else None
-                    if st.st_mtime >= cutoff and not (st.st_nlink > 1 and child.is_file(follow_symlinks=False)):
+                    if _in_use(child.path, st, cutoff) and not (st.st_nlink > 1 and child.is_file(follow_symlinks=False)):
                         return _TOUCHED, None
                     if child.is_dir(follow_symlinks=False):
                         stack.append(child.path)
@@ -144,7 +184,8 @@ def _scan_subtree(path: Path, cutoff: float) -> tuple[str, str | None]:
 
 
 def subtree_touched_since(path: Path, cutoff: float) -> bool:
-    """True when *path* or anything beneath it has an mtime at or after *cutoff*.
+    """True when *path* or anything beneath it was written at or after *cutoff* or is a
+    UNIX socket a server may still listen on (``_in_use``).
 
     Stops at the first recent entry, so a live tree costs one hit and only a truly idle
     tree pays for the full walk (once, right before it is deleted). Symlinks are never

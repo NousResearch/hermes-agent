@@ -93,7 +93,7 @@ async def handle(event_type: str, context: dict):
 | `agent:start` | Agent begins processing a message | `platform`, `user_id`, `chat_id`, `thread_id` (forum-topic / thread root id; empty when not in a thread), `chat_type` (`"dm"` \| `"group"` \| `"forum"`; empty if unknown), `session_id`, `message` (truncated to 500 chars) |
 | `agent:step` | Each iteration of the tool-calling loop | `platform`, `user_id`, `session_id`, `iteration`, `tool_names` |
 | `agent:end` | Agent finishes processing | same keys as `agent:start`, plus `response` (truncated to 500 chars) |
-| `reaction:added` | An emoji reaction was added to a message the bot can see (Slack adapter currently). Requires the `reactions:read` scope + the `reaction_added` bot event subscription; the bot must be a member of the channel. | `platform`, `reaction`, `user_id`, `item_user_id`, `item_type`, `channel_id`, `message_ts`, `team_id`, `event_ts`, `raw_event` |
+| `reaction:added` | An emoji reaction was added to a message the bot can see. Emitted by the Slack and Matrix adapters (Matrix forwards `m.reaction`; taking a reaction back is a redaction and raises no event). On Slack it requires the `reactions:read` scope + the `reaction_added` bot event subscription, and the bot must be a member of the channel. | `platform`, `reaction`, `user_id`, `item_user_id`, `item_type`, `channel_id`, `message_ts`, `team_id`, `event_ts`, `raw_event` |
 | `reaction:removed` | An emoji reaction was removed from a message the bot can see. Requires the `reaction_removed` bot event subscription. | same shape as `reaction:added` |
 | `command:*` | Any slash command executed | `platform`, `user_id`, `command`, `args` |
 

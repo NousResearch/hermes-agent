@@ -1483,3 +1483,42 @@ class TestDefaultTaskId:
         assert kt._default_task_id("") == worker_env
         assert kt._default_task_id("   ") == worker_env
         assert kt._default_task_id(None) == worker_env
+
+
+def test_worker_create_on_foreign_board_errors_and_writes_nothing(monkeypatch, tmp_path):
+    """#142435: kanban_create(board=<other>) from a dispatched worker returns an
+    error instead of silently creating the card on the worker's own board (and
+    inheriting the other board's workdir); naming its own board still works."""
+    from pathlib import Path as _Path
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    kb.create_board("a")
+    kb.create_board("b", default_workdir=str(tmp_path))
+    with kbc.connect_closing(board="a") as conn:
+        tid = kb.create_task(conn, title="coordinator", assignee="w")
+    # The pins kanban_db_dispatch._default_spawn injects for a board-a worker.
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path(board="a")))
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(kb.workspaces_root(board="a")))
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "a")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    refused = json.loads(kt._handle_create(
+        {"title": "for b", "assignee": "w", "board": "b", "workspace_kind": "dir"}))
+    assert "error" in refused and "'b' is not accessible" in refused["error"]
+    assert json.loads(kt._handle_create({"title": "for a", "assignee": "w", "board": "a"}))["ok"]
+
+    for var in ("HERMES_KANBAN_DB", "HERMES_KANBAN_WORKSPACES_ROOT",
+                "HERMES_KANBAN_BOARD", "HERMES_KANBAN_TASK"):
+        monkeypatch.delenv(var)
+    titles = {}
+    for slug in ("a", "b"):
+        with kbc.connect_closing(board=slug) as conn:
+            titles[slug] = {r[0] for r in conn.execute("SELECT title FROM tasks")}
+    assert titles == {"a": {"coordinator", "for a"}, "b": set()}

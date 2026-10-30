@@ -1,6 +1,7 @@
 """Board metadata (``board.json``) and board lifecycle management for the Kanban DB:
-read/write of per-board display metadata, board creation/discovery/archival, and the
-``board.json``-as-identity-marker rule.
+read/write of per-board display metadata, board creation/discovery/archival, the
+``board.json``-as-identity-marker rule, the active-board pointer, and the refusal a
+fenced worker gets for explicitly naming another board.
 
 Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached
 late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
@@ -9,7 +10,9 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import time
 from typing import Any
 from typing import Optional
@@ -62,7 +65,12 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
                 meta.update(raw)
     except (OSError, json.JSONDecodeError):
         pass
-    meta["db_path"] = str(_kb.kanban_db_path(slug))
+    try:
+        meta["db_path"] = str(_kb.kanban_db_path(slug))
+    except ValueError:
+        # A fenced worker enumerating boards: another board's slug is refused as
+        # explicit intent (#142435) but its metadata is still describable.
+        meta["db_path"] = str(_kb._unpinned_board_path(slug, ("kanban.db",), "kanban.db"))
     return meta
 
 
@@ -193,6 +201,45 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     import shutil
     shutil.rmtree(d)
     return {"slug": normed, "action": "deleted", "new_path": ""}
+
+
+def set_current_board(slug: str) -> Path:
+    """Persist ``slug`` as the active board; returns the file written. Does NOT
+    check the board exists — callers do (so ``boards switch <typo>`` errors)."""
+    _kb._assert_not_delegated_child_mutation()
+    normed = _kb._require_slug(slug)
+    path = _kb.current_board_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(normed + "\n", encoding="utf-8")
+    return path
+
+
+def clear_current_board() -> None:
+    """Remove ``<root>/kanban/current`` so the active board reverts to ``default``."""
+    _kb._assert_not_delegated_child_mutation()
+    with contextlib.suppress(FileNotFoundError):
+        _kb.current_board_path().unlink()
+
+
+def _refuse_foreign_board_in_fence(slug: str, pin: str, default_parts: tuple[str, ...], leaf: str) -> None:
+    """A fenced worker / delegated child that explicitly names a board other than
+    its pinned one gets an error, not a silent redirect onto the pinned board
+    (#142435). The fence is unchanged: naming the pinned board still resolves to
+    the pin, and nothing outside it is opened. ``HERMES_KANBAN_BOARD`` (set beside
+    the pin by the dispatcher) identifies the pinned board even where the worker's
+    own path resolution differs from the dispatcher's; the path compare covers pins
+    set without it. The message echoes only the caller's slug and its own board."""
+    own = (os.environ.get("HERMES_KANBAN_BOARD") or "").strip().lower()
+    if slug == own or (
+        _kb._unpinned_board_path(slug, default_parts, leaf).resolve() == Path(pin).expanduser().resolve()
+    ):
+        return
+    fenced_to = f"board {own!r}" if own else "its pinned board"
+    raise ValueError(
+        f"board {slug!r} is not accessible here: this Kanban worker / delegated context is "
+        f"fenced to {fenced_to}, so nothing was read or written. Drop the explicit board "
+        f"(board= / --board) to use {fenced_to}, or ask an orchestrator or user outside the "
+        f"worker to act on board {slug!r}.")
 
 
 # Late-bound origin namespace (see module docstring); imported LAST so this

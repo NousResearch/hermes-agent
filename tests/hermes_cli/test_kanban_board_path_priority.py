@@ -184,40 +184,129 @@ def test_cli_board_flag_trumps_worker_env_pin_end_to_end(monkeypatch, tmp_path):
 # PINNED path / fenced root. Explicit board intent therefore only outranks the
 # pin where no fence applies: a dispatched worker (HERMES_KANBAN_TASK) or a
 # delegated child / descendant (HERMES_DELEGATED_CHILD_CONTEXT) passing
-# board=<other> must still resolve through the pin, or it would both see and
-# write a board outside the dispatcher's fence. Machine flows that enumerate
+# board=<other> must never reach that board, or it would both see and write a
+# board outside the dispatcher's fence — and it is refused with an error rather
+# than silently redirected onto the pinned board (#142435). Machine flows that enumerate
 # boards (gateway notifier / watcher / dispatcher ticks) are fenced the same
 # way via kanban_db.pin_first_board_resolution() — the enumerated slug is not
 # caller intent.
 # ---------------------------------------------------------------------------
 
-def test_dispatched_worker_board_arg_stays_pinned(monkeypatch, tmp_path):
-    """A dispatched worker (HERMES_KANBAN_TASK, the dispatcher's own injection)
-    cannot resolve its way to another board: each env pin wins over board= for
-    its own resolver."""
+def _pin_like_dispatcher(monkeypatch, tmp_path, own="own-board"):
+    """The pins kanban_db_dispatch._default_spawn injects into every worker."""
     pinned = tmp_path / "worker-pinned.db"
     pinned_workspaces = tmp_path / "worker-pinned-workspaces"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
     monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(pinned_workspaces))
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", own)
+    return pinned, pinned_workspaces
+
+
+def test_dispatched_worker_foreign_board_is_refused_not_redirected(monkeypatch, tmp_path):
+    """#142435: a dispatched worker (HERMES_KANBAN_TASK) naming ANOTHER board gets a
+    clear error from every pinned resolver: never that board's path (the fence) and
+    never a silent redirect onto the pinned board. Its own board — or no board —
+    still resolves through the pin."""
+    pinned, pinned_workspaces = _pin_like_dispatcher(monkeypatch, tmp_path)
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_3f1c63a5")
-    assert kb.kanban_db_path(board="other-board") == pinned
-    assert kb.workspaces_root(board="other-board") == pinned_workspaces
+    for resolve in (kb.kanban_db_path, kb.workspaces_root):
+        with pytest.raises(ValueError, match="'other-board' is not accessible"):
+            resolve(board="other-board")
+    with pytest.raises(ValueError, match="not accessible"), kb.scoped_current_board("other-board"):
+        kb.kanban_db_path()  # CLI --board / dashboard scope is the same explicit intent
+    assert kb.kanban_db_path(board="own-board") == pinned
+    assert kb.kanban_db_path(board="OWN-BOARD") == pinned
+    assert kb.workspaces_root(board="own-board") == pinned_workspaces
+    assert kb.kanban_db_path() == pinned
 
 
-def test_delegated_child_board_arg_stays_pinned(monkeypatch, tmp_path):
-    """A delegated child / spawned descendant (HERMES_DELEGATED_CHILD_CONTEXT
-    marker) passing an explicit board= resolves through the pin, so
-    kanban_path_is_fenced still catches the resolved path."""
-    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, kanban_path_is_fenced
+def test_worker_shell_cli_board_flag_is_refused_end_to_end(monkeypatch, tmp_path, capsys):
+    """#142409: `hermes kanban --board B list --status blocked` from a dispatched
+    worker's shell read the worker's own board under B's name and reported an
+    empty queue (exit 0); a `create` landed on the wrong board. Both now fail
+    loudly, neither database changes, and the worker's own board stays usable."""
+    import argparse
 
-    pinned = tmp_path / "worker-pinned.db"
+    from hermes_cli import kanban as kc
+    from hermes_cli import kanban_db_connect as kbc
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.create_board("own")
+    kb.create_board("target")
+    with kbc.connect_closing(board="target") as conn:
+        kb.block_task(conn, kb.create_task(conn, title="waiting on a human"), reason="phone")
+    own_db, target_db = kb.kanban_db_path(board="own"), kb.kanban_db_path(board="target")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(own_db))
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "own")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+
+    def run(*argv):
+        parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+        kc.build_parser(parser.add_subparsers(dest="command"))
+        return kc.kanban_command(parser.parse_args(["kanban", *argv]))
+
+    def titles(db):
+        with kbc.connect_closing(db_path=db) as conn:
+            return [r[0] for r in conn.execute("SELECT title FROM tasks")]
+
+    assert run("--board", "target", "list", "--status", "blocked") != 0
+    assert "'target' is not accessible" in capsys.readouterr().err
+    assert run("--board", "target", "create", "misrouted") != 0
+    assert titles(own_db) == []
+    assert titles(target_db) == ["waiting on a human"]
+    assert run("--board", "own", "create", "mine") == 0
+    assert titles(own_db) == ["mine"]
+
+
+def test_fenced_pin_without_board_env_matches_own_board_by_path(monkeypatch, tmp_path):
+    """A pin set without HERMES_KANBAN_BOARD still recognises its own board (by
+    resolved path) and refuses any other."""
+    pinned = kb.kanban_db_path(board="own-board")
     monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_x")
+    assert kb.kanban_db_path(board="own-board") == pinned
+    with pytest.raises(ValueError, match="not accessible"):
+        kb.kanban_db_path(board="default")
+
+
+def test_delegated_child_foreign_board_is_refused(monkeypatch, tmp_path):
+    """Delegated children (spawned descendant marker, or the in-process context)
+    are fenced the same way; their own board stays on the fenced pin."""
+    from agent.delegation_context import (
+        DELEGATED_CHILD_ENV_MARKER, delegated_child_context, kanban_path_is_fenced,
+    )
+
+    pinned, _ = _pin_like_dispatcher(monkeypatch, tmp_path)
+    with delegated_child_context(), pytest.raises(ValueError, match="not accessible"):
+        kb.kanban_db_path(board="other-board")
     monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, str(tmp_path))  # fenced root
-    path = kb.kanban_db_path(board="other-board")
+    with pytest.raises(ValueError, match="not accessible"):
+        kb.kanban_db_path(board="other-board")
+    path = kb.kanban_db_path(board="own-board")
     assert path == pinned
     assert kanban_path_is_fenced(path), (
         "the explicit board escaped the dispatcher's pin-based fence"
     )
+
+
+def test_fenced_board_enumeration_keeps_working(monkeypatch, tmp_path):
+    """Enumerated slugs are not caller intent: machine flows keep aliasing to the
+    pin, and read_board_metadata (\"never raises\") / list_boards keep listing
+    every board for a fenced worker (`hermes kanban boards list` in its shell)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.create_board("own-board")
+    kb.create_board("other-board")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path(board="own-board")))
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "own-board")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_x")
+    with kb.pin_first_board_resolution():
+        assert kb.kanban_db_path(board="other-board") == kb.kanban_db_path()
+    slugs = {b["slug"] for b in kb.list_boards()}
+    assert {"default", "own-board", "other-board"} <= slugs
 
 
 def test_pin_first_board_resolution_maps_every_slug_to_the_pin(monkeypatch, tmp_path):

@@ -22,6 +22,7 @@ import hashlib
 import logging
 import os
 import stat
+import sys
 import threading
 import time
 
@@ -254,6 +255,19 @@ def _file_metadata(resolved: str) -> tuple | None:
         return None
 
 
+_VERSION_FIELDS = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+# Windows reports st_ctime as creation time, not change time. CPython can
+# return different values from fstat(fd) and stat(path) for a file written
+# earlier in the session, while the path value stays stable. Creation time
+# cannot signal a content rewrite, so requiring the views to agree there only
+# makes the file unversionable — every read is then stamped partial and
+# write_file refuses forever (#146022). Keep ctime in the stored version (the
+# path view is the one _file_metadata returns); skip it only in the comparison.
+_COMPARED_VERSION_FIELDS = (
+    _VERSION_FIELDS if sys.platform != "win32" else _VERSION_FIELDS[:-1]
+)
+
+
 def _file_version(resolved: str) -> tuple | None:
     """A byte snapshot, not just mtime (editors/copy tools can preserve that)."""
     try:
@@ -266,10 +280,14 @@ def _file_version(resolved: str) -> tuple | None:
                 return None
             digest = hashlib.file_digest(stream, "sha256").digest()
             after = os.stat(resolved)
-        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-        version = tuple(getattr(before, name) for name in fields)
-        if version == tuple(getattr(after, name) for name in fields):
-            return (*version, digest)
+        same = all(
+            getattr(before, name) == getattr(after, name)
+            for name in _COMPARED_VERSION_FIELDS
+        )
+        if same:
+            # Store the path view so the version compares equal to
+            # _file_metadata() and later _file_version() calls.
+            return (*(getattr(after, name) for name in _VERSION_FIELDS), digest)
         return None
     except OSError:
         return None

@@ -28,6 +28,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from hermes_cli.kanban_db_attention import current_attention
 from hermes_cli import kanban_db
 from hermes_cli import kanban_workflow
 from hermes_cli.web_read_coalescing import coalesced_read
@@ -205,7 +206,10 @@ def _placeholders(ids: list) -> str:
     return ",".join(["?"] * len(ids))
 
 
-def _compute_task_diagnostics(conn: sqlite3.Connection, task_ids: Optional[list[str]] = None) -> dict[str, list[dict]]:
+def _compute_task_diagnostics(
+    conn: sqlite3.Connection, task_ids: Optional[list[str]] = None,
+    *, attention: dict[str, dict] | None = None,
+) -> dict[str, list[dict]]:
     """``{task_id: [diagnostic_dict, ...]}`` (tasks with none omitted) via three aggregate
     queries (tasks, events, runs) — slurps the board; paginate if profiling shows a hotspot."""
     from hermes_cli.config import load_config
@@ -234,6 +238,10 @@ def _compute_task_diagnostics(conn: sqlite3.Connection, task_ids: Optional[list[
     out: dict[str, list[dict]] = {}
     for r in rows:
         tid = r["id"]
+        if attention is not None:
+            current = current_attention(r, events_by_task[tid], runs_by_task[tid])
+            if current:
+                attention[tid] = current
         diags = kd.compute_task_diagnostics(
             r, events_by_task[tid], runs_by_task[tid], config=diag_config, graph=graph_by_task.get(tid))
         if diags:
@@ -312,7 +320,8 @@ def get_board(
             p = progress.setdefault(row["pid"], {"done": 0, "total": 0})
             p["total"] += 1
             p["done"] += row["cstatus"] == "done"
-        diagnostics_per_task = _compute_task_diagnostics(conn, task_ids=None)
+        attention: dict[str, dict] = {}
+        diagnostics_per_task = _compute_task_diagnostics(conn, task_ids=None, attention=attention)
         latest_event_id = conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM task_events").fetchone()["m"]
         columns: dict[str, list[dict]] = {c: [] for c in BOARD_COLUMNS}
         if include_archived:
@@ -331,6 +340,9 @@ def get_board(
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
             _attach_diagnostics(d, diagnostics_per_task.get(t.id))
+            if t.id in attention:
+                current = attention[t.id]
+                d["current_attention"] = dict(current, summary=(current["summary"] or "")[:_CARD_SUMMARY_PREVIEW_CHARS] or None)
             columns[t.status if t.status in columns else "todo"].append(d)
 
         # Queue lanes keep the list_tasks dispatch order; the done column is
@@ -395,7 +407,10 @@ def get_task(
         links = _links_for(conn, task_id)
         child_summaries = kanban_db.latest_summaries(conn, links["children"])
         children = filter(None, (kanban_db.get_task(conn, cid) for cid in links["children"]))
-        _attach_diagnostics(task_d, _compute_task_diagnostics(conn, task_ids=[task_id]).get(task_id) or [])
+        attention: dict[str, dict] = {}
+        _attach_diagnostics(task_d, _compute_task_diagnostics(conn, task_ids=[task_id], attention=attention).get(task_id) or [])
+        if task_id in attention:
+            task_d["current_attention"] = attention[task_id]
         return {
             "task": task_d,
             "comments": [asdict(c) for c in kanban_db.list_comments(conn, task_id)],

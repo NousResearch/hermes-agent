@@ -233,7 +233,7 @@ Notes:
 ## Badges — one component
 
 `src/components/ui/badge.tsx`. Variants: `default` (tinted primary), `muted`,
-`warn`, `destructive`, `outline`, `solid` (primary fill — icon-corner counts).
+`success` (green), `info` (blue), `warn` (amber), `destructive` (red), `outline`, `solid` (primary fill — icon-corner counts).
 Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
 ## Profile rail

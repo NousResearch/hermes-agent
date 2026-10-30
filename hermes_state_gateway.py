@@ -944,12 +944,14 @@ class SessionGatewayMixin:
         return [dict(r) for r in rows]
 
     def request_handoff(self, session_id: str, platform: str) -> bool:
-        """Mark a session pending handoff to *platform*; False if a handoff is already in flight."""
+        """Mark an idle session pending handoff; False if its turn or another handoff is in flight."""
         return self._write_rowcount(
-            "UPDATE sessions SET handoff_state = 'pending',     handoff_platform = ?, "
+            "UPDATE sessions SET handoff_state = 'pending', handoff_platform = ?, "
             "    handoff_error = NULL WHERE id = ? AND (handoff_state IS NULL "
-            "                  OR handoff_state IN ('completed', 'failed'))",
-            (platform, session_id),
+            "                  OR handoff_state IN ('completed', 'failed')) "
+            "AND NOT EXISTS (SELECT 1 FROM session_admissions WHERE target_session_id = ? "
+            "                AND status IN ('queued', 'started', 'unknown'))",
+            (platform, session_id, session_id),
         ) > 0
 
     def get_handoff_state(self, session_id: str) -> Optional[dict[str, Any]]:

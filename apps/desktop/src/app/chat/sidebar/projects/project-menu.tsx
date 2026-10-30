@@ -34,6 +34,8 @@ import {
   setProjectAppearance
 } from '@/store/projects'
 
+import { SIDEBAR_FOCUS_VISIBLE } from '../chrome'
+
 import { ProjectAppearancePicker } from './project-appearance'
 import type { SidebarProjectTree } from './workspace-groups'
 
@@ -220,7 +222,8 @@ export function ProjectMenu({
       <button
         aria-label={p.menu}
         className={cn(
-          'grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:opacity-100',
+          'grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 data-[state=open]:opacity-100',
+          SIDEBAR_FOCUS_VISIBLE,
           // In the project header reveal on the whole header hover; in overview
           // rows reveal on the row hover.
           scoped ? 'group-hover/section:opacity-100' : 'group-hover/workspace:opacity-100'

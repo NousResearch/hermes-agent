@@ -12,6 +12,8 @@ import type * as ChatRuntime from '@/lib/chat-runtime'
 import { SESSION_ROW_AREAS, type SessionRowSlotProps } from '@/lib/session-row-slots'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
+import { $sidebarRowMeta } from '@/store/layout'
+import { $pullRequestsByBranch, branchPrKey } from '@/store/pull-requests'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
@@ -287,6 +289,69 @@ describe('SidebarSessionRow', () => {
     renderRow(makeSession({ title: 'Live row' }))
 
     expect(menuProps).toHaveBeenCalledWith(expect.objectContaining({ archived: false }))
+  })
+})
+
+describe('SidebarSessionRow keyboard stops', () => {
+  const rowMeta = $sidebarRowMeta.get()
+  const pullRequests = $pullRequestsByBranch.get()
+
+  afterEach(() => {
+    $sidebarRowMeta.set(rowMeta)
+    $pullRequestsByBranch.set(pullRequests)
+  })
+
+  it.each([false, true])('keeps timestamp metadata out of keyboard focus (card=%s)', card => {
+    $sidebarRowMeta.set(['updated'])
+    const { container } = renderRow(makeSession({ title: 'Keyboard session' }), { card })
+    const primary = screen.getByRole('button', { name: 'Keyboard session' })
+    const actions = screen.getByRole('button', { name: 'Session actions' })
+    const timestamp = container.querySelector('time')!
+
+    primary.focus()
+    timestamp.focus()
+    expect(globalThis.document.activeElement).toBe(primary)
+
+    const stops = [...container.querySelectorAll<HTMLElement>('button, [tabindex]')].filter(
+      element => element.tabIndex >= 0
+    )
+
+    expect(stops).toEqual(card ? [actions, primary] : [primary, actions])
+    actions.focus()
+    expect(globalThis.document.activeElement).toBe(actions)
+  })
+
+  it('retains the real pull-request action as a separate keyboard stop', () => {
+    $sidebarRowMeta.set(['pr'])
+    $pullRequestsByBranch.set({
+      [branchPrKey('/repo', 'feature')]: {
+        branch: 'feature',
+        draft: false,
+        number: 7,
+        state: 'open',
+        title: 'Feature',
+        url: 'https://github.com/example/repo/pull/7'
+      }
+    })
+
+    const { container } = renderRow(
+      makeSession({ git_branch: 'feature', git_repo_root: '/repo', title: 'Feature session' })
+    )
+
+    const primary = screen.getByRole('button', { name: 'Feature session' })
+    const pullRequest = screen.getByRole('button', { name: 'Open pull request #7' })
+    const actions = screen.getByRole('button', { name: 'Session actions' })
+
+    const stops = [...container.querySelectorAll<HTMLElement>('button, [tabindex]')].filter(
+      element => element.tabIndex >= 0
+    )
+
+    expect(stops).toEqual([primary, pullRequest, actions])
+    pullRequest.focus()
+    expect(globalThis.document.activeElement).toBe(pullRequest)
+    noop.mockClear()
+    fireEvent.click(pullRequest)
+    expect(noop).not.toHaveBeenCalled()
   })
 })
 

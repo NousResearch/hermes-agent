@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 
@@ -92,6 +92,27 @@ describe('focusComposerInput', () => {
     focusComposerInput(visible)
 
     expect(document.activeElement).toBe(visible)
+  })
+
+  it('queued composer retries yield to newer tab focus while a fresh explicit request still wins', () => {
+    vi.useFakeTimers()
+
+    try {
+      const input = mountInput()
+      focusComposerInput(input)
+      const tab = document.createElement('div')
+      tab.setAttribute('role', 'tab')
+      tab.tabIndex = 0
+      document.body.append(tab)
+      tab.focus()
+      vi.runAllTimers()
+      expect(document.activeElement).toBe(tab)
+
+      focusComposerInput(input)
+      expect(document.activeElement).toBe(input)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

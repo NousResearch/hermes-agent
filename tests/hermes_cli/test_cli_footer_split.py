@@ -97,3 +97,27 @@ def test_footer_split_clips_from_the_top_when_minimums_overflow():
 
     # ``_all_children`` interleaves zero-height padding windows between the three children.
     assert sizes == [0, 0, 1, 0, 1], "composer-side rows keep their height; the late top row is clipped"
+
+
+def test_footer_split_heals_an_overflow_once_per_terminal_size(monkeypatch):
+    """Regression for #138982: a persistently short terminal must not spin redraws."""
+    from unittest.mock import Mock
+
+    from hermes_cli.cli_footer_split import FooterSplit
+
+    top, middle, bottom = (Window(height=Dimension.exact(1)) for _ in range(3))
+    split = FooterSplit([top, middle, bottom])
+    app = Mock()
+    monkeypatch.setattr("hermes_cli.cli_footer_split.get_app", lambda: app)
+
+    overflow = WritePosition(0, 0, 80, 2)
+    split._divide_heights(overflow)
+    split._divide_heights(overflow)
+
+    assert app.invalidate.call_count == 1
+
+    # A frame that fits clears the overflow state, so a later overflow gets one heal redraw.
+    split._divide_heights(WritePosition(0, 0, 80, 3))
+    split._divide_heights(overflow)
+
+    assert app.invalidate.call_count == 2

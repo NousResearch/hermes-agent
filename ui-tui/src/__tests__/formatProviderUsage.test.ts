@@ -43,6 +43,7 @@ describe('formatProviderUsage', () => {
         ],
       }),
     )
+
     expect(text).toBe('Claude cg.chae-claude 5%/14% ●claude_code 23%/32% ⚠2')
     expect(text).not.toContain('ANTHROPIC_TOKEN')
     expect(text).not.toContain('HTTP 403')
@@ -58,6 +59,7 @@ describe('formatProviderUsage', () => {
         ],
       }),
     )
+
     expect(text).toBe('Claude ●real 1%/2% ⚠1')
     expect(text).not.toMatch(/ghost\s/)
   })
@@ -72,6 +74,7 @@ describe('formatProviderUsage', () => {
         ],
       }),
     )
+
     expect(text).toBe('Claude ⚠2')
   })
 
@@ -80,6 +83,7 @@ describe('formatProviderUsage', () => {
       'Claude',
       provider({ accounts: [account({ label: 'a', windows: win(1, 2) }), account({ label: 'b', active: true, windows: win(3, 4) })] }),
     )
+
     expect(text).toBe('Claude a 1%/2% ●b 3%/4%')
     expect(text).not.toContain('⚠')
   })

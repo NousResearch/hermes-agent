@@ -257,13 +257,20 @@ export function formatProviderUsage(name: string, provider: UsageMeterInfo['clau
   if (!provider.accounts || provider.accounts.length <= 1) {
     return `${name} ${provider.available ? provider.windows.map(window => `${window.usedPercent}%`).join('/') : '—'}`
   }
+
   const live = provider.accounts.filter(account => account.available && account.windows.length > 0)
   const dead = provider.accounts.length - live.length
+
   const parts = live.map(account => {
     const marker = account.active ? '●' : ''
+
     return `${marker}${account.label} ${account.windows.map(window => `${window.usedPercent}%`).join('/')}`
   })
-  if (dead > 0) parts.push(`⚠${dead}`)
+
+  if (dead > 0) {
+    parts.push(`⚠${dead}`)
+  }
+
   return `${name} ${parts.length ? parts.join(' ') : '—'}`
 }
 

@@ -5,7 +5,7 @@ import type { GatewayClient } from '../gatewayClient.js'
 import type { SystemUsageMeterAccount, SystemUsageMeterProvider, SystemUsageMeterResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 
-import type { AccountUsageMeterInfo, AccountUsageMeterAccount, UsageMeterInfo } from './interfaces.js'
+import type { AccountUsageMeterAccount, AccountUsageMeterInfo, UsageMeterInfo } from './interfaces.js'
 import { $uiState, patchUiState } from './uiStore.js'
 
 const USAGE_METER_POLL_MS = 30_000
@@ -18,7 +18,10 @@ const normalizeWindows = (windows: SystemUsageMeterProvider['windows']) =>
           typeof window.label !== 'string' ||
           typeof window.used_percent !== 'number' ||
           !Number.isFinite(window.used_percent)
-        ) return []
+        ) {
+          return []
+        }
+
         return [{ label: window.label, usedPercent: Math.max(0, Math.min(100, Math.round(window.used_percent))) }]
       })
     : []

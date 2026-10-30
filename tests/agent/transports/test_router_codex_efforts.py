@@ -233,3 +233,52 @@ class TestCatalogIngestValidation:
             ],
         )
         assert profile.fetch_models() == ["b", "a", "c"]
+
+
+class TestDiskMirror:
+    """First lookup after a restart: memory cold, the per-home disk mirror present."""
+
+    def _restart_with_mirror(self, monkeypatch, tmp_path, payload):
+        import json
+
+        profile, mod = _router_plugin_module()
+        path = tmp_path / "router_catalog.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        warms = []
+        # The cache lives on whatever ``_state()`` returns (the module, or a per-home
+        # ``_CacheState`` under a home override), so hand it a cold one directly.
+        state = mod._CacheState()
+        monkeypatch.setattr(mod, "_state", lambda: state)
+        monkeypatch.setattr(mod, "_disk_path", lambda: path)
+        monkeypatch.setattr(mod, "_warm_efforts_async", lambda: warms.append(True))
+        return profile, warms, state
+
+    def test_fresh_mirror_serves_the_clamp_without_a_refresh(self, monkeypatch, tmp_path):
+        import time
+
+        profile, warms, state = self._restart_with_mirror(
+            monkeypatch, tmp_path, {"ts": time.time(), "efforts": {"grok-4.6": ["low", "high"]}})
+        assert profile.supported_reasoning_efforts("grok-4.6") == ("low", "high")
+        assert warms == []
+        assert state._disk_checked and state._efforts_cache == {"grok-4.6": ["low", "high"]}
+
+    def test_stale_mirror_is_served_and_refreshed_in_the_background(self, monkeypatch, tmp_path):
+        import time
+
+        profile, warms, _state = self._restart_with_mirror(
+            monkeypatch, tmp_path, {"ts": time.time() - 3 * 24 * 3600, "efforts": {"grok-4.6": ["low"]}})
+        assert profile.supported_reasoning_efforts("grok-4.6") == ("low",)
+        assert warms == [True]
+
+    def test_unparseable_timestamp_counts_as_stale(self, monkeypatch, tmp_path):
+        profile, warms, _state = self._restart_with_mirror(
+            monkeypatch, tmp_path, {"ts": "not-a-number", "efforts": {"grok-4.6": ["low"]}})
+        assert profile.supported_reasoning_efforts("grok-4.6") == ("low",)
+        assert warms == [True]
+
+    def test_unparseable_timestamp_reports_the_mirror_as_ttl_old(self, monkeypatch, tmp_path):
+        """A corrupt ``ts`` must read as exactly TTL-old, not make the mirror look absent."""
+        _profile, _warms, _state = self._restart_with_mirror(
+            monkeypatch, tmp_path, {"ts": "not-a-number", "efforts": {"grok-4.6": ["low"]}})
+        _, mod = _router_plugin_module()
+        assert mod._load_disk() == ({"grok-4.6": ["low"]}, float(24 * 60 * 60))

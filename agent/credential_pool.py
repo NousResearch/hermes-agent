@@ -2053,6 +2053,54 @@ class CredentialPool:
         with self._lock:
             return self._try_refresh_current_unlocked()
 
+    def refresh_current_entry(
+        self, api_key_hint: Optional[str] = None
+    ) -> Optional[PooledCredential]:
+        """Return the *current* entry with up-to-date token material, without rotating.
+
+        Per-request credential refresh on the Anthropic path must stay bound to
+        the entry the pool selected for this agent: re-sync it from its backing
+        store (shared PKCE grant / Claude Code credentials file) and do a
+        proactive refresh when it is about to expire.  Unlike ``select()`` this
+        never changes the cursor to another account, so pool priority is
+        honoured on every call instead of only at agent start.
+
+        Returns ``None`` when there is no current entry (``api_key_hint`` is
+        used to re-anchor the cursor if it was lost), or when the current entry
+        is no longer usable (exhausted/dead/refresh failed).  Callers should then
+        fall back to ``select()`` so normal pool rotation applies.
+        """
+        with self._lock:
+            entry = self._current_unlocked()
+            if entry is None and api_key_hint:
+                matches = [
+                    e for e in self._entries if e.runtime_api_key == api_key_hint
+                ]
+                entry = matches[0] if len(matches) == 1 else None
+            if entry is None:
+                return None
+            if entry.auth_type == AUTH_TYPE_API_KEY and not entry.runtime_api_key:
+                return None
+            if self.provider == "anthropic" and entry.source == "hermes_pkce_shared":
+                entry = self._sync_anthropic_entry_from_shared_file(entry)
+                if not entry.access_token:
+                    return None
+            elif self.provider == "anthropic" and entry.source == "claude_code":
+                entry = self._sync_anthropic_entry_from_credentials_file(entry)
+            if entry.last_status == STATUS_DEAD:
+                return None
+            if entry.last_status == STATUS_EXHAUSTED:
+                exhausted_until = _exhausted_until(entry)
+                if exhausted_until is not None and time.time() < exhausted_until:
+                    return None
+            if self._entry_needs_refresh(entry):
+                refreshed = self._refresh_entry(entry, force=False)
+                if refreshed is None:
+                    return None
+                entry = refreshed
+            self._current_id = entry.id
+            return entry
+
     def try_refresh_matching(
         self,
         api_key_hint: Optional[str] = None,
@@ -2256,13 +2304,24 @@ def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -
         (entry for entry in entries if _is_manual_source(entry.source)),
         key=lambda entry: entry.priority,
     )
+    # Explicit env overrides (ANTHROPIC_TOKEN / CLAUDE_CODE_OAUTH_TOKEN) keep
+    # ranking ahead of file-backed accounts and ANTHROPIC_API_KEY stays last.
+    # Among the file-backed OAuth accounts (hermes_pkce_shared / claude_code /
+    # hermes_pkce) the user's explicit ``priority`` is the primary key so
+    # ``hermes auth`` reorders and scheduled priority shifts survive a reload;
+    # sorting those by source first silently undid every reorder on
+    # ``load_pool()``.  ``source_rank`` only breaks ties inside a tier.
+    file_backed_sources = {"hermes_pkce_shared", "claude_code", "hermes_pkce"}
+
+    def _seed_key(entry: PooledCredential):
+        rank = source_rank.get(entry.source, len(source_rank))
+        if entry.source in file_backed_sources:
+            return (1, entry.priority, rank, entry.label)
+        return (0 if rank < 2 else 2, 0, rank, entry.priority, entry.label)
+
     seeded_entries = sorted(
         (entry for entry in entries if not _is_manual_source(entry.source)),
-        key=lambda entry: (
-            source_rank.get(entry.source, len(source_rank)),
-            entry.priority,
-            entry.label,
-        ),
+        key=_seed_key,
     )
 
     ordered = [*manual_entries, *seeded_entries]

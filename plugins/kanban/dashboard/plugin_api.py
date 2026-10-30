@@ -751,6 +751,11 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             (task_id,)).fetchone()
         if prev is None:
             return False
+        if new_status in {"ready", "todo"}:
+            from hermes_cli.kanban_intake import require_admitted
+
+            if not require_admitted(conn, task_id):
+                return False
         if prev["status"] == "running" and new_status == "ready":
             resume_status = kanban_db._retry_status_for_run(conn, task_id, prev["current_run_id"])
             if resume_status == "review":

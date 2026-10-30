@@ -250,6 +250,41 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
             for event in kb.list_events(conn, task["id"])
         )
 
+
+def test_dashboard_cannot_drag_pending_intake_out_of_triage(client):
+    kb.write_board_metadata("default", intake_profile="planner")
+    task = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "new request"},
+    ).json()["task"]
+    assert task["status"] == "triage"
+    with kbc.connect() as conn:
+        row = conn.execute(
+            "SELECT intake_state, status FROM tasks WHERE id = ?", (task["id"],),
+        ).fetchone()
+        assert tuple(row) == ("pending", "triage")
+
+    for new_status in ("ready", "todo"):
+        response = client.patch(
+            f"/api/plugins/kanban/tasks/{task['id']}", json={"status": new_status},
+        )
+        assert response.status_code == 409, response.text
+
+        response = client.post(
+            "/api/plugins/kanban/tasks/bulk",
+            json={"ids": [task["id"]], "status": new_status},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["results"][0]["ok"] is False
+
+        with kbc.connect() as conn:
+            row = conn.execute(
+                "SELECT intake_state, status FROM tasks WHERE id = ?", (task["id"],),
+            ).fetchone()
+            assert tuple(row) == ("pending", "triage")
+            assert conn.execute(
+                "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (task["id"],),
+            ).fetchone()[0] == 0
+
 def test_reopening_parent_demotes_ready_child(client):
     """Reopening a completed parent must invalidate ready children immediately.
 

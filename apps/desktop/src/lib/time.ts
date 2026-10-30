@@ -37,11 +37,18 @@ export const fmtMonthYear = new Intl.DateTimeFormat(undefined, { month: 'long', 
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
 
 // Localized bidirectional "in 5 min" / "2 hr ago" — coarsest sensible unit so a
-// daily job reads "in 14 hr", not "in 840 min".
+// daily job reads "in 14 hr", not "in 840 min". Non-finite inputs (NaN from a
+// missing/malformed timestamp, Infinity from an overflowing value) return a
+// dash instead of throwing: `Intl.RelativeTimeFormat.format` rejects them, and
+// one bad timestamp must never crash a whole surface's render.
 export function relativeTime(targetMs: number, nowMs = Date.now()): string {
   const diff = targetMs - nowMs
   const abs = Math.abs(diff)
   const sign = diff < 0 ? -1 : 1
+
+  if (!Number.isFinite(abs)) {
+    return '—'
+  }
 
   if (abs < MINUTE) {
     return rtf.format(sign * Math.round(abs / SECOND), 'second')

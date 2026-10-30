@@ -9,6 +9,7 @@ import {
   HOUR,
   MINUTE,
   nominalDayStart,
+  relativeTime,
   SECOND,
   sessionBucketLabel
 } from './time'
@@ -23,6 +24,22 @@ const labels = {
 
 const now = 1_000 * DAY
 const ago = (delta: number) => formatAgo(now - delta, labels, now)
+
+describe('relativeTime', () => {
+  it('formats finite deltas through the shared formatter', () => {
+    expect(relativeTime(now - 5 * HOUR, now)).toBe('5 hr. ago')
+    expect(relativeTime(now + 2 * DAY, now)).toBe('in 2 days')
+  })
+
+  it('returns a dash for non-finite timestamps instead of throwing', () => {
+    // NaN (malformed/missing timestamp) and +/- Infinity (overflowing value)
+    // reach Intl.RelativeTimeFormat.format, which throws RangeError. One bad
+    // row must degrade to a dash, never crash the whole board render.
+    expect(relativeTime(Number.NaN, now)).toBe('—')
+    expect(relativeTime(Number.POSITIVE_INFINITY, now)).toBe('—')
+    expect(relativeTime(Number.NEGATIVE_INFINITY, now)).toBe('—')
+  })
+})
 
 describe('formatAgo', () => {
   it('reads "now" under two seconds, then seconds', () => {

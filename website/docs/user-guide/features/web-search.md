@@ -452,6 +452,18 @@ If no shared backend has **ever** been selected (no `web.backend` written by you
 
 **One-shot keyless rescue for keyed backends:** when your chosen/keyed backend — including the Nous Tool Gateway route (`web.backend: nous`) — fails a call (bad key, outage, unreachable gateway, upstream 5xx), that single call automatically retries on the keyless free-tier ring instead of erroring — the result notes which vendor served it and why (`rescued_from` / `backend_error`). The failover is never sticky: the very next `web_search`/`web_extract` call attempts your chosen backend again. Disable with `web.keyless_rescue: false` (also off whenever `keyless_fallback` is off).
 
+**Ordered fallback chain (opt-in):** to keep your own priority order — say a self-hosted SearXNG first, then your keyed Exa, then Tavily — list fallback backends per capability:
+
+```yaml
+web:
+  search_backend: "searxng"
+  search_fallback_chain: ["exa", "tavily"]
+  extract_backend: "tavily"
+  extract_fallback_chain: ["exa"]
+```
+
+When the selected backend fails a call (an error result, an exception or timeout, or a stored selection that no longer resolves), that call walks the list in order and stops at the first backend that succeeds. An empty search result is a success, not a failure. `web_extract` re-sends only the URLs that are still failing, so pages the selected backend already returned are kept; a URL whose own page answered with an HTTP error, or that the website policy blocked, is not re-sent. Backends with no credentials, or that cannot serve the capability (SearXNG cannot extract), are skipped. A result served from the chain says so — `fallback_from`, `served_by` and `chain_errors` on search, `served_by` on each extracted page — and is never cached, so the next call tries your selected backend first again. If the whole chain fails, the call goes to the one-shot keyless rescue above (when enabled); otherwise the error names every backend that was tried. The chain is empty by default, so a stored selection keeps surfacing its own error unless you opt in.
+
 xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` set (or being signed in via xAI Grok OAuth) does not automatically route web traffic through xAI, since those credentials are also used for inference / TTS / image gen and the user may want a different backend for web. Opt in explicitly with `web.backend: "xai"`.
 
 ---

@@ -24,6 +24,43 @@ def _jwt_with_claims(claims: dict) -> str:
     return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
 
 
+@pytest.mark.parametrize("payload", ["[]", "null", "not-json"])
+def test_shared_hermes_oauth_reader_rejects_non_object_or_malformed_json(tmp_path, monkeypatch, payload):
+    shared = tmp_path / ".anthropic_oauth.json"
+    shared.write_text(payload)
+    monkeypatch.setattr("agent.anthropic_adapter._get_shared_hermes_oauth_file", lambda: shared)
+
+    from agent.anthropic_adapter import read_shared_hermes_oauth_credentials
+
+    assert read_shared_hermes_oauth_credentials() is None
+
+
+def test_shared_hermes_oauth_writer_fails_closed_on_directory_permission_error(tmp_path, monkeypatch):
+    shared = tmp_path / "shared" / ".anthropic_oauth.json"
+    monkeypatch.setattr("agent.anthropic_adapter._get_shared_hermes_oauth_file", lambda: shared)
+    monkeypatch.setattr(type(shared.parent), "chmod", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("denied")))
+
+    from agent.anthropic_adapter import write_shared_hermes_oauth_credentials
+
+    assert not write_shared_hermes_oauth_credentials({"accessToken": "token"})
+    assert not shared.exists()
+
+
+def test_legacy_pkce_migration_does_not_advance_when_publication_fails(tmp_path, monkeypatch):
+    shared = tmp_path / "shared" / ".anthropic_oauth.json"
+    monkeypatch.setattr("agent.anthropic_adapter._get_shared_hermes_oauth_file", lambda: shared)
+    monkeypatch.setattr("agent.anthropic_adapter.read_shared_hermes_oauth_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_adapter.write_shared_hermes_oauth_credentials", lambda _payload: False)
+    monkeypatch.setattr("agent.credential_pool.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("agent.credential_pool.get_default_hermes_root", lambda: tmp_path)
+
+    from agent.credential_pool import PooledCredential, _migrate_legacy_hermes_pkce_entries
+
+    entries = [PooledCredential("anthropic", "legacy", "account", "oauth", 0, "manual:hermes_pkce", "access", "refresh")]
+    assert not _migrate_legacy_hermes_pkce_entries(entries)
+    assert entries[0].source == "manual:hermes_pkce"
+
+
 def test_fill_first_selection_skips_recently_exhausted_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
@@ -1821,7 +1858,7 @@ def test_singleton_seed_does_not_clobber_manual_oauth_entry(tmp_path, monkeypatc
     entries = pool.entries()
 
     assert len(entries) == 2
-    assert {entry.source for entry in entries} == {"manual:hermes_pkce", "hermes_pkce"}
+    assert {entry.source for entry in entries} == {"hermes_pkce_shared", "hermes_pkce"}
 
 
 def test_load_pool_prefers_anthropic_env_token_over_file_backed_oauth(tmp_path, monkeypatch):

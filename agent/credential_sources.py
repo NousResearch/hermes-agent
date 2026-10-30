@@ -68,11 +68,17 @@ class RemovalResult:
             Default True — almost every source needs this to stay sticky.
             The only legitimate False is ``manual`` entries, which aren't
             seeded from anywhere external.
+        suppress_source: Optional override for the suppression key.  When
+            set, ``auth remove`` records this key instead of the entry's
+            ``source`` so sources that seed one row per account (the shared
+            PKCE grants, keyed by label) can be removed one label at a time
+            without suppressing every other label.
     """
 
     cleaned: List[str] = field(default_factory=list)
     hints: List[str] = field(default_factory=list)
     suppress: bool = True
+    suppress_source: Optional[str] = None
 
 
 @dataclass
@@ -217,6 +223,35 @@ def _remove_hermes_pkce(provider: str, removed) -> RemovalResult:
         except OSError as exc:
             result.hints.append(f"Could not delete {oauth_file}: {exc}")
     return result
+
+
+SHARED_PKCE_SOURCE = "hermes_pkce_shared"
+
+
+def shared_pkce_suppression_key(label: Optional[str]) -> str:
+    """Suppression key for one labelled shared PKCE grant.
+
+    ``suppressed_sources`` is a flat list of strings per provider; shared
+    grants add a ``hermes_pkce_shared:<label>`` entry so one label can be
+    retired from a profile while the others keep seeding.
+    """
+    return f"{SHARED_PKCE_SOURCE}:{str(label or '').strip()}"
+
+
+def _remove_hermes_pkce_shared(provider: str, removed) -> RemovalResult:
+    """A shared grant is published for every profile; removing it from one
+    profile must not revoke it for the others, so the grant file stays and
+    only this profile's seeding of that label is suppressed."""
+    label = str(getattr(removed, "label", "") or "").strip()
+    return RemovalResult(
+        hints=[
+            f'Suppressed shared Anthropic OAuth grant "{label}" for this profile — it will not be re-seeded here.',
+            "The grant file is retained for other profiles; run `hermes auth remove anthropic` in each "
+            "profile (or delete the file under ~/.hermes/.anthropic_oauth/) to revoke it everywhere.",
+            "Run `hermes auth add anthropic` to re-enable.",
+        ],
+        suppress_source=shared_pkce_suppression_key(label),
+    )
 
 
 def _clear_auth_store_provider(provider: str) -> bool:
@@ -405,6 +440,11 @@ def _register_all_sources() -> None:
         provider="anthropic", source_id="hermes_pkce",
         remove_fn=_remove_hermes_pkce,
         description="~/.hermes/.anthropic_oauth.json",
+    ))
+    register(RemovalStep(
+        provider="anthropic", source_id=SHARED_PKCE_SOURCE,
+        remove_fn=_remove_hermes_pkce_shared,
+        description="~/.hermes/.anthropic_oauth/<label>.json (shared across profiles; removal suppresses one label)",
     ))
     register(RemovalStep(
         provider="nous", source_id="device_code",

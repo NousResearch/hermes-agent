@@ -2181,10 +2181,10 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         # Never leave the session untitled.
         # Try the next free title in the lineage, then a bare id-stamped title. See #50535.
         for _fallback in (
-            getattr(_session_db, "get_next_title_in_lineage", lambda b: b)(f"cron {job_id}"),
-            f"cron {job_id} {_final_cron_session_id[-6:]}"):
+            lambda: getattr(_session_db, "get_next_title_in_lineage", lambda b: b)(f"cron {job_id}"),
+            lambda: f"cron {job_id} {_final_cron_session_id[-6:]}"):
             try:
-                if _set_cron_session_title(_session_db, _final_cron_session_id, _fallback):
+                if _set_cron_session_title(_session_db, _final_cron_session_id, _fallback()):
                     break
             except (Exception, KeyboardInterrupt):
                 continue

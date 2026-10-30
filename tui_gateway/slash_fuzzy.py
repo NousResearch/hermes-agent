@@ -11,6 +11,12 @@ from typing import Callable
 
 _TOKEN_SPLIT = re.compile(r"[^a-z0-9]+")
 
+# Tokenization memo: the completion path re-scores the same name/meta strings on every keystroke
+# (identical item lists, evolving queries), so the split cost is paid once per distinct string.
+# Bounded and cleared whole when full — pure cache of a pure function.
+_TOKEN_CACHE: dict[str, list[str]] = {}
+_TOKEN_CACHE_LIMIT = 8192
+
 # (tier bump, field predicate) in priority order: exact, prefix, substring.
 _TIERS = (
     (0, lambda field, q: field == q or f"/{field}" == q),
@@ -21,8 +27,14 @@ _TIERS = (
 
 def tokenize_search_text(value: str) -> list[str]:
     """Lowercase ``value`` and return it alongside its alphanumeric words."""
-    normalized = value.lower()
-    return [normalized, *[t for t in _TOKEN_SPLIT.split(normalized) if t]]
+    cached = _TOKEN_CACHE.get(value)
+    if cached is None:
+        normalized = value.lower()
+        cached = [normalized, *[t for t in _TOKEN_SPLIT.split(normalized) if t]]
+        if len(_TOKEN_CACHE) >= _TOKEN_CACHE_LIMIT:
+            _TOKEN_CACHE.clear()
+        _TOKEN_CACHE[value] = cached
+    return cached
 
 
 def normalize_slash_search_query(query: str) -> str:
@@ -51,10 +63,16 @@ def fuzzy_rank_slash_items(
     identity) and sort by score (stable within a tier). Also returns a ``score_of`` lookup for downstream
     rankers to use as a leading sort key."""
     seen = {str(item.get("text", "")).strip() for item in items}
-    merged = list(items) + [
-        item for item in catalog
-        if str(item.get("text", "")).strip() not in seen and not math.isinf(score_slash_completion_item(item, query))
-    ]
-    scores = {id(item): score_slash_completion_item(item, query) for item in merged}
+    merged = list(items)
+    # Score exactly once per item: the merge filter and the score map share one pass, so an
+    # 850-skill catalog costs ~850 scorings per keystroke, not ~1700.
+    scores = {id(item): score_slash_completion_item(item, query) for item in items}
+    for item in catalog:
+        if str(item.get("text", "")).strip() in seen:
+            continue
+        score = score_slash_completion_item(item, query)
+        if not math.isinf(score):
+            merged.append(item)
+            scores[id(item)] = score
     ranked = sorted((item for item in merged if not math.isinf(scores[id(item)])), key=lambda item: scores[id(item)])
     return ranked, lambda item: scores.get(id(item), math.inf)

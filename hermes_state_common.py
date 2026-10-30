@@ -583,6 +583,22 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
 );
 
+-- External outcomes of a session (merged PR, failed CI, ...; #138653). Recorded by the user's CLI, the agent's
+-- own CLI calls, or a plugin; ``recorder`` is provenance stamped by core, not by the caller.
+CREATE TABLE IF NOT EXISTS session_outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    signal TEXT NOT NULL,
+    verdict TEXT NOT NULL CHECK (verdict IN ('good', 'bad', 'neutral')),
+    source TEXT NOT NULL,
+    recorder TEXT NOT NULL,
+    ref TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    observed_at REAL NOT NULL,
+    recorded_at REAL NOT NULL,
+    UNIQUE (session_id, signal, source, ref, recorder)
+);
+
 CREATE TABLE IF NOT EXISTS runtime_epoch (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     epoch INTEGER NOT NULL CHECK (epoch > 0),
@@ -765,6 +781,7 @@ CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(ex
 CREATE INDEX IF NOT EXISTS idx_session_turn_leases_expires ON session_turn_leases(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
+CREATE INDEX IF NOT EXISTS idx_session_outcomes_observed ON session_outcomes(observed_at);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
 """

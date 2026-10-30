@@ -1369,6 +1369,11 @@ def _cmd_adopt(args):
     return cmd_adopt(args)
 
 
+def _cmd_outcome(db, args):
+    from hermes_cli.sessions_outcome import cmd_outcome
+    return cmd_outcome(db, args)
+
+
 _PRE_DB_HANDLERS = {
     "repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import,
     "repair-profiles": _cmd_repair_profiles,  # opens every profile's store itself
@@ -1384,7 +1389,7 @@ _DB_HANDLERS = {
     "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,
     "clean-markers": _cmd_clean_markers, "optimize-storage": _cmd_optimize_storage,
     "repair-routing": _cmd_repair_routing, "repair-prompts": _cmd_repair_prompts, "stats": _cmd_stats,
-    "refresh-prompts": _cmd_refresh_prompts,
+    "refresh-prompts": _cmd_refresh_prompts, "outcome": _cmd_outcome,
 }
 
 
@@ -1392,6 +1397,8 @@ def _print_empty_store(action: str, args) -> None:
     """A profile that never created state.db: report empty instead of opening a writer that creates it."""
     if action == "stats":
         print("Total sessions: 0\nTotal messages: 0")
+    elif action == "outcome":
+        print('{"version": 1, "outcomes": []}' if getattr(args, "json", False) else "No outcomes recorded.")
     elif action == "pinned":
         print("[]" if getattr(args, "json", False) else "No pinned sessions. Pin one with: hermes sessions pin <session_id>")
     else:
@@ -1416,7 +1423,8 @@ def cmd_sessions(args, sessions_parser=None):
         and getattr(args, "yes", False) and getattr(args, "session_id", None)
         and getattr(args, "format", None) in ("md", "qmd")
     )
-    observational = action in _OBSERVATIONAL_DB_ACTIONS or (action == "export" and not deleting_export)
+    observational = (action in _OBSERVATIONAL_DB_ACTIONS or (action == "export" and not deleting_export)
+                     or (action == "outcome" and args.outcome_action == "list"))
     if action == "prune":
         # The always-on gateway owns the store: this process only reads the preview, the owner
         # deletes. No gateway: the local prune below, behind the holder scan, as before.

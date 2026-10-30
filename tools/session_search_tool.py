@@ -273,6 +273,17 @@ def _discovery_entry(lineage_root: Optional[str], **fields) -> dict[str, Any]:
     return entry
 
 
+def _attach_outcomes(db, results: list[dict[str, Any]]) -> None:
+    """``outcomes``: up to 3 newest ``{signal, verdict, source, recorder}`` of each hit's session, matched
+    across its compression lineage (#138653), so recall can tell work that shipped from work that was
+    reverted. Never ``note``/``ref``: those are free text the model must not read. Absent when there are
+    none; a store that cannot answer just leaves the key off."""
+    found = _quiet(lambda: db.outcomes_for_sessions(e["session_id"] for e in results), {}, "outcomes read failed")
+    for entry in results:
+        if rows := found.get(entry["session_id"]):
+            entry["outcomes"] = [{k: r[k] for k in ("signal", "verdict", "source", "recorder")} for r in rows]
+
+
 def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> Optional[dict[str, Any]]:
     """Discovery-shaped result when the query matches a session title, else None."""
     title_query = query.strip().strip("`'\"")  # models often quote a remembered title
@@ -421,6 +432,7 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         entry = _hydrate_hit(db, lineage_root, match_info, "full" if detail == "full" or not results else "compact")
         if entry is not None:
             results.append(entry)
+    _attach_outcomes(db, results)
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
     return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), link_hint=(

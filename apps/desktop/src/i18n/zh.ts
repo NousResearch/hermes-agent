@@ -3180,6 +3180,8 @@ export const zhOverrides = {
       deleted: '会话已删除',
       untitledChat: id => `会话 ${id}`,
       messageCount: count => `${count} 条消息`,
+      branchCount: count => `${count} 个分支`,
+      toggleBranches: open => (open ? '折叠分支' : '展开分支'),
       todoProgress: '任务完成度',
       ageNow: '刚刚',
       ageDay: '天',

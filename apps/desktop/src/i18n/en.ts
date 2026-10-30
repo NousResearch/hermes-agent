@@ -3274,6 +3274,8 @@ export const en: Translations = {
       deleted: 'Session deleted',
       untitledChat: id => `Chat ${id}`,
       messageCount: count => `${count} ${count === 1 ? 'message' : 'messages'}`,
+      branchCount: count => `${count} ${count === 1 ? 'branch' : 'branches'}`,
+      toggleBranches: open => (open ? 'Collapse branches' : 'Expand branches'),
       todoProgress: 'Tasks completed',
       ageNow: 'now',
       ageDay: 'd',

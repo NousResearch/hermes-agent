@@ -254,7 +254,7 @@ def test_voice_clone_uploads_audio_then_clones(
     }
 
 
-def test_voice_design_uses_china_region_and_nested_voice_id(
+def test_voice_design_uses_china_region_and_generated_voice_id(
     _fake_minimax_credentials,
 ):
     _fake_minimax_credentials["MINIMAX_CN_API_KEY"] = CN_CREDENTIAL_SENTINEL
@@ -274,7 +274,8 @@ def test_voice_design_uses_china_region_and_nested_voice_id(
     with patch("requests.post", side_effect=fake_post):
         result = _design_minimax_voice(
             prompt="warm narrator",
-            voice_id="designed-voice",
+            preview_text="Welcome to the evening news.",
+            voice_id=None,
             tts_config={},
         )
 
@@ -282,7 +283,7 @@ def test_voice_design_uses_china_region_and_nested_voice_id(
     assert captured["url"] == DEFAULT_MINIMAX_CN_VOICE_DESIGN_URL
     assert captured["kwargs"]["json"] == {
         "prompt": "warm narrator",
-        "voice_id": "designed-voice",
+        "preview_text": "Welcome to the evening news.",
     }
     assert captured["kwargs"]["headers"]["Authorization"] == f"Bearer {CN_CREDENTIAL_SENTINEL}"
 
@@ -322,7 +323,11 @@ def test_voice_tool_wrappers_return_json(tmp_path, monkeypatch, _fake_minimax_cr
     )
 
     clone_result = minimax_voice_clone_tool(str(sample), "voice-created")
-    design_result = minimax_voice_design_tool("warm narrator", "designed-voice")
+    design_result = minimax_voice_design_tool(
+        "warm narrator",
+        "Welcome to the evening news.",
+        "designed-voice",
+    )
 
     assert '"success": true' in clone_result
     assert '"file_id": "file-123"' in clone_result

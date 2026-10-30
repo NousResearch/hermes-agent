@@ -66,6 +66,9 @@ tts:
     vol: 1                      # 0 - 10
     pitch: 0                    # -12 - 12
     # base_url: "https://tts.example/v1/t2a_v2"  # Optional endpoint override for the selected region
+    # clone_url: "https://api.minimax.io/v1/voice_clone"  # Optional voice clone override
+    # design_url: "https://api.minimax.io/v1/voice_design"  # Optional voice design override
+    # upload_url: "https://api.minimax.io/v1/files/upload"  # Optional voice upload override
   mistral:
     model: "voxtral-mini-tts-2603"
     voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
@@ -111,6 +114,16 @@ MiniMax TTS selects its region, endpoint, and credential together:
 - `region: "cn"` uses `https://api.minimaxi.com/v1/t2a_v2` with `MINIMAX_CN_API_KEY`.
 - If `region` is omitted, `MINIMAX_API_KEY` keeps precedence for backward compatibility. If only `MINIMAX_CN_API_KEY` is configured, Hermes selects `cn`.
 - An explicitly selected region must have its matching credential. Hermes never borrows the other region's key. A `base_url` override does not change the selected credential, and an override pointing at the other region's official endpoint is rejected.
+
+### MiniMax Voice Cloning and Design
+
+The TTS toolset also exposes three MiniMax voice operations:
+
+- `minimax_voice_upload` uploads MP3, M4A, or WAV audio with `purpose` set to `voice_clone` or `prompt_audio` and returns its `file_id`.
+- `minimax_voice_clone` uploads a sample, creates the requested `voice_id`, and supports `speech-2.8-hd`, `speech-2.6-hd`, `speech-02-hd`, and `speech-01-hd`.
+- `minimax_voice_design` creates a voice from a required `prompt` and `preview_text`. The `voice_id` is optional; MiniMax generates one when it is omitted.
+
+These tools use the same `tts.minimax.region` and matching API key as MiniMax TTS. The default clone, design, and upload endpoints follow the selected region. Set `clone_url`, `design_url`, or `upload_url` under `tts.minimax` only when an operation needs a custom endpoint.
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
 

@@ -747,19 +747,23 @@ def _clone_minimax_voice(
 def _design_minimax_voice(
     *,
     prompt: str,
-    voice_id: str,
+    preview_text: str,
+    voice_id: Optional[str],
     tts_config: Dict[str, Any],
 ) -> Dict[str, Any]:
     import requests
 
     payload = {
         "prompt": str(prompt).strip(),
-        "voice_id": str(voice_id).strip(),
+        "preview_text": str(preview_text).strip(),
     }
     if not payload["prompt"]:
         raise ValueError("MiniMax voice design requires prompt")
-    if not payload["voice_id"]:
-        raise ValueError("MiniMax voice design requires voice_id")
+    if not payload["preview_text"]:
+        raise ValueError("MiniMax voice design requires preview_text")
+    selected_voice_id = str(voice_id or "").strip()
+    if selected_voice_id:
+        payload["voice_id"] = selected_voice_id
 
     response = requests.post(
         _resolve_minimax_voice_url(tts_config, operation="design"),
@@ -770,7 +774,9 @@ def _design_minimax_voice(
     response.raise_for_status()
     result = _read_tts_response_json(response, label="MiniMax voice design")
     _check_minimax_base_resp(result, "MiniMax voice design")
-    returned_voice_id = _extract_minimax_voice_id(result) or payload["voice_id"]
+    returned_voice_id = _extract_minimax_voice_id(result) or selected_voice_id
+    if not returned_voice_id:
+        raise RuntimeError("MiniMax voice design returned no voice_id")
     return {"voice_id": returned_voice_id}
 
 
@@ -3408,11 +3414,16 @@ def minimax_voice_upload_tool(audio_path: str, purpose: str = "voice_clone") -> 
         }, ensure_ascii=False)
 
 
-def minimax_voice_design_tool(prompt: str, voice_id: str) -> str:
+def minimax_voice_design_tool(
+    prompt: str,
+    preview_text: str,
+    voice_id: Optional[str] = None,
+) -> str:
     """Create a MiniMax designed voice_id from a text prompt."""
     try:
         result = _design_minimax_voice(
             prompt=prompt,
+            preview_text=preview_text,
             voice_id=voice_id,
             tts_config=_load_tts_config(),
         )
@@ -4000,12 +4011,16 @@ MINIMAX_VOICE_DESIGN_SCHEMA = {
                 "type": "string",
                 "description": "Voice design prompt describing tone, accent, style, or role.",
             },
+            "preview_text": {
+                "type": "string",
+                "description": "Text MiniMax uses to synthesize the trial audio preview.",
+            },
             "voice_id": {
                 "type": "string",
-                "description": "Caller-chosen MiniMax voice_id to create.",
+                "description": "Optional caller-chosen MiniMax voice_id to create.",
             },
         },
-        "required": ["prompt", "voice_id"],
+        "required": ["prompt", "preview_text"],
     },
 }
 
@@ -4062,7 +4077,8 @@ registry.register(
     schema=MINIMAX_VOICE_DESIGN_SCHEMA,
     handler=lambda args, **kw: minimax_voice_design_tool(
         prompt=args.get("prompt", ""),
-        voice_id=args.get("voice_id", ""),
+        preview_text=args.get("preview_text", ""),
+        voice_id=args.get("voice_id"),
     ),
     check_fn=check_minimax_voice_requirements,
     emoji="🔊",

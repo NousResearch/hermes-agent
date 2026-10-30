@@ -8,6 +8,7 @@ and ``_adopt_out_of_band_turns`` handed the cancelled prompt to the model after 
 from types import SimpleNamespace
 
 from hermes_state import SessionDB
+from tools import approval
 from tui_gateway import server
 
 
@@ -124,6 +125,7 @@ def test_stop_retires_last_and_outside_history_lock(monkeypatch, tmp_path):
     sid, key, session, _held = _busy_session(monkeypatch, db)
     calls, retire = [], server._retire_discarded_queued_rows
     monkeypatch.setattr(server, "_clear_pending", lambda _sid: calls.append("clear_pending"))
+    monkeypatch.setattr(approval, "resolve_gateway_approval", lambda *_a, **_k: calls.append("deny"))
 
     def spy(sess, envelopes):
         calls.append(("retire", sess["history_lock"].locked(), sess.get("running")))
@@ -132,7 +134,7 @@ def test_stop_retires_last_and_outside_history_lock(monkeypatch, tmp_path):
     try:
         _queue(sid, session, "QUEUED-A")
         server._interrupt_session_turn(sid, session)
-        assert calls == ["clear_pending", ("retire", False, False)]
+        assert calls == ["clear_pending", "deny", ("retire", False, False)]
         assert "QUEUED-A" not in _active(db, key)
     finally:
         server._sessions.pop(sid, None)

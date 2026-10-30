@@ -1232,7 +1232,7 @@ Key tables in `state.db`:
 - **sessions** — session metadata (id, source, user_id, model, title, timestamps, token counts). Titles have a unique index (NULL titles allowed, only non-NULL must be unique).
 - **messages** — full message history (role, content, tool_calls, tool_name, token_count)
 - **messages_fts** — FTS5 virtual table for full-text search across message content
-- **session_outcomes** — external outcomes per session (signal, domain, verdict, source, recorder, ref, note, observed_at); superseded rows are kept as history; deleted with their session
+- **session_outcomes** — external outcomes per session (signal, verdict, source, recorder, ref, note, observed_at; `domain` is derived from the signal on read); superseded rows are kept as history; deleted with their session
 
 ## Session Expiry and Cleanup
 

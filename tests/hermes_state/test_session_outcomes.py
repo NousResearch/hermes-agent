@@ -85,7 +85,7 @@ def test_remove_by_id_optionally_limited_to_one_recorder(db):
 
 @pytest.mark.parametrize("sid,kwargs,message", [
     ("nope", {}, "Unknown session"),
-    ("s1", {"signal": "review.comment_applied"}, "no default verdict"),
+    ("s1", {"signal": "review.comment_applied"}, r"no default verdict: .*\^\[a-z0-9\].*needs --verdict"),
     ("s1", {"signal": "custom"}, r"is invalid: .*\^\[a-z0-9\]"),
     ("s1", {"signal": "custom", "verdict": "good"}, "is invalid"),
     ("s1", {"signal": "PR.Merged", "verdict": "good"}, "is invalid"),
@@ -154,6 +154,48 @@ def test_agent_rows_never_cover_or_get_covered_by_someone_elses(db):
     assert _effective(db, include_agent=False) == [("ci.passed", "plugin:ci"), ("reverted", "cli")]
     _rec(db, "s1", "pr.merged", ref=PR, recorder="plugin:gh", observed_at=1_700_000_200.0)  # cli and plugins share
     assert _effective(db, include_agent=False) == [("pr.merged", "plugin:gh"), ("ci.passed", "plugin:ci")]
+
+
+@pytest.mark.parametrize("legacy,dotted", [
+    ("merged", "pr.reverted"), ("reverted", "pr.merged"), ("review_accepted", "review.rejected"),
+    ("review_rejected", "review.accepted"), ("ci_passed", "ci.failed"), ("ci_failed", "ci.passed"),
+    ("ticket_closed", "task.reopened"), ("ticket_reopened", "task.done"),
+])
+def test_unprefixed_and_dotted_spellings_fold_into_one_domain(db, legacy, dotted):
+    """A backfill in the old spelling and a poller in the new one must not both stay effective."""
+    old = _rec(db, "s1", legacy, ref=PR, observed_at=1_700_000_000.0)
+    new = _rec(db, "s1", dotted, ref=PR, observed_at=1_700_000_100.0)
+    assert old["domain"] == new["domain"] == dotted.split(".")[0]
+    assert [(o["signal"], o["domain"]) for o in db.list_session_outcomes("s1")] == [(dotted, new["domain"])]
+
+
+def test_an_open_signal_without_a_dot_is_its_own_domain(db):
+    _rec(db, "s1", "deploy", verdict="good", ref=PR, observed_at=1_700_000_000.0)
+    _rec(db, "s1", "deploy.rolled_back", verdict="bad", ref=PR, observed_at=1_700_000_100.0)
+    _rec(db, "s1", "deployed", verdict="good", ref=PR, observed_at=1_700_000_200.0)
+    assert [(o["signal"], o["domain"]) for o in db.list_session_outcomes("s1")] == [
+        ("deployed", "deployed"), ("deploy.rolled_back", "deploy")]
+
+
+def test_rows_written_before_supersession_read_and_supersede(tmp_path):
+    """A store whose rows were written with the first table shape (no domain anywhere) opens, reads and
+    supersedes: domain is derived from the signal on read, so no column has to be added to existing rows."""
+    path = tmp_path / "state.db"
+    db = SessionDB(db_path=path)
+    db.create_session("old", source="cli")
+    db.close()
+    with sqlite3.connect(path) as legacy:
+        legacy.execute("INSERT INTO session_outcomes (session_id, signal, verdict, source, recorder, ref, note, "
+                       "observed_at, recorded_at) VALUES ('old', 'merged', 'good', 'github', 'cli', ?, '', ?, ?)",
+                       (PR, 1_700_000_000.0, 1_700_000_000.0))
+    db = SessionDB(db_path=path)
+    try:
+        assert [(o["signal"], o["domain"]) for o in db.list_session_outcomes("old")] == [("merged", "pr")]
+        _rec(db, "old", "pr.reverted", ref=PR, observed_at=1_700_000_100.0)
+        assert [o["signal"] for o in db.list_session_outcomes("old")] == ["pr.reverted"]
+        assert [o["effective"] for o in db.list_session_outcomes("old", all_rows=True)] == [True, False]
+    finally:
+        db.close()
 
 
 def test_list_rejects_a_non_positive_limit(db):

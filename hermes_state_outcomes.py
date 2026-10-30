@@ -33,7 +33,9 @@ DEFAULT_VERDICTS: dict[str, str] = {
 }
 DEFAULT_VERDICTS.update({old: DEFAULT_VERDICTS[new] for old, new in _LEGACY_SIGNALS.items()})
 OUTCOME_VERDICTS = ("good", "bad", "neutral")
-OUTCOME_COLUMNS = ("id", "session_id", "signal", "domain", "verdict", "source", "recorder", "ref", "note",
+# Stored columns. ``domain`` is derived from ``signal`` on every read (``_DOMAIN_SQL``), not stored, so a
+# store written before supersession existed needs no column added to its rows.
+OUTCOME_COLUMNS = ("id", "session_id", "signal", "verdict", "source", "recorder", "ref", "note",
                    "observed_at", "recorded_at")
 MAX_OUTCOME_REF_CHARS = 512
 MAX_OUTCOME_NOTE_CHARS = 500
@@ -49,11 +51,20 @@ _SEED_SQL = (f"SELECT CASE WHEN {_DELEGATE_OF.format(a='s')} = s.parent_session_
 # Every segment of the compression lineage, plus delegate subagents run from any of them.
 _SCOPE_SQL = (f"{_LINEAGE_CTE_SQL},\n scope(id) AS (SELECT id FROM lineage UNION SELECT c.id FROM sessions c "
               f"JOIN lineage l ON c.parent_session_id = l.id WHERE {_DELEGATE_OF.format(a='c')} = l.id)\n")
+
+
+def _domain_sql(alias: str) -> str:
+    """SQL twin of :func:`outcome_domain` over ``<alias>.signal`` (legacy names folded, else the prefix)."""
+    legacy = " ".join(f"WHEN '{old}' THEN '{new.split('.', 1)[0]}'" for old, new in _LEGACY_SIGNALS.items())
+    return f"CASE {alias}.signal {legacy} ELSE substr({alias}.signal, 1, instr({alias}.signal || '.', '.') - 1) END"
+
+
 # ``head`` is the id of the row's artifact's effective row; an empty ref is its own artifact. The
 # ``recorder = 'agent'`` partition term keeps agent rows from covering, or being covered by, anyone else's.
 _RANKED_SQL = ("ranked AS (SELECT o.*, CASE WHEN o.ref = '' THEN o.id ELSE first_value(o.id) OVER (PARTITION BY "
                "o.session_id, o.source, o.domain, o.ref, o.recorder = 'agent' ORDER BY o.observed_at DESC, o.id DESC) "
-               "END AS head FROM session_outcomes o {where})")
+               f"END AS head FROM (SELECT *, {_domain_sql('session_outcomes')} AS domain FROM session_outcomes) o "
+               "{where})")
 
 
 def _missing_outcomes_table(exc: sqlite3.OperationalError) -> bool:
@@ -73,8 +84,8 @@ def _validate_outcome(signal, verdict, source, recorder, ref, note, observed_at)
                          f"^{_LABEL}$ (for example 'review.comment_applied') and give a verdict.")
     verdict = verdict or DEFAULT_VERDICTS.get(signal)
     if verdict is None:
-        raise ValueError(f"Outcome signal {signal!r} has no default verdict: give one of "
-                         f"{', '.join(OUTCOME_VERDICTS)} (--verdict).")
+        raise ValueError(f"Outcome signal {signal!r} has no default verdict: a signal matching ^{_LABEL}$ "
+                         f"needs --verdict ({', '.join(OUTCOME_VERDICTS)}) unless it is a well-known one.")
     if verdict not in OUTCOME_VERDICTS:
         raise ValueError(f"Outcome verdict {verdict!r} is invalid: use one of {', '.join(OUTCOME_VERDICTS)}.")
     if not isinstance(source, str) or not _SOURCE_RE.fullmatch(source):
@@ -116,13 +127,13 @@ class SessionOutcomesMixin:
             if conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone() is None:
                 raise ValueError(f"Unknown session {session_id!r}: see `hermes sessions list`.")
             row = conn.execute(
-                f"INSERT INTO session_outcomes ({', '.join(OUTCOME_COLUMNS[1:])}) VALUES (?,?,?,?,?,?,?,?,?,?) "
+                f"INSERT INTO session_outcomes ({', '.join(OUTCOME_COLUMNS[1:])}) VALUES (?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT (session_id, signal, source, ref, recorder) DO UPDATE SET verdict = excluded.verdict, "
                 "note = excluded.note, observed_at = excluded.observed_at, recorded_at = excluded.recorded_at "
                 f"RETURNING {', '.join(OUTCOME_COLUMNS)}",
-                (session_id, signal, outcome_domain(signal), verdict, source, recorder, ref, note, observed_at,
+                (session_id, signal, verdict, source, recorder, ref, note, observed_at,
                  time.time())).fetchone()
-            return dict(zip(OUTCOME_COLUMNS, row))
+            return {**dict(zip(OUTCOME_COLUMNS, row)), "domain": outcome_domain(signal)}
         return self._execute_write(_write)
 
     def delete_session_outcome(self, outcome_id: int, *, recorder: Optional[str] = None) -> bool:
@@ -151,7 +162,7 @@ class SessionOutcomesMixin:
             if param is not None:
                 clauses.append(f" AND {clause}")
                 params.append(param)
-        tail = (f"SELECT {', '.join(OUTCOME_COLUMNS)}, head = id AS effective, NULLIF(head, id) AS superseded_by "
+        tail = (f"SELECT {', '.join(OUTCOME_COLUMNS)}, domain, head = id AS effective, NULLIF(head, id) AS superseded_by "
                 f"FROM ranked WHERE 1{''.join(clauses)} ORDER BY observed_at DESC, id DESC LIMIT ?")
 
         def _read(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -189,7 +200,8 @@ class SessionOutcomesMixin:
         found: dict[str, list[dict]] = {}
         try:
             for chunk in _id_chunks(sorted(set(session_ids))):
-                for row in self._read_all(f"SELECT {', '.join(OUTCOME_COLUMNS)} FROM session_outcomes WHERE "
+                for row in self._read_all(f"SELECT {', '.join(OUTCOME_COLUMNS)}, {_domain_sql('session_outcomes')} AS domain "
+                                          "FROM session_outcomes WHERE "
                                           f"session_id IN ({','.join('?' * len(chunk))}) ORDER BY id", chunk):
                     found.setdefault(row["session_id"], []).append(dict(row))
         except sqlite3.OperationalError as exc:
@@ -212,11 +224,11 @@ class SessionOutcomesMixin:
             recorded_at = o.get("recorded_at")
             if not isinstance(recorded_at, (int, float)) or isinstance(recorded_at, bool) or not math.isfinite(recorded_at):
                 recorded_at = observed_at
-            rows.append((fields["signal"], outcome_domain(fields["signal"]), verdict, fields["source"],
+            rows.append((fields["signal"], verdict, fields["source"],
                          fields["recorder"], fields["ref"], fields["note"], observed_at, float(recorded_at)))
         return rows
 
     @staticmethod
     def _insert_import_outcomes(conn: sqlite3.Connection, session_id: str, rows: list[tuple]) -> None:
         conn.executemany(f"INSERT OR IGNORE INTO session_outcomes ({', '.join(OUTCOME_COLUMNS[1:])}) "
-                         "VALUES (?,?,?,?,?,?,?,?,?,?)", [(session_id, *row) for row in rows])
+                         "VALUES (?,?,?,?,?,?,?,?,?)", [(session_id, *row) for row in rows])

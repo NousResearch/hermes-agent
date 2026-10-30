@@ -682,7 +682,9 @@ def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str
                 else:
                     logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
             else:
-                safe_servers[name] = dict(cfg)
+                # Render ${VAR} here like native servers: reconnects re-read this dict via
+                # _load_mcp_config(), and a literal placeholder fails closed (_require_rendered_remote).
+                safe_servers[name] = _interpolate_env_vars(dict(cfg))
     except Exception:
         logger.debug("Failed to load portable MCP servers", exc_info=True)
 

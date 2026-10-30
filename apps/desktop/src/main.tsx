@@ -90,8 +90,13 @@ if (winParam === 'overlay') {
 } else {
   // CSS animations do not inherit Chromium's JS-loop pause policy. Mirror the
   // main window's visibility state to :root so decorative infinite
-  // animations stop producing frames when nobody can see them.
-  installRendererAnimationPauseState()
+  // animations stop producing frames when nobody can see them. Focus counts
+  // as "nobody can see them": a visible-but-backgrounded window is not
+  // occluded, so Chromium keeps painting those animations at display cadence —
+  // measured 30-50% of a core across the renderer + GPU helper with the window
+  // sitting behind another app. Streamed text still lands (the delta flush is
+  // timer-driven, not frame-driven).
+  installRendererAnimationPauseState({ pauseWhenUnfocused: true })
 
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

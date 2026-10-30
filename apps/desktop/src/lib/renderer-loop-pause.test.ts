@@ -28,4 +28,23 @@ describe('installRendererAnimationPauseState', () => {
     dispose()
     expect(document.documentElement.hasAttribute(RENDERER_ANIMATIONS_PAUSED_ATTRIBUTE)).toBe(false)
   })
+
+  it('pauses decorative animations while the window is visible but unfocused when asked to', () => {
+    let focused = true
+    vi.spyOn(document, 'hasFocus').mockImplementation(() => focused)
+
+    const dispose = installRendererAnimationPauseState({ pauseWhenUnfocused: true })
+    expect(document.documentElement.hasAttribute(RENDERER_ANIMATIONS_PAUSED_ATTRIBUTE)).toBe(false)
+
+    focused = false
+    window.dispatchEvent(new Event('blur'))
+    expect(document.documentElement.hasAttribute(RENDERER_ANIMATIONS_PAUSED_ATTRIBUTE)).toBe(true)
+
+    focused = true
+    window.dispatchEvent(new Event('focus'))
+    expect(document.documentElement.hasAttribute(RENDERER_ANIMATIONS_PAUSED_ATTRIBUTE)).toBe(false)
+
+    dispose()
+    expect(document.documentElement.hasAttribute(RENDERER_ANIMATIONS_PAUSED_ATTRIBUTE)).toBe(false)
+  })
 })

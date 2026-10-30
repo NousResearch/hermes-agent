@@ -59,13 +59,25 @@ export function createRendererLoopPauseController(onChange: () => void, { pauseW
  * CSS animations can sleep with the JS renderer loops. The caller owns the
  * returned cleanup; overlay windows intentionally do not install this state.
  */
-export function installRendererAnimationPauseState(): () => void {
+export interface RendererAnimationPauseOptions {
+  /** Also stop decorative animations while the window is visible but has no
+   *  keyboard focus. Chromium only throttles an occluded/minimized page, so a
+   *  visible-but-backgrounded main window otherwise paints every infinite
+   *  animation (session arcs, shimmer, spinners) at display cadence — measured
+   *  at 30-50% of a core with the window behind another app. Defaults to false
+   *  so overlays and callers that want the old always-animate look opt out. */
+  pauseWhenUnfocused?: boolean
+}
+
+export function installRendererAnimationPauseState({
+  pauseWhenUnfocused = false
+}: RendererAnimationPauseOptions = {}): () => void {
   const root = document.documentElement
   let controller: ReturnType<typeof createRendererLoopPauseController>
 
   const sync = () => root.toggleAttribute(RENDERER_ANIMATIONS_PAUSED_ATTRIBUTE, controller.isPaused())
 
-  controller = createRendererLoopPauseController(sync)
+  controller = createRendererLoopPauseController(sync, { pauseWhenUnfocused })
   sync()
 
   return () => {

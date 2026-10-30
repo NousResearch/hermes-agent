@@ -16,6 +16,7 @@ type ProbeStatus = 'idle' | 'probing' | 'done' | 'error'
 
 export interface RemoteCredentials {
   url: string
+  sshTunnel?: { host: string } | null
   authMode: AuthMode
   token: string
   tokenSet: boolean
@@ -55,6 +56,7 @@ export interface RemoteSetup {
   setUrl: (url: string) => void
   setToken: (token: string) => void
   setAuthMode: (mode: AuthMode) => void
+  setSshTunnel: (tunnel: { host: string } | null | undefined) => void
   reset: (saved?: Partial<RemoteCredentials>) => void
   signIn: () => Promise<void>
   signOut: () => Promise<void>
@@ -63,6 +65,16 @@ export interface RemoteSetup {
 
 function credentialsFrom(saved: Partial<RemoteCredentials> = {}): RemoteCredentials {
   return { url: '', authMode: 'token', token: '', tokenSet: false, tokenPreview: null, oauthConnected: false, ...saved }
+}
+
+function remoteSetupPayload(credentials: RemoteCredentials, url: string): DesktopConnectionConfigInput {
+  return {
+    mode: 'remote',
+    remoteAuthMode: credentials.authMode,
+    remoteToken: credentials.authMode === 'token' ? credentials.token.trim() || undefined : undefined,
+    remoteUrl: url,
+    ...(credentials.sshTunnel !== undefined ? { sshTunnel: credentials.sshTunnel } : {})
+  }
 }
 
 /**
@@ -89,6 +101,7 @@ export function useRemoteSetup(options: RemoteSetupOptions): RemoteSetup {
     enabled: probeEnabled,
     url,
     revision,
+    sshTunnel: credentials.sshTunnel,
     onReset: (): void => {
       oauth.clearSigningIn()
       connectionTest.clearTestOutcome()
@@ -107,12 +120,7 @@ export function useRemoteSetup(options: RemoteSetupOptions): RemoteSetup {
     }
   })
 
-  const payload: DesktopConnectionConfigInput = {
-    mode: 'remote',
-    remoteAuthMode: credentials.authMode,
-    remoteToken: credentials.authMode === 'token' ? credentials.token.trim() || undefined : undefined,
-    remoteUrl: url
-  }
+  const payload = remoteSetupPayload(credentials, url)
 
   const { isPassword, providerLabel } = deriveRemoteAuthProviderShape(probe?.providers, t.boot.failure.identityProvider)
 
@@ -142,6 +150,7 @@ export function useRemoteSetup(options: RemoteSetupOptions): RemoteSetup {
   const oauth: RemoteOAuth = useRemoteOAuth({
     host,
     url,
+    payload,
     providerLabel,
     targetSeq,
     beforeOAuthLogin: (value: DesktopConnectionConfigInput): Promise<void> | undefined =>
@@ -185,6 +194,12 @@ export function useRemoteSetup(options: RemoteSetupOptions): RemoteSetup {
     setRevision(value => value + 1)
   }
 
+  const setSshTunnel = (sshTunnel: { host: string } | null | undefined): void => {
+    invalidateTarget()
+    setCredentials(current => ({ ...current, sshTunnel, oauthConnected: false }))
+    setRevision(value => value + 1)
+  }
+
   return {
     host,
     credentials,
@@ -202,6 +217,7 @@ export function useRemoteSetup(options: RemoteSetupOptions): RemoteSetup {
     setUrl,
     setToken,
     setAuthMode,
+    setSshTunnel,
     reset,
     signIn: oauth.signIn,
     signOut: oauth.signOut,

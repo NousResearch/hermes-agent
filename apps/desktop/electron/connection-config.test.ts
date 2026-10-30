@@ -190,6 +190,21 @@ test('profileRemoteOverride preserves an explicit oauth auth mode', () => {
   assert.equal(profileRemoteOverride(config, 'coder').authMode, 'oauth')
 })
 
+test('profileRemoteOverride preserves the optional SSH tunnel', () => {
+  const config = {
+    profiles: {
+      coder: {
+        mode: 'remote',
+        url: 'http://127.0.0.1:9119',
+        authMode: 'oauth',
+        sshTunnel: { host: 'alice@gw-host' }
+      }
+    }
+  }
+
+  assert.deepEqual(profileRemoteOverride(config, 'coder')?.sshTunnel, { host: 'alice@gw-host' })
+})
+
 test('profileRemoteOverride preserves normalized remote headers', () => {
   const config = {
     profiles: {

@@ -149,6 +149,7 @@ import {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  buildSshBlock,
   connectionScopeKey,
   cookiesHaveLiveSession,
   cookiesHaveSession,
@@ -326,6 +327,14 @@ import type { InstallStamp } from './install-stamp'
 import { createKeepAwakeController } from './keep-awake-controller'
 import { launchBuildIdentity } from './launch-build-identity'
 import { applyLaunchProfileOverride } from './launch-profile'
+import {
+  buildLegacyRemoteBlock,
+  legacyRemoteTunnelFields,
+  legacyRemoteTunnelFieldsForMode,
+  safeLegacyRemoteTunnelFields,
+  sanitizedLegacyRemoteTunnel,
+  savedLegacyTunnelConnectionId
+} from './legacy-remote-config'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import {
@@ -509,6 +518,12 @@ import {
   rememberConnectionInstallId
 } from './registry-backend-identity'
 import { releaseHolderRetry } from './release-holder-consent'
+import {
+  remoteGatewayTunnelLoginSource,
+  RemoteGatewayTunnels,
+  remoteGatewayTunnelScope,
+  type TunnelSource
+} from './remote-gateway-tunnel'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
@@ -6917,12 +6932,15 @@ const oauthSessionsByPartition = new Map()
 
 function resolveOauthPartitionForUrl(url, { connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}) {
   try {
+    const [registry, config] = [readDesktopConnectionsRegistry(), readDesktopConnectionConfig()]
+    const savedTunnelId = () => savedLegacyTunnelConnectionId(url, config, registry)
+
     return resolveOauthPartition(url, {
-      connectionId,
+      connectionId: remoteGatewayTunnels.connectionIdForUrl(url) || connectionId || savedTunnelId(),
       pendingAuthMode,
       pendingKind,
-      registry: readDesktopConnectionsRegistry(),
-      v1RemoteUrl: readDesktopConnectionConfig()?.remote?.url
+      registry,
+      v1RemoteUrl: config?.remote?.url
     })
   } catch {
     // A broken registry read must never take cookie auth down with it.
@@ -8363,6 +8381,8 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
       cleaned.headers = headers
     }
 
+    Object.assign(cleaned, safeLegacyRemoteTunnelFields(cleaned.mode, cleaned.url, (entry as any).sshTunnel))
+
     // Preserve the Hermes Cloud org tag on cloud-mode entries so Settings can
     // reopen into the same org for a per-profile cloud connection.
     if (cleaned.mode === 'cloud') {
@@ -8882,6 +8902,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     remoteAuthMode: authMode,
     remoteOauthConnected,
     remoteUrl,
+    sshTunnel: sanitizedLegacyRemoteTunnel(mode, block.sshTunnel),
     // The persisted Hermes Cloud org (slug/id) for a cloud connection, or '' for
     // remote/local. Lets Settings → Gateway reopen into the same org.
     cloudOrg: mode === 'cloud' ? String(block.org || '') : '',
@@ -8920,49 +8941,19 @@ function buildRemoteBlock(
   name?: string,
   remoteProfile?: string
 ) {
-  if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
-    throw new Error('Remote gateway session token is required.')
-  }
-
-  const block: {
-    url: string
-    authMode: string
-    token: object
-    headers?: object
-    org?: string
-    name?: string
-    remoteProfile?: string
-  } = {
-    url: normalizeRemoteBaseUrl(remoteUrl),
-    authMode,
-    token
-  }
-
   const remoteHeaders = normalizeRemoteHeaders(headers)
-
-  if (Object.keys(remoteHeaders).length > 0) {
-    block.headers = remoteHeaders
-  }
-
-  const nameValue = typeof name === 'string' ? name.trim() : ''
-
-  if (nameValue) {
-    block.name = nameValue
-  }
-
-  const orgValue = typeof org === 'string' ? org.trim() : ''
-
-  if (orgValue) {
-    block.org = orgValue
-  }
-
   const remoteProfileName = normalizeRemoteProfileName(remoteProfile)
 
-  if (remoteProfileName) {
-    block.remoteProfile = remoteProfileName.remoteProfile
-  }
-
-  return block
+  return buildLegacyRemoteBlock({
+    remoteUrl,
+    authMode,
+    token,
+    tokenPresent: Boolean(decryptDesktopSecret(token)),
+    headers: Object.keys(remoteHeaders).length > 0 ? remoteHeaders : undefined,
+    org: typeof org === 'string' ? org.trim() : '',
+    name: typeof name === 'string' ? name.trim() : '',
+    remoteProfile: remoteProfileName?.remoteProfile
+  })
 }
 
 function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopConnectionConfig(), options: any = {}) {
@@ -8987,6 +8978,7 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   const leavingSsh = rawExistingBlock.mode === 'ssh' && mode !== 'ssh' && mode !== 'local'
   const existingBlock = leavingCloud || leavingSsh ? {} : rawExistingBlock
   const remoteUrl = String(input.remoteUrl ?? existingBlock.url ?? '').trim()
+  const tunnel = legacyRemoteTunnelFieldsForMode(mode, remoteUrl, input.sshTunnel, existingBlock.sshTunnel)
   // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
   const authMode = resolveAuthMode(input.remoteAuthMode, existingBlock.authMode)
   // Cloud org: only meaningful for 'cloud' mode. Explicit input wins; otherwise
@@ -9049,7 +9041,8 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     if (remoteLike) {
       profiles[key] = {
         mode,
-        ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName, input.remoteProfile)
+        ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName, input.remoteProfile),
+        ...tunnel
       }
     } else {
       const localEntry = localProfileEntry(rawExistingBlock)
@@ -9069,43 +9062,13 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   }
 
   const nextRemote = remoteLike
-    ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName)
+    ? { ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName), ...tunnel }
     : existingMode === 'ssh'
       ? rawExistingBlock
       : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
 
   // Preserve per-profile overrides when saving the global connection.
   return { mode, remote: nextRemote, profiles: existing.profiles || {} }
-}
-
-// Build an SSH connection block from a save payload, preserving an
-// already-adopted dashboard token from the existing block (the token is minted
-// + reconciled at bootstrap, never user-entered). `mode: 'ssh'` is stamped so
-// normalizeSshConfig/profileSshOverride recognize it.
-function buildSshBlock(input: any, existingBlock: any = {}) {
-  // `??` (not `||`) so an explicit '' (user CLEARED the field) wins over the
-  // saved value; only a truly absent (undefined) field inherits.
-  const merged = normalizeSshConfig({
-    mode: 'ssh',
-    host: input.sshHost ?? existingBlock.host,
-    user: input.sshUser ?? existingBlock.user,
-    port: input.sshPort ?? existingBlock.port,
-    keyPath: input.sshKeyPath ?? existingBlock.keyPath,
-    remoteHermesPath: input.sshRemoteHermesPath ?? existingBlock.remoteHermesPath,
-    remoteProfile: input.sshRemoteProfile ?? existingBlock.remoteProfile
-  })
-
-  if (!merged) {
-    throw new Error('SSH host is required.')
-  }
-
-  // Carry forward an already-adopted dashboard token unless the host changed
-  // (a different host invalidates the old dashboard's token).
-  if (existingBlock.token && existingBlock.host === merged.host) {
-    merged.token = existingBlock.token
-  }
-
-  return merged
 }
 
 // Build a remote backend connection descriptor from an already-resolved remote
@@ -9181,6 +9144,22 @@ async function buildRemoteConnection(
 }
 
 const sshConnections = new Map<string, any>()
+const remoteGatewayTunnels = new RemoteGatewayTunnels({ rememberLog: sshRememberLog })
+
+// An unsaved tunnelled draft reconciles in memory: its id keys the tunnel and its own cookie jar.
+function legacyRemoteDraftSource(rawUrl: unknown, sshTunnel: unknown): TunnelSource {
+  const url = normalizeRemoteBaseUrl(rawUrl)
+
+  if (!sshTunnel) {
+    return { url }
+  }
+
+  const remote = { url, authMode: 'oauth', ...legacyRemoteTunnelFields('remote', url, sshTunnel) }
+  const registry = reconcileAppliedGlobalConnection(readDesktopConnectionsRegistry(), { mode: 'remote', remote })
+  const entry = registry.connections.find(connection => connection.id === registry.primary)
+
+  return entry ? { ...entry, url } : { url }
+}
 
 const sshIsolatedKeepalives = createSshIsolatedKeepaliveRegistry({
   log: chunk => sshRememberLog(chunk)
@@ -10047,15 +10026,17 @@ async function resolveRemoteBackend(
     const token =
       route.authMode === 'oauth' ? null : route.source === 'env' ? route.token : decryptDesktopSecret(route.token)
 
-    connection = await buildRemoteConnection(
-      route.url,
-      route.authMode,
-      token,
-      route.source,
-      undefined,
-      route.kind === 'cloud' ? 'cloud' : 'url',
-      undefined,
-      route.headers
+    connection = await remoteGatewayTunnels.connect(route, remoteGatewayTunnelScope(options.poolKey, profileKey), url =>
+      buildRemoteConnection(
+        url,
+        route.authMode,
+        token,
+        route.source,
+        route.sshTunnel?.host,
+        route.kind === 'cloud' ? 'cloud' : 'url',
+        undefined,
+        route.headers
+      )
     )
   }
 
@@ -10203,7 +10184,7 @@ async function probeRemoteAuthMode(rawUrl) {
   }
 }
 
-async function testDesktopConnectionConfig(input: any = {}) {
+async function testDesktopConnectionConfig(input: any = {}): Promise<any> {
   if (input.mode === 'ssh') {
     const sshConfig = normalizeSshConfig({
       mode: 'ssh',
@@ -10323,38 +10304,9 @@ async function testDesktopConnectionConfig(input: any = {}) {
     testHeaders = remote.headers || {}
   }
 
-  const status = (await fetchConnectionStatus(baseUrl, authMode, token, testHeaders)) as any
+  const source = legacyRemoteDraftSource(baseUrl, block?.sshTunnel)
 
-  // The HTTP status check above proves the backend is reachable, but the chat
-  // surface only works once the renderer's live WebSocket to ``/api/ws``
-  // connects — a separate transport with separate server-side guards (Host/
-  // Origin, ws-ticket/token auth). Validating only the HTTP side produced a
-  // false-positive "reachable" while the real boot still failed with "Could not
-  // connect to Hermes gateway". Mirror the renderer's connect here so the test
-  // reflects the full path the app actually uses.
-  const wsUrl = await resolveTestWsUrl(baseUrl, authMode, token, {
-    mintTicket: url => mintGatewayWsTicket(url, testHeaders)
-  })
-
-  // Skip the WS leg only when the runtime genuinely lacks a WebSocket (so an
-  // older Electron/Node never fails the test spuriously); Electron's main
-  // process ships a global WebSocket on every supported version.
-  if (wsUrl && typeof globalThis.WebSocket === 'function') {
-    const probe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket, headers: testHeaders })
-
-    if (!probe.ok) {
-      throw new Error(
-        `Reached the gateway over HTTP, but the live WebSocket (/api/ws) connection failed: ${probe.reason} ` +
-          'The HTTP check can pass while the WebSocket is blocked by a proxy, firewall, or gateway auth/origin guard.'
-      )
-    }
-  }
-
-  return {
-    ok: true,
-    baseUrl,
-    version: status?.version || null
-  }
+  return remoteGatewayTunnels.run(source, 'test', url => probeConnection(source.id || '', url, authMode, token, testHeaders))
 }
 
 async function fetchConnectionStatus(baseUrl, authMode, token, headers = {}) {
@@ -10404,6 +10356,7 @@ function invalidatePrimaryConnection() {
 // startHermes() spawns fresh instead of racing the dying one. Shared by the
 // connection-config and profile switch flows.
 async function teardownPrimaryBackendAndWait({ soft = false }: { soft?: boolean } = {}): Promise<void> {
+  await remoteGatewayTunnels.releaseScope(remoteGatewayTunnelScope('', primaryProfileKey()))
   const stopping = backendConnectionState.stopProcess(localBackendLifecycle.stop)
 
   if (soft) {
@@ -10874,18 +10827,21 @@ async function connectRegistryBackend(
   // renderer-side WS minting and REST scoping target the right agent.
   const token = source.authMode === 'oauth' ? null : decryptDesktopSecret(source.token)
 
-  const connection = await buildRemoteConnection(
-    source.url,
-    normAuthMode(source.authMode),
-    token,
-    `registry:${source.id}`,
-    undefined,
-    source.kind === 'cloud' ? 'cloud' : 'url',
-    undefined,
-    source.headers
-  )
+  const connection = await remoteGatewayTunnels.connect(source, key, async url => {
+    const descriptor = await buildRemoteConnection(
+      url,
+      normAuthMode(source.authMode),
+      token,
+      `registry:${source.id}`,
+      source.sshTunnel?.host,
+      source.kind === 'cloud' ? 'cloud' : 'url',
+      undefined,
+      source.headers
+    )
 
-  await waitForRemoteHermes(connection)
+    return waitForRemoteHermes(descriptor).then(() => descriptor)
+  })
+
   poolEntry.remoteBaseUrl = connection.baseUrl
 
   // Remote/cloud backends live on another host too — disable the WSL path
@@ -11397,6 +11353,7 @@ async function resumeManagedSshRecoveries() {
 // Stop every pooled backend and ssh scope owned by a registry connection —
 // called when the connection is removed from the registry.
 async function stopRegistryConnectionBackends(connectionId) {
+  await remoteGatewayTunnels.closeOne(connectionId)
   const prefix = backendScopePrefix(connectionId)
 
   for (const key of [...backendPool.keys()]) {
@@ -11560,6 +11517,7 @@ async function restartAttachedLocalGateway(profile: string): Promise<void> {
 // funnels through here so the verb stays in one place.
 async function stopPoolBackend(profile: string) {
   backendPool.delete(profile)
+  await remoteGatewayTunnels.releaseScope(profile)
 }
 
 // Profile delete/rename also drops a per-profile SSH remote's tunnel/server
@@ -11581,6 +11539,7 @@ async function teardownPoolBackendAndWait(profile) {
 }
 
 async function stopAllPoolBackends() {
+  await remoteGatewayTunnels.releaseScopes(backendPool.keys())
   backendPool.clear()
 }
 
@@ -14755,11 +14714,19 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
     }
   }
 
+  return remoteGatewayTunnels.run({ ...entry, url: baseUrl }, 'test', url =>
+    probeConnection(entry.id, url, authMode, token, testHeaders)
+  )
+})
+
+async function probeConnection(connectionId: string, baseUrl: string, authMode, token, testHeaders) {
   const status = (await fetchConnectionStatus(baseUrl, authMode, token, testHeaders)) as any
 
   // The Test button is the cheapest moment to (re)learn this backend's stable
   // identity for the same-backend roster collapse + Settings hint.
-  rememberConnectionInstallId(entry.id, status)
+  if (connectionId) {
+    rememberConnectionInstallId(connectionId, status)
+  }
 
   // Same HTTP+WS two-leg check as testDesktopConnectionConfig: HTTP alone is
   // a false positive when the WebSocket leg is blocked.
@@ -14779,7 +14746,7 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
   }
 
   return { ok: true, baseUrl, version: status?.version || null }
-})
+}
 
 // ── Union agent roster + registry ws-url + fan-out updates (phase 3-5) ─────
 
@@ -15298,7 +15265,9 @@ async function fetchJsonForBackend(
   })
 }
 
-ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
+ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl, options) =>
+  remoteGatewayTunnels.run(legacyRemoteDraftSource(rawUrl, options?.sshTunnel), 'probe', probeRemoteAuthMode)
+)
 ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, rawOpts) => {
   // Capability-gated login (RFC 8252). Probe the gateway's public /api/status
   // for supported auth_flows and /api/auth/providers for provider capabilities:
@@ -15312,8 +15281,6 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, ra
   //   - a failed native login reports the error rather than auto-falling back
   //     to the embedded flow — one sign-in action opens at most one window.
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
-  // Order login attempts without interrupting rotation of the existing session.
-  const authIsCurrent: () => boolean = nativeAccessTokenCoordinator.beginLogin(baseUrl)
 
   // A registry-editor sign-in can run BEFORE the draft connection is saved:
   // settle the id the save will reuse (returned so the renderer pins it into
@@ -15322,16 +15289,25 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, ra
   // legacy shared jar an unmatched URL would fall back to, where the session
   // is both unreadable by the new connection and able to evict a same-host
   // primary's cookie (#92183 isolation hole). '' → URL-matched behavior.
-  let loginConnectionId = ''
+  const registry = readDesktopConnectionsRegistry()
 
-  try {
-    loginConnectionId = connectionIdForPendingLogin({
-      connectionId: rawOpts?.connectionId,
-      label: rawOpts?.label,
-      registry: readDesktopConnectionsRegistry()
-    })
-  } catch {
-    loginConnectionId = ''
+  const legacySource =
+    rawOpts?.sshTunnel && !rawOpts?.label && !rawOpts?.connectionId
+      ? legacyRemoteDraftSource(baseUrl, rawOpts.sshTunnel)
+      : null
+
+  let loginConnectionId = legacySource?.id || legacySource?.connectionId || ''
+
+  if (!loginConnectionId) {
+    try {
+      loginConnectionId = connectionIdForPendingLogin({
+        connectionId: rawOpts?.connectionId,
+        label: rawOpts?.label,
+        registry
+      })
+    } catch {
+      loginConnectionId = ''
+    }
   }
 
   // The draft's intended entry shape (kind/authMode the save will persist).
@@ -15340,8 +15316,29 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, ra
   // cloud or token draft signs in on the legacy jar — the jar the saved
   // entry reads — so login and read can never disagree. Invalid or missing
   // values fail closed to the legacy jar in the resolver.
-  const pendingKind = typeof rawOpts?.kind === 'string' ? rawOpts.kind : ''
-  const pendingAuthMode = typeof rawOpts?.authMode === 'string' ? rawOpts.authMode : ''
+  // A tunnelled Settings/first-run draft is a cookie-auth remote: it signs in on its own jar.
+  const pendingKind = legacySource ? 'remote' : typeof rawOpts?.kind === 'string' ? rawOpts.kind : ''
+  const pendingAuthMode = legacySource ? 'oauth' : typeof rawOpts?.authMode === 'string' ? rawOpts.authMode : ''
+
+  // A tunnelled gateway signs in through its SSH tunnel: the saved URL is the SSH host's loopback.
+  const source = legacySource || remoteGatewayTunnelLoginSource(registry, rawOpts, loginConnectionId, baseUrl)
+
+  return remoteGatewayTunnels.run(source, `login:${loginConnectionId}`, loginUrl =>
+    oauthLoginThrough(loginUrl, {
+      forceEmbedded: Boolean(source.sshTunnel),
+      loginConnectionId,
+      pendingAuthMode,
+      pendingKind
+    })
+  )
+})
+
+async function oauthLoginThrough(
+  baseUrl: string,
+  { forceEmbedded = false, loginConnectionId, pendingAuthMode, pendingKind }
+) {
+  // Order login attempts per dialed URL (each tunnel has its own local origin) without interrupting rotation.
+  const authIsCurrent: () => boolean = nativeAccessTokenCoordinator.beginLogin(baseUrl)
 
   let statusBody: any = null
 
@@ -15355,7 +15352,7 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, ra
   const authRequired = statusBody && authModeFromStatus(statusBody) === 'oauth'
   const providers = authRequired ? await gatewayAuthProviders(baseUrl) : []
 
-  const strategy = resolveLoginStrategy(statusBody, { providers })
+  const strategy = resolveLoginStrategy(statusBody, { forceEmbedded, providers })
 
   // A newer login/logout can finish during the status/provider probes. Do not
   // open a browser or login window for an attempt that no longer owns auth.
@@ -15434,7 +15431,8 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, ra
   }
 
   return { ok: true, baseUrl, connected, connectionId: loginConnectionId || undefined }
-})
+}
+
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
 
@@ -18168,7 +18166,8 @@ app.on('before-quit', event => {
     sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0 || sshTeardowns.hasPending()
 
   const teardownTasks: QuitTeardownTask[] = [
-    { run: (): Promise<void> => backendShutdown.run(), waitForCompletion: backendNeedsWait }
+    { run: (): Promise<void> => backendShutdown.run(), waitForCompletion: backendNeedsWait },
+    { run: (): Promise<void> => remoteGatewayTunnels.closeAll(), waitForCompletion: remoteGatewayTunnels.hasOpen() }
   ]
 
   if (sshNeedsWait) {

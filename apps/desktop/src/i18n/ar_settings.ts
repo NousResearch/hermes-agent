@@ -1,5 +1,6 @@
 import { arDelegationRouting } from './ar_delegation_routing'
 import { arMemoryLayers } from './ar_memory_layers'
+import { arSshTunnel } from './ar_ssh_tunnel'
 import { arUpdateChannel } from './ar_update_channel'
 import type { TranslationOverrides } from './define-locale'
 
@@ -45,6 +46,7 @@ export const arSettings = {
         }
       }
     },
+    connections: { sshTunnel: arSshTunnel },
     subpages: {
       appearanceTheme: 'السمة',
       appearanceTypography: 'الخطوط والتحجيم',

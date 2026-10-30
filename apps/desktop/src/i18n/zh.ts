@@ -23,6 +23,7 @@ import { zhPluginUpdate } from './zh_plugin_update'
 import { zhPreviewWeb } from './zh_preview_web'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
+import { zhSshTunnel } from './zh_ssh_tunnel'
 import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
@@ -1129,9 +1130,7 @@ export const zhOverrides = {
           sampleRate: '音频采样率（Hz）。越高音质越好、文件越大。',
           bitRate: 'MP3 比特率（bps）。仅当编码为 mp3 时生效。'
         },
-        neutts: {
-          device: 'NeuTTS 的本地推理设备。'
-        }
+        neutts: { device: 'NeuTTS 的本地推理设备。' }
       },
       updates: {
         nonInteractiveLocalChanges:
@@ -1320,6 +1319,7 @@ export const zhOverrides = {
     },
     // v2 多连接注册表：设置 → 网关。
     connections: {
+      sshTunnel: zhSshTunnel,
       title: '已注册网关',
       intro: '管理本机以及通过远程、SSH 或 Hermes Cloud 连接可访问的每个 Hermes 网关。',
       stagedNote:

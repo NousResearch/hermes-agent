@@ -8,6 +8,7 @@
 
 import { normalizeRemoteBaseUrl, normalizeRemoteHeaders, normalizeSshConfig, normAuthMode } from './connection-config'
 import type { ConnectionRegistry, RegistryConnection } from './connection-registry'
+import { type RemoteGatewayTunnelConfig, remoteGatewayTunnelKey } from './remote-gateway-tunnel'
 
 interface SshRouteConfig {
   host: string
@@ -25,6 +26,7 @@ export type StoredRoute =
       headers?: Record<string, unknown>
       kind: 'cloud' | 'remote'
       org?: unknown
+      sshTunnel?: RemoteGatewayTunnelConfig
       token?: unknown
       url?: unknown
     }
@@ -81,7 +83,8 @@ function routeIdentity(route: StoredRoute): null | string {
       kind: route.kind,
       org: route.kind === 'cloud' ? String(route.org || '').trim() : '',
       token: authMode === 'token' ? (route.token ?? null) : null,
-      url: normalizeRemoteBaseUrl(route.url)
+      url: normalizeRemoteBaseUrl(route.url),
+      sshTunnel: remoteGatewayTunnelKey(route.sshTunnel)
     })
   } catch {
     return null

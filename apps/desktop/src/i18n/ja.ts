@@ -24,6 +24,7 @@ import { jaPluginSettings, jaPluginsTab } from './ja_plugins'
 import { jaPreviewWeb } from './ja_preview_web'
 import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
+import { jaSshTunnel } from './ja_ssh_tunnel'
 import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
 
@@ -277,6 +278,7 @@ export const jaOverrides = {
         }
       }
     },
+    connections: { sshTunnel: jaSshTunnel },
     uninstallSection: {
       dangerZone: '危険ゾーン',
       checkingInstalled: 'インストール内容を確認中…',
@@ -694,9 +696,7 @@ export const jaOverrides = {
         maxLines: 'ファイルページ上限',
         maxLineLength: '行長上限'
       },
-      codeExecution: {
-        mode: 'コード実行モード'
-      },
+      codeExecution: { mode: 'コード実行モード' },
       approvals: {
         mode: '承認モード',
         timeout: '承認タイムアウト',

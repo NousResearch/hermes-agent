@@ -26,6 +26,7 @@ import { refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
 
 import { EmptyState, ListRow, Pill, SectionHeading, SettingsBreadcrumbContext, ToggleRow } from './primitives'
+import { hadSshTunnel, type SshTunnelDraft, SshTunnelFields, sshTunnelPayload } from './ssh-tunnel-fields'
 
 const KIND_ICONS: Record<DesktopConnectionKind, typeof Globe> = {
   cloud: Cloud,
@@ -51,6 +52,8 @@ interface EditorState {
   // it. `stored` marks rows hydrated from headerNames so the placeholder can
   // say "saved" instead of demanding a value.
   headers: { name: string; stored: boolean; value: string }[]
+  // Remote gateway reached through an SSH host (the URL is that host's loopback).
+  sshTunnel?: SshTunnelDraft
 }
 
 function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
@@ -58,6 +61,7 @@ function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
     id: conn.id,
     kind: conn.kind,
     label: conn.label,
+    sshTunnel: conn.sshTunnel,
     // Reconstruct the composite the single ssh host field displays. The save
     // payload sends ONLY this string (never separate user/port), because
     // normalizeSshConfig gives explicit user/port fields precedence over the
@@ -119,12 +123,12 @@ export function sshCompositeKey(composite: string): string {
  * The renderer-side duplicate rule, mirrored by the main process
  * (normalizeConnectionInput enforces the same keys in the save path):
  *  - at most ONE local entry, ever;
- *  - remote/cloud entries are duplicates when their normalized URLs match;
+ *  - remote/cloud entries are duplicates when their normalized URLs and SSH tunnel hosts match;
  *  - ssh entries are duplicates on user@host:port + remote profile.
  * Returns the existing entry the candidate collides with, or null.
  */
 export function findDuplicateConnection(
-  editor: Pick<EditorState, 'host' | 'id' | 'kind' | 'remoteProfile'> & { url: string },
+  editor: Pick<EditorState, 'host' | 'id' | 'kind' | 'remoteProfile' | 'sshTunnel'> & { url: string },
   connections: DesktopRegistryConnection[]
 ): DesktopRegistryConnection | null {
   if (editor.kind === 'local') {
@@ -141,7 +145,10 @@ export function findDuplicateConnection(
     return (
       connections.find(
         c =>
-          (c.kind === 'remote' || c.kind === 'cloud') && c.id !== editor.id && normalizeGatewayUrl(c.url || '') === key
+          (c.kind === 'remote' || c.kind === 'cloud') &&
+          c.id !== editor.id &&
+          normalizeGatewayUrl(c.url || '') === key &&
+          sshCompositeKey(c.sshTunnel?.host || '') === sshCompositeKey(editor.sshTunnel?.host || '')
       ) ?? null
     )
   }
@@ -258,7 +265,8 @@ export function ConnectionsRegistrySection() {
       connectionId: editor?.id ?? null,
       label: editor?.label ?? '',
       kind: editor?.kind,
-      authMode: editor?.kind === 'cloud' ? 'oauth' : remoteAuthModeRef.current
+      authMode: editor?.kind === 'cloud' ? 'oauth' : remoteAuthModeRef.current,
+      ...sshTunnelPayload(editor?.kind ?? '', editor?.sshTunnel, hadSshTunnel(registry, editor?.id ?? null))
     }),
     onOAuthLoginSettled: settledId => {
       setEditor(prev => (prev && !prev.id ? { ...prev, id: settledId } : prev))
@@ -348,6 +356,7 @@ export function ConnectionsRegistrySection() {
         if (editor.kind === 'remote' || editor.kind === 'cloud') {
           payload.url = remote.payload.remoteUrl
           payload.authMode = editor.kind === 'cloud' ? 'oauth' : remote.credentials.authMode
+          Object.assign(payload, sshTunnelPayload(editor.kind, editor.sshTunnel, hadSshTunnel(registry, editor.id)))
 
           if (editor.kind === 'remote' && remote.payload.remoteToken) {
             payload.token = remote.payload.remoteToken
@@ -402,16 +411,7 @@ export function ConnectionsRegistrySection() {
         setSaving(false)
       }
     },
-    [
-      bridge,
-      editor,
-      remote.credentials,
-      remote.payload,
-      publishRegistry,
-      registry?.connections,
-      registry?.secureTokenStorage,
-      s
-    ]
+    [bridge, editor, remote.credentials, remote.payload, publishRegistry, registry, s]
   )
 
   const remove = useCallback(async () => {
@@ -745,7 +745,7 @@ export function ConnectionsRegistrySection() {
               urlOnly={editor.kind === 'cloud'}
             />
           )}
-
+          <SshTunnelFields disabled={saving} editor={editor} onChange={setEditor} />
           {editor.kind === 'cloud' && (
             <ListRow
               action={

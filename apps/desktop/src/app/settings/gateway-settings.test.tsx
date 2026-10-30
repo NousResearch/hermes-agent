@@ -90,6 +90,33 @@ afterEach(() => {
 })
 
 describe('GatewaySettings', () => {
+  it('hydrates and saves the v1 Remote SSH tunnel', async () => {
+    const saved = {
+      ...localConnection,
+      mode: 'remote' as const,
+      remoteAuthMode: 'token' as const,
+      remoteTokenSet: true,
+      remoteUrl: 'http://127.0.0.1:9119',
+      sshTunnel: { host: 'alice@gw-host' }
+    }
+
+    getConnectionConfig.mockResolvedValue(saved)
+    saveConnectionConfig.mockResolvedValue(saved)
+    Object.assign(window.hermesDesktop, {
+      probeConnectionConfig: vi.fn().mockResolvedValue({ reachable: true, authMode: 'token', providers: [] })
+    })
+
+    render(<GatewaySettings />)
+    expect((await screen.findByRole('switch', { name: 'Use SSH tunnel' })).getAttribute('aria-checked')).toBe('true')
+    expect((screen.getByRole('textbox', { name: 'SSH host' }) as HTMLInputElement).value).toBe('alice@gw-host')
+    fireEvent.click(screen.getByRole('button', { name: 'Save for next restart' }))
+    await waitFor(() =>
+      expect(saveConnectionConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ sshTunnel: { host: 'alice@gw-host' } })
+      )
+    )
+  })
+
   it('releases a pending save after a late probe invalidates its response', async () => {
     const saved = { ...localConnection, mode: 'remote', remoteUrl: 'https://a.example', remoteTokenSet: true }
     getConnectionConfig.mockResolvedValue(saved)

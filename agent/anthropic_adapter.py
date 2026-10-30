@@ -21,7 +21,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
 
@@ -1542,6 +1542,81 @@ _OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
 def _get_hermes_oauth_file() -> Path:
     return get_hermes_home() / ".anthropic_oauth.json"
+
+
+def _get_shared_hermes_oauth_file() -> Path:
+    """Return the profile-independent Hermes PKCE credential store."""
+    root = get_default_hermes_root()
+    home = get_hermes_home()
+    # Custom/container HERMES_HOME values are their own installation root, not
+    # profiles beneath the user's default root. This also keeps isolated test
+    # homes from publishing credentials into the real user's store.
+    try:
+        if home != root and root not in home.parents:
+            root = home
+    except (AttributeError, TypeError):
+        root = home
+    return root / ".anthropic_oauth.json"
+
+
+def read_shared_hermes_oauth_credentials(label: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Read one shared Hermes PKCE grant without falling back to a profile file."""
+    oauth_file = _get_shared_hermes_oauth_file()
+    if not oauth_file.exists():
+        return None
+    try:
+        data = json.loads(oauth_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        if label is not None:
+            data = data.get("grants", {}).get(label) if isinstance(data.get("grants"), dict) else None
+        return data if isinstance(data, dict) and data.get("accessToken") else None
+    except (json.JSONDecodeError, OSError, IOError) as exc:
+        logger.debug("Failed to read shared Hermes OAuth credentials: %s", exc)
+        return None
+
+
+def write_shared_hermes_oauth_credentials(
+    credentials: Dict[str, Any], label: Optional[str] = None
+) -> bool:
+    """Atomically publish a labelled PKCE grant for all profiles."""
+    path = _get_shared_hermes_oauth_file()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.chmod(0o700)
+    except OSError as exc:
+        logger.debug("Failed to secure shared Hermes OAuth directory: %s", exc)
+        return False
+    try:
+        from hermes_cli.auth import _auth_store_lock
+
+        with _auth_store_lock(target_path=path):
+            tmp = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
+            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
+            try:
+                payload = credentials
+                if label is not None:
+                    existing = {}
+                    if path.exists():
+                        try:
+                            loaded = json.loads(path.read_text(encoding="utf-8"))
+                            if isinstance(loaded, dict) and isinstance(loaded.get("grants"), dict):
+                                existing = loaded["grants"]
+                        except (OSError, json.JSONDecodeError):
+                            pass
+                    existing[label] = credentials
+                    payload = {"grants": existing}
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh, indent=2)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, path)
+            finally:
+                tmp.unlink(missing_ok=True)
+    except (OSError, IOError, TimeoutError) as exc:
+        logger.debug("Failed to write shared Hermes OAuth credentials: %s", exc)
+        return False
+    return True
 
 
 def _generate_pkce() -> tuple:

@@ -21,6 +21,7 @@ from agent.credential_pool import (
     STRATEGY_LEAST_USED,
     PooledCredential,
     _exhausted_until,
+    _migrate_legacy_hermes_pkce_entries,
     _normalize_custom_pool_name,
     get_pool_strategy,
     label_from_token,
@@ -110,6 +111,8 @@ def _api_key_default_label(count: int) -> str:
 
 
 def _display_source(source: str) -> str:
+    if source == "hermes_pkce_shared":
+        return "hermes_pkce (shared)"
     return source.split(":", 1)[1] if source.startswith("manual:") else source
 
 
@@ -231,13 +234,23 @@ def auth_add_command(args) -> None:
             creds["access_token"],
             _oauth_default_label(provider, len(pool.entries()) + 1),
         )
+        if not anthropic_mod.write_shared_hermes_oauth_credentials({
+            "accessToken": creds["access_token"],
+            "refreshToken": creds.get("refresh_token"),
+            "expiresAt": creds.get("expires_at_ms"),
+        }, label=label):
+            raise SystemExit("Could not persist shared Anthropic OAuth credentials.")
+        # A successful new login is also the safe point to retire any legacy
+        # copied entry with the same label; leaving it would let stale refresh
+        # tokens win before the shared reference.
+        _migrate_legacy_hermes_pkce_entries(pool._entries)
         entry = PooledCredential(
             provider=provider,
             id=uuid.uuid4().hex[:6],
             label=label,
             auth_type=AUTH_TYPE_OAUTH,
             priority=0,
-            source=f"{SOURCE_MANUAL}:hermes_pkce",
+            source="hermes_pkce_shared",
             access_token=creds["access_token"],
             refresh_token=creds.get("refresh_token"),
             expires_at_ms=creds.get("expires_at_ms"),

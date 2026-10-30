@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_constants import OPENROUTER_BASE_URL, get_default_hermes_root, get_hermes_home
 from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret
 from agent.credential_persistence import (
@@ -602,6 +602,7 @@ class CredentialPool:
         # loop runs unbounded and non-interruptible.  Reset whenever a real
         # entry is identified or an escape path returns None.
         self._unmatched_rotation_streak: int = 0
+        self._missing_shared_oauth_warned = False
 
     def has_credentials(self) -> bool:
         with self._lock:
@@ -773,6 +774,42 @@ class CredentialPool:
                 return updated
         except Exception as exc:
             logger.debug("Failed to sync from credentials file: %s", exc)
+        return entry
+
+    def _sync_anthropic_entry_from_shared_file(self, entry: PooledCredential) -> PooledCredential:
+        """Hydrate a profile-local reference from the shared PKCE grant."""
+        if self.provider != "anthropic" or entry.source != "hermes_pkce_shared":
+            return entry
+        try:
+            from agent.anthropic_adapter import read_shared_hermes_oauth_credentials
+            creds = read_shared_hermes_oauth_credentials(entry.label)
+            if not creds:
+                if not self._missing_shared_oauth_warned:
+                    logger.warning("Anthropic shared OAuth source is missing; skipping credential %s", entry.label)
+                    self._missing_shared_oauth_warned = True
+                return entry
+            self._missing_shared_oauth_warned = False
+            access = creds.get("accessToken", "")
+            refresh = creds.get("refreshToken", "")
+            expires = creds.get("expiresAt")
+            if access and (access != entry.access_token or refresh != entry.refresh_token):
+                updated = replace(
+                    entry,
+                    access_token=access,
+                    refresh_token=refresh or entry.refresh_token,
+                    expires_at_ms=expires or entry.expires_at_ms,
+                    last_status=None,
+                    last_status_at=None,
+                    last_error_code=None,
+                    last_error_reason=None,
+                    last_error_message=None,
+                    last_error_reset_at=None,
+                )
+                self._replace_entry(entry, updated)
+                self._persist()
+                return updated
+        except Exception:
+            logger.debug("Failed to sync Anthropic shared OAuth entry", exc_info=True)
         return entry
 
     def _sync_codex_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
@@ -1138,6 +1175,15 @@ class CredentialPool:
         # resolve_codex_runtime_credentials()).  When a waiter finally acquires
         # the lock, the in-lock re-sync below picks up the rotated token the
         # winner persisted and skips the POST.
+        if self.provider == "anthropic" and entry.source == "hermes_pkce_shared":
+            from agent.anthropic_adapter import _get_shared_hermes_oauth_file
+            with _auth_store_lock(target_path=_get_shared_hermes_oauth_file()):
+                original_refresh = entry.refresh_token
+                entry = self._sync_anthropic_entry_from_shared_file(entry)
+                if entry.refresh_token != original_refresh:
+                    return entry
+                return self._refresh_entry_impl(entry, force=force)
+
         if self.provider in ("openai-codex", "xai-oauth"):
             sync_entry = (
                 self._sync_codex_entry_from_auth_store
@@ -1190,7 +1236,7 @@ class CredentialPool:
 
                 refreshed = refresh_anthropic_oauth_pure(
                     entry.refresh_token,
-                    use_json=entry.source.endswith("hermes_pkce"),
+                    use_json="hermes_pkce" in entry.source,
                 )
                 updated = replace(
                     entry,
@@ -1198,6 +1244,14 @@ class CredentialPool:
                     refresh_token=refreshed["refresh_token"],
                     expires_at_ms=refreshed["expires_at_ms"],
                 )
+                if entry.source == "hermes_pkce_shared":
+                    from agent.anthropic_adapter import write_shared_hermes_oauth_credentials
+                    if not write_shared_hermes_oauth_credentials({
+                        "accessToken": refreshed["access_token"],
+                        "refreshToken": refreshed["refresh_token"],
+                        "expiresAt": refreshed["expires_at_ms"],
+                    }, label=entry.label):
+                        raise OSError("shared Anthropic OAuth publication failed")
                 # Keep ~/.claude/.credentials.json in sync so that the
                 # fallback path (resolve_anthropic_token) and other profiles
                 # see the latest tokens.
@@ -1260,19 +1314,30 @@ class CredentialPool:
                 return entry
         except Exception as exc:
             logger.debug("Credential refresh failed for %s/%s: %s", self.provider, entry.id, exc)
-            # For anthropic claude_code entries: the refresh token may have been
-            # consumed by another process. Check if ~/.claude/.credentials.json
-            # has a newer token pair and retry once.
-            if self.provider == "anthropic" and entry.source == "claude_code":
-                synced = self._sync_anthropic_entry_from_credentials_file(entry)
+            # For Anthropic entries, the refresh token may have been consumed by
+            # another process. Re-read the canonical source and retry once.
+            if self.provider == "anthropic" and entry.source in {"claude_code", "hermes_pkce_shared"}:
+                synced = (
+                    self._sync_anthropic_entry_from_credentials_file(entry)
+                    if entry.source == "claude_code"
+                    else self._sync_anthropic_entry_from_shared_file(entry)
+                )
                 if synced.refresh_token != entry.refresh_token:
-                    logger.debug("Retrying refresh with synced token from credentials file")
+                    logger.debug("Retrying refresh with synced Anthropic token")
                     try:
                         from agent.anthropic_adapter import refresh_anthropic_oauth_pure
                         refreshed = refresh_anthropic_oauth_pure(
                             synced.refresh_token,
-                            use_json=synced.source.endswith("hermes_pkce"),
+                            use_json="hermes_pkce" in synced.source,
                         )
+                        if synced.source == "hermes_pkce_shared":
+                            from agent.anthropic_adapter import write_shared_hermes_oauth_credentials
+                            if not write_shared_hermes_oauth_credentials({
+                                "accessToken": refreshed["access_token"],
+                                "refreshToken": refreshed["refresh_token"],
+                                "expiresAt": refreshed["expires_at_ms"],
+                            }, label=synced.label):
+                                raise OSError("shared Anthropic OAuth publication failed")
                         updated = replace(
                             synced,
                             access_token=refreshed["access_token"],
@@ -1284,21 +1349,20 @@ class CredentialPool:
                         )
                         self._replace_entry(synced, updated)
                         self._persist()
-                        try:
-                            from agent.anthropic_adapter import _write_claude_code_credentials
-                            _write_claude_code_credentials(
-                                refreshed["access_token"],
-                                refreshed["refresh_token"],
-                                refreshed["expires_at_ms"],
-                            )
-                        except Exception as wexc:
-                            logger.debug("Failed to write refreshed token to credentials file (retry path): %s", wexc)
+                        if synced.source == "claude_code":
+                            try:
+                                from agent.anthropic_adapter import _write_claude_code_credentials
+                                _write_claude_code_credentials(
+                                    refreshed["access_token"],
+                                    refreshed["refresh_token"],
+                                    refreshed["expires_at_ms"],
+                                )
+                            except Exception as wexc:
+                                logger.debug("Failed to write refreshed token to credentials file (retry path): %s", wexc)
                         return updated
                     except Exception as retry_exc:
                         logger.debug("Retry refresh also failed: %s", retry_exc)
                 elif not self._entry_needs_refresh(synced):
-                    # Credentials file had a valid (non-expired) token — use it directly
-                    logger.debug("Credentials file has valid token, using without refresh")
                     return synced
             # For xai-oauth: same race as nous — another process may have
             # consumed the refresh token between our proactive sync and the
@@ -1620,6 +1684,13 @@ class CredentialPool:
             # For anthropic claude_code entries, sync from the credentials file
             # before any status/refresh checks. This picks up tokens refreshed
             # by other processes (Claude Code CLI, other Hermes profiles).
+            if (self.provider == "anthropic" and entry.source == "hermes_pkce_shared"):
+                synced = self._sync_anthropic_entry_from_shared_file(entry)
+                if not synced.access_token:
+                    continue
+                if synced is not entry:
+                    entry = synced
+                    cleared_any = True
             if (self.provider == "anthropic" and entry.source == "claude_code"
                     and entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD}):
                 synced = self._sync_anthropic_entry_from_credentials_file(entry)
@@ -2097,6 +2168,14 @@ class CredentialPool:
 
 
 def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, payload: Dict[str, Any]) -> bool:
+    if source == "hermes_pkce_shared":
+        legacy_indices = [
+            idx for idx, entry in enumerate(entries)
+            if entry.source == "manual:hermes_pkce"
+            and (not payload.get("label") or entry.label == payload.get("label"))
+        ]
+        if legacy_indices:
+            entries[:] = [entry for idx, entry in enumerate(entries) if idx not in legacy_indices]
     matching_indices = []
     for idx, entry in enumerate(entries):
         if entry.source == source:
@@ -2148,9 +2227,10 @@ def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -
     source_rank = {
         "env:ANTHROPIC_TOKEN": 0,
         "env:CLAUDE_CODE_OAUTH_TOKEN": 1,
-        "hermes_pkce": 2,
+        "hermes_pkce_shared": 2,
         "claude_code": 3,
-        "env:ANTHROPIC_API_KEY": 4,
+        "hermes_pkce": 4,
+        "env:ANTHROPIC_API_KEY": 5,
     }
     manual_entries = sorted(
         (entry for entry in entries if _is_manual_source(entry.source)),
@@ -2171,6 +2251,58 @@ def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -
     for new_priority, entry in enumerate(ordered):
         if entry.priority != new_priority:
             entries[id_to_idx[entry.id]] = replace(entry, priority=new_priority)
+            changed = True
+    return changed
+
+
+def _migrate_legacy_hermes_pkce_entries(entries: List[PooledCredential]) -> bool:
+    """Replace copied PKCE entries with shared references, label by label."""
+    legacy = [entry for entry in entries if entry.source == "manual:hermes_pkce"]
+    if not legacy:
+        return False
+    from agent.anthropic_adapter import (
+        _get_shared_hermes_oauth_file,
+        read_shared_hermes_oauth_credentials,
+        write_shared_hermes_oauth_credentials,
+    )
+    shared_path = _get_shared_hermes_oauth_file()
+    def _publish(credentials: Dict[str, Any], label: str) -> bool:
+        try:
+            return write_shared_hermes_oauth_credentials(credentials, label=label)
+        except TypeError:
+            # Keep compatibility with narrow test doubles and older adapters.
+            return write_shared_hermes_oauth_credentials(credentials)
+    def _read(label: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        try:
+            return read_shared_hermes_oauth_credentials(label)
+        except TypeError:
+            return read_shared_hermes_oauth_credentials()
+    legacy_shared = read_shared_hermes_oauth_credentials()
+    labels = {entry.label for entry in legacy}
+    if legacy_shared and len(labels) == 1 and shared_path.exists():
+        # The old single-grant file is safe to assign only when this pool has
+        # exactly one legacy label; never fan one grant out to other labels.
+        _publish(legacy_shared, next(iter(labels)))
+    # Only the default profile may promote its local copy; worker copies may
+    # already be revoked and must never become the shared source.
+    if not shared_path.exists() and get_hermes_home() == get_default_hermes_root():
+        for seed in legacy:
+            if seed.access_token and seed.refresh_token:
+                _publish({
+                    "accessToken": seed.access_token,
+                    "refreshToken": seed.refresh_token,
+                    "expiresAt": seed.expires_at_ms,
+                }, seed.label)
+    changed = False
+    for index, entry in enumerate(entries):
+        if entry.source == "manual:hermes_pkce" and _read(entry.label):
+            entries[index] = replace(
+                entry,
+                source="hermes_pkce_shared",
+                access_token="",
+                refresh_token=None,
+                expires_at_ms=None,
+            )
             changed = True
     return changed
 
@@ -2235,16 +2367,21 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             # transient 401 could revive them.
             retained = [
                 entry for entry in entries
-                if entry.source not in {"hermes_pkce", "claude_code"}
+                if entry.source not in {"hermes_pkce", "hermes_pkce_shared", "claude_code"}
             ]
             if len(retained) != len(entries):
                 entries[:] = retained
                 changed = True
             return changed, active_sources
 
-        from agent.anthropic_adapter import read_claude_code_credentials, read_hermes_oauth_credentials
+        from agent.anthropic_adapter import (
+            read_claude_code_credentials,
+            read_hermes_oauth_credentials,
+            read_shared_hermes_oauth_credentials,
+        )
 
         for source_name, creds in (
+            ("hermes_pkce_shared", read_shared_hermes_oauth_credentials()),
             ("hermes_pkce", read_hermes_oauth_credentials()),
             ("claude_code", read_claude_code_credentials()),
         ):
@@ -2647,8 +2784,13 @@ def _prune_stale_seeded_entries(
         # (e.g. an `hermes auth` command that confirmed the source is gone).
         if entry.source.startswith("env:"):
             return prune_env_sources
-        # File-backed singletons (device-code OAuth, claude_code) and Hermes
-        # PKCE should disappear from the pool when their backing file is gone.
+        if entry.source == "hermes_pkce_shared":
+            return False
+        # File-backed singletons (device-code OAuth, claude_code) and legacy
+        # Hermes PKCE should disappear from the pool when their backing file is
+        # gone. Shared PKCE rows are references keyed by label; keep them so a
+        # transiently missing shared file is reported by selection instead of
+        # silently deleting the row.
         return (
             is_borrowed_credential_source(entry.source, entry.provider)
             or entry.source == "hermes_pkce"
@@ -2754,6 +2896,8 @@ def load_pool(provider: str) -> CredentialPool:
         for payload in raw_entries
     )
     entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries]
+    legacy_entries = [entry for entry in entries if entry.source == "manual:hermes_pkce"]
+    migration_changed = provider == "anthropic" and _migrate_legacy_hermes_pkce_entries(entries)
     raw_needs_auth_normalization = any(
         isinstance(payload, dict)
         and _normalize_pool_auth_type(
@@ -2774,7 +2918,7 @@ def load_pool(provider: str) -> CredentialPool:
     if provider.startswith(CUSTOM_POOL_PREFIX):
         # Custom endpoint pool — seed from custom_providers config and model config
         custom_changed, custom_sources = _seed_custom_pool(provider, entries)
-        changed = raw_needs_sanitization or raw_needs_auth_normalization or custom_changed
+        changed = raw_needs_sanitization or raw_needs_auth_normalization or custom_changed or migration_changed
         changed |= _prune_stale_seeded_entries(entries, custom_sources)
     else:
         singleton_changed, singleton_sources = _seed_from_singletons(provider, entries)
@@ -2784,6 +2928,7 @@ def load_pool(provider: str) -> CredentialPool:
             or raw_needs_auth_normalization
             or singleton_changed
             or env_changed
+            or migration_changed
         )
         # ``load_pool()`` is a non-destructive read for env-seeded entries: a
         # process missing a provider env var must not delete the persisted
@@ -2794,6 +2939,12 @@ def load_pool(provider: str) -> CredentialPool:
             singleton_sources | env_sources,
             prune_env_sources=False,
         )
+        if provider == "anthropic" and not migration_changed:
+            current_ids = {entry.id for entry in entries}
+            for legacy_entry in legacy_entries:
+                if legacy_entry.id not in current_ids:
+                    entries.append(legacy_entry)
+                    changed = True
         changed |= _normalize_pool_priorities(provider, entries)
 
     if changed:

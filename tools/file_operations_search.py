@@ -518,10 +518,13 @@ def _find_literal_path_expressions(roots: list[str]) -> list[str]:
 
 
 def _diagnostic_safe_root(root: str) -> str:
-    """``./``-anchor a relative root named like engine stderr (``rg: data``). Every
-    result line starts with the root, and the lanes tell stderr from results by these
-    prefixes, so such a root would turn all of its own results into diagnostics."""
-    return f"./{root}" if root.lstrip().startswith(_DIAGNOSTIC_PREFIXES) else root
+    """``./``-anchor a relative root that the engines would misread: one named like
+    engine stderr (``rg: data``; every result line starts with the root, and the lanes
+    tell stderr from results by these prefixes), one led by whitespace (its result
+    lines get split like stderr), and one led by ``-`` (parsed as an option)."""
+    if root[:1].isspace() or root.startswith("-") or root.lstrip().startswith(_DIAGNOSTIC_PREFIXES):
+        return f"./{root}"
+    return root
 
 
 _ERROR_DETAIL_CHARS = 2000
@@ -955,7 +958,8 @@ class SearchMixin:
             else:
                 glob_expr_probe = glob_expr
             probe_words = [rg, flags, "--count-matches", glob_expr_probe,
-                           self._escape_shell_arg(pattern, translate_path=False), self._escape_native_tool_arg(path)]
+                           self._escape_shell_arg(pattern, translate_path=False),
+                           self._escape_native_tool_arg(_diagnostic_safe_root(path))]
             probe = self._run_rg_bounded(probe_words, 50, timeout=30)
             total, per_file = 0, []
             for line in (probe.stdout or "").strip().splitlines():
@@ -1166,7 +1170,7 @@ class SearchMixin:
         # still allowing an explicitly selected hidden root. ``./`` keeps dash-prefixed
         # roots from parsing as options and roots named like stderr (``find: x``) from
         # reading as diagnostics.
-        find_roots = [f"./{root}" if root.startswith("-") else _diagnostic_safe_root(root) for root in roots]
+        find_roots = [_diagnostic_safe_root(root) for root in roots]
         q_roots = [self._escape_shell_arg(root) for root in find_roots]
         hidden_prune = f" {self._hidden_prune_expr(q_roots)} -o"
         protected_paths = [absolute for _r, _rel, absolute in self._effective_macos_search_exclusions(roots)]

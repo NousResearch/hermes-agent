@@ -1082,6 +1082,10 @@ wire_shell_path() {
     local login_shell="${SHELL:-/bin/bash}"
     case "${login_shell##*/}" in
         zsh)
+            # Every zsh reads ~/.zshenv, so PATH setup there already covers new shells.
+            if [ -f "$HOME/.zshenv" ] && grep -E "$SHELL_PATH_SETUP_RE" "$HOME/.zshenv" >/dev/null 2>&1; then
+                return 0
+            fi
             append_shell_path "$HOME/.zshrc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
             append_shell_path "$HOME/.zprofile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
             ;;

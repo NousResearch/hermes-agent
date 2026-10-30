@@ -42,6 +42,15 @@ fi
 
 # User specific environment and startup programs
 """
+# A zsh user who keeps PATH in ~/.zshenv, which every zsh reads.
+ZSHENV = """\
+if [ -d "$HOME/.local/bin" ]; then
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) export PATH="$HOME/.local/bin:$PATH" ;;
+  esac
+fi
+"""
 # Debian /etc/skel/.profile tail.
 DEBIAN_PROFILE = """\
 # set PATH so it includes user's private bin if it exists
@@ -51,9 +60,9 @@ fi
 """
 
 
-def _wire(home: Path, runs: int = 1) -> None:
+def _wire(home: Path, runs: int = 1, shell: str = "/bin/bash") -> None:
     env = {k: v for k, v in os.environ.items() if k not in ("CI", "GITHUB_ACTIONS")}
-    env.update(HOME=str(home), HERMES_HOME=str(home / "hermes"), SHELL="/bin/bash",
+    env.update(HOME=str(home), HERMES_HOME=str(home / "hermes"), SHELL=shell,
                NO_COLOR="1", TERM="dumb", CI="true")
     script = f"source {shlex.quote(INSTALL_SH.as_posix())} --manifest\n" + "wire_shell_path\n" * runs
     result = subprocess.run(["bash", "-c", script], env=env, stdin=subprocess.DEVNULL,
@@ -103,3 +112,17 @@ def test_bash_login_only_user_gets_local_bin(tmp_path):
     home = _home(tmp_path, **{".bash_login": "# mine\n"})
     _wire(home)
     assert str(home / ".local" / "bin") in _login_path(home)
+
+
+def test_zshenv_path_setup_counts_as_existing_setup(tmp_path):
+    home = _home(tmp_path, **{".zshenv": ZSHENV})
+    _wire(home, shell="/bin/zsh")
+    assert not (home / ".zshrc").exists()
+    assert not (home / ".zprofile").exists()
+
+
+def test_zsh_without_path_setup_gets_local_bin(tmp_path):
+    home = _home(tmp_path, **{".zshenv": "# mine\n"})
+    _wire(home, shell="/bin/zsh")
+    assert (home / ".zshrc").read_text(encoding="utf-8-sig").count(MARKER) == 1
+    assert (home / ".zprofile").read_text(encoding="utf-8-sig").count(MARKER) == 1

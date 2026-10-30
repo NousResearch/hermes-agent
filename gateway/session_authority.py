@@ -1212,7 +1212,12 @@ class SessionAuthority:
                             if refused:
                                 continue
                     import logging
-                    logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
+                    hint = ''
+                    if exc.reason == 'unknown_execution':
+                        # The pause is the operator's to clear: name the command that clears it.
+                        from gateway.session_ingress import discard_command
+                        hint = f'; queued input waits until `{discard_command(self, ref.session_id)}`'
+                    logging.getLogger(__name__).warning('Session %s paused: %s%s', ref.session_id, exc.reason, hint)
                     self._pause(ref, exc.reason)
                     return None
             except (OSError, sqlite3.OperationalError) as exc:

@@ -5712,10 +5712,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         text = re.sub(r'\*([^*\n]+)\*', _ph_wrap('_', '_'), text)
         text = re.sub(r'~~(.+?)~~', _ph_wrap('~', '~'), text)
         text = re.sub(r'\|\|(.+?)\|\|', _ph_wrap('||', '||'), text)
-        # 9) Blockquotes: protect leading > from escaping; expandable quotes (**> starts, trailing || ends).
+        # 9) Blockquotes: protect leading > from escaping; expandable quotes (any ">…" prefix, trailing || ends
+        #    the last quoted line = Telegram's official MarkdownV2 expandability mark).
         def _convert_blockquote(m):
             prefix, content = m.group(1), m.group(2)  # prefix: >, >>, >>>, **>, **>> …
-            if prefix.startswith('**') and content.endswith('||'):
+            if content.endswith('||'):
                 return _ph(f'{prefix} {_escape_mdv2(content[:-2])}||')
             return _ph(f'{prefix} {_escape_mdv2(content)}')
 

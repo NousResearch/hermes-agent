@@ -6345,38 +6345,60 @@ def decompose_triage_task(
             return None
 
         # Fail-closed guard: refuse to decompose while the root worktree
-        # has uncommitted changes or commits not yet merged upstream.
-        # Spawning children from a stale baseline means they miss the root's
-        # work and silently redo it from scratch (observed on t_3f1ea6d8).
-        # We add an audit comment and return None — the task stays in triage
-        # so a human or the operator can decide how to proceed.
-        if (
-            root_row["workspace_kind"] == "worktree"
-            and root_row["workspace_path"]
-            and _worktree_has_active_work(root_row["workspace_path"])
-        ):
-            conn.execute(
-                "INSERT INTO task_comments (task_id, author, body, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (
-                    task_id,
-                    author or "decomposer",
+        # has uncommitted changes or commits not yet merged into the primary
+        # checkout. Spawning children from a stale baseline means they miss
+        # the root's work and silently redo it from scratch (observed on
+        # t_3f1ea6d8). We add an audit comment and return None — the task
+        # stays in triage so a human or the operator can decide how to proceed.
+        if root_row["workspace_kind"] == "worktree" and root_row["workspace_path"]:
+            _wt_state = _worktree_has_active_work(root_row["workspace_path"])
+            if _wt_state is True:
+                conn.execute(
+                    "INSERT INTO task_comments (task_id, author, body, created_at) "
+                    "VALUES (?, ?, ?, ?)",
                     (
-                        "Decomposition blocked: the root worktree at "
-                        + root_row["workspace_path"]
-                        + " has uncommitted changes or unmerged commits. "
-                        + "Commit or stash the local work, then retry decomposition."
+                        task_id,
+                        author or "decomposer",
+                        (
+                            "Decomposition blocked: the root worktree at "
+                            + root_row["workspace_path"]
+                            + " has uncommitted changes or unmerged commits. "
+                            + "Commit or stash the local work, then retry decomposition."
+                        ),
+                        now,
                     ),
-                    now,
-                ),
-            )
-            _append_event(
-                conn,
-                task_id,
-                "decompose_blocked_dirty_worktree",
-                {"workspace_path": root_row["workspace_path"]},
-            )
-            return None
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "decompose_blocked_dirty_worktree",
+                    {"workspace_path": root_row["workspace_path"]},
+                )
+                return None
+            if _wt_state is None:
+                conn.execute(
+                    "INSERT INTO task_comments (task_id, author, body, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        task_id,
+                        author or "decomposer",
+                        (
+                            "Decomposition blocked: could not determine the git state of "
+                            "the root worktree at "
+                            + root_row["workspace_path"]
+                            + ". Verify that git is available and the path is a valid "
+                            "worktree, then retry decomposition."
+                        ),
+                        now,
+                    ),
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "decompose_blocked_unknown_worktree_state",
+                    {"workspace_path": root_row["workspace_path"]},
+                )
+                return None
         tenant = root_row["tenant"]
         # Children inherit the root's workspace by default so a fan-out
         # of a code-gen task lands in the parent's project dir/worktree
@@ -6648,14 +6670,22 @@ def _git_toplevel(path: Path) -> Optional[Path]:
         return Path(out).expanduser()
 
 
-def _worktree_has_active_work(workspace_path: str) -> bool:
+def _worktree_has_active_work(workspace_path: str) -> Optional[bool]:
     """Return True when the git worktree at *workspace_path* has local work
-    that has not been merged / pushed — either uncommitted changes (dirty
-    state) or commits that are ahead of the tracking upstream branch.
+    that has not been merged into the primary checkout — either uncommitted
+    changes (dirty state) or commits that are not yet in the primary checkout.
 
-    Fail-open (returns False) when the path does not exist, is not a git
-    repo, or the git commands are unavailable. The caller should treat False
-    as "we don't know; proceed" and log a warning if needed.
+    Returns False when the path does not exist (worktree never created) or
+    when the state is confirmed clean.
+
+    Returns None when the state cannot be determined (git failure, timeout,
+    or the path is not a git repo). Callers must treat None as **fail-closed**
+    and block decomposition, not proceed.
+
+    Kanban worktree branches (``wt/<id>``) have no upstream tracking branch, so
+    ``@{upstream}`` always fails with a fatal error.  We compare against the
+    primary checkout's HEAD instead: any commits in this worktree's history
+    that are not ancestors of the primary HEAD are considered unmerged work.
     """
     path = Path(workspace_path)
     if not path.exists():
@@ -6671,12 +6701,20 @@ def _worktree_has_active_work(workspace_path: str) -> bool:
             timeout=10,
             check=False,
         )
-        if dirty.returncode == 0 and dirty.stdout.strip():
+        if dirty.returncode != 0:
+            return None  # not a git repo or git unavailable
+        if dirty.stdout.strip():
             return True
 
-        # 2. Commits ahead of the upstream/tracking branch.
-        ahead = subprocess.run(
-            ["git", "-C", str(path), "log", "--oneline", "@{upstream}.."],
+        # 2. Commits not yet merged into the primary checkout.
+        # Use the shared git common dir to locate the primary HEAD so this
+        # works even when there is no upstream tracking branch configured.
+        common_dir = _git_common_dir(path)
+        if common_dir is None:
+            return None
+
+        primary_head_result = subprocess.run(
+            ["git", "--git-dir", str(common_dir), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -6684,12 +6722,30 @@ def _worktree_has_active_work(workspace_path: str) -> bool:
             timeout=10,
             check=False,
         )
-        if ahead.returncode == 0 and ahead.stdout.strip():
+        if primary_head_result.returncode != 0:
+            return None
+        primary_head = primary_head_result.stdout.strip()
+        if not primary_head:
+            return None
+
+        ahead_result = subprocess.run(
+            ["git", "-C", str(path), "rev-list", "--count", "HEAD", f"^{primary_head}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+        if ahead_result.returncode != 0:
+            return None
+        count_str = ahead_result.stdout.strip()
+        if count_str.isdigit() and int(count_str) > 0:
             return True
 
         return False
     except Exception:
-        return False  # fail-open: cannot determine state, assume clean
+        return None  # fail-closed: cannot determine state, block decomposition
 
 
 def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:

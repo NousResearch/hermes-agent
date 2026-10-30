@@ -99,6 +99,56 @@ class TestFixA:
         assert events is not None
         assert events["kind"] == "decompose_blocked_dirty_worktree"
 
+    def test_unknown_worktree_state_blocks_decompose_with_unknown_event(
+        self, kanban_home, tmp_path
+    ):
+        """When _worktree_has_active_work returns None (fail-closed), decompose returns
+        None and adds an audit comment with the decompose_blocked_unknown_worktree_state
+        event — distinct from the dirty-worktree event."""
+        fake_ws = str(tmp_path / "fake_ws")
+        with kb.connect() as conn:
+            tid = kb.create_task(
+                conn,
+                title="a task with unreachable worktree",
+                assignee="kamiyu",
+                triage=True,
+                workspace_kind="worktree",
+                workspace_path=fake_ws,
+            )
+
+        children = [{"title": "child one", "assignee": "worker"}]
+        with patch(
+            "hermes_cli.kanban_db._worktree_has_active_work",
+            return_value=None,
+        ):
+            with kb.connect() as conn:
+                result = kb.decompose_triage_task(
+                    conn,
+                    tid,
+                    root_assignee=None,
+                    children=children,
+                    author="decomposer",
+                )
+
+        assert result is None, "decompose must return None when worktree state is unknown"
+
+        with kb.connect() as conn:
+            task = _get(conn, tid)
+            comments = conn.execute(
+                "SELECT body FROM task_comments WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                (tid,),
+            ).fetchone()
+            events = conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                (tid,),
+            ).fetchone()
+
+        assert task.status == "triage", "root must stay in triage when state is unknown"
+        assert comments is not None
+        assert "could not determine" in comments["body"]
+        assert events is not None
+        assert events["kind"] == "decompose_blocked_unknown_worktree_state"
+
     def test_clean_worktree_allows_decompose(self, kanban_home, tmp_path):
         """When _worktree_has_active_work returns False, decompose proceeds normally."""
         fake_ws = str(tmp_path / "fake_ws")

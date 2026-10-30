@@ -21,6 +21,7 @@ import {
   type DisplayLease,
   displayRequest,
   type DisplayStatus,
+  isDisplayRouteMissing,
   isDisplayUnavailable,
   isEventForBotScreen,
   isManagedBackend,
@@ -119,9 +120,11 @@ export function useScreenPortalState(bot: RosterRow) {
         }
       })
       .catch((error: unknown) => {
-        // An older Hermes without display.* is a settled answer (hide the surface);
-        // an offline bot is transient and stays in its unknown state.
-        if (!cancelled && isDisplayUnavailable(error)) {
+        // An older Hermes without display.* is a settled answer (hide the surface), and so is a
+        // bot with no routable owner: a profile-only request is refused on a multi-source
+        // desktop, so there is nothing to retry and the portal would sit in `unknown` forever.
+        // An offline bot is transient and stays in its unknown state.
+        if (!cancelled && (isDisplayUnavailable(error) || isDisplayRouteMissing(error))) {
           setScreenUnavailable(bot)
         }
       })
@@ -179,8 +182,12 @@ export function ScreenPortal({ bot }: { bot: RosterRow }) {
     unknown: status?.display ?? ''
   }[tone]
 
-  // Nothing to offer for a screen that cannot exist: the sidebar row simply disappears.
-  if (tone === 'unsupported' || tone === 'unavailable') {
+  // Nothing to offer for a screen that cannot exist: the sidebar row simply disappears. `unknown`
+  // is not an offer either — it means the status request has not landed yet, and painting a button
+  // with no subtitle there is a dead entry that never goes away when the request can never
+  // succeed (a group with no routable owner, a host whose display.* is missing). The row appears
+  // once a status says there is something to open.
+  if (tone === 'unsupported' || tone === 'unavailable' || tone === 'unknown') {
     return null
   }
 
@@ -217,25 +224,32 @@ export function ProfileGroupScreenPortal({ route }: { route: ProfileGroupRoute }
 
   // Stable row identity: the portal's effects key on `bot`, so a synthesized row
   // rebuilt every render would re-subscribe the lease listener on every sidebar paint.
-  const bot = useMemo(
-    () =>
-      roster.find(row => {
-        const resolved = resolveBotConnectionRoute(row)
+  const bot = useMemo(() => {
+    const owner = roster.find(row => {
+      const resolved = resolveBotConnectionRoute(row)
 
-        return resolved.route
-          ? resolved.route.profile === profile && resolved.route.connectionId === (connectionId ?? 'local')
-          : row.name === profile && connectionId === null
-      }) ??
-      (connectionId
-        ? ({
-            name: profile,
-            sourceScoped: true,
-            connectionId,
-            connectionKind: connectionId === 'local' ? 'local' : 'remote'
-          } as RosterRow)
-        : ({ name: profile } as RosterRow)),
-    [connectionId, profile, roster]
-  )
+      return resolved.route
+        ? resolved.route.profile === profile && resolved.route.connectionId === (connectionId ?? 'local')
+        : row.name === profile && connectionId === null
+    })
 
-  return <ScreenPortal bot={bot} />
+    if (owner) {
+      return owner
+    }
+
+    // A profile outside the current roster filter still gets its portal when the group carries a
+    // connection: the synthesized row is routable. Without one there is no route to ask for a
+    // status — a profile-only `display.*` is refused on a multi-source desktop — so the group has
+    // no screen surface at all instead of a button that can never open anything.
+    return connectionId
+      ? ({
+          name: profile,
+          sourceScoped: true,
+          connectionId,
+          connectionKind: connectionId === 'local' ? 'local' : 'remote'
+        } as RosterRow)
+      : null
+  }, [connectionId, profile, roster])
+
+  return bot ? <ScreenPortal bot={bot} /> : null
 }

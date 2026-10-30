@@ -17,6 +17,7 @@ import os
 import threading
 from dataclasses import dataclass
 from typing import Any, List, Optional
+import time  # after the from-imports: keeps clear of upstream additions to the plain import block
 
 
 # Log-record parity with the origin module.
@@ -1504,6 +1505,47 @@ def _deliver_via_live_adapter(
     return delivered
 
 
+# Transient network markers in a delivery error string. A connect/DNS-phase failure means the
+# send never reached the platform, so retrying the same target cannot duplicate a delivered
+# message (unlike a post-send timeout, which the senders already refuse to retry).
+_TRANSIENT_DELIVERY_MARKERS = (
+    "getaddrinfo", "temporary failure in name resolution",
+    "name or service not known", "nodename nor servname",
+    "connecterror", "connect error", "connection error", "connecttimeout",
+    "network is unreachable", "no route to host",
+)
+
+
+def _is_transient_delivery_error(message) -> bool:
+    """True when a delivery error string is a transient network (DNS/connect) failure worth
+    retrying inside the tick instead of surfacing as a delivery failure."""
+    text = str(message or "").lower()
+    return any(marker in text for marker in _TRANSIENT_DELIVERY_MARKERS)
+
+
+def _get_delivery_retry_attempts() -> int:
+    """Total send attempts for a transient delivery failure before it is recorded as a
+    delivery error. ``cron.delivery_retry_attempts``; default 3, minimum 1 (no retry)."""
+    try:
+        cfg = _sched.load_config() or {}
+        value = int((cfg.get("cron") or {}).get("delivery_retry_attempts", 3))
+        return value if value > 0 else 1
+    except Exception:
+        return 3
+
+
+def _get_delivery_retry_backoff_seconds() -> float:
+    """Pause between transient delivery retries. ``cron.delivery_retry_backoff_seconds``;
+    default 30s — sized for ~60s transient DNS blips, so a one-tick
+    outage is absorbed inside the run instead of surfacing a false delivery-failure alarm."""
+    try:
+        cfg = _sched.load_config() or {}
+        value = float((cfg.get("cron") or {}).get("delivery_retry_backoff_seconds", 30.0))
+        return value if value >= 0 else 30.0
+    except Exception:
+        return 30.0
+
+
 def _standalone_send(
     t: _TargetDelivery, content: str, media_files: list) -> tuple[Any, Optional[str]]:
     """Run the standalone sender for one target: ``(result, None)`` or ``(None, error)`` (already
@@ -1603,7 +1645,11 @@ def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: lis
 def _deliver_standalone(
     t: _TargetDelivery, content: str, media_files: list, target_errors: list, delivery_errors: list,
 ) -> None:
-    """Standalone fallback for a target the live lane did not deliver."""
+    """Standalone fallback for a target the live lane did not deliver. A transient
+    (DNS/connect) failure is retried with backoff — ``_get_delivery_retry_attempts`` x
+    ``_get_delivery_retry_backoff_seconds`` — before it is recorded: the send never reached
+    the platform, so a retry cannot duplicate it, and a one-tick network blip must not
+    surface as a delivery failure."""
     job = t.job
     if t.is_relay:
         # Relay owns the destination and credential; a native retry could duplicate — fail closed.
@@ -1611,12 +1657,28 @@ def _deliver_standalone(
             target_errors.append(f"relay delivery to {t.where} failed")
         delivery_errors.extend(target_errors)
         return
-    result, err = _standalone_send(t, content, media_files)
-    if err is None and result and result.get("error"):
-        # Not inside an except block — the error comes from the result dict, no traceback.
-        err = f"delivery error: {result['error']} (target {t.where})"
-        logger.error("Job '%s': %s", job["id"], err)
+
+    def _attempt() -> tuple[Any, Optional[str]]:
+        result, err = _standalone_send(t, content, media_files)
+        if err is None and result and result.get("error"):
+            # Not inside an except block — the error comes from the result dict, no traceback.
+            err = f"delivery error: {result['error']} (target {t.where})"
+        return result, err
+
+    result, err = _attempt()
+    attempts_left = _get_delivery_retry_attempts() - 1
+    while err is not None and attempts_left > 0 and _is_transient_delivery_error(err):
+        backoff = _get_delivery_retry_backoff_seconds()
+        logger.warning(
+            "Job '%s': transient delivery failure to %s (%s) — retrying in %.0fs "
+            "(%d attempt(s) left before this is recorded as a delivery error)",
+            job["id"], t.where, err, backoff, attempts_left)
+        if backoff > 0:
+            time.sleep(backoff)
+        attempts_left -= 1
+        result, err = _attempt()
     if err is not None:
+        logger.error("Job '%s': %s", job["id"], err)
         target_errors.append(err)
         delivery_errors.extend(target_errors)
         # A satellite profile's worker has no platform token, so standalone cannot stand in for a

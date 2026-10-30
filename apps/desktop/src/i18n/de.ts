@@ -1003,6 +1003,9 @@ export const deOverrides = {
       sessionDensityComfortable: 'Komfortabel',
       sessionDensityDetailed: 'Detailreich',
       tabStripTitle: 'Tab-Leiste',
+      sidebarScreenPortalTitle: 'Screen in der Sitzungsseitenleiste',
+      sidebarScreenPortalDesc:
+        'Zeigt die Screen-Karte für jedes Profil in Sitzungen. Screen bleibt unter Bots verfügbar, wenn die Karte ausgeblendet ist. Auf diesem Gerät gespeichert.',
       tabStripDesc:
         'Zeigt Tabs über einer Zone. Blendet sie automatisch aus, wenn eine Zone nur einen einzelnen Bereich enthält.',
       tabStripAuto: 'Automatisch',

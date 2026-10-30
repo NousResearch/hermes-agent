@@ -798,6 +798,8 @@ export interface Translations extends NoticeTranslations {
       sessionDensityComfortable: string
       sessionDensityDetailed: string
       tabStripTitle: string
+      sidebarScreenPortalTitle: string
+      sidebarScreenPortalDesc: string
       tabStripDesc: string
       tabStripAuto: string
       tabStripAlways: string

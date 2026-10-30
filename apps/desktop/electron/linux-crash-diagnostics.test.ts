@@ -27,9 +27,16 @@ test('on linux, fatal Chromium output lands in a file under the Hermes logs dir'
   assert.equal(plan.crashReporter.uploadToServer, false)
 })
 
-test('other platforms get no Chromium logging switches and no crash reporter', () => {
+test('Windows receives local crash reporting and Chromium file logging', () => {
+  const plan = linuxCrashDiagnostics('C:\\Users\\u\\.hermes\\logs', 'win32')
+
+  assert.ok(plan)
+  assert.equal(new Map(plan.switches).get('enable-logging'), 'file')
+  assert.equal(plan.crashReporter.uploadToServer, false)
+})
+
+test('unsupported platforms get no Chromium logging switches and no crash reporter', () => {
   assert.equal(linuxCrashDiagnostics('/Users/u/.hermes/logs', 'darwin'), null)
-  assert.equal(linuxCrashDiagnostics('C:\\Users\\u\\.hermes\\logs', 'win32'), null)
 })
 
 test('a logs dir that cannot be created degrades to no logging, never a dead shell', () => {

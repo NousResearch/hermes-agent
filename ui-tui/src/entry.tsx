@@ -5,6 +5,8 @@ import './lib/forceTruecolor.js'
 
 import type { FrameEvent } from '@hermes/ink'
 
+import { startTabPersistence } from './app/sessionTabsPersistence.js'
+import { releaseHerdrReporters } from './app/useHerdrActivity.js'
 import { setRpcErrorLogSink } from './app/userMessages.js'
 import { DASHBOARD_TUI_MODE, NATIVE_MODE, TERMUX_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
@@ -20,6 +22,9 @@ if (!process.stdin.isTTY) {
   console.log(messages().chatBits.entry.noTty)
   process.exit(0)
 }
+
+// Restore this directory's private tab layout before the owner attaches.
+const stopTabPersistence = startTabPersistence(process.env.HERMES_TUI_CWD || process.env.HERMES_CWD || process.cwd())
 
 // Start from a clean slate. If a previous TUI crashed or was kill -9'd, the
 // terminal tab can still have mouse/focus/paste modes enabled.
@@ -72,6 +77,8 @@ let consecutiveDeadStreamErrors = 0
 
 setupGracefulExit({
   cleanups: [
+    stopTabPersistence,
+    releaseHerdrReporters,
     () => {
       resetTerminalModes()
 

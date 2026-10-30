@@ -4,12 +4,15 @@ import { opsCommands } from './commands/ops.js'
 import { sessionCommands } from './commands/session.js'
 import { setupCommands } from './commands/setup.js'
 import { subscriptionCommands } from './commands/subscription.js'
+import { tabCommands } from './commands/tabs.js'
 import { topupCommands } from './commands/topup.js'
 import { wakeCommands } from './commands/wake.js'
 import type { SlashCommand } from './types.js'
 
 export const SLASH_COMMANDS: SlashCommand[] = [
   ...coreCommands,
+  ...tabCommands,
+
   ...topupCommands,
   ...sessionCommands,
   ...subscriptionCommands,

@@ -14,6 +14,7 @@ import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 
 import { $agentDockCollapsed } from './agentRoster.js'
+import { handleSessionNavigationInput } from './inputNavigation.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import {
   type GatewayRpc,
@@ -273,7 +274,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // legacy server→client request resolves its response frame locally.
       if (overlay.approval.sharedControl) {
         return gateway
-          .rpc<SharedControlRespondResponse>('approval.respond', { choice: 'deny', ...sharedControlParams(overlay.approval) })
+          .rpc<SharedControlRespondResponse>('approval.respond', {
+            choice: 'deny',
+            ...sharedControlParams(overlay.approval)
+          })
           .then(r => r && fresh() && settle())
       }
 
@@ -608,11 +612,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
     }
 
-    if (cState.completions.length && cState.input && cState.historyIdx === null && (key.upArrow || key.downArrow)) {
-      const len = cState.completions.length
-
-      cActions.setCompIdx(i => (key.upArrow ? (i - 1 + len) % len : (i + 1) % len))
-
+    if (handleSessionNavigationInput(ch, key, event, ctx)) {
       return
     }
 

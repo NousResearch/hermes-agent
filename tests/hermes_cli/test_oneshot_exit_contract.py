@@ -39,3 +39,19 @@ def test_incomplete_run_with_text_exits_nonzero_and_reports_why(monkeypatch, tmp
 def test_completed_run_still_exits_zero(monkeypatch, tmp_path):
     code, _ = _run(monkeypatch, tmp_path, "Paris.", {"final_response": "Paris.", "completed": True, "failed": False})
     assert code == 0
+
+
+def test_system_exit_from_the_agent_still_ends_the_run(monkeypatch, tmp_path):
+    """A ``SystemExit`` that escapes the agent itself (not a tool) still exits ``hermes -z`` with
+    its code: containing tool exits at the dispatch boundary must not swallow this one."""
+    import json
+
+    import pytest
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    usage = tmp_path / "usage.json"
+    with mock.patch.object(oneshot, "_run_agent", side_effect=SystemExit(3)):
+        with pytest.raises(SystemExit) as exited:
+            oneshot.run_oneshot("q", usage_file=str(usage))
+    assert exited.value.code == 3
+    assert "SystemExit" in json.loads(usage.read_text(encoding="utf-8"))["failure"]

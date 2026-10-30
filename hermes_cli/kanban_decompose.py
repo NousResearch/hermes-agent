@@ -434,7 +434,8 @@ def decompose_task(
             child_ids = kb.decompose_triage_task(
                 conn,
                 task_id,
-                root_assignee=orchestrator,
+                root_assignee=None,  # Never reassign the root — its current
+                # assignee stays unchanged. Only children carry new profiles.
                 children=children,
                 author=audit_author,
                 auto_promote=auto_promote,

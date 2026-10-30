@@ -39,8 +39,11 @@ def homes(tmp_path, monkeypatch):
     profile_root = default_root / "profiles" / "worker"
     default_root.mkdir(parents=True)
     profile_root.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(default_root))
     monkeypatch.setattr("agent.anthropic_adapter.get_default_hermes_root", lambda: default_root)
     monkeypatch.setattr("agent.credential_pool.get_default_hermes_root", lambda: default_root)
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
     monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda _provider: True)
     for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
         monkeypatch.delenv(name, raising=False)
@@ -124,10 +127,6 @@ def test_two_labels_migrate_to_separate_shared_files_without_cross_contamination
 
     from agent.anthropic_adapter import _shared_pkce_label_filename
 
-    assert _shared_pkce_label_filename("../x")
-    assert _shared_pkce_label_filename("a/b")
-    assert _shared_pkce_label_filename("a\\b")
-    assert _shared_pkce_label_filename("")
     for label in ("../x", "a/b", "a\\b"):
         with pytest.raises(ValueError):
             _shared_pkce_label_filename(label)

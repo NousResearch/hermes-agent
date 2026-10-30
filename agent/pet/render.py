@@ -146,7 +146,11 @@ def _kitty_apc(ctrl: str, data: str) -> str:
     """kitty APC escape for *data*, chunked into ≤4096-byte ``m`` pieces (``m=1`` = more chunks follow)."""
     pieces = [data[i : i + 4096] for i in range(0, len(data), 4096)] or [""]
     last = len(pieces) - 1
-    return "".join(f"\x1b_G{ctrl + ',' if i == 0 else ''}m={int(i != last)};{piece}\x1b\\" for i, piece in enumerate(pieces))
+    chunks = (f"\x1b_G{ctrl + ',' if i == 0 else ''}m={int(i != last)};{piece}\x1b\\" for i, piece in enumerate(pieces))
+    if os.environ.get("TMUX"):
+        # tmux consumes bare APC and limits each DCS passthrough: wrap per chunk.
+        return "".join(f"\x1bPtmux;{chunk.replace(chr(27), chr(27) * 2)}\x1b\\" for chunk in chunks)
+    return "".join(chunks)
 
 
 def _encode_kitty(frame) -> str:

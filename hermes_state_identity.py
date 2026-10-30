@@ -96,6 +96,35 @@ def _restore_identity_columns(row: Any, msg: MutableMapping[str, Any]) -> None:
         msg[ABSORBED_MESSAGE_UIDS] = absorbed
 
 
+def _active_summary_source_uids(rows: list[Any], session_id: str) -> set[str]:
+    """Active source identities belong to the current session, never its ended ancestors."""
+    return {row["message_uid"] for row in rows
+            if row["session_id"] == session_id and row["active"] and row["message_uid"]}
+
+
+def _restore_summary_source_activity(
+    row: Any, msg: MutableMapping[str, Any], active_uids: set[str] | None, session_id: str,
+) -> None:
+    """An archived original may represent a live shortened copy; both remain protected together."""
+    if active_uids is not None:
+        msg["_summary_source_active"] = bool(
+            (row["session_id"] == session_id and row["active"]) or row["message_uid"] in active_uids)
+
+
+def _fold_summary_carrier(row: Any, key: Any, first_by_uid: dict) -> Any:
+    """The display identity both display reads give *row*, scanning rows in ``id`` order.
+
+    A compaction carrier keeps its message's ``message_uid`` but not its content (the prior tail
+    wrapped around the summary), so it is a copy of the first row with that uid: shown once."""
+    uid = row["message_uid"]
+    if not uid:
+        return key
+    if row["_compressed_summary"]:
+        return first_by_uid.get(uid, key)
+    first_by_uid.setdefault(uid, key)
+    return key
+
+
 def _stable_tool_key(row: Any) -> Optional[tuple[Any, ...]]:
     """Display-dedupe key of a tool-calling assistant row built from its stable call ids instead of the arguments a
     prune rewrites (#117750: a pruned carried-forward copy must collapse with its durable original). ``None`` for

@@ -59,7 +59,7 @@ REMOTE_RUN_SCHEMA = {
 
 def check_remote_run_requirements() -> bool:
     try:
-        import paramiko  # noqa: F401
+        import paramiko
         return True
     except ImportError:
         return False
@@ -83,7 +83,7 @@ def _build_command(
     sudo: bool,
 ) -> str:
     prefix = f"cd {shlex.quote(workdir)} && " if workdir else ""
-    full_command = f"{prefix}{_build_env_export(env)}{command}"
+    full_command = f"{prefix}(\n{_build_env_export(env)}{command}\n)" if workdir else f"{_build_env_export(env)}{command}"
     if sudo:
         return f"sudo -S -p '' -- bash -c {shlex.quote(full_command)}"
     return full_command
@@ -165,11 +165,13 @@ def _blocked_result(approval: dict[str, Any], command: str) -> str:
 
 
 def remote_run_handler(args: dict[str, Any], **_: Any) -> str:
-    import paramiko
     from tools.terminal_tool import check_command_guards
 
-    host = str(args.get("host", "")).strip()
-    command = str(args.get("command", "")).strip()
+    host = args.get("host", "")
+    command = args.get("command", "")
+    if not isinstance(host, str) or not isinstance(command, str):
+        return json.dumps({"error": "host and command must be strings", "exit_code": 2})
+    host, command = host.strip(), command.strip()
     port = args.get("port", 22)
     timeout = args.get("timeout", 60)
     if not host or not command:
@@ -179,9 +181,24 @@ def remote_run_handler(args: dict[str, Any], **_: Any) -> str:
     if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 3600:
         return json.dumps({"error": "timeout must be between 1 and 3600 seconds", "exit_code": 2})
 
+    for field in ("user", "key_file", "password", "workdir"):
+        if args.get(field) is not None and not isinstance(args[field], str):
+            return json.dumps({"error": f"{field} must be a string", "exit_code": 2})
+    env = args.get("env")
+    if env is not None and (not isinstance(env, dict) or any(
+            not isinstance(k, str) or not isinstance(v, str) for k, v in env.items())):
+        return json.dumps({"error": "env must map strings to strings", "exit_code": 2})
+    if not isinstance(args.get("sudo", False), bool):
+        return json.dumps({"error": "sudo must be a boolean", "exit_code": 2})
+    try:
+        full_command = _build_command(command, args.get("workdir"), env, args.get("sudo", False))
+    except ValueError as exc:
+        return json.dumps({"error": str(exc), "exit_code": 2})
     approval = check_command_guards(command, "ssh")
     if not approval.get("approved", False):
         return _blocked_result(approval, command)
+
+    import paramiko
 
     client = paramiko.SSHClient()
     try:
@@ -205,12 +222,6 @@ def remote_run_handler(args: dict[str, Any], **_: Any) -> str:
             _configure_host_keys(client, paramiko, _known_hosts_path())
             client.connect(**connect_args)
 
-        full_command = _build_command(
-            command,
-            args.get("workdir"),
-            args.get("env"),
-            bool(args.get("sudo", False)),
-        )
         stdin, stdout, _stderr = client.exec_command(
             full_command,
             timeout=timeout,

@@ -22,8 +22,9 @@ def test_warm_skill_view_parses_no_frontmatter(tmp_path):
     import agent.skill_utils as su
     import tools.skills_tool as st
 
+    skills_root = tmp_path / "tree"  # isolated: home (hermes_test) stays outside
     for i in range(30):
-        _make_skill(tmp_path, f"cat/skill{i:02d}", f"skill{i:02d}")
+        _make_skill(skills_root, f"cat/skill{i:02d}", f"skill{i:02d}")
 
     parses = []
     real = su.parse_frontmatter
@@ -32,7 +33,7 @@ def test_warm_skill_view_parses_no_frontmatter(tmp_path):
         parses.append(1)
         return real(content)
 
-    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+    with patch("tools.skills_tool.SKILLS_DIR", skills_root):
         st.clear_skills_cache()
         with patch.object(su, "parse_frontmatter", side_effect=counting):
             st.skill_view("skill07")  # cold: catalog scan parses once per skill
@@ -52,9 +53,10 @@ def test_locate_finds_by_dir_name_and_frontmatter_name(tmp_path):
     import tools.skills_tool as st
 
     # dir name differs from frontmatter name; both lookups must work
-    _make_skill(tmp_path, "cat/dir-name", "frontmatter-name")
+    skills_root = tmp_path / "tree"
+    _make_skill(skills_root, "cat/dir-name", "frontmatter-name")
 
-    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+    with patch("tools.skills_tool.SKILLS_DIR", skills_root):
         st.clear_skills_cache()
         by_dir = st.skill_view("dir-name")
         by_fm = st.skill_view("frontmatter-name")

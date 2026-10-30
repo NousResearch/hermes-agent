@@ -483,13 +483,45 @@ _GOAL_GATE_MESSAGES = {
             "matching the card before requesting review.")}}
 
 
-def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
+def _goal_gate(tool_name: str, task, tid: str, evidence: str, metadata: Optional[dict] = None) -> None:
     """Goal-mode pre-handoff judge gate: a worker must not complete / request
     review before acceptance criteria are met. ``blocked`` gets its own
     guidance; any other non-``done`` verdict gets the ``continue`` guidance.
     A broken judge fails open (logged) so it cannot permanently wedge work."""
     if not task or not task.goal_mode or not _goal_judge_available():
         return
+    if metadata:
+        try:
+            safe_metadata = _redact_metadata(metadata)
+            if safe_metadata is None:
+                logger.debug("Could not safely redact goal completion metadata for %s", tid)
+                safe_metadata = {}
+            # The judge keeps only the first response chars. Put the fields most likely to carry
+            # acceptance evidence first so verbose artifact metadata cannot crowd them out.
+            evidence_terms = ("evidence", "acceptance", "criterion", "criteria", "verification")
+            evidence_keys = [
+                key for key in safe_metadata
+                if any(term in str(key).casefold() for term in evidence_terms)
+            ]
+            # Explicit acceptance state is more decisive than free-form evidence
+            # or verification detail, which can be long enough to consume the
+            # judge's response snippet before criteria status is visible.
+            evidence_keys.sort(key=lambda key: (
+                0 if any(term in str(key).casefold() for term in ("acceptance", "criterion", "criteria"))
+                else 1 if "verification" in str(key).casefold()
+                else 2,
+                str(key).casefold(),
+            ))
+            ordered_metadata = {key: safe_metadata[key] for key in evidence_keys}
+            for key, value in safe_metadata.items():
+                ordered_metadata.setdefault(key, value)
+            structured = json.dumps(ordered_metadata, ensure_ascii=False)
+            evidence = (
+                "Structured completion metadata (consider explicit failed or unverified items):\n"
+                f"{structured}\n\nCompletion summary:\n{evidence}"
+            )
+        except (TypeError, ValueError) as exc:
+            logger.debug("Could not serialize goal completion metadata for %s: %s", tid, exc)
     try:
         # Headless gate runs outside any agent turn: bind the per-task relay-affinity scope
         # (mirrors kanban_specify) so the relay does not reject the judge call (#113669).
@@ -745,7 +777,7 @@ def _handle_complete(args: dict, **kw) -> str:
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
-        _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
+        _goal_gate("kanban_complete", task, tid, (summary or result or "").strip(), metadata)
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
@@ -897,7 +929,7 @@ def _handle_request_review(args: dict, **kw) -> str:
                f"reviewer profile {reviewer!r} is not installed. "
                f"Installed profiles: {', '.join(list_profile_names())}")
     with _board(args.get("board")) as (kb, conn):
-        _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
+        _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary, metadata)
         try:
             ok, fail_reason = kb.request_review(
                 conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,

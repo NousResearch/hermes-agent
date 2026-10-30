@@ -307,7 +307,8 @@ def open_url(url: str) -> bool:
         opener = shutil.which("xdg-open")
         if opener:
             subprocess.Popen([opener, url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
+                             stderr=subprocess.DEVNULL,
+                             start_new_session=True)  # detached-spawn: ok — the user's browser, meant to outlive Hermes
             return True
     import webbrowser
     from hermes_cli.auth_device_flow import _can_open_graphical_browser

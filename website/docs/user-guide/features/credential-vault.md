@@ -49,11 +49,15 @@ top-level document request. Proxy authentication, Digest and other schemes,
 child-frame challenges and cross-origin redirects are refused. One credential
 attempt is allowed per fill, with a timeout and interception cleanup. Do not
 automatically retry a refusal: the server may impose a cooldown.
+If neither interception disable nor session detach can be confirmed, native
+fills fail closed on that supervisor until its browser connection is replaced.
 
 Chromium retains successful HTTP authentication in its browser session, just as
 with a manually completed native prompt. This is not a vault lock or a logout;
-close the browser session to discard its native authentication state. On plain
-HTTP, Basic authentication is not encrypted on the network; use HTTPS where the
+close the browser session to discard its native authentication state.
+A refusal does not clear previously cached browser credentials or prove they
+were unused; it means this fill did not complete a newly authorized login.
+On plain HTTP, Basic authentication is not encrypted on the network; use HTTPS where the
 site supports it. Backends without the supervised CDP transport cannot perform
 native authentication. Existing HTML form, payment, address and 2FA fills are
 unchanged.

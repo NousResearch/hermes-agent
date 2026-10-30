@@ -92,14 +92,14 @@ describe('Desktop MCP client callback lifecycle', () => {
         connectionId,
         'origin-profile',
         'mcp.servers.oauth.start',
-        { name: 'reports', client_redirect_uri: redirectUri },
+        { name: 'reports', client_redirect_uri: redirectUri, profile: 'origin-profile' },
         60_000
       )
       expect(rpc).toHaveBeenCalledWith(
         connectionId,
         'origin-profile',
         'mcp.servers.oauth.callback',
-        { name: 'reports', session_id: 'flow-1', ...callbackResult },
+        { name: 'reports', session_id: 'flow-1', ...callbackResult, profile: 'origin-profile' },
         60_000
       )
       expect(rpc.mock.calls.every(call => call[0] === connectionId && call[1] === 'origin-profile')).toBe(true)
@@ -140,7 +140,7 @@ describe('Desktop MCP client callback lifecycle', () => {
       'remote-gateway',
       'origin-profile',
       'mcp.servers.oauth.cancel',
-      { name: 'reports', session_id: 'flow-1' },
+      { name: 'reports', session_id: 'flow-1', profile: 'origin-profile' },
       60_000
     )
     expect(rpc.mock.calls.every(call => call[0] === 'remote-gateway' && call[1] === 'origin-profile')).toBe(true)

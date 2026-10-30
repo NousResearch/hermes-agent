@@ -1,18 +1,32 @@
 """A closed agent's message bodies leave the token-estimate memo.
 
-``_MSG_TOKENS_CACHE`` pins every string it fingerprints, so after ``AIAgent.close()`` a long-lived
+``_MSG_TOKENS_CACHE`` keys hold every string they fingerprint, so after ``AIAgent.close()`` a long-lived
 ``hermes serve`` kept each closed session's message bodies resident until 4096 newer messages evicted
 them (~50 MB after 20 sessions x 10 turns of 256 KB replies on macOS).
 """
 
 import threading
+from typing import Any
 
 from agent.model_metadata import _MSG_TOKENS_CACHE, estimate_messages_tokens_rough
 from run_agent import AIAgent
 
 
-def _pinned_ids() -> set[int]:
-    return {id(pin) for pins, _text, _images in _MSG_TOKENS_CACHE.values() for pin in pins}
+def _held() -> set[str]:
+    """Long strings the memo still holds."""
+    return _held_in(list(_MSG_TOKENS_CACHE.items()))
+
+
+def _held_in(value: Any) -> set[str]:
+    found: set[str] = set()
+    stack: list[Any] = [value]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, (list, tuple)):
+            stack.extend(value)
+        elif isinstance(value, str) and len(value) > 64:
+            found.add(value)
+    return found
 
 
 def _closing_agent(messages: list) -> AIAgent:
@@ -34,12 +48,12 @@ def test_close_evicts_the_conversations_memo_entries_and_keeps_others():
     live = [{"role": "assistant", "content": other}]
     before = estimate_messages_tokens_rough(closed)
     estimate_messages_tokens_rough(live)
-    assert id(reply) in _pinned_ids() and id(other) in _pinned_ids()
+    assert reply in _held() and other in _held()
 
     _closing_agent(closed).close()
 
-    assert id(reply) not in _pinned_ids()
-    assert id(other) in _pinned_ids()
+    assert reply not in _held()
+    assert other in _held()
     # Eviction only drops a pure-function memo: the estimate is unchanged when recomputed.
     assert estimate_messages_tokens_rough(closed) == before
 
@@ -68,12 +82,12 @@ def test_compression_evicts_the_bodies_the_summary_replaced(tmp_path, monkeypatc
     compressed = [{"role": "user", "content": "[summary] " + "s" * 80}, history[2]]
     monkeypatch.setattr(conversation_compression, "compress_context",
                         lambda *_a, **_kw: (compressed, "prompt"))
-    assert id(dropped) in _pinned_ids()
+    assert dropped in _held()
 
     agent._compress_context(history, "sys", commit_fence=CompressionCommitFence())
 
-    assert id(dropped) not in _pinned_ids()
-    assert id(kept) in _pinned_ids()  # still live in the compressed history
+    assert dropped not in _held()
+    assert kept in _held()  # still live in the compressed history
 
 
 def test_close_evicts_the_system_prompt_the_history_never_holds():
@@ -81,14 +95,14 @@ def test_close_evicts_the_system_prompt_the_history_never_holds():
     estimate_messages_tokens_rough([{"role": "system", "content": system_prompt}])
     agent = _closing_agent([{"role": "user", "content": "hi"}])
     agent._cached_system_prompt = system_prompt
-    assert id(system_prompt) in _pinned_ids()
+    assert system_prompt in _held()
 
     agent.close()
 
-    assert id(system_prompt) not in _pinned_ids()
+    assert system_prompt not in _held()
 
 
-def test_compression_telemetry_does_not_pin_the_one_shot_summary_prompt():
+def test_compression_telemetry_does_not_hold_the_one_shot_summary_prompt():
     from agent.context_compressor_telemetry import CompressionTelemetryMixin
 
     recorder = CompressionTelemetryMixin()
@@ -99,7 +113,7 @@ def test_compression_telemetry_does_not_pin_the_one_shot_summary_prompt():
                                           max_tokens=None, duration_ms=1)
 
     assert recorder._active_compression_telemetry["aux_prompt_tokens"] > 0
-    assert id(prompt) not in _pinned_ids()
+    assert prompt not in _held()
 
 
 def test_close_evicts_a_prompt_caching_split_system_prompt():
@@ -114,8 +128,79 @@ def test_close_evicts_a_prompt_caching_split_system_prompt():
     agent = _closing_agent([{"role": "user", "content": "hi"}])
     agent._cached_system_prompt = full
     agent._cached_system_prompt_static = static
-    assert id(static) in _pinned_ids()
+    assert static in _held()
 
     agent.close()
 
-    assert id(static) not in _pinned_ids()
+    assert static not in _held()
+
+
+def _turn_agent() -> AIAgent:
+    from unittest.mock import MagicMock, patch
+
+    with (patch("model_tools.get_tool_definitions", return_value=[]),
+          patch("model_tools.check_toolset_requirements", return_value={}),
+          patch("agent.process_bootstrap.OpenAI")):
+        agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1",
+                        quiet_mode=True, skip_context_files=True, skip_memory=True)
+    agent.client = MagicMock()
+    agent._disable_streaming = True
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    return agent
+
+
+def _run_marked_turn(agent: AIAgent) -> None:
+    from unittest.mock import patch
+
+    from tests.agent.test_run_agent import _mock_response
+
+    agent._cached_system_prompt = "a long cached per-session system prompt " * 500
+    agent.ephemeral_system_prompt = "an ephemeral gateway channel prompt " * 200
+    agent.prefill_messages = [{"role": "user", "content": "a prefilled example question " * 100},
+                              {"role": "assistant", "content": "a prefilled example answer " * 100}]
+    agent._interruptible_api_call = lambda _kw: _mock_response(content="the reply", finish_reason="stop")
+    with (patch.object(agent, "_flush_messages_to_session_db"), patch.object(agent, "_persist_session"),
+          patch.object(agent, "_save_trajectory"), patch.object(agent, "_cleanup_task_resources")):
+        agent.run_conversation("a pasted log the user ended with a newline " * 100 + "\n")
+
+
+def _request_only() -> list[str]:
+    return [s for s in _held() if "ephemeral gateway" in s or "prefilled example" in s or "pasted log" in s]
+
+
+def test_close_evicts_the_request_only_strings_a_real_turn_estimated():
+    """The ephemeral system-prompt concat, prefill rows and the whitespace-stripped user row reach the memo
+    only through the per-call request copy; no history or cached prompt holds them, so release by value
+    alone left them until FIFO eviction."""
+    agent = _turn_agent()
+    _run_marked_turn(agent)
+    assert len(_request_only()) >= 4  # concat, 2 prefill rows, stripped user row (+ the history's copy)
+
+    agent.close()
+
+    assert not _request_only()
+
+
+def test_release_clients_evicts_the_turns_memo_entries():
+    """Gateway cache eviction and background-review forks end in release_clients(), never close()."""
+    agent = _turn_agent()
+    _run_marked_turn(agent)
+    agent._session_messages = []  # gateway eviction drops the history right after release_clients()
+    assert _request_only()
+
+    agent.release_clients()
+
+    assert not _request_only()
+
+
+def test_a_rebuilt_equal_string_reuses_its_memo_entry():
+    """Per-request strings rebuilt with the same bytes (the ephemeral concat, a skill-split tail, a MoA
+    tool-result fold) hit the existing entry instead of holding one more copy per request."""
+    base = "a cached system prompt body " * 500
+    first = estimate_messages_tokens_rough([{"role": "system", "content": base + "\n\nephemeral"}])
+    for _ in range(5):
+        assert estimate_messages_tokens_rough([{"role": "system", "content": base + "\n\nephemeral"}]) == first
+
+    target = base + "\n\nephemeral"
+    assert sum(1 for key, _entry in list(_MSG_TOKENS_CACHE.items()) if target in _held_in(key)) == 1

@@ -11,6 +11,7 @@ import os
 import time
 from contextlib import contextmanager, suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from threading import RLock
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
@@ -30,20 +31,23 @@ from tools.skill_provenance import is_background_review
 
 logger = logging.getLogger(__name__)
 
-# Per-session discovery cache: {cache_key: (signature, timestamp, skills_list)}. Signature =
+# Parsed catalog cache per profile and ordered search roots: {key: (signature, timestamp, records)}. Signature =
 # every catalog directory's mtime and child-dir names, walked like the catalog itself (an install
-# under an existing category such as ``mlops/training/`` moves only that dir's mtime) + the disabled
-# set (config-only change, no mtime) + platform; the TTL bounds staleness from in-place SKILL.md
-# edits, which no directory signature can see.
+# under an existing category such as ``mlops/training/`` moves only that dir's mtime) + platform.
+# Visibility and disabled state are evaluated live; the TTL bounds staleness from in-place
+# SKILL.md edits, which no directory signature can see.
 _SKILLS_CACHE: dict = {}
+_SKILLS_CACHE_LOCK = RLock()
 _SKILLS_CACHE_TTL_SECONDS = 30.0
+_SKILLS_CACHE_MAX_ENTRIES = 256
 # Deepest directory the signature descends to below a root (a skill sits at <cat>/<sub>/<skill>/).
 _SIGNATURE_MAX_DEPTH = 6
 
 
 def clear_skills_cache() -> None:
-    """Drop the scanned catalog so the next listing re-scans (explicit reloads must not wait out the TTL)."""
-    _SKILLS_CACHE.clear()
+    """Drop scanned catalogs so the next listing re-scans (explicit reloads must not wait out the TTL)."""
+    with _SKILLS_CACHE_LOCK:
+        _SKILLS_CACHE.clear()
 
 
 def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
@@ -228,50 +232,30 @@ def skill_search_dirs() -> tuple[list[tuple[int, Path]], Path]:
 
 def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False) -> list[dict[str, Any]]:
     """Every scanned skill resolved by ``agent.skill_utils.resolve_skill_catalog`` (status /
-    load_name / tier / path), visible ones only unless *include_hidden*; cached per session.
+    load_name / tier / path), visible ones only unless *include_hidden*. Filesystem records are
+    cached per profile and search roots; visibility is evaluated for the current execution.
     Resolution runs over ALL files first — skill_view ignores platform/disabled gates when
     collecting candidates, so it asks for hidden rows too."""
-    from agent.skill_utils import (
-        TIER_PROJECT, is_disabled_entry, iter_project_skill_files, iter_skill_index_files, resolve_skill_catalog)
-    cache_key = ("with_disabled" if skip_disabled else "filtered", include_hidden)
+    from tools.skills_tool_catalog import _read_catalog, _select_catalog
+
     disabled = set() if skip_disabled else _get_disabled_skill_names()
     roots, _ = skill_search_dirs()
-    signature = _skills_scan_signature([d for _t, d in roots], disabled)
+    cache_key = (str(get_hermes_home()), tuple((tier, str(path)) for tier, path in roots))
+    signature = _skills_scan_signature([d for _t, d in roots], set())
     now = time.monotonic()
-    cached = _SKILLS_CACHE.get(cache_key)
+    with _SKILLS_CACHE_LOCK:
+        cached = _SKILLS_CACHE.get(cache_key)
     if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
-        # Shallow copies: callers mutate the returned dicts (web_server annotates
-        # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
-        return [dict(s) for s in cached[2]]
-    scanned = []
-    for tier, scan_dir in roots:  # project dirs go through the quarantine chokepoint
-        _iter = iter_project_skill_files if tier == TIER_PROJECT else lambda d: iter_skill_index_files(d, "SKILL.md")
-        for skill_md in _iter(scan_dir):
-            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
-                continue
-            try:
-                frontmatter, body = _parse_frontmatter(_read_skill_text(skill_md)[:4000])
-                description = frontmatter.get("description", "")
-                if not description:  # first non-heading body line (a null value stays null)
-                    description = next((ln for ln in map(str.strip, body.strip().split("\n"))
-                                        if ln and not ln.startswith("#")), description)
-                scanned.append({
-                    "name": frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH],
-                    "description": _truncate_description(description),
-                    "category": _get_category_from_path(skill_md), "tier": tier, "root": scan_dir,
-                    "path": skill_md, "visible": bool(skill_matches_platform(frontmatter)
-                                                      and skill_matches_environment(frontmatter)
-                                                      and skill_matches_apps(frontmatter))})
-            except (UnicodeDecodeError, PermissionError) as e:
-                logger.debug("Failed to read skill file %s: %s", skill_md, e)
-            except Exception as e:
-                logger.debug("Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True)
-    skills = [s for s in resolve_skill_catalog(scanned)
-              if (s.pop("visible") or include_hidden) and not is_disabled_entry(s, disabled)]
-    # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the
-    # signature, so the next call re-scans instead of serving a torn result.
-    _SKILLS_CACHE[cache_key] = (signature, now, skills)
-    return [dict(s) for s in skills]
+        records = cached[2]
+    else:
+        records = _read_catalog(roots)
+        # Keep the pre-read signature so a concurrent write is seen on the next lookup.
+        with _SKILLS_CACHE_LOCK:
+            if len(_SKILLS_CACHE) >= _SKILLS_CACHE_MAX_ENTRIES:
+                clear_skills_cache()
+            _SKILLS_CACHE[cache_key] = (signature, now, records)
+    # Eligibility belongs to the current execution; only filesystem parsing is cached.
+    return _select_catalog(records, disabled, include_hidden)
 
 
 def find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:

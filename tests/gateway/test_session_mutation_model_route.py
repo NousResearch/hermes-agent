@@ -415,3 +415,38 @@ async def test_a_model_committed_on_a_frozen_bot_chat_holds_when_an_open_adopts_
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+@pytest.mark.asyncio
+async def test_a_following_pick_keeps_secrets_outside_the_followed_sections(home, endpoints):
+    """A following pick must not lose the frozen secrets it does not follow.
+
+    ``recover_config_secrets`` skips ``FOLLOW_SECTIONS`` for a following session, so a profile secret
+    outside them (an MCP ``headers`` entry here) is the only way the displacement map in
+    ``prepare_model`` is non-empty. That map was shadowed by the route-bound key tuple in a
+    ``follows_profile`` branch, which made every such pick raise
+    ``AttributeError: 'tuple' object has no attribute 'get'``.
+    """
+    from gateway.session_policy import policy_for_source
+    from tests.gateway.test_bot_chat_follows_profile import _follows
+    (_, url_a), _ = endpoints
+    _configure(home, 'original', url_a, 'key-a')
+    config = json.loads((home / 'config.yaml').read_text())
+    config['mcp_servers'] = {'docs': {'url': 'https://example.invalid/mcp',
+                                      'headers': {'Authorization': 'Bearer sekrit'}}}
+    (home / 'config.yaml').write_text(json.dumps(config), encoding='utf-8')
+    store, runner, authority, owner = _owner(home)
+    _bind_resolver(runner)
+    try:
+        live = await _create(owner, authority, home, 'follow')
+        sid = next(sid for sid, value in authority.sessions.items() if value is live)
+        assert _follows(runner, live)
+        assert policy_for_source(runner, live.source).config_secret_ref, 'the MCP header must be a frozen secret'
+        response = await _pick(owner, authority, sid, {'model': 'picked', 'provider': 'custom'})
+        assert 'result' in response, response
+        assert response['result']['model'] == 'picked'
+        after = policy_for_source(runner, live.source)
+        assert after.config(authority)['mcp_servers']['docs']['headers']['Authorization'] == 'Bearer sekrit'
+        assert after.config(authority)['model']['api_key'] == 'key-a'
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

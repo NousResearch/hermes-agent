@@ -706,6 +706,19 @@ class PluginContext(PluginCapabilityCtxMixin):
         logger.info("Plugin '%s' registered context engine: %s", self.manifest.name, engine.name)
         return handle
 
+    @_serialized_replacement
+    def register_final_answer_provider(self, provider_id: str, provider) -> Optional[PluginRegistration]:
+        """Register an optional final-answer provider (see ``agent.final_answer_extensions``).
+
+        Registration is load-owned: a failed or abandoned load and plugin unload remove it.
+        """
+        if not provider_id or not callable(getattr(provider, 'before_final', None)):
+            raise self._refuse("an invalid final-answer provider")
+        if provider_id in self._manager._final_answer_providers:
+            raise self._refuse("a duplicate final-answer provider %r" % (provider_id,))
+        return self._track_mapping_entry(
+            "final_answer_provider", provider_id, self._manager._final_answer_providers, (self.manifest.name, provider))
+
     def register_context_reference(self, provider) -> None:
         """Register a :class:`agent.context_references.ContextReferenceProvider`; ``provider.prefix``
         defines ``@<prefix>:``. Built-in prefixes (diff, staged, file, folder, git, url) are
@@ -1096,6 +1109,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # messaging gateway and a TUI in one process would otherwise clobber each other.
         self._tui_message_injector: tuple[object, Callable] | None = None
         self._context_engine = None  # Set by a plugin via register_context_engine()
+        self._final_answer_providers: dict[str, tuple[str, Any]] = {}  # final-answer provider
         # Manager-local registries keyed by name (see the matching ``PluginContext.register_*``):
         # plugins, hooks, middleware, CLI + slash commands, prompt sections, skills (qualified name ->
         # metadata), portable MCP servers, auxiliary tasks, approval transports, Slack action handlers

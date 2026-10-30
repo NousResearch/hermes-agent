@@ -1,0 +1,24 @@
+name: laya-oneshot
+repo: https://github.com/gergeisabo/laya-oneshot
+sha: 0251efbaa1dc530760fe790ff1e6fa2cd8e8b2d4
+description: >-
+  Ask typed questions about a piece of text — yes/no, pick one of N, a score on a
+  scale — and get probabilities back in about a second, from an open Laya model that is
+  not running. Loads the checkpoint, answers, exits: no server, no port, no resident
+  memory, no API key. Runs the model locally or on another machine over ssh, so a laptop
+  that is otherwise off answers one call and goes back to sleep. Ships four question sets
+  (triage, email, guard, router) and accepts your own. Disclosure — the text you decide
+  about is sent to the model host, which is either this machine or an ssh host you
+  configure; no third party is called. The model is a ~400M encoder, not a language model:
+  do not use it for multi-step reasoning.
+maintainer: gergeisabo
+tier: community
+category: tools
+docs_url: https://github.com/gergeisabo/laya-oneshot#readme
+version: "0.1.0"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [laya_decide]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

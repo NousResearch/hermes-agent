@@ -197,6 +197,12 @@ class LoopState:
     # Gateway routing (platform / chat_id / chat_type / thread_id) captured at creation so the
     # idle watcher can inject ticks into the right chat. Empty for CLI/TUI (own schedulers).
     route: dict[str, str] = field(default_factory=dict)
+    # sys-8xces5: (tick index, payload digest) of the last wakeup whose injection raised AFTER
+    # the prompt persisted as a role=user turn. Rolling that tick back re-fires the same '#N'
+    # prompt and duplicates the turn; ``fire_tick`` coalesces a re-render whose index+digest
+    # match instead of re-injecting. 0/"" = nothing landed-unconfirmed.
+    landed_tick: int = 0
+    landed_digest: str = ""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -383,6 +389,12 @@ def _digest_response(response: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
 
 
+def wakeup_payload_digest(message: str) -> str:
+    """Exact-digest of a fired wakeup payload — the coalescing key half (sys-8xces5). NOT
+    normalized like ``_digest_response``: the dedupe compares persisted byte-identical turns."""
+    return hashlib.sha256((message or "").encode("utf-8", "replace")).hexdigest()
+
+
 class LoopManager:
     """Per-session /loop state + tick decisions.
 
@@ -508,28 +520,54 @@ class LoopManager:
         The message is the wakeup-framed prompt, or the raw command when the loop's prompt is
         itself a slash command (``/loop 10m /recap``). Marks ``awaiting_response`` so the tick
         can't double-fire; drivers MUST follow up with ``complete_tick`` (or ``abandon_tick``).
+
+        Coalescing (sys-8xces5): when a prior injection raised AFTER the prompt persisted
+        (``abandon_tick(payload=...)``), re-firing the same tick index re-claims the tick and
+        returns None instead of re-rendering the '#N' prompt — one persisted user turn per index.
         """
         s = self._state
         if s is None or not self.is_due():
             return None
-        s.ticks_fired += 1
+        next_index = s.ticks_fired + 1
+        message = self._render_wakeup(next_index)
+        s.ticks_fired = next_index
         s.last_fired_at = time.time()
         s.awaiting_response = True
         # Provisional schedule from NOW: complete_tick reschedules from turn end, but if the
         # process dies mid-turn this keeps the persisted loop from being 'due' in a tight loop.
         s.next_due_at = s.last_fired_at + (s.current_delay or s.interval_seconds or self_paced_floor_seconds())
+        if message is not None and s.landed_tick == next_index and wakeup_payload_digest(message) == s.landed_digest:
+            # The prompt for this index already persisted as a role=user turn — claim, don't re-inject.
+            s.landed_tick, s.landed_digest = 0, ""
+            self._save()
+            return None
         self._save()
+        return message
 
+    def _render_wakeup(self, tick: int) -> Optional[str]:
+        """The wakeup-framed prompt for tick index ``tick``; raw command for slash loops."""
+        s = self._state
+        if s is None:
+            return None
         if s.prompt.lstrip().startswith("/"):
             return s.prompt.strip()
         cadence = f", {s.cadence_label()}" if s.mode == "interval" else ", self-paced"
         template = WAKEUP_PROMPT_WITH_UNTIL_TEMPLATE if s.until else WAKEUP_PROMPT_TEMPLATE
-        return template.format(tick=s.ticks_fired, cadence=cadence, prompt=s.prompt, until=s.until)
+        return template.format(tick=tick, cadence=cadence, prompt=s.prompt, until=s.until)
 
-    def abandon_tick(self) -> None:
-        """Roll back a fired tick whose injection failed (nothing ran)."""
+    def abandon_tick(self, payload: Optional[str] = None) -> None:
+        """Roll back a fired tick whose injection failed (nothing ran).
+
+        Pass the fired ``payload`` when the raise came AFTER the prompt persisted as a role=user
+        turn (sys-8xces5): the tick is NOT rolled back — re-firing it would duplicate the turn —
+        the (index, digest) is recorded as landed so the next ``fire_tick`` coalesces the re-fire.
+        """
         s = self._state
         if s is None or not s.awaiting_response:
+            return
+        if payload is not None:
+            s.landed_tick, s.landed_digest = s.ticks_fired, wakeup_payload_digest(payload)
+            self._save()
             return
         s.awaiting_response = False
         s.ticks_fired = max(0, s.ticks_fired - 1)
@@ -722,6 +760,7 @@ __all__ = [
     "LOOP_COMPLETE_MARKER",
     "WAKEUP_PROMPT_TEMPLATE",
     "WAKEUP_PROMPT_WITH_UNTIL_TEMPLATE",
+    "wakeup_payload_digest",
     "LoopManager",
     "LoopState",
     "clear_loop",

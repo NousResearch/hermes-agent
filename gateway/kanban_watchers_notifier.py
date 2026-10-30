@@ -159,9 +159,45 @@ def _platform_names(mapping: Any) -> set[str]:
     return {getattr(platform, "value", str(platform)).lower() for platform in mapping}
 
 
+# The desktop / hermes-webui surface stamps its sessions with source platform
+# "webui", but the gateway actually serves that chat through the "local"
+# adapter: ``Platform`` has no WEBUI member (``Platform("webui")`` resolves to
+# None via ``_missing_``) and the sub's chat_id carries a ``local-`` prefix.
+# Without this alias the notifier's ``active_platforms`` membership check skips
+# every webui subscription at DEBUG level — no WARNING, no error — so a card
+# that finishes never wakes its origin. Map the source label to the adapter that
+# can actually deliver. The cursor row keeps its original platform; only the
+# delivery / adapter-resolution path is aliased.
+_PLATFORM_DELIVERY_ALIASES = {"webui": "local"}
+
+
+def _delivery_platform(platform: str, active_platforms: set) -> str:
+    """Resolve a subscription's source platform to the connected gateway adapter
+    platform that can deliver to it. Returns the original when it is already
+    connected or no alias applies (preserving the prior skip behaviour)."""
+    if platform in active_platforms:
+        return platform
+    alias = _PLATFORM_DELIVERY_ALIASES.get(platform)
+    if alias and alias in active_platforms:
+        return alias
+    return platform
+
+
 def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profile: Optional[str]) -> Any:
     """Resolve a durable route without turning a missing secondary bot into primary authority."""
     adapter = runner._authorization_adapter(platform, owner_profile)
+    # Aliased desktop delivery (webui→local): the ``local`` transport is a
+    # gateway-level adapter, not a per-profile bot. When the session's profile
+    # has no own adapter for the aliased platform, resolve it from the primary
+    # map so the desktop completion wake lands instead of being silently
+    # skipped. Guarded to fire ONLY when an alias was actually applied
+    # (sub's original platform differs from the resolved target and is a known
+    # alias), so it never lets an unrelated secondary borrow the primary bot.
+    if adapter is None and sub is not None:
+        original = (sub.get("platform") or "").lower()
+        target = getattr(platform, "value", str(platform)).lower()
+        if original != target and _PLATFORM_DELIVERY_ALIASES.get(original) == target:
+            adapter = (getattr(runner, "_primary_adapters", dict)() or {}).get(platform)
     config = getattr(runner, "config", None)
     if not getattr(config, "multiplex_profiles", False):
         return adapter
@@ -303,13 +339,17 @@ class _Collector:
         """Claim one subscription's unseen events; None when skipped or nothing new."""
         owner_profile = sub.get("notifier_profile") or None
         platform = (sub.get("platform") or "").lower()
-        if platform not in self.active_platforms:
+        # A "webui" (desktop) subscription is delivered through the connected
+        # "local" adapter; see _PLATFORM_DELIVERY_ALIASES. The cursor row keeps
+        # its original platform — only the delivery / adapter path is aliased.
+        delivery_platform = _delivery_platform(platform, self.active_platforms)
+        if delivery_platform not in self.active_platforms:
             logger.debug("kanban notifier: subscription for %s on %s skipped; adapter not connected",
                          sub.get("task_id"), platform or "<missing>")
             return None
         from gateway.config import Platform
-        if _adapter_for_subscription(self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
-            _warn_anchorless_thread_sub_once(sub, platform)
+        if _adapter_for_subscription(self.runner, Platform(delivery_platform), sub, owner_profile or self.notifier_profile) is None:
+            _warn_anchorless_thread_sub_once(sub, delivery_platform)
             return None
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
@@ -320,7 +360,7 @@ class _Collector:
         task = self.kb.get_task(conn, sub["task_id"])
         logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                      len(events), sub["task_id"], slug, old_cursor, cursor)
-        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug}
+        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug, "delivery_platform": delivery_platform}
 
     def collect_board(self, slug: str) -> None:
         """Claim events on one board, appending delivery dicts to ``deliveries``."""
@@ -504,7 +544,11 @@ class _KanbanNotification:
         self.sub = sub = d["sub"]
         self.task = task = d["task"]
         self.board_slug = d.get("board")
-        self.platform_str = (sub["platform"] or "").lower()
+        # Delivery resolves against the aliased adapter platform (webui→local);
+        # cursor ops below (advance/rewind/record_notify_ping/sub_key) still use
+        # self.sub's ORIGINAL platform, so the subscription row stays correctly
+        # keyed and its cursor advances on the row that was claimed.
+        self.platform_str = (d.get("delivery_platform") or sub["platform"] or "").lower()
         self.task_id = sub["task_id"]
         self.sub_profile = sub.get("notifier_profile") or ""
         self.title = (task.title if task else sub["task_id"])[:120]

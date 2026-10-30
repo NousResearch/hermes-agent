@@ -13,6 +13,8 @@ import time
 from mcp.shared.auth import OAuthMetadata
 from pydantic import AnyHttpUrl
 
+from agent.ssl_verify import resolve_httpx_verify
+
 DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 
 
@@ -216,7 +218,8 @@ async def login_device(name, server_url, oauth_config):
                                      token_user_agent=cfg.get("user_agent"))
     httpx = sdk_httpx()
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False,
+                                     verify=resolve_httpx_verify(base_url=server_url)) as client:
             await _discover(client, provider)
             await _register(client, provider, cfg)
             tokens = await _authorize(client, provider, cfg)

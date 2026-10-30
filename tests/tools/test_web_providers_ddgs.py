@@ -286,3 +286,59 @@ class TestDDGSSearchOnlyErrors:
         assert result["success"] is False
         assert "search-only" in result["error"].lower()
         assert "duckduckgo" in result["error"].lower() or "ddgs" in result["error"].lower()
+
+    def test_search_only_ddgs_pin_keeps_extract_autodetect_independent(self, monkeypatch, tmp_path):
+        """A search-only pin leaves the full extract resolver free to select a capable provider."""
+        import asyncio
+
+        from agent import web_search_registry
+        from tools import web_tools
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("web:\n  search_backend: ddgs\n", encoding="utf-8")
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(web_search_registry, "_keyless_tier_enabled", lambda: True)
+        monkeypatch.setattr(web_search_registry, "_keyless_preference", lambda: ("exa",))
+
+        exa = web_search_registry.get_provider("exa")
+        monkeypatch.setattr(exa, "is_available", lambda: False)
+        monkeypatch.setattr(exa, "is_keyless_available", lambda: True)
+
+        async def _extract(urls, format=None):
+            return [{"url": url, "title": "controlled", "content": "resolved by exa"} for url in urls]
+
+        async def _allow_ssrf(_url: str) -> bool:
+            return True
+
+        monkeypatch.setattr(exa, "extract", _extract)
+        monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
+
+        assert web_tools._get_search_backend() == "ddgs"
+        result = json.loads(asyncio.get_event_loop().run_until_complete(
+            web_tools.web_extract_tool(["https://example.com/fixture"])
+        ))
+        assert result["results"][0]["content"] == "resolved by exa"
+
+    @pytest.mark.parametrize("config", [
+        {"extract_backend": "nous"},
+        {"backend": "nous"},
+    ])
+    def test_managed_extract_selection_maps_to_firecrawl(self, monkeypatch, config):
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: config)
+
+        assert web_tools._get_extract_backend() == "firecrawl"
+
+    @pytest.mark.parametrize("config", [
+        {"extract_backend": "ddgs"},
+        {"backend": "ddgs"},
+    ])
+    def test_explicit_ddgs_selection_remains_strict(self, monkeypatch, config):
+        """Explicit per-capability and shared selections are never silently rerouted."""
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: config)
+        assert web_tools._get_extract_backend() == "ddgs"

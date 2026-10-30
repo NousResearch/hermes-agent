@@ -2452,6 +2452,18 @@ DEFAULT_CONFIG = {
             "enabled": True,        # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
             "binary_path": "",      # absolute path to bw; empty = PATH.
         },
+        # SMS one-time codes from the local macOS Messages store for browser_vault_enter_code. Off by
+        # default. Only sites listed here are eligible, and only texts from that site's senders:
+        #   sites: {amazon.com: {senders: ["72656"], keywords: [amazon]}}
+        # `senders` (required) are exact short codes, full international numbers or sender IDs;
+        # `keywords` (optional) must each appear as a whole word. Texts must arrive within
+        # lookback_seconds of the request, and each text is used at most once. Audit: logs/vault_sms_otp.log.
+        "sms_otp": {
+            "enabled": False,
+            "lookback_seconds": 120,
+            "max_wait_seconds": 90,
+            "sites": {},
+        },
     },
     "secrets": {
         # Optional ordering of enabled sources (e.g. [onepassword, bitwarden]); default registration

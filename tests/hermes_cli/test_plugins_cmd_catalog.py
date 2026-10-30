@@ -276,6 +276,7 @@ def test_update_of_a_subdir_install_keeps_files_the_user_created_or_edited(world
     (src / "dashboard" / "manifest.json").write_text("{}")
     (src / "hooks").mkdir()
     (src / "hooks" / "run.cjs").write_text("module.exports = 1\n")
+    (mono / "unrelated.txt").write_text("Other monorepo content\n")
     sp.run(["git", "init", "-q"], cwd=mono, check=True, env=_GIT_ENV)
     pin = {"sha": _commit(mono, "v1")}
 
@@ -296,6 +297,17 @@ def test_update_of_a_subdir_install_keeps_files_the_user_created_or_edited(world
         target = pc._install_plugin_core(f"{mono.as_uri()}#plugins/sub-plugin", force=False)[0]
     assert not (target / ".git").exists()
 
+    update_checkouts = []
+    clone_plugin = pc._clone_plugin_repo
+
+    def observe_clone(clone_root, *args, **kwargs):
+        revision = clone_plugin(clone_root, *args, **kwargs)
+        update_checkouts.append((clone_root / "unrelated.txt").exists())
+        return revision
+
+    if via == "catalog":
+        monkeypatch.setattr(pc, "_clone_plugin_repo", observe_clone)
+
     (target / "config.yaml").write_text("endpoint: mine\n")
     (target / "data").mkdir()
     (target / "data" / "state.json").write_text("{}")
@@ -315,6 +327,8 @@ def test_update_of_a_subdir_install_keeps_files_the_user_created_or_edited(world
     assert not (target / "desktop").exists()
     assert not (target / "server.js").exists()
     assert not (target / "dashboard").exists() and not (target / "hooks" / "run.cjs").exists()
+    if via == "catalog":
+        assert update_checkouts == [False, False], "Preview and publication must both use sparse checkouts"
 
 
 def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):

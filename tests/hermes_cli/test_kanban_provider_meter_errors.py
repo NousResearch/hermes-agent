@@ -25,9 +25,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import hermes_cli.kanban_db as kb
-from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow, PooledUsageSnapshot
 from agent.credential_pool import PooledCredential, CredentialPool, STATUS_DEAD, STATUS_EXHAUSTED
 from hermes_cli.kanban_db import _read_assignee_credentials, _remediate_provider_meter
+from hermes_cli.kanban_provider_meter import (
+    ProviderMeterCandidate,
+    remediate_candidate,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -960,3 +964,109 @@ class TestCredentialPoolAuthStoreIntegration:
 
         assert "anthropic" in creds
         assert "openai-codex" not in creds
+
+
+def _pooled(label: str, snapshot: AccountUsageSnapshot, fingerprint: str) -> PooledUsageSnapshot:
+    return PooledUsageSnapshot(
+        label=label,
+        fingerprint=fingerprint,
+        active=False,
+        status=None,
+        snapshot=snapshot,
+    )
+
+
+def test_pool_meter_uses_later_healthy_account_when_first_is_unavailable():
+    pooled = [
+        _pooled("dead", _unavailable("anthropic", "429 quota"), "sha256:dead"),
+        _pooled("healthy", _snapshot("anthropic", 20), "sha256:healthy"),
+    ]
+    out = {}
+
+    selected = remediate_candidate(
+        [ProviderMeterCandidate("anthropic", "claude-sonnet-4-6")],
+        _pool_readings={"anthropic": pooled},
+        _out_readings=out,
+    )
+
+    assert selected == ProviderMeterCandidate("anthropic", "claude-sonnet-4-6")
+    assert out["anthropic"] == pooled
+
+
+def test_pool_meter_reports_none_only_when_every_account_is_unavailable():
+    pooled = [
+        _pooled("dead", _unavailable("anthropic", "429 quota"), "sha256:dead"),
+        _pooled("broken", _unavailable("anthropic", "connection error"), "sha256:broken"),
+    ]
+    out = {}
+
+    selected = remediate_candidate(
+        [ProviderMeterCandidate("anthropic", "claude-sonnet-4-6")],
+        _pool_readings={"anthropic": pooled},
+        _out_readings=out,
+    )
+
+    assert selected is None
+    assert out["anthropic"] == pooled
+
+
+def test_pool_meter_serializes_all_accounts_and_selected_preference_without_tokens():
+    pooled = [
+        _pooled(
+            "first",
+            AccountUsageSnapshot(
+                provider="anthropic",
+                source="pool",
+                fetched_at=datetime.now(timezone.utc),
+                windows=(
+                    AccountUsageWindow(label="Session", used_percent=0),
+                    AccountUsageWindow(label="Weekly", used_percent=90),
+                ),
+            ),
+            "sha256:first-secret",
+        ),
+        _pooled("second", _snapshot("anthropic", 20), "sha256:second-secret"),
+    ]
+
+    serialized = kb._serialize_meter_readings({"anthropic": pooled})["anthropic"]
+
+    assert [account["label"] for account in serialized["accounts"]] == ["first", "second"]
+    assert serialized["preferred_account"] == {
+        "label": "second",
+        "fingerprint": "sha256:s",
+    }
+    assert "secret" not in json.dumps(serialized)
+
+
+def test_pool_meter_serializes_account_details_when_all_accounts_fail():
+    pooled = [
+        _pooled("first", _unavailable("anthropic", "dead"), "sha256:first"),
+        _pooled("second", _unavailable("anthropic", "429"), "sha256:second"),
+    ]
+
+    serialized = kb._serialize_meter_readings({"anthropic": pooled})["anthropic"]
+
+    assert serialized["available"] is False
+    assert [account["label"] for account in serialized["accounts"]] == ["first", "second"]
+    assert "preferred_account" not in serialized
+
+
+def test_pool_meter_preserves_detail_only_usage_accounts():
+    detail_only = AccountUsageSnapshot(
+        provider="anthropic",
+        source="pool",
+        fetched_at=datetime.now(timezone.utc),
+        title="Subscription",
+        plan="pro",
+        details=("credits remaining: 12",),
+    )
+
+    serialized = kb._serialize_meter_readings({
+        "anthropic": [_pooled("detail", detail_only, "sha256:detail")],
+    })["anthropic"]
+
+    assert serialized["available"] is True
+    assert serialized["title"] == "Subscription"
+    assert serialized["plan"] == "pro"
+    assert serialized["details"] == ["credits remaining: 12"]
+    assert serialized["preferred_account"]["label"] == "detail"

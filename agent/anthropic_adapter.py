@@ -11,17 +11,19 @@ Auth supports:
 """
 
 import copy
+import hashlib
 import json
 import logging
 import os
 import platform
+import re
 import secrets
 import stat
 import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
 
@@ -1542,6 +1544,287 @@ _OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
 def _get_hermes_oauth_file() -> Path:
     return get_hermes_home() / ".anthropic_oauth.json"
+
+
+def _get_shared_hermes_oauth_file() -> Path:
+    """Return the profile-independent Hermes PKCE credential store."""
+    root = get_default_hermes_root()
+    home = get_hermes_home()
+    # Custom/container HERMES_HOME values are their own installation root, not
+    # profiles beneath the user's default root. This also keeps isolated test
+    # homes from publishing credentials into the real user's store.
+    try:
+        if home != root and root not in home.parents:
+            root = home
+    except (AttributeError, TypeError):
+        root = home
+    return root / ".anthropic_oauth.json"
+
+
+def _shared_pkce_label_filename(label: Optional[str]) -> str:
+    """Return the collision-resistant filename used for one shared PKCE grant.
+
+    The human-readable prefix is sanitized for the filesystem, so distinct
+    labels such as ``"team a"`` and ``"team_a"`` would otherwise collide; a
+    digest of the exact label keeps every grant in its own file.  The exact
+    label is also stored inside the payload (see
+    ``write_shared_hermes_oauth_credentials``) so discovery never has to
+    reverse the filename.
+    """
+    value = str(label or "default").strip() or "default"
+    if value in {".", ".."} or value.startswith(".") or "/" in value or "\\" in value:
+        raise ValueError("Invalid shared PKCE label")
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError("Invalid shared PKCE label")
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", value)
+    if not safe or safe in {".", ".."}:
+        raise ValueError("Invalid shared PKCE label")
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
+    return f"{safe[:48]}-{digest}.json"
+
+
+def _get_shared_hermes_oauth_dir() -> Path:
+    return _get_shared_hermes_oauth_file().parent / ".anthropic_oauth"
+
+
+def _get_shared_hermes_oauth_label_file(label: Optional[str]) -> Path:
+    return _get_shared_hermes_oauth_dir() / _shared_pkce_label_filename(label)
+
+
+def _find_shared_hermes_oauth_label_aliases(label: Optional[str]) -> List[Path]:
+    """Grant files for ``label`` that live under a non-canonical filename.
+
+    Earlier builds named the file ``<sanitized>.json`` (no digest); the exact
+    label is still recoverable from the payload.  Readers fall back to these
+    so a grant never goes dark across a filename-scheme change, and writers
+    retire them once the canonical file is published.  Only the payload's
+    ``label`` field identifies an alias -- never the filename -- so a stray
+    ``<label>.json`` without a label can neither be served nor retired.
+    """
+    want = str(label or "default").strip() or "default"
+    shared_dir = _get_shared_hermes_oauth_dir()
+    if not shared_dir.is_dir():
+        return []
+    try:
+        canonical = _get_shared_hermes_oauth_label_file(label)
+    except ValueError:
+        return []
+    aliases: List[Path] = []
+    for path in sorted(shared_dir.glob("*.json")):
+        if path == canonical:
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, IOError):
+            continue
+        if not isinstance(data, dict) or not data.get("accessToken"):
+            continue
+        if _shared_grant_payload_label(data) == want:
+            aliases.append(path)
+    return aliases
+
+
+def _shared_grant_payload_label(data: Any) -> Optional[str]:
+    """The label a per-label grant file declares for itself, or None.
+
+    Per-label files are always written with a string ``label`` (see
+    write_shared_hermes_oauth_credentials); a file without one is not a
+    trusted grant for any account, regardless of its filename.
+    """
+    if not isinstance(data, dict):
+        return None
+    label = data.get("label")
+    if not isinstance(label, str):
+        return None
+    label = label.strip()
+    return label or None
+
+
+def shared_hermes_oauth_lock_target(label: Optional[str]) -> Path:
+    """Canonical path whose ``.lock`` sibling serializes one labelled grant.
+
+    Every sync→refresh→publish sequence for a label (any profile, any
+    process) must take ``_auth_store_lock(target_path=...)`` on this exact
+    path; ``write_shared_hermes_oauth_credentials`` locks the same path, so
+    the two never race on a single refresh token.  The parent directory is
+    created up front so the lock file can exist before the first publish.
+    """
+    path = _get_shared_hermes_oauth_label_file(label)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.chmod(0o700)
+    except OSError as exc:
+        logger.debug("Failed to prepare shared Hermes OAuth directory: %s", exc)
+    return path
+
+
+def read_shared_hermes_oauth_credentials(label: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Read one shared Hermes PKCE grant, preferring its label file.
+
+    Per-label files (canonical ``<sanitized>-<digest>.json`` and pre-digest
+    aliases) are trusted only when the payload's own ``label`` matches the
+    requested label exactly -- the filename is never an identity.  That check
+    happens on the bytes actually returned, under the label's publisher lock,
+    so an alias discovered a moment earlier cannot be swapped underneath us.
+    The legacy singleton keeps its ``grants`` map / ``shared_label`` rules.
+    """
+    want = str(label).strip() if label is not None else None
+    if want is not None:
+        try:
+            from hermes_cli.auth import _auth_store_lock
+            with _auth_store_lock(target_path=shared_hermes_oauth_lock_target(want)):
+                per_label = [_get_shared_hermes_oauth_label_file(want)]
+                per_label.extend(_find_shared_hermes_oauth_label_aliases(want))
+                for oauth_file in per_label:
+                    data = _read_per_label_shared_grant(oauth_file, want)
+                    if data is not None:
+                        return data
+        except (OSError, IOError, TimeoutError, ValueError) as exc:
+            logger.debug("Failed to read per-label shared Hermes OAuth credentials: %s", exc)
+
+    oauth_file = _get_shared_hermes_oauth_file()
+    if not oauth_file.exists():
+        return None
+    try:
+        data = json.loads(oauth_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        if label is not None:
+            if isinstance(data.get("grants"), dict):
+                data = data["grants"].get(want)
+            else:
+                legacy_label = data.get("shared_label") or data.get("label") or "default"
+                if str(legacy_label).strip() != want:
+                    return None
+        if label is None and isinstance(data.get("grants"), dict):
+            return data
+        if isinstance(data, dict) and data.get("accessToken"):
+            return data
+    except (json.JSONDecodeError, OSError, IOError) as exc:
+        logger.debug("Failed to read shared Hermes OAuth credentials: %s", exc)
+    return None
+
+
+def _read_per_label_shared_grant(path: Path, want: str) -> Optional[Dict[str, Any]]:
+    """Return the grant in ``path`` iff its payload declares label ``want``."""
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, IOError) as exc:
+        logger.debug("Failed to read shared Hermes OAuth grant %s: %s", path.name, exc)
+        return None
+    if not isinstance(data, dict) or not data.get("accessToken"):
+        return None
+    declared = _shared_grant_payload_label(data)
+    if declared != want:
+        logger.warning(
+            "Ignoring shared Hermes OAuth grant %s: payload label %r does not match requested %r",
+            path.name, declared, want,
+        )
+        return None
+    return data
+
+
+def list_shared_hermes_oauth_credentials() -> Dict[str, Dict[str, Any]]:
+    """Return every published shared PKCE grant keyed by label.
+
+    Covers the label directory (``<root>/.anthropic_oauth/<label>.json``) and
+    the legacy singleton file (either a ``grants`` map or one bare grant).
+    Unreadable or malformed files are skipped; a new profile without pool rows
+    relies on this to discover grants it never copied.
+    """
+    grants: Dict[str, Dict[str, Any]] = {}
+
+    def _accept(label: Any, data: Any, *, canonical: bool = False) -> None:
+        name = str(label or "").strip()
+        if not name or not isinstance(data, dict) or not data.get("accessToken"):
+            return
+        # The canonical (digest-named) file always wins over an alias left by
+        # an older filename scheme; among aliases the first one found wins.
+        if canonical:
+            grants[name] = data
+        elif name not in grants:
+            grants[name] = data
+
+    shared_dir = _get_shared_hermes_oauth_dir()
+    if shared_dir.is_dir():
+        for path in sorted(shared_dir.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError, IOError) as exc:
+                logger.debug("Skipping unreadable shared Hermes OAuth grant %s: %s", path.name, exc)
+                continue
+            if isinstance(data, dict):
+                name = _shared_grant_payload_label(data)
+                if name is None:
+                    logger.debug("Skipping shared Hermes OAuth grant %s: payload declares no label", path.name)
+                    continue
+                try:
+                    is_canonical = path.name == _shared_pkce_label_filename(name)
+                except ValueError:
+                    is_canonical = False
+                _accept(name, data, canonical=is_canonical)
+
+    legacy = _get_shared_hermes_oauth_file()
+    if legacy.exists():
+        try:
+            data = json.loads(legacy.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, IOError) as exc:
+            logger.debug("Skipping unreadable legacy shared Hermes OAuth file: %s", exc)
+            data = None
+        if isinstance(data, dict):
+            if isinstance(data.get("grants"), dict):
+                for label, creds in data["grants"].items():
+                    _accept(label, creds)
+            else:
+                _accept(data.get("shared_label") or data.get("label") or "default", data)
+    return grants
+
+
+def write_shared_hermes_oauth_credentials(
+    credentials: Dict[str, Any], label: Optional[str] = None
+) -> bool:
+    """Atomically publish a labelled PKCE grant for all profiles."""
+    path = _get_shared_hermes_oauth_label_file(label)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.chmod(0o700)
+    except OSError as exc:
+        logger.debug("Failed to secure shared Hermes OAuth directory: %s", exc)
+        return False
+    try:
+        from hermes_cli.auth import _auth_store_lock
+
+        with _auth_store_lock(target_path=path):
+            tmp = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
+            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
+            try:
+                payload = credentials
+                if label is not None:
+                    # The filename is sanitized; keep the exact label inside so
+                    # discovery can recover it (see list_shared_hermes_oauth_credentials).
+                    payload = {**credentials, "label": str(label)}
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh, indent=2)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, path)
+            finally:
+                tmp.unlink(missing_ok=True)
+            # The canonical file now holds the newest grant; retire any copy
+            # left under an older filename so the label resolves to one file
+            # (an alias with a stale refresh token must never win a race).
+            for alias in _find_shared_hermes_oauth_label_aliases(label):
+                try:
+                    alias.unlink()
+                    alias.with_suffix(".lock").unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.debug("Failed to retire shared Hermes OAuth alias %s: %s", alias.name, exc)
+    except (OSError, IOError, TimeoutError) as exc:
+        logger.debug("Failed to write shared Hermes OAuth credentials: %s", exc)
+        return False
+    return True
 
 
 def _generate_pkce() -> tuple:

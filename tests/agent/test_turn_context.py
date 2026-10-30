@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import threading
 import types
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -541,3 +542,74 @@ def test_prologue_forwards_the_submit_title_preview_to_the_titler():
               "display_metadata": {"title_preview": "Pasted 5000 chars"}}],
         )
     assert titler.call_args.kwargs["title_preview"] == "Pasted 5000 chars"
+
+
+# ── Per-turn "now" for long-lived sessions (cache-safe) ─────────────────────
+#
+# ``_timestamp_line`` freezes ``Conversation started`` to the session's start DAY because the
+# system prompt is part of the prompt-cache key, and its "as of the last context rebuild" line
+# refreshes only at a compaction boundary. A session resumed days later restores those frozen
+# bytes verbatim, so the only date in front of the model is one that is no longer today. The
+# prologue therefore puts a fresh "now" on the tail of the request (the user message, not the
+# system prompt) — the same channel the gateway uses for per-turn notes.
+
+
+def _fixed_now():
+    return datetime(2026, 10, 24, 23, 0, tzinfo=timezone(timedelta(hours=2)))
+
+
+@pytest.mark.parametrize(
+    "session_id,expect_note",
+    [
+        ("20260101_090000_old", True),    # start day != today -> a stale anchor exists
+        ("sess-1", False),                # no stamp -> falls back to now -> same day
+        ("20261024_090000_today", False), # start day == today -> nothing to correct
+    ],
+)
+def test_current_time_note_only_for_long_lived_sessions(session_id, expect_note):
+    agent = _FakeAgent()
+    agent.session_id = session_id
+
+    with patch("hermes_time.now", return_value=_fixed_now()):
+        ctx = _build(agent)
+
+    # The clean transcript never carries the note; the wire copy (api_content) does.
+    assert ctx.messages[-1]["content"] == "hello"
+    api_content = ctx.messages[-1].get("api_content")
+    if not expect_note:
+        assert api_content is None or "System note: the current time is" not in api_content
+        return
+
+    assert isinstance(api_content, str) and api_content
+    assert "System note: the current time is" in api_content
+    assert "Saturday, October 24, 2026 23:00:00" in api_content
+    assert "(UTC+02:00)" in api_content and "UTC+02:00, UTC+02:00" not in api_content
+    # It names the trap it corrects, so the model stops anchoring on the frozen stamp.
+    assert "Conversation started" in api_content and "not today" in api_content
+    # Cache-safety: the note is on the user message (the request tail), NOT the system prompt.
+    assert ctx.active_system_prompt == "SYSTEM"
+    assert "System note: the current time is" not in ctx.active_system_prompt
+
+
+def test_current_time_note_appends_after_existing_plugin_context():
+    """The note joins the per-turn context rather than replacing it, and stays last."""
+    from agent import turn_context
+
+    agent = _FakeAgent()
+    agent.session_id = "20260101_090000_old"
+    with patch("hermes_time.now", return_value=_fixed_now()):
+        merged = turn_context._append_current_time_note(agent, "PLUGIN CONTEXT")
+
+    assert merged.startswith("PLUGIN CONTEXT\n\n")
+    assert "System note: the current time is" in merged
+
+
+def test_current_time_note_is_empty_without_a_stale_clock():
+    """Same-day and stamp-less sessions get nothing: no per-turn cost in the common case."""
+    from agent import turn_context
+
+    with patch("hermes_time.now", return_value=_fixed_now()):
+        assert turn_context._append_current_time_note(_FakeAgent(), "") == ""
+        today = _FakeAgent()
+        today.session_id = "20261024_090000_today"
+        assert turn_context._append_current_time_note(today, "CTX") == "CTX"

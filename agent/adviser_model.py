@@ -269,15 +269,13 @@ class AdviserModel:
 
     def __init__(self, *, system_blocks: list[str], tools: list[dict[str, Any]],
                  advise: AdviseTool, run_tool: Callable[[str, dict[str, Any]], str],
-                 call_model: Callable[..., Any], on_record: Callable[[dict[str, Any]], None],
-                 include_reasoning: bool = True) -> None:
+                 call_model: Callable[..., Any], on_record: Callable[[dict[str, Any]], None]) -> None:
         self._system = "\n\n".join(blocks for blocks in system_blocks if blocks)
         self._tools = [ADVISE_SCHEMA, *tools]
         self._advise = advise
         self._run_tool = run_tool
         self._call_model = call_model
         self._on_record = on_record
-        self._include_reasoning = include_reasoning
         self._messages: list[dict[str, Any]] = [{"role": "system", "content": self._system}]
         self._loop_counts: dict[str, int] = {}
         self._loop_corrected = False

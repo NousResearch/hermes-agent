@@ -892,6 +892,9 @@ adviser:
   continue_severity: concern  # nit | concern | blocker
   max_notes_per_update: 4
   evict_stale_results: true
+  # Wait out a provider-stated throttle (Retry-After / retry-after-ms) up to this
+  # many seconds before latching the reviewer; 0 latches immediately.
+  max_rate_limit_wait_s: 60
 
 # =============================================================================
 # Auxiliary Models (Advanced — Experimental)

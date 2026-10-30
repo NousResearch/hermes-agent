@@ -21,9 +21,11 @@ class _FakeModel:
         self.exc = exc or RuntimeError("boom")
         self.calls = 0
         self.resets = 0
+        self.deltas: list[list[str]] = []
 
     def run(self, deltas, *, wip, covered_turn=None, terminal=False):
         self.calls += 1
+        self.deltas.append(list(deltas))
         if self.calls <= self.failures:
             raise self.exc
 
@@ -91,6 +93,56 @@ def test_quota_latches_and_stops_draining(tmp_path):
     assert model.calls == 1  # the latch refuses new reviews until reset
 
 
+def test_timed_429_waits_out_the_retry_after_instead_of_latching(tmp_path):
+    model = _FakeModel(failures=1, exc=AdviserUsageLimit("429 Rate limit exceeded: retry-after-ms=20"))
+    runtime = _runtime(tmp_path, model, settings=AdviserSettings(max_rate_limit_wait_s=1.0))
+
+    runtime.capture([{"role": "user", "content": "go"}], wip=False)
+
+    assert _wait(lambda: runtime.backlog == 0)
+    assert model.calls == 2
+    assert runtime.status == "running"
+
+
+def test_repeated_timed_throttles_latch_after_the_per_batch_budget(tmp_path):
+    model = _FakeModel(failures=99, exc=AdviserUsageLimit("429 retry-after-ms=1"))
+    runtime = _runtime(tmp_path, model, settings=AdviserSettings(max_rate_limit_wait_s=1.0))
+
+    runtime.capture([{"role": "user", "content": "go"}], wip=False)
+
+    assert _wait(lambda: runtime.status == "quota_exhausted")
+    # Three honored waits, then the fourth refusal falls through to the latch.
+    assert model.calls == 4
+
+
+def test_rate_limit_wait_beyond_the_cap_still_latches(tmp_path):
+    model = _FakeModel(failures=1, exc=AdviserUsageLimit("429 Rate limit exceeded: retry-after-ms=60000"))
+    runtime = _runtime(tmp_path, model, settings=AdviserSettings(max_rate_limit_wait_s=1.0))
+
+    runtime.capture([{"role": "user", "content": "go"}], wip=False)
+
+    assert _wait(lambda: runtime.status == "quota_exhausted")
+    assert model.calls == 1
+
+
+def test_include_reasoning_false_omits_primary_thinking(tmp_path):
+    model = _FakeModel()
+    runtime = _runtime(tmp_path, model, config=AdviserConfig(
+        name="Reviewer", slug="reviewer", include_reasoning=False))
+    messages = [
+        {"role": "user", "content": "verify the patch"},
+        {"role": "assistant", "content": "Observable answer.",
+         "reasoning": "Internal hypothesis that must not anchor the reviewer."},
+    ]
+
+    runtime.capture(messages, wip=False)
+
+    assert _wait(lambda: model.calls == 1)
+    rendered = "\n".join(model.deltas[0])
+    assert "Observable answer." in rendered
+    assert "Internal hypothesis" not in rendered
+
+
 def test_delta_dispatch_false_is_held_until_flush(tmp_path):
     model = _FakeModel()
     runtime = _runtime(tmp_path, model)
@@ -116,6 +168,39 @@ def test_eviction_blanks_only_old_tool_results(tmp_path):
     assert evicted == 1
     assert "Stale result elided" in messages[2]["content"]
     assert messages[2]["_adviser_pruned"] is True
+
+
+class _ScriptedModel(_FakeModel):
+    def __init__(self, errors):
+        super().__init__()
+        self.errors = list(errors)
+
+    def run(self, deltas, *, wip, covered_turn=None, terminal=False):
+        self.calls += 1
+        self.deltas.append(list(deltas))
+        if self.errors:
+            raise self.errors.pop(0)
+
+
+def test_context_overflow_reprime_keeps_the_failure_strikes(tmp_path):
+    from agent.adviser_model import AdviserContextOverflow
+
+    model = _ScriptedModel([
+        RuntimeError("boom"),
+        RuntimeError("boom"),
+        AdviserContextOverflow("context length exceeded"),
+        RuntimeError("boom"),
+        RuntimeError("boom"),
+        RuntimeError("boom"),
+    ])
+    runtime = _runtime(tmp_path, model)
+
+    runtime.capture([{"role": "user", "content": "go"}], wip=False)
+
+    assert _wait(lambda: runtime.backlog == 0)
+    # Two strikes, one overflow re-prime that keeps them, then the third strike drops the batch.
+    assert model.calls == 4
+    assert runtime.status == "running"
 
 
 class _SessionAgent:
@@ -189,6 +274,30 @@ def test_agent_end_mode_skips_mid_turn_reviews(monkeypatch, tmp_path):
     assert "the test never ran" in session.take_continuation()["text"]
 
 
+def test_watchdog_scope_selects_which_session_builds_an_entry(monkeypatch, tmp_path):
+    import agent.adviser_runtime as runtime_mod
+    from agent.adviser_config import AdviserConfig, DiscoveredAdvisers
+    from agent.adviser_runtime import AdviserSession, AdviserSettings
+
+    roster = [
+        AdviserConfig(name="Main", slug="main", scope="main", tools=[]),
+        AdviserConfig(name="Sub", slug="sub", scope="subagent", tools=[]),
+        AdviserConfig(name="Both", slug="both", scope="all", tools=[]),
+        AdviserConfig(name="Unset", slug="unset", tools=[]),
+    ]
+    monkeypatch.setattr(runtime_mod, "load_settings", lambda: AdviserSettings(enabled=True))
+    monkeypatch.setattr(runtime_mod, "discover_advisers",
+                        lambda cwd, home="": DiscoveredAdvisers(advisers=roster))
+
+    main = AdviserSession(_SessionAgent(tmp_path), kind="main")
+    main.bind_turn()
+    assert [a["name"] for a in main.status()["advisers"]] == ["Main", "Both", "Unset"]
+
+    sub = AdviserSession(_SessionAgent(tmp_path), kind="sub")
+    sub.bind_turn()
+    assert [a["name"] for a in sub.status()["advisers"]] == ["Sub", "Both"]
+
+
 def test_nested_sessions_never_bind_or_review(monkeypatch, tmp_path):
     import agent.adviser_runtime as runtime_mod
     from agent.adviser_bridge import ensure_adviser
@@ -202,10 +311,18 @@ def test_nested_sessions_never_bind_or_review(monkeypatch, tmp_path):
     agent = _SessionAgent(tmp_path)
     agent._delegate_depth = 1
 
-    assert ensure_adviser(agent) is None
-    session = AdviserSession(agent)
+    session = ensure_adviser(agent)
+    assert session is not None  # a subagent may host subagent-scoped entries...
     session.bind_turn()
     session.on_step([{"role": "user", "content": "go"}], terminal=True)
 
-    assert session._runtimes == []
+    assert session._runtimes == []  # ...but this roster is main-scoped, so none are built
     assert session.status()["advisers"] == []
+
+    cron = _SessionAgent(tmp_path)
+    cron.platform = "cron"
+    assert ensure_adviser(cron) is None
+
+    peer = _SessionAgent(tmp_path)
+    peer.platform = "subagent"  # agent_run.py peer: unattended, never delegated
+    assert ensure_adviser(peer) is None

@@ -30,7 +30,21 @@ PROJECT_CONFIG_DIR = ".hermes"
 
 REVIEW_MODES = ("turn", "agent-end")
 SYNC_BACKLOG_MODES = ("off", "1", "3", "5", "strict")
+ADVISER_SCOPES = ("main", "subagent", "all")
 _SYNC_BACKLOG_NUMERIC = {1: "1", 3: "3", 5: "5"}
+
+#: oh-my-pi release this adviser port is pinned to (advisor subsystem, session roster and
+#: prompts). Bump all three together with ``website/docs/user-guide/features/adviser.md``
+#: when re-porting; ``UPSTREAM_ADVISER_COMMIT`` is the ``v18.14.0`` tag commit.
+UPSTREAM_ADVISER_REPO = "can1357/oh-my-pi"
+UPSTREAM_ADVISER_RELEASE = "18.14.0"
+UPSTREAM_ADVISER_COMMIT = "31147f9d1a76608549821c3759f8487b4d66c72d"
+UPSTREAM_ADVISER_PATHS = (
+    "packages/coding-agent/src/advisor/",
+    "packages/coding-agent/src/session/session-advisors.ts",
+    "packages/coding-agent/src/prompts/advisor/",
+    "docs/advisor-watchdog.md",
+)
 
 #: The read-only investigative set an adviser gets when its entry omits ``tools``.
 DEFAULT_TOOL_NAMES = ("read_file", "search_files")
@@ -70,6 +84,8 @@ class AdviserConfig:
     review_mode: Optional[str] = None
     review_interval: Optional[int] = None
     sync_backlog: Optional[str] = None
+    scope: Optional[str] = None
+    include_reasoning: Optional[bool] = None
     instructions: Optional[str] = None
     enabled: Optional[bool] = None
     max_notes_per_update: Optional[int] = None
@@ -300,6 +316,14 @@ def _parse_adviser_entry(raw: Any, index: int, path: str,
             warnings.append(f"{label} syncBacklog must be one of {SYNC_BACKLOG_MODES}")
         else:
             entry["syncBacklog"] = backlog
+    if raw.get("scope") is not None:
+        scope = str(raw.get("scope") or "").strip()
+        if scope not in ADVISER_SCOPES:
+            warnings.append(f"{label} dropped — scope must be one of {ADVISER_SCOPES}")
+            return None
+        entry["scope"] = scope
+    if raw.get("includeReasoning") is not None:
+        entry["includeReasoning"] = bool(raw.get("includeReasoning"))
     if raw.get("instructions") is not None:
         text = str(raw.get("instructions") or "").strip()
         if text:
@@ -356,6 +380,8 @@ def discover_advisers(cwd: str, home: str = "") -> DiscoveredAdvisers:
                 review_mode=entry.get("reviewMode"),
                 review_interval=entry.get("reviewInterval"),
                 sync_backlog=entry.get("syncBacklog"),
+                scope=entry.get("scope"),
+                include_reasoning=entry.get("includeReasoning"),
                 instructions=entry.get("instructions"),
                 enabled=entry.get("enabled"),
                 max_notes_per_update=entry.get("maxNotesPerUpdate"),
@@ -429,32 +455,41 @@ def load_watchdog_config_file(path: str) -> dict[str, Any]:
         doc["maxNotesPerUpdate"] = min(MAX_NOTES_CAP, shared_max)
     advisers = parsed.get("advisors")
     if isinstance(advisers, list):
-        cleaned: list[dict[str, Any]] = []
-        for raw in advisers:
-            if not isinstance(raw, dict) or not str(raw.get("name") or "").strip():
-                continue
-            entry: dict[str, Any] = {"name": str(raw["name"]).strip()}
-            for key in ("model", "provider", "instructions"):
-                if raw.get(key) is not None:
-                    entry[key] = str(raw.get(key))
-            if "tools" in raw:
-                entry["tools"] = _normalize_tools(raw.get("tools"), path) or []
-            if raw.get("reviewMode") in REVIEW_MODES:
-                entry["reviewMode"] = raw["reviewMode"]
-            interval = _positive_int(raw.get("reviewInterval"))
-            if interval is not None:
-                entry["reviewInterval"] = interval
-            backlog = _normalize_sync_backlog(raw.get("syncBacklog"))
-            if backlog is not None:
-                entry["syncBacklog"] = backlog
-            if raw.get("enabled") is not None:
-                entry["enabled"] = bool(raw.get("enabled"))
-            budget = _positive_int(raw.get("maxNotesPerUpdate"))
-            if budget is not None:
-                entry["maxNotesPerUpdate"] = min(MAX_NOTES_CAP, budget)
-            cleaned.append(entry)
-        doc["advisors"] = cleaned
+        doc["advisors"] = [
+            entry for raw in advisers
+            if (entry := _clean_entry_for_edit(raw, path)) is not None
+        ]
     return doc
+
+
+def _clean_entry_for_edit(raw: Any, path: str) -> Optional[dict[str, Any]]:
+    """One entry as the editor round-trips it: unknown keys dropped, known keys typed."""
+    if not isinstance(raw, dict) or not str(raw.get("name") or "").strip():
+        return None
+    entry: dict[str, Any] = {"name": str(raw["name"]).strip()}
+    for key in ("model", "provider", "instructions"):
+        if raw.get(key) is not None:
+            entry[key] = str(raw.get(key))
+    if "tools" in raw:
+        entry["tools"] = _normalize_tools(raw.get("tools"), path) or []
+    if raw.get("reviewMode") in REVIEW_MODES:
+        entry["reviewMode"] = raw["reviewMode"]
+    interval = _positive_int(raw.get("reviewInterval"))
+    if interval is not None:
+        entry["reviewInterval"] = interval
+    backlog = _normalize_sync_backlog(raw.get("syncBacklog"))
+    if backlog is not None:
+        entry["syncBacklog"] = backlog
+    if raw.get("scope") in ADVISER_SCOPES:
+        entry["scope"] = raw["scope"]
+    if raw.get("includeReasoning") is not None:
+        entry["includeReasoning"] = bool(raw.get("includeReasoning"))
+    if raw.get("enabled") is not None:
+        entry["enabled"] = bool(raw.get("enabled"))
+    budget = _positive_int(raw.get("maxNotesPerUpdate"))
+    if budget is not None:
+        entry["maxNotesPerUpdate"] = min(MAX_NOTES_CAP, budget)
+    return entry
 
 
 _YAML_AMBIGUOUS = re.compile(r"^(?:true|false|null|yes|no|on|off|~|[-+]?\d+(?:\.\d+)?)$", re.IGNORECASE)
@@ -485,6 +520,47 @@ def _yaml_block(value: str, indent: str) -> str:
     return "\n".join(lines)
 
 
+def _serialize_entry_fields(entry: dict[str, Any]) -> list[str]:
+    """Everything after ``- name:`` for one roster entry, in canonical order."""
+    field_indent = "    "
+    lines: list[str] = []
+    if entry.get("model"):
+        lines.append(f"{field_indent}model: {_yaml_scalar(entry['model'])}")
+    if entry.get("provider"):
+        lines.append(f"{field_indent}provider: {_yaml_scalar(entry['provider'])}")
+    if "tools" in entry:
+        tools = entry.get("tools") or []
+        if not tools:
+            lines.append(f"{field_indent}tools: []")
+        else:
+            lines.append(f"{field_indent}tools:")
+            for tool in tools:
+                lines.append(f"{field_indent}  - {_yaml_scalar(tool)}")
+    if entry.get("reviewMode") in REVIEW_MODES:
+        lines.append(f"{field_indent}reviewMode: {_yaml_scalar(entry['reviewMode'])}")
+    if entry.get("syncBacklog") in SYNC_BACKLOG_MODES:
+        lines.append(f"{field_indent}syncBacklog: {_yaml_scalar(entry['syncBacklog'])}")
+    if entry.get("scope") in ADVISER_SCOPES:
+        lines.append(f"{field_indent}scope: {_yaml_scalar(entry['scope'])}")
+    if entry.get("includeReasoning") is not None:
+        lines.append(f"{field_indent}includeReasoning: {'true' if entry['includeReasoning'] else 'false'}")
+    text = entry.get("instructions")
+    if isinstance(text, str) and text.strip():
+        if "\n" in text:
+            lines.append(f"{field_indent}instructions:\n" + _yaml_block(text, field_indent + "  "))
+        else:
+            lines.append(f"{field_indent}instructions: {_yaml_scalar(text)}")
+    if entry.get("enabled") is not None:
+        lines.append(f"{field_indent}enabled: {'true' if entry['enabled'] else 'false'}")
+    budget = _positive_int(entry.get("maxNotesPerUpdate"))
+    if budget is not None:
+        lines.append(f"{field_indent}maxNotesPerUpdate: {min(MAX_NOTES_CAP, budget)}")
+    interval = _positive_int(entry.get("reviewInterval"))
+    if interval is not None:
+        lines.append(f"{field_indent}reviewInterval: {interval}")
+    return lines
+
+
 def serialize_watchdog_config(doc: dict[str, Any]) -> str:
     """Canonical, hand-editable ``WATCHDOG.yml`` text (fixed key order)."""
     lines: list[str] = []
@@ -502,37 +578,7 @@ def serialize_watchdog_config(doc: dict[str, Any]) -> str:
         if not isinstance(entry, dict):
             continue
         lines.append(f"  - name: {_yaml_scalar(entry.get('name') or '')}")
-        field_indent = "    "
-        if entry.get("model"):
-            lines.append(f"{field_indent}model: {_yaml_scalar(entry['model'])}")
-        if entry.get("provider"):
-            lines.append(f"{field_indent}provider: {_yaml_scalar(entry['provider'])}")
-        if "tools" in entry:
-            tools = entry.get("tools") or []
-            if not tools:
-                lines.append(f"{field_indent}tools: []")
-            else:
-                lines.append(f"{field_indent}tools:")
-                for tool in tools:
-                    lines.append(f"{field_indent}  - {_yaml_scalar(tool)}")
-        if entry.get("reviewMode") in REVIEW_MODES:
-            lines.append(f"{field_indent}reviewMode: {_yaml_scalar(entry['reviewMode'])}")
-        if entry.get("syncBacklog") in SYNC_BACKLOG_MODES:
-            lines.append(f"{field_indent}syncBacklog: {_yaml_scalar(entry['syncBacklog'])}")
-        text = entry.get("instructions")
-        if isinstance(text, str) and text.strip():
-            if "\n" in text:
-                lines.append(f"{field_indent}instructions:\n" + _yaml_block(text, field_indent + "  "))
-            else:
-                lines.append(f"{field_indent}instructions: {_yaml_scalar(text)}")
-        if entry.get("enabled") is not None:
-            lines.append(f"{field_indent}enabled: {'true' if entry['enabled'] else 'false'}")
-        budget = _positive_int(entry.get("maxNotesPerUpdate"))
-        if budget is not None:
-            lines.append(f"{field_indent}maxNotesPerUpdate: {min(MAX_NOTES_CAP, budget)}")
-        interval = _positive_int(entry.get("reviewInterval"))
-        if interval is not None:
-            lines.append(f"{field_indent}reviewInterval: {interval}")
+        lines.extend(_serialize_entry_fields(entry))
     if not any(isinstance(entry, dict) for entry in doc.get("advisors") or []) and \
             not (isinstance(instructions, str) and instructions.strip()) and max_notes is None:
         return ""
@@ -554,6 +600,7 @@ def save_watchdog_config_file(path: str, doc: dict[str, Any]) -> None:
 
 
 __all__ = [
+    "ADVISER_SCOPES",
     "CONFIG_FILENAMES",
     "DEFAULT_TOOL_NAMES",
     "MAX_NOTES_CAP",
@@ -561,6 +608,10 @@ __all__ = [
     "REVIEW_MODES",
     "SYNC_BACKLOG_MODES",
     "TOOL_ALIASES",
+    "UPSTREAM_ADVISER_COMMIT",
+    "UPSTREAM_ADVISER_PATHS",
+    "UPSTREAM_ADVISER_RELEASE",
+    "UPSTREAM_ADVISER_REPO",
     "WATCHDOG_MD_FILENAME",
     "AdviserConfig",
     "Candidate",

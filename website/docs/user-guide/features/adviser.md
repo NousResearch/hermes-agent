@@ -51,6 +51,8 @@ advisors:
     reviewMode: agent-end              # turn | agent-end
     reviewInterval: 2
     syncBacklog: strict
+    scope: main                        # main | subagent | all
+    includeReasoning: false            # reviewer sees actions, not the primary's CoT
     instructions: |
       Focus on auth, injection, and secret handling.
   - name: Silent
@@ -60,6 +62,28 @@ advisors:
 `WATCHDOG.md` files on the same path add `<attention>` blocks to every reviewer's
 system prompt. Project context files (`AGENTS.md` and friends) are passed too, so
 the reviewer can hold the agent to the user's standing instructions.
+
+### Session scope
+
+`scope` decides which session kind builds an entry:
+
+| Value | Built in |
+|---|---|
+| `main` (default) | the top-level interactive session |
+| `subagent` | delegated subagent sessions only |
+| `all` | both |
+
+The default is deliberately `main`, unlike oh-my-pi's `all`: Hermes subagents are
+spawned often, and an unset scope must not silently start a reviewer (and its
+model spend) per subagent. Set `all` or `subagent` to opt in. Cron runs and
+detached forks never host an adviser regardless of scope.
+
+### Evidence-only review
+
+`includeReasoning: false` drops the primary assistant's `reasoning` content from
+the delta sent to that reviewer. Reviews then judge observable actions, tool I/O,
+and outputs without anchoring on the primary model's chain of thought. The
+default is `true`.
 
 ## Delivery
 
@@ -105,9 +129,14 @@ The reviewer cannot flood the turn:
 - `sync_backlog` pauses the primary at turn end until reviews catch up:
   `"1"/"3"/"5"` cap the wait at 30 s, `strict` waits without a wall-clock cap.
   A failing reviewer never parks the primary.
-- Provider quota errors latch the reviewer until the session is reset; repeated
-  failures drop the backlog and eventually halt it, so a broken adviser cannot
-  burn tokens forever.
+- A provider throttle that states *when* to retry (`Retry-After`, `retry-after-ms`,
+  "retry after N s", "resets in …") is waited out and retried when the wait is at
+  or below `max_rate_limit_wait_s` (default 60; `0` disables waiting). At most
+  three declared waits are honored per review, then the latch below applies, so a
+  provider that keeps throttling cannot pin a worker thread.
+- Provider quota errors beyond that cap latch the reviewer until the session is
+  reset; repeated failures drop the backlog and eventually halt it, so a broken
+  adviser cannot burn tokens forever.
 
 ## Inspect
 
@@ -120,3 +149,19 @@ agent.adviser.status()
 Per-reviewer transcripts are appended to
 `$HERMES_HOME/adviser/<session_id>/__adviser.<slug>.jsonl` for cost and
 post-mortem inspection.
+
+## Upstream pin
+
+The port is pinned to oh-my-pi **18.14.0** (`can1357/oh-my-pi`, tag commit
+`31147f9d1a76608549821c3759f8487b4d66c72d`). The source list and pin live in
+`agent/adviser_config.py` (`UPSTREAM_ADVISER_*`) — bump them together with this
+section when re-porting.
+
+Ported behavior from 18.13.1/18.13.2/18.14.0: timed throttle waits, per-entry
+`scope`/`includeReasoning`, and failure strikes that survive a context re-prime.
+Known deviations:
+
+- unset `scope` means `main`, not `all` (see [Session scope](#session-scope));
+- there are no fallback chains for the reviewer model (a failed model retries,
+  then pauses), and no `/advisor` command family — inspect with
+  `agent.adviser.status()`.

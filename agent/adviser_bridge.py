@@ -5,6 +5,10 @@ The conversation loop and the stop gates only need two things: a session handle
 false`` pays nothing) and one terminal-boundary capture taken before the stop
 gates decide whether the turn ends. Keeping both here leaves the loop phases at
 their audited complexity: the call site is one function call, not a branch.
+
+Session kind decides which ``WATCHDOG.yml`` scopes may build: the top-level
+session hosts ``main``/``all`` entries, a delegated subagent hosts
+``subagent``/``all`` entries, and cron runs or detached forks host none.
 """
 
 from __future__ import annotations
@@ -28,11 +32,12 @@ def ensure_adviser(agent: Any) -> Optional[Any]:
         if existing is not None:
             return existing
         try:
-            from agent.adviser_runtime import AdviserSession, is_nested_agent
+            from agent.adviser_runtime import AdviserSession, adviser_session_kind
 
-            if is_nested_agent(agent):
+            kind = adviser_session_kind(agent)
+            if kind is None:  # cron runs and detached forks never host a reviewer
                 return None
-            session = AdviserSession(agent)
+            session = AdviserSession(agent, kind=kind)
         except Exception:  # health: allow BLE001 -- optional feature: a broken adviser must never block a turn
             logger.debug("adviser session init failed", exc_info=True)
             return None

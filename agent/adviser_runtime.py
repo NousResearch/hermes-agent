@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -58,11 +59,16 @@ from agent.adviser_prompts import (
     render_system_prompt,
 )
 from agent.adviser_recorder import AdviserRecorder
+from agent.retry_utils import provider_retry_after_seconds, reset_delay_from_message
 
 logger = logging.getLogger(__name__)
 
 RETRY_DELAY_S = 1.0
 DROP_AFTER_FAILURES = 3
+#: Declared throttle waits honored per batch before the runtime falls back to the quota latch.
+MAX_THROTTLE_WAITS = 3
+#: Provider throttle shapes carry the wait in milliseconds, not ``Retry-After``.
+_RETRY_AFTER_MS_RE = re.compile(r"retry[-_ ]?after[-_ ]?ms\s*[=:]\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
 HALT_AFTER_DROPPED_BACKLOGS = 3
 MAX_OVERFLOW_RECOVERIES = 1
 
@@ -86,6 +92,7 @@ SETTING_DEFAULTS: dict[str, Any] = {
     "max_notes_per_update": DEFAULT_BUDGET_PER_UPDATE,
     "max_continuations": 2,
     "evict_stale_results": True,
+    "max_rate_limit_wait_s": 60.0,
     "timeout_s": 120.0,
     "temperature": 0.0,
 }
@@ -104,6 +111,7 @@ class AdviserSettings:
     max_notes_per_update: int = DEFAULT_BUDGET_PER_UPDATE
     max_continuations: int = 2
     evict_stale_results: bool = True
+    max_rate_limit_wait_s: float = 60.0
     timeout_s: float = 120.0
     temperature: float = 0.0
 
@@ -126,6 +134,7 @@ class AdviserSettings:
             max_notes_per_update=_min_int(values["max_notes_per_update"], 1, 32),
             max_continuations=_min_int(values["max_continuations"], 0, 10),
             evict_stale_results=bool(values["evict_stale_results"]),
+            max_rate_limit_wait_s=max(0.0, min(600.0, float(values["max_rate_limit_wait_s"] or 0.0))),
             timeout_s=float(values["timeout_s"] or 120.0),
             temperature=float(values["temperature"] or 0.0),
         )
@@ -151,18 +160,45 @@ def load_settings() -> AdviserSettings:
     return AdviserSettings.from_config(config.get("adviser"))
 
 
-def is_nested_agent(agent: Any) -> bool:
-    """Delegated subagents, detached forks and unattended runs never carry an adviser.
+def adviser_session_kind(agent: Any) -> Optional[str]:
+    """Which ``WATCHDOG.yml`` scope this session hosts: ``"main"``, ``"sub"`` or ``None``.
 
-    The reviewer is interactive-session assistance: a subagent multiplying reviews
-    multiplies spend with no one watching, and a background-review fork binding an
-    adviser would re-enter the review machinery it exists to avoid.
+    Detached forks (``_persist_disabled``) and cron runs never host an adviser: a
+    background-review fork binding one would re-enter the review machinery it exists
+    to avoid, and an unattended run (cron, ``agent_run`` peer) has nobody to act on
+    the advice. A *delegated* subagent (``_delegate_depth > 0``) hosts one only when
+    a roster entry explicitly asks for it (``scope: subagent`` or ``all``) — the
+    default scope is ``main`` so existing rosters keep paying for the top-level
+    session alone.
     """
-    if int(getattr(agent, "_delegate_depth", 0) or 0) > 0:
-        return True
     if bool(getattr(agent, "_persist_disabled", False)):
-        return True
-    return str(getattr(agent, "platform", "") or "") in ("subagent", "cron")
+        return None
+    if int(getattr(agent, "_delegate_depth", 0) or 0) > 0:
+        return "sub"
+    # ``platform="subagent"`` also covers unattended peers (``agent_run.py``) that never
+    # delegated; only a delegated child opts into subagent-scoped reviewers.
+    if str(getattr(agent, "platform", "") or "") in ("cron", "subagent"):
+        return None
+    return "main"
+
+
+def rate_limit_wait_seconds(exc: BaseException, cap_s: float) -> Optional[float]:
+    """Seconds the provider asked the caller to wait, or None when unstated/over *cap_s*.
+
+    A declared wait inside the cap is a throttle, not a dead provider: the reviewer
+    waits it out and retries instead of latching the runtime (omp 18.13.1). Anything
+    longer — a quota window — stays a latch.
+    """
+    if cap_s <= 0:
+        return None
+    declared = provider_retry_after_seconds(exc)
+    if declared is None:
+        message = str(exc or "")
+        match = _RETRY_AFTER_MS_RE.search(message)
+        declared = float(match.group(1)) / 1000.0 if match else reset_delay_from_message(message)
+    if declared is None or declared <= 0 or declared > cap_s:
+        return None
+    return declared
 
 
 def _estimate_tokens(message: Any) -> int:
@@ -260,6 +296,8 @@ class AdviserRuntime:
         self.review_interval = max(1, config.review_interval or settings.review_interval)
         self.sync_backlog = config.sync_backlog or settings.sync_backlog
         self.evict_stale = settings.evict_stale_results
+        self.max_rate_limit_wait_s = settings.max_rate_limit_wait_s
+        self.include_reasoning = config.include_reasoning is not False
         self._model = model
         self._recorder = recorder
         self._state = _RuntimeState()
@@ -305,7 +343,8 @@ class AdviserRuntime:
             if self._stop.is_set() or self._state.quota or self._state.halted:
                 return
         try:
-            delta = self._tracker.capture(messages, wip=wip)
+            delta = self._tracker.capture(messages, wip=wip,
+                                          include_reasoning=self.include_reasoning)
         except Exception:
             logger.warning("adviser delta render failed", exc_info=True)
             with self._lock:
@@ -377,11 +416,11 @@ class AdviserRuntime:
 
     def _run_batch(self, batch: PendingDelta, epoch: int) -> None:
         overflow_retries = 0
+        throttle_waits = 0
         while True:
             with self._lock:
                 if self._stop.is_set() or self._state.epoch != epoch:
                     return
-                self._state.consecutive_failures = max(0, self._state.consecutive_failures)
             self._recorder.begin_review()
             try:
                 if self.evict_stale:
@@ -396,6 +435,13 @@ class AdviserRuntime:
                         return
                     self._state.failing = True
                 self._release_failure_waiters()
+                if classify_error(exc) == "quota" and throttle_waits < MAX_THROTTLE_WAITS:
+                    wait = rate_limit_wait_seconds(exc, self.max_rate_limit_wait_s)
+                    if wait is not None:
+                        throttle_waits += 1
+                        logger.info("adviser %s throttle: retrying after %.1fs", self.name, wait)
+                        if not self._stop.wait(wait):
+                            continue
                 decision = self._handle_failure(exc, batch, epoch)
                 if decision == "retry":
                     continue
@@ -516,8 +562,9 @@ class AdviserRuntime:
 class AdviserSession:
     """The roster and turn-boundary policy attached to one ``AIAgent``."""
 
-    def __init__(self, agent: Any) -> None:
+    def __init__(self, agent: Any, *, kind: Optional[str] = None) -> None:
         self.agent = agent
+        self.kind = kind or adviser_session_kind(agent)
         self.settings = AdviserSettings()
         self._lock = threading.RLock()
         self._runtimes: list[AdviserRuntime] = []
@@ -544,12 +591,14 @@ class AdviserSession:
             settings.enabled, settings.provider, settings.model, settings.review_mode,
             settings.review_interval, settings.sync_backlog, settings.immune_turns,
             settings.continue_severity, settings.max_notes_per_update,
-            settings.max_continuations, settings.evict_stale_results, settings.timeout_s,
-            settings.temperature, cwd,
+            settings.max_continuations, settings.evict_stale_results,
+            settings.max_rate_limit_wait_s, settings.timeout_s, settings.temperature,
+            cwd, self.kind,
             tuple((a.slug, a.name, a.model, a.provider,
                    None if a.tools is None else tuple(a.tools), a.review_mode,
-                   a.review_interval, a.sync_backlog, a.instructions, a.enabled,
-                   a.max_notes_per_update) for a in (discovered.advisers if discovered else ())),
+                   a.review_interval, a.sync_backlog, a.scope, a.include_reasoning,
+                   a.instructions, a.enabled, a.max_notes_per_update)
+                  for a in (discovered.advisers if discovered else ())),
         )
         with self._lock:
             if not force and signature == self._built_for:
@@ -559,18 +608,28 @@ class AdviserSession:
             self.continue_severity = settings.continue_severity
             self._built_for = signature
             self._last_refresh = time.monotonic()
-            if not settings.enabled:
+            if not settings.enabled or self.kind is None:
                 return
             self._warnings = list(discovered.warnings) if discovered else []
-            roster = list(discovered.advisers) if discovered and discovered.advisers else [
-                AdviserConfig(name="default", slug="")
-            ]
+            if discovered and discovered.advisers:
+                roster = [config for config in discovered.advisers if self._scope_hosts(config)]
+            else:
+                # The legacy/default reviewer belongs to the top-level session only; a subagent
+                # hosts nothing unless the roster asks for it explicitly.
+                roster = [AdviserConfig(name="default", slug="")] if self.kind == "main" else []
             shared = discovered.shared_instructions if discovered else None
             shared_budget = discovered.shared_max_notes_per_update if discovered else None
             for config in roster:
                 runtime = self._build(config, shared, shared_budget, cwd)
                 if runtime is not None:
                     self._runtimes.append(runtime)
+
+    def _scope_hosts(self, config: AdviserConfig) -> bool:
+        """``scope`` decides which session kind builds this entry; unset means main."""
+        scope = config.scope or "main"
+        if scope == "all":
+            return True
+        return scope == "subagent" if self.kind == "sub" else scope == "main"
 
     def _build(self, config: AdviserConfig, shared: Optional[str], shared_budget: Optional[int],
                cwd: str) -> Optional[AdviserRuntime]:
@@ -706,7 +765,7 @@ class AdviserSession:
 
     # ---- turn boundaries --------------------------------------------------
     def bind_turn(self) -> None:
-        if is_nested_agent(self.agent):
+        if self.kind is None:
             with self._lock:
                 self._turn_live = False
                 self._continuation = None
@@ -728,7 +787,7 @@ class AdviserSession:
 
     def on_step(self, messages: list[Any], *, terminal: bool) -> None:
         """Capture one boundary; terminal boundaries may dispatch and wait for catch-up."""
-        if is_nested_agent(self.agent):
+        if self.kind is None:
             return
         with self._lock:
             if not self.settings.enabled or not self._runtimes:
@@ -843,6 +902,8 @@ class AdviserSession:
                     "review_mode": runtime.review_mode,
                     "review_interval": runtime.review_interval,
                     "sync_backlog": runtime.sync_backlog,
+                    "scope": runtime.config.scope or "main",
+                    "include_reasoning": runtime.include_reasoning,
                 }
                 for runtime in runtimes
             ],
@@ -860,7 +921,8 @@ __all__ = [
     "AdviserRuntime",
     "AdviserSession",
     "AdviserSettings",
+    "adviser_session_kind",
     "evict_stale_tool_results",
-    "is_nested_agent",
     "load_settings",
+    "rate_limit_wait_seconds",
 ]

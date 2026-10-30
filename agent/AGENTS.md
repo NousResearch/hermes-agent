@@ -135,6 +135,11 @@ adviser card parses); `adviser_recorder.py` = JSONL telemetry. Delivery reuses t
 `agent.adviser.take_continuation()` before plugin continuations. A failing reviewer must never park
 the primary: catch-up waits release on `failing`/`halted`/`quota`. Off by default
 (`adviser.enabled`), because every reviewed turn is one extra completion.
+`WATCHDOG.yml` entries carry `scope` (`main` default, `subagent`, `all`) and `includeReasoning`;
+`adviser_session_kind` decides which kinds a session hosts (cron and detached forks host none), and
+a declared throttle wait inside `adviser.max_rate_limit_wait_s` is slept instead of latching. The
+port is pinned to oh-my-pi 18.14.0 via `UPSTREAM_ADVISER_*` in `adviser_config.py`; bump those with
+`website/docs/user-guide/features/adviser.md` § Upstream pin.
 
 ## Memory, context engines, curator
 

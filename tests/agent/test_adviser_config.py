@@ -132,6 +132,7 @@ def test_serialize_round_trips_through_load(tmp_path):
         "advisors": [
             {"name": "Security Reviewer", "model": "anthropic/claude", "tools": ["read_file"],
              "reviewMode": "agent-end", "reviewInterval": 2, "syncBacklog": "strict",
+             "scope": "subagent", "includeReasoning": False,
              "instructions": "Focus on auth.\nCite the rule.", "enabled": True,
              "maxNotesPerUpdate": 2},
             {"name": "Silent", "tools": []},
@@ -149,6 +150,8 @@ def test_serialize_round_trips_through_load(tmp_path):
     assert first["tools"] == ["read_file"]
     assert first["instructions"] == "Focus on auth.\nCite the rule."
     assert first["reviewInterval"] == 2
+    assert first["scope"] == "subagent"
+    assert first["includeReasoning"] is False
     assert second["tools"] == []
     assert serialize_watchdog_config(loaded) == path.read_text(encoding="utf-8")
 
@@ -160,6 +163,32 @@ def test_empty_document_deletes_the_file(tmp_path):
     save_watchdog_config_file(str(path), {"advisors": []})
 
     assert not os.path.exists(path)
+
+
+def test_scope_rejects_unknown_values_and_keeps_healthy_entries(tmp_path):
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    _write(project / "WATCHDOG.yml", """
+advisors:
+  - name: Main Only
+    scope: main
+    includeReasoning: false
+  - name: Subagent Only
+    scope: subagent
+  - name: Bad Scope
+    scope: worker-only
+""")
+
+    found = discover_advisers(str(project), str(home))
+
+    assert [a.name for a in found.advisers] == ["Main Only", "Subagent Only"]
+    main_only = found.advisers[0]
+    assert main_only.scope == "main"
+    assert main_only.include_reasoning is False
+    assert found.advisers[1].scope == "subagent"
+    assert found.advisers[1].include_reasoning is None
+    assert any("Bad Scope" in warning and "scope" in warning for warning in found.warnings)
 
 
 def test_slug_falls_back_when_nothing_survives():

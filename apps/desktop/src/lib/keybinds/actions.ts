@@ -20,6 +20,21 @@ export type KeybindCategory = 'composer' | 'profiles' | 'session' | 'navigation'
 // character there; AltGr arrives as Ctrl+Alt or AltGraph), ⌃⌘ + the same key
 // on macOS (Option types a character). Alt+Tab is the OS window switcher, so
 // tab cycling takes ] and [. Native Desktop keeps the native chords.
+//
+// A Chrome app window (Install / "Open as window", `--app=`) reserves none of
+// them: `BrowserCommandController::IsReservedCommandOrKey` returns false for
+// TYPE_APP windows, so the page gets Ctrl+N/T/W/Tab first there; such a
+// window matches one of the display modes below. Off macOS it keeps the
+// native Ctrl chords, the same ones Desktop ships. macOS keeps ⌃⌘ either way.
+const APP_WINDOW_DISPLAY_MODES = ['standalone', 'minimal-ui', 'window-controls-overlay'] as const
+
+function inBrowserAppWindow(): boolean {
+  return (
+    typeof window.matchMedia === 'function' &&
+    APP_WINDOW_DISPLAY_MODES.some(mode => window.matchMedia(`(display-mode: ${mode})`).matches)
+  )
+}
+
 interface BrowserChords {
   /** Omitted: the native default already reaches the page on macOS. */
   mac?: string
@@ -35,6 +50,10 @@ function hostDefaults(native: readonly string[], browser: BrowserChords): HostDe
 
   if (isMacPlatform()) {
     return { defaults: browser.mac ? [browser.mac] : native }
+  }
+
+  if (inBrowserAppWindow()) {
+    return { defaults: native }
   }
 
   // Alt+letter has no Cmd/Ctrl, so it needs the editable-target opt-in to

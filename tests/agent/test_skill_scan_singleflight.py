@@ -29,7 +29,7 @@ def test_concurrent_cold_command_map_calls_run_one_scan(tmp_path):
         _make_skill(tmp_path, f"skill{i:02d}")
 
     parses = []
-    real_parse = sc_mod._scan_skill_md
+    real_parse = sc_mod._register_row_command
 
     def counting_parse(*args, **kwargs):
         parses.append(1)
@@ -45,7 +45,7 @@ def test_concurrent_cold_command_map_calls_run_one_scan(tmp_path):
     with (
         patch("tools.skills_tool.SKILLS_DIR", tmp_path),
         patch.object(sc_mod, "_skill_commands_by_key", {}),
-        patch.object(sc_mod, "_scan_skill_md", side_effect=counting_parse),
+        patch.object(sc_mod, "_register_row_command", side_effect=counting_parse),
     ):
         st.clear_skills_cache()
         threads = [threading.Thread(target=worker) for _ in range(8)]

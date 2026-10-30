@@ -451,10 +451,10 @@ class TestScanSkillCommands:
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             scan_skill_commands()
 
-        real_parse = _skills_tool._parse_frontmatter
+        real_register = skill_commands_module._register_row_command
         observed_sizes = []
 
-        def observing_parse(content):
+        def observing_register(entry, disabled, seen_names, commands):
             # Cache is now _skill_commands_by_key; count skill commands in the cached map (for this identity)
             key = (
                 skill_commands_module._resolve_skill_commands_platform(),
@@ -463,10 +463,10 @@ class TestScanSkillCommands:
             )
             cached_map = skill_commands_module._skill_commands_by_key.get(key, {})
             observed_sizes.append(len(cached_map))
-            return real_parse(content)
+            return real_register(entry, disabled, seen_names, commands)
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path), patch(
-            "tools.skills_tool._parse_frontmatter", observing_parse
+            "agent.skill_commands._register_row_command", observing_register
         ):
             scan_skill_commands()
 

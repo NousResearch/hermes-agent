@@ -40,12 +40,14 @@ class ActivityTrackingMixin:
 
     def _touch_activity(
         self, desc: str, *, provenance: Optional[ActivityProvenance] = None,
-        force_persist: bool = False,
+        force_persist: bool = False, progress: bool = False,
     ) -> None:
         """Update the last-activity timestamp and description (thread-safe).
 
-        Bumps a monotonic generation under the activity lock so the watchdog can bind a stall observation to
-        the exact ``(generation, timestamp)`` it sampled. Also bridges (rate-limited, best-effort) to the
+        Bumps a monotonic generation under the activity lock so activity-based interrupt claims can bind to
+        the exact ``(generation, timestamp)`` they sampled. ``progress=True`` additionally advances the
+        watchdog's progress clock; ordinary activity (including a fast failing-tool retry) does not. Also
+        bridges (rate-limited, best-effort) to the
         kanban heartbeat when this is a dispatcher-spawned worker, and to the durable SessionDB activity
         projection. ``provenance`` names special writers (compression); ``force_persist`` bypasses the
         SessionDB rate limit — as does any terminal compression provenance, which must converge the durable
@@ -68,9 +70,20 @@ class ActivityTrackingMixin:
             self._last_activity_ts = time.time()
             self._last_activity_desc = bound_activity_description(desc)
             self._last_activity_provenance = resolved_provenance
-            # Real progress invalidates a reserved abort claim; an in-flight watchdog interrupt must abandon
-            # itself at the final mutation edge.
-            self._turn_liveness_abort_claim = None
+            if progress:
+                self._last_progress_ts = self._last_activity_ts
+                self._turn_liveness_progress_generation = (
+                    getattr(self, "_turn_liveness_progress_generation", 0) + 1
+                )
+                # Real progress invalidates a reserved abort claim; an in-flight watchdog interrupt must
+                # abandon itself at the final mutation edge.
+                self._turn_liveness_abort_claim = None
+            elif (
+                isinstance(getattr(self, "_turn_liveness_abort_claim", None), tuple)
+                and self._turn_liveness_abort_claim[0] == "activity"
+            ):
+                # Preserve the existing activity-bound claim contract for other callers.
+                self._turn_liveness_abort_claim = None
         if os.environ.get("HERMES_KANBAN_TASK"):
             # Never let the bridge break the loop; this guard covers import-time failures.
             with suppress(Exception):
@@ -87,6 +100,10 @@ class ActivityTrackingMixin:
             # the turn is over or the host is gone (the permanently "stuck" chat, #72039 follow-up).
             reset_session_activity_persist_window(self)
         self._persist_session_activity_if_due()
+
+    def _touch_progress(self, desc: str) -> None:
+        """Record meaningful turn progress as well as user-visible activity."""
+        self._touch_activity(desc, progress=True)
 
     def _persist_session_activity_if_due(self) -> None:
         """Best-effort durable activity heartbeat for SessionDB consumers.

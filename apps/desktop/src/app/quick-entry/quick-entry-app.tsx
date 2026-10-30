@@ -164,7 +164,7 @@ export function QuickEntryApp() {
             }}
             placeholder={state.connected ? 'Ask Hermes…' : 'Not connected — open Hermes to reconnect'}
             ref={inputRef}
-            spellCheck={false}
+            spellCheck
             style={{
               background: 'transparent',
               border: 'none',

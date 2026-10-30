@@ -97,6 +97,19 @@ def _gc_retention_days() -> int:
         return 30
 
 
+def notify_reason_max_chars() -> int:
+    """``kanban.notify_reason_max_chars`` (default 160; 0 = no clip), re-read per ping so a config
+    change applies on the next delivery; fails safe to 160."""
+    try:
+        from hermes_cli.config import load_config
+
+        kcfg = (load_config() or {}).get("kanban") or {}
+        return max(int(kcfg.get("notify_reason_max_chars", 160)), 0)
+    except Exception:
+        logger.debug("kanban notify_reason_max_chars read failed", exc_info=True)
+        return 160
+
+
 def _kanban_dispatch_allowed() -> bool:
     """False while the global emergency stop (`hermes pause`) is engaged.
 

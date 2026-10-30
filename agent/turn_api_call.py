@@ -22,6 +22,18 @@ from agent.turn_failure_copy import site_copy, stamp_failure
 
 logger = logging.getLogger("agent.conversation_loop")
 
+__all__ = [
+    "ApiCallVerdict",
+    "ApiInterruptVerdict",
+    "NousRateGuardVerdict",
+    "_should_stream",
+    "handle_api_interrupt",
+    "nous_rate_limit_guard",
+    "perform_api_call",
+    "should_stream",
+    "stop_thinking_spinner",
+]
+
 
 def stop_thinking_spinner(agent: Any, thinking_spinner: Any) -> None:
     """Stop the spinner silently and clear the thinking callback; returns ``None`` so
@@ -43,9 +55,17 @@ class ApiCallVerdict:
     interrupted: Any
 
 
-def _should_stream(agent: Any) -> bool:
-    """Prefer streaming for liveness even without display consumers. Process providers
-    must opt in; ACP transports and explicit session/provider disables stay non-streaming."""
+def should_stream(agent: Any) -> bool:
+    """Prefer streaming for liveness even without display consumers (stale-stream /
+    read-timeout health checks). Process providers must opt in (``supports_streaming``);
+    ACP transports, explicit session/provider disables, MoA without a display consumer and
+    Mock clients in tests stay non-streaming.
+
+    ``agent`` is the live ``AIAgent`` making the call: this reads ``_disable_streaming``,
+    ``base_url``, ``provider`` and ``client`` and calls ``_has_stream_consumers()``. Hook
+    payloads carry no agent, so the caller is code that holds the one it constructed (for
+    example an ``llm_execution`` middleware reading a context variable it bound around
+    ``run_conversation``); anything else raises ``AttributeError``."""
     if getattr(agent, "_disable_streaming", False):
         return False
     _base = str(agent.base_url or "").lower()
@@ -67,6 +87,9 @@ def _should_stream(agent: Any) -> bool:
         if isinstance(getattr(agent, "client", None), Mock):
             return False
     return True
+
+
+_should_stream = should_stream  # original private spelling, kept as an alias
 
 
 def perform_api_call(

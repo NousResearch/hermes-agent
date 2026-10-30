@@ -2,6 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { $registryVersion } from '@/contrib/registry'
 import { allKeybindActions, defaultBindings, keybindAction, type KeybindBindings } from '@/lib/keybinds/actions'
+import { followBrowserWindowKind } from '@/lib/keybinds/app-window'
 import { canonicalizeCombo } from '@/lib/keybinds/combo'
 import { persistStore } from '@/lib/persist-store'
 import { arraysEqual, persistString, storedString, type WriteOptions } from '@/lib/storage'
@@ -86,6 +87,9 @@ function persistBindings(bindings: KeybindBindings, options: WriteOptions): void
 export const $bindings = atom<KeybindBindings>(loadBindings())
 
 persistStore($bindings, persistBindings, defaultBindings())
+
+// "Open in Chrome" turns an app window into a tab without a reload.
+followBrowserWindowKind($bindings, defaultBindings)
 
 /** Live combos for an action: explicit binding → stored override → default. */
 export function bindingsFor(id: string, bindings: KeybindBindings = $bindings.get()): string[] {

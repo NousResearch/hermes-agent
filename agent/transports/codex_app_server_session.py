@@ -10,6 +10,7 @@ reader threads feed queues that this adapter polls, like the chat_completions lo
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import threading
@@ -715,9 +716,21 @@ class CodexAppServerSession:
         client.respond(rid, handler(self, params))
 
     def _respond_elicitation(self, params: dict) -> dict:
-        """MCP elicitation: auto-accept our own hermes-tools server (opted in by enabling the runtime;
-        exposes nothing codex's shell can't do); decline others so the user opts in via codex's own flow."""
-        action = "accept" if (params.get("serverName") or "") == HERMES_TOOLS_MCP_SERVER_NAME else "decline"
+        """Route tool-call approvals to the owning session; unsupported forms fail closed."""
+        server = params.get("serverName") or ""
+        if server == HERMES_TOOLS_MCP_SERVER_NAME:
+            return {"action": "accept", "content": None, "_meta": None}
+        meta = params.get("_meta") or {}
+        if (params.get("mode") != "form" or not isinstance(meta, dict)
+                or meta.get("codex_approval_kind") != "mcp_tool_call"):
+            return {"action": "decline", "content": None, "_meta": None}
+        from tools.approval_prompt import request_elicitation_consent
+        details = meta.get("tool_params_display") or meta.get("tool_params") or {}
+        description = json.dumps(details, ensure_ascii=False, indent=2)
+        title = meta.get("tool_title") or "MCP tool call"
+        message = params.get("message") or f"Approve {title}?"
+        action = request_elicitation_consent(message, f"{server}: {title}\n{description}",
+                                             surface=f"mcp-elicitation/{server}")
         return {"action": action, "content": None, "_meta": None}
 
     _SERVER_REQUEST_HANDLERS: dict[str, Callable[..., dict]] = {

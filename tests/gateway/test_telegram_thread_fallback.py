@@ -695,7 +695,7 @@ async def test_base_send_image_fallback_preserves_metadata():
 
 @pytest.mark.asyncio
 async def test_thread_fallback_only_fires_once():
-    """After clearing thread_id, subsequent chunks should also use None."""
+    """Private reply chain: after clearing thread_id, subsequent chunks should also use None."""
     adapter = _make_adapter()
 
     call_log = []
@@ -712,7 +712,7 @@ async def test_thread_fallback_only_fires_once():
     # Send a long message that gets split into chunks
     long_msg = "A" * 5000  # Exceeds Telegram's 4096 limit
     result = await adapter.send(
-        chat_id="-100123",
+        chat_id="12345",
         content=long_msg,
         metadata={"thread_id": "99999"},
     )
@@ -722,5 +722,85 @@ async def test_thread_fallback_only_fires_once():
     # Second chunk: should use thread_id=None directly (effective_thread_id
     # was cleared per-chunk but the metadata doesn't change between chunks)
     # The key point: the message was delivered despite the invalid thread
+    assert call_log[-1]["message_thread_id"] is None
 
 
+@pytest.mark.asyncio
+async def test_forum_topic_thread_not_found_never_falls_back_to_general():
+    """A forum chat's root is its General topic, a wider audience than the
+    topic the reply belongs to: a missing topic fails the send instead."""
+    adapter = _make_adapter()
+
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="-100123",
+        content="A" * 5000,
+        metadata={"thread_id": "99999"},
+    )
+
+    assert result.success is False
+    assert result.retryable is False
+    # The one same-thread retry still happens; no chunk is sent without the topic.
+    assert [call["message_thread_id"] for call in call_log] == [99999, 99999]
+
+
+@pytest.mark.asyncio
+async def test_forum_topic_transient_thread_not_found_retries_in_place():
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if len(call_log) == 1:
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=42)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="-100123", content="hi", metadata={"thread_id": "99999"})
+
+    assert result.success is True
+    assert [call["message_thread_id"] for call in call_log] == [99999, 99999]
+
+
+@pytest.mark.asyncio
+async def test_forum_control_message_thread_not_found_stays_in_topic():
+    """Approval prompts and pickers follow the same rule as ``send``."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    with pytest.raises(FakeBadRequest, match="thread not found"):
+        await adapter._send_message_with_thread_fallback(chat_id=-100123, text="Approve?", message_thread_id=99999)
+
+    assert [call.get("message_thread_id") for call in call_log] == [99999, 99999]
+
+
+@pytest.mark.asyncio
+async def test_private_control_message_thread_not_found_drops_thread():
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id") is not None:
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=42)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    await adapter._send_message_with_thread_fallback(chat_id=12345, text="Approve?", message_thread_id=99999)
+
+    assert [call.get("message_thread_id") for call in call_log] == [99999, None]

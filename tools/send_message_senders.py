@@ -166,9 +166,9 @@ async def _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, *
 
 
 async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, text_kwargs):
-    """One text chunk with adapter-matching fallbacks: thread-not-found -> retry without
-    ``message_thread_id`` (dropped from ``text_kwargs`` for later chunks too); parse failure
-    -> plain text."""
+    """One text chunk with adapter-matching fallbacks: thread-not-found in a private chat -> retry
+    without ``message_thread_id`` (dropped from ``text_kwargs`` for later chunks too; a forum chat
+    raises, as its root is General); parse failure -> plain text."""
     async def send(text, mode):
         return await _send_telegram_message_with_retry(bot, chat_id=chat_id, text=text, parse_mode=mode, **text_kwargs)
     try:
@@ -177,6 +177,9 @@ async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, t
         # Thread not found — retry without message_thread_id so the message still delivers (matching the
         # gateway adapter's fallback behaviour, issue #27012).
         if _is_telegram_thread_not_found(md_error) and text_kwargs.get("message_thread_id") is not None:
+            from gateway.delivery import looks_like_telegram_private_chat_id
+            if not looks_like_telegram_private_chat_id(chat_id):
+                raise
             logger.warning("Thread %s not found in _send_telegram, retrying without message_thread_id",
                            text_kwargs.pop("message_thread_id"))
             return await send(chunk, parse_mode)
@@ -190,7 +193,7 @@ async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, t
 
 async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, caption, parse_mode, has_html,
                                    thread_kwargs, force_document):
-    """Upload one file with adapter-matching fallbacks (thread-not-found -> no
+    """Upload one file with adapter-matching fallbacks (thread-not-found in a private chat -> no
     ``message_thread_id``; caption parse failure -> plain caption); retries re-seek the file."""
     ext = os.path.splitext(media_path)[1].lower()
     voice_note = ext in _VOICE_EXTS and is_voice
@@ -225,6 +228,9 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
             except Exception as media_err:
                 err_text = str(media_err).lower()
                 if _is_telegram_thread_not_found(media_err) and media_kwargs.get("message_thread_id"):
+                    from gateway.delivery import looks_like_telegram_private_chat_id
+                    if not looks_like_telegram_private_chat_id(chat_id):
+                        raise
                     logger.warning("Thread %s not found for media send, retrying without message_thread_id",
                                    media_kwargs.pop("message_thread_id"))
                 elif media_kwargs.get("parse_mode") and ("parse" in err_text or "caption" in err_text):

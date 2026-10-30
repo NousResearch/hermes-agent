@@ -817,7 +817,7 @@ class TestSendTelegramThreadIdMapping:
         assert kwargs["message_thread_id"] == 17585
 
     def test_thread_not_found_retries_without_message_thread_id(self, monkeypatch):
-        """When send_message raises "thread not found", retry without thread_id (#27012)."""
+        """Private chat: when send_message raises "thread not found", retry without thread_id (#27012)."""
         bot = self._make_bot()
         _install_telegram_mock(monkeypatch, bot)
 
@@ -828,7 +828,7 @@ class TestSendTelegramThreadIdMapping:
         ])
 
         asyncio.run(
-            _send_telegram("tok", "-1001234567890", "hello", thread_id="17585")
+            _send_telegram("tok", "12345", "hello", thread_id="17585")
         )
 
         assert bot.send_message.await_count == 2
@@ -840,7 +840,7 @@ class TestSendTelegramThreadIdMapping:
         assert "message_thread_id" not in call2_kwargs
 
     def test_thread_not_found_for_media_retries_without_message_thread_id(self, monkeypatch, tmp_path):
-        """Media send with stale thread_id retries without it (#27012)."""
+        """Private chat: media send with stale thread_id retries without it (#27012)."""
         bot = self._make_bot()
         # Mock send_document to fail with thread-not-found, then succeed
         bot.send_document = AsyncMock(side_effect=[
@@ -855,7 +855,7 @@ class TestSendTelegramThreadIdMapping:
 
         asyncio.run(
             _send_telegram(
-                "tok", "-1001234567890", "",
+                "tok", "12345", "",
                 media_files=[(str(test_file), False)],
                 thread_id="17585",
             )
@@ -868,6 +868,33 @@ class TestSendTelegramThreadIdMapping:
         # Second call (retry): should NOT include message_thread_id
         call2_kwargs = bot.send_document.await_args_list[1].kwargs
         assert "message_thread_id" not in call2_kwargs
+
+    @pytest.mark.parametrize("chat_id", ["-1001234567890", "@forum_channel"])
+    def test_thread_not_found_in_forum_does_not_post_to_general(self, monkeypatch, chat_id):
+        """A forum chat's root is General, a wider audience than the topic: fail instead."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+        bot.send_message = AsyncMock(side_effect=Exception("Bad Request: message thread not found"))
+
+        result = asyncio.run(_send_telegram("tok", chat_id, "hello", thread_id="17585"))
+
+        assert "error" in result
+        bot.send_message.assert_awaited_once()
+        assert bot.send_message.await_args.kwargs["message_thread_id"] == 17585
+
+    def test_thread_not_found_for_forum_media_does_not_post_to_general(self, monkeypatch, tmp_path):
+        bot = self._make_bot()
+        bot.send_document = AsyncMock(side_effect=Exception("Bad Request: message thread not found"))
+        _install_telegram_mock(monkeypatch, bot)
+        test_file = tmp_path / "doc.txt"
+        test_file.write_text("test content")
+
+        result = asyncio.run(
+            _send_telegram("tok", "-1001234567890", "", media_files=[(str(test_file), False)], thread_id="17585"))
+
+        assert "error" in result
+        bot.send_document.assert_awaited_once()
+        assert bot.send_document.await_args.kwargs["message_thread_id"] == 17585
 
 
 # ---------------------------------------------------------------------------

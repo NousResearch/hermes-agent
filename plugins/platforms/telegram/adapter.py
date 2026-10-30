@@ -142,6 +142,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from gateway.authz_mixin import _coerce_allow_set
 from agent.i18n import get_language, t
 from gateway.config import Platform, PlatformConfig
+from gateway.delivery import looks_like_telegram_private_chat_id
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
@@ -3526,7 +3527,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                             retried_thread_not_found = True
                             logger.warning("[%s] Thread %s not found, retrying once with same thread_id", self.name, effective_thread_id)
                             continue
-                        # Thread is genuinely gone: retry without it and prune the stale binding.
+                        if not looks_like_telegram_private_chat_id(chat_id):  # a forum root is General: another audience
+                            return SendResult(success=False, error=_redact_telegram_error_text(send_err), retryable=False)
+                        # Private reply chain whose thread is gone: retry without it and prune the stale binding.
                         logger.warning("[%s] Thread %s not found, retrying without message_thread_id", self.name, effective_thread_id)
                         self._prune_stale_dm_topic_binding(chat_id, effective_thread_id, metadata=metadata)
                         used_thread_fallback = True
@@ -4132,13 +4135,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         return SendResult(success=False, error="draft_rejected")
 
     async def _send_message_with_thread_fallback(self, **kwargs):
-        """Send a control-style message (approval prompts, pickers), retrying once without
-        message_thread_id on 'Message thread not found' (stale thread_id); ``send`` has its own.
-
-        Used for control-style sends (approval prompts, model picker, update prompts) that can carry a stale
-        thread_id from a DM reply chain. The streaming send loop has its own equivalent (PR #3390) at the
-        body of ``send``; this helper applies the same retry pattern to the non-streaming control paths.
-        """
+        """Control send (prompts, pickers) on 'thread not found': a forum topic retries in place, a private chain drops it."""
         if not self._bot:
             raise RuntimeError("Not connected")
         message_thread_id = kwargs.get("message_thread_id")
@@ -4147,6 +4144,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 self._bot.send_message(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
         except Exception as send_err:
             if (message_thread_id is not None and self._is_bad_request_error(send_err) and self._is_thread_not_found_error(send_err)):
+                if not looks_like_telegram_private_chat_id(kwargs.get("chat_id")):  # never re-route a forum topic to General
+                    return await _await_with_thread_deadline(
+                        self._bot.send_message(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
                 logger.warning(
                     "[%s] Thread %s not found for control message, retrying without message_thread_id", self.name, message_thread_id)
                 # Same prune as the streaming send path; control sends carry no gateway metadata.

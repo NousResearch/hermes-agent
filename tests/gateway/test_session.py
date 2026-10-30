@@ -58,6 +58,31 @@ class TestSessionSourceRoundtrip:
 class TestBuildSessionContextPrompt:
 
 
+    def test_discord_prompt_points_configured_bot_to_opt_in_toolsets(self, monkeypatch):
+        """Regression for #138450: an opted-out toolset is not a missing Discord capability."""
+        from gateway import session
+
+        monkeypatch.setattr(session, "_discord_tools_loaded", lambda: False)
+        monkeypatch.setattr(session, "_discord_bot_token_configured", lambda: True)
+
+        note = "\n".join(session._discord_platform_notes(MagicMock()))
+
+        assert "not enabled for this platform" in note
+        assert "hermes tools enable discord --platform discord" in note
+        assert "discord_admin" in note
+
+
+    def test_discord_prompt_keeps_hard_limit_without_bot_token(self, monkeypatch):
+        from gateway import session
+
+        monkeypatch.setattr(session, "_discord_tools_loaded", lambda: False)
+        monkeypatch.setattr(session, "_discord_bot_token_configured", lambda: False)
+
+        note = "\n".join(session._discord_platform_notes(MagicMock()))
+
+        assert "do NOT have access to Discord-specific APIs" in note
+
+
     def test_discord_prompt_stable_across_message_id(self):
         """The cached system prompt must NOT vary with the triggering message_id.
 

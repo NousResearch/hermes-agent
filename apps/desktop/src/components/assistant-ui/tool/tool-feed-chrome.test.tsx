@@ -18,6 +18,18 @@ stubThreadViewportSize()
 const SID = 'sess-1'
 const createdAt = new Date('2026-06-03T00:00:00.000Z')
 
+// A bridged call (tool_search / tool_call) carries the gateway's labels as `hermes_tool_labels` on
+// its args — live, and again in a reloaded transcript (`tui_gateway/session_history.py` attaches them).
+const MCP_LABEL = {
+  action: 'ha search',
+  app: 'Ha',
+  emoji: '\u{1F50C}',
+  kind: 'mcp',
+  name: 'mcp__ha__ha_search',
+  preview: '',
+  text: 'Ha \u00b7 ha search'
+}
+
 function answerOnlyMessage(): ThreadMessage {
   return {
     id: 'assistant-answer-only',
@@ -232,5 +244,58 @@ describe('tool feed visibility policy', () => {
 
     expect(await screen.findByText('done')).toBeTruthy()
     expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(0)
+  })
+
+  // The labeled rows are tool feed like any other: the same switch owns them. Before the fix they
+  // rendered through ConnectorExecution whatever `display.tool_progress` said.
+  it('hides a labeled bridge call while the feed is off', async () => {
+    setShowReasoningFromConfig(false)
+    setShowToolActivityFromConfig('off')
+
+    const { container } = render(
+      completionHarness({
+        args: { calls: [{ arguments: {}, name: 'mcp__ha__ha_search' }], hermes_tool_labels: [MCP_LABEL] },
+        name: 'tool_call',
+        result: { results: [{ data: { ok: true } }] },
+        tool_id: 'bridge-ok-1'
+      })
+    )
+
+    expect(await screen.findByText('done')).toBeTruthy()
+    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(0)
+  })
+
+  it('keeps a failed labeled bridge call while the feed is off', async () => {
+    setShowReasoningFromConfig(false)
+    setShowToolActivityFromConfig('off')
+
+    const { container } = render(
+      completionHarness({
+        args: {
+          calls: [{ arguments: {}, name: 'mcp__ha__ha_config_set_helper' }],
+          hermes_tool_labels: [MCP_LABEL]
+        },
+        name: 'tool_call',
+        result: { results: [{ error: 'unknown helper' }] },
+        tool_id: 'bridge-fail-1'
+      })
+    )
+
+    expect(await screen.findByText('done')).toBeTruthy()
+    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(1)
+  })
+
+  it('renders a labeled bridge call while the feed is on', async () => {
+    const { container } = render(
+      completionHarness({
+        args: { calls: [{ arguments: {}, name: 'mcp__ha__ha_search' }], hermes_tool_labels: [MCP_LABEL] },
+        name: 'tool_call',
+        result: { results: [{ data: { ok: true } }] },
+        tool_id: 'bridge-on-1'
+      })
+    )
+
+    expect(await screen.findByText('done')).toBeTruthy()
+    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(1)
   })
 })

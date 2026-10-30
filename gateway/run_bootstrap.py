@@ -27,6 +27,55 @@ def _start_deferred_state_db_integrity_check(evidence: dict) -> None:
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+def _replace_takeover_grace_s(existing_pid: Optional[int] = None) -> float:
+    """Seconds ``--replace`` waits for the old gateway; see :func:`_replace_takeover_lease`."""
+    return _replace_takeover_lease(existing_pid)[0]
+
+
+def _replace_takeover_lease(existing_pid: Optional[int] = None) -> tuple[float, bool]:
+    """``(wait_s, lease_known)``: drain-aware wait for ``--replace``, bound to the OLD gateway's lease.
+
+    The old ``GatewayRunner`` froze ``_restart_drain_timeout`` / ``_cron_drain_timeout`` at ITS
+    construction and ``stop()`` drains from those retained values; re-reading config HERE answers
+    for a different generation. It publishes that frozen budget in its PID record
+    (``publish_stop_budget``), so read it and never grant less. When the old lease is UNKNOWN
+    (legacy record, unreadable file) the wait is only a bounded patience window, never destructive
+    authority: ``lease_known`` is False and the caller must not SIGKILL when it elapses, because a
+    floor is a lower bound on the old incarnation's lease, not an upper one. A config-loader
+    failure must not shorten the wait either. #113355, all three witnesses caught by @andrexibiza.
+    """
+    from gateway.restart import (
+        REPLACE_TAKEOVER_GRACE_UNKNOWN_LEASE_FLOOR_S, resolve_replace_takeover_grace_s)
+    from gateway.run import _REAL_GATEWAY_RUNNER_CLASS as runner_cls
+    config_readable = True
+    try:
+        drain_s = runner_cls._load_restart_drain_timeout()
+        cron_s = runner_cls._load_cron_drain_timeout()
+    except Exception:
+        # Fail closed: an unreadable config says nothing about the old generation's lease, and
+        # (0, 0) would mint the SHORTEST one.
+        config_readable = False
+        drain_s, cron_s = 0.0, 0.0
+    old_budget_s: Optional[float] = None
+    if existing_pid is not None:
+        try:
+            from gateway.status import read_published_stop_budget_s
+            old_budget_s = read_published_stop_budget_s(existing_pid)
+        except Exception:
+            old_budget_s = None
+    if old_budget_s is None:
+        # Unknown old lease: wait at least the conservative floor, then abstain (see caller).
+        return max(
+            resolve_replace_takeover_grace_s(
+                drain_s, cron_s, floor_s=REPLACE_TAKEOVER_GRACE_UNKNOWN_LEASE_FLOOR_S),
+            REPLACE_TAKEOVER_GRACE_UNKNOWN_LEASE_FLOOR_S), False
+    grace = resolve_replace_takeover_grace_s(
+        drain_s, cron_s, old_generation_budget_s=old_budget_s)
+    if not config_readable:
+        grace = max(grace, REPLACE_TAKEOVER_GRACE_UNKNOWN_LEASE_FLOOR_S)
+    return grace, True
+
+
 async def _start_gateway_replace_existing_instance(existing_pid: int, replace: bool) -> bool:
     """Handle a live gateway PID under this HERMES_HOME: replace it (``--replace``) or refuse.
     Returns False when startup must abort (refused, permission denied, target still alive)."""
@@ -94,9 +143,26 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
         logger.error("Permission denied killing PID %d. Cannot replace.", existing_pid)
         _clear_takeover_marker_quiet()
         return False
-    # Up to 10s for SIGTERM, then SIGKILL.
-    if not await _wait_for_pid_exit(existing_pid, 20, 0.5):
-        logger.warning("Old gateway (PID %d) did not exit after SIGTERM, sending SIGKILL.", existing_pid)
+    # Wait the old gateway's FULL graceful-stop budget (restart_drain_timeout / cron_drain_timeout
+    # + headroom) before SIGKILL — the same budget systemd's TimeoutStopSec covers. A fixed 10s
+    # force-killed a draining gateway mid-SQLite-write on every busy restart (state.db malformed).
+    grace_s, lease_known = _replace_takeover_lease(existing_pid)
+    logger.info("Waiting up to %.0fs for old gateway (PID %d) to drain and exit%s",
+                grace_s, existing_pid, " before force-kill" if lease_known else "")
+    if not await _wait_for_pid_exit(existing_pid, max(1, int(grace_s / 0.5)), 0.5):
+        if not lease_known:
+            # The old gateway published no stop lease (it predates ``stop_budget_s``), so we have no
+            # upper bound on how long it may legitimately drain. A guessed deadline is not authority
+            # to SIGKILL it mid-drain / mid-SQLite-write: abort the replacement and leave it (and its
+            # PID record and scoped locks) alone to finish its own graceful stop.
+            logger.error(
+                "Old gateway (PID %d) is still draining after %.0fs and published no stop lease; "
+                "not force-killing it. Aborting --replace: re-run once it has exited, or stop it "
+                "explicitly (hermes gateway stop).", existing_pid, grace_s)
+            _clear_takeover_marker_quiet()
+            return False
+        logger.warning("Old gateway (PID %d) did not exit within %.0fs after SIGTERM, sending SIGKILL.",
+                       existing_pid, grace_s)
         old_gateway_exited = False
         try:
             terminate_pid(existing_pid, force=True, expected_start_time=existing_start_time)

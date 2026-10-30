@@ -367,7 +367,7 @@ function logErrorToDesktopLog(error: unknown, fallback: string): void {
 export function notifyError(
   error: unknown,
   fallback: string,
-  options: { action?: NotificationAction; id?: string } = {}
+  options: { action?: NotificationAction; id?: string; persistent?: boolean; secondaryAction?: NotificationAction } = {}
 ): string {
   const readable = readableError(error, fallback)
   logErrorToDesktopLog(error, fallback)
@@ -383,7 +383,9 @@ export function notifyError(
       kind: 'error',
       title: fallback,
       message: readable.message,
-      detail: readable.detail
+      detail: readable.detail,
+      persistent: options.persistent,
+      secondaryAction: options.secondaryAction
     },
     category
   )

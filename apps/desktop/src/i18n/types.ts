@@ -491,6 +491,8 @@ export interface Translations extends NoticeTranslations {
       noSpeechDetected: string
       playbackFailed: string
       recordingFailed: string
+      retryTranscription: string
+      saveRecording: string
       sayStopToEnd: (phrase: string) => string
       transcriptionFailed: string
       transcriptionUnavailable: string

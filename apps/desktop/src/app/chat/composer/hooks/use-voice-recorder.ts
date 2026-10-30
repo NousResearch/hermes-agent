@@ -1,17 +1,42 @@
+import { randomUuid } from '@hermes/shared'
 import { useEffect, useRef, useState } from 'react'
 
 import { type ResolvedOwner, resolveOwnerNow } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { downloadBlob } from '@/lib/download'
 import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
 import { fetchVoiceClientConfigFor } from '@/lib/voice-client-direct'
 import { type DictationStreamSession, openDictationStream } from '@/lib/voice-stream'
 import { recordFeatureUse } from '@/store/desktop-metrics'
 import { notify, notifyError } from '@/store/notifications'
 
+import type { ComposerTarget } from '../focus'
 import { useComposerScope } from '../scope'
 import type { VoiceActivityState, VoiceStatus } from '../types'
 
 import { useMicRecorder } from './use-mic-recorder'
+
+/**
+ * A take kept after a failed transcription belongs to the window, not to the
+ * recorder instance that captured it: opening Settings unmounts the chat bar.
+ * Its retry, and the words it yields, go to whichever recorder of the same
+ * composer target is mounted when they are needed.
+ */
+interface TakeHandler {
+  insert: (text: string) => void
+  retry: (audio: Blob, owner: ResolvedOwner) => Promise<void>
+}
+
+const takeHandlers = new Map<ComposerTarget, TakeHandler>()
+
+const TAKE_EXTENSIONS: Record<string, string> = { 'audio/mp4': 'm4a', 'audio/ogg': 'ogg', 'audio/wav': 'wav' }
+
+function takeFilename(audio: Blob): string {
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+  const type = audio.type.split(';')[0].trim().toLowerCase()
+
+  return `hermes-dictation-${stamp}.${TAKE_EXTENSIONS[type] ?? 'webm'}`
+}
 
 interface VoiceRecorderOptions {
   maxRecordingSeconds: number
@@ -44,7 +69,8 @@ export function useVoiceRecorder({
   const { handle, level, recording } = useMicRecorder(voiceCopy)
   // The scope's session owner (a Bot tile's own connection + profile); the
   // main composer leaves it unset and the ambient scope fills it at mic-open.
-  const { connectionId: ownerConnectionId, profile: ownerProfile } = useComposerScope()
+  const { connectionId: ownerConnectionId, profile: ownerProfile, target } = useComposerScope()
+  const takeKey: ComposerTarget = target ?? 'main'
   const ownerRef = useRef({ connectionId: ownerConnectionId, profile: ownerProfile })
   ownerRef.current = { connectionId: ownerConnectionId, profile: ownerProfile }
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('idle')
@@ -128,9 +154,9 @@ export function useVoiceRecorder({
         onTranscript(transcript)
       }
     } catch (error) {
-      if (live()) {
-        notifyError(error, voiceCopy.transcriptionFailed)
-      }
+      // Kept even when this composer is gone by now: the notice is an offer,
+      // and the words are recoverable from any composer of this target.
+      keepFailedTake(error, result.audio, dictation.owner)
     } finally {
       if (live()) {
         finish(dictation)
@@ -139,6 +165,88 @@ export function useVoiceRecorder({
       }
     }
   }
+
+  // A take's words exist nowhere else until it transcribes, and a long take
+  // cannot be spoken again. A failed transcription (provider busy, timeout,
+  // dropped link) keeps the recording behind a notice that survives chat
+  // switches: retry on the same audio, or save the file itself.
+  const keepFailedTake = (error: unknown, audio: Blob, owner: ResolvedOwner) => {
+    const retry = () => {
+      const handler = takeHandlers.get(takeKey)
+
+      if (handler) {
+        void handler.retry(audio, owner)
+      } else {
+        keepFailedTake(error, audio, owner) // no composer of this target is mounted (Settings open)
+      }
+    }
+
+    notifyError(error, voiceCopy.transcriptionFailed, {
+      action: { label: voiceCopy.retryTranscription, onClick: retry },
+      id: `dictation-take-${randomUuid()}`,
+      persistent: true,
+      secondaryAction: { label: voiceCopy.saveRecording, onClick: () => downloadBlob(audio, takeFilename(audio)) }
+    })
+  }
+
+  const retryTake = async (audio: Blob, owner: ResolvedOwner) => {
+    if (!onTranscribeAudio) {
+      keepFailedTake(new Error(voiceCopy.transcriptionUnavailable), audio, owner)
+
+      return
+    }
+
+    // A dictation started since owns the mic state; the retry runs beside it.
+    const ownsStatus = dictationRef.current === null
+
+    if (ownsStatus) {
+      setVoiceStatus('transcribing')
+    }
+
+    await syncSttLease(VOICE_INPUT_LEASE, true, owner)
+
+    try {
+      const transcript = (await onTranscribeAudio(audio, owner)).trim()
+      const handler = takeHandlers.get(takeKey)
+
+      if (!transcript) {
+        notify({ kind: 'warning', title: voiceCopy.noSpeechDetected, message: voiceCopy.tryRecordingAgain })
+      } else if (handler) {
+        handler.insert(transcript)
+      } else {
+        keepFailedTake(new Error(voiceCopy.transcriptionFailed), audio, owner)
+      }
+    } catch (error) {
+      keepFailedTake(error, audio, owner)
+    } finally {
+      void syncSttLease(VOICE_INPUT_LEASE, false, owner)
+
+      if (ownsStatus && dictationRef.current === null) {
+        setVoiceStatus('idle')
+        focusInput()
+      }
+    }
+  }
+
+  // The handler a kept take reaches: this render's insert and retry, registered
+  // for as long as this recorder is the mounted one for its composer target.
+  const latestTakeHandler = useRef<TakeHandler>({ insert: onTranscript, retry: retryTake })
+  latestTakeHandler.current = { insert: onTranscript, retry: retryTake }
+
+  useEffect(() => {
+    const handler: TakeHandler = {
+      insert: text => latestTakeHandler.current.insert(text),
+      retry: (audio, owner) => latestTakeHandler.current.retry(audio, owner)
+    }
+
+    takeHandlers.set(takeKey, handler)
+
+    return () => {
+      if (takeHandlers.get(takeKey) === handler) {
+        takeHandlers.delete(takeKey)
+      }
+    }
+  }, [takeKey])
 
   // The live session's final text, or null to transcribe the recorded blob instead (no session,
   // socket failure, or an empty result over a take the recorder kept).

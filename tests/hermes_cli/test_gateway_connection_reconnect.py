@@ -14,8 +14,8 @@ from websockets.protocol import State
 
 from hermes_cli.cli_chat_error_copy import chat_error_response
 from hermes_cli.gateway_agent import GatewayAgent
-from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import GatewayConnection, lost_before
+from hermes_cli.gateway_client import AnswerLost, GatewayClientError
+from hermes_cli.gateway_connection import NOT_SENT, GatewayConnection, lost_before
 
 SID = "local-abc"
 
@@ -67,6 +67,7 @@ class Gateway:
         self.resume_errors = []  # raised by the next session.resume calls, across lives
         self.dialing = threading.Event()
         self.hold = None  # an Event the next dials wait on before the socket opens
+        self.teardown = None  # an Event a closing socket waits on before its loop ends (close_timeout)
 
     @asynccontextmanager
     async def dial(self):
@@ -79,7 +80,11 @@ class Gateway:
         life = Life(len(self.lives) + 1, drop_on_submit=self.drop_next_submit, resume_errors=self.resume_errors)
         self.drop_next_submit = False
         self.lives.append(life)
-        yield life
+        try:
+            yield life
+        finally:
+            if self.teardown is not None:
+                await asyncio.to_thread(self.teardown.wait, 5)
 
     def hang_up(self, conn):
         """The current life goes away (``gateway restart``); the loop thread ends with it."""
@@ -114,6 +119,38 @@ def test_the_next_call_after_a_restart_reconnects_and_resubscribes(gateway, conn
     assert conn.state(SID).subscription_id == "sub-2"
     lost = conn.events.get_nowait()
     assert isinstance(lost, GatewayClientError) and lost_before(lost, conn.epoch)
+
+
+def _hang_up_with_the_close_held(gateway, conn):
+    """The reader ended (the hang-up already failed the pending requests with AnswerLost), but the loop
+    is still closing that socket: ``gateway.teardown`` holds the close open."""
+    gateway.teardown = threading.Event()
+    life = gateway.lives[-1]
+    life.hung_up = lambda: True  # the hang-up ended its reader
+    conn.loop.call_soon_threadsafe(life.events.put_nowait, GatewayClientError("Gateway disconnected"))
+    return life
+
+
+def test_start_while_the_hung_up_socket_closes_resubscribes_on_the_next_gateway(gateway, conn):
+    """Callers that read the connection's state after ``start()`` (a submit's preflight, a detach) see
+    the next gateway's, resubscribed, never the dying socket's; a call reaches the next gateway too."""
+    life = _hang_up_with_the_close_held(gateway, conn)
+    threading.Timer(0.3, gateway.teardown.set).start()
+
+    conn.start(5)
+    assert conn.client is gateway.lives[1] and conn.state(SID).subscription_id == "sub-2"
+    assert conn.call("status") == {"status": "ok", "life": 2}
+    assert ("status", {}) not in life.calls
+
+
+def test_a_close_that_outlasts_start_sends_nothing(gateway, conn):
+    life = _hang_up_with_the_close_held(gateway, conn)
+    try:
+        with pytest.raises(GatewayClientError, match="timed out"):
+            conn.start(0.3)
+        assert life.calls == [("session.resume", {"session_id": SID})] and len(gateway.lives) == 1
+    finally:
+        gateway.teardown.set()
 
 
 def test_close_ends_the_viewer_for_good(gateway, conn):
@@ -252,6 +289,18 @@ def test_a_transient_resume_failure_fails_the_reconnect_and_the_next_call_retrie
     assert conn.call("status") == {"status": "ok", "life": 3}
     assert _resumes(gateway.lives[2]) == [SID]
     assert conn.state(SID).subscription_id == "sub-3"
+
+
+def test_a_resubscribe_answer_lost_during_a_redial_is_not_the_callers_lost_answer(gateway, conn):
+    """The redial's own ``session.resume`` lost its answer: the call that triggered the redial never
+    sent its request, so it must not read as :class:`AnswerLost` (a caller would re-ask under its id)."""
+    gateway.resume_errors.append(AnswerLost("Gateway did not answer session.resume"))
+    gateway.hang_up(conn)
+    with pytest.raises(GatewayClientError) as raised:
+        conn.call("status")
+    assert not isinstance(raised.value, AnswerLost) and str(raised.value) == NOT_SENT
+    assert isinstance(raised.value.__cause__, AnswerLost)
+    assert conn.call("status") == {"status": "ok", "life": 3}
 
 
 def test_close_after_a_failed_resume_is_still_final(gateway, conn):

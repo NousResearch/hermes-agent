@@ -55,6 +55,19 @@ def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> dic
     return config
 
 
+def resolve_task_max_tokens(task: str | None, requested: int | None) -> int | None:
+    """Use a positive task cap when the caller did not choose one explicitly."""
+    if requested is not None or not task:
+        return requested
+    value = _get_auxiliary_task_config(task).get("max_tokens")
+    if type(value) is int:
+        return value if value > 0 else None
+    if isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+        return parsed if parsed > 0 else None
+    return None
+
+
 def _task_config(task: str, _seen: frozenset) -> dict[str, Any]:
     aux = _SESSION_AUXILIARY.get()
     if aux is None:

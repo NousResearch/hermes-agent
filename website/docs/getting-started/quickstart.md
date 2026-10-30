@@ -135,6 +135,7 @@ Good defaults:
 | **xAI** | Grok models via direct API | Set `XAI_API_KEY` |
 | **xAI Grok OAuth** | SuperGrok / Premium+ subscription, no API key needed | `hermes model` → xAI Grok OAuth |
 | **NovitaAI** | Multi-model API gateway | Set `NOVITA_API_KEY` |
+| **Scaleway** | European Generative APIs — GLM, Qwen, DeepSeek, Mistral (pay-per-use) | Set `SCW_SECRET_KEY` |
 | **Ramp Router** | Responses-native LLM gateway routing across OpenAI/Anthropic/xAI/... | Set `RAMP_ROUTER_API_KEY` |
 | **Nebius Token Factory** | Open models on Nebius AI cloud | Set `NEBIUS_API_KEY` |
 | **StepFun** | Step Plan models | Set `STEPFUN_API_KEY` |

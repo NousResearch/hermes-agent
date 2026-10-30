@@ -19,6 +19,7 @@ sidebar_position: 1
 | **Anthropic** | `hermes model`（Claude Max + 额外用量积分，通过 OAuth；也支持 Anthropic API key 或手动 setup-token——见下方说明） |
 | **OpenRouter** | `~/.hermes/.env` 中的 `OPENROUTER_API_KEY` |
 | **NovitaAI** | `~/.hermes/.env` 中的 `NOVITA_API_KEY`（provider: `novita`，200+ 模型，Model API、Agent Sandbox、GPU Cloud） |
+| **Scaleway** | `~/.hermes/.env` 中的 `SCW_SECRET_KEY`（provider: `scaleway`，别名：`scw`；欧洲 Generative APIs——GLM、Qwen、DeepSeek、Mistral 等，按用量计费） |
 | **AI Gateway** | `~/.hermes/.env` 中的 `AI_GATEWAY_API_KEY`（provider: `ai-gateway`） |
 | **z.ai / GLM** | `~/.hermes/.env` 中的 `GLM_API_KEY`（provider: `zai`） |
 | **Kimi / Moonshot** | `~/.hermes/.env` 中的 `KIMI_API_KEY`（provider: `kimi-coding`） |
@@ -167,6 +168,10 @@ hermes plugins install github-copilot
 # NovitaAI Model API
 hermes chat --provider novita --model moonshotai/kimi-k2.5
 # 需要：~/.hermes/.env 中的 NOVITA_API_KEY
+
+# Scaleway Generative APIs（欧洲云——GLM、Qwen、DeepSeek、Mistral）
+hermes chat --provider scaleway --model deepseek-v4.1-flash-1017
+# 需要：~/.hermes/.env 中的 SCW_SECRET_KEY
 
 # z.ai / ZhipuAI GLM
 hermes chat --provider zai --model glm-5

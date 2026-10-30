@@ -1474,6 +1474,13 @@ def compute_error_backoff(
         wait_time, _backoff_policy = adaptive_rate_limit_backoff(
             retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
         )
+    # ``agent.max_retry_wait_seconds`` bounds every single wait (a Retry-After or the adaptive backoff);
+    # unset keeps the built-in caps. A pool or fallback chain then takes over sooner than a 600s sleep.
+    _cap = getattr(agent, "_max_retry_wait_s", None)
+    if isinstance(_cap, (int, float)) and not isinstance(_cap, bool) and _cap >= 0:
+        wait_time = min(wait_time, float(_cap))
+        if _retry_after is not None:
+            _retry_after = min(_retry_after, float(_cap))
     _reset = reset_hint(api_error) if _adaptive else ""
     _free_busy = is_rate_limited and on_free_model(agent, base_url)
     _wait_reason = ("The free model is busy" if _free_busy

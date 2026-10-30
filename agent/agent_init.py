@@ -1281,6 +1281,17 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     inject_memory_provider_tools(agent)
 
 
+def normalize_max_retry_wait(value) -> float | None:
+    """``agent.max_retry_wait_seconds``: a non-negative number of seconds, else None (built-in caps)."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds >= 0 else None
+
+
 def _apply_agent_section(agent, _agent_cfg):
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10
@@ -1291,6 +1302,9 @@ def _apply_agent_section(agent, _agent_cfg):
     agent.budget_warning_ratio = normalize_budget_warning_ratio(
         _agent_section.get("budget_warning_ratio")
     )
+    # Rate-limit patience (agent/turn_recovery.compute_error_backoff, agent_runtime_helpers._recover_rate_limit).
+    agent._max_retry_wait_s = normalize_max_retry_wait(_agent_section.get("max_retry_wait_seconds"))
+    agent._rotate_on_first_429 = _agent_section.get("rotate_credential_on_first_rate_limit") is True
     # Both: "auto" (model-list match), true, false, or list of model substrings; independent
     # of each other (gates in agent/system_prompt.py).
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")

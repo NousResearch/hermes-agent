@@ -119,6 +119,15 @@ DEFAULT_CONFIG = {
         # whole call; the OpenAI SDK also retries transient errors (max_retries=2). Set 1 for fast
         # failover to fallback providers; raise to tolerate longer provider hiccups.
         "api_max_retries": 3,
+        # Upper bound in seconds on any single wait between API retries (a provider Retry-After or the
+        # rate-limit backoff). null keeps the built-in caps (a Retry-After is honoured up to 600s). Lower
+        # it to move to the next pool credential or fallback provider sooner instead of holding a turn
+        # on a quota wall for minutes.
+        "max_retry_wait_seconds": None,
+        # On a 429 from a multi-credential pool, retry the same credential once before rotating (false,
+        # the default: per-minute throttles often clear). true rotates to the next pool credential on the
+        # first 429, for pools whose 429s are plan/quota walls (several subscription accounts).
+        "rotate_credential_on_first_rate_limit": False,
         # Once api_max_retries AND the fallback chain are spent on a transient outage (5xx,
         # overloaded/529, connect/read timeouts) with nothing delivered yet, wait and retry this many
         # more cycles (jittered 15/30/60/60/60s; a provider Retry-After wins up to 120s) with a

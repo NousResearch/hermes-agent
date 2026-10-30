@@ -186,3 +186,102 @@ def test_deprecated_alias_keeps_a_frozen_out_of_tree_subclass_working(tmp_path):
     assert result["is_acp_client"] and result["base_url"] == "acp://frozen"
     assert result["models"] == ["open-model", "policy-blocked"]  # the alias keeps its enablement filter
     assert result["reply"] == "HELLO"
+
+
+# --- issue 114313: Cursor-backed ACP auth + permission/cursor handling ---
+
+
+class _FakeProcess:
+    def __init__(self):
+        import io
+
+        self.stdin = io.StringIO()
+
+
+def _dispatch_to_client(client, message):
+    process = _FakeProcess()
+    handled = client._handle_server_message(
+        message, process=process, cwd="/tmp", text_parts=[], reasoning_parts=[],
+    )
+    assert handled
+    payload = process.stdin.getvalue().strip()
+    assert payload
+    return json.loads(payload)
+
+
+def test_permission_request_stays_cancelled_for_generic_backend(tmp_path):
+    client = ACPClient(command="some-agent", args=["--acp"], acp_cwd=str(tmp_path))
+    response = _dispatch_to_client(
+        client, {"jsonrpc": "2.0", "id": 1, "method": "session/request_permission", "params": {} },
+    )
+    assert "error" not in response
+    assert response["result"] == {"outcome": {"outcome": "cancelled"} }
+
+
+def test_permission_request_selects_allow_once_for_cursor(tmp_path):
+    client = ACPClient(command="cursor-agent", args=["--acp", "--stdio"], acp_cwd=str(tmp_path))
+    response = _dispatch_to_client(
+        client, {"jsonrpc": "2.0", "id": 1, "method": "session/request_permission", "params": {} },
+    )
+    assert "error" not in response
+    assert response["result"] == {"outcome": {"outcome": "selected", "optionId": "allow-once"} }
+
+
+def test_cursor_prefixed_method_is_acknowledged_not_rejected(tmp_path):
+    client = ACPClient(command="cursor-agent", args=["--acp", "--stdio"], acp_cwd=str(tmp_path))
+    response = _dispatch_to_client(
+        client, {"jsonrpc": "2.0", "id": 7, "method": "cursor/readFile", "params": {} },
+    )
+    assert "error" not in response
+    assert "result" in response
+
+
+def _write_method_logging_server(path, log_path):
+    quoted = json.dumps(str(log_path))
+    path.write_text(
+        "import json, sys\n"
+        "log = open(" + quoted + ", 'a', encoding='utf-8')\n"
+        "for line in sys.stdin:\n"
+        "    try:\n"
+        "        req = json.loads(line)\n"
+        "    except Exception:\n"
+        "        continue\n"
+        "    if not isinstance(req, dict) or 'method' not in req:\n"
+        "        continue\n"
+        "    method = req.get('method')\n"
+        "    log.write(method + '|' + json.dumps(req.get('params') or {}) + chr(10))\n"
+        "    log.flush()\n"
+        "    if method == 'initialize':\n"
+        "        result = {'protocolVersion': 1}\n"
+        "    elif method == 'authenticate':\n"
+        "        result = {}\n"
+        "    elif method == 'session/new':\n"
+        "        result = {'sessionId': 'cursor-session'}\n"
+        "    else:\n"
+        "        result = {}\n"
+        "    print(json.dumps({'jsonrpc': '2.0', 'id': req.get('id'), 'result': result}), flush=True)\n",
+        encoding="utf-8",
+    )
+
+
+def test_cursor_backend_authenticates_with_cursor_login_after_initialize(tmp_path):
+    log_path = tmp_path / "methods.log"
+    server = tmp_path / "fake_cursor_acp.py"
+    _write_method_logging_server(server, log_path)
+    client = ACPClient(command=sys.executable, args=[str(server)], acp_cwd=str(tmp_path))
+    assert client.list_models(timeout_seconds=30) == []
+    entries = [line.split('|', 1) for line in log_path.read_text(encoding='utf-8').splitlines()]
+    methods = [entry[0] for entry in entries]
+    assert methods.index('authenticate') > methods.index('initialize')
+    auth_params = json.loads(entries[methods.index('authenticate')][1])
+    assert auth_params.get('methodId') == 'cursor_login'
+
+
+def test_plain_backend_skips_authenticate(tmp_path):
+    log_path = tmp_path / "methods.log"
+    server = tmp_path / "fake_plain_acp.py"
+    _write_method_logging_server(server, log_path)
+    client = ACPClient(command=sys.executable, args=[str(server)], acp_cwd=str(tmp_path))
+    assert client.list_models(timeout_seconds=30) == []
+    methods = [line.split('|', 1)[0] for line in log_path.read_text(encoding='utf-8').splitlines()]
+    assert 'authenticate' not in methods

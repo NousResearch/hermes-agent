@@ -1027,38 +1027,9 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             logger.debug("slack session-thread stamp failed", exc_info=True)
 
     async def _localize_inbound_media(self, event) -> None:
-        """Download connector re-hosted attachments to local temp paths — every NATIVE
-        adapter presents inbound media as LOCAL FILE PATHS (vision/file tools consume
-        paths). Best-effort per entry: a failed download drops that entry, never the
-        message; with no client only re-host URLs are dropped (they'd 401 downstream)."""
-        try:
-            urls = list(getattr(event, "media_urls", None) or [])
-            if not urls:
-                return
-            # media_types / media_filenames are INDEXED IN PARALLEL with media_urls downstream:
-            # carry (url, mime, name) TRIPLES or survivors inherit a neighbour's type or name.
-            types = list(getattr(event, "media_types", None) or []) + [""] * len(urls)
-            names = list(getattr(event, "media_filenames", None) or []) + [""] * len(urls)
-            client = self._get_media_client()
-            localized: list[tuple[str, str, str]] = []
-            for url, mime, name in zip(urls, types, names):
-                if not isinstance(url, str) or not url:
-                    continue
-                if client is None:
-                    if "/relay/media/" not in url:
-                        localized.append((url, mime, name))
-                    continue
-                # The path is a random temp name; the original name rides beside it.
-                got = await client.download_with_name(url, suggested_name=name or None)
-                if got:
-                    localized.append((got[0], mime, got[1]))
-                elif "/relay/media/" not in url:
-                    # A public URL still has value as a URL; a dead re-host does not.
-                    localized.append((url, mime, name))
-            event.media_urls, event.media_types, event.media_filenames = (
-                [entry[i] for entry in localized] for i in range(3))
-        except Exception:
-            logger.debug("relay inbound media localization failed", exc_info=True)
+        """Download connector attachments, retaining metadata for each surviving file."""
+        from gateway.relay.adapter_inbound_media import localize_inbound_media
+        await localize_inbound_media(event, self._get_media_client)
 
     def prime_routing_cache(self, event) -> None:
         """Warm the per-chat egress routing caches from a SYNTHETIC event: a completion

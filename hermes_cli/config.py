@@ -613,7 +613,8 @@ from hermes_cli.personality import (
 
 from hermes_cli.config_version_stamp import (
     check_config_version, newer_stamp_message, note_first_stamp, read_config_version_stamp, stamp_missing_config)
-from hermes_cli.config_secret_display import _maskable_secret_text, redact_config_value
+from hermes_cli.config_secret_display import (
+    _maskable_secret_text, config_set_display_value, redact_config_value)
 
 
 # ---- Config Migration System ----

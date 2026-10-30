@@ -258,7 +258,7 @@ async def _withdraw(authority, row):
 
 def _route_owner(authority, entry):
     # Compression moves the route's transcript to a child; admissions stay on the logical root.
-    return (entry.origin.chat_id if entry.origin.platform == Platform.LOCAL
+    return (entry.origin.chat_id if entry.origin is not None and entry.origin.platform == Platform.LOCAL
             else authority.logical_owner(entry.session_id))
 
 

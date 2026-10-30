@@ -57,6 +57,9 @@ def test_normalize_enabled_coerces_values():
     assert wa._normalize_enabled("off") is False
     assert wa._normalize_enabled("garbage") is False
     assert wa._normalize_enabled(None) is False
+    # A bare YAML integer reads like its string ("write_approval: 1" was gate OFF).
+    assert wa._normalize_enabled(1) is True and wa._normalize_enabled("1") is True
+    assert wa._normalize_enabled(0) is False and wa._normalize_enabled(2) is False
 
 # ---------------------------------------------------------------------------
 # Memory gate
@@ -430,3 +433,44 @@ def test_staged_hint_keeps_command_for_chat_gateway_platform(hermes_home, monkey
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     r = _stage_one_memory_write()
     assert "/memory pending" in r["message"], r["message"]
+
+
+def test_gate_unavailable_refuses_memory_and_skill_writes(hermes_home, monkeypatch):
+    """If tools.write_approval cannot be imported, the gate must fail CLOSED: a user who
+    turned approval on must never get a silent direct write because the module broke."""
+    import sys
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools.skill_manager_tool import _find_skill, skill_manage
+    store = MemoryStore(); store.load_from_disk()
+    import tools
+    monkeypatch.setitem(sys.modules, "tools.write_approval", None)  # import now raises
+    monkeypatch.delattr(tools, "write_approval", raising=False)
+
+    r = json.loads(memory_tool("add", "memory", "should not land", store=store))
+    assert r["success"] is False and not r.get("staged")
+    assert "should not land" not in json.dumps(store._entries_for("memory"))
+
+    content = "---\nname: gate-probe\ndescription: Use when probing. Probe.\n---\n# Probe\n"
+    r = json.loads(skill_manage(action="create", name="gate-probe", content=content))
+    assert r["success"] is False and not r.get("staged")
+    assert _find_skill("gate-probe") is None
+
+
+def test_gate_is_on_when_the_config_cannot_be_read(hermes_home, monkeypatch):
+    """An unreadable config must not read as 'gate off': a skill write is staged, not written."""
+    import hermes_cli.config as cfg
+    from hermes_cli.config_read_errors import FailedConfigRead
+    from tools import write_approval as wa
+    from tools.skill_manager_tool import _find_skill, skill_manage
+
+    def boom():
+        raise OSError("config unreadable")
+    monkeypatch.setattr(cfg, "load_config", boom)
+    assert wa.write_approval_enabled(wa.SKILLS) is True
+    r = json.loads(skill_manage(action="create", name="cfg-probe",
+                                content="---\nname: cfg-probe\ndescription: Use when probing. Probe.\n---\n# P\n"))
+    assert r.get("staged") is True and _find_skill("cfg-probe") is None
+    monkeypatch.setattr(cfg, "load_config", lambda: FailedConfigRead({}, error=OSError("EIO")))
+    assert wa.write_approval_enabled(wa.MEMORY) is True
+    monkeypatch.setattr(cfg, "load_config", dict)
+    assert wa.write_approval_enabled(wa.MEMORY) is False

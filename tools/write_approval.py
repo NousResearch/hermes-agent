@@ -42,21 +42,30 @@ _TRUTHY_STRINGS = frozenset({"on", "true", "yes", "1", "approve", "enabled"})
 # --- Config resolution ---
 
 def write_approval_enabled(subsystem: str) -> bool:
-    """Read ``<subsystem>.write_approval``; any unset/invalid value means gate off."""
+    """Read ``<subsystem>.write_approval``; an unset/invalid value means gate off. A config that
+    cannot be read (load error, or a ``FailedConfigRead`` fallback standing in for the file) means
+    gate ON: the user's setting is unknown, and staging is recoverable where an unreviewed write is not."""
     if subsystem not in _SUBSYSTEMS:
         return False
     try:
-        from hermes_cli.config import load_config, cfg_get
-        return _normalize_enabled(cfg_get(load_config(), subsystem, CONFIG_KEY, default=False))
+        from hermes_cli.config import FailedConfigRead, cfg_get, load_config
+        config = load_config()
+        if isinstance(config, FailedConfigRead):
+            return True
+        return _normalize_enabled(cfg_get(config, subsystem, CONFIG_KEY, default=False))
     except Exception:
-        return False
+        logger.warning("write_approval: config unreadable; staging %s writes", subsystem, exc_info=True)
+        return True
 
 
 def _normalize_enabled(value: Any) -> bool:
     """Coerce a config value to bool; unknown → False (gate off). The string branch
-    covers hand-edited configs (YAML already parses bare on/off/yes/no)."""
+    covers hand-edited configs (YAML already parses bare on/off/yes/no); a bare YAML 1 / 0
+    reads like "1" / "0"."""
     if isinstance(value, bool):
         return value
+    if isinstance(value, int):
+        return value == 1
     return isinstance(value, str) and value.strip().lower() in _TRUTHY_STRINGS
 
 

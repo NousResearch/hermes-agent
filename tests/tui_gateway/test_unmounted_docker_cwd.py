@@ -122,3 +122,31 @@ def test_a_bad_unrelated_terminal_setting_does_not_drop_the_registration(tmp_pat
     finally:
         terminal_tool.clear_task_env_overrides("bad-timeout")
         reset_terminal_scope(token)
+
+
+def test_an_unreadable_profile_keeps_the_desktop_cwd_record(tmp_path, monkeypatch):
+    """The routed profile's refusal scope raises on every terminal read; the host-side record
+    (project tools read it) must still be written."""
+    import hermes_constants as hc
+    from tools import terminal_tool
+    from tui_gateway import server
+
+    home = tmp_path / "home"
+    profile = home / "profiles" / "bad"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("terminal: [unclosed", encoding="utf-8")
+    workspace = tmp_path / "host-project"
+    workspace.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    vars(server)["_register_session_cwd"]({
+        "session_key": "bad-profile", "cwd": str(workspace), "explicit_cwd": True,
+        "source": "desktop", "profile_home": str(profile),
+    })
+
+    token = hc.set_hermes_home_override(str(profile))
+    try:
+        assert terminal_tool.resolve_task_overrides("bad-profile").get("cwd") == str(workspace)
+    finally:
+        terminal_tool.clear_task_env_overrides("bad-profile")
+        hc.reset_hermes_home_override(token)

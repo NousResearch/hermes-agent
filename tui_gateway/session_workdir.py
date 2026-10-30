@@ -518,7 +518,7 @@ def _register_session_cwd(session: dict | None) -> None:
         # and the scoped turn (`profile:<p>:<key>`) misses it until the first `cd`. Callers already
         # inside the session's scope (the turn) bind nothing: the routed home is theirs already.
         import hermes_constants as hc
-        from tools.terminal_scope import install_and_reset_profile_terminal_scope
+        from tools.terminal_scope import TerminalPolicyUnavailable, install_and_reset_profile_terminal_scope
 
         with contextlib.ExitStack() as stack:
             profile_home = session.get("profile_home")
@@ -527,11 +527,18 @@ def _register_session_cwd(session: dict | None) -> None:
                 stack.enter_context(install_and_reset_profile_terminal_scope(profile_home))
             overrides = {"cwd": cwd, "cwd_source": cwd_source}
             _ensure_terminal_env_bridged()
-            unmounted = not _tenv_bool("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
-            if _tenv("TERMINAL_ENV", "local") == "docker" and unmounted:
-                # The Desktop workspace is host context, not a directory in this sandbox. An empty cwd
-                # leaves its configured cwd and a later in-container cd intact; host-side readers
-                # (project tools) still find the session's folder under ``host_workspace``.
+            try:
+                unmounted_docker = _tenv("TERMINAL_ENV", "local") == "docker" and not _tenv_bool(
+                    "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
+            except TerminalPolicyUnavailable:
+                # An unreadable profile's terminal refuses every call anyway: register the cwd as usual
+                # so project tools still find the folder. (register_task_env_overrides writes the record
+                # before its live-env update, which raises under this refusal scope.)
+                unmounted_docker = False
+            if unmounted_docker:
+                # A host cwd is not a directory in this sandbox. An empty cwd leaves its configured cwd
+                # and a later in-container cd intact; host-side readers (project tools) still find the
+                # session's own folder under ``host_workspace``.
                 host = cwd if cwd_source == "session" else ""
                 overrides = {"cwd": "", "cwd_source": "process", "host_workspace": host}
             register_task_env_overrides(session["session_key"], overrides)

@@ -1,0 +1,72 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: creators-network
+description: Keep your CREATORS club profile current and find members to collaborate with.
+source: https://api.creators-network.app/agent
+
+# CREATORS is a private club of founders, executives and experts who meet and
+# build collaborations online. It runs a remote MCP server over Streamable HTTP
+# with native OAuth 2.1 — dynamic client registration, PKCE (S256) and refresh
+# tokens — so there is no API key to paste and nothing to install locally.
+# Discovery metadata is at /.well-known/oauth-authorization-server, and the
+# resource document the 401 points to is at
+# /.well-known/oauth-protected-resource/mcp.
+transport:
+  type: http
+  url: https://api.creators-network.app/mcp
+
+auth:
+  type: oauth
+  # No `provider:` — native MCP OAuth. The MCP client opens the browser flow on
+  # the first probe, and the member approves access in the club's own app.
+
+tools:
+  # The server's own instructions ask the agent to call start_in_club at the
+  # beginning of every conversation: it returns the owner's profile, what is
+  # missing from it, and members worth an introduction. The profile tools are
+  # enabled with it because keeping that profile accurate is the whole point of
+  # the integration — the club matches people by it, and the field that decays
+  # fastest ("what I'm looking for right now") is exactly what the agent is
+  # there to refresh. Profile and project edits are queued for human review by
+  # the club before they appear, so nothing an agent writes goes live unchecked.
+  #
+  # Left disabled: request_intro, which sends a message to another member, and
+  # set_project_logo, which replaces an image. Enable them in
+  # `hermes mcp configure creators-network` when you want them.
+  default_enabled:
+    - start_in_club
+    - get_my_profile
+    - update_my_profile
+    - set_current_need
+    - get_my_intake
+    - fill_my_intake
+    - get_my_projects
+    - update_my_project
+    - search_members
+    - get_member_card
+
+suggest:
+  keywords:
+    - creators club
+    - creators network
+  hosts:
+    - creators-network.app
+
+post_install: |
+  On first connection, Hermes opens a browser to approve access to your
+  CREATORS account. There is no login and password and no API key: the club
+  issues the token through OAuth.
+
+  This server is for club members and for people applying to join. If you are
+  already a member, start_in_club returns your profile and who in the club is
+  worth meeting. If you connected from the club's application form, it returns
+  that form instead, and your agent can fill it in for you — you send the
+  application yourself.
+
+  Edits your agent makes to your profile are reviewed by the club before they
+  go live, so ask it to show you what it wrote.
+
+  Re-run the tool checklist any time with:
+    hermes mcp configure creators-network

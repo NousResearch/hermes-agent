@@ -1,7 +1,11 @@
 import * as sdk from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
-import { type CanonicalGroupAttachment, CanonicalGroupAttachments, fetchCanonicalGroupAttachment } from './canonical-group-attachments'
+import {
+  type CanonicalGroupAttachment,
+  CanonicalGroupAttachments,
+  fetchCanonicalGroupAttachment
+} from './canonical-group-attachments'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
 
@@ -13,7 +17,16 @@ export interface CanonicalGroupEvent {
   event_id?: string
   room_id?: string
   kind: string
-  payload: { text?: string; content?: string; attachments?: CanonicalGroupAttachment[]; member_id?: string; error?: string; reason?: string; reason_code?: string; status?: string }
+  payload: {
+    text?: string
+    content?: string
+    attachments?: CanonicalGroupAttachment[]
+    member_id?: string
+    error?: string
+    reason?: string
+    reason_code?: string
+    status?: string
+  }
   actor?: { kind?: string; id?: string; display_name?: string }
   created_at?: number
 }
@@ -26,44 +39,67 @@ interface CanonicalGroupHistoryProps {
 }
 
 function eventAuthor(event: CanonicalGroupEvent, roster: Map<string, CanonicalRoomMember>, isMessage: boolean) {
-  const memberId = isMessage
-    ? event.actor?.kind === 'member' ? event.actor.id : undefined
-    : event.payload.member_id
+  const memberId = isMessage ? (event.actor?.kind === 'member' ? event.actor.id : undefined) : event.payload.member_id
 
   const member = roster.get(memberId ?? '')
 
   // The log's label preserves who spoke even if the roster has since changed.
-  return (isMessage ? event.actor?.display_name : undefined) || member?.display_name || member?.handle ||
+  return (
+    (isMessage ? event.actor?.display_name : undefined) ||
+    member?.display_name ||
+    member?.handle ||
     (isMessage ? event.actor?.id : memberId)
+  )
 }
 
 function EventTime({ timestamp }: { timestamp?: number }) {
-  if (typeof timestamp !== 'number') {return null}
+  if (typeof timestamp !== 'number') {
+    return null
+  }
   const at = new Date(timestamp * 1000)
 
-  if (!Number.isFinite(at.getTime())) {return null}
+  if (!Number.isFinite(at.getTime())) {
+    return null
+  }
 
-  return <time className="text-[0.625rem] text-(--ui-text-quaternary)" dateTime={at.toISOString()}>{sdk.relativeTime(at.getTime())}</time>
+  return (
+    <time className="text-[0.625rem] text-(--ui-text-quaternary)" dateTime={at.toISOString()}>
+      {sdk.relativeTime(at.getTime())}
+    </time>
+  )
 }
 
 function EventBody({ event, notice }: { event: CanonicalGroupEvent; notice?: string }) {
   if (notice) {
     const detail = event.payload.error || event.payload.reason || event.payload.reason_code
 
-    return <p className="text-xs text-(--ui-text-secondary)" data-selectable-text="true">
-      <strong>{notice}</strong>{detail && <>: {detail}</>}
-    </p>
+    return (
+      <p className="text-xs text-(--ui-text-secondary)" data-selectable-text="true">
+        <strong>{notice}</strong>
+        {detail && <>: {detail}</>}
+      </p>
+    )
   }
 
   const text = event.payload.text || event.payload.content || ''
 
-  return <div className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere" data-selectable-text="true">
-    {/* The shared renderer (layout and large-message safeguards). media={false}: room text
+  return (
+    <div
+      className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere"
+      data-selectable-text="true"
+    >
+      {/* The shared renderer (layout and large-message safeguards). media={false}: room text
         may come from another machine, so its MEDIA: paths never resolve against this gateway;
         room files keep their own download path below. */}
-    {MessageTextContent ? <MessageTextContent media={false} text={text} />
-      : Streamdown ? <Streamdown>{text}</Streamdown> : text}
-  </div>
+      {MessageTextContent ? (
+        <MessageTextContent media={false} text={text} />
+      ) : Streamdown ? (
+        <Streamdown>{text}</Streamdown>
+      ) : (
+        text
+      )}
+    </div>
+  )
 }
 
 // Previews download the whole file over RPC; larger or unsized images keep only Download.
@@ -73,27 +109,52 @@ const IMAGE_PREVIEW_MAX_BYTES = 5 * 1024 * 1024
 // downloading is joined rather than requested again. Manual Download stays outside it. The budget is
 // per connection because a remote whose dial hangs holds its slots for good, and must not stall others.
 type Preview = Awaited<ReturnType<typeof fetchCanonicalGroupAttachment>>
-interface PreviewQueue { slots: number; waiters: Array<() => void> }
+interface PreviewQueue {
+  slots: number
+  waiters: Array<() => void>
+}
 const previewDownloads = new Map<string, Promise<Preview>>()
 const previewQueues = new Map<string, PreviewQueue>()
 
 function releasePreviewSlot(queue: PreviewQueue) {
   const next = queue.waiters.shift()
 
-  if (next) {next()} else {queue.slots++}
+  if (next) {
+    next()
+  } else {
+    queue.slots++
+  }
 }
 
-function queuePreview(connectionId: string, key: string, fetch: () => Promise<Preview>, onPreview: (preview: Preview) => void) {
+function queuePreview(
+  connectionId: string,
+  key: string,
+  fetch: () => Promise<Preview>,
+  onPreview: (preview: Preview) => void
+) {
   const queue = previewQueues.get(connectionId) ?? { slots: 2, waiters: [] }
   previewQueues.set(connectionId, queue)
   let cancelled = false
-  const deliver = (download: Promise<Preview>) => void download.then(preview => { if (!cancelled) {onPreview(preview)} }, () => undefined)
+  const deliver = (download: Promise<Preview>) =>
+    void download.then(
+      preview => {
+        if (!cancelled) {
+          onPreview(preview)
+        }
+      },
+      () => undefined
+    )
 
   const run = () => {
     let download = previewDownloads.get(key)
 
-    if (download) {releasePreviewSlot(queue)} else {
-      download = fetch().finally(() => { previewDownloads.delete(key); releasePreviewSlot(queue) })
+    if (download) {
+      releasePreviewSlot(queue)
+    } else {
+      download = fetch().finally(() => {
+        previewDownloads.delete(key)
+        releasePreviewSlot(queue)
+      })
       previewDownloads.set(key, download)
     }
 
@@ -102,19 +163,36 @@ function queuePreview(connectionId: string, key: string, fetch: () => Promise<Pr
 
   const running = previewDownloads.get(key)
 
-  if (running) {deliver(running)} else if (queue.slots > 0) {queue.slots--; run()} else {queue.waiters.push(run)}
+  if (running) {
+    deliver(running)
+  } else if (queue.slots > 0) {
+    queue.slots--
+    run()
+  } else {
+    queue.waiters.push(run)
+  }
 
   // A preview that leaves before its turn gives up its place without sending a request.
   return () => {
     cancelled = true
     const at = queue.waiters.indexOf(run)
 
-    if (at >= 0) {queue.waiters.splice(at, 1)}
+    if (at >= 0) {
+      queue.waiters.splice(at, 1)
+    }
   }
 }
 
-function ImagePreview({ binding, eventId, attachment, disabled }: {
-  binding: CanonicalGroupBinding; eventId: string; attachment: CanonicalGroupAttachment; disabled: boolean
+function ImagePreview({
+  binding,
+  eventId,
+  attachment,
+  disabled
+}: {
+  binding: CanonicalGroupBinding
+  eventId: string
+  attachment: CanonicalGroupAttachment
+  disabled: boolean
 }) {
   const [src, setSrc] = useState('')
   const [near, setNear] = useState(false)
@@ -128,29 +206,49 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
   useEffect(() => {
     const el = box.current
 
-    if (src || disabled || !el) {return}
-    const observer = new IntersectionObserver(entries => setNear(entries[entries.length - 1].isIntersecting), { rootMargin: '200px' })
+    if (src || disabled || !el) {
+      return
+    }
+    const observer = new IntersectionObserver(entries => setNear(entries[entries.length - 1].isIntersecting), {
+      rootMargin: '200px'
+    })
     observer.observe(el)
 
     return () => observer.disconnect()
   }, [src, disabled])
 
   useEffect(() => {
-    if (disabled || !near || !attachmentId || !previewable) {return}
+    if (disabled || !near || !attachmentId || !previewable) {
+      return
+    }
     let url = ''
     const key = JSON.stringify([connectionId, profile, roomId, eventId, attachmentId])
 
     // A failed preview leaves the Download button as the way to the file.
-    const cancel = queuePreview(connectionId, key, () => fetchCanonicalGroupAttachment({ connectionId, profile, roomId }, eventId, attachmentId), ({ bytes, mime }) => {
-      url = URL.createObjectURL(new Blob([bytes], { type: mime }))
-      setSrc(url)
-    })
+    const cancel = queuePreview(
+      connectionId,
+      key,
+      () => fetchCanonicalGroupAttachment({ connectionId, profile, roomId }, eventId, attachmentId),
+      ({ bytes, mime }) => {
+        url = URL.createObjectURL(new Blob([bytes], { type: mime }))
+        setSrc(url)
+      }
+    )
 
     // Dropping `near` makes a re-shown room wait on the observer again, not refetch every preview seen so far at once.
-    return () => { cancel(); URL.revokeObjectURL(url); setSrc(''); setNear(false) }
+    return () => {
+      cancel()
+      URL.revokeObjectURL(url)
+      setSrc('')
+      setNear(false)
+    }
   }, [connectionId, profile, roomId, eventId, attachmentId, disabled, near, previewable])
 
-  return previewable ? <div ref={box}>{src && <img alt={attachment.name} className="max-h-64 max-w-full rounded object-contain" src={src} />}</div> : null
+  return previewable ? (
+    <div ref={box}>
+      {src && <img alt={attachment.name} className="max-h-64 max-w-full rounded object-contain" src={src} />}
+    </div>
+  ) : null
 }
 
 export function CanonicalGroupHistory({ binding, events, members = [], disabled = false }: CanonicalGroupHistoryProps) {
@@ -167,26 +265,52 @@ export function CanonicalGroupHistory({ binding, events, members = [], disabled 
     ['authority.lost', labels.authorityLost]
   ])
 
-  return <>{events.map(event => {
-    const notice = event.kind === 'room.activity' && event.payload.status === 'bounded'
-      ? labels.workLimitReached : notices.get(event.kind)
+  return (
+    <>
+      {events.map(event => {
+        const notice =
+          event.kind === 'room.activity' && event.payload.status === 'bounded'
+            ? labels.workLimitReached
+            : notices.get(event.kind)
 
-    const isMessage = event.kind === 'message' || event.kind === 'message.user' || event.kind === 'message.member'
+        const isMessage = event.kind === 'message' || event.kind === 'message.user' || event.kind === 'message.member'
 
-    if (!notice && !isMessage) {return null}
-    const author = eventAuthor(event, roster, isMessage)
-    const previewEventId = event.room_id === binding.roomId ? event.event_id : undefined
+        if (!notice && !isMessage) {
+          return null
+        }
+        const author = eventAuthor(event, roster, isMessage)
+        const previewEventId = event.room_id === binding.roomId ? event.event_id : undefined
 
-    return <div className="grid grid-cols-[minmax(0,1fr)] gap-1 px-2 py-1.5" key={event.seq}>
-    <div className="flex items-center gap-2">
-      {author && <strong className="text-[0.7rem] font-semibold text-(--ui-accent)">{author}</strong>}
-      <EventTime timestamp={event.created_at} />
-    </div>
-    <EventBody event={event} notice={notice} />
-    {previewEventId && event.payload.attachments?.filter(a => a.kind === 'image').map(a =>
-      <ImagePreview attachment={a} binding={binding} disabled={disabled} eventId={previewEventId} key={a.attachment_id ?? a.name} />)}
-    {!!event.payload.attachments?.length && <CanonicalGroupAttachments
-      attachments={event.payload.attachments.map(attachment => ({ ...attachment, event_id: event.event_id }))}
-      binding={binding} disabled={disabled || !event.event_id || event.room_id !== binding.roomId} readOnly />}
-  </div>})}</>
+        return (
+          <div className="grid grid-cols-[minmax(0,1fr)] gap-1 px-2 py-1.5" key={event.seq}>
+            <div className="flex items-center gap-2">
+              {author && <strong className="text-[0.7rem] font-semibold text-(--ui-accent)">{author}</strong>}
+              <EventTime timestamp={event.created_at} />
+            </div>
+            <EventBody event={event} notice={notice} />
+            {previewEventId &&
+              event.payload.attachments
+                ?.filter(a => a.kind === 'image')
+                .map(a => (
+                  <ImagePreview
+                    attachment={a}
+                    binding={binding}
+                    disabled={disabled}
+                    eventId={previewEventId}
+                    key={a.attachment_id ?? a.name}
+                  />
+                ))}
+            {!!event.payload.attachments?.length && (
+              <CanonicalGroupAttachments
+                attachments={event.payload.attachments.map(attachment => ({ ...attachment, event_id: event.event_id }))}
+                binding={binding}
+                disabled={disabled || !event.event_id || event.room_id !== binding.roomId}
+                readOnly
+              />
+            )}
+          </div>
+        )
+      })}
+    </>
+  )
 }

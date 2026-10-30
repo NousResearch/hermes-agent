@@ -102,6 +102,16 @@ def _resolve_configured_cwd(
     return _existing_dir(raw, "TERMINAL_CWD") if raw else None
 
 
+def process_cwd() -> str:
+    """``os.getcwd()``, or ``""`` when the process cwd is gone (deleted worktree/temp dir) or
+    unreadable (macOS TCC). The one crash-proof process-cwd read every tool falls back through;
+    other OSErrors still propagate so callers see the real problem."""
+    try:
+        return os.getcwd()
+    except (FileNotFoundError, PermissionError):
+        return ""
+
+
 def resolve_agent_cwd() -> Path:
     """Configured cwd, else the launch dir (os.getcwd()'s OSError on a deleted cwd deliberately propagates)."""
     return _resolve_configured_cwd(override_is_final=False) or Path(os.getcwd())

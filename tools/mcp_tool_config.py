@@ -167,7 +167,8 @@ def _workspace_folder() -> str:
         root = _authoritative_workspace_root()
     except Exception:
         root = None
-    return root or os.getcwd()
+    from agent.runtime_cwd import process_cwd
+    return root or process_cwd() or os.path.expanduser("~")
 
 
 def _workspace_basename() -> str:

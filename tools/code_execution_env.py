@@ -307,9 +307,10 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
             session_cwd = None
         if session_cwd and os.path.isdir(session_cwd):
             return session_cwd
-    from agent.runtime_cwd import scope_terminal_cwd
+    from agent.runtime_cwd import process_cwd, scope_terminal_cwd
     raw = scope_terminal_cwd().strip()
-    for candidate in (os.path.expanduser(raw) if raw else "", os.getcwd()):
+    # process_cwd(): a deleted process cwd (removed worktree) is skipped, not raised.
+    for candidate in (os.path.expanduser(raw) if raw else "", process_cwd()):
         if candidate and os.path.isdir(candidate):
             return candidate
     return staging_dir

@@ -87,10 +87,12 @@ class _SourceVisitor(ast.NodeVisitor):
 
     def __init__(self, rel: str, *, model_provider: bool = False):
         from hermes_cli.plugin_isolation import (
-            HOST_DEGRADED_HOOKS, HOST_OBJECT_BASES, HOST_SKIPPED_CTX_METHODS, HOST_UNSUPPORTED_CTX_METHODS,
+            HOST_DEGRADED_HOOKS, HOST_IN_PROCESS_ONLY_FACADES, HOST_OBJECT_BASES,
+            HOST_SKIPPED_CTX_METHODS, HOST_UNSUPPORTED_CTX_METHODS,
         )
         self._unsupported, self._skipped = HOST_UNSUPPORTED_CTX_METHODS, HOST_SKIPPED_CTX_METHODS
         self._degraded, self._object_methods = HOST_DEGRADED_HOOKS, HOST_OBJECT_BASES
+        self._in_process_only = HOST_IN_PROCESS_ONLY_FACADES
         self.rel = rel
         # A model-provider plugin's register_provider() call is its contract; the host captures it.
         self.model_provider = model_provider
@@ -120,6 +122,16 @@ class _SourceVisitor(ast.NodeVisitor):
             base = self._resolve(node.value)
             return f"{base}.{node.attr}" if base else None
         return None
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        # The host raises AttributeError for these names, so a plugin reading one without a
+        # ``getattr(..., None)`` fallback cannot run there — the audit must say so.
+        if (node.attr in self._in_process_only and isinstance(node.value, ast.Name)
+                and node.value.id == "ctx"):
+            self.reasons.append(
+                f"{self.rel}:{node.lineno} ctx.{node.attr} exists only in the Hermes process "
+                f"(the plugin host raises AttributeError)")
+        self.generic_visit(node)
 
     def _flag_write(self, target: ast.AST, line: int) -> None:
         if isinstance(target, ast.Attribute):

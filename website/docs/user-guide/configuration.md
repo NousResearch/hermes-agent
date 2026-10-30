@@ -1334,8 +1334,11 @@ agent:
   verify_on_stop: false        # true | false | "auto" (surface-aware: on for CLI/TUI/desktop, off for messaging)
   verify_guidance: true        # Append creative-UI / clean-diff guidance to the missing-evidence nudge
   max_verify_nudges: 3         # Cap on consecutive continue nudges per turn (built-in + pre_verify hooks)
+  max_plugin_continuations: 2  # Cap on consecutive plugin stop-gate continuations per turn
   coding_instructions: ""      # Standing project-wide coding rules appended to the coding brief
 ```
+
+`agent.max_plugin_continuations` bounds how many times a plugin may keep a turn open through the stop gate (`hermes_cli.plugin_runtime.request_continuation`), separately from the verification budget so an adviser acting on its own finding cannot consume the coding-verification allowance.
 
 `verify_on_stop` accepts `true` (on everywhere), `false` (off — the default), or `"auto"` (legacy surface-aware behavior: on for interactive coding surfaces — CLI, TUI, desktop — and programmatic callers; off for messaging surfaces like Telegram/Discord where the verification narrative reads as chat noise). Off is the default everywhere: fresh installs ship `false` and the config migration turned it off on existing installs, so enabling it is an explicit opt-in. The `HERMES_VERIFY_ON_STOP` env var overrides the config value when set.
 

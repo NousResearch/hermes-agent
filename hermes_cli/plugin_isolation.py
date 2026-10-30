@@ -56,6 +56,12 @@ HOST_REMOTE_FACADES: frozenset[str] = frozenset({
     "state", "llm", "platform_actions", "subagent_lifecycle", "delegation_backends",
 })
 
+# Facades that only exist in the process that owns the agent turn: ``agent_loop`` runs a real
+# ``AIAgent`` on a thread pool with the profile's config, secrets and session store, which is the
+# launch process's job, not a plugin host's. A hosted plugin gets AttributeError for these, so
+# ``getattr(ctx, "agent_loop", None)`` is None and it degrades explicitly.
+HOST_IN_PROCESS_ONLY_FACADES: frozenset[str] = frozenset({"agent_loop"})
+
 # Object-taking ctx methods and the ABC the parent checks. The host sends the object's method table
 # and the parent builds a subclass of that ABC whose methods run in the host.
 HOST_OBJECT_BASES: dict[str, str] = {

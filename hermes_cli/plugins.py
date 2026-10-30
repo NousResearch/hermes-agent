@@ -58,6 +58,7 @@ from hermes_cli.plugins_dispatch import (
     is_valid_system_prompt_section_id, resolve_plugin_command_result,
 )
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
+from hermes_cli.plugins_service_ctx import PluginServiceCtxMixin
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
 from hermes_cli.plugins_state import (
@@ -227,7 +228,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext(PluginCapabilityCtxMixin):
+class PluginContext(PluginCapabilityCtxMixin, PluginServiceCtxMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -382,13 +383,6 @@ class PluginContext(PluginCapabilityCtxMixin):
             from agent.plugin_llm import PluginLlm
             self._llm = PluginLlm(plugin_id=self.plugin_id)
         return self._llm
-
-    @cached_property
-    def subagent_lifecycle(self) -> Any:
-        """Plugin-safe subagent lifecycle service: serializable handles and immutable snapshots,
-        never a live agent or private registry."""
-        from agent.subagent_lifecycle import SubagentLifecycleService, get_active_subagent_parent
-        return SubagentLifecycleService(get_active_subagent_parent)
 
     @cached_property
     def delegation_backends(self) -> Any:

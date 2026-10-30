@@ -98,8 +98,13 @@ class RemotePluginContext:
         if name.startswith("_"):
             raise AttributeError(name)
         from hermes_cli.plugin_isolation import (
-            HOST_REMOTE_FACADES, HOST_SKIPPED_CTX_METHODS, HOST_UNSUPPORTED_CTX_METHODS,
+            HOST_IN_PROCESS_ONLY_FACADES, HOST_REMOTE_FACADES, HOST_SKIPPED_CTX_METHODS,
+            HOST_UNSUPPORTED_CTX_METHODS,
         )
+        if name in HOST_IN_PROCESS_ONLY_FACADES:
+            # Same AttributeError as a host that predates the facade: ``getattr(ctx, name, None)``
+            # is how a plugin feature-detects, and a callable placeholder would lie to it.
+            raise AttributeError(f"'PluginContext' object has no attribute {name!r}")
         if name in HOST_UNSUPPORTED_CTX_METHODS:
             def unsupported(*_args: Any, **_kwargs: Any) -> Any:
                 raise PluginHostUnsupported(

@@ -47,7 +47,8 @@ from tools.terminal_tool_lifecycle import (
 from tools.terminal_tool_config import (
     _is_container_backend, _is_host_cwd, _is_mounted_host_cwd, _is_unusable_container_cwd,
     _is_windows_drive_path, _parse_env_var, _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
-    _in_sandbox_home, coerce_ssh_remote_cwd, translate_mounted_host_path,
+    _in_sandbox_home, coerce_ssh_remote_cwd, home_profile_name, profile_container_key,
+    translate_mounted_host_path,
 )
 from tools.terminal_tool_backends import (
     _REQUIREMENT_CHECKERS, _VERCEL_SANDBOX_DEFAULT_CWD, _check_plugin_requirements,
@@ -122,8 +123,9 @@ def _container_profile() -> str:
     """Profile whose persistent container a session-bound command uses: the bound home's profile when it is not
     the session's own (a profile-routed subagent runs in its target's home while the session, and the delivery
     identity HERMES_SESSION_PROFILE carries, stay the parent's; that target may be the launch profile, reached
-    from a routed profile's chat), else the session's. A session with no profile name is the launch profile's,
-    so the launch home's own work keeps the session's key whatever the launch profile is named."""
+    from a routed profile's chat), else the session's. A session with no profile name (a gateway launched as a
+    named profile stamps none on its own chats) is the launch profile's, so it keys that profile by name, like
+    the profile's Desktop sessions and its session-less work (:func:`_sessionless_container_key`)."""
     from hermes_constants import get_hermes_home_override, profile_name_for_home
     from tools.environments.local import _is_routed_home
 
@@ -132,7 +134,7 @@ def _container_profile() -> str:
     bound = profile_name_for_home(override) if override else None
     if bound and (bound != session if session else _is_routed_home(override)):
         return bound
-    return session or "default"
+    return session or home_profile_name()
 
 
 from tools.approval import (
@@ -474,7 +476,7 @@ def _routed_home_task_key(profile_scoped: bool) -> Optional[str]:
         return None
     profile = profile_name_for_home(override) if profile_scoped else None
     if profile:
-        return "default" if profile == "default" else f"profile:{profile}"
+        return profile_container_key(profile)
     try:
         return f"home:{os.path.realpath(override)}"
     except OSError:
@@ -489,22 +491,13 @@ def _sessionless_container_key(profile_scoped: bool) -> str:
     session-bound work of that profile uses. Dispatcher workers set
     ``HERMES_HOME`` and clear session vars, so they are not a routed override;
     without this they collapsed onto ``default`` and missed the profile sandbox.
-    The default profile, non-persistent backends, and a home that is not a
-    named profile stay ``default``.
+    The default profile, non-persistent backends, and a home outside the Hermes
+    root stay ``default`` (:func:`~tools.terminal_tool_config.home_profile_name` names the profile).
     """
     routed = _routed_home_task_key(profile_scoped)
     if routed:
         return routed
-    if not profile_scoped:
-        return "default"
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        profile = (get_active_profile_name() or "").strip()
-    except Exception:
-        return "default"
-    if not profile or profile in {"default", "custom"}:
-        return "default"
-    return f"profile:{profile}"
+    return profile_container_key(home_profile_name()) if profile_scoped else "default"
 
 
 def _qualify_task_key(key: str) -> str:
@@ -532,8 +525,9 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
        ITS mounts); delegate_task children follow the alias registry to the parent.
        Routed profiles qualify the key (:func:`_qualify_task_key`, #123989).
     3. Session key present (WebUI per-session, gateway per-message): persistent
-       Docker is PROFILE-scoped — ``shared:<key>`` opt-in, else ``profile:<name>``,
-       with the default profile staying literally ``"default"`` so CLI and
+       Docker is PROFILE-scoped — ``shared:<key>`` opt-in, else ``profile:<name>``
+       (a session naming no profile takes the process home's), with the default
+       profile staying literally ``"default"`` so CLI and
        default-profile gateway sessions share ONE container; other backends key
        ``session:<key>`` so switching profiles can't reuse another profile's
        SSHEnvironment on the wrong host.
@@ -568,9 +562,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         return _sessionless_container_key(scope.docker_profile_scoped)
     if not scope.docker_profile_scoped:
         return _qualify_task_key(f"session:{session_key}")
-    profile = _container_profile()
-    base = "default" if profile == "default" else f"profile:{profile}"
-    return _workspace_container_key(base, task_id)
+    return _workspace_container_key(profile_container_key(_container_profile()), task_id)
 
 
 def workspace_key_for(cwd: str) -> str:

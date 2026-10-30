@@ -69,13 +69,13 @@ def _disable_isolation(monkeypatch):
 
 
 class TestSessionIsolationKeying:
-    def test_persistent_true_keeps_shared_default(self, monkeypatch):
+    def test_persistent_true_keeps_shared_default(self, monkeypatch, tmp_path):
         _disable_isolation(monkeypatch)
-        # Default profile stays on the shared "default" key. Pin the name so a
-        # named-profile test runner does not take the session-less profile path.
-        monkeypatch.setattr(
-            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
-        )
+        # The default profile's home stays on the shared "default" key (a named-profile
+        # home would take the profile path, so run from a real default root).
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".hermes").mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         assert terminal_tool._resolve_container_task_id("tui:sess-1") == "default"
 
     def test_persistent_false_keys_by_session(self, monkeypatch):

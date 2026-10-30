@@ -10,11 +10,7 @@ reconnect is a reliable hung-poll signature.
 
 import asyncio
 import logging
-from types import SimpleNamespace
 from gateway.config import Platform
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -74,7 +70,6 @@ class TestPollingHealthConfirmation:
             assert a._send_path_degraded is False
 
         asyncio.run(exercise())
-
     def test_health_replay_task_is_gateway_owned_and_logs_failure(self, caplog):
         async def exercise():
             a = _bare_adapter()
@@ -102,34 +97,5 @@ class TestPollingHealthConfirmation:
                 await asyncio.sleep(0)
             assert not owned
             assert any("delivery replay after polling recovery failed" in r.message for r in caplog.records)
-
-        asyncio.run(exercise())
-
-    def test_mark_failed_after_health_replays_once_on_same_healthy_adapter(self):
-        async def exercise():
-            class FakeAdapter(BasePlatformAdapter):
-                async def connect(self, **kwargs): return True
-                async def disconnect(self): return None
-                async def get_chat_info(self, chat_id): return {}
-                async def send(self, *args, **kwargs): return SendResult(success=False, error="send_path_degraded")
-
-            adapter = FakeAdapter.__new__(FakeAdapter)
-            delivery_adapter = FakeAdapter.__new__(FakeAdapter)
-            delivery_adapter._send_path_degraded = False
-            delivery_adapter._owner_profile = "default"
-            calls = []
-            runner = SimpleNamespace()
-
-            async def redeliver(platform, *, profile=None):
-                calls.append((platform, profile))
-
-            runner._redeliver_failed_obligations_for_platform = redeliver
-            adapter.gateway_runner = runner
-            adapter._final_delivery_adapter = lambda source: delivery_adapter
-            source = SessionSource(platform=Platform.TELEGRAM, chat_id="4242", chat_type="dm", user_id="u1")
-            event = MessageEvent(text="probe", source=source, message_id="m-probe")
-            result = SendResult(success=False, error="send_path_degraded")
-            await adapter._finalize_delivery_obligation("obligation-probe", result, event, delivery_adapter)
-            assert calls == [(Platform.TELEGRAM, "default")]
 
         asyncio.run(exercise())

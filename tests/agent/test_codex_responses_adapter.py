@@ -683,7 +683,7 @@ def test_preflight_codex_input_items_drops_short_id_for_github_responses():
                 "phase": "final_answer",
             }
         ],
-        is_github_responses=True,
+        drop_replay_item_ids=True,
     )
 
     assert "id" not in items[0]

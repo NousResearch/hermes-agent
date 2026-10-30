@@ -123,6 +123,12 @@ def usage_model_from_account(account_info: Any) -> UsageModel:
     try:
         if account_info is None or not getattr(account_info, "logged_in", False):
             return UsageModel(available=False)
+        # Usage-window plans have no monthly credit grant, so the credit bars don't apply;
+        # /usage falls through to the percent-window renderer instead. A partial/empty block is not a
+        # window plan (same completeness rule as the credits seed).
+        from agent.credits_tracker import _window_seed_fields
+        if _window_seed_fields(getattr(account_info, "usage_window", None)) is not None:
+            return UsageModel(available=False)
         # Sub-structs are dataclasses or None; getattr(None, ..., None) is None, so no guards needed.
         access = getattr(account_info, "paid_service_access_info", None)
         sub = getattr(account_info, "subscription", None)

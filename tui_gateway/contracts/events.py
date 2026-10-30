@@ -18,7 +18,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
-from .common import MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
+from .common import MessageReaction, PlanGauge, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
 from .config_free_tier_control import FreeTierChallengePayload, SessionControlSnapshot
 from .registry import event
 
@@ -142,6 +142,9 @@ class MessageStartPayload(Payload):
     display_text: str | None = None
     notification_category: str | None = None
     text: str | None = None
+    #: ``stream_segments.TurnSegments`` identity of the prompt turn; a client that sees the same id again is
+    #: looking at a re-sent frame of the turn it already has, not a new turn.
+    turn_id: str | None = None
 
 
 event("message.start", MessageStartPayload,
@@ -161,9 +164,15 @@ class StreamDeltaPayload(Payload):
 class MessageDeltaPayload(StreamDeltaPayload):
     """``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the
     reply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that
-    closes the classic CLI's reply box. Every other viewer ignores an empty chunk."""
+    closes the classic CLI's reply box. Every other viewer ignores an empty chunk.
+
+    A prompt turn stamps ``turn_id`` + ``segment`` (interim seals before it) + ``offset`` (UTF-16 code
+    units of that segment already sent): a client drops a re-sent chunk it already applied."""
 
     text: str | None
+    turn_id: str | None = None
+    segment: int | None = None
+    offset: int | None = None
 
 
 event("message.delta", MessageDeltaPayload, doc="One streamed chunk of the assistant reply (null text: segment boundary).")
@@ -177,6 +186,9 @@ class MessageInterimPayload(Payload):
 
     text: str
     already_streamed: bool
+    #: The turn and segment this seal closes; a re-sent seal of a closed segment is not a new bubble.
+    turn_id: str | None = None
+    segment: int | None = None
 
 
 event("message.interim", MessageInterimPayload,
@@ -191,9 +203,40 @@ class TurnStatus(WireEnum):
     interrupted = "interrupted"
 
 
+class UsageLimitSuggestion(Payload):
+    """``agent/plan_limits.py::ModelSuggestion`` — a recommended model that still works past the limit."""
+
+    model: str
+    label: str
+    note: str                    # "free" | "included"
+    provider: str = "nous"
+
+
+class UsageLimitCredits(Payload):
+    """``agent/plan_limits.py::CreditsOption`` — ``use_credits`` (turn on Keep going), ``add_credits``, or
+    ``add_credits_and_keep_going`` (both: Keep going is off and there is no balance)."""
+
+    action: str
+
+
+class UsageLimit(Payload):
+    """``agent/plan_limits.py::LimitHit`` — a usage-window plan's limit: what ran out, when it resets, and
+    the one-click ways on (switch to a recommended model, use / add credits)."""
+
+    gauge_id: str
+    scope: str
+    limit_name: str
+    resets_at_ms: int | None = None
+    message: str
+    suggestions: list[UsageLimitSuggestion] = Field(default_factory=list)
+    credits: UsageLimitCredits | None = None
+    current_model: str = ""
+
+
 class ErrorSurface(Payload):
     """``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint,
-    + ``resets_at`` epoch seconds when the provider named when its limit lifts)."""
+    + ``resets_at`` epoch seconds when the provider named when its limit lifts, + ``usage_limit`` on a
+    usage-window plan's limit)."""
 
     layer: str
     code: str
@@ -201,6 +244,7 @@ class ErrorSurface(Payload):
     provider: str | None = None
     model: str | None = None
     resets_at: float | None = None
+    usage_limit: UsageLimit | None = None
     model_config = Payload.model_config | {"extra": "allow"}
 
 
@@ -304,6 +348,7 @@ class SessionUsagePayload(Payload):
     model: str | None = None
     provider: str | None = None
     fallback_model: str | None = None
+    plan_gauge: PlanGauge | None = None
 
 
 event("session.usage", SessionUsagePayload, doc="Mid-turn usage tick; message.complete carries the authoritative final usage.")
@@ -727,31 +772,6 @@ class BrowserProgressPayload(Payload):
 event("browser.progress", BrowserProgressPayload, doc="Browser (CDP) connect / install progress line.")
 
 
-# ── browser controller (gateway/browser_control_broker frames re-enveloped as events) ─────────
-
-
-class BrowserControllerCommandPayload(Payload):
-    """``gateway/browser_control_broker.py`` FRAME_COMMAND params."""
-
-    command_id: str
-    action: str
-    arguments: dict[str, JsonValue]
-    controller_id: str | None = None
-    browser_profile_id: str | None = None
-    tool_call_id: str | None = None
-
-
-class BrowserControllerCancelPayload(Payload):
-    """``gateway/browser_control_broker.py::_cancel_frame``."""
-
-    command_id: str
-    tool_call_id: str | None = None
-
-
-event("browser.controller.command", BrowserControllerCommandPayload, doc="Dispatch one browser action to the attached controller.")
-event("browser.controller.cancel", BrowserControllerCancelPayload, doc="Withdraw a pending controller command.")
-
-
 # ── voice ─────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -848,8 +868,7 @@ event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox e
 
 
 __all__ = [
-    "BillingBlock", "BillingStepUpVerificationPayload", "BrowserControllerCancelPayload",
-    "BrowserControllerCommandPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
+    "BillingBlock", "BillingStepUpVerificationPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
     "ErrorSurface", "FreeTierChallengePayload", "GatewayReadyPayload",
     "MessageCompletePayload", "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
     "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",

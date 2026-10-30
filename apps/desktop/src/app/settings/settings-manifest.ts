@@ -1,9 +1,11 @@
 import type { Translations } from '@/i18n'
+import { hostHas } from '@/lib/host-capabilities'
 import { NATIVE_NOTIFICATION_KINDS } from '@/store/native-notifications'
 import { canUseQuickEntry } from '@/store/quick-entry'
 import { TRANSLUCENCY_SUPPORTED } from '@/store/translucency'
 
 import type { AppearanceSubpageId } from './appearance-subpages'
+import { nativeHostOnly } from './other-subpages'
 import type { SettingsView } from './types'
 
 interface SettingCopy {
@@ -208,9 +210,26 @@ export const SETTINGS_MANIFEST = {
         } satisfies SettingDefinition
       ])
     ),
+    browserPermission: {
+      subpage: 'alerts',
+      keywords: ['notifications', 'browser', 'permission', 'allow', 'tab', 'flash'],
+      available: () => hostHas('browserNotifications'),
+      copy: t => ({
+        label: t.settings.notifications.browserPermission.title,
+        description: t.settings.notifications.browserPermission.states.default
+      })
+    },
+    muteSounds: {
+      subpage: 'sounds',
+      keywords: ['mute', 'silence', 'quiet', 'sound', 'chime', 'wake', 'haptics'],
+      copy: t => ({
+        label: t.settings.notifications.muteSoundsTitle,
+        description: t.settings.notifications.muteSoundsDesc
+      })
+    },
     completionSound: {
       subpage: 'sounds',
-      keywords: ['sound', 'chime', 'ding', 'audio', 'done', 'complete', 'mute'],
+      keywords: ['sound', 'chime', 'ding', 'audio', 'done', 'complete', 'mute', 'off', 'none', 'silence'],
       copy: t => ({
         label: t.settings.notifications.completionSoundTitle,
         description: t.settings.notifications.completionSoundDesc
@@ -226,11 +245,13 @@ export const SETTINGS_MANIFEST = {
   },
   gateway: {
     connectionMode: {
+      available: nativeHostOnly,
       subpage: 'connection',
       keywords: ['gateway', 'connection', 'local', 'cloud', 'remote', 'ssh', 'url', 'token', 'host', 'port', 'key'],
       copy: t => ({ label: t.settings.gateway.modeTitle, description: t.settings.gateway.intro })
     },
     keychainEncryption: {
+      available: nativeHostOnly,
       subpage: 'connection',
       keywords: ['keychain', 'encrypt', 'secrets', 'secure storage', 'plain text'],
       copy: t => ({
@@ -239,6 +260,7 @@ export const SETTINGS_MANIFEST = {
       })
     },
     diagnostics: {
+      available: nativeHostOnly,
       subpage: 'connection',
       keywords: ['diagnostics', 'logs', 'debug', 'report', 'troubleshoot'],
       copy: t => ({ label: t.settings.gateway.diagnostics, description: t.settings.gateway.diagnosticsDesc })

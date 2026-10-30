@@ -12,7 +12,13 @@ import { Button, cn, Codicon, host, Input, RowButton, Textarea, useI18n, useValu
 import type { ClipboardEvent } from 'react'
 import { useRef, useState } from 'react'
 
-import { $imagenAvailable, normalizeAvatarImage, pickImageFromDevice, probeImagen } from './avatar-image'
+import {
+  $imagenAvailable,
+  IMAGE_GENERATE_TIMEOUT_MS,
+  normalizeAvatarImage,
+  pickImageFromDevice,
+  probeImagen
+} from './avatar-image'
 import { $botMeta, botHandle, botMentionTag } from './data'
 import { appendGroupChatEntry } from './group-chat'
 import { groupMemberKey } from './group-membership'
@@ -72,12 +78,16 @@ export function GroupImageControls({ image, onImage, seedName, seedMembers }: Gr
         .filter(Boolean)
         .join(' — ')
 
-      const res = await host.request<ImageGenerateResponse>('image.generate', {
-        prompt:
-          `Group chat icon for an AI agent team called "${who || 'a bot team'}". ` +
-          'Friendly minimal emblem, bold flat vector style, solid color background, centered, no text.',
-        aspect_ratio: 'square'
-      })
+      const res = await host.request<ImageGenerateResponse>(
+        'image.generate',
+        {
+          prompt:
+            `Group chat icon for an AI agent team called "${who || 'a bot team'}". ` +
+            'Friendly minimal emblem, bold flat vector style, solid color background, centered, no text.',
+          aspect_ratio: 'square'
+        },
+        IMAGE_GENERATE_TIMEOUT_MS
+      )
 
       if (!res?.success) {
         throw new Error(res?.error || 'generation failed')

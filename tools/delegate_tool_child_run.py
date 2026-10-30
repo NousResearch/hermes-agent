@@ -396,6 +396,11 @@ def _register_child(
             owner_session_id = get_session_env("HERMES_UI_SESSION_ID", "") or None
     if owner_session_id and (owner_transport is None or owner_session_record is None):
         owner_transport, owner_session_record = _capture_gateway_steer_authority(owner_session_id)
+    canonical_owner = getattr(child, "_canonical_session_owner",
+                              getattr(parent_agent, "_canonical_session_owner", None))
+    child._canonical_session_owner = canonical_owner
+    if canonical_owner is not None:
+        owner_session_record = canonical_owner
     _raw_depth = getattr(child, "_delegate_depth", 1)
     _register_subagent({
         "subagent_id": _subagent_id,

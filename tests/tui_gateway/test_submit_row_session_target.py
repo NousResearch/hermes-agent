@@ -11,6 +11,7 @@ The regression test drives the REAL rotation (``publish_compression_child`` clos
 mints the continuation) and asserts one turn's rows stay in ONE session.
 """
 
+import json
 from types import SimpleNamespace
 
 from agent.turn_context import _stage_turn_user_message
@@ -163,6 +164,32 @@ def test_expanded_submit_row_is_rewritten_on_the_session_that_owns_it(monkeypatc
 
 def _full_rows(db, key):
     return [(r["role"], str(r["content"])) for r in db.get_messages_as_conversation(key, include_inactive=True)]
+
+
+def test_draft_model_switch_creates_a_row_before_runtime_and_marker_persist(monkeypatch, tmp_path):
+    """Regression for #138260: a draft switch must not lose its model or marker to the messages FK."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    session["agent"] = SimpleNamespace(
+        _session_db=db, session_id=key, model="new-model", provider="test-provider",
+        base_url="", api_mode="chat_completions", reasoning_config={}, service_tier=None)
+    try:
+        assert db.get_session(key) is None, "a new desktop chat remains a draft before its first durable activity"
+
+        # This is the persistence order in _apply_model_switch after the live agent accepts the new route.
+        server._persist_live_session_runtime(session)
+        server._append_model_switch_marker(session, model="new-model", provider="test-provider")
+
+        row = db.get_session(key)
+        assert row is not None
+        assert row["model"] == "new-model"
+        assert json.loads(row["model_config"])["provider"] == "test-provider"
+        assert [content for _role, content in _full_rows(db, key)
+                if content.startswith(server._MODEL_SWITCH_MARKER_PREFIX)]
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
 
 
 def test_model_switch_marker_lands_in_the_live_session(monkeypatch, tmp_path):

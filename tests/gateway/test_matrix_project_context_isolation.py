@@ -113,6 +113,32 @@ def _context_for(source: SessionSource) -> SessionContext:
 
 
 @pytest.mark.asyncio
+async def test_matrix_shared_room_prompt_allows_intentional_no_reply():
+    adapter = _make_adapter()
+    adapter._get_room_member_count = AsyncMock(return_value=3)
+    source = await _source_for(adapter, PROJECT_B_ROOM_ID, "$message")
+
+    prompt = build_session_context_prompt(_context_for(source))
+
+    assert "NO_REPLY" in prompt
+    assert "nothing useful, warm, or interesting to add" in prompt
+
+
+def test_matrix_dm_prompt_does_not_include_shared_room_silence_guidance():
+    source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id="!dm:example.org",
+        chat_type="dm",
+        user_id="@alice:example.org",
+    )
+
+    prompt = build_session_context_prompt(_context_for(source))
+
+    assert "Matrix shared-room participation" not in prompt
+    assert "nothing useful, warm, or interesting to add" not in prompt
+
+
+@pytest.mark.asyncio
 async def test_matrix_session_scope_auto_and_thread_preserve_synthetic_threads():
     adapter = _make_adapter()
     # Override member_count to 3 so the named project room is NOT classified as

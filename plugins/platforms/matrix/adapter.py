@@ -79,7 +79,9 @@ from gateway.platforms.base import (
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
-from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
+from gateway.session import SessionSource
+from plugins.platforms.matrix.adapter_inbound import MatrixInboundMixin
+from plugins.platforms.matrix.voice_mention import ParkedVoices, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
 
@@ -791,7 +793,7 @@ def ensure_matrix_deps() -> bool:
     return True
 
 
-class MatrixAdapter(BasePlatformAdapter):
+class MatrixAdapter(MatrixInboundMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
     serial_receive_loop = True  # _sync_loop reads the next sync only after this sync's handlers return
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -897,6 +899,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # which must not decide who approves tool calls on a secondary bot.
         self._allowed_user_ids: set[str] = _extra_csv_set(config, "allowed_users", "MATRIX_ALLOWED_USERS")
         self._allowed_room_ids: set[str] = set(self._allowed_rooms)
+        self._configure_peer_budget(config)
         self._ignored_user_patterns: list[re.Pattern[str]] = []
         for pattern in _csv_set(_extra_or_secret(config.extra, "ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "")):
             try:
@@ -2065,75 +2068,6 @@ class MatrixAdapter(BasePlatformAdapter):
         elif msgtype in ("m.text", "m.notice"):
             await self._handle_text_message(room_id, sender, event_id, event_ts, source_content, relates_to)
 
-    async def _resolve_message_context(
-        self, room_id: str, sender: str, event_id: str, body: str, source_content: dict,
-        relates_to: dict, mention_claimed: bool = False,
-        voice_gate: Optional[VoiceGate] = None) -> Optional[tuple]:
-        """Shared mention/thread/DM gating. Returns (body, is_dm, chat_type, thread_id,
-        display_name, source) or None when the message should be dropped. ``mention_claimed``
-        marks a parked voice claimed by the sender's follow-up bare @mention; ``voice_gate`` is
-        the in-flight mark of a parkable voice, released once the park decision is made."""
-        identity = await self._resolve_room_identity(room_id)
-        is_dm = await self._is_dm_room(room_id)
-        chat_type = "dm" if is_dm else "group"
-        thread_id = _thread_root(relates_to)
-        is_mentioned = mention_claimed or self._content_mentions_bot(body, source_content)
-        if not is_dm:
-            # Whitelist first: non-listed rooms are dropped even when @mentioned (DMs exempt).
-            if self._allowed_rooms and room_id not in self._allowed_rooms:
-                logger.debug(
-                    "Matrix: ignoring message %s in %s — room not in MATRIX_ALLOWED_ROOMS whitelist", event_id, room_id)
-                return None
-            is_free_room = room_id in self._free_rooms
-            in_bot_thread = bool(thread_id and thread_id in self._threads)
-            if self._require_mention and not is_free_room and not in_bot_thread:
-                if not is_mentioned and not body.startswith("/"):
-                    if voice_gate is not None:  # parkable voice: a bare @mention may follow (Element X)
-                        self._parked_voices.park(room_id, sender, voice_gate, event_id, source_content, relates_to)
-                    logger.debug(
-                        "Matrix: ignoring message %s in %s — no @mention "
-                        "(set MATRIX_REQUIRE_MENTION=false to disable)", event_id, room_id)
-                    return None
-            # thread_require_mention: even inside a bot thread require @mention — prevents
-            # infinite reply loops when several bots share one thread.
-            elif self._thread_require_mention and in_bot_thread and not is_free_room and not is_mentioned:
-                logger.debug(
-                    "Matrix: ignoring message %s in thread %s — no @mention (thread_require_mention=true)",
-                    event_id, thread_id)
-                return None
-        if is_mentioned and self._require_mention:
-            # Strip the mention from the reply text only: the quote block carries the
-            # ``> <@bot:srv> ...`` reply pill, which _extract_reply_context parses later
-            # for reply_to_author_id. A whole-body replace rewrote the pill to ``> <>``
-            # and silently dropped the replied-to author (#111233). Only a real reply carries a
-            # pill; a hand-typed blockquote in a plain message is stripped whole as before.
-            if relates_to.get("m.in_reply_to"):
-                quote_block, reply_text = _split_reply_fallback(body)
-                body = quote_block + self._strip_mention(reply_text)
-            else:
-                body = self._strip_mention(body)
-        # Real thread roots are preserved above; synthetic roots (this event) follow policy: DM
-        # @mention threads / DM auto-thread, or room auto-thread unless session_scope pins the room.
-        if not thread_id:
-            if is_dm:
-                synthetic = (self._dm_mention_threads and is_mentioned) or self._dm_auto_thread
-            else:
-                synthetic = self._matrix_session_scope == "thread" or (
-                    self._matrix_session_scope != "room" and self._auto_thread)
-            if synthetic:
-                thread_id = event_id
-        if voice_gate is not None:  # decided (parked or passing): don't hold bare mentions any longer
-            self._parked_voices.release(room_id, sender, voice_gate)
-        display_name = await self._get_display_name(room_id, sender)
-        source = self.build_source(
-            chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
-            user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
-            guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
-        if thread_id:
-            await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
-        self._background_read_receipt(room_id, event_id)
-        return body, is_dm, chat_type, thread_id, display_name, source
-
     async def _extract_reply_context(
         self, room_id: str, body: str, relates_to: dict
     ) -> tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
@@ -2152,11 +2086,12 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
-        ctx: Optional[tuple] = None, **extra) -> Optional[MessageEvent]:
+        ctx: Optional[tuple] = None, *, mention_claimed: bool = False, **extra) -> Optional[MessageEvent]:
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
         still change (reply-fallback strip); ``extra`` carries media fields / message_type.
         ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
         downloading); resolving it twice would double the read receipt / thread mark."""
+        is_mentioned = mention_claimed or self._content_mentions_bot(body, source_content)
         if ctx is None:
             ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
         if ctx is None:
@@ -2173,6 +2108,8 @@ class MatrixAdapter(BasePlatformAdapter):
             body = ""  # transport filename, not user text
         return MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
+            reply_expected=self._matrix_reply_expected(
+                _is_dm, is_mentioned, body, relates_to, reply_to_author_id),
             reply_to_message_id=reply_to, reply_to_text=reply_to_text, reply_to_author_id=reply_to_author_id,
             reply_to_author_name=reply_to_author_name,
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
@@ -2264,6 +2201,7 @@ class MatrixAdapter(BasePlatformAdapter):
         media_urls = [cached_path] if cached_path else ([http_url] if http_url else None)
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
+            mention_claimed=mention_claimed,
             media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
         if msg_event is not None:
             await self.handle_message(msg_event)
@@ -2603,10 +2541,14 @@ class MatrixAdapter(BasePlatformAdapter):
         expires_at = getattr(prompt, "expires_at", None)
         return expires_at is not None and time.monotonic() > float(expires_at)
 
-    def _is_authorized_user(self, user_id: str, room_id: str | None = None) -> bool:
+    def _is_authorized_user(
+        self, user_id: str, room_id: str | None = None, *, chat_type: str | None = None,
+        thread_id: str | None = None, source: SessionSource | None = None,
+    ) -> bool:
         """Resolve live gateway authorization, falling back to the startup snapshot when unwired."""
         if getattr(self, "_authorization_check", None) is not None:
-            return self._is_sender_authorized(user_id, chat_id=room_id) is True
+            return self._is_sender_authorized(
+                user_id, chat_type=chat_type, chat_id=room_id, thread_id=thread_id, source=source) is True
         # Scoped read — the DEFAULT profile's os.environ opt-in must not authorize on a secondary bot.
         return _get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes") or bool(
             self._allowed_user_ids and user_id in self._allowed_user_ids)
@@ -3245,7 +3187,11 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
     """``apply_yaml_config_fn`` (#24849): config.yaml matrix: keys → MATRIX_* env (env wins; skipped under a
     multiplexed secondary profile's scope) + ``PlatformConfig.extra`` (extra-first readers)."""
-    return _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE)
+    seeded = _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE) or {}
+    for key in ("peer_agent_ids", "peer_reply_budget_per_human_message"):
+        if key in matrix_cfg:
+            seeded[key] = matrix_cfg[key]
+    return seeded or None
 
 
 def _is_connected(config) -> bool:

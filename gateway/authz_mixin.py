@@ -222,13 +222,23 @@ class GatewayAuthorizationMixin:
         if not profile_name or profile_name == "default":
             return self._primary_adapters()
         profile_adapters = self._profile_adapters_map()
-        if profile_name in profile_adapters:
-            adapters = profile_adapters[profile_name]
-            from cron.scheduler_preflight import has_credential_platform
-            if has_credential_platform(adapters) or not self._is_shared_bot_satellite(profile_name):
-                return adapters
+        adapters = profile_adapters.get(profile_name)
+        from cron.scheduler_preflight import has_credential_platform
+        if adapters is not None and has_credential_platform(adapters):
+            return adapters
+        # ``_profile_adapters`` gets a ``{}`` placeholder from ``_start_one_profile_adapters`` only for
+        # a profile started as a secondary. A profile served purely by ``profile_routes`` on the
+        # default bot therefore has NO entry at all, and requiring the entry made the satellite
+        # fallback below unreachable for exactly those profiles: it answered ``{}`` for a live
+        # satellite. A caller that must name ONE adapter then resolved none — claim-time native
+        # re-authorization (``gateway/session_envelope.check_native_route``) refuses such a row
+        # ``not_found`` and the lane's FIFO stays paused for good. Reaching that path needs only the
+        # lane's transport ref to die, which a bot reconnect does by replacing the adapter object.
+        if self._is_shared_bot_satellite(profile_name):
             # Its own LOCAL adapter stays layered over the borrowed primary bots.
-            return {**self._primary_adapters(), **adapters}
+            return {**self._primary_adapters(), **(adapters or {})}
+        if adapters is not None:
+            return adapters
         # Identity captured at construction, not the per-turn HERMES_HOME-derived name.
         primary_profile = getattr(self, "_primary_profile_name", None)
         if not primary_profile:

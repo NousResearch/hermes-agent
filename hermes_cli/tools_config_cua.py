@@ -46,7 +46,8 @@ def _post_setup_no_window_flags(*, streams_to_console: bool = False) -> int:
 
 
 def _cua_driver_cmd() -> str:
-    return os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip() or "cua-driver"
+    from tools.computer_use.cua_backend_driver import _configured_driver_override
+    return _configured_driver_override() or "cua-driver"
 
 
 def _cua_version_summary(raw: str, *, limit: int = 120) -> str:
@@ -111,7 +112,9 @@ def install_cua_driver(upgrade: bool = False, show_installer_progress: bool = Tr
     """
     from pm import ensure
 
-    override = os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip()
+    from tools.computer_use.cua_backend_driver import _configured_driver_override
+
+    override = _configured_driver_override()
     binary = _resolved_cua_driver_cmd()
     fresh_install = binary is None
     if override:

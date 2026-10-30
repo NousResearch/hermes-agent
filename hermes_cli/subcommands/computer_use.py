@@ -33,12 +33,11 @@ def _cu_install(args) -> int:
 
 def _cu_status(args) -> int:
     _exit_if_plugin_backend()
-    import os as _os
     from hermes_cli.tools_config_cua import _cua_driver_contract_status, _cua_version_summary
-    from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
+    from tools.computer_use.cua_backend_driver import _configured_driver_override, resolve_cua_driver_cmd
 
     path = resolve_cua_driver_cmd()
-    override = _os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip()
+    override = _configured_driver_override()
     if not path:
         print("cua-driver: not installed")
         print("  Run: hermes computer-use install")

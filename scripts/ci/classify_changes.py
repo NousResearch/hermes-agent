@@ -369,6 +369,9 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/sqlite_safe_read.py",
     "hermes_cli/sizefmt.py",
     "hermes_cli/tools_config_cua.py",
+    # _refresh_cua_driver_after_update resolves the profile-scoped driver override.
+    "tools/computer_use/__init__.py",
+    "tools/computer_use/cua_backend_driver.py",
     "hermes_cli/_startup_fast.py",
     "hermes_cli/_parser.py",
     "hermes_cli/gateway_multiplex_mode.py",

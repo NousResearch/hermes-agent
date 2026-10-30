@@ -193,6 +193,7 @@ _PREFIX_PATTERNS = [
     r"gsk_[A-Za-z0-9]{10,}",            # Groq Cloud API key
     r"syt_[A-Za-z0-9]{10,}",            # Matrix access token
     r"retaindb_[A-Za-z0-9]{10,}",       # RetainDB API key
+    r"sbp_[A-Za-z0-9]{20,}",            # Supabase management token (sbp_ + 40-char body)
     r"hsk-[A-Za-z0-9]{10,}",            # Hindsight API key
     r"mem0_[A-Za-z0-9]{10,}",           # Mem0 Platform API key
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key

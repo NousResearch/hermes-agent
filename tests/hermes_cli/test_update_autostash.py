@@ -214,16 +214,6 @@ def test_unreadable_stash_prompt_keeps_work(tmp_path, monkeypatch, capsys, error
     assert 'git stash apply stash@{0}' in capsys.readouterr().out
 
 
-def test_unreadable_upstream_prompt_does_not_add_remote(tmp_path, monkeypatch):
-    git(tmp_path, 'init', '-q', '-b', 'main')
-    def unreadable(*_):
-        raise UnicodeDecodeError('utf-8', b'\xff', 0, 1, 'invalid')
-    monkeypatch.setattr('builtins.input', unreadable)
-    monkeypatch.setattr(update_cmd, '_should_skip_upstream_prompt', lambda *_: False)
-    update_cmd._sync_with_upstream_if_needed(['git'], tmp_path)
-    assert not git(tmp_path, 'remote')
-
-
 def test_update_parser_accepts_keep_stash():
     """The flag parses and defaults off."""
     import argparse

@@ -29,7 +29,6 @@ _ORPHAN_RESCUE_REF_MAX_AGE_DAYS = 30
 _GIT_TEXT_KW = dict(capture_output=True, text=True, encoding="utf-8", errors="replace",
                    creationflags=windows_hide_flags())
 _BAR = "=" * 68
-_UPSTREAM_ADD_CMD = "git remote add upstream https://github.com/chaorenex1/My-H.git"
 
 
 def _git_ok(git_cmd, args, cwd, **kw) -> bool:
@@ -304,7 +303,11 @@ def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
 
 
 def _add_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
-    """Add the official repo as the 'upstream' remote. Returns True on success."""
+    """Add the official repo as the 'upstream' remote. Returns True on success.
+
+    Retained for the frozen old-updater surface (`tests/compat/old_updater_surface.json`):
+    no current call site adds an `upstream` remote.
+    """
     return _git_ok(git_cmd, ["remote", "add", "upstream", OFFICIAL_REPO_URL], cwd)
 
 
@@ -318,7 +321,11 @@ def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) 
 
 
 def _should_skip_upstream_prompt() -> bool:
-    """Check if user previously declined to add upstream."""
+    """Check if user previously declined to add upstream.
+
+    Frozen old-updater surface: the current flow never offers the remote, so this marker
+    only matters to an updater that shipped before the offer was removed.
+    """
     from hermes_constants import get_hermes_home
     return (get_hermes_home() / SKIP_UPSTREAM_PROMPT_FILE).exists()
 
@@ -335,38 +342,6 @@ def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
     return _git_ok(git_cmd, ["push", "origin", "main", "--force-with-lease"], cwd, network=True)
 
 
-def _offer_upstream_remote(git_cmd: list[str], cwd: Path, *, assume_yes: bool, input_fn) -> bool:
-    """Prompt to add ``upstream`` and add it; False when the user declined, the run is non-interactive, or add failed.
-
-    ``--yes`` means "don't block", not "mutate my remotes", so a non-interactive skip is NOT persisted."""
-    from hermes_cli.update_cmd import _add_upstream_remote, _mark_skip_upstream_prompt
-    print(
-        "\nℹ Your fork is not tracking the official Hermes repository.\n"
-        "  This means you may miss updates from NousResearch/hermes-agent.\n"
-    )
-    if assume_yes or (input_fn is None and not (sys.stdin.isatty() and sys.stdout.isatty())):
-        print(f"  Skipping upstream setup (non-interactive run).\n  Add it later with: {_UPSTREAM_ADD_CMD}")
-        return False
-    if input_fn is not None:
-        response = input_fn("Add official repo as 'upstream' remote? [y/N]", "n").strip().lower()
-    else:
-        try:
-            response = input("Add official repo as 'upstream' remote? [Y/n]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt, UnicodeDecodeError):
-            print()
-            response = "n"
-    if response not in {"", "y", "yes"}:
-        print(f"  Skipped. Run '{_UPSTREAM_ADD_CMD}' to add later.")
-        _mark_skip_upstream_prompt()
-        return False
-    print("→ Adding upstream remote...")
-    if not _add_upstream_remote(git_cmd, cwd):
-        print("  ✗ Failed to add upstream remote. Skipping upstream sync.")
-        return False
-    print(f"  ✓ Added upstream: {OFFICIAL_REPO_URL}")
-    return True
-
-
 class UpstreamTargetBroken(Exception):
     """The fork sync's upstream target fails the startup syntax check: refused before its move."""
 
@@ -377,24 +352,27 @@ class UpstreamTargetBroken(Exception):
 
 def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: bool = False, input_fn=None,
                                   checkout_move=None) -> bool:
-    """Offer to add ``upstream``, compare origin/main vs upstream/main, ff-pull when strictly behind, then push origin.
+    """Compare origin/main against a user-configured ``upstream/main``, ff-pull when behind, then push origin.
 
-    Returns True only when origin/main was actually verified against upstream/main; False when the check never
-    happened, so the caller never reports "up to date" on an origin-only compare. Fetches only upstream/main:
-    a bare fetch drags in thousands of auto-generated branches. ``UpstreamTargetBroken`` when the
-    upstream commit fails the startup syntax check: nothing moved, the caller rolls the update back.
+    The updater never creates the ``upstream`` remote: a checkout without one is updated from
+    origin alone, with no prompt, no remote mutation and no network call here. Returns True only
+    when origin/main was actually verified against upstream/main; False when the check never
+    happened, so the caller never reports "up to date" on an origin-only compare. Fetches only
+    upstream/main: a bare fetch drags in thousands of auto-generated branches.
+    ``UpstreamTargetBroken`` when the upstream commit fails the startup syntax check: nothing
+    moved, the caller rolls the update back.
 
     ``checkout_move(target)`` is the caller's context for the one tree write (the merge): the
     paused gateways' tree gate is bound to *target* before git writes a file.
+    ``assume_yes``/``input_fn`` stay in the signature for the frozen old-updater call shape
+    (`tests/compat/old_updater_surface.json`); the sync no longer prompts.
 
     See #97052.
     """
-    from hermes_cli.update_cmd import _count_commits_between, _has_upstream_remote, _no_prompt_git_kwargs, _should_skip_upstream_prompt
+    from hermes_cli.update_cmd import _count_commits_between, _has_upstream_remote, _no_prompt_git_kwargs
     from hermes_cli.update_cmd_check import tracking_refspec
     from hermes_cli.update_custody import run_git
-    if not _has_upstream_remote(git_cmd, cwd) and (
-        _should_skip_upstream_prompt() or not _offer_upstream_remote(git_cmd, cwd, assume_yes=assume_yes, input_fn=input_fn)
-    ):
+    if not _has_upstream_remote(git_cmd, cwd):
         return False
     print("\n→ Fetching upstream...")
     try:

@@ -28,6 +28,34 @@ def _deny_network(*_args: Any, **_kwargs: Any) -> None:
     raise RuntimeError("network access is disabled while Plugin Doctor runs")
 
 
+def _stage_copy(source: Path, staged: Path) -> None:
+    """Copy *source* to *staged*, refusing any directory that leads into the destination.
+
+    TMPDIR can sit inside the plugin being checked, or a symlink/junction inside the plugin can
+    point at TMPDIR; either way the copy walks its own output until the path is too long or the
+    disk is full. Paths are resolved so link aliases cannot hide the overlap.
+    """
+    dest = staged.resolve()
+    skipped = shutil.ignore_patterns(*_STAGING_SKIPPED_DIRS, "*.pyc")
+
+    def _refuse_overlap(path: Path) -> None:
+        real = path.resolve()
+        if dest.is_relative_to(real) or real.is_relative_to(dest):
+            raise _DoctorLoadError(
+                f"Refusing to stage {source}: {path} leads into Doctor's temporary directory "
+                f"{staged.parent}, so the copy would recurse into itself. Point TMPDIR outside "
+                "the plugin and remove links to it.")
+
+    def _ignore(directory: str, names: list[str]) -> set[str]:
+        for name in names:
+            if os.path.isdir(os.path.join(directory, name)):
+                _refuse_overlap(Path(directory, name))
+        return skipped(directory, names)
+
+    _refuse_overlap(source)
+    shutil.copytree(source, staged, ignore=_ignore)
+
+
 @contextmanager
 def _doctor_runtime(plugin_path: Path):
     """Load one plugin through the real runtime and restore global state afterwards.
@@ -44,10 +72,20 @@ def _doctor_runtime(plugin_path: Path):
         plugins_root = home / "plugins"
         bundled.mkdir(parents=True)
         plugins_root.mkdir(parents=True)
-        copied = plugins_root / plugin_path.name
-        shutil.copytree(
-            plugin_path, copied,
-            ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", "*.pyc"))
+        staging_root = plugins_root / plugin_path.name
+        if _has_manifest(plugin_path):
+            staged = staging_root
+            _stage_copy(plugin_path, staged)
+        else:
+            # A category: stage only its plugin under the category name (discovery keys it
+            # ``category/plugin``), never the loose files or skipped dirs beside it.
+            members = _category_plugins(plugin_path)
+            if len(members) != 1:
+                names = ", ".join(member.name for member in members)
+                raise _DoctorLoadError(
+                    f"{plugin_path} holds {len(members)} plugins ({names}); point Doctor at one of them")
+            staged = staging_root / members[0].name
+            _stage_copy(members[0], staged)
         stack.enter_context(patch.dict(os.environ, {
             "HERMES_HOME": str(home),
             "HERMES_BUNDLED_PLUGINS": str(bundled),
@@ -69,13 +107,13 @@ def _doctor_runtime(plugin_path: Path):
     try:
         manifests = manager._scan_directory(plugins_root, source="user")
         if not manifests:
-            raise _DoctorLoadError(f"Hermes discovery found no valid plugin manifest under {copied}")
+            raise _DoctorLoadError(f"Hermes discovery found no valid plugin manifest under {staging_root}")
         if len(manifests) != 1:
             raise _DoctorLoadError(
-                f"Expected one plugin manifest, discovered {len(manifests)} under {copied}")
+                f"Expected one plugin manifest, discovered {len(manifests)} under {staging_root}")
         manifest = manifests[0]
         if manifest.kind == "model-provider":
-            with _load_model_provider(copied, manifest) as registered:
+            with _load_model_provider(staged, manifest) as registered:
                 yield SimpleNamespace(manifest=manifest, manager=manager, registered_tools=(),
                                       registered_hooks=(), registered_providers=registered)
             return
@@ -131,7 +169,7 @@ def _is_plugin_module(name: str) -> bool:
 
 
 @contextmanager
-def _load_model_provider(copied: Path, manifest):
+def _load_model_provider(plugin_dir: Path, manifest):
     """Doctor path for ``kind: model-provider``: those register a ProviderProfile at import through
     providers/ discovery (PluginManager skips the kind), so demanding ``register(ctx)`` would fail
     every valid provider plugin. Registry additions are undone on exit."""
@@ -139,12 +177,12 @@ def _load_model_provider(copied: Path, manifest):
 
     # The live install may already have imported this very plugin (same directory name) during
     # startup discovery; import the copy fresh and put the live module/profiles back afterwards.
-    module_name = providers._user_module_name(copied, "")
+    module_name = providers._user_module_name(plugin_dir, "")
     prior_module = sys.modules.pop(module_name, None)
     before = dict(providers._REGISTRY)
     before_aliases = dict(providers._ALIASES)
     try:
-        providers._import_plugin_dir(copied, "user")
+        providers._import_plugin_dir(plugin_dir, "user")
         registered = tuple(sorted(
             name for name, profile in providers._REGISTRY.items() if before.get(name) is not profile))
         if not registered:
@@ -212,19 +250,40 @@ def _has_manifest(path: Path) -> bool:
     return any((path / name).exists() or (path / name).is_symlink() for name in _MANIFEST_NAMES)
 
 
-def _holds_plugin(path: Path) -> bool:
-    """True when discovery would find a manifest in *path* or one immediate subdirectory (category
-    layout), mirroring ``PluginManager._scan_directory``. Doctor copies the resolved directory
-    wholesale, so resolving an arbitrary directory (e.g. the default ``.``) would be a disk bug."""
-    if not path.is_dir():
-        return False
-    if _has_manifest(path):
-        return True
+# Dirs the staging copy drops, so a category may hold them beside its plugins.
+_STAGING_SKIPPED_DIRS = (".git", "__pycache__", ".pytest_cache")
+
+
+def _candidate_dirs(path: Path) -> list[Path]:
+    """Subdirectories of *path* that could be plugins: not skipped by discovery or the staging copy."""
+    from hermes_cli.plugins_discovery import is_skipped_plugin_dir
+
     try:
-        children = sorted(path.iterdir())
+        return sorted(
+            child for child in path.iterdir()
+            if child.is_dir()
+            and child.name not in _STAGING_SKIPPED_DIRS
+            and not is_skipped_plugin_dir(child.name)
+        )
     except OSError:
-        return False
-    return any(child.is_dir() and _has_manifest(child) for child in children)
+        return []
+
+
+def _category_plugins(path: Path) -> list[Path]:
+    """The plugin subdirectories of a manifest-less *path* when it is a category, else ``[]``.
+
+    A category is a directory whose candidate subdirectories (:func:`_candidate_dirs`) all hold
+    a manifest. A plugin checkout next to other directories (``$HOME`` beside ``.hermes``, a repo
+    root beside ``tests/``) is not a category."""
+    children = _candidate_dirs(path)
+    return children if children and all(_has_manifest(child) for child in children) else []
+
+
+def _holds_plugin(path: Path) -> bool:
+    """True when *path* holds a manifest or is a category (:func:`_category_plugins`). Stricter
+    than discovery on purpose: resolving an arbitrary directory (e.g. the default ``.``) would
+    send Doctor to validate whatever plugin happens to sit inside it."""
+    return path.is_dir() and (_has_manifest(path) or bool(_category_plugins(path)))
 
 
 def _is_plugin_id(raw: str) -> bool:
@@ -258,10 +317,15 @@ def resolve_plugin_path(target: str | os.PathLike[str] | None = None) -> Path:
         if _holds_plugin(candidate):
             return candidate.resolve()
     if direct_is_dir:
+        nested = [os.path.join(raw, c.name) for c in _candidate_dirs(direct) if _has_manifest(c)]
+        if nested:
+            hint = f"Point Doctor at a plugin directory inside it: {', '.join(nested)}."
+        else:
+            hint = "Point Doctor at a plugin directory."
         raise FileNotFoundError(
             f"{direct.resolve()} holds no plugin manifest "
             f"({', '.join(_MANIFEST_NAMES)}), and {raw!r} is not an installed "
-            "plugin id. Point Doctor at a plugin directory.")
+            f"plugin id. {hint}")
     raise FileNotFoundError(f"Plugin {raw!r} was not found as a path or installed plugin id")
 
 

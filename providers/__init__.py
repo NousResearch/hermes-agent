@@ -100,6 +100,8 @@ _HOME_LAYERS_LOCK = threading.Lock()
 # across the import itself — a thread mid-``import hermes_cli.auth`` (whose import calls
 # ``list_providers()``) would block on it while the scanning thread waits on that module's import lock.
 _REGISTRATION_TARGET: ContextVar[_HomeLayer | None] = ContextVar("_provider_registration_target", default=None)
+# Set by :func:`bundled_profiles`: registrations made in this context are collected, nothing else.
+_COLLECT: ContextVar[list | None] = ContextVar("_provider_collect", default=None)
 # Profile names an in-process import may register (None = all). Set while a hosted plugin's
 # profiles that cannot cross the host boundary are imported here: its hosted siblings stay hosted.
 _REGISTRATION_ONLY: ContextVar[frozenset[str] | None] = ContextVar("_provider_registration_only", default=None)
@@ -124,6 +126,7 @@ def _sync_auth_registry() -> None:
     for module, attr in (
         ("hermes_cli.auth", "sync_plugin_provider_registry"),
         ("hermes_cli.models_catalog_static", "sync_plugin_provider_catalog"),
+        ("hermes_cli.config_provider_env", "sync_registered_providers"),
     ):
         sync = getattr(sys.modules.get(module), attr, None)
         if sync is None:
@@ -143,6 +146,10 @@ def register_provider(profile: ProviderProfile) -> None:
     ``$HERMES_HOME`` plugin is being imported lands in that home's layer.
     """
     global _PROVIDER_LIST_CACHE, _REGISTRY_GENERATION
+    collect = _COLLECT.get()
+    if collect is not None:
+        collect.append(profile)
+        return
     only = _REGISTRATION_ONLY.get()
     if only is not None and profile.name not in only:
         return
@@ -817,6 +824,37 @@ def _requires_arguments(fn) -> bool:
         ) and param.default is inspect.Parameter.empty:
             return True
     return False
+
+
+def bundled_profiles() -> list[ProviderProfile]:
+    """Every bundled provider profile, one per name (the last registration wins, in discovery
+    order), WITHOUT config and without touching the registry: each bundled plugin is executed into
+    a private module whose registrations are collected. For descriptive catalogs, which must not
+    depend on config or on discovery having run."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():  # a safe worker loads no plugin code, bundled included (as list_providers)
+        return []
+    collected: list[ProviderProfile] = []
+    token = _COLLECT.set(collected)
+    try:
+        for child in sorted(_BUNDLED_PLUGINS_DIR.iterdir()) if _BUNDLED_PLUGINS_DIR.is_dir() else ():
+            init = child / "__init__.py"
+            if not child.is_dir() or child.name.startswith(("_", ".")) or not init.exists():
+                continue
+            name = f"_hermes_provider_catalog_{child.name.replace('-', '_')}"
+            spec = importlib.util.spec_from_file_location(name, init, submodule_search_locations=[str(child)])
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module  # relative imports inside the plugin
+            try:
+                spec.loader.exec_module(module)
+            except Exception as exc:  # health: allow BLE001 -- one broken plugin never breaks the catalog
+                logger.debug("provider catalog skipped %s: %s", child.name, exc)
+    finally:
+        _COLLECT.reset(token)
+    return list({p.name: p for p in collected}.values())
 
 
 def _discover_providers() -> None:

@@ -428,7 +428,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         )
         lines = [
             t("gateway.session.info_model", model=resolved.model),
-            t("gateway.session.info_provider", provider=resolved.provider or "openrouter"),
+            t("gateway.session.info_provider", provider=resolved.requested_provider or resolved.provider or "openrouter"),
             t("gateway.session.info_context", tokens=ctx_display, source=ctx_source),
         ]
         if (resolved.provider or "") == "moa":

@@ -51,10 +51,10 @@ def test_registration_uses_the_target_profiles_mount_policy(
     token = hc.set_hermes_home_override(str(profile))
     try:
         overrides = terminal_tool.resolve_task_overrides("profile-cwd")
-        assert overrides == {
-            "cwd": str(workspace) if mount else "",
-            "cwd_source": "session" if mount else "process",
-        }
+        assert overrides == (
+            {"cwd": str(workspace), "cwd_source": "session"} if mount
+            else {"cwd": "", "cwd_source": "process", "host_workspace": str(workspace)}
+        )
         if not mount:
             with install_and_reset_profile_terminal_scope(profile):
                 assert terminal_env("TERMINAL_CWD") == "/workspace"
@@ -116,7 +116,9 @@ def test_a_bad_unrelated_terminal_setting_does_not_drop_the_registration(tmp_pat
     })
     try:
         server._register_session_cwd({"session_key": "bad-timeout", "cwd": str(tmp_path), "explicit_cwd": True})
-        assert terminal_tool.resolve_task_overrides("bad-timeout") == {"cwd": "", "cwd_source": "process"}
+        assert terminal_tool.resolve_task_overrides("bad-timeout") == {
+            "cwd": "", "cwd_source": "process", "host_workspace": str(tmp_path),
+        }
     finally:
         terminal_tool.clear_task_env_overrides("bad-timeout")
         reset_terminal_scope(token)

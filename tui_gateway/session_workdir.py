@@ -525,13 +525,16 @@ def _register_session_cwd(session: dict | None) -> None:
             if profile_home and hc.hermes_home_key(hc.get_hermes_home()) != hc.hermes_home_key(profile_home):
                 stack.callback(hc.reset_hermes_home_override, hc.set_hermes_home_override(str(profile_home)))
                 stack.enter_context(install_and_reset_profile_terminal_scope(profile_home))
+            overrides = {"cwd": cwd, "cwd_source": cwd_source}
             _ensure_terminal_env_bridged()
             unmounted = not _tenv_bool("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
             if _tenv("TERMINAL_ENV", "local") == "docker" and unmounted:
-                # The Desktop workspace is host context, not a directory in this sandbox.
-                # An empty override leaves its configured cwd and subsequent in-container cd intact.
-                cwd, cwd_source = "", "process"
-            register_task_env_overrides(session["session_key"], {"cwd": cwd, "cwd_source": cwd_source})
+                # The Desktop workspace is host context, not a directory in this sandbox. An empty cwd
+                # leaves its configured cwd and a later in-container cd intact; host-side readers
+                # (project tools) still find the session's folder under ``host_workspace``.
+                host = cwd if cwd_source == "session" else ""
+                overrides = {"cwd": "", "cwd_source": "process", "host_workspace": host}
+            register_task_env_overrides(session["session_key"], overrides)
 
 
 def _workdir_row_model_config(session: dict) -> tuple[str, dict]:

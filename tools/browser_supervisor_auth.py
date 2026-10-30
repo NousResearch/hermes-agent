@@ -159,20 +159,32 @@ class NativeAuthMixin:
                 challenged_network = requests[request_id]
                 if not challenged_network:
                     return _refused("native_auth_request_unbound")
-                from tools.browser_supervisor import _schedule
+                from agent.async_utils import safe_schedule_threadsafe
                 active = True
                 loop = asyncio.get_running_loop()
+                credential_tasks = set()
 
                 async def send(username, password):
-                    if not active or sid not in self._vault_auth_events:
-                        raise TimeoutError("native authentication expired")
-                    authorize()
-                    await self._cdp("Fetch.continueWithAuth", {"requestId": request_id,
-                                    "authChallengeResponse": {"response": "ProvideCredentials",
-                                                              "username": username, "password": password}}, session_id=sid)
+                    task = asyncio.current_task()
+                    credential_tasks.add(task)
+                    try:
+                        async with asyncio.timeout(3):
+                            if not active or sid not in self._vault_auth_events:
+                                raise TimeoutError("native authentication expired")
+                            authorize()
+                            await self._cdp("Fetch.continueWithAuth", {"requestId": request_id,
+                                            "authChallengeResponse": {"response": "ProvideCredentials",
+                                                                      "username": username, "password": password}}, session_id=sid)
+                    finally:
+                        credential_tasks.discard(task)
 
                 def transmit(username, password):
-                    return _schedule(send(username, password), loop, timeout=3)
+                    future = safe_schedule_threadsafe(send(username, password), loop)
+                    if future is None:
+                        raise RuntimeError("native auth loop unavailable")
+                    # The coroutine owns its timeout; returning before it settles
+                    # would release the backend context while a write is pending.
+                    return future.result()
 
                 try:
                     # The broker's backend context (if any) spans resolution AND
@@ -180,6 +192,10 @@ class NativeAuthMixin:
                     await asyncio.to_thread(resolve, origin, transmit)
                 finally:
                     active = False  # a timed-out resolver must never send late
+                    pending = list(credential_tasks)
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
             elif method == "Network.responseReceived":
                 response = params.get("response") or {}
                 if (attempted and params.get("frameId") == frame_id and params.get("type") == "Document"

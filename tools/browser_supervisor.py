@@ -467,8 +467,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin, NativeAuthMixin)
         payload.update({k: v for k, v in (("params", params), ("sessionId", session_id)) if v})
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending_calls[call_id] = fut
-        await self._ws.send(json.dumps(payload))
         try:
+            await self._ws.send(json.dumps(payload))
             return await asyncio.wait_for(fut, timeout=timeout)
         finally:
             self._pending_calls.pop(call_id, None)

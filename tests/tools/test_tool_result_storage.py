@@ -252,7 +252,8 @@ class TestMaybePersistToolResult:
         assert len(result) < len(content)
 
     def test_persists_full_content_as_is(self):
-        """Content is persisted verbatim — no JSON extraction."""
+        """Terminal-envelope content is unwrapped: the RAW output text is persisted
+        (lab F1 patch); sibling fields ride inline in the <result-fields> block."""
         import json
         env = MagicMock()
         # Readability probe fails -> falls back to the in-sandbox write,
@@ -265,6 +266,7 @@ class TestMaybePersistToolResult:
         env.get_temp_dir.return_value = ""
         raw = "line1\nline2\n" * 5_000
         content = json.dumps({"output": raw, "exit_code": 0, "error": None})
+        expected_persisted = raw
         result = maybe_persist_tool_result(
             content=content,
             tool_name="terminal",
@@ -275,7 +277,8 @@ class TestMaybePersistToolResult:
         assert PERSISTED_OUTPUT_TAG in result
         # Content is delivered through stdin (no longer embedded in the
         # command string — see test_large_content_via_stdin for why).
-        assert env.execute.call_args_list[1][1]["stdin_data"] == content
+        assert env.execute.call_args_list[1][1]["stdin_data"] == expected_persisted
+        assert "<result-fields>" in result
 
     def test_tool_use_id_cannot_escape_storage_dir(self):
         env = MagicMock()
@@ -702,11 +705,24 @@ class TestMcpEnvelopeSpillover:
         assert json.loads(tail.split("\n</mcp-result-metadata>")[0]) == {"structuredContent": {"count": 5_000}}
 
     def test_non_envelope_json_still_verbatim(self):
-        content = json.dumps({"output": "line\n" * 8_000, "exit_code": 0})
+        # "stdout" is outside the terminal envelope key set -> arbitrary JSON, kept verbatim.
+        content = json.dumps({"stdout": "line\n" * 8_000, "code": 0})
         maybe_persist_tool_result(
             content=content, tool_name="terminal", tool_use_id="tc_json_verbatim",
             env=None, threshold=30_000)
         assert (get_spillover_dir() / "tc_json_verbatim.txt").read_text(encoding="utf-8") == content
+
+    def test_terminal_envelope_spills_raw_output(self):
+        """Lab F1: the archive holds only the raw output text, byte-faithful, so wc/tail
+        on it are exact; exit_code and friends appear inline in <result-fields>."""
+        raw = "line\n" * 8_000
+        content = json.dumps({"output": raw, "exit_code": 1, "error": None,
+                              "exit_code_meaning": "failed"})
+        msg = maybe_persist_tool_result(
+            content=content, tool_name="terminal", tool_use_id="tc_term_envelope",
+            env=None, threshold=30_000)
+        assert (get_spillover_dir() / "tc_term_envelope.txt").read_text(encoding="utf-8") == raw
+        assert "<result-fields>" in msg and '"exit_code": 1' in msg
 
     def test_structured_content_only_result_still_verbatim(self):
         content = json.dumps({"result": {"blob": "z" * 40_000}})

@@ -31,6 +31,13 @@ _BUDGET_TOOL_NAME = "__budget_enforcement__"
 # The exact key set tools/mcp_tool_handlers.py::_render_call_tool_result emits. A JSON object whose
 # keys stay inside this set is that handler's own envelope, never an arbitrary tool's JSON payload.
 _MCP_ENVELOPE_KEYS = frozenset({"result", "structuredContent", "_meta"})
+# The terminal/execute_code result envelope (tools/terminal_tool_result.py), recognized by
+# shape exactly like the MCP envelope: both required keys present, no key outside the set.
+_TERMINAL_ENVELOPE_REQUIRED = frozenset({"output", "exit_code"})
+_TERMINAL_ENVELOPE_KEYS = frozenset({
+    "output", "exit_code", "error", "status", "cwd", "environment_recreated",
+    "output_total_chars", "full_output_path", "truncation_note", "verification_evidence",
+    "approval", "exit_code_meaning", "hint", "sudo_auth_failed", "sudo_cache_cleared"})
 _ENVELOPE_METADATA_TAG = "<mcp-result-metadata>"
 _ENVELOPE_METADATA_CLOSING_TAG = "</mcp-result-metadata>"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -320,6 +327,31 @@ def _pageable_text(content: str) -> str:
     return f"{text}\n\n{_ENVELOPE_METADATA_TAG}\n{metadata}\n{_ENVELOPE_METADATA_CLOSING_TAG}\n"
 
 
+def _unwrap_terminal_envelope(content: str):
+    """(raw output text, sibling-fields JSON) for a terminal-envelope result, else (content, None).
+
+    Same #90426 rationale as the MCP branch of ``_pageable_text``, with one difference: the
+    sibling fields (exit_code, hints, ...) go INLINE under the persisted-output block, never
+    into the archive. The archive must hold ONLY the byte-faithful output text so that paging
+    and shell idioms on it (wc -l, tail, grep -c) are exact — spilling the JSON-serialized
+    envelope made every such read wrong (lab finding F1)."""
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return content, None
+    if (not isinstance(payload, dict)
+            or not _TERMINAL_ENVELOPE_REQUIRED <= set(payload) <= _TERMINAL_ENVELOPE_KEYS):
+        return content, None
+    text = payload.get("output")
+    if not isinstance(text, str) or not text:
+        return content, None
+    extras = {key: value for key, value in payload.items() if key != "output"}
+    try:
+        return text, json.dumps(extras, ensure_ascii=False, indent=1, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return content, None
+
+
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     """Write content into the sandbox via env.execute(); True on success. Content goes through
     stdin, not the command string: Linux ``MAX_ARG_STRLEN`` caps one argv element at 128 KB,
@@ -403,15 +435,23 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     if threshold == float("inf") or len(content) <= threshold:
         return content
     # The size decision above stays on the raw inline result (that is what cost context); the file
-    # and the preview carry the pageable text inside an MCP envelope (#90426).
-    persisted_content = _pageable_text(content)
+    # and the preview carry the pageable text inside an MCP envelope (#90426) or a terminal
+    # envelope (raw output text to the archive, sibling fields inline under the pointer block).
+    persisted_content, terminal_extras = _unwrap_terminal_envelope(content)
+    if terminal_extras is None:
+        persisted_content = _pageable_text(content)
     filename = _safe_result_filename(tool_use_id)
     preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
 
     def _persisted(path: str, host_suffix: str = "") -> str:
         logger.info("Persisted large tool result: %s (%s, %d chars -> %s%s)",
                     tool_name, tool_use_id, len(persisted_content), path, host_suffix)
-        return _build_persisted_message(preview, has_more, len(persisted_content), path)
+        msg = _build_persisted_message(preview, has_more, len(persisted_content), path)
+        if terminal_extras:
+            msg += ("\n<result-fields>\n"
+                    "The saved file holds ONLY the raw output text; the result's other fields are:\n"
+                    f"{terminal_extras}\n</result-fields>")
+        return msg
 
     # Always persist host-side first: cache/spillover is the single canonical home.
     host_path = _write_to_spillover(persisted_content, filename)

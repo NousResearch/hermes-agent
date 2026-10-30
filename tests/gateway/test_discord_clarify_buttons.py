@@ -105,13 +105,19 @@ class TestClarifyChoiceViewConstruction:
     def test_truncates_long_no_space_choice_on_soft_boundary(self):
         # A long choice with soft boundaries (commas, hyphens) but no spaces
         # should still cut on a soft boundary, not mid-word. We use an input
-        # where position 76 is NOT a soft boundary — the test only passes
-        # if the renderer actively searches backward for a soft char
+        # where the first soft boundary (a '-') sits INSIDE the new short
+        # selector budget (~20 chars after the '1. ' prefix) — the test only
+        # passes if the renderer actively searches backward for a soft char
         # rather than blindly cutting at the budget limit.
-        long_choice = "a" * 30 + "-" + "b" * 30 + "-" + "c" * 30 + "-" + "d" * 30
-        # 30a-30b-30c-30d = 30 + 1 + 30 + 1 + 30 + 1 + 30 = 123 chars
-        # Position 76 is 'b' (a mid-word alpha). The renderer must look back
-        # for a '-' to cut on.
+        #
+        # Buttons are short selectors (budget 24) in the decision-helper
+        # design; the full option text lives in the embed body. So the label
+        # must stay compact AND still cut at the soft boundary when one is
+        # within the window.
+        long_choice = "a" * 15 + "-" + "b" * 15 + "-" + "c" * 15
+        # 15a-15b-15c = 47 chars. The first '-' lands at index 15, which is
+        # inside the 20-char truncation window, so the renderer must look
+        # back for it and cut on it rather than mid-word.
         view = ClarifyChoiceView(
             choices=[long_choice],
             clarify_id="cidSB",
@@ -119,7 +125,8 @@ class TestClarifyChoiceViewConstruction:
         )
         first_label = view.children[0].label
         assert first_label.endswith("\u2026")
-        assert len(first_label) <= 80
+        # Short-selector budget: number + tight label (≤24 total).
+        assert len(first_label) <= 25
         body = first_label[len("1. "):].rstrip("\u2026")
         last_char = body[-1]
         assert last_char in {"-", ",", ".", ")", " "}, (

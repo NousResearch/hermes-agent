@@ -11,6 +11,7 @@ These tests cover the two review models that must coexist:
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -437,6 +438,14 @@ def test_respawn_guards_compare_mixed_int_and_iso_times_by_value(conn) -> None:
         conn.execute("INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, 'dev', ?, ?)",
                      (task_id, "opened https://github.com/o/r/pull/1", at))
 
+    def publish_pr(task_id):
+        """Record that this card opened PR #1 — the ``active_pr`` ownership."""
+        conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, outcome, started_at, ended_at, metadata) "
+            "VALUES (?, 'dev', 'done', 'completed', 1, 2, ?)",
+            (task_id, json.dumps({"published_pr": "https://github.com/o/r/pull/1"})),
+        )
+
     old_success = card("old success")
     kb.claim_task(conn, old_success)
     kb.complete_task(conn, old_success, result="ok", force=True)
@@ -451,6 +460,8 @@ def test_respawn_guards_compare_mixed_int_and_iso_times_by_value(conn) -> None:
 
     with kb.write_txn(conn):
         old_pr, guarded = card("old pr"), card("guarded")
+        publish_pr(old_pr)
+        publish_pr(guarded)
         comment(old_pr, iso(90 * 86400))
         comment(guarded, now - 60)
         conn.execute("INSERT INTO task_events (task_id, kind, payload, created_at) VALUES "

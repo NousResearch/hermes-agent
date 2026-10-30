@@ -84,6 +84,13 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The same URL, parsed into its identity parts so two spellings of one PR
+# compare equal (``www.``, host casing, a trailing slash).
+_RESPAWN_GUARD_PR_IDENTITY_RE = re.compile(
+    r"https?://(?:www\.)?github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class DispatchResult:
@@ -1638,23 +1645,99 @@ def check_respawn_guard(
         return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Only a PR THIS card owns counts. A card that merely *references*
+    #    another card's PR (a merge gate, a review, an audit, a delivery
+    #    card) has no PR of its own, so re-spawning it cannot duplicate any
+    #    PR — holding it for the whole window strands the card for a day.
+    #    Ownership comes from the card's own durable records: the PR URL a
+    #    run published (``published_pr`` / ``pr_url``) or the card's
+    #    ``completion_contract``.
     #    Exception: a handoff AFTER the newest PR comment (operator reassign,
     #    reviewer changes_requested, review reopen) names the profile that must
     #    now work on THAT PR — a closer or the implementer finishing it, not a
     #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
     #    so the worker that opened the PR is still not re-spawned against it.
-    pr_times = [t for t, c in _rows_since(conn, "task_comments", task_id, now - _RESPAWN_GUARD_PR_WINDOW,
-                                          cols=", body", unreadable=now)  # duplicate-PR risk: fail closed
-                if _RESPAWN_GUARD_PR_URL_RE.search(_kb._lossy_text(c["body"]) or "")]
-    if pr_times:
-        # Strictly after: a same-second tie stays guarded (fail closed).
-        if any(_is_handoff_event(e["kind"], e["payload"]) for _, e in _rows_since(
-                conn, "task_events", task_id, max(pr_times),
-                "AND kind IN ('assigned', 'changes_requested', 'review_reopened')", cols=", kind, payload", strict=True)):
-            return None
-        return "active_pr"
+    owned_prs = _card_owned_pr_urls(conn, task_id)
+    if owned_prs:
+        owned_ids = {i for i in (_pr_identity(u) for u in owned_prs) if i is not None}
+        pr_times = [t for t, c in _rows_since(conn, "task_comments", task_id, now - _RESPAWN_GUARD_PR_WINDOW,
+                                              cols=", body", unreadable=now)  # duplicate-PR risk: fail closed
+                    if _RESPAWN_GUARD_PR_URL_RE.search(_kb._lossy_text(c["body"]) or "")
+                    and _comment_owns_any_pr(c["body"], owned_ids)]
+        if pr_times:
+            # Strictly after: a same-second tie stays guarded (fail closed).
+            if any(_is_handoff_event(e["kind"], e["payload"]) for _, e in _rows_since(
+                    conn, "task_events", task_id, max(pr_times),
+                    "AND kind IN ('assigned', 'changes_requested', 'review_reopened')", cols=", kind, payload", strict=True)):
+                return None
+            return "active_pr"
 
     return None
+
+
+def _card_owned_pr_urls(conn: sqlite3.Connection, task_id: str) -> set[str]:
+    """The GitHub PR URLs this card itself opened, lowercased.
+
+    Two durable, card-scoped records name a PR the card owns:
+
+    * ``task_runs.metadata.published_pr`` — what the PR-acceptance contract
+      already treats as *this task's* PR (``kanban_pr_acceptance`` binds the
+      task's contract to it), and the ``pr_url`` spelling some delivery runs
+      use for the same fact;
+    * ``tasks.completion_contract`` — the PR the card was contracted to
+      deliver.
+
+    ``pr_number`` is deliberately NOT an ownership signal: review, audit and
+    QE cards record the number of the PR they are *reviewing*, which is
+    exactly the card that must not be suppressed by it.
+    """
+    owned: set[str] = set()
+    for row in conn.execute(
+        "SELECT metadata FROM task_runs WHERE task_id = ? AND metadata IS NOT NULL",
+        (task_id,),
+    ).fetchall():
+        meta = _kb._json_dict(row["metadata"])
+        for key in ("published_pr", "pr_url"):
+            url = meta.get(key)
+            if isinstance(url, str) and _RESPAWN_GUARD_PR_URL_RE.search(url):
+                owned.add(url.strip().lower())
+    row = conn.execute(
+        "SELECT completion_contract FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is not None:
+        contract = _kb._lossy_text(row["completion_contract"] or "")
+        if contract and _RESPAWN_GUARD_PR_URL_RE.search(contract):
+            owned.add(contract.strip().lower())
+    return owned
+
+
+def _comment_owns_any_pr(body: Any, owned_ids: set[tuple[str, str, int]]) -> bool:
+    """True when ``body`` links one of the PR identities in ``owned_ids``.
+
+    Compare the canonical PR identity (``owner/repo#number``) rather than the
+    raw URL: a card may spell the same PR with or without a trailing slash,
+    with ``www.``, or with a different host casing.
+    """
+    text = _kb._lossy_text(body) or ""
+    if not text:
+        return False
+    for match in _RESPAWN_GUARD_PR_IDENTITY_RE.finditer(text):
+        if (match.group(1).lower(), match.group(2).lower(), int(match.group(3))) in owned_ids:
+            return True
+    return False
+
+
+def _pr_identity(url: str) -> Optional[tuple[str, str, int]]:
+    """``(owner, repo, number)`` for a GitHub PR URL, lowercased.
+
+    A dedicated pattern (not ``_RESPAWN_GUARD_PR_URL_RE``) so the identity is
+    parsed rather than sliced: ``www.`` and host casing are normalized, and a
+    trailing slash is ignored.
+    """
+    match = _RESPAWN_GUARD_PR_IDENTITY_RE.search(url or "")
+    if match is None:
+        return None
+    return match.group(1).lower(), match.group(2).lower(), int(match.group(3))
 
 
 _GUARD_TIME_COLS = {"task_runs": "ended_at", "task_events": "created_at", "task_comments": "created_at"}

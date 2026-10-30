@@ -448,6 +448,7 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         review_id = kb.create_task(conn, title="review me", assignee="reviewer")
         claimed = kb.claim_task(conn, review_id)
         assert claimed is not None
+        _publish_pr(conn, review_id, "https://github.com/example/repo/pull/123")
         kb.add_comment(conn, review_id, author="worker", body=pr_comment)
         assert kb.request_review(
             conn, review_id, summary="PR ready",
@@ -455,6 +456,7 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         )
         # Ready-lane task with the same fresh PR comment.
         ready_id = kb.create_task(conn, title="already PRed", assignee="worker")
+        _publish_pr(conn, ready_id, "https://github.com/example/repo/pull/123")
         kb.add_comment(conn, ready_id, author="worker", body=pr_comment)
 
         assert kbd.check_respawn_guard(conn, ready_id) == "active_pr"
@@ -493,6 +495,23 @@ def _backdate_comments(conn, tid, seconds=60):
         )
 
 
+def _publish_pr(conn, tid, pr_url):
+    """Record that THIS card opened ``pr_url``.
+
+    ``active_pr`` is scoped to the PR the card owns: a card that only
+    *references* another card's PR (a merge gate, a review, an audit) is not
+    a duplicate-work risk and must not be held. A card's own published PR is
+    the durable record of that ownership (``metadata.published_pr``).
+    """
+    with kb.write_txn(conn):
+        conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, outcome, "
+            "started_at, ended_at, metadata) "
+            "VALUES (?, 'worker', 'done', 'completed', 1, 2, ?)",
+            (tid, json.dumps({"published_pr": pr_url})),
+        )
+
+
 def test_active_pr_guard_lifts_for_profile_handed_the_card_after_the_pr(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -515,8 +534,10 @@ def test_active_pr_guard_lifts_for_profile_handed_the_card_after_the_pr(
 
     with kbc.connect() as conn:
         dev_id = kb.create_task(conn, title="dev own pr", assignee="dev")
+        _publish_pr(conn, dev_id, "https://github.com/example/repo/pull/44")
         kb.add_comment(conn, dev_id, author="dev", body=pr_comment)
         closer_id = kb.create_task(conn, title="closer recovery", assignee="dev")
+        _publish_pr(conn, closer_id, "https://github.com/example/repo/pull/44")
         kb.add_comment(conn, closer_id, author="dev", body=pr_comment)
         _backdate_comments(conn, closer_id)
         assert kb.assign_task(conn, closer_id, "closer") is True
@@ -553,6 +574,7 @@ def test_active_pr_guard_holds_through_same_profile_reassign_and_unassign(
     pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="same assign", assignee="dev")
+        _publish_pr(conn, tid, "https://github.com/example/repo/pull/44")
         kb.add_comment(conn, tid, author="dev", body=pr_comment)
         _backdate_comments(conn, tid)
         assert kb.assign_task(conn, tid, "dev") is True

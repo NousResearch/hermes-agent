@@ -26,9 +26,12 @@ function isChromium(): boolean {
   return brands ? brands.some(entry => entry.brand === 'Chromium') : /Chrom(e|ium)\//.test(navigator.userAgent)
 }
 
+// Node test environments import the keybind store with no window at all.
+const canWatch = () => typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+
 export function inChromiumAppWindow(): boolean {
   return (
-    typeof window.matchMedia === 'function' &&
+    canWatch() &&
     isChromium() &&
     APP_WINDOW_QUERIES.some(query => window.matchMedia(query).matches)
   )
@@ -36,7 +39,7 @@ export function inChromiumAppWindow(): boolean {
 
 /** Runs `listener` whenever the window's display mode changes. */
 export function onBrowserWindowKindChange(listener: () => void): () => void {
-  if (typeof window.matchMedia !== 'function') {
+  if (!canWatch()) {
     return () => undefined
   }
 

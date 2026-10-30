@@ -150,6 +150,79 @@ async def test_watch_notice_without_a_viewer_is_a_note(tmp_path, monkeypatch):
         authority.db.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('producer', ['async_delegation', 'completion', 'watch_match', 'watch_disabled'])
+@pytest.mark.parametrize('compressed', [False, True], ids=['root', 'compressed-tip'])
+@pytest.mark.parametrize('managed,title,turn', [(True, 'Bot Chat', True), (False, 'Bot Chat', False),
+                                              (True, 'ordinary chat', False)])
+async def test_unviewed_bot_chat_completion_runs_as_a_turn(tmp_path, monkeypatch, producer, compressed,
+                                                         managed, title, turn):
+    """The bot is its inbox's consumer; neither an ordinary local chat nor an unmanaged title opts in."""
+    import json
+    from gateway.platforms.event import MessageEvent
+    from gateway.session_local_title import title_new_session
+    from hermes_state_local import end_idle_local_session
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    try:
+        if managed:
+            (tmp_path / 'profile.yaml').write_text('ui_meta:\n  hermes-bots: {}\n')
+        title_new_session(authority, ref, title)
+        target = _target(runner, authority, ref)
+        if compressed:
+            _compress(runner, authority, ref, target, 'bot-tip')
+            target = 'bot-tip'
+        assert end_idle_local_session(authority.db, epoch=authority.epoch, session_id=ref.session_id,
+                                      target_id=target, reason='viewer_closed')
+        # The owning DB, not the host's launch profile, decides whether this is Bot Mode.
+        monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'unmanaged-launch-home'))
+        live = authority.sessions[ref.session_id]
+        assert not live.subscribers
+        text = f'RESULT_{producer}'
+        event = MessageEvent(text=text, source=live.source, internal=True, metadata={
+            'gateway_session_key': live.route, 'gateway_session_id': target})
+        identity = json.dumps([producer, 'bot-result', 'event'])
+        await authority.admit_automation(runner._adapter_for_source(live.source), event, identity)
+        seen = _turns(runner, authority, target)
+        await authority._drain(ref)
+        assert seen == ([(text, 0)] if turn else [])
+        assert len(_notes(authority, target)) == (0 if turn else 1)
+        assert (authority.db.get_session(target)['ended_at'] is None) is turn
+        assert [r['outcome'] for r in _admissions(authority, ref)] == ['completed']
+        # Lost acknowledgements must not produce either a second turn or an extra note.
+        await authority.admit_automation(runner._adapter_for_source(live.source), event, identity)
+        await authority._drain(ref)
+        assert len(seen) == int(turn)
+        assert len(_admissions(authority, ref)) == 1
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('viewer', [False, True], ids=['unviewed', 'viewed'])
+async def test_bot_chat_local_cron_result_stays_a_note(tmp_path, monkeypatch, viewer):
+    """Local-chat cron delivery stays finished text; bot-chat delivery is a separate per-job choice."""
+    from gateway.platforms.event import MessageEvent
+    from gateway.session_local_title import title_new_session
+    runner, authority, ref, actor = await _local(tmp_path, monkeypatch)
+    try:
+        (tmp_path / 'profile.yaml').write_text('ui_meta:\n  hermes-bots: {}\n')
+        title_new_session(authority, ref, 'Bot Chat')
+        target = _target(runner, authority, ref)
+        live = authority.sessions[ref.session_id]
+        if viewer:
+            live.subscribers['viewer'] = actor
+        event = MessageEvent(text='RESULT_cron', source=live.source, internal=True, metadata={
+            'gateway_session_key': live.route, 'gateway_session_id': target})
+        await authority.admit_automation(runner._adapter_for_source(live.source), event, '["cron","job","fire"]')
+        seen = _turns(runner, authority, target)
+        await authority._drain(ref)
+        assert seen == []
+        assert [m['content'] for m in _notes(authority, target)] == ['RESULT_cron']
+        assert [r['outcome'] for r in _admissions(authority, ref)] == ['completed']
+    finally:
+        authority.db.close()
+
+
 async def _restart(tmp_path, monkeypatch, old):
     """A real owner restart over the same state.db: new runner, new epoch, local sessions recovered."""
     from gateway.config import GatewayConfig

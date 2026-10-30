@@ -1084,8 +1084,8 @@ class SessionAuthority:
                 # tracked so retirement and the shutdown close gate count it.
                 from gateway.session_local_recovery import reopen_local_session
                 from gateway.session_runtime_workers import tracked_write
-                from gateway.session_completion_notes import noted_completion
-                if not noted_completion(first):  # a note leaves a closed row closed (session_completion_notes)
+                from gateway.session_completion_notes import bot_chat_completion, noted_completion
+                if not noted_completion(first) or bot_chat_completion(self, ref, first):
                     await tracked_write(self, partial(reopen_local_session, self, ref))
             if first is not None and 'native_text_v1' in first['payload']:
                 from gateway.session_envelope import check_native_route
@@ -1105,8 +1105,8 @@ class SessionAuthority:
             elif first is not None and live.detached:
                 # The chat's /new ended its row; the app's turn makes it live again, as an API row's
                 # does. A note leaves it closed, as a local one's does (session_completion_notes).
-                from gateway.session_completion_notes import noted_completion, reopen_for_turn
-                if not noted_completion(first):
+                from gateway.session_completion_notes import bot_chat_completion, noted_completion, reopen_for_turn
+                if not noted_completion(first) or bot_chat_completion(self, ref, first):
                     await reopen_for_turn(self, ref)
             if first is not None and self._classic_turn_holds(live.route):
                 # A classic turn (fallback wake, CLI handoff, legacy resume) holds the route's slot:

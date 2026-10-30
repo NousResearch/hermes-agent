@@ -954,7 +954,7 @@ def _print_tier1_advisory(skill_dir, console) -> None:
 # --- list / check / update / audit ---
 
 def do_list(source_filter: str = "all", enabled_only: bool = False,
-            console: Optional[Console] = None) -> None:
+            console: Optional[Console] = None, as_json: bool = False) -> None:
     """List installed skills (hub / builtin / local). Enabled state comes from the active
     profile's config — ``-p`` swaps HERMES_HOME at process start, so no profile flag here."""
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
@@ -976,6 +976,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
 
     counts = {"hub": 0, "builtin": 0, "local": 0}
     enabled_count = disabled_count = 0
+    rows = []
     for skill in sorted(all_skills, key=lambda s: (s.get("category") or "", s["name"])):
         name = skill["name"]
         hub_entry = hub_installed.get(name)
@@ -988,6 +989,10 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
         is_enabled = name not in disabled_names
         if source_filter not in ("all", source_type) or (enabled_only and not is_enabled):
             continue
+        if as_json:
+            rows.append({"name": name, "category": skill.get("category") or "",
+                         "source": source_display, "trust": trust, "enabled": is_enabled})
+            continue
         counts[source_type] += 1
         enabled_count += is_enabled
         disabled_count += not is_enabled
@@ -998,6 +1003,10 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
         table.add_row(name, skill.get("category", ""), source_display,
                       _trust_cell(trust, source_display), status)
 
+    if as_json:
+        # Bypass Rich so terminal width, markup and styling cannot alter the JSON.
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return
     c.print(table)
     tail = (f"{enabled_count} enabled shown" if enabled_only
             else f"{enabled_count} enabled, {disabled_count} disabled")
@@ -1548,7 +1557,8 @@ _CLI_ACTIONS = {
                                     name_override=getattr(a, "name", "") or ""),
     "inspect": lambda a: do_inspect(a.identifier),
     "list": lambda a: do_list(source_filter=a.source,
-                              enabled_only=getattr(a, "enabled_only", False)),
+                              enabled_only=getattr(a, "enabled_only", False),
+                              as_json=getattr(a, "json", False)),
     "check": lambda a: do_check(name=getattr(a, "name", None)),
     "update": lambda a: do_update(name=getattr(a, "name", None), force=getattr(a, "force", False)),
     "audit": lambda a: do_audit(name=getattr(a, "name", None), deep=getattr(a, "deep", False)),
@@ -1648,7 +1658,8 @@ _SLASH_ACTIONS = {
     "inspect": lambda args, c: do_inspect(args[0], console=c),
     "list": lambda args, c: do_list(
         source_filter=_opt_value(args, "--source", "all"),
-        enabled_only="--enabled-only" in args or "--enabled" in args, console=c),
+        enabled_only="--enabled-only" in args or "--enabled" in args, console=c,
+        as_json="--json" in args),
     "check": lambda args, c: do_check(name=args[0] if args else None, console=c),
     "update": lambda args, c: do_update(
         name=next((a for a in args if not a.startswith("--")), None), console=c,
@@ -1716,7 +1727,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]search[/] <query>              Search registries for skills\n"
         "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
-        "  [cyan]list[/] [--source hub|builtin|local] [--enabled-only]\n"
+        "  [cyan]list[/] [--source hub|builtin|local] [--enabled-only] [--json]\n"
         "       List installed skills; --enabled-only filters to the active profile's live set\n"
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"

@@ -26,7 +26,9 @@ describe('timeline metadata index', () => {
     const a = fetchTimelineIndex('session', scope)
     const b = fetchTimelineIndex('session', scope)
     expect(a).toBe(b)
-    expect((await a).entries).toEqual([{ id: 'history:1', rowId: 1, preview: 'Prompt 1' }])
+    expect((await a).entries).toEqual([
+      { id: 'history:1', label: 'Prompt 1', preview: 'Prompt 1', rowId: 1 }
+    ])
     expect(api).toHaveBeenCalledTimes(1)
     expect(api.mock.calls[0][0]).toMatchObject({ connectionId: 'local', profile: 'default', passive: true })
     expect(api.mock.calls[0][0].path).toContain('/timeline?limit=500')

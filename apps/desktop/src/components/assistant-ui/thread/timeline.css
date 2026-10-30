@@ -1,5 +1,11 @@
-.thread-timeline-ticks {
+.thread-timeline-rail {
+  position: relative;
   width: 3rem;
+  height: 100%;
+}
+
+.thread-timeline-ticks {
+  width: 100%;
   height: 100%;
   overflow-x: hidden;
   overflow-y: auto;
@@ -38,7 +44,14 @@
   border-radius: 999px;
   background: var(--ui-text-tertiary);
   opacity: 0.65;
-  transition: width 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition:
+    width 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    height 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.thread-timeline-tick:hover [data-slot='timeline-bar'],
+.thread-timeline-tick:focus-visible [data-slot='timeline-bar'] {
+  opacity: 1;
 }
 
 .thread-timeline-tick[aria-current='location'] [data-slot='timeline-bar'] {
@@ -55,6 +68,50 @@
   animation: timeline-loading 700ms ease-in-out infinite alternate;
 }
 
+/* The selected prompt's name, beside its tick — never on top of it, so the mark
+   stays visible. Height matches the magnified row's band (DOCK_PEAK_REM), which
+   is also the band the pointer is hit-tested against. All colour comes from the
+   theme tokens, so it follows the active theme/skin. */
+.thread-timeline-dock {
+  position: absolute;
+  top: 0;
+  right: calc(100% + 0.5rem);
+  display: flex;
+  height: 1.5rem;
+  align-items: center;
+  transform: translateY(-50%);
+  max-width: min(22rem, calc(100vw - 6rem));
+  overflow: hidden;
+  padding: 0 0.5rem;
+  border: 1px solid var(--theme-primary);
+  border-radius: 0.375rem;
+  background: var(--ui-bg-elevated);
+  color: var(--ui-text-primary);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 22%);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 0;
+  pointer-events: none;
+  /* Promote the layer at mount, so the first hover only flips a property
+     instead of allocating (and rasterising) a layer on the pointer frame. */
+  will-change: opacity;
+  z-index: 2;
+}
+
+/* The label's system-font instance is created on first shaping, which is the
+   other half of the cold path: laying out two glyphs at the label's own font,
+   size and weight at mount moves that work off the first hover. A pseudo
+   element, so the rail still mounts no prompt text. */
+.thread-timeline-dock::before {
+  content: 'あア';
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
 @keyframes timeline-loading {
   to {
     opacity: 0.3;
@@ -62,6 +119,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .thread-timeline-tick,
+  .thread-timeline-dock,
   .thread-timeline-tick [data-slot='timeline-bar'] {
     transition: none;
     animation: none;

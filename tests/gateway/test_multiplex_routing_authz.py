@@ -46,6 +46,9 @@ def mux(tmp_path, monkeypatch):
     (home / "profiles" / "team_b" / ".env").write_text("TELEGRAM_ALLOWED_USERS=72719239\n")
     (home / "profiles" / "ops" / ".env").write_text("")
     monkeypatch.setenv("HERMES_HOME", str(home))
+    import hermes_state
+    # state.db resolves from the active profile scope, as in production, whatever the import order.
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     for key in ("TELEGRAM_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
         monkeypatch.delenv(key, raising=False)
     prev = secret_scope.is_multiplex_active()
@@ -151,6 +154,82 @@ def test_completion_preflight_runs_in_target_profile_scope(mux):
         return unscoped, scoped
 
     assert asyncio.run(_run()) == ("terminal", "deliver")
+
+
+def _served_session_db(mux, profile, sid):
+    """Create api_server session *sid* in served *profile*'s own store; unpin the runner's DB handles."""
+    from gateway import run as run_module
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=mux.home / "profiles" / profile / "state.db")
+    db.create_session(session_id=sid, source="api_server", profile_name=profile)
+    runner = mux.runner
+    runner._session_db_pinned = run_module._SESSION_DB_UNPINNED
+    runner._session_db_handles, runner._session_db_handles_lock = {}, threading.Lock()
+    runner.session_store, runner._session_sources = None, {}
+    return db
+
+
+def test_completion_preflight_resolves_raw_api_server_session_owner(mux):
+    """A served profile's api_server (WebUI) session carries no profile on its completion event:
+    the pre-flight must classify it against the store that owns the raw session id, not drop it."""
+    _served_session_db(mux, "team_b", "webui-b")
+    runner = mux.runner
+    evt = {"type": "async_delegation", "session_key": "webui-b", "parent_session_id": "webui-b"}
+    unknown = {"type": "async_delegation", "session_key": "gone", "parent_session_id": "gone"}
+
+    async def _run():
+        async with runner._completion_event_scope(evt):
+            owned = await runner._classify_completion_target("webui-b")
+        async with runner._completion_event_scope(unknown):
+            missing = await runner._classify_completion_target("gone")
+        return owned, missing
+
+    assert asyncio.run(_run()) == ("deliver", "terminal")
+
+
+def test_served_profile_structured_api_server_completion_ready_and_defers_while_busy(mux, monkeypatch):
+    """Authority-admitted api_server turns on a route-only served profile carry
+    ``agent:<profile>:api_server:dm:<sid>``: ``_completion_delivery_ready`` must resolve the
+    shared API_SERVER adapter, and an active turn lease on the parent session must defer (not
+    burn a delivery attempt via release)."""
+    from typing import cast
+
+    db = _served_session_db(mux, "ops", "24f923cff3f1")
+    runner = mux.runner
+    runner.session_store = SimpleNamespace(_ensure_loaded=lambda: None, _entries={}, _db=db)
+    runner._completion_deliveries_inflight, runner._completion_deliveries_delivered = set(), {}
+    runner._completion_delivery_retention, runner._completion_delivery_lock = 100, threading.Lock()
+    runner.adapters[Platform.API_SERVER] = cast(BasePlatformAdapter, SimpleNamespace(
+        supports_async_delivery=False, _ensure_session_db=lambda: db))
+    evt = {
+        "type": "async_delegation", "delegation_id": "deleg_7cfc8432",
+        "session_key": "agent:ops:api_server:dm:24f923cff3f1",
+        "parent_session_id": "24f923cff3f1", "origin_session_id": "24f923cff3f1",
+    }
+    settled = []
+    monkeypatch.setattr(runner, "_settle_durable_claim",
+                        lambda op, did, cid: settled.append((op, did)))
+    import tools.async_delegation as ad_mod
+    monkeypatch.setattr(ad_mod, "claim_completion_delivery", lambda did, cid: True)
+
+    async def _run():
+        assert db.acquire_session_turn_lease("24f923cff3f1", "parent-turn", wait_seconds=0)
+        try:
+            busy = await runner._deliver_completion_notification("[BATCH COMPLETE]", evt)
+        finally:
+            db.release_session_turn_lease("24f923cff3f1", "parent-turn")
+        ok = await runner._deliver_completion_notification("[BATCH COMPLETE]", evt)
+        return busy, ok, db.get_messages("24f923cff3f1")
+
+    try:
+        busy, ok, msgs = asyncio.run(_run())
+    finally:
+        runner.close_all_session_db_handles()
+        db.close()
+    assert (busy, ok) == (False, True)
+    assert settled == [("defer", "deleg_7cfc8432"), ("complete", "deleg_7cfc8432")]
+    assert len(msgs) == 1 and msgs[0]["display_kind"] == "async_delegation_complete"
 
 
 @pytest.mark.parametrize(("launch_policy", "served_policy"), [(False, True), (True, False)])

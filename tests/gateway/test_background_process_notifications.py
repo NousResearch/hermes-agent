@@ -879,3 +879,46 @@ async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
         assert "proc_deadbeef" not in text and "[Background process" not in text and "~" not in text
         assert "\x1b[" not in text
         assert "make -j8 all" in text
+
+
+def _apiserver_persist_runner(monkeypatch, tmp_path, served_profile):
+    """Runner with a non-push api_server adapter; records the home each delivery row persists in."""
+    import gateway.wake as wake_mod
+    from hermes_constants import get_hermes_home
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    runner.adapters[Platform.API_SERVER] = SimpleNamespace(supports_async_delivery=False, handle_message=AdmittingHandler())
+    monkeypatch.setattr(runner, "_served_api_server_wake_profile", served_profile)
+    homes = []
+
+    async def fake_persist(adapter, *, text, session_id, evt=None):
+        homes.append(get_hermes_home())
+
+    monkeypatch.setattr(wake_mod, "persist_delegation_delivery", fake_persist)
+    return runner, homes
+
+
+@pytest.mark.asyncio
+async def test_async_delegation_apiserver_persist_runs_in_owning_profile_scope(monkeypatch, tmp_path):
+    """A served profile's api_server session gets its delivery row in ITS OWN store."""
+    from hermes_constants import get_hermes_home
+
+    served_home = tmp_path / "profiles" / "secondary"
+    served_home.mkdir(parents=True)
+    runner, homes = _apiserver_persist_runner(monkeypatch, tmp_path, lambda evt, sid: "secondary")
+    monkeypatch.setattr(runner, "_resolve_profile_home_for_source", lambda source: served_home)
+    evt = {"type": "async_delegation", "delegation_id": "deleg_x", "session_key": "raw-sid"}
+    assert await runner._inject_watch_notification("[BATCH COMPLETE]", evt) is True
+    assert homes == [served_home] and get_hermes_home() != served_home
+
+
+@pytest.mark.asyncio
+async def test_async_delegation_apiserver_foreign_profile_hint_is_retryable(monkeypatch, tmp_path):
+    """A session not in the hinted profile's store is never persisted into the launch profile's store."""
+    def not_owned(evt, sid):
+        raise LookupError("not in served profile")
+
+    runner, homes = _apiserver_persist_runner(monkeypatch, tmp_path, not_owned)
+    evt = {"type": "async_delegation", "delegation_id": "deleg_y", "session_key": "raw-sid"}
+    assert await runner._inject_watch_notification("[BATCH COMPLETE]", evt) is False
+    assert homes == []

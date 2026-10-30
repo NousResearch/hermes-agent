@@ -453,6 +453,31 @@ class TestLoadGatewayConfig:
         assert extra["websocket_event_max_silence_seconds"] == 7200
 
 
+    def test_channel_command_access_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n"
+            "  channel_command_access:\n"
+            "    signal:\n"
+            "      synthetic-group-id:\n"
+            "        allowed_slash_commands: [help, status]\n"
+            '        deny_message: "Not enabled in this room."\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.channel_command_access == {
+            "signal": {
+                "synthetic-group-id": {
+                    "allowed_slash_commands": ["help", "status"],
+                    "deny_message": "Not enabled in this room.",
+                }
+            }
+        }
+
     def test_quick_commands_from_nested_gateway_section(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

@@ -100,4 +100,43 @@ describe('a multi-question clarify set is one form', () => {
     await waitFor(() => expect(locks(request)).toHaveLength(3))
     expect(locks(request)).toEqual([['q0', 'staging'], ['q1', null], ['q2', 'later']])
   })
+
+  // An empty multi-select ("pick any") is a valid answer, so it never holds plain Enter back:
+  // mashing Enter from any question the keyboard cursor rests on sends the set within a few
+  // presses instead of landing on the multi-select, where Enter toggles a choice on and off
+  // forever. (On a multi-select row Enter is that toggle by design; a free-text question
+  // takes Enter in its own text field.)
+  const MIXED = [
+    { choices: ['staging', 'production'], multiSelect: false, qid: 'q0', question: 'Which target?' },
+    { choices: ['lint', 'tests', 'docs'], multiSelect: true, qid: 'q1', question: 'Which checks?' },
+    { choices: null, multiSelect: false, qid: 'q2', question: 'Anything else?' },
+    { choices: ['now', 'later'], multiSelect: false, qid: 'q3', question: 'When?' }
+  ]
+
+  const ENTER_BUDGET = 3
+
+  for (const answerFirst of [true, false]) {
+    for (const start of ['Which target?', 'When?']) {
+      it(`plain Enter from "${start}" sends the set within ${ENTER_BUDGET} presses (q0 ${answerFirst ? 'answered' : 'open'})`, async () => {
+        const request = renderSet(MIXED)
+
+        if (answerFirst) {
+          fireEvent.click(screen.getByRole('button', { name: /staging/ }))
+        }
+
+        fireEvent.change(screen.getByPlaceholderText(/Type your answer/), { target: { value: 'after 5pm' } })
+        fireEvent.click(screen.getByRole('button', { name: /later/ }))
+        // Clicking a question heading takes focus out of the text field a pick moved it into.
+        screen.getByPlaceholderText(/Type your answer/).blur()
+        fireEvent.pointerDown(screen.getByText(start))
+
+        for (let press = 0; press < ENTER_BUDGET; press += 1) {
+          fireEvent.keyDown(window, { key: 'Enter' })
+        }
+
+        await waitFor(() => expect(locks(request)).toHaveLength(4))
+        expect(locks(request)).toEqual([['q0', 'staging'], ['q1', null], ['q2', 'after 5pm'], ['q3', 'later']])
+      })
+    }
+  }
 })

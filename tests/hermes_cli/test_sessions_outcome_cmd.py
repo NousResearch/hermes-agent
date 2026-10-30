@@ -12,7 +12,9 @@ import pytest
 import hermes_state
 
 _SID = "20261030_101500_abc123"
-_FIELDS = {"id", "session_id", "signal", "verdict", "source", "recorder", "ref", "note", "observed_at", "recorded_at"}
+_ROW = {"id", "session_id", "signal", "domain", "verdict", "source", "recorder", "ref", "note", "observed_at",
+        "recorded_at"}
+_FIELDS = _ROW | {"effective", "superseded_by"}
 
 
 @pytest.fixture()
@@ -50,17 +52,30 @@ def test_add_resolves_prefix_and_title_then_list_json_is_the_documented_envelope
     code, out, _ = _run(monkeypatch, capsys, "add", "20261030_1015", "--signal", "merged", "--source", "github",
                         "--url", "https://github.com/o/r/pull/3", "--observed-at", "2026-10-29T12:00:00Z")
     assert code == 0 and f"merged (good) from github for session '{_SID}'." in out
-    code, _, _ = _run(monkeypatch, capsys, "add", "Fix the flaky upload test", "--signal", "custom",
-                      "--verdict", "neutral", "--source", "ci", "--note", "shipped behind a flag")
-    assert code == 0
+    code, out, _ = _run(monkeypatch, capsys, "add", "Fix the flaky upload test", "--signal", "review.comment_applied",
+                        "--verdict", "neutral", "--source", "ci", "--note", "shipped behind a flag", "--json")
+    assert code == 0 and set(json.loads(out)) == _ROW
 
-    custom, merged = _list(monkeypatch, capsys)
-    assert set(custom) == _FIELDS == set(merged)
-    assert {k: custom[k] for k in ("session_id", "signal", "verdict", "source", "recorder", "note")} == {
-        "session_id": _SID, "signal": "custom", "verdict": "neutral", "source": "ci", "recorder": "cli",
-        "note": "shipped behind a flag"}
+    applied, merged = _list(monkeypatch, capsys)
+    assert set(applied) == _FIELDS == set(merged)
+    assert {k: applied[k] for k in ("session_id", "signal", "domain", "verdict", "source", "recorder", "note")} == {
+        "session_id": _SID, "signal": "review.comment_applied", "domain": "review", "verdict": "neutral",
+        "source": "ci", "recorder": "cli", "note": "shipped behind a flag"}
     assert (merged["ref"], merged["observed_at"]) == ("https://github.com/o/r/pull/3", 1_793_275_200.0)
+    assert (merged["effective"], merged["superseded_by"]) == (True, None)
     assert isinstance(merged["id"], int) and isinstance(merged["recorded_at"], float)
+
+
+def test_a_revert_supersedes_the_merge_by_default_and_all_shows_the_journal(home, monkeypatch, capsys):
+    pr = ["--source", "github", "--ref", "https://github.com/o/r/pull/3"]
+    _run(monkeypatch, capsys, "add", _SID, "--signal", "pr.merged", *pr, "--observed-at", "2026-10-28T12:00:00Z")
+    _run(monkeypatch, capsys, "add", _SID, "--signal", "pr.reverted", *pr, "--observed-at", "2026-10-29T12:00:00Z")
+
+    assert [r["signal"] for r in _list(monkeypatch, capsys)] == ["pr.reverted"]
+    revert, merge = _list(monkeypatch, capsys, "--all")
+    assert (merge["signal"], merge["effective"], merge["superseded_by"]) == ("pr.merged", False, revert["id"])
+    code, out, _ = _run(monkeypatch, capsys, "list", "--all")
+    assert code == 0 and f"(superseded by {revert['id']})" in out
 
 
 def test_a_command_run_by_an_agent_records_as_agent_and_removes_only_agent_rows(home, monkeypatch, capsys):
@@ -83,7 +98,9 @@ def test_a_command_run_by_an_agent_records_as_agent_and_removes_only_agent_rows(
     (["add", "nope", "--signal", "merged", "--source", "github"], 3, "No session 'nope'"),
     (["list", "nope"], 3, "No session 'nope'"),
     (["remove", "999"], 3, "No outcome 999"),
-    (["add", _SID, "--signal", "custom", "--source", "github"], 2, "no default"),
+    (["add", _SID, "--signal", "review.comment_applied", "--source", "github"], 2, "no default verdict"),
+    (["add", _SID, "--signal", "custom", "--verdict", "good", "--source", "github"], 2, "is invalid"),
+    (["add", _SID, "--signal", "PR merged", "--verdict", "good", "--source", "github"], 2, "is invalid"),
     (["add", _SID, "--signal", "merged", "--source", "self:cli"], 2, "plain label"),
     (["add", _SID, "--signal", "merged", "--source", "github", "--observed-at", "soon"], 2, "--observed-at"),
     (["list", "--since", "last tuesday"], 2, "Invalid value for --since"),
@@ -94,7 +111,7 @@ def test_bad_input_exits_with_the_documented_code_and_cause_on_stderr(home, monk
 
 
 @pytest.mark.parametrize("argv", [
-    ["add", _SID, "--signal", "shipped", "--source", "github"],  # outside the fixed vocabulary
+    ["add", _SID, "--signal", "pr.merged", "--source", "github", "--verdict", "great"],  # verdict is closed
     ["add", _SID, "--signal", "merged"],                         # --source is required
     ["add", _SID, "--signal", "merged", "--source", "g", "--current"],  # no --current: name the session
     ["add", _SID, "--signal", "merged", "--source", "g", "--recorder", "plugin:x"],  # provenance is core's
@@ -109,6 +126,7 @@ def test_list_filters_and_human_table(home, monkeypatch, capsys):
         _run(monkeypatch, capsys, "add", _SID, "--signal", signal, "--source", "github")
     assert [r["signal"] for r in _list(monkeypatch, capsys, "--verdict", "bad", "--since", "1h")] == ["reverted"]
     assert [r["signal"] for r in _list(monkeypatch, capsys, _SID, "--signal", "ci_passed")] == ["ci_passed"]
+    assert _list(monkeypatch, capsys, "--source", "gitlab") == []
     code, out, _ = _run(monkeypatch, capsys, "list", "--limit", "1")
     assert code == 0 and "reverted" in out and "ci_passed" not in out
 

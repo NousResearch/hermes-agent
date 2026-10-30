@@ -584,11 +584,13 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
 );
 
 -- External outcomes of a session (merged PR, failed CI, ...; #138653). Recorded by the user's CLI, the agent's
--- own CLI calls, or a plugin; ``recorder`` is provenance stamped by core, not by the caller.
+-- own CLI calls, or a plugin; ``recorder`` is provenance stamped by core, not by the caller. ``domain`` is the
+-- signal's prefix before the first dot; default reads keep the latest row per (session, source, domain, ref).
 CREATE TABLE IF NOT EXISTS session_outcomes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     signal TEXT NOT NULL,
+    domain TEXT NOT NULL,
     verdict TEXT NOT NULL CHECK (verdict IN ('good', 'bad', 'neutral')),
     source TEXT NOT NULL,
     recorder TEXT NOT NULL,
@@ -782,6 +784,7 @@ CREATE INDEX IF NOT EXISTS idx_session_turn_leases_expires ON session_turn_lease
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_session_outcomes_observed ON session_outcomes(observed_at);
+CREATE INDEX IF NOT EXISTS idx_session_outcomes_session ON session_outcomes(session_id);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
 """

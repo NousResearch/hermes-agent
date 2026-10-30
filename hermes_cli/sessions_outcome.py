@@ -1,8 +1,9 @@
 """``hermes sessions outcome add|list|remove``: what happened to a session's work after it ended (#138653).
 
 ``list --json`` is the stable read contract for consumers outside the process (memory consolidation and
-dreaming plugins, dashboards): ``{"version": 1, "outcomes": [...]}``, newest observed first, each object
-carrying ``OUTCOME_COLUMNS``. Fields may be added within version 1; none are renamed or removed.
+dreaming plugins, dashboards): ``{"version": 1, "outcomes": [...]}``, newest observed first, effective rows
+only unless ``--all``; each object carries ``OUTCOME_COLUMNS`` plus ``effective`` and ``superseded_by``.
+Fields may be added within version 1; none are renamed or removed.
 Exit codes: 0 ok, 2 invalid input, 3 unknown session or outcome.
 """
 from __future__ import annotations
@@ -11,7 +12,7 @@ import json
 import os
 import sys
 
-from hermes_state_outcomes import OUTCOME_SIGNALS, OUTCOME_VERDICTS
+from hermes_state_outcomes import DEFAULT_VERDICTS, OUTCOME_VERDICTS
 
 _BAD_INPUT, _NOT_FOUND = 2, 3
 
@@ -27,9 +28,11 @@ def add_outcome_parser(sessions_subparsers) -> None:
 
     add = actions.add_parser("add", help="Record one outcome (re-recording the same signal/source/ref updates it)")
     add.add_argument("session", help="Session ID, unique prefix, or title")
-    add.add_argument("--signal", required=True, choices=list(OUTCOME_SIGNALS), help="What happened")
+    add.add_argument("--signal", required=True, help="What happened: a label such as pr.merged, ci.failed or "
+        "review.comment_applied (lowercase a-z 0-9 _ . -, at most 64)")
     add.add_argument("--verdict", choices=OUTCOME_VERDICTS, default=None,
-        help="good, bad or neutral; defaults to the signal's, required for custom")
+        help="good, bad or neutral; required unless the signal has a default "
+             f"({', '.join(s for s in DEFAULT_VERDICTS if '.' in s)} and their unprefixed forms)")
     add.add_argument("--source", required=True, help="Who observed it: a lowercase label such as github or ci")
     add.add_argument("--ref", "--url", dest="ref", default="", help="PR/commit/ticket URL or id (max 512 chars)")
     add.add_argument("--note", default="", help="One-line note (max 500 chars)")
@@ -37,10 +40,14 @@ def add_outcome_parser(sessions_subparsers) -> None:
         "(default: now)")
     add_json_flag(add, "Print the recorded outcome as JSON")
 
-    lst = actions.add_parser("list", help="List outcomes, newest observed first")
+    lst = actions.add_parser("list", help="List effective outcomes (a later signal on the same ref replaces an "
+                             "earlier one), newest observed first")
     lst.add_argument("session", nargs="?", default=None, help="Only this session's lineage (ID, prefix, or title)")
-    lst.add_argument("--signal", choices=list(OUTCOME_SIGNALS), default=None, help="Only this signal")
+    lst.add_argument("--signal", default=None, help="Only this signal")
+    lst.add_argument("--source", default=None, help="Only this source")
     lst.add_argument("--verdict", choices=OUTCOME_VERDICTS, default=None, help="Only this verdict")
+    lst.add_argument("--all", dest="all_rows", action="store_true",
+        help="Include superseded rows (the full journal; see effective / superseded_by)")
     lst.add_argument("--since", default=None, help="Observed at/after: a duration ago ('7d') or an ISO time")
     lst.add_argument("--limit", type=int, default=200, help="Maximum rows (default: 200)")
     add_json_flag(lst, 'Emit {"version": 1, "outcomes": [...]} (the stable contract in the sessions guide)')
@@ -89,7 +96,7 @@ def _list(db, args) -> int:
     try:
         since = parse_point_in_time(args.since, "--since") if args.since else None
         rows = db.list_session_outcomes(session_id, since=since, signal=args.signal, verdict=args.verdict,
-                                        limit=args.limit)
+                                        source=args.source, all_rows=args.all_rows, limit=args.limit)
     except ValueError as exc:
         return _fail(str(exc))
     if args.json:
@@ -97,11 +104,12 @@ def _list(db, args) -> int:
     elif not rows:
         print("No outcomes recorded. Add one with: hermes sessions outcome add <session> --signal merged --source github")
     else:
-        print(f"{'ID':>5}  {'Observed':<17} {'Signal':<16} {'Verdict':<8} {'Source':<12} {'Recorder':<10} "
-              f"{'Session':<28} Ref\n" + "─" * 110)
+        print(f"{'ID':>5}  {'Observed':<17} {'Signal':<22} {'Verdict':<8} {'Source':<12} {'Recorder':<10} "
+              f"{'Session':<28} Ref\n" + "─" * 116)
         for r in rows:
-            print(f"{r['id']:>5}  {format_epoch(r['observed_at']):<17} {r['signal']:<16} {r['verdict']:<8} "
-                  f"{r['source'][:12]:<12} {r['recorder'][:10]:<10} {r['session_id'][:28]:<28} {r['ref']}")
+            mark = "" if r["effective"] else f"  (superseded by {r['superseded_by']})"
+            print(f"{r['id']:>5}  {format_epoch(r['observed_at']):<17} {r['signal'][:22]:<22} {r['verdict']:<8} "
+                  f"{r['source'][:12]:<12} {r['recorder'][:10]:<10} {r['session_id'][:28]:<28} {r['ref']}{mark}")
     return 0
 
 

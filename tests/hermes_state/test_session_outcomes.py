@@ -1,7 +1,7 @@
 """External session outcomes (#138653): the ``session_outcomes`` store contract.
 
-Real ``SessionDB`` on a temp file: record/list/upsert/remove, field validation, lineage-matched reads
-(compression yes, delegate one hop, /reset and /branch never), lifetime tied to the session row on every
+Real ``SessionDB`` on a temp file: record/list/upsert/remove, field validation, supersession, lineage-matched
+reads (compression yes, delegate one hop, /reset and /branch never), lifetime tied to the session row on every
 delete path, and a store that predates the table.
 """
 
@@ -35,26 +35,30 @@ def _signals(db, sid=None):
 def test_record_returns_the_row_and_lists_newest_observed_first(db):
     first = _rec(db, "s1", ref="https://github.com/o/r/pull/7", observed_at=1_800_000_000.0)
     _rec(db, "s1", "ci_failed", observed_at=1_800_000_100.0)
-    _rec(db, "s2", "custom", verdict="neutral", note="shipped behind a flag", recorder="plugin:ci-watch",
-         observed_at=1_800_000_050.0)
+    _rec(db, "s2", "review.comment_applied", verdict="neutral", note="shipped behind a flag",
+         recorder="plugin:ci-watch", observed_at=1_800_000_050.0)
 
-    assert first == {"id": first["id"], "session_id": "s1", "signal": "merged", "verdict": "good",
+    assert first == {"id": first["id"], "session_id": "s1", "signal": "merged", "domain": "pr", "verdict": "good",
                      "source": "github", "recorder": "cli", "ref": "https://github.com/o/r/pull/7", "note": "",
                      "observed_at": 1_800_000_000.0, "recorded_at": first["recorded_at"]}
     assert [(o["session_id"], o["signal"]) for o in db.list_session_outcomes()] == [
-        ("s1", "ci_failed"), ("s2", "custom"), ("s1", "merged")]
+        ("s1", "ci_failed"), ("s2", "review.comment_applied"), ("s1", "merged")]
     assert _signals(db, "s1") == ["ci_failed", "merged"]
     assert [o["signal"] for o in db.list_session_outcomes(verdict="bad")] == ["ci_failed"]
-    assert [o["session_id"] for o in db.list_session_outcomes(signal="custom")] == ["s2"]
-    assert [o["signal"] for o in db.list_session_outcomes(since=1_800_000_050.0)] == ["ci_failed", "custom"]
+    assert [o["session_id"] for o in db.list_session_outcomes(signal="review.comment_applied")] == ["s2"]
+    assert [o["session_id"] for o in db.list_session_outcomes(source="github", verdict="neutral")] == ["s2"]
+    assert [o["signal"] for o in db.list_session_outcomes(since=1_800_000_050.0)] == [
+        "ci_failed", "review.comment_applied"]
     assert len(db.list_session_outcomes(limit=1)) == 1
 
 
 @pytest.mark.parametrize("signal,verdict", [
     ("merged", "good"), ("reverted", "bad"), ("review_accepted", "good"), ("review_rejected", "bad"),
     ("ci_passed", "good"), ("ci_failed", "bad"), ("ticket_closed", "good"), ("ticket_reopened", "bad"),
+    ("pr.merged", "good"), ("pr.reverted", "bad"), ("review.accepted", "good"), ("review.rejected", "bad"),
+    ("ci.passed", "good"), ("ci.failed", "bad"), ("task.done", "good"), ("task.reopened", "bad"),
 ])
-def test_each_fixed_signal_has_a_default_verdict_that_can_be_overridden(db, signal, verdict):
+def test_each_well_known_signal_has_a_default_verdict_that_can_be_overridden(db, signal, verdict):
     assert _rec(db, "s1", signal)["verdict"] == verdict
     assert _rec(db, "s1", signal, verdict="neutral")["verdict"] == "neutral"
 
@@ -81,8 +85,11 @@ def test_remove_by_id_optionally_limited_to_one_recorder(db):
 
 @pytest.mark.parametrize("sid,kwargs,message", [
     ("nope", {}, "Unknown session"),
-    ("s1", {"signal": "shipped"}, "Unknown outcome signal"),
-    ("s1", {"signal": "custom"}, "no default"),
+    ("s1", {"signal": "review.comment_applied"}, "no default verdict"),
+    ("s1", {"signal": "custom"}, r"is invalid: .*\^\[a-z0-9\]"),
+    ("s1", {"signal": "custom", "verdict": "good"}, "is invalid"),
+    ("s1", {"signal": "PR.Merged", "verdict": "good"}, "is invalid"),
+    ("s1", {"signal": "", "verdict": "good"}, "is invalid"),
     ("s1", {"verdict": "great"}, "verdict"),
     ("s1", {"source": "GitHub"}, "plain label"),
     ("s1", {"source": "self:cli"}, "plain label"),
@@ -99,6 +106,54 @@ def test_invalid_outcomes_are_rejected_and_nothing_is_written(db, sid, kwargs, m
     with pytest.raises(ValueError, match=message):
         _rec(db, sid, **kwargs)
     assert db.list_session_outcomes() == []
+
+
+PR = "https://github.com/o/r/pull/7"
+
+
+def _effective(db, sid="s1", **kw):
+    return [(o["signal"], o["recorder"]) for o in db.list_session_outcomes(sid, **kw)]
+
+
+def test_a_later_signal_on_the_same_ref_supersedes_without_deleting_history(db):
+    merged = _rec(db, "s1", ref=PR, observed_at=1_700_000_000.0)
+    revert = _rec(db, "s1", "pr.reverted", ref=PR, observed_at=1_700_000_100.0)  # legacy and dotted share "pr"
+    again = _rec(db, "s1", ref=PR, observed_at=1_700_000_000.0)  # the poller re-reports the merge idempotently
+
+    assert again["id"] == merged["id"]
+    assert _effective(db) == [("pr.reverted", "cli")]
+    assert db.list_session_outcomes(signal="merged") == []  # filters apply after supersession
+    journal = db.list_session_outcomes("s1", all_rows=True)
+    assert [(o["id"], o["effective"], o["superseded_by"]) for o in journal] == [
+        (revert["id"], True, None), (merged["id"], False, revert["id"])]
+
+
+def test_the_newest_observation_wins_and_a_tie_goes_to_the_higher_id(db):
+    _rec(db, "s1", "pr.reverted", ref=PR, observed_at=1_700_000_100.0)
+    _rec(db, "s1", ref=PR, observed_at=1_700_000_000.0)  # recorded later, observed earlier
+    assert _effective(db) == [("pr.reverted", "cli")]
+    _rec(db, "s1", "pr.merged", ref=PR, observed_at=1_700_000_100.0)
+    assert _effective(db) == [("pr.merged", "cli")]
+
+
+@pytest.mark.parametrize("other", [
+    {"ref": ""}, {"source": "gitlab"}, {"signal": "ci.failed"}, {"session": "s2"}])
+def test_supersession_needs_the_same_session_source_domain_and_a_non_empty_ref(db, other):
+    _rec(db, "s1", ref=other.get("ref", PR), observed_at=1_700_000_000.0)
+    _rec(db, other.get("session", "s1"), other.get("signal", "reverted"), source=other.get("source", "github"),
+         ref=other.get("ref", PR), observed_at=1_700_000_100.0)
+    assert len(db.list_session_outcomes()) == 2
+
+
+def test_agent_rows_never_cover_or_get_covered_by_someone_elses(db):
+    _rec(db, "s1", "reverted", ref=PR, observed_at=1_700_000_000.0)
+    _rec(db, "s1", ref=PR, recorder="agent", observed_at=1_700_000_100.0)
+    _rec(db, "s1", "ci.passed", ref=PR, recorder="plugin:ci", observed_at=1_700_000_050.0)
+
+    assert _effective(db) == [("merged", "agent"), ("ci.passed", "plugin:ci"), ("reverted", "cli")]
+    assert _effective(db, include_agent=False) == [("ci.passed", "plugin:ci"), ("reverted", "cli")]
+    _rec(db, "s1", "pr.merged", ref=PR, recorder="plugin:gh", observed_at=1_700_000_200.0)  # cli and plugins share
+    assert _effective(db, include_agent=False) == [("pr.merged", "plugin:gh"), ("ci.passed", "plugin:ci")]
 
 
 def test_list_rejects_a_non_positive_limit(db):

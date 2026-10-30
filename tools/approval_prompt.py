@@ -20,7 +20,7 @@ logger = logging.getLogger("tools.approval")
 def prompt_dangerous_approval(command: str, description: str, timeout_seconds: int | None = None,
                               allow_permanent: bool = True, approval_callback=None,
                               *, allow_session: bool = True, smart_denied: bool = False,
-                              title: str | None = None) -> str:
+                              title: str | None = None, guardian_note: str | None = None) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
 
     allow_permanent=False hides [a]lways. allow_session=False hides
@@ -30,6 +30,9 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     smart_denied: owner override of a Smart DENY, offer only once/deny.
     title: header for the plain-input prompt when the question is not a dangerous command
     ("Save to memory?", "<server> is asking"); the default header stays the dangerous-command one.
+    guardian_note: one-line guardian context for smart-mode escalates — says whether the escalate
+    is a fail-closed fallback for an unavailable judge or a guardian verdict that wants a human
+    (#135802); callbacks without the keyword keep working.
     approval_callback: CLI prompt_toolkit callback ``(command, description, *,
     allow_permanent=True, allow_session=True, smart_denied=False) -> str``; legacy
     signatures keep working while both keywords hold their defaults.
@@ -50,7 +53,8 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     # See #79719.
     with human_input_request("approval", prompt=command) as human, human_wait_window():
         human.outcome = choice = _ask_human(command, description, timeout_seconds, allow_permanent,
-                                            approval_callback, allow_session, smart_denied, title=title)
+                                            approval_callback, allow_session, smart_denied, title=title,
+                                            guardian_note=guardian_note)
         return choice
 
 
@@ -108,7 +112,8 @@ def callback_accepts(callback, keyword: str) -> bool:
 
 
 def _ask_human(command: str, description: str, timeout_seconds: int, allow_permanent: bool,
-               approval_callback, allow_session: bool, smart_denied: bool, title: str | None = None) -> str:
+               approval_callback, allow_session: bool, smart_denied: bool, title: str | None = None,
+               guardian_note: str | None = None) -> str:
     # Redact before any user-visible rendering; the original `command` still executes after approval. Same redactor as
     # memory/log sanitization so tokens mask consistently across surfaces.
     from agent.redact import redact_sensitive_text
@@ -123,7 +128,9 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
             callback_kwargs = {"allow_permanent": allow_permanent,
                                **({"allow_session": False} if not allow_session else {}),
                                **({"smart_denied": True} if smart_denied else {}),
-                               **({"title": title} if title and callback_accepts(approval_callback, "title") else {})}
+                               **({"title": title} if title and callback_accepts(approval_callback, "title") else {}),
+                               **({"guardian_note": guardian_note} if guardian_note
+                                  and callback_accepts(approval_callback, "guardian_note") else {})}
             return approval_callback(display_command, display_description, **callback_kwargs)
         except Exception as e:
             logger.error("Approval callback failed: %s", e, exc_info=True)
@@ -157,7 +164,9 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
         prompt_key, menu_key = f"approval.prompt_{shape}", f"approval.choose_{shape}"
         header = title or t('approval.dangerous_header', description=display_description)
         print(f"\n  {header}"
-              f"\n      {display_command}\n\n{t(menu_key)}\n")
+              f"\n      {display_command}"
+              + (f"\n      {guardian_note}" if guardian_note else "")
+              + f"\n\n{t(menu_key)}\n")
         sys.stdout.flush()
         choice = _read_choice(t(prompt_key), timeout_seconds)
         if choice is None:

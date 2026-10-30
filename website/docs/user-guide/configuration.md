@@ -120,7 +120,15 @@ database:
   # Optional WAL sizing pragmas (integers). Unset = SQLite defaults.
   # wal_autocheckpoint: 1000     # pages between automatic checkpoints
   # journal_size_limit: 67108864 # cap the WAL/journal size in bytes
+  # Optional per-connection performance pragmas (integers). Unset = SQLite defaults.
+  # cache_size: -64000           # negative = KiB of page cache, positive = pages
+  # mmap_size: 268435456         # bytes of memory-mapped I/O; 0 disables mmap
+  # temp_store: 2                # 0 default, 1 file, 2 memory
 ```
+
+Each of these can also be set with `hermes config set`, for example
+`hermes config set database.synchronous FULL`; the performance pragmas are
+`database.cache_size`, `database.mmap_size` and `database.temp_store`.
 
 Hermes also warns (once per process per database) when an existing
 database's on-disk journal mode is silently flipped to WAL on open — for

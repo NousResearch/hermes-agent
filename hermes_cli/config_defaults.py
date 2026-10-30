@@ -32,9 +32,9 @@ DEFAULT_CONFIG = {
     # weak-fsync/shared filesystems where WAL is not crash-safe (macOS virtiofs, NFS, SMB).
     "database": {
         "journal_mode": "wal",
-        # WAL sizing pragmas (ints). None = SQLite defaults (autocheckpoint 1000 pages, no limit).
-        "wal_autocheckpoint": None,
-        "journal_size_limit": None,
+        # apply_database_pragmas inputs (hermes_state_wal.py); None = SQLite's default, the PRAGMA is not issued.
+        "wal_autocheckpoint": None, "journal_size_limit": None,  # ints; SQLite: 1000 pages, no WAL size limit
+        "cache_size": None, "mmap_size": None, "temp_store": None, "synchronous": None,  # synchronous: OFF..EXTRA
     },
     # Soft fd limit for long-running server processes; clamped to OS hard limit. 0/false/null = off.
     "runtime": {"nofile_soft_limit": 4096},
@@ -1957,6 +1957,7 @@ DEFAULT_CONFIG = {
         # (sys.executable): max isolation, project deps/relative paths won't work. Env scrubbing
         # (*_API_KEY, *_TOKEN, *_SECRET, ...) and the tool whitelist apply in both modes.
         "mode": "project",
+        "timeout": 300, "max_tool_calls": 50,  # per call; code_execution_tool's DEFAULT_TIMEOUT / DEFAULT_MAX_TOOL_CALLS
         # Session kernels are always on locally (`kernel_mode` is ignored) and remotely
         # (tools/code_kernel_remote.py; a backend that cannot spawn a kernel fails open to
         # per-call). One kernel per (session owner, mode, interpreter, cwd, tool-set) keeps state
@@ -1965,8 +1966,7 @@ DEFAULT_CONFIG = {
         # timed-out/interrupted cell kills the kernel; env is frozen at spawn (reset=true after
         # changing passthrough). Tool RPC authority (approval, session, allow-list, call budget) is
         # rebound per cell — that runtime boundary is the cross-cell enforcement.
-        "kernel_idle_timeout": 1800,
-        "max_session_kernels": 4,
+        "kernel_idle_timeout": 1800, "max_session_kernels": 4,
     },
     # Tool Search replaces deferred tools in the model-facing array with the
     # tool_search / tool_describe / tool_call bridges and surfaces them on demand.

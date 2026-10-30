@@ -633,3 +633,51 @@ class TestAuxInheritsCustomProviderExtraBody:
         # A custom endpoint no entry describes gets nothing.
         stray = _build_call_kwargs("custom", "some-model", msgs, base_url="https://stray.example/v1")
         assert "user" not in (stray.get("extra_body") or {})
+
+class TestAutoVisionCustomKeyCmd:
+    """An auto-vision request must not replace a named custom provider's key_cmd bearer."""
+
+    def test_custom_runtime_preserves_callable_credentials(self):
+        from agent.auxiliary_client import _resolve_custom_runtime
+
+        def token_source():
+            return "fresh-bearer"
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={
+            "base_url": "http://127.0.0.1:4000/v1",
+            "api_key": token_source,
+            "api_mode": "chat_completions",
+        }):
+            base_url, api_key, api_mode = _resolve_custom_runtime()
+
+        assert base_url == "http://127.0.0.1:4000/v1"
+        assert api_key is token_source
+        assert api_mode == "chat_completions"
+
+    def test_named_custom_auto_vision_uses_key_cmd_with_no_live_endpoint(self, tmp_path):
+        import sys
+        from openai._models import FinalRequestOptions
+
+        _write_config(tmp_path, {
+            "model": {"provider": "custom:litellm", "default": "vision-test-model",
+                      "base_url": "http://127.0.0.1:4000/v1"},
+            "providers": {"litellm": {
+                "name": "LiteLLM",
+                "base_url": "http://127.0.0.1:4000/v1",
+                "api_mode": "chat_completions",
+                "key_cmd": f'"{sys.executable}" -c "print(\'fresh-bearer\')"',
+            }},
+        })
+        from agent.auxiliary_client import resolve_vision_provider_client
+
+        with patch("agent.auxiliary_client._main_model_supports_vision", return_value=True), patch(
+            "agent.auxiliary_client._resolve_provider_vision_default", return_value=None
+        ):
+            provider, client, model = resolve_vision_provider_client(main_runtime={
+                "provider": "custom:litellm", "model": "vision-test-model",
+            })
+
+        assert provider == "custom:litellm"
+        assert model == "vision-test-model"
+        client._refresh_api_key()
+        headers = client._build_headers(FinalRequestOptions(method="post", url="/chat/completions"))
+        assert headers["authorization"] == "Bearer fresh-bearer"

@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: satohub
+description: >-
+  Sato Hub — the scored, daily-updated index of what onchain AI agents are
+  built from (frameworks, MCP servers, wallets, x402 payment rails, ERC-8004
+  identity, trading venues, skills), plus Preflight checks and Agent Passports.
+source: https://satohub.ai/mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize succeeds anonymously). Read-only index tools plus unsigned
+# route/swap quotes; nothing here holds a key or signs a transaction.
+
+transport:
+  type: http
+  url: https://satohub.ai/api/mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - satohub
+    - sato hub
+    - onchain agent
+    - crypto agent
+    - x402
+    - erc-8004
+  hosts:
+    - satohub.ai
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts. Every record carries a sato_url; cite it when you
+  surface a listing. A Sato Score measures how open, active and verifiable
+  a project is — it is not a safety, quality or returns grade.

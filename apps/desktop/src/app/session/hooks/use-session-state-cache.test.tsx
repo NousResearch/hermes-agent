@@ -1371,6 +1371,24 @@ describe('useSessionStateCache — parked tiles release their warm transcript (#
     expect($sessionStates.get()[runtime]?.messages).toEqual([])
   })
 
+  it('unbinds a bound parked tile on eviction so unpark re-resumes instead of painting empty', () => {
+    let cache!: Cache
+    $sessionTiles.set([{ runtimeId: runtime, storedSessionId: stored }])
+    render(<Harness activeSessionId={null} onReady={value => (cache = value)} selectedStoredSessionId={null} />)
+
+    act(() => {
+      cache.updateSessionState(runtime, state => ({ ...state, messages: transcriptForCache('parked') }), stored)
+    })
+    fillToCap(cache, 24)
+
+    act(() => setZoneParkedTiles('parked-zone', [stored]))
+
+    expect($sessionStates.get()[runtime]?.messages).toEqual([])
+    // SessionTilePane's resume effect is gated on `!runtimeId`: a kept binding
+    // over a released transcript is the bound-empty tile that never re-hydrates.
+    expect($sessionTiles.get().find(tile => tile.storedSessionId === stored)?.runtimeId).toBeUndefined()
+  })
+
   it('keeps a parked tile whose turn is still running', () => {
     let cache!: Cache
     render(<Harness activeSessionId={null} onReady={value => (cache = value)} selectedStoredSessionId={null} />)

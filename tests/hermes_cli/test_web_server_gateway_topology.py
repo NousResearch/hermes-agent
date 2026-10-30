@@ -94,6 +94,30 @@ class TestCollectProfileGatewayTopology:
         assert topo["gateways"] == []
         assert topo["profile_platforms"] == {}
 
+    def test_secondary_profiles_standalone_reason_never_surfaces_host_wide(self, tmp_path, monkeypatch):
+        # A standalone secondary (its own gateway unit) records a multiplex_standalone_reason in
+        # its own runtime; that is a normal per-profile state, not the host-level guard refusal
+        # the dashboard banner reports.
+        homes = [("default", tmp_path / "d"), ("ops", tmp_path / "o")]
+        _patch_topology(monkeypatch, homes, running={"default"}, runtimes={
+            "default": {"served_profiles": ["default"]},
+            "ops": {"multiplex_standalone_reason": "this profile is standalone (gateway.standalone: true)"},
+        })
+        monkeypatch.setattr(_web_server_gateway, "_has_own_gateway", lambda home: True)
+        topo = _collect_profile_gateway_topology()
+        assert topo["gateway_mode"] == "multiple"
+        assert topo["multiplex_standalone_reason"] is None
+
+    def test_default_gateways_guard_refusal_is_still_reported(self, tmp_path, monkeypatch):
+        reason = "profile 'coder' pins its own credentials; multiplexing it would share them"
+        homes = [("default", tmp_path / "d"), ("ops", tmp_path / "o")]
+        _patch_topology(monkeypatch, homes, running={"default"}, runtimes={
+            "default": {"multiplex_standalone_reason": reason},
+            "ops": {"multiplex_standalone_reason": "this profile is standalone (gateway.standalone: true)"},
+        })
+        monkeypatch.setattr(_web_server_gateway, "_has_own_gateway", lambda home: True)
+        assert _collect_profile_gateway_topology()["multiplex_standalone_reason"] == reason
+
     def test_collects_per_profile_platform_maps(self, tmp_path, monkeypatch):
         # Independent per-profile gateways (gateway_mode == "multiple") each
         # write their own gateway_state.json; the collector surfaces every

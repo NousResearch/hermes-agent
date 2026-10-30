@@ -194,7 +194,9 @@ def _collect_profile_gateway_topology() -> dict[str, Any]:
         served = [str(p) for p in ((runtime or {}).get("served_profiles") or [])]
         if name == "default" and len(served) > 1:
             multiplex = True
-        if (runtime or {}).get("multiplex_standalone_reason"):
+        # Host-level field: only the default gateway's guard refusal counts. A secondary profile
+        # being standalone is a normal per-profile state and must not surface host-wide.
+        if name == "default" and (runtime or {}).get("multiplex_standalone_reason"):
             standalone_reason = str(runtime["multiplex_standalone_reason"])
         plats = (runtime or {}).get("platforms")
         owned: dict = {}

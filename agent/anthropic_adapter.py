@@ -18,8 +18,9 @@ from utils import normalize_proxy_env_vars
 
 from agent.anthropic_credentials import _is_oauth_token, anthropic_route_is_oauth, is_native_anthropic_host
 from agent.anthropic_endpoints import (
-    _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
-    _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
+    _base_url_needs_context_1m_beta, _cleartext_endpoint_ok, _core_owns_anthropic_auth,
+    _is_azure_anthropic_endpoint,
+    _is_kimi_coding_endpoint, _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
     _is_third_party_anthropic_endpoint, _model_name_is_kimi_family, _normalize_base_url_text,
     _requires_bearer_auth,
 )
@@ -450,10 +451,24 @@ def _new_sdk_client(sdk, kwargs: dict[str, Any], headers: dict[str, str], route:
     # Per-provider ``custom_providers[].extra_headers`` last: the most specific config level wins
     # over the SDK User-Agent and the attribution/beta sets above, on every builder path (init,
     # /model switch, rebuild, auxiliary) — the OpenAI-wire clients already do this (#24293, #9721).
-    merged.update(_custom_provider_extra_headers(route or kwargs.get("base_url")))
+    # The override is case-insensitive, so a user ``editor-version`` replaces a profile ``Editor-Version``
+    # instead of reaching httpx as a second header line. A user ``authorization`` / ``x-api-key`` is renamed to
+    # the SDK's own casing first, so it replaces the SDK's credential line (or core's ``Omit()`` guard for it)
+    # instead of riding next to it; any other ``Omit()`` guard is never removed.
+    for name, value in _custom_provider_extra_headers(route or kwargs.get("base_url")).items():
+        if isinstance(name, str):
+            name = _SDK_CREDENTIAL_HEADER_CASE.get(name.lower(), name)
+            for existing in [k for k, v in merged.items()
+                             if isinstance(k, str) and isinstance(v, str) and k.lower() == name.lower()]:
+                del merged[existing]
+        merged[name] = value
     if merged:
         kwargs["default_headers"] = merged
     return sdk.Anthropic(**kwargs)
+
+
+# The SDK's own spelling of its credential headers (``Anthropic.auth_headers``).
+_SDK_CREDENTIAL_HEADER_CASE = {"authorization": "Authorization", "x-api-key": "X-Api-Key"}
 
 
 def _custom_provider_extra_headers(base_url) -> dict[str, str]:
@@ -487,6 +502,67 @@ def _auth_style(api_key, base_url, normalized_base_url) -> str:
     return "api_key"
 
 
+_PROFILE_AUTH_STYLES = frozenset({"bearer", "api_key"})
+# Headers a profile's client_headers may never set on an Anthropic client: core's credential and beta
+# headers, and the transport / framing / identity headers httpx and the SDK own.
+_PROFILE_RESERVED_HEADERS = frozenset({
+    "anthropic-beta", "anthropic-version", "authorization", "x-api-key", "proxy-authorization", "cookie",
+    "host", "content-length", "transfer-encoding", "connection", "te", "trailer", "upgrade", "keep-alive",
+    "proxy-connection", "expect",
+})
+# RFC 9110 field-name token characters.
+_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+# Header values: printable ASCII and tab only (no control characters, no text httpx would reject and echo),
+# with no leading or trailing whitespace (h11 refuses those and repeats the value in its error).
+_HEADER_VALUE_RE = re.compile(r"(?:[\x21-\x7e](?:[\t\x20-\x7e]*[\x21-\x7e])?)?")
+
+
+def _profile_header_ok(name: Any, value: Any) -> bool:
+    """A profile header survives only as a ``str`` token name outside the reserved set with a ``str`` value
+    of printable ASCII or tab, not starting or ending in whitespace (no header splitting, no control
+    characters, no ``str()`` of a non-string)."""
+    return (
+        isinstance(name, str) and isinstance(value, str) and bool(_HEADER_NAME_RE.fullmatch(name))
+        and name.lower() not in _PROFILE_RESERVED_HEADERS and _HEADER_VALUE_RE.fullmatch(value) is not None
+    )
+
+
+def _route_profile_client_overrides(base_url, api_key, *, core_style: str = "") -> tuple[str | None, dict[str, str]]:
+    """``(auth style, client headers)`` from the provider profile serving *base_url*'s host
+    (``agent.provider_route_hooks``; the lookup is host-keyed, so a proxy host no profile claims gets
+    core's generic behavior). The style is honored only when a profile answers ``anthropic_auth_style``;
+    headers come from ``client_headers`` only in that case, so profiles written for the OpenAI wire never
+    leak headers onto other Anthropic routes. ``(None, {})`` (the generic behavior, and ``client_headers``
+    is never asked, so no credential reaches the profile) when core owns the host's auth
+    (``_core_owns_anthropic_auth``: native, OAuth, Kimi, MiniMax, Azure, Nous, ...), when *core_style* is
+    ``oauth`` / ``kimi``, when the URL is cleartext ``http`` to a host that is not strictly local
+    (``_cleartext_endpoint_ok``), when the hostname is not
+    plain ASCII (a fullwidth-dot ``api.anthropic<U+FF0E>com`` reads as foreign here, but httpx's IDNA step
+    sends it to ``api.anthropic.com``), and on any failure. Headers failing ``_profile_header_ok`` are dropped."""
+    if not base_url or core_style in ("oauth", "kimi") or _core_owns_anthropic_auth(base_url):
+        return None, {}
+    try:
+        from urllib.parse import urlparse
+
+        from utils import base_url_hostname
+
+        host = base_url_hostname(str(base_url))
+        if not host or not host.isascii():
+            return None, {}
+        if ((urlparse(str(base_url)).scheme or "").lower() != "https"
+                and not _cleartext_endpoint_ok(str(base_url))):
+            return None, {}
+        from agent.provider_route_hooks import route_answer
+        style = route_answer("anthropic_auth_style", base_url=str(base_url))
+        if style not in _PROFILE_AUTH_STYLES:
+            return None, {}
+        headers = route_answer("client_headers", base_url=str(base_url), api_key=str(api_key or ""))
+        return style, {k: v for k, v in (headers or {}).items() if _profile_header_ok(k, v)}
+    except Exception as exc:  # health: allow BLE001 -- plugin hook boundary: any failure keeps core's generic auth; the hooks got a live credential, so log the type only
+        logger.debug("provider-profile overrides skipped for Anthropic client (%s)", type(exc).__name__)
+        return None, {}
+
+
 def build_anthropic_client(api_key, base_url: str | None = None, timeout: float | None = None, *, drop_context_1m_beta: bool = False):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys. ``api_key`` is a static
     ``str`` or a ``Callable[[], str]`` Entra ID bearer provider (routed through
@@ -505,6 +581,12 @@ def build_anthropic_client(api_key, base_url: str | None = None, timeout: float 
         kwargs["base_url"] = normalized_base_url.rstrip("/")
     common_betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
     style = _auth_style(api_key, base_url, normalized_base_url)
+    # The provider profile serving this host may override the auth style (e.g. a gateway whose
+    # /v1/messages wants Authorization: Bearer, not x-api-key) and add client headers, except on hosts
+    # whose auth core owns (see _route_profile_client_overrides).
+    profile_style, profile_headers = _route_profile_client_overrides(base_url, api_key, core_style=style)
+    if profile_style:
+        style = profile_style
     kwargs["auth_token" if style in ("bearer", "oauth") else "api_key"] = api_key
     headers = _beta_header(common_betas + _OAUTH_ONLY_BETAS if style == "oauth" else common_betas)
     if style == "kimi":
@@ -517,6 +599,13 @@ def build_anthropic_client(api_key, base_url: str | None = None, timeout: float 
         # get these from profile.default_headers, but this route never sees the profile.
         for k, v in _attribution_headers().items():
             headers.setdefault(k, v)
+    # Profile client headers (already filtered by _profile_header_ok) win over core defaults, replacing any
+    # core header of the same name in another case; core keeps the anthropic-beta set and the single SDK
+    # credential header, and custom_providers extra_headers still apply last.
+    for name, value in profile_headers.items():
+        for existing in [k for k in headers if isinstance(k, str) and k.lower() == name.lower()]:
+            del headers[existing]
+        headers[name] = value
     return _new_sdk_client(sdk, kwargs, headers, route=base_url)
 
 

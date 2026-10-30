@@ -488,12 +488,17 @@ def _collect_skill_candidates(name, local_category_name, all_dirs):
     for search_dir in all_dirs:
         for direct in filter(None, (name, local_category_name)):  # "p:x" with no plugin p → "p/x"
             _record_direct(search_dir / direct, search_dir)
-        # Recursive by directory name plus frontmatter `name:` — skills_list()
-        # exposes the frontmatter name, so skill_view(name) must accept it too.
-        for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
-            if (found_skill_md.parent.name == name
-                    or _safe_frontmatter(found_skill_md).get("name") == name):
-                _record(found_skill_md.parent, found_skill_md)
+        # Recursive by directory name plus frontmatter `name:` — skills_list() exposes the
+        # frontmatter name, so skill_view(name) must accept it too. The cached catalog rows
+        # carry every copy's path and name: matching them replaces a full-tree walk plus a
+        # frontmatter parse of every SKILL.md on each lookup (~250ms warm at 850 skills).
+        # skip_disabled/include_hidden: locating must see the same universe the old scan saw.
+        for row in _skill_catalog(skip_disabled=True, include_hidden=True):
+            row_path = row["path"]
+            if str(row["root"]) != str(search_dir):
+                continue
+            if row_path.parent.name == name or row.get("_cmd_name") == name or row["name"] == name:
+                _record(row_path.parent, row_path)
         # Legacy flat <name>.md anywhere under the dir. Markdown owned by an ancestor
         # directory skill loads through file_path and must not shadow a real skill.
         for found_md in search_dir.rglob(f"{name}.md"):

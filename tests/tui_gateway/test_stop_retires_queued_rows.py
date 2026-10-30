@@ -116,3 +116,24 @@ def test_discarded_prompt_does_not_reach_the_model_after_compactions(monkeypatch
     finally:
         server._sessions.pop(sid, None)
         db.close()
+
+
+def test_stop_retires_last_and_outside_history_lock(monkeypatch, tmp_path):
+    """A busy state.db must not hold up the interrupt or the approval deny: the retire runs after both."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key, session, _held = _busy_session(monkeypatch, db)
+    calls, retire = [], server._retire_discarded_queued_rows
+    monkeypatch.setattr(server, "_clear_pending", lambda _sid: calls.append("clear_pending"))
+
+    def spy(sess, envelopes):
+        calls.append(("retire", sess["history_lock"].locked(), sess.get("running")))
+        retire(sess, envelopes)
+    monkeypatch.setattr(server, "_retire_discarded_queued_rows", spy)
+    try:
+        _queue(sid, session, "QUEUED-A")
+        server._interrupt_session_turn(sid, session)
+        assert calls == ["clear_pending", ("retire", False, False)]
+        assert "QUEUED-A" not in _active(db, key)
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()

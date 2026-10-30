@@ -821,9 +821,6 @@ def _interrupt_session_turn(
                 if session.get("running"):
                     session["running"] = False
                     _clear_inflight_turn(session)
-    # After the interrupt and outside history_lock: a busy state.db must not delay Stop. The envelopes are already
-    # off the queue, so nothing can drain them meanwhile.
-    _retire_discarded_queued_rows(session, discarded)
     # Sibling of the #102895 finalize-path fix above: an explicit /stop (or the WS-orphan reaper's
     # interrupt-at-grace) must also reach a background memory/skill review, not just the foreground
     # turn. The review fork is invisible to `should_interrupt`/`run_thread_alive` above (both gated
@@ -846,6 +843,9 @@ def _interrupt_session_turn(
         _announce_cancelled_gateway_approvals(session, reason, session_id=sid)
         from tools.approval import resolve_gateway_approval
         resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+    # Last and outside history_lock, so a busy state.db cannot hold up the interrupt or the approval deny. The
+    # envelopes are already off the queue, so no drain can claim them meanwhile (#146968).
+    _retire_discarded_queued_rows(session, discarded)
     return use_compute_host
 
 

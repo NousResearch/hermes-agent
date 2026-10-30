@@ -151,9 +151,9 @@ def _transcribe_openai(
         from openai import APIStatusError
 
         def _create_transcription(path: str):
-            create_kwargs: dict[str, Any] = {
-                "model": model_name, "response_format": "text" if model_name == "whisper-1" else "json",
-            }
+            # json for every model: only it carries the usage (whisper-1's audio seconds) a metering
+            # proxy in front of the endpoint bills by, and every OpenAI-compatible server answers it.
+            create_kwargs: dict[str, Any] = {"model": model_name, "response_format": "json"}
             if language:
                 # gpt-transcribe takes a ``languages`` list and rejects the legacy field.
                 if model_name == "gpt-transcribe":

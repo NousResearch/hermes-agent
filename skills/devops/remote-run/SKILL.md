@@ -1,14 +1,15 @@
 ---
 name: remote-run
 description: "Execute commands on remote hosts via SSH with Paramiko."
-version: 1.2.0
-author: Magnus Hedemark + Jasper
+version: 1.3.0
+author: Magnus Hedemark (@magnus919), Hermes Agent
 license: MIT
 platforms: [macos, linux]
 metadata:
   hermes:
+    category: devops
     tags: [SSH, Remote, Paramiko, Deployment, Sysadmin]
-    related_skills: [cli-builder, host-summary]
+    related_skills: []
     requires_toolsets: [ssh]
 ---
 
@@ -55,10 +56,9 @@ for interactive exploration on a single host.
 
 ## Prerequisites
 
-- **paramiko** — install the Hermes SSH extra:
-  ```bash
-  pip install "hermes-agent[ssh]"
-  ```
+- **paramiko** — declared by the plugin's `python_dependencies`. Use `terminal`
+  to run `hermes plugins enable remote-run`; Hermes prepares dependencies through PM
+  after the normal dependency consent step. Do not install packages into Hermes with pip.
 - **SSH access** — to the target host (key-based auth recommended)
 - **ssh toolset** — the tool is in the `ssh` toolset, not the default `terminal` toolset.
   Enable it with `hermes tools` or `--toolsets ssh`.
@@ -106,7 +106,7 @@ command succeeds only when the remote user has NOPASSWD sudo.
 ```python
 # Using a specific key file
 remote_run(host="db-01", command="pg_isready",
-           key_file="/home/user/.ssh/example_key")
+           key_file="/srv/app/.ssh/example_key")
 
 # Without key_file — uses SSH agent and default keys
 remote_run(host="db-01", command="pg_isready", user="admin")

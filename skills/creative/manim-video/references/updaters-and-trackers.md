@@ -88,7 +88,7 @@ Creates a new mobject from scratch each frame. More expensive than `add_updater`
 
 ```python
 # Brace that follows a resizing square
-brace = always_redraw(Brace, square, UP)
+brace = always_redraw(lambda: Brace(square, UP))
 
 # Area under curve that updates as function changes
 area = always_redraw(lambda: axes.get_area(

@@ -60,13 +60,12 @@ def _checked_name(name: Optional[str]) -> str:
     return candidate
 
 
-def _https_source(identifier: str, catalog_name: Optional[str]) -> tuple[str, Optional[str], Optional[str]]:
+def _resolve_source(identifier: str, catalog_name: Optional[str]) -> tuple[str, Optional[str], Optional[str]]:
     """``(git_url, subdir, catalog_sha)`` through the installer's own resolution and kill list, with the
     catalog's reviewed pin when *catalog_name* is given (its repository replaces *identifier*).
 
-    A browser tab asks for this clone, so it is https only: ``file://`` would copy any folder of the
-    host, ``ssh``/``git@`` would spend the host's keys, and ``http://`` can be rewritten in transit.
-    Native Desktop's install keeps those for a user at their own machine."""
+    Every scheme the CLI installs from is accepted (``git@``/``ssh://`` for private plugins, ``file://``,
+    ``http://``): the Webapp opens only for the signed-in owner of this host, whose keys and disk these are."""
     pc = _pc()
     revision = None
     if catalog_name:
@@ -79,8 +78,6 @@ def _https_source(identifier: str, catalog_name: Optional[str]) -> tuple[str, Op
         git_url, subdir = pc._resolve_git_url(identifier)
     except ValueError as exc:
         raise pc.PluginOperationError(str(exc)) from exc
-    if not git_url.startswith("https://"):
-        raise pc.PluginOperationError("A desktop plugin is installed from the Webapp over https:// only.")
     from hermes_cli.plugins_cmd_catalog import raise_if_removed
     raise_if_removed(identifier, git_url, *((catalog_name,) if catalog_name else ()))
     return git_url, subdir, revision
@@ -104,7 +101,7 @@ def install_desktop_plugin(identifier: str, *, ref: Optional[str], catalog_name:
     try:
         if not _COMMIT.fullmatch(sha):
             raise pc.PluginOperationError("Installing a desktop plugin needs the commit the install dialog reviewed.")
-        git_url, subdir, catalog_sha = _https_source(identifier, catalog_name)
+        git_url, subdir, catalog_sha = _resolve_source(identifier, catalog_name)
         root = desktop_plugins_root()
         with tempfile.TemporaryDirectory(prefix="hermes-plugin-install-") as tmp:
             clone = Path(tmp) / "plugin"

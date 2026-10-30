@@ -264,50 +264,11 @@ async function desktopHalfEntry(
   return null
 }
 
-/** The whole published folder; the loader reads at most a 16 MB `plugin.js` from it. */
-const TREE_MAX_BYTES = 64 * 1024 * 1024
-
 /** A root-layout half publishes the package root, never its clone's `.git` or
  *  the agent half's `__pycache__` (the gateway's `ROOT_LAYOUT_SKIP`). */
 const ROOT_LAYOUT_SKIP = new Set(['.git', '__pycache__'])
 
 const rootLayoutFilter = (src: string) => !ROOT_LAYOUT_SKIP.has(path.basename(src))
-
-/** Why `source` cannot be published as a desktop plugin, else `null`: it must
- *  be a plain tree (a link could publish any folder of this machine) under
- *  `TREE_MAX_BYTES` (the gateway's `check_desktop_tree`). `source` itself may
- *  be a linked dev checkout; nothing inside it may be a link. */
-async function plainTreeRefusal(source: string): Promise<null | string> {
-  let total = 0
-
-  const walk = async (dir: string): Promise<null | string> => {
-    for (const entry of await fs.promises.readdir(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name)
-
-      if (entry.isDirectory() && ROOT_LAYOUT_SKIP.has(entry.name)) {
-        continue
-      }
-
-      if (entry.isSymbolicLink()) {
-        return `The desktop plugin contains a link (${path.relative(source, full)}); links are not installed.`
-      }
-
-      if (entry.isDirectory()) {
-        const refused = await walk(full)
-
-        if (refused) {
-          return refused
-        }
-      } else if ((total += (await fs.promises.lstat(full)).size) > TREE_MAX_BYTES) {
-        return `The desktop plugin is larger than ${TREE_MAX_BYTES / (1024 * 1024)} MB.`
-      }
-    }
-
-    return null
-  }
-
-  return walk(source)
-}
 
 /** Copy one unified package's desktop half into the app root as
  *  `<appRoot>/<packageName>/`, stamping the marker: its `desktop/` folder, or
@@ -391,20 +352,12 @@ export async function materializeDesktopHalf(
     }
   }
 
-  if (rootLayout) {
-    // The whole package root is published, agent payload included: hold it to
-    // the installer's plain-tree rule.
-    const refused = await plainTreeRefusal(sourceDir)
-
-    if (refused) {
-      console.warn(`[desktop-plugins] not copying the desktop half of ${packageName}: ${refused}`)
-
-      return null
-    }
-  }
-
+  // A package folder symlinked in by hand is the user's own development checkout and its desktop/
+  // folder is copied as it stands. An installed package is checked like a fresh clone (a link inside
+  // it publishes host files), and so is a root-layout half, linked or not: it publishes the whole
+  // package root, agent payload included.
   await publishDesktopTree(
-    sourceDir,
+    { dir: sourceDir, plainWithin: linked && !rootLayout ? null : packageDir },
     target,
     staged => writeDesktopHalfMarker(staged, marker),
     rootLayout ? rootLayoutFilter : undefined
@@ -413,19 +366,83 @@ export async function materializeDesktopHalf(
   return target
 }
 
-/** Copy `sourceDir` to `target` through a staging sibling (`<parent>/.<name>.staging-*`)
- *  and rename the finished tree into place. `finalize` runs on the staged tree
- *  before publication, so a marker is never missing from a published folder.
+/** The whole published folder (the Webapp's host-side install applies the same cap); the loader reads
+ *  at most a 16 MB `plugin.js` from it. */
+const DESKTOP_TREE_MAX_BYTES = 64 * 1024 * 1024
+
+/** What `publishDesktopTree` copies. `plainWithin` names the clone or installed package the tree must
+ *  stay inside as plain files and folders; `null` only for a development checkout the user linked in. */
+export interface DesktopTreeSource {
+  dir: string
+  plainWithin: null | string
+}
+
+/** Refuse a desktop tree that reaches outside its package or is too big to copy. A symlink anywhere on
+ *  the way to it, or inside it, would publish whatever it points at on this machine (or a dangling link
+ *  into a deleted clone) as part of the plugin, so the tree must be plain files and folders. */
+async function assertPlainDesktopTree(
+  root: string,
+  sourceDir: string,
+  filter: (src: string) => boolean = () => true
+): Promise<void> {
+  const realRoot = await fs.promises.realpath(root)
+
+  if ((await fs.promises.realpath(sourceDir)) !== path.join(realRoot, path.relative(root, sourceDir))) {
+    throw new Error('The desktop plugin folder is a symbolic link; it is not installed.')
+  }
+
+  let total = 0
+  const pending = [sourceDir]
+
+  while (pending.length > 0) {
+    const dir = pending.pop()!
+
+    for (const entry of await fs.promises.readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name)
+
+      // What the copy leaves out (a root-layout half's `.git`, `__pycache__`) is not published.
+      if (!filter(full)) {
+        continue
+      }
+
+      if (entry.isSymbolicLink()) {
+        throw new Error(
+          `The desktop plugin contains a symbolic link (${path.relative(sourceDir, full)}); it is not installed.`
+        )
+      }
+
+      if (entry.isDirectory()) {
+        pending.push(full)
+      } else {
+        total += (await fs.promises.lstat(full)).size
+
+        if (total > DESKTOP_TREE_MAX_BYTES) {
+          throw new Error(`The desktop plugin is larger than ${DESKTOP_TREE_MAX_BYTES / (1024 * 1024)} MB.`)
+        }
+      }
+    }
+  }
+}
+
+/** Copy `source.dir` to `target` through a staging sibling (`<parent>/.<name>.staging-*`)
+ *  and rename the finished tree into place. Every route that publishes a desktop tree (git install,
+ *  package reconcile) comes through here, so the plain-tree check runs once for all of them, before
+ *  anything is staged. `finalize` runs on the staged tree before publication, so a marker is never
+ *  missing from a published folder.
  *  Directory replacement is not atomic on every platform Electron supports, but
  *  the complete copy exists before the old one is removed, so a failure leaves
  *  either the old folder or none — never a partial, marker-less one that a
  *  later pass would mistake for a manual install (#112450). */
 export async function publishDesktopTree(
-  sourceDir: string,
+  source: DesktopTreeSource,
   target: string,
   finalize?: (staged: string) => Promise<void>,
   filter?: (src: string) => boolean
 ): Promise<void> {
+  if (source.plainWithin !== null) {
+    await assertPlainDesktopTree(source.plainWithin, source.dir, filter)
+  }
+
   const parent = path.dirname(target)
   const name = path.basename(target)
 
@@ -436,7 +453,7 @@ export async function publishDesktopTree(
   try {
     // From the resolved folder: `cp` keeps a source that is itself a link (a dev checkout linked into
     // `plugins/`) as a link, so the published "copy" was the checkout and the marker landed in it.
-    await fs.promises.cp(await fs.promises.realpath(sourceDir), staged, { filter, force: true, recursive: true })
+    await fs.promises.cp(await fs.promises.realpath(source.dir), staged, { filter, force: true, recursive: true })
     await finalize?.(staged)
     // rename() refuses to replace a non-empty directory, so the old copy goes first.
     await fs.promises.rm(target, { force: true, recursive: true })
@@ -483,12 +500,31 @@ async function sourceGone(name: string, entry: string): Promise<boolean> {
  *  desktop half. First home wins for a name that appears in several profiles
  *  (the default home is first). Also drops root copies whose source package
  *  is gone — an uninstalled agent package must not leave a ghost pane. */
-export function reconcileUnifiedDesktopHalves(hermesHome: string, appRoot: string): Promise<string[]> {
+export async function reconcileUnifiedDesktopHalves(hermesHome: string, appRoot: string): Promise<string[]> {
+  return (await reconcileDesktopHalvesReport(hermesHome, appRoot)).published
+}
+
+/** A package whose desktop half this pass did not publish, and why (the plain-tree check, an unreadable folder). */
+export interface RefusedDesktopHalf {
+  name: string
+  reason: string
+}
+
+/** `published`: the root copies written or pruned. `refused`: packages whose desktop half was not published. */
+export interface DesktopReconcileReport {
+  published: string[]
+  refused: RefusedDesktopHalf[]
+}
+
+/** `reconcileUnifiedDesktopHalves`, also naming each package it refused, so an install that just put one
+ *  down can report its desktop half as failed instead of done. */
+export function reconcileDesktopHalvesReport(hermesHome: string, appRoot: string): Promise<DesktopReconcileReport> {
   return withDesktopPluginsRoot(appRoot, () => reconcilePass(hermesHome, appRoot))
 }
 
-async function reconcilePass(hermesHome: string, appRoot: string): Promise<string[]> {
+async function reconcilePass(hermesHome: string, appRoot: string): Promise<DesktopReconcileReport> {
   const touched: string[] = []
+  const refused: RefusedDesktopHalf[] = []
   const seen = new Set<string>()
 
   for (const home of await localHomes(hermesHome)) {
@@ -507,7 +543,9 @@ async function reconcilePass(hermesHome: string, appRoot: string): Promise<strin
         // One package the app cannot read (Windows ACL EPERM on lstat/copy, a
         // mode-000 folder) must not reject the whole reconcile — the root would
         // never resolve and EVERY desktop plugin would silently stop loading.
-        console.warn(`[desktop-plugins] skipping unreadable package ${name}: ${String(error)}`)
+        // A desktop half refused by the plain-tree check lands here too.
+        console.warn(`[desktop-plugins] skipping package ${name}: ${String(error)}`)
+        refused.push({ name, reason: error instanceof Error ? error.message : String(error) })
 
         continue
       }
@@ -534,5 +572,6 @@ async function reconcilePass(hermesHome: string, appRoot: string): Promise<strin
     }
   }
 
-  return touched
+  // A same-named package in a later home that did publish owns the root copy; its refused twin is moot.
+  return { published: touched, refused: refused.filter(entry => !seen.has(entry.name)) }
 }

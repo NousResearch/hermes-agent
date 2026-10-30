@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,10 +29,11 @@ def launch_context(tmp_path, monkeypatch):
         scope.exit()
 
 
-def launch(context, *, env_type="local", env=None, pty=False, notify=False, watch=None, opted=True, persist=False):
+def launch(context, *, env_type="local", env=None, pty=False, notify=False, watch=None, opted=True, persist=False,
+           command="printf 'transport done'"):
     _registry, scope, identity, cwd = context
     return json.loads(spawn_background_process(
-        command="printf 'transport done'", env=env, env_type=env_type,
+        command=command, env=env, env_type=env_type,
         effective_task_id=scope.task_id, task_id=scope.task_id, session_key="",
         workdir=str(cwd), cwd=str(cwd), effective_pty=pty,
         notify_on_complete=notify, watch_patterns=watch, approval_note=None,
@@ -191,3 +193,37 @@ def test_checkpoint_recovery_preserves_cron_identity_and_does_not_enable_notific
             child.wait(timeout=15)
         registry._running.clear()
         recovered._running.clear()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("pty", [False, True])
+def test_login_path_restore_preserves_durable_continuation(launch_context, monkeypatch, pty):
+    registry, _scope, identity, cwd = launch_context
+    parent_bin = cwd / "parent-bin"
+    parent_bin.mkdir()
+    command = parent_bin / "build-receipt"
+    command.write_text("#!/bin/sh\nprintf 'PATH_RECEIPT'\nexit 7\n", encoding="utf-8")
+    command.chmod(0o755)
+    # A real shell with deterministic startup PATH; the command exists only in
+    # the parent's path, which production restores after the login shell's path.
+    shell = cwd / "login-shell"
+    shell.write_text('#!/bin/sh\nPATH="/usr/bin:/bin"\n'
+                     'exec /bin/bash --noprofile --norc -c "$2"\n', encoding="utf-8")
+    shell.chmod(0o755)
+    monkeypatch.setattr(processes, "_find_shell", lambda: str(shell))
+    data = launch(launch_context, pty=pty, command="build-receipt",
+                  env=SimpleNamespace(env={"PATH": f"{parent_bin}:/usr/bin:/bin"}))
+    assert not data.get("error"), data
+    assert data["continue_on_complete"]
+    session = registry.get(data["session_id"])
+    assert session._completion_event.wait(20)
+    assert session.cron_continuation == identity
+    if pty:
+        assert session._pty is not None
+    executions.finish_execution(identity["execution_id"], success=True)
+    pending = continuations.pending_jobs()
+    assert len(pending) == 1
+    receipt = pending[0]["_process_continuation"]
+    assert receipt["execution_id"] == identity["execution_id"]
+    result = json.loads(receipt["result"])
+    assert result["exit_code"] == 7 and result["output"].strip() == "PATH_RECEIPT", result

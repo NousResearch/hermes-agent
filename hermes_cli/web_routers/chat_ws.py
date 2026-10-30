@@ -676,7 +676,12 @@ async def gateway_ws(ws: WebSocket) -> None:
         identity = {**identity, 'profile_scope': 'host'}
     ticket_home = getattr(ws, "_hermes_ticket_profile_home", None)
     served = authority
-    if ticket_home and authority is not None and identity is not None:
+    if ticket_home and authority is None:
+        # Only the gateway mints a profile-bound ticket, and it unbinds its authority while the
+        # listener stops: serving the launch profile now would answer the tab for the wrong one.
+        await ws.close(code=1013)
+        return
+    if ticket_home and identity is not None:
         # A Webapp tab's ticket names its profile (``webapp.issue_gateway_ticket``): bind the socket
         # to that home's authority, as a native ticket does (``gateway/run_api.py``), so a request
         # that names no profile is answered for the tab's profile, not the launch profile.

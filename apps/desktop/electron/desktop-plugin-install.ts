@@ -534,15 +534,13 @@ export async function installDesktopPluginFromGit(
       // Under the root's writer lock: the exists check and the publish must not
       // interleave with a reconcile pass copying the same package folder.
       return await withDesktopPluginsRoot<DesktopPluginInstallResult>(desktopPluginsRoot, async () => {
-        if ((await pathIsDirectory(targetDir)) || (await pathIsFile(targetPlugin))) {
-          if (!force) {
-            return {
-              ok: false,
-              error: `Desktop plugin '${pluginName}' already exists. Enable force reinstall to replace it.`
-            }
+        // Force replaces the folder only once the new tree has passed its checks and been staged
+        // (publishDesktopTree): a refused reinstall keeps the working copy.
+        if (!force && ((await pathIsDirectory(targetDir)) || (await pathIsFile(targetPlugin)))) {
+          return {
+            ok: false,
+            error: `Desktop plugin '${pluginName}' already exists. Enable force reinstall to replace it.`
           }
-
-          await fsp.rm(targetDir, { recursive: true, force: true })
         }
 
         // Staged copy + rename: a failed copy must not leave an empty `targetDir`
@@ -551,7 +549,7 @@ export async function installDesktopPluginFromGit(
         // part of that publication — without it the Plugins page cannot tell this
         // copy belongs to the agent row (it sits on "copying…" forever) and the
         // half loads default-enabled instead of opt-in.
-        await publishDesktopTree(sourceDir, targetDir, async staged => {
+        await publishDesktopTree({ dir: sourceDir, plainWithin: cloneRoot }, targetDir, async staged => {
           if (!packageName) {
             // A desktop-only repo is a standalone plugin. A package marker it
             // ships would name another package's agent half as its own (pairing

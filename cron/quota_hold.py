@@ -135,7 +135,9 @@ def plan_hold(
     if kind == "cron" and blocked and not extra_fire.queued(job):
         # Coalesce cron occurrences inside the closed window to the first legal instant after it.
         # A queued run-now is not an occurrence: it waits for the boundary, not the next slot.
-        parked = compute_next_run(schedule, window_end.isoformat()) or window_end.isoformat()
+        parked = compute_next_run(
+            schedule, window_end.isoformat(), timezone=job.get("timezone")
+        ) or window_end.isoformat()
     else:
         parked = window_end.isoformat()
     if recover:

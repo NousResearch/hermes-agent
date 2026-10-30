@@ -288,8 +288,10 @@ model:
 # implicit non-stream stale detector is auto-disabled for local endpoints
 # and can scale upward for very large contexts.
 #
-# Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
-# SDK paths) — those use boto3 with its own timeout configuration.
+# AWS Bedrock (providers.bedrock): the resolved value is the socket read
+# timeout of the boto3 Converse client and of the AnthropicBedrock SDK
+# client, chosen per request for the active model. Connect stays fixed
+# (botocore 60s / SDK 10s); unset keeps botocore's 60s read on Converse.
 #
 # providers:
 #   ollama-local:
@@ -581,6 +583,11 @@ terminal:
 # Security
 # =============================================================================
 # security:
+#   # Private/internal addresses (localhost, 192.168.x.x, CGNAT) for web_extract,
+#   # vision/media URL fetches and cloud/CDP browsers. The local Chromium and the
+#   # hybrid sidecar (browser.auto_local_for_private_urls) are not covered.
+#   # Cloud-metadata endpoints stay blocked even when true.
+#   allow_private_urls: false
 #   approval:
 #     transport: builtin        # Or an explicitly enabled plugin transport name
 #     transport_fallback: deny  # Set builtin to opt into fallback on transport failure
@@ -621,6 +628,12 @@ browser:
   # executable_path: ""
   # user_data_dir: ""
   # chromium_args: ["--lang=de"]
+
+  # With a cloud provider (Browserbase, Browser Use, ...), LAN/localhost URLs
+  # open in a local Chromium sidecar on this host instead. The sidecar ignores
+  # security.allow_private_urls (like the plain local Chromium, it reaches what
+  # the terminal reaches); set false to refuse private URLs instead.
+  # auto_local_for_private_urls: true
 
 # =============================================================================
 # Tool Loop Guardrails

@@ -85,16 +85,8 @@ def build_exec_approval_view(discord, base, *, unauthorized):
                     "timeout": "platform.discord.prompt.expired_footer",
                     "gone": "platform.discord.approval.no_longer_pending",
                 }.get(reason, "platform.discord.slash_confirm.resolved_cancel"))
-                if self._message:
-                    try:
-                        embed = self._first_embed(self._message)
-                        if embed:
-                            embed.color = discord.Color.greyple()
-                            embed.set_footer(text=footer)
-                        # Notices edit content independently; neither restores controls.
-                        await self._message.edit(embed=embed, view=None)
-                    except Exception:
-                        logger.debug("[Discord] Could not retire approval card", exc_info=True)
+                # The timeout notice edits only the content, so it never restores the controls.
+                await self._expire_embed(footer, keep_controls=False)
 
         async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label_key: str):
             """Resolve the approval via the gateway approval queue and update the embed."""

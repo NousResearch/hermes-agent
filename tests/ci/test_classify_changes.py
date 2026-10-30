@@ -100,6 +100,13 @@ CASES = {
         _lanes(frontend=True, e2e_upgrade=True, e2e_desktop_core=True, e2e_desktop_update=True, docker=True),
     ),
     "root JS tests → frontend": (["tests-js/product-builders.test.mjs"], _lanes(python=True, frontend=True)),
+    # The bridge's node --test suites run in the JS & TS job (js-tests.yml).
+    "whatsapp bridge → frontend": (
+        ["scripts/whatsapp-bridge/bridge_helpers.js"], _lanes(python=True, frontend=True),
+    ),
+    "whatsapp adapter → frontend": (
+        ["plugins/platforms/whatsapp/adapter.py"], _lanes(python=True, frontend=True, scan=True),
+    ),
     "docs-only → nothing heavy": (["README.md", "docs/guide.md"], _lanes()),
     "python source → python": (["run_agent.py"], _lanes(python=True, scan=True)),
     # pyproject.toml declares the pytest markers the OS lanes select on, so it

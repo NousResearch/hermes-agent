@@ -20,6 +20,7 @@ vi.mock('@/hermes', async importOriginal => ({
 
 import { $pluginDecisions, $pluginRecords, dropPlugin, patchPlugin, publishPlugin } from '@/contrib/plugins-store'
 import { queryClient } from '@/lib/query-client'
+import { $notifications } from '@/store/notifications'
 import {
   $pluginInstallRequest,
   closePluginInstallRequest,
@@ -438,5 +439,36 @@ describe('Unified package desktop half on a local backend', () => {
     expect(installDesktopPlugin).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
     expect(installButton().disabled).toBe(true)
+  })
+
+  it('reports the desktop half as failed when the reconcile refused the package it just installed', async () => {
+    // A combined package whose desktop/ folder holds a symlink: the agent half installs, the reconcile
+    // refuses to publish the desktop half, and the dialog must say so instead of "installed".
+    const reason = 'The desktop plugin contains a symbolic link (asset.txt); it is not installed.'
+    const reconcileDesktopPluginsReport = vi.fn(async () => ({ published: [], refused: [{ name: 'pkg', reason }] }))
+    $notifications.set([])
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, warnings: [] })
+    requestGateway.mockImplementation(async (method, params) =>
+      method === 'plugins.manage' && params?.action === 'install'
+        ? { ok: true, plugin_name: 'pkg', enabled: false }
+        : { plugins: [] }
+    )
+    vi.stubGlobal('hermesDesktop', {
+      installDesktopPlugin,
+      probePluginRepo,
+      reconcileDesktopPlugins,
+      reconcileDesktopPluginsReport
+    })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/pkg' }))
+    expect(await screen.findByText('This package includes')).toBeTruthy()
+    await waitFor(() => expect(installButton().disabled).toBe(false))
+    fireEvent.click(installButton())
+
+    expect(await screen.findByText(reason)).toBeTruthy()
+    const toasts = $notifications.get().map(n => n.message)
+    expect(toasts).toContain('Agent plugin pkg installed')
+    expect(toasts).not.toContain('Desktop plugin pkg installed')
+    expect(installDesktopPlugin).not.toHaveBeenCalled()
   })
 })

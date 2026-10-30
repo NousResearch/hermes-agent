@@ -8,6 +8,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import hashlib
 import logging
 import mimetypes
 import os
@@ -1215,12 +1216,29 @@ async def fs_read_data_url(
     target, st = _fs_regular_file(target, _fs_profile_home(profile))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
+    # A transcript image is read again on every remount. The browser keeps the body in its own
+    # HTTP cache and revalidates each time, so an unchanged file costs a 304 instead of its bytes
+    # over a slow link, and a rewritten one is fetched fresh.
+    validators = {"Cache-Control": "private, no-cache", "ETag": _fs_etag(target, st)}
+    if validators["ETag"] in _if_none_match(request):
+        return Response(status_code=304, headers=validators)
+
     def _render() -> JSONResponse:
         encoded = base64.b64encode(_fs_read_bytes(target)).decode("ascii")
-        return JSONResponse({"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"})
+        return JSONResponse({"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}, headers=validators)
 
     # Read, encode and render off the event loop: up to 16 MB inline stalls every other request (and /api/ws).
     return await asyncio.to_thread(_render)
+
+
+def _fs_etag(target: Path, st: os.stat_result) -> str:
+    """A validator that changes whenever the file at *target* does."""
+    identity = f"{target}\0{st.st_dev}\0{st.st_ino}\0{st.st_size}\0{st.st_mtime_ns}"
+    return '"' + hashlib.sha256(identity.encode("utf-8", "surrogateescape")).hexdigest()[:32] + '"'
+
+
+def _if_none_match(request: Request) -> set[str]:
+    return {tag.strip().removeprefix("W/") for tag in request.headers.get("if-none-match", "").split(",")}
 
 
 def _remote_download_target(backend, path: str) -> tuple[str, int]:
@@ -1238,14 +1256,10 @@ def _remote_download_target(backend, path: str) -> tuple[str, int]:
 
 def _remote_stream_target(backend, path: str) -> tuple[str, int]:
     """*path* on the SSH workspace as media the stream route may serve, and its size: download's
-    checks, then the host stream's media-type and size caps."""
-    from hermes_cli.web_server import _MANAGED_FILE_MAX_BYTES
-
+    checks, then the host stream's media-type check. No size cap: served one Range at a time."""
     target, size = _remote_download_target(backend, path)
     if PurePosixPath(target).suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
         raise HTTPException(status_code=415, detail="Unsupported media type")
-    if size > _MANAGED_FILE_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="File is too large")
     return target, size
 
 

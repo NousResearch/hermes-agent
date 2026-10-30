@@ -148,6 +148,9 @@ class Machine:
     # Git for Windows on PATH (a typical developer box). False: a clean machine, where the
     # installer must stage its own pinned Git.
     system_git: bool = False
+    # Install an older commit (``base_ref``) instead of this checkout, and update to this checkout's
+    # HEAD instead of a synthetic NEXT: a user upgrading a real prior release.
+    base_ref: str = ""
     path_prepend: list[str] = field(default_factory=list)
     head: str = ""
     next: str = ""
@@ -192,7 +195,7 @@ class Machine:
 
     # -- environment ----------------------------------------------------------
 
-    def env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
+    def env(self, extra: dict[str, str] | None = None, *, as_user: bool = False) -> dict[str, str]:
         env = {k: v for k, v in os.environ.items()
                if k in _PASSTHROUGH_ENV and not k.upper().endswith(_SECRET_SUFFIXES)}
         roaming = self.profile / "AppData" / "Roaming"
@@ -211,6 +214,11 @@ class Machine:
             # state.db lives under tmp; under a pytest ancestor the live-DB guard would refuse it.
             "HERMES_STATE_DB_GUARD_BYPASS": "1",
         })
+        if as_user:
+            # The runner's own %TEMP% belongs to the elevated session; a user's is in their profile.
+            temp = self.local / "Temp"
+            temp.mkdir(parents=True, exist_ok=True)
+            env.update({"TEMP": str(temp), "TMP": str(temp)})
         env.update(extra or {})
         return env
 
@@ -219,13 +227,13 @@ class Machine:
     def stage(self) -> None:
         """serve.git at HEAD (+ NEXT in its object store), the URL redirect, a seeded home."""
         self.root.mkdir(parents=True, exist_ok=True)
-        self.head = harness_git("-C", str(REPO_ROOT), "rev-parse", "HEAD")
+        self.head = harness_git("-C", str(REPO_ROOT), "rev-parse", f"{self.base_ref}^{{commit}}" if self.base_ref else "HEAD")
         harness_git("clone", "--bare", "--quiet", str(REPO_ROOT), str(self.serve))
         harness_git("-C", str(self.serve), "update-ref", "refs/heads/main", self.head)
         harness_git("-C", str(self.serve), "symbolic-ref", "HEAD", "refs/heads/main")
         for key in ("uploadpack.allowAnySHA1InWant", "uploadpack.allowFilter"):
             harness_git("-C", str(self.serve), "config", key, "true")
-        self.next = self._mint_next()
+        self.next = (harness_git("-C", str(REPO_ROOT), "rev-parse", "HEAD") if self.base_ref else self._mint_next())
         file_url = "file:///" + str(self.serve).replace("\\", "/")
         rewrites = "".join(f"\tinsteadOf = {url}\n" for url in CANONICAL_URLS)
         (self.root / "e2e-gitconfig").write_text(f'[url "{file_url}"]\n{rewrites}', encoding="utf-8")
@@ -320,11 +328,30 @@ class Machine:
     # -- running --------------------------------------------------------------
 
     def _run_logged(self, argv: list[str], label: str, *, timeout: float, cwd: Path | None = None,
-                    env_extra: dict[str, str] | None = None) -> Run:
-        """Run to completion with the full transcript on disk (survives a timeout)."""
+                    env_extra: dict[str, str] | None = None, as_user: bool = False) -> Run:
+        """Run to completion with the full transcript on disk (survives a timeout).
+
+        ``as_user``: under a standard-user token (``_tokens.StandardUserProcess``), as a
+        non-elevated console would; the child writes the transcript itself (no timestamps)."""
         self._seq += 1
-        log = self.logs / f"{self._seq:02d}-{label}.log"
+        log = self.logs / f"{self._seq:02d}-{label}{'-as-user' if as_user else ''}.log"
         started = time.monotonic()
+        if as_user:
+            from tests.e2e.core.windows_update._tokens import StandardUserProcess
+
+            proc = StandardUserProcess(argv, cwd=cwd or self.profile, env=self.env(env_extra, as_user=True),
+                                       log=log, creationflags=subprocess.CREATE_NO_WINDOW)
+            self._spawned.append(proc)  # type: ignore[arg-type]
+            try:
+                code = proc.wait(timeout=timeout)
+                self.timings.append((label, round(time.monotonic() - started, 1)))
+            except subprocess.TimeoutExpired:
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60,
+                               check=False)
+                raise AssertionError(
+                    f"{label} (standard user) did not finish within {timeout:.0f}s\n{self._tail(log)}\n"
+                    f"{self.evidence()}") from None
+            return Run(code, _decode(log.read_bytes()), "")
         chunks: list[bytes] = []
         proc = subprocess.Popen(argv, cwd=cwd or self.profile, env=self.env(env_extra),
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -361,31 +388,42 @@ class Machine:
             return f"<no {path.name}>"
         return f"--- {path.name} (last {n} chars) ---\n{text[-n:]}"
 
-    def install(self) -> Run:
-        """``powershell -File install.ps1 -NonInteractive`` from a directory that is no project."""
+    def install(self, *, as_user: bool = False) -> Run:
+        """``powershell -File install.ps1 -NonInteractive`` from a directory that is no project.
+
+        With ``base_ref`` set it is that commit's install.ps1, the script that user downloaded then."""
         script = self.root / "install.ps1"
-        shutil.copyfile(REPO_ROOT / "scripts" / "install.ps1", script)
+        if self.base_ref:
+            raw = subprocess.run([REAL_GIT, "-C", str(self.serve), "show", f"{self.head}:scripts/install.ps1"],
+                                 env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+                                 capture_output=True, timeout=120, check=True).stdout
+            script.write_bytes(raw)
+        else:
+            shutil.copyfile(REPO_ROOT / "scripts" / "install.ps1", script)
         cwd = self.root / "install-cwd"
         cwd.mkdir(parents=True, exist_ok=True)
         run = self._run_logged(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-NonInteractive"],
-            "install", timeout=INSTALL_TIMEOUT, cwd=cwd)
+            "install", timeout=INSTALL_TIMEOUT, cwd=cwd,
+            # serve.git carries this checkout's release tags; install main, not the latest release.
+            env_extra={"HERMES_INSTALL_CHANNEL": "main"}, as_user=as_user)
         if run.returncode == 0 and self.hermes_exe.is_file():
             # advance() lands NEXT on main and publishes no release: follow main, not the stable
             # default an official-origin checkout gets (channel resolution has its own suites).
-            pin = self.hermes("update", "--set-channel", "main", label="pin-main-channel")
+            pin = self.hermes("update", "--set-channel", "main", label="pin-main-channel", as_user=as_user)
             assert pin.returncode == 0, f"could not pin the main channel\n{self.evidence()}"
         return run
 
     def hermes(self, *args: str, label: str | None = None, timeout: float = CMD_TIMEOUT,
-               env_extra: dict[str, str] | None = None) -> Run:
+               env_extra: dict[str, str] | None = None, as_user: bool = False) -> Run:
         assert self.hermes_exe.is_file(), f"installer published no {self.hermes_exe}\n{self.evidence()}"
         name = label or "hermes-" + "-".join(a.strip("-") for a in args[:2] if a)
-        return self._run_logged([str(self.hermes_exe), *args], name, timeout=timeout, env_extra=env_extra)
+        return self._run_logged([str(self.hermes_exe), *args], name, timeout=timeout, env_extra=env_extra,
+                                as_user=as_user)
 
-    def update(self, *extra: str, label: str = "update") -> Run:
+    def update(self, *extra: str, label: str = "update", as_user: bool = False) -> Run:
         with self.gateway_phase():
-            return self.hermes("update", "--yes", *extra, label=label, timeout=UPDATE_TIMEOUT)
+            return self.hermes("update", "--yes", *extra, label=label, timeout=UPDATE_TIMEOUT, as_user=as_user)
 
     @contextlib.contextmanager
     def gateway_phase(self):
@@ -442,12 +480,21 @@ class Machine:
         except (OSError, ValueError):
             return {}
 
-    def spawn_gateway(self, env_extra: dict[str, str] | None = None) -> subprocess.Popen:
+    def spawn_gateway(self, env_extra: dict[str, str] | None = None, *, as_user: bool = False) -> subprocess.Popen:
         """``hermes gateway run`` through the published launcher, windowless and detached from
-        this console: the shape the Desktop / login item uses to host a gateway."""
+        this console: the shape the Desktop / login item uses to host a gateway.
+
+        ``as_user``: under a standard-user token, as a non-elevated login item / Desktop starts it."""
         self._seq += 1
-        log = self.logs / f"{self._seq:02d}-gateway-run.log"
+        log = self.logs / f"{self._seq:02d}-gateway-run{'-as-user' if as_user else ''}.log"
         flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        if as_user:
+            from tests.e2e.core.windows_update._tokens import StandardUserProcess
+
+            proc = StandardUserProcess([str(self.hermes_exe), "gateway", "run"], cwd=self.profile,
+                                       env=self.env(env_extra, as_user=True), log=log, creationflags=flags)
+            self._spawned.append(proc)  # type: ignore[arg-type]
+            return proc  # type: ignore[return-value]
         with log.open("wb") as fh:
             proc = subprocess.Popen([str(self.hermes_exe), "gateway", "run"], cwd=self.profile,
                                     env=self.env(env_extra), stdin=subprocess.DEVNULL, stdout=fh,
@@ -529,20 +576,50 @@ class Machine:
         except OSError:
             pass
         artifacts = os.environ.get("HERMES_E2E_ARTIFACTS")
-        if artifacts:
-            dest = Path(artifacts) / self.root.name
-            shutil.copytree(self.logs, dest / "transcripts", dirs_exist_ok=True)
-            for sub in ("logs",):
-                src = self.hermes_home / sub
-                if src.is_dir():
-                    shutil.copytree(src, dest / sub, dirs_exist_ok=True,
-                                    ignore=shutil.ignore_patterns("*.db", "*.db-*"))
-            (dest / "evidence.txt").write_text(self.evidence(), encoding="utf-8", errors="replace")
-            (dest / "timings.json").write_text(json.dumps(self.timings, indent=1), encoding="utf-8")
+        try:
+            if artifacts:
+                dest = Path(artifacts) / self.root.name
+                shutil.copytree(self.logs, dest / "transcripts", dirs_exist_ok=True)
+                for sub in ("logs",):
+                    src = self.hermes_home / sub
+                    if src.is_dir():
+                        shutil.copytree(src, dest / sub, dirs_exist_ok=True,
+                                        ignore=shutil.ignore_patterns("*.db", "*.db-*"))
+                (dest / "evidence.txt").write_text(self.evidence(), encoding="utf-8", errors="replace")
+                (dest / "timings.json").write_text(json.dumps(self.timings, indent=1), encoding="utf-8")
+        finally:
+            # Every machine is a full install (checkout, venv with every extra, PM tools, caches) on
+            # the runner's only drive; kept, they add up past its free space before the last file
+            # runs. A failed artifact copy (a full disk) must not keep the install. The transcripts
+            # stay (small, and the only record when no artifacts dir is set).
+            leftovers = [note for tree in (self.profile, self.serve) if (note := _remove_tree(tree))]
+            if leftovers:  # the job's "No machine install left behind" step names these
+                dest = Path(artifacts) / self.root.name if artifacts else self.logs
+                dest.mkdir(parents=True, exist_ok=True)
+                (dest / "teardown-leftovers.txt").write_text("\n".join(leftovers) + "\n", encoding="utf-8")
+
+
+def _remove_tree(path: Path) -> str | None:
+    """Delete ``path``; ``None`` when gone, else what stopped it.
+
+    The ``\\\\?\\`` prefix reaches past MAX_PATH (the checkout carries 159-character paths); a
+    just-killed process can hold a handle for a moment, so a failure is retried."""
+    from utils import rmtree_readonly
+
+    error: OSError | None = None
+    for _ in range(5):
+        if not path.exists():
+            return None
+        try:
+            rmtree_readonly("\\\\?\\" + str(path.resolve()))
+        except OSError as exc:
+            error = exc
+            time.sleep(2)
+    return None if not path.exists() else f"{path}: {error}"
 
 
 def new_machine(tmp_root: Path, base_url: str, *, label: str, person: str = "",
-                system_git: bool = False) -> Machine:
+                system_git: bool = False, base_ref: str = "") -> Machine:
     """A staged machine. Its work dir (serve.git, transcripts) lives under
     ``HERMES_E2E_MACHINE_ROOT`` (else ``tmp_root``); its user profile under
     ``HERMES_E2E_PROFILES_ROOT`` (CI: ``C:\\Users``), named ``[<person> ]hermes-e2e-<id>``."""
@@ -551,7 +628,7 @@ def new_machine(tmp_root: Path, base_url: str, *, label: str, person: str = "",
     profiles = os.environ.get("HERMES_E2E_PROFILES_ROOT")
     name = f"{person} hermes-e2e-{sfx}" if person else f"hermes-e2e-{sfx}"
     machine = Machine(root=base / f"{label}-{sfx}", profile_name=name, base_url=base_url,
-                      profiles_root=Path(profiles) if profiles else None, system_git=system_git)
+                      profiles_root=Path(profiles) if profiles else None, system_git=system_git, base_ref=base_ref)
     machine.stage()
     return machine
 
@@ -618,15 +695,18 @@ class Turn:
         return self.run.returncode == 0 and self.reply_id in self.run.stdout and self.reached_wire
 
 
-def one_shot_turn(machine: Machine, srv: Any, label: str) -> Turn:
+def one_shot_turn(machine: Machine, srv: Any, label: str, *, as_user: bool = False) -> Turn:
     """``hermes chat -q ... -Q`` through the published launcher against the loopback provider."""
     from tests.e2e.core.windows._helpers import last_user
     from tests.fakes.fake_llm_provider import Text
 
     prompt_id, reply_id = f"PROMPT-{uuid.uuid4().hex[:8]}", f"REPLY-{uuid.uuid4().hex[:8]}"
+    # A reply an earlier refused launch never consumed would answer THIS prompt (the script is
+    # FIFO) and fail every later cell of the shared machine with another cell's reply id.
+    srv.drop_unconsumed()
     before = len(srv.main_requests())
     srv.push(Text(f"The answer is {reply_id}."))
-    res = machine.hermes("chat", "-q", f"Say the code {prompt_id}", "-Q", label=label)
+    res = machine.hermes("chat", "-q", f"Say the code {prompt_id}", "-Q", label=label, as_user=as_user)
     wired = any(prompt_id in last_user(body) for body in srv.main_requests()[before:])
     return Turn(res, reply_id, wired)
 

@@ -1,0 +1,40 @@
+name: elevenlabs-music
+repo: https://github.com/NousResearch/hermes-official-plugins
+sha: 1e326ddd28ae261821d7714d106fe114999a0bba
+subdir: elevenlabs-music
+title: ElevenLabs Music
+description: 'ElevenLabs Music for Hermes: describe a song or paste your lyrics and Hermes writes, generates
+  and sends the track, 3 seconds to 10 minutes, vocals or instrumental. It can redo one section, extend or
+  loop a song, split it into stems (vocals, drums, bass, guitar, piano, other) and score a video. Long songs
+  finish in the background and arrive in the chat. Bundles a music skill (prompting, composition plans,
+  edit recipes) and, in Hermes Desktop, an inline music card with synced lyrics, format downloads and a
+  music library tab. Model, audio format and endpoint are plugin settings.
+  Disclosure: uses your ElevenLabs API key (ELEVENLABS_API_KEY, the same key as Hermes''s ElevenLabs voice;
+  needs a paid ElevenLabs plan, and a restricted key needs the Music permission); compose, plan, upload,
+  stems and video calls are paid generations billed to your ElevenLabs account by length (drafting a plan
+  and listing finetunes are free). Only the prompt or plan, its parameters and any file you name are sent,
+  to api.elevenlabs.io (or the data-residency endpoint you set); with store_for_editing on, ElevenLabs
+  keeps generated songs so they can be edited later. Files are written to cache/generated/audio under the
+  Hermes home and never overwritten. One Python dependency (httpx, already part of Hermes).'
+maintainer: NousResearch
+tier: official
+category: tools
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/1e326ddd28ae261821d7714d106fe114999a0bba/assets/elevenlabs-music.jpg
+docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/elevenlabs-music
+platforms: []
+capabilities:
+  provides_tools:
+    - elevenlabs_music_compose
+    - elevenlabs_music_compose_plan
+    - elevenlabs_music_draft_plan
+    - elevenlabs_music_upload
+    - elevenlabs_music_stems
+    - elevenlabs_music_from_video
+    - elevenlabs_music_finetunes
+    - elevenlabs_music_job
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - ELEVENLABS_API_KEY

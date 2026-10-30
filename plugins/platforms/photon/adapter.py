@@ -44,6 +44,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
 from gateway.platforms.helpers import MessageDeduplicator, bounded_put, cancel_task
+from gateway.platforms.send_targets import regex_stripped_parser
 from utils import atomic_json_write
 
 from .auth import load_project_credentials
@@ -560,6 +561,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = _MAX_MESSAGE_LENGTH
     SUPPORTS_MESSAGE_EDITING = False  # no edit API: streaming must not leave a stale cursor (▉)
+    serial_receive_loop = True  # the /inbound NDJSON loop awaits each line before reading the next
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("photon"))
@@ -1052,6 +1054,7 @@ class PhotonAdapter(BasePlatformAdapter):
             self._sidecar_proc = subprocess.Popen(  # noqa: ASYNC220 -- persistent sidecar; callers use the Popen pipes and poll()
                 [self._node_bin, str(_sidecar_dir() / "index.mjs")],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                # detached-spawn: ok — exits on stdin EOF (PHOTON_SIDECAR_WATCH_STDIN), so it dies with this process
                 start_new_session=(sys.platform != "win32"),
                 # Windows: run the persistent sidecar headless so it does not open
                 # (or leave) a visible console window. CREATE_NO_WINDOW only (no
@@ -1692,11 +1695,18 @@ async def _standalone_send(
 
 # -- Plugin entry point ----------------------------------------------------------
 
+_SEND_DM_GUID_RE = re.compile(r"^any;-;\+\d{6,}$")  # mirrors PhotonAdapter._DM_CHAT_GUID_RE
+
+
 def register(ctx) -> None:
     """Called by the Hermes plugin loader at startup."""
     from . import cli as _cli  # local: avoid argparse work at module load
     ctx.register_platform(
+        # DM GUIDs are adapter-native ids (mirrors the react handler).
+        target_ref_syntax_fn=regex_stripped_parser(_SEND_DM_GUID_RE),
         name="photon", label="iMessage via Photon", adapter_factory=lambda cfg: PhotonAdapter(cfg),
+        dashboard_description="Use Hermes through iMessage via Photon's managed Spectrum platform.",
+        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/photon",
         check_fn=check_requirements, validate_config=validate_config, is_connected=is_connected,
         required_env=["PHOTON_PROJECT_ID", "PHOTON_PROJECT_SECRET"],
         install_hint=(
@@ -1722,7 +1732,10 @@ def register(ctx) -> None:
             "sends as a rich preview card. You can send files natively: write MEDIA:/absolute/path/to/file "
             "in your response (images and video appear inline, audio as voice notes, other files as "
             "attachments). Recipient identifiers are E.164 phone numbers; never expose them in responses "
-            "unless the user asked."))
+            "unless the user asked."),
+        # Permanent-message iMessage inboxes (no edit).
+        display_tier="low",
+    )
     ctx.register_cli_command(
         name="photon", help="Set up and manage the Photon iMessage integration",
         setup_fn=_cli.register_cli, handler_fn=_cli.dispatch)

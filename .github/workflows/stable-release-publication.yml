@@ -32,7 +32,10 @@ jobs:
       (github.event.workflow_run.conclusion != 'success' &&
        github.event.workflow_run.event == 'workflow_dispatch' &&
        github.event.workflow_run.head_repository.full_name == github.repository)
-    runs-on: ubuntu-24.04
+    # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
+    # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
+    # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release-signing
     steps:
@@ -40,6 +43,7 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
       - uses: ./.github/actions/setup-pm
         with:
@@ -53,7 +57,8 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Reconcile stable drafts and protected heads
-        run: python -m scripts.releases.sequencer
+        # The macOS feed merge parses YAML (hermes_yaml -> ruamel); the node toolchain has none.
+        run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.releases.sequencer
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_VERSION: ${{ inputs.version || '' }}

@@ -18,9 +18,10 @@ import time
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from urllib.parse import urlsplit
+from hermes_dir_acl import make_user_dir, unusable_dir_remedy
+from gateway.platforms.base_log_safety import safe_url_for_log
 
-from utils import normalize_proxy_url
+from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
@@ -163,10 +164,10 @@ def _reply_anchor_for_event(event) -> str | None:
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
     raw_message = getattr(event, "raw_message", None)
-    if (platform == "slack" and isinstance(raw_message, dict)
-            and raw_message.get("_hermes_no_thread_response")):
-        # Slack reaction handoff = new top-level message; a message_id anchor would make
-        # _resolve_thread_ts() reply in a nonexistent thread.
+    if getattr(event, "internal", False) or (platform == "slack" and isinstance(raw_message, dict)
+                                             and raw_message.get("_hermes_no_thread_response")):
+        # A synthetic wake's message_id is its producer identity, not a platform id (Telegram int()s
+        # it; #52694). A Slack reaction handoff is a new top-level message, not a thread reply.
         return None
     if platform == "telegram" and thread_id:
         # Forum topics route by topic metadata (no reply); DM-topic lanes reply to the triggering
@@ -243,6 +244,12 @@ def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:
         else:
             hi = mid - 1
     return lo
+
+
+def fit_prefix(text: str, budget: int, measure, suffix: str = "...") -> str:
+    """``text``, or its longest prefix within ``budget`` ``measure`` units plus ``suffix`` (outside it)."""
+    n = _custom_unit_to_cp(text, budget, measure)
+    return text if n == len(text) else text[:n] + suffix
 
 
 def _prefix_within_utf16_limit(s: str, limit: int) -> str:
@@ -417,7 +424,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 
 
 import dataclasses
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 
@@ -428,56 +435,18 @@ from gateway.platforms.helpers import fence_state_after
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
+from gateway.platforms.base_streaming_tts import (
+    AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
-from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
+from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home
 from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
 
 if TYPE_CHECKING:
     from agent.display import ToolPreview
-
-@dataclass
-# --------------------------------------------------------------------------- Streaming TTS format
-# descriptor and handle (#60671) ---------------------------------------------------------------------------
-class AudioFormat:
-    """Declared PCM format for a streaming-TTS session: every ``write_streaming_tts``
-    chunk must be raw little-endian PCM at this rate / channels / sample width."""
-    sample_rate: int = 24000
-    channels: int = 1
-    sample_width: int = 2  # bytes per sample (int16 = 2)
-
-
-@dataclass
-class StreamingTTSHandle:
-    """Opaque handle returned by ``begin_streaming_tts``; adapters may extend it with
-    platform state. The base fields are consumer bookkeeping / cancellation."""
-    chat_id: str = ""
-    audio_format: AudioFormat = field(default_factory=AudioFormat)
-    # True once the first PCM chunk is written: a later failure then ends cleanly instead of
-    # falling back to whole-file TTS (don't replay already-audible output).
-    audible: bool = False
-    aborted: bool = False  # set by abort_streaming_tts; late chunks are dropped
-
-
-def streaming_tts_turn_key(session_key: str | None, turn_marker: Any = None, *, event: Any = None) -> str | None:
-    """Per-turn streaming-TTS suppression key — turn-scoped (not chat-scoped) so
-    overlapping turns in one chat can't suppress each other's fallback paths.
-    ``turn_marker`` is normally the run generation, else the event's message/update id."""
-    if not session_key:
-        return None
-    if turn_marker is None and event is not None:
-        turn_marker = getattr(event, "message_id", None) or getattr(event, "platform_update_id", None)
-    return None if turn_marker is None else f"{session_key}:{turn_marker}"
-
-
-def streaming_tts_should_skip_whole_file(completed_turns: set[str], session_key: str | None,
-                                         turn_marker: Any = None, *, event: Any = None) -> bool:
-    """Pure, turn-scoped auto-TTS suppression decision (testable without the adapter stack)."""
-    turn_key = streaming_tts_turn_key(session_key, turn_marker, event=event)
-    return bool(turn_key and turn_key in completed_turns)
 
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
@@ -500,28 +469,7 @@ def unauthorized_action_notice(platform: Any) -> str:
     return t("gateway.unauthorized.action_notice", platform=str(name or "<platform>"))
 
 
-def safe_url_for_log(url: str, max_len: int = 80) -> str:
-    """Return a URL string safe for logs (no query/fragment/userinfo)."""
-    raw = str(url) if max_len > 0 and url is not None else ""
-    if not raw:
-        return ""
-    try:
-        parsed = urlsplit(raw)
-    except Exception:
-        return raw[:max_len]
-    safe = raw
-    if parsed.scheme and parsed.netloc:
-        # Strip potential embedded credentials (user:pass@host).
-        path = parsed.path or ""
-        basename = path.rsplit("/", 1)[-1]
-        tail = "" if path in ("", "/") else f"/.../{basename}" if basename else "/..."
-        safe = f"{parsed.scheme}://{parsed.netloc.rsplit('@', 1)[-1]}{tail}"
-    if len(safe) <= max_len:
-        return safe
-    return "." * max_len if max_len <= 3 else f"{safe[:max_len - 3]}..."
-
-
-async def _ssrf_redirect_guard(response):
+async def ssrf_redirect_guard(response):
     """Re-validate each redirect target (a public URL 302-ing to http://169.254.169.254/ would
     bypass the pre-flight is_safe_url()). Async because httpx awaits response event hooks."""
     from tools.url_safety import is_safe_url, redirect_target_from_response
@@ -601,7 +549,7 @@ def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_na
         return d
 
     def cleanup(max_age_hours: int = MEDIA_CACHE_MAX_AGE_HOURS) -> int:
-        return _cleanup_cache_dir(get_dir(), max_age_hours)
+        return unlink_files_older_than(get_dir(), "*", max_age_hours * 3600)
     get_dir.__name__ = get_dir.__qualname__ = f"get_{kind}_cache_dir"
     cleanup.__name__ = cleanup.__qualname__ = f"cleanup_{kind}_cache"
     return get_dir, cleanup
@@ -643,7 +591,7 @@ def _secure_media_cache_dir(cache_dir: Path) -> None:
         if managed:
             cache_dir.mkdir(parents=True, exist_ok=True)
             return
-        cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        make_user_dir(cache_dir, parents=True, exist_ok=True, mode=0o700)
         try:
             from hermes_cli.config import _secure_dir
 
@@ -700,7 +648,7 @@ async def _cache_media_from_url(url: str, ext: str, retries: int, *, media_type:
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
     headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": accept}
     async with create_ssrf_safe_async_client(
-        timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]},
+        timeout=30.0, follow_redirects=True, event_hooks={"response": [ssrf_redirect_guard]},
     ) as client:
         for attempt in range(retries + 1):
             try:
@@ -725,18 +673,6 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     return await _cache_media_from_url(
         url, ext, retries, media_type="image", accept="image/*,*/*;q=0.8",
         cache_fn=cache_image_from_bytes, log_label="Media")
-
-
-def _cleanup_cache_dir(cache_dir: Path, max_age_hours: int) -> int:
-    """Delete files in *cache_dir* older than *max_age_hours*; return the count removed."""
-    cutoff = time.time() - (max_age_hours * 3600)
-    removed = 0
-    for f in cache_dir.iterdir():
-        if f.is_file() and f.stat().st_mtime < cutoff:
-            with contextlib.suppress(OSError):
-                f.unlink()
-                removed += 1
-    return removed
 
 
 # Audio cache utilities (same pattern as images; feeds the STT tool).
@@ -842,12 +778,12 @@ def _sqlite_files(name: str) -> tuple[str, ...]:
 # Credential stores at the HERMES_HOME root, denied per-file so skills/, logs/ and agent-written
 # files stay deliverable (cache subdirs are allowlisted BEFORE this). A superset of the
 # agent/file_safety.py read+write denies so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
-# recency window); pairing/ and mcp-tokens/ (live OAuth tokens) are denied as whole trees.
+# recency window); pairing/, mcp-tokens/ (live OAuth tokens) and webapp/ (the Webapp's credential) are whole trees.
 _ROOT_CREDENTIAL_PATHS = (
     ".env", "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
     "google_token.json", "google_oauth_pending.json", os.path.join("auth", "google_oauth.json"),
     "webhook_subscriptions.json", os.path.join("cache", "bws_cache.json"),
-    os.path.join("cache", "bws_cache.enc.json"), "pairing", "mcp-tokens",
+    os.path.join("cache", "bws_cache.enc.json"), "pairing", "mcp-tokens", "webapp",
     # Whole conversation history (every secret ever pasted into a chat) and the copied browser
     # cookie/login store; sessions/ is the legacy transcript dir. SQLite sidecars are listed
     # too: WAL mode touches state.db-wal on every write, so recency trust alone would leak them.
@@ -855,16 +791,13 @@ _ROOT_CREDENTIAL_PATHS = (
 
 
 def _profile_cache_roots() -> list[Path]:
-    """Per-profile cache roots ``<root>/profiles/<name>/cache/{images,...}`` (the static safe
-    roots cover only the active HERMES_HOME). Enumerated at check time so profiles created after
-    startup count and are allowlisted BEFORE the ``/root`` denylist (HERMES_HOME symlinked).
-
-    ``HERMES_HOME=/opt/data``) while the model emits a profile-scoped path silently fails delivery.
-    Enumerated dynamically at check time so profiles created after startup are covered, and so the resolved
-    profile path is allowlisted *before* the ``/root`` system denylist is consulted (which otherwise wins
-    when HERMES_HOME is symlinked under a denied prefix and $HOME is not that prefix). See issue #31733.
+    """Per-profile cache roots ``<root>/profiles/<name>/cache/{images,...}`` and every home's connector
+    downloads dir (the static safe roots cover only the launch HERMES_HOME). Enumerated at check
+    time so profiles created after startup count, and allowlisted BEFORE the ``/root`` denylist,
+    which otherwise wins when HERMES_HOME is symlinked under a denied prefix (#31733).
     """
-    return [p / "cache" / subdir for p in _profile_dirs() for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS]
+    return [*(p / "cache" / subdir for p in _profile_dirs() for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS),
+            *(p / CONNECTOR_DOWNLOADS_SUBDIR for p in (get_hermes_home(), *_profile_dirs()))]
 
 
 def _profile_dirs() -> list[Path]:
@@ -1011,8 +944,8 @@ def _parse_docker_volume_mounts() -> list[tuple[Path, Path]]:
     mounts: list[tuple[Path, Path]] = []
     for entry in parsed if isinstance(parsed, list) else ():
         spec = entry.strip() if isinstance(entry, str) else ""
-        # Prefer the first ':/' so absolute container paths are unambiguous.
-        sep = spec.find(":/")
+        # First ':/' past any Windows drive colon (``C:/data:/workspace``) splits host from container.
+        sep = spec.find(":/", 2 if re.match(r"[A-Za-z]:[/\\]", spec) else 0)
         if sep <= 0:
             continue
         container_raw = spec[sep + 1:].split(":", 1)[0]  # starts with /
@@ -1020,41 +953,9 @@ def _parse_docker_volume_mounts() -> list[tuple[Path, Path]]:
         host_expanded = os.path.expanduser(spec[:sep])
         if not (host_expanded.startswith("/") or (len(host_expanded) > 1 and host_expanded[1] == ":")):
             continue
-        host_path, container_path = _resolve_path(Path(host_expanded)), Path(container_raw)
-        if host_path is not None and container_path.is_absolute():
-            mounts.append((host_path, container_path))
+        if (host_path := _resolve_path(Path(host_expanded))) is not None:  # container_raw is POSIX on any OS
+            mounts.append((host_path, Path(container_raw)))
     return mounts
-
-
-def _docker_sandbox_dir_candidates(session_key: str = "") -> list[str]:
-    """Candidate host sandbox dir names for the delivering session, best first. Mirrors
-    ``_resolve_container_task_id`` (tools/terminal_tool.py): containers are PROFILE-scoped
-    (``default``, else ``profile:<name>``); legacy ``session:<key>`` sandboxes stay as a fallback.
-    The key is passed explicitly because delivery runs after the turn's contextvars were cleared.
-
-    Takes the key explicitly because the delivery pipeline runs after ``_handle_message_with_agent`` cleared
-    the turn's session contextvars (#93950) — an ambient lookup here would silently collapse onto
-    ``default`` and miss the session's real sandbox.
-    """
-    try:
-        from tools.environments.path_utils import sanitize_task_id_for_path
-    except Exception:
-        return ["default"]
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        profile = get_active_profile_name() or "default"
-    except Exception:
-        profile = "default"
-    candidates: list[str] = []
-    # Explicit trusted-profiles opt-in: one shared container identity.
-    if shared := _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip():
-        candidates.append(sanitize_task_id_for_path(f"shared:{shared}"))
-    if profile != "default":
-        candidates.append(sanitize_task_id_for_path(f"profile:{profile}"))
-    candidates.append("default")
-    if session_key:  # bug-window legacy layout: per-session sandboxes
-        candidates.append(sanitize_task_id_for_path(f"session:{session_key}"))
-    return candidates
 
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -1069,35 +970,6 @@ def _docker_persistent_active() -> bool:
     return _docker_env_active() and _tenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() in _TRUTHY
 
 
-def _docker_persistent_sandbox_roots(session_key: str, leaf: str) -> list[Path]:
-    """Existing ``<sandbox>/docker/<candidate>/<leaf>`` host dirs in candidate order;
-    the translator tries each until the file resolves. Empty unless Docker + persistent."""
-    if not _docker_persistent_active():
-        return []
-    try:
-        from tools.environments.base import get_sandbox_dir
-        base = get_sandbox_dir() / "docker"
-        return [cand for name in _docker_sandbox_dir_candidates(session_key)
-                if (cand := (base / name / leaf).resolve(strict=False)).is_dir()]
-    except Exception:
-        return []
-
-
-def _default_docker_workspace_host_roots(session_key: str = "") -> list[Path]:
-    """Existing host candidates for ``/workspace``: the explicit cwd mount
-    (``TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE``) if set, else the persistent sandbox layouts."""
-    if not _docker_persistent_active():
-        return []
-    if _tenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in _TRUTHY:
-        cwd = _tenv("TERMINAL_CWD") or os.getcwd()
-        try:
-            host = Path(os.path.expanduser(cwd)).resolve(strict=False)
-        except (OSError, RuntimeError, ValueError):
-            return []
-        return [host] if host.is_dir() else []
-    return _docker_persistent_sandbox_roots(session_key, "workspace")
-
-
 def _cache_dir_container_mounts() -> list[tuple[Path, Path]]:
     """(host, container) pairs for the auto-mounted Hermes cache dirs (``/root/.hermes/...`` in
     MEDIA tags); longer prefixes than the ``/root`` home mount, so longest-prefix match wins."""
@@ -1110,13 +982,14 @@ def _cache_dir_container_mounts() -> list[tuple[Path, Path]]:
         return []
 
 
-def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str) -> None:
+def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str, quiet: bool = False) -> None:
     """Name WHY a container-absolute MEDIA path failed translation (otherwise the only signal is
-    the generic "Skipping unsafe MEDIA directive path" line). Docker-only; host rejections quiet.
+    the generic "Skipping unsafe MEDIA directive path" line). Docker-only; host rejections and ``quiet``
+    callers (fs routes, which also see ordinary host paths) stay silent.
 
     See #93950.
     """
-    if not _docker_env_active():
+    if quiet or not _docker_env_active():
         return
     logger.warning("Docker MEDIA path %s did not resolve to a host sandbox file (%s%s); "
                    "the producing container's sandbox directory may not exist yet or "
@@ -1124,29 +997,42 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
                    f", session_key={session_key}" if session_key else "")
 
 
-def _translate_docker_container_media_path(candidate: Path, session_key: str = "") -> Optional[Path]:
+def _translate_docker_container_media_path(
+    candidate: Path, session_key: str = "", workspace_key: str = "", *, quiet: bool = False, workspace_cwd: str = "",
+) -> Optional[Path]:
     """Container-absolute path -> host path via longest-prefix match over ``docker_volumes``, the
-    auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``."""
-    if not candidate.is_absolute():
+    auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``.
+
+    ``workspace_key`` is the 16-hex digest of one session's host cwd ``workspace_cwd`` (its cwd
+    mount). It selects that session's ``<base>:ws:<digest>`` sandbox and is empty for MEDIA delivery.
+    """
+    if not candidate.as_posix().startswith("/"):  # POSIX even on Windows gateways (not is_absolute)
         return None
     # In-process gateways (Desktop, `hermes serve`) may not have bridged terminal.* config into
     # TERMINAL_* env yet; the bridge is idempotent.
     with contextlib.suppress(Exception):
         from tools.terminal_tool import _ensure_terminal_env_bridged
         _ensure_terminal_env_bridged()
+    from gateway.platforms.docker_media_paths import (
+        _default_docker_workspace_host_roots, _docker_persistent_sandbox_roots,
+    )
     mounts = [*_parse_docker_volume_mounts(), *_cache_dir_container_mounts()]
     mounted = {c.as_posix() for _, c in mounts}
-    # Synthetic /workspace mounts: profile-scoped layout first, then legacy per-session.
+    # Synthetic /workspace mounts: this session's workspace sandbox, then the
+    # shared profile layout, then the legacy per-session dir.
     if "/workspace" not in mounted:
-        mounts.extend((root, Path("/workspace")) for root in _default_docker_workspace_host_roots(session_key))
+        mounts.extend(
+            (root, Path("/workspace"))
+            for root in _default_docker_workspace_host_roots(session_key, workspace_key, workspace_cwd))
     # Synthetic /root mounts catch stray home writes (/root/out.png; cache mounts are longer
     # prefixes). /root/.hermes/* that missed a cache mount is the container's credential surface —
     # translating it via the home mount would dodge the host denylist.
     if "/root" not in mounted and not candidate.as_posix().startswith("/root/.hermes"):
         mounts.extend(
-            (root, Path("/root")) for root in _docker_persistent_sandbox_roots(session_key, "home"))
+            (root, Path("/root"))
+            for root in _docker_persistent_sandbox_roots(session_key, "home", workspace_key))
     if not mounts:
-        _warn_unresolved_docker_media(candidate, session_key, "no sandbox mounts resolved")
+        _warn_unresolved_docker_media(candidate, session_key, "no sandbox mounts resolved", quiet)
         return None
     # Longest container-prefix match; equal-length prefixes are tried in insertion order.
     candidate_posix = candidate.as_posix()
@@ -1154,14 +1040,14 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
                for prefix in (container_root.as_posix().rstrip("/") or "/",)
                if candidate_posix == prefix or candidate_posix.startswith(prefix + "/")]
     if not matched:
-        _warn_unresolved_docker_media(candidate, session_key, "no mounted prefix matches")
+        _warn_unresolved_docker_media(candidate, session_key, "no mounted prefix matches", quiet)
         return None
     for host_root, container_root, _score in sorted(matched, key=lambda m: -m[2]):
         translated = _resolve_path(host_root / candidate.relative_to(container_root), strict=True)
         if translated is not None and (
                 translated == host_root or _path_is_within(translated, host_root)):
             return translated
-    _warn_unresolved_docker_media(candidate, session_key, "host file missing from sandbox")
+    _warn_unresolved_docker_media(candidate, session_key, "host file missing from sandbox", quiet)
     return None
 
 
@@ -1324,6 +1210,11 @@ _MEDIA_EXT_ALTERNATION = "|".join(sorted((e.lstrip(".") for e in MEDIA_DELIVERY_
 # ``MEDIA:D:\path\早报.pdf（782.6 KB）`` or ``MEDIA:...pdf：内容`` — without these, the lookahead fails and the
 # attachment is silently dropped (#88038).
 _MEDIA_CJK_TERMINATORS = "（）〈〉《》：，。；！？、\u201c\u201d\u2018\u2019【】"
+
+# Image tags ``extract_images`` turns into attachments (the streamed display hides the same tags).
+MD_IMAGE_TAG_PATTERN = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
+HTML_IMAGE_TAG_PATTERN = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
+_IMAGE_URL_MARKERS = ('.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery')
 
 MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''[`"'*_]{0,3}MEDIA:\s*'''
@@ -1693,6 +1584,7 @@ class ExecApprovalPrompt:
     description: str
     smart_denied: bool
     metadata: Optional[dict[str, Any]] = None
+    request_id: Optional[str] = None  # the ``tools.approval`` request this card answers (and only that one)
 
     @property
     def choices(self) -> list[str]:
@@ -1824,8 +1716,7 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
         # side. Captions merge in every absorbing case.
         if both_photo or existing.media_urls or incoming_has_media:
             if both_photo or incoming_has_media:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
+                existing.extend_media(event)
                 existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
@@ -2116,13 +2007,10 @@ class BasePlatformAdapter(ABC):
         from gateway.stream_events import ToolCallChunk
         if not isinstance(event, ToolCallChunk):
             return None
-        from agent.display import get_tool_emoji, prepare_tool_preview
+        from agent.display import get_tool_emoji, prepare_tool_preview, verbose_tool_args_text
         emoji, tool = get_tool_emoji(event.tool_name, default='⚙️'), event.tool_name
         if mode == "verbose" and event.args:
-            import json
-            args_str = json.dumps(event.args, ensure_ascii=False, default=str)
-            if preview_max_len > 0 and len(args_str) > preview_max_len:
-                args_str = args_str[:preview_max_len - 3] + "..."
+            args_str = verbose_tool_args_text(event.args, preview_max_len, self.supports_code_blocks)
             return t("gateway.progress.tool_verbose", emoji=emoji, tool=tool, keys=list(event.args.keys()), args=args_str)
         if not event.preview:
             return t("gateway.progress.tool_pending", emoji=emoji, tool=tool)
@@ -2255,11 +2143,26 @@ class BasePlatformAdapter(ABC):
         """Acquire a scoped lock for this adapter; True on success. A live cross-HERMES_HOME
         holder is replaced only when the runner armed this adapter for its initial
         ``--replace`` connect (the status module validates ownership and terminates)."""
-        from gateway.status import (
-            acquire_scoped_lock, scoped_lock_owner_label, take_over_scoped_lock_holder)
+        from gateway.status import acquire_scoped_lock, scoped_lock_owner_label, take_over_scoped_lock_holder
+        from gateway.status_lock_dir import ScopedLockDirUnusable
         self._platform_lock_scope, self._platform_lock_identity = scope, identity
         lock_meta = {"platform": self.platform.value}
-        acquired, existing = acquire_scoped_lock(scope, identity, metadata=lock_meta)
+        try:
+            acquired, existing = acquire_scoped_lock(scope, identity, metadata=lock_meta)
+        except ScopedLockDirUnusable as exc:
+            # An ACL an elevated install left on the lock dir (#134889 W2): name the repair. Stay
+            # RETRYABLE: the dir is shared by every token-locked adapter, so a non-retryable park
+            # on a gateway that runs only those exits 78 and takes cron and the Desktop attach
+            # endpoint down with it. The status module logs the WARNING once per dir (DEBUG after),
+            # so the watcher's backoff retries quietly and picks the repair up without a restart.
+            self._platform_lock_identity = None
+            self._set_fatal_error(
+                "lock_dir_unusable",
+                f"{resource_desc} lock cannot be taken: the gateway lock directory {exc.filename} is not "
+                f"usable by this user (likely created by an elevated Hermes). To repair, "
+                f"{unusable_dir_remedy(exc.filename)}; the gateway retries on its own.",
+                retryable=True)
+            return False
         if acquired:
             return True
         if (self._platform_lock_takeover_allowed and not self._platform_lock_takeover_attempted
@@ -2294,7 +2197,7 @@ class BasePlatformAdapter(ABC):
         identity = getattr(self, '_platform_lock_identity', None)
         if not identity:
             return
-        from gateway.status import release_scoped_lock
+        from gateway.status_scoped_locks import release_scoped_lock
         release_scoped_lock(self._platform_lock_scope, identity)
         self._platform_lock_identity = None
 
@@ -2484,9 +2387,8 @@ class BasePlatformAdapter(ABC):
             return False
         if getattr(source, "profile_route_rejected", False) is not True:
             return False
-        logger.warning(
-            "[%s] Dropping inbound event for %s: explicit profile route targets an unserved profile",
-            self.name, getattr(source, "chat_id", "?"))
+        from gateway.parked_route_refusal import drop_rejected_route
+        drop_rejected_route(self, source)  # one WARNING; a parked target is also refused to the sender
         return True
 
     def _session_key_profile(self, source: Optional[Any] = None) -> Optional[str]:
@@ -2582,8 +2484,7 @@ class BasePlatformAdapter(ABC):
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
+                existing.extend_media(event)
             existing.absorb_reply_expected(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
@@ -2825,19 +2726,8 @@ class BasePlatformAdapter(ABC):
         ``message_len_fn`` units: the platform cap applies to the wire payload, and escaping
         expands (``&`` → ``&amp;``), so a raw-length cut can still overflow. Returns raw text (the
         caller escapes); ``suffix`` rides outside ``budget`` like ``_truncate_preview``."""
-        text = str(text or "")
         escape = escape or self._ea_escape
-        len_fn = self.message_len_fn
-        if len_fn(escape(text)) <= budget:
-            return text
-        lo, hi = 0, len(text)
-        while lo < hi:  # escaped length is monotonic in the raw prefix, so bisect it
-            mid = (lo + hi + 1) // 2
-            if len_fn(escape(text[:mid])) <= budget:
-                lo = mid
-            else:
-                hi = mid - 1
-        return text[:lo] + suffix
+        return fit_prefix(str(text or ""), budget, lambda s: self.message_len_fn(escape(s)), suffix)
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         """Chars of command preview that fit; platforms with a hard message cap compute it."""
@@ -2894,16 +2784,15 @@ class BasePlatformAdapter(ABC):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
+        smart_denied: bool = False, request_id: Optional[str] = None,
     ) -> SendResult:
-        """Interactive exec-approval prompt; a press resolves via
-        ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
-        render them natively in ``_send_exec_approval_prompt``."""
+        """Interactive exec-approval prompt; a press resolves via ``tools.approval.resolve_gateway_approval``.
+        Text and choice set are shared; adapters render them natively in ``_send_exec_approval_prompt``."""
         if description is None:
             description = ea_default_reason_text()
         prompt = ExecApprovalPrompt(
             chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
-            description=description, smart_denied=smart_denied,
+            description=description, smart_denied=smart_denied, request_id=request_id,
             text=self._format_exec_approval(command, description, smart_denied),
             actions=self._exec_approval_actions(
                 allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))
@@ -2951,9 +2840,8 @@ class BasePlatformAdapter(ABC):
         if choices:
             # Multi-select flag lives on the pending entry (signature stays adapter-compatible).
             try:
-                from tools import clarify_gateway as _cg
-                with _cg._lock:
-                    _is_multi = bool(getattr(_cg._entries.get(clarify_id), "multi_select", False))
+                from tools.clarify_gateway import get_pending
+                _is_multi = bool(getattr(get_pending(clarify_id), "multi_select", False))
             except Exception:
                 _is_multi = False
             hint = t("gateway.clarify.hint_multi") if _is_multi else t("gateway.clarify.hint_single")
@@ -3060,15 +2948,10 @@ class BasePlatformAdapter(ABC):
     def extract_images(content: str) -> tuple[list[tuple[str, str]], str]:
         """Extract ``![alt](url)`` and ``<img src=...>`` image URLs from a response;
         returns ``([(url, alt_text), ...], content with those tags removed)``."""
-        md_pattern = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
-        # <img src="url"> / <img src="url"></img> / <img src="url"/>
-        html_pattern = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
-        # Only extract URLs that look like actual images.
-        markers = ('.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn',
-                   'replicate.delivery')
+        md_pattern, html_pattern = MD_IMAGE_TAG_PATTERN, HTML_IMAGE_TAG_PATTERN
         images = [(m.group(2), m.group(1)) for m in re.finditer(md_pattern, content)
                   if any(m.group(2).lower().endswith(ext) or ext in m.group(2).lower()
-                         for ext in markers)]
+                         for ext in _IMAGE_URL_MARKERS)]  # only URLs that look like actual images
         images.extend((match.group(1), "") for match in re.finditer(html_pattern, content))
         if not images:
             return images, content
@@ -3914,6 +3797,8 @@ class BasePlatformAdapter(ABC):
         state = self._text_debounce_store().pop(session_key, None)
         if state is not None:
             state.cancel_timer()
+        from gateway.session_ingress_burst import discard_busy_burst
+        discard_busy_burst(self, session_key)
 
     # ── Session task + guard ownership helpers: paired with the _session_tasks owner map so
     # reconciliation is deterministic across completion, /stop /new /reset, and stale-lock heal.
@@ -4068,18 +3953,47 @@ class BasePlatformAdapter(ABC):
             logger.warning("Dropping internally routed event: expected session=%s derived=%s",
                            expected_session_key, session_key)
             return
+        from gateway.session_ingress_burst import burst_gate
+        behind_burst = await burst_gate(self, event, session_key)  # a serial reader's command waits too
         # On-entry self-heal: clear a guard whose owner task already exited.
         if session_key in self._active_sessions:
             self._heal_stale_session_lock(session_key)
-        if session_key in self._active_sessions:
+        if session_key in self._active_sessions or behind_burst:
             await self._handle_message_while_active(event, session_key)
             return
         # Guard installed synchronously BEFORE the task spawns so a second message can't race in.
         event._gateway_accepted = self._start_session_processing(event, session_key)
 
+    def _shared_runtime_owns_input(self, event: MessageEvent) -> bool:
+        """True when a non-command input belongs to the shared runtime's session authority."""
+        runner = getattr(self._message_handler, '__self__', None)
+        return getattr(runner, 'session_authority', None) is not None and not event.get_command()
+
+    def _pending_recovery_owners(self, event: MessageEvent, session_key: str) -> list:
+        """Adapters whose pending slot may hold *event* after busy admission: this one, plus the
+        runner's current delivery adapter for its source when that replacement has no live guard."""
+        owners = [self]
+        runner = getattr(self, "gateway_runner", None)
+        if runner is not None:
+            try:
+                delivery_adapter = runner._delivery_adapter_for(event.source)
+            except Exception:
+                delivery_adapter = None
+                logger.debug("[%s] Delivery-adapter lookup failed during pending recovery",
+                             self.name, exc_info=True)
+            if (delivery_adapter is not None and delivery_adapter is not self
+                    and session_key not in delivery_adapter._active_sessions):
+                owners.append(delivery_adapter)
+        return owners
+
     async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
         """Route a message that arrived while ``session_key`` is busy: bypass
         commands / clarify replies dispatch inline, everything else is queued."""
+        # The shared runtime's durable FIFO replaces the adapter's busy-message slot.
+        if self._shared_runtime_owns_input(event):
+            from gateway.session_ingress_burst import dispatch_busy_burst
+            await dispatch_busy_burst(self, event, session_key)  # main's photo/text burst merge
+            return
         # Bypass commands run inline: queued they'd leak as user text (/new) or deadlock
         # (/approve, /deny — the agent is blocked on Event.wait).  Dispatch inline by
         # calling the message handler directly and sending the response.  Do NOT use
@@ -4142,20 +4056,8 @@ class BasePlatformAdapter(ABC):
                 # Recover from whichever slot actually holds it — this one, or the replacement —
                 # and start it on that slot's owner. A replacement with a live guard drains its
                 # own slot, so leave that one alone.
-                owners = [self]
-                runner = getattr(self, "gateway_runner", None)
-                if runner is not None:
-                    try:
-                        delivery_adapter = runner._delivery_adapter_for(event.source)
-                    except Exception:
-                        delivery_adapter = None
-                        logger.debug("[%s] Delivery-adapter lookup failed during pending recovery",
-                                     self.name, exc_info=True)
-                    if (delivery_adapter is not None and delivery_adapter is not self
-                            and session_key not in delivery_adapter._active_sessions):
-                        owners.append(delivery_adapter)
                 orphan = None
-                for owner in owners:
+                for owner in self._pending_recovery_owners(event, session_key):
                     orphan = owner.get_pending_message(session_key)
                     if orphan is not None:
                         owner._start_session_processing(orphan, session_key)
@@ -4401,11 +4303,12 @@ class BasePlatformAdapter(ABC):
         return result, delivery_adapter
 
     async def _release_turn_marker(self, event: MessageEvent) -> None:
-        """Clear the crash-recovery marker the runner handed to this delivery lifecycle
-        (``_turn_marker_handoff``): only once the final reply is ledgered or nothing more is owed,
-        so no kill leaves a persisted reply with neither marker nor ledger row. Idempotent."""
-        if getattr(event, "_turn_marker_handoff", False) and getattr(event, "_gateway_active_turn_token", None):
+        """Clear the crash marker handed to this delivery lifecycle only once the final reply is ledgered or
+        nothing more is owed (no kill leaves a persisted reply with neither), then wake the drain. Idempotent."""
+        if (getattr(event, "_turn_marker_handoff", False) and getattr(event, "_gateway_active_turn_token", None)
+                and self.gateway_runner is not None):
             await self.gateway_runner._clear_durable_active_turn(event)
+        getattr(event, "_gateway_marker_released", asyncio.Event()).set()
 
     async def _send_final_text(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: dict[str, Any],
@@ -4667,8 +4570,8 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
-            # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.
-            if isinstance(e, (SystemExit, KeyboardInterrupt)):
+            from hermes_cli.config_backend import ConfigBackendUnavailable as _outage  # this turn only
+            if isinstance(e, (SystemExit, KeyboardInterrupt)) and not isinstance(e, _outage):  # rest contained
                 raise
         finally:
             await self._release_turn_marker(event)
@@ -4834,14 +4737,14 @@ class BasePlatformAdapter(ABC):
         # Profile from configured routes, else the owning profile of a dedicated secondary bot (so no
         # later ``source.profile``-less fallback can re-route the message through the default bot's routes).
         owner_profile = getattr(self, "_owner_profile", None)
-        profile, profile_route_rejected = owner_profile, False
+        profile, profile_route_rejected, rejected_profile = owner_profile, False, None
         if self.gateway_runner is not None:
             from gateway.profile_routing import ProfileRouteRejected
             try:
                 profile = self.gateway_runner._profile_name_for_source(
                     SessionSource(**fields), adapter_profile=owner_profile) or owner_profile
-            except ProfileRouteRejected:
-                profile_route_rejected = True
+            except ProfileRouteRejected as exc:
+                profile_route_rejected, rejected_profile = True, exc.profile
             except Exception:
                 logger.warning("Profile resolution failed for %s/%s, defaulting to active profile",
                                self.platform, chat_id, exc_info=True)
@@ -4851,7 +4754,7 @@ class BasePlatformAdapter(ABC):
         # Transport-only, kept out of to_dict(): the receiving adapter is authoritative this turn
         # even if profile_routes picks another runtime; the reject flag is consumed before auth.
         source._transport_adapter_ref = weakref.ref(self)
-        source.profile_route_rejected = profile_route_rejected
+        source.profile_route_rejected, source._rejected_route_profile = profile_route_rejected, rejected_profile
         return source
 
     @abstractmethod

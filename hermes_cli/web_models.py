@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, SecretStr, StrictBool, field_validator
+from pydantic import BaseModel, Field, SecretStr, StrictBool, StrictInt, field_validator
 
 
 class ConfigUpdate(BaseModel):
@@ -76,6 +76,7 @@ class WhatsAppOnboardingStart(BaseModel):
     mode: Optional[str] = "bot"
     allowed_users: Optional[str] = ""
     profile: Optional[str] = None
+    reset_session: bool = False
 
 class WhatsAppOnboardingApply(BaseModel):
     mode: Optional[str] = None
@@ -101,6 +102,13 @@ class ManagedDirectoryCreate(BaseModel):
 class ManagedFileDelete(BaseModel):
     path: str
     recursive: bool = False
+
+class FileTicketRequest(BaseModel):
+    """POST /api/files/ticket — the exact query the ticketed download/stream URL carries."""
+    route: Literal["download", "stream"]
+    path: str
+    profile: Optional[str] = None
+    session_id: Optional[str] = None
 
 class ModelAssignment(BaseModel):
     """POST /api/model/set — assign a provider/model to a slot.
@@ -176,6 +184,8 @@ class MoaConfigPayload(_MoaReferenceControls):
 class FsWriteText(BaseModel):
     path: str
     content: str
+    #: The session the file was read for: its /workspace is that session's sandbox.
+    session_id: Optional[str] = None
 
 class GitPathBody(BaseModel):
     path: str
@@ -262,16 +272,21 @@ class BulkDeleteSessions(BaseModel):
     profile: Optional[str] = None
 
 class SessionImport(BaseModel):
+    request_id: Optional[str] = None
+    expected_revision: Optional[StrictInt] = Field(None, ge=0)
     sessions: list[dict[str, Any]]
     profile: Optional[str] = None
 
 class SessionRename(BaseModel):
+    request_id: Optional[str] = None
+    expected_revision: Optional[StrictInt] = Field(None, ge=0)
+    expected_generation: Optional[StrictInt] = Field(None, ge=0)
     title: Optional[str] = None
-    archived: Optional[bool] = None
-    hidden: Optional[bool] = None  # also used by cross-profile reconciliation
-    pinned: Optional[bool] = None  # durable "keep" (Desktop pins); exempt from auto_archive
+    archived: Optional[StrictBool] = None
+    hidden: Optional[StrictBool] = None  # also used by cross-profile reconciliation
+    pinned: Optional[StrictBool] = None  # durable "keep" (Desktop pins); exempt from auto_archive
     # Read-state watermark (sessions.last_read_at): True = unread, False = read now, None = leave.
-    unread: Optional[bool] = None
+    unread: Optional[StrictBool] = None
     profile: Optional[str] = None  # session owned by another profile (opens its state.db)
 
 class SessionOwnerBackfill(BaseModel):
@@ -328,6 +343,9 @@ class CronJobCreate(BaseModel):
     enabled_toolsets: Optional[list[str]] = None
     workdir: Optional[str] = None
     no_agent: bool = False
+    # Validated in cron.jobs.create_job (unknown IANA zone / out-of-range grace -> 400).
+    timezone: Optional[str] = None
+    grace_minutes: Optional[int | str] = None
 
 class CronJobUpdate(BaseModel):
     updates: dict
@@ -433,6 +451,7 @@ class SkillsUpdateRequest(BaseModel):
 
 class ProfileCreate(BaseModel):
     name: str
+    soul: Optional[str] = None
     clone_from: Optional[str] = None
     clone_from_default: bool = False  # legacy clients; new ones send clone_from explicitly
     clone_all: bool = False
@@ -518,6 +537,20 @@ class ToolsetPostSetup(BaseModel):
 
 class TerminalBackendSelect(BaseModel):
     backend: str
+    profile: Optional[str] = None
+
+class DelegationBackendSelect(BaseModel):
+    backend: str
+    profile: Optional[str] = None
+
+class DelegationModelMapUpdate(BaseModel):
+    options: list[dict[str, Any]]
+    default: Optional[str] = None
+    profile: Optional[str] = None
+
+class DelegationProfileRoutesUpdate(BaseModel):
+    profiles: list[dict[str, Any]]
+    default: Optional[str] = None
     profile: Optional[str] = None
 
 class RawConfigUpdate(BaseModel):

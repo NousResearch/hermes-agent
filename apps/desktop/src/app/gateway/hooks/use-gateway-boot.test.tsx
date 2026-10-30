@@ -171,7 +171,6 @@ function fakeDesktop() {
     }),
     revalidateConnection: vi.fn(async () => ({ ok: true, rebuilt: false })),
     onWindowStateChanged: vi.fn(() => () => undefined),
-    touchBackend: vi.fn(async () => undefined),
     profile: { get: vi.fn(async () => ({ profile: 'default' })) }
   }
 }
@@ -288,7 +287,7 @@ async function flushAsync() {
 it('loads and tracks saved gateways without mounting the statusbar or Settings', async () => {
   const desktop = fakeDesktop()
   const bootFetch = deferred<void>()
-  type Listener = Parameters<NonNullable<Window['hermesDesktop']['connections']['onChanged']>>[0]
+  type Listener = Parameters<NonNullable<NonNullable<Window['hermesDesktop']['connections']>['onChanged']>>[0]
   const listeners = new Set<Listener>()
 
   let registry: DesktopConnectionsRegistry = {

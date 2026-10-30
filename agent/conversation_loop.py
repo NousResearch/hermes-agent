@@ -23,6 +23,7 @@ from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_su
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
+from agent.prompt_refresh import rebuild_for_refresh, requested_epoch, stamp_prompt_epoch, stored_prompt_refresh_epoch
 from agent.prompt_caching import (
     build_prompt_cache_plan,
     effective_cache_ttl,
@@ -36,6 +37,7 @@ from agent.surface_switch import (
 )
 from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from hermes_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
+from hermes_cli.plugins_dispatch import held_stream_transforms
 from agent.turn_retry_state import TurnRetryState
 from agent.turn_scripted_prelude import Prelude, play_prelude
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
@@ -43,7 +45,7 @@ from agent.turn_scripted_prelude import Prelude, play_prelude
 from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
-from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, failed_turn_notice, site_copy
+from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, OPEN_TURN_TAIL_ROLES, failed_turn_notice, site_copy
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
 from agent.turn_iteration_prep import (
@@ -361,32 +363,15 @@ def _apply_active_turn_redirect(agent: Any, messages: list[dict[str, Any]], text
     agent._stream_needs_break = True
 
 
-def _is_copilot_provider(agent: Any) -> bool:
-    """Delegate to ``AIAgent._is_copilot_provider``; the fallback keeps the ``github-copilot`` /
-    ``github`` aliases so credential recovery is not skipped for them."""
-    try:
-        return bool(agent._is_copilot_provider())
-    except Exception:
-        return (getattr(agent, "provider", "") or "").strip().lower() in {
-            "copilot",
-            "github-copilot",
-            "github",
-        }
+def _credential_refresh_profile(agent: Any) -> Any:
+    """The profile owning the live credential's runtime refresh: the agent's provider by name, else
+    (a ``custom`` route at a provider's host) the profile serving the base URL's host. Only profiles
+    that override ``refresh_runtime_credentials`` qualify."""
+    from agent.provider_route_hooks import route_profiles
 
-
-def _is_stale_copilot_credential_error(status_code: Optional[int], error_message: str) -> bool:
-    """Detect a Copilot 400 that is really a STALE / DEGRADED credential (status 400 AND an
-    integrator/model-not-supported marker, so a wrong model name never triggers the
-    single-shot re-exchange). Caller enforces scoping/guard."""
-    lowered = (error_message or "").lower()
-    if status_code != 400 and "error code: 400" not in lowered:
-        return False
-    return any(marker in lowered for marker in (
-        "model_not_available_for_integrator",
-        "not available for integrator",
-        "model_not_supported",
-        "the requested model is not supported",
-    ))
+    profiles = route_profiles("refresh_runtime_credentials", (getattr(agent, "provider", "") or "").strip().lower(),
+                              str(getattr(agent, "base_url", "") or ""))
+    return profiles[0] if profiles else None
 
 
 def _pressure_with_real_floor(compressor: Any, rough_tokens: int) -> int:
@@ -479,13 +464,18 @@ def _ra():
     return run_agent
 
 
-def _nous_entitlement_message(capability: str) -> str:
+def _nous_entitlement_message(capability: str, *, billing: bool = False) -> str:
+    """``billing``: the request hit a billing wall. A usage-window account then gets its own next
+    step (top-up link); its plan is still live, so the entitlement copy alone would say nothing."""
     try:
         from hermes_cli.nous_account import (
             format_nous_portal_entitlement_message,
+            format_usage_window_block_guidance,
             get_nous_portal_account_info,
         )
         account_info = get_nous_portal_account_info(force_fresh=True)
+        if billing and (window_guidance := format_usage_window_block_guidance(account_info)):
+            return window_guidance
         return format_nous_portal_entitlement_message(
             account_info, capability=capability, in_chat=True
         ) or ""
@@ -529,7 +519,7 @@ def _billing_or_entitlement_message(
     *, capability: str, provider: str, base_url: str, model: str, unverified: bool = False
 ) -> str:
     if _is_nous_inference_route(provider, base_url):
-        return _nous_entitlement_message(capability)
+        return _nous_entitlement_message(capability, billing=True)
 
     provider_label = (provider or "").strip() or "the selected provider"
     model_label = (model or "").strip() or "the selected model"
@@ -606,20 +596,83 @@ def _billing_terminal_label(summary: str, unverified: bool) -> str:
     return f"Billing or credits exhausted: {summary}"
 
 
+def _usage_window_refusal(agent, classified, api_messages=None) -> tuple[str, Optional[float], Optional[dict]]:
+    """A usage-window 402 in the words of the credits limit line ("You've hit your daily limit · resets
+    15:56 · /topup to add credits") plus when that allowance frees up (epoch
+    seconds), so the chat and the error card say exactly what the notice says and the card can offer
+    a retry at the reset. The third item is the structured limit (:class:`agent.plan_limits.LimitHit`
+    payload: what ran out, the recommended models that still work, the credits option) every surface
+    renders as buttons or a sentence. ``("", None, None)`` for every other billing failure."""
+    context = getattr(classified, "error_context", None) or {}
+    if not context.get("usage_window"):
+        return "", None, None
+    try:
+        from agent.credits_tracker import _window_hard_stop, window_stop_resets_at_ms
+        from agent.plan_limits import current_model_is_top_tier
+        state = getattr(agent, "_credits_state", None)
+        top_tier = current_model_is_top_tier(agent)
+        stop = _window_hard_stop(state, model_is_free=False, model_is_top_tier=top_tier) if state is not None else None
+        # The server may word the refusal itself (``display_message`` on the 402): shown verbatim, so a
+        # reword ships with the API. Without it, the stop line Hermes builds from the gauges.
+        display = context.get("display_message")
+        server_message = str(getattr(classified, "message", "") or "").strip()
+        if isinstance(display, str) and display.strip():
+            message = display.strip()
+        elif stop:
+            message = stop.removeprefix("✕ ").strip()
+        elif server_message:
+            # Local state says nothing is spent (stale snapshot, or it thinks credits will pay) but the
+            # server refused with the window code: its own sentence still beats the generic "out of
+            # credits" wall, and keeps the turn on the window card (one place, Open billing) instead of
+            # a billing toast + banner + Switch provider card.
+            message = server_message
+        else:
+            return "", None, None
+        resets_ms = window_stop_resets_at_ms(state, model_is_top_tier=top_tier) if state is not None else None
+        limit = None
+        try:
+            from agent.model_metadata import estimate_messages_tokens_rough
+            from agent.plan_limits import limit_hit
+            hit = limit_hit(agent, message=message,
+                            needed_tokens=estimate_messages_tokens_rough(api_messages or []) if api_messages else None)
+            limit = hit.to_payload() if hit is not None else None
+        except Exception:
+            logger.debug("Usage-window limit payload unavailable", exc_info=True)
+            limit = None
+        return (message, resets_ms / 1000 if isinstance(resets_ms, int) and resets_ms > 0 else None, limit)
+    except Exception:
+        logger.debug("Usage-window refusal parse failed", exc_info=True)
+        return "", None, None
+
+
 def _billing_failure_result(
     *, classified, summary: str, messages, api_call_count: int, provider: str, base_url, model: str,
     guidance: Optional[str] = None,
+    usage_window: tuple[str, Optional[float], Optional[dict]] = ("", None, None),
 ) -> dict:
     """Structured terminal result for a billing-classified failure — the single construction
-    point for the non-retryable abort and max-retries paths (#82154)."""
+    point for the non-retryable abort and max-retries paths (#82154). A usage-window refusal
+    reads as its one stop-line sentence instead of the generic "billing exhausted" text."""
     unverified = bool(getattr(classified, "billing_unverified", False))
-    if guidance is None:
+    if guidance is None and not (tuple(usage_window) + ("",))[0]:  # a window refusal is its own message: no portal fetch
         guidance = _billing_or_entitlement_message(
             capability="model access", provider=provider, base_url=str(base_url), model=model,
             unverified=unverified,
         )
-    final = _billing_terminal_label(summary, unverified) + (f"\n\n{guidance}" if guidance else "")
+    usage_window_message, usage_window_resets_at, usage_limit = (tuple(usage_window) + (None, None, None))[:3]
+    final = usage_window_message or (
+        _billing_terminal_label(summary, unverified) + (f"\n\n{guidance}" if guidance else ""))
+    extra: dict = {}
+    if usage_window_message:
+        extra["usage_window_message"] = usage_window_message
+        if usage_window_resets_at is not None:
+            extra["failure_resets_at"] = usage_window_resets_at
+        if usage_limit:
+            # Structured: the CLI and the messaging gateway read it off the result; the error surface
+            # carries it to the TUI and the desktop card.
+            extra["usage_limit"] = usage_limit
     return {
+        **extra,
         "final_response": final, "messages": messages, "api_calls": api_call_count,
         "completed": False, "failed": True, "error": summary,
         "failure_reason": classified.reason.value,
@@ -724,11 +777,19 @@ def _refresh_bot_chat_tools(agent) -> None:
     gateway keeps agents alive across turns; every other surface builds a fresh agent whose
     tools[] already reflects config. No prefix preservation: a disabled toolset must drop,
     and the prompt rebuild this rides on already breaks the cache."""
+    from gateway.session_policy import active_policy
+    policy = active_policy()
     platform = getattr(agent, "platform", None)
-    if platform not in ("desktop", "tui"):
+    if policy is None and platform not in ("desktop", "tui"):
         return
     try:
         from tools.mcp_tool_agent import refresh_agent_mcp_tools
+        if policy is not None:
+            # Gateway-owned session (managed worker / owner turn): toolsets are frozen in its
+            # launch policy, so live config edits never widen or narrow a running session.
+            refresh_agent_mcp_tools(agent, enabled_override=list(policy.toolsets),
+                                    quiet_mode=True, content_aware=True)
+            return
         from tui_gateway.server import _load_disabled_toolsets, _load_enabled_toolsets
         refresh_agent_mcp_tools(
             agent, enabled_override=_load_enabled_toolsets(platform),
@@ -770,6 +831,8 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 agent.session_id,
             )
             agent._session_title_hint = "Bot Chat"
+            # Read BEFORE the build: this rebuild also satisfies any pending prompt refresh.
+            refresh_request = requested_epoch(agent)
             # The skills index cache (LRU + disk snapshot) does not watch the skills
             # dir; a capability refresh must rebuild THROUGH it or new skills are lost.
             try:
@@ -791,6 +854,14 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 "(session=%s): %s. The refresh will re-fire next turn.",
                 persist_tools=True,
             )
+            stamp_prompt_epoch(agent, refresh_request)
+            return
+        refresh_epoch = stored_prompt_refresh_epoch(agent, session_row)
+        if refresh_epoch:
+            # `hermes sessions refresh-prompts` ran after this prompt was built. Pin tools[] first
+            # (the refresh is about instructions; the frozen tool array stays), then rebuild once.
+            _restore_pinned_tools(agent, session_row)
+            rebuild_for_refresh(agent, system_message, conversation_history, refresh_epoch)
             return
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
@@ -842,6 +913,8 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # surface's own build (the -q footprint, its tool_search catalog) would otherwise be
     # persisted over the pin below. Pinned first, so the prompt describes the tools sent.
     built_for_this_surface = _restore_pinned_tools(agent, session_row)
+    # Read before the build: a refresh request landing mid-build still fires next turn.
+    refresh_epoch = requested_epoch(agent)
     agent._cached_system_prompt = agent._build_system_prompt(system_message)
     if conversation_history:
         record_prompt_rebuild(agent, stored_prompt, stored_state, agent._cached_system_prompt)
@@ -878,6 +951,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         "rebuild the system prompt and miss the prefix cache.",
         persist_tools=True,
     )
+    stamp_prompt_epoch(agent, refresh_epoch)
 
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
@@ -1532,7 +1606,7 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
     codex_result = agent._run_codex_app_server_turn(
         user_message=s.user_message, original_user_message=s.original_user_message,
         messages=s.messages, effective_task_id=s.effective_task_id,
-        should_review_memory=s._should_review_memory,
+        should_review_memory=s._should_review_memory, turn_id=s.turn_id,
     )
     from agent.turn_recovery import activate_codex_app_server_fallback
     if not activate_codex_app_server_fallback(agent, codex_result):
@@ -1588,6 +1662,12 @@ def _run_conversation_turn(
         agent._try_refresh_env_client_credentials()
     except Exception:
         logger.debug("per-turn env credential refresh failed", exc_info=True)
+
+    # A loaded ``hold_stream`` transform in this profile: the user sees only its rewritten final, made
+    # by the transforms live now (a plugin reload mid-turn cannot drop them before the final). Set
+    # before any exit, so an early one never reads the previous turn's hold.
+    agent._held_transforms = held_stream_transforms()
+    agent._hold_stream = bool(agent._held_transforms)
 
     # Per-turn setup: build_turn_context mutates ``agent`` and returns the locals the loop reads.
     try:
@@ -1731,6 +1811,7 @@ def run_conversation(
     addresses, after every history rewrite including post-turn micro-compaction.
     """
     from agent.turn_context import export_current_turn_boundary
+    from agent.turn_finalizer import settle_held_final
     from agent.voice_turn_route import end_voice_turn_route
     from tools.vision_tools_history_budget import native_turn_images
 
@@ -1759,6 +1840,7 @@ def run_conversation(
             )
         finally:
             end_voice_turn_route(agent)
+    settle_held_final(agent, result)
     result = export_current_turn_boundary(agent, result, user_message)
     if isinstance(result, dict):
         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))
@@ -1811,8 +1893,9 @@ def _redact_display_metadata(metadata: dict) -> dict:
 
 
 def _close_durable_failed_turn(agent, result: Any) -> None:
-    """Append a Hermes-authored assistant boundary when a failed turn left ``user`` as the
-    durable conversation tail (in place, on ``result["messages"]`` and in SessionDB).
+    """Append a Hermes-authored assistant boundary when a failed turn left its durable tail open
+    (``OPEN_TURN_TAIL_ROLES``: the accepted ``user`` row, or a ``tool`` row when a call ran before
+    the failure), in place on ``result["messages"]`` and in SessionDB.
 
     The terminal-failure paths (content-policy refusal, ``_Trunc.end_turn``, retry exhaustion,
     interrupt before any assistant text) persist the accepted user row and return without
@@ -1839,7 +1922,7 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
         db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
         if not isinstance(messages, list) or not messages or db is None or not session_id:
             return
-        if getattr(agent, "_persist_disabled", False) or db.latest_conversation_role(session_id) != "user":
+        if getattr(agent, "_persist_disabled", False) or db.latest_conversation_role(session_id) not in OPEN_TURN_TAIL_ROLES:
             return
         # Scope the "did a tool run" scan to this turn when its boundary is proven; otherwise
         # hedge over the whole list rather than under-report a possible side effect.

@@ -116,7 +116,7 @@ Do not fake the host by patching `sys.platform` or platform probes.
 Factual host/backend guidance (OS, `$HOME`, cwd, terminal backend, shell)
 is emitted by `agent/prompt_builder.py::build_environment_hints()`. The key
 invariant for prompt authors: with a **remote** terminal backend
-(`docker, singularity, modal, daytona, ssh, managed_modal`), host info is
+(`docker, modal, daytona, ssh, managed_modal`, plus plugin backends declaring `is_remote`), host info is
 suppressed and *every* file tool runs inside the backend container — the
 prompt must never describe the host the agent can't touch.
 

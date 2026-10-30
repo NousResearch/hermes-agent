@@ -29,6 +29,28 @@ export function isFallbackSwitchStatus(kind: string | undefined, text: string): 
   return /model fallback|provider fallback|switched to fallback|switching to fallback/i.test(text)
 }
 
+/** The toast for a gateway `error` in a session that is NOT on screen (its card can't be seen).
+ *  The stable id collapses the same error from multiple background threads into one toast. For
+ *  a recovered code the message is the card's glossed sentence with the raw gateway text as the
+ *  dimmed detail; otherwise the server copy is the message and there is no detail to repeat.
+ *  No Retry action: assistant-ui's reload is per-thread, and for the codes recovered here a
+ *  retry would fail identically anyway. */
+function toastBackgroundGatewayError(errorMessage: string, surface: ErrorSurface | null, toastMessage: string): void {
+  if (surface?.code === 'disk_full') {
+    notifyError(new Error(errorMessage), translateNow('notifications.errors.diskFull'))
+
+    return
+  }
+
+  notify({
+    detail: surface ? errorMessage : undefined,
+    id: `gateway-error:${errorMessage}`,
+    kind: 'error',
+    message: toastMessage,
+    title: translateNow('assistant.thread.errorToastTitle')
+  })
+}
+
 /** status.update / review.summary / notification.show / notification.clear /
  *  error — the status-and-notice tail of the dispatcher. */
 export function handleStatusEvent(ctx: GatewayEventContext): boolean {
@@ -331,25 +353,10 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
 
     if (looksLikeProviderSetup) {
       requestDesktopOnboarding(errorMessage)
-    } else if (surface?.code === 'disk_full') {
-      notifyError(new Error(errorMessage), translateNow('notifications.errors.diskFull'))
-    } else {
-      // Toast globally, not just when the failing thread is focused: a
-      // turn-ending error (e.g. out of funds) blocks every thread, so the
-      // inline error alone is too easy to miss. The stable id collapses the
-      // same error from multiple blocked threads into one toast. For a
-      // recovered code the message is the card's glossed sentence with the raw
-      // gateway text as the dimmed detail; otherwise the server copy is the
-      // message and there is no separate detail to repeat.
-      // No Retry action: assistant-ui's reload is per-thread, and for the
-      // codes recovered above a retry would fail identically anyway.
-      notify({
-        detail: surface ? errorMessage : undefined,
-        id: `gateway-error:${errorMessage}`,
-        kind: 'error',
-        message: toastMessage,
-        title: translateNow('assistant.thread.errorToastTitle')
-      })
+    } else if (!isActiveEvent) {
+      // One event, one surface: the inline card already explains this failure
+      // where the user is acting; the toast is only for a session off screen.
+      toastBackgroundGatewayError(errorMessage, surface, toastMessage)
     }
 
     if (sessionId) {

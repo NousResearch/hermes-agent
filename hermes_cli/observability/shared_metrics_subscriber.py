@@ -8,13 +8,13 @@ import threading
 from typing import Any
 
 from agent.relay_runtime import RUNTIME_INSTANCE_KEY
-from hermes_cli.config import detect_install_method
 from hermes_constants import get_hermes_home
 
 from . import shared_metrics_engagement as engagement
 from . import shared_metrics_signals as signals
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_fields import milestones_for
+from .shared_metrics_install import detect_client_install_method
 from .shared_metrics_contract import (
     CLIENT_ACTIVE_METRIC,
     COMMIT_TICKET_KEY,
@@ -80,7 +80,7 @@ class SharedMetricsSubscriber:
             hermes_version,
             os_name=platform.system(),
             architecture=platform.machine(),
-            install_method=detect_install_method(),
+            install_method=detect_client_install_method(),
         )
         self._runtime_id = runtime_id
         self._active = True

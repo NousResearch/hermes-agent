@@ -24,7 +24,6 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "parallel-web": "parallel",
     "ddgs": "ddgs",
     "otlp": "opentelemetry.sdk",
-    "langfuse": "langfuse",
     "mistral": "mistralai",
     "edge-tts": "edge_tts",
     "neutts": "neutts",
@@ -48,6 +47,7 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "dingtalk": "dingtalk_stream",
     "feishu": "lark_oapi",
     "wecom": "defusedxml",
+    "keychain": "keyring",
     "teams": "microsoft_teams.apps",
     "modal": "modal",
     "daytona": "daytona",
@@ -59,6 +59,8 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "acp": "acp",
     "web": "fastapi",
     "doc-extract": "anydoc",
+    "documents": ("docx", "openpyxl", "pptx", "reportlab", "pypdf"),
+    "documents-pdf": ("pdfplumber", "pypdfium2"),
     "computer-use": "mcp",
     "trace-upload": "huggingface_hub",
     # Pillow resize recovery for vision tools (the `vision` extra is a no-op
@@ -221,7 +223,7 @@ def ensure_import(extra: str) -> None:
     # already imported would change underneath it (adopt_selected); otherwise only
     # a restart can load it.
     from pm.environments import selected_venv, site_packages
-    from pm.environments_adopt import adopt_selected, restart_needed
+    from pm.environments_adopt import adopt_selected, note_restart_pending, restart_needed
     from pm.paths import repo_root, runtime_facts_path
     import sys
     from pathlib import Path
@@ -232,6 +234,7 @@ def ensure_import(extra: str) -> None:
         selected = site_packages(selected_venv(root)).resolve()
         if selected not in {Path(entry).resolve() for entry in sys.path}:
             reason = restart_needed(root) or "this process does not run from the install's dependency environment"
+            note_restart_pending(f"{extra} installed ({reason})")
             raise InstallError("venv", f"{extra} installed; restart Hermes to activate it ({reason})")
 
 

@@ -73,6 +73,10 @@ on:
     # manual dispatch — a source (non-bundle) release run passes route=all
     # with empty manifests and gets the source install/update matrix only.
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       release:
         description: 'Stable-release candidate run (informational; jobs behave as route=all with empty manifests).'
         required: false
@@ -119,6 +123,10 @@ concurrency:
   group: install-e2e-${{ inputs.release == true && github.run_id || github.ref }}
   cancel-in-progress: ${{ inputs.release != true }}
 
+env:
+  # A stable run is on the default branch, so GITHUB_SHA is not the commit under test.
+  HERMES_TESTED_COMMIT: ${{ inputs.commit || github.sha }}
+
 jobs:
   pick-releases:
     name: Pick release tags
@@ -133,6 +141,7 @@ jobs:
       # has none.
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
+          ref: ${{ inputs.commit }}
           filter: blob:none
           fetch-tags: true
           sparse-checkout: |
@@ -198,6 +207,7 @@ jobs:
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
+          ref: ${{ inputs.commit }}
           sparse-checkout: scripts/sandbox/generate-e2e-matrix.mjs
           sparse-checkout-cone-mode: false
       - id: gen
@@ -231,6 +241,8 @@ jobs:
       macos-arch: ${{ steps.inputs.outputs.macos-arch }}
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
       - id: inputs
         env:
           BUNDLE_WINDOWS_MANIFEST: ${{ inputs.windows-bundle-manifest }}
@@ -249,6 +261,7 @@ jobs:
       matrix: ${{ fromJSON(needs.bundle-inputs.outputs.windows) }}
     uses: ./.github/workflows/install-e2e-windows-run.yml
     with:
+      commit: ${{ inputs.commit }}
       install-method: packaged-app
       update-method: open-app-update
       install-ref: ${{ matrix.install_ref }}
@@ -265,6 +278,7 @@ jobs:
       matrix: ${{ fromJSON(needs.bundle-inputs.outputs.macos) }}
     uses: ./.github/workflows/install-e2e-macos-run.yml
     with:
+      commit: ${{ inputs.commit }}
       install-method: packaged-app
       update-method: open-app-update
       install-ref: ${{ matrix.install_ref }}
@@ -285,6 +299,7 @@ jobs:
       matrix: ${{ fromJSON(needs.generate-matrix.outputs.linux) }}
     uses: ./.github/workflows/install-e2e-run.yml
     with:
+      commit: ${{ inputs.commit }}
       install-method: ${{ matrix.install_method }}
       update-method: ${{ matrix.update_method }}
       install-ref: ${{ matrix.install_ref }}
@@ -301,6 +316,7 @@ jobs:
       matrix: ${{ fromJSON(needs.generate-matrix.outputs.windows) }}
     uses: ./.github/workflows/install-e2e-windows-run.yml
     with:
+      commit: ${{ inputs.commit }}
       install-method: ${{ matrix.install_method }}
       update-method: ${{ matrix.update_method }}
       install-ref: ${{ matrix.install_ref }}
@@ -319,6 +335,7 @@ jobs:
     # and the published-dmg GUI driver; the run workflow routes.
     uses: ./.github/workflows/install-e2e-macos-run.yml
     with:
+      commit: ${{ inputs.commit }}
       install-method: ${{ matrix.install_method }}
       update-method: ${{ matrix.update_method }}
       install-ref: ${{ matrix.install_ref }}
@@ -340,6 +357,7 @@ jobs:
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
+          ref: ${{ inputs.commit }}
           sparse-checkout: tests/install/e2e-assets/playback.html
           sparse-checkout-cone-mode: false
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -409,6 +427,7 @@ jobs:
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
+          ref: ${{ inputs.commit }}
           sparse-checkout: |
             scripts/sandbox/generate-e2e-matrix.mjs
             tests/install/e2e-assets/known-failures.json

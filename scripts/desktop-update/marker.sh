@@ -46,13 +46,17 @@ proc_ct() { # pid -> creation time (unix seconds, 3 decimals), or nothing
     btime="$(awk '/^btime /{print $2}' /proc/stat 2>/dev/null)"
     hz="$(getconf CLK_TCK 2>/dev/null)"
     [ -n "$start" ] && [ -n "$btime" ] && [ -n "$hz" ] || return 0
-    awk -v b="$btime" -v s="$start" -v h="$hz" 'BEGIN{printf "%.3f\n", b + s / h}'
+    # LC_ALL=C: mawk (the default awk on Debian and Ubuntu) prints %f with the locale's decimal
+    # separator; the marker grammar and every reader accept only a dot (#135183).
+    LC_ALL=C awk -v b="$btime" -v s="$start" -v h="$hz" 'BEGIN{printf "%.3f\n", b + s / h}'
   elif [ "$(uname)" = "Darwin" ]; then
     # ps prints lstart in local time: render AND parse it in UTC so a DST
-    # fall-back hour cannot shift the identity by 3600 s.
+    # fall-back hour cannot shift the identity by 3600 s. `-j -f` is BSD-only:
+    # pin /bin/date so GNU coreutils first on the login PATH (Homebrew gnubin)
+    # cannot blank every creation time and fail the bridge-marker claim (#137925).
     lstart="$(TZ=UTC0 LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//;s/ *$//')"
     [ -n "$lstart" ] || return 0
-    secs="$(TZ=UTC0 LC_ALL=C date -j -f '%a %b %e %T %Y' "$lstart" +%s 2>/dev/null)" || return 0
+    secs="$(TZ=UTC0 LC_ALL=C /bin/date -j -f '%a %b %e %T %Y' "$lstart" +%s 2>/dev/null)" || return 0
     [ -n "$secs" ] && printf '%s.000\n' "$secs"
   fi
 }
@@ -79,7 +83,8 @@ marker_names_handoff() { # daemon pid -> 0 iff line 1 names it or a process it f
 }
 
 ct_close() { # a b tolerance -> 0 iff |a - b| <= tolerance
-  awk -v a="$1" -v b="$2" -v t="$3" 'BEGIN{d=a-b; if (d<0) d=-d; exit !(d<=t)}'
+  # LC_ALL=C as in proc_ct: the cts are dotted, so their parse must not depend on the locale.
+  LC_ALL=C awk -v a="$1" -v b="$2" -v t="$3" 'BEGIN{d=a-b; if (d<0) d=-d; exit !(d<=t)}'
 }
 
 marker_now() { date +%s; }

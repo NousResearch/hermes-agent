@@ -43,6 +43,24 @@ def _tuple_agent(entry: Any) -> Any:
     return entry[0] if isinstance(entry, tuple) and entry else None
 
 
+def _custom_alias_owns_endpoint(model: Any, provider: Any, base_url: Any) -> bool:
+    """An explicit custom model alias may intentionally use a registered provider endpoint."""
+    model_id = str(model or "").strip().lower()
+    provider_id = str(provider or "").strip().lower()
+    url = str(base_url or "").strip().rstrip("/")
+    if not model_id or not url or (provider_id != "custom" and not provider_id.startswith("custom:")):
+        return False
+    from hermes_cli.model_switch import _load_direct_aliases
+    aliases = _load_direct_aliases()
+    return any(
+        (name == model_id or str(alias.model or "").strip().lower() == model_id)
+        and (str(alias.provider or "").strip().lower() == "custom"
+             or str(alias.provider or "").strip().lower().startswith("custom:"))
+        and str(alias.base_url or "").strip().rstrip("/") == url
+        for name, alias in aliases.items()
+    )
+
+
 class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
 
@@ -146,25 +164,45 @@ class GatewayAgentCacheMixin:
         return state.conversation.model_override if state else None
 
     def _rehydrate_session_model_override(self, session_key: str) -> None:
-        """Lazily restore a persisted /model override after a gateway restart: non-secret parts
-        (model/provider/base_url) are written through on /model and read back on first use; api_key
-        is never persisted and is re-resolved. No-op when an in-memory override or nothing exists."""
+        """Lazily restore a persisted /model override and heal known foreign endpoints, including a
+        stale in-memory route. Credentials are re-resolved on restore; explicit custom aliases keep
+        their declared endpoint, even when it resembles another provider."""
         from gateway.run import _resolve_runtime_agent_kwargs_for_provider
         store = getattr(self, "session_store", None)
-        if self._session_model_override(session_key) is not None or store is None:
-            return
-        try:
-            persisted = store.get_model_override(session_key)
-        except Exception:
-            logger.debug("Failed to read persisted session model override", exc_info=True)
+        current = self._session_model_override(session_key)
+        from hermes_cli.runtime_provider import is_foreign_provider_endpoint, is_registered_provider_endpoint
+        if current is not None:
+            current_provider = str(current.get("provider") or "").strip().lower()
+            custom_candidate = (
+                (current_provider == "custom" or current_provider.startswith("custom:"))
+                and is_registered_provider_endpoint(current.get("base_url"))
+                and not _custom_alias_owns_endpoint(current.get("model"), current_provider, current.get("base_url"))
+            )
+            if not is_foreign_provider_endpoint(current.get("provider"), current.get("base_url")) and not custom_candidate:
+                return
+            persisted = current
+        elif store is not None:
+            try:
+                persisted = store.get_model_override(session_key)
+            except Exception:
+                logger.debug("Failed to read persisted session model override", exc_info=True)
+                return
+        else:
             return
         if not persisted:
             return
         override: dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
         provider = persisted.get("provider")
-        from hermes_cli.runtime_provider import is_foreign_provider_endpoint
-        if is_foreign_provider_endpoint(provider, override.get("base_url")):
-            override["base_url"] = None  # left over from a switch that kept the previous provider's URL
+        provider_id = str(provider or "").strip().lower()
+        custom_alias_endpoint = _custom_alias_owns_endpoint(
+            override.get("model"), provider_id, override.get("base_url"))
+        custom_candidate = (
+            (provider_id == "custom" or provider_id.startswith("custom:"))
+            and not custom_alias_endpoint
+            and is_registered_provider_endpoint(override.get("base_url"))
+        )
+        foreign_endpoint = is_foreign_provider_endpoint(provider, override.get("base_url"))
+        runtime = None
         if provider:
             # Re-resolve credentials for the persisted provider. On failure (e.g. credentials removed
             # since the switch) keep the credential-less override — _resolve_session_agent_runtime
@@ -189,6 +227,17 @@ class GatewayAgentCacheMixin:
                     "Credential re-resolution failed for persisted override "
                     "(provider=%s); using credential-less override", provider, exc_info=True,
                 )
+        if custom_candidate:
+            saved_url = str(override.get("base_url") or "").strip().rstrip("/")
+            resolved_url = str((runtime or {}).get("base_url") or "").strip().rstrip("/")
+            if resolved_url != saved_url:
+                override["base_url"] = None  # stale custom route matches another provider's canonical URL
+            elif current is not None:
+                return  # this custom route intentionally resolves to the same registered endpoint
+        elif foreign_endpoint:
+            override["base_url"] = None  # left over from a switch that kept the previous provider's URL
+        if runtime is not None and not override.get("base_url"):
+            override["base_url"] = runtime.get("base_url")
         self._session_state(session_key).conversation.model_override = override
         logger.info(
             "Rehydrated persisted /model override for session=%s: model=%s provider=%s",

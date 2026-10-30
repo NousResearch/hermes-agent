@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -165,3 +167,120 @@ class TestParseSystemdDuration:
 # ---------------------------------------------------------------------------
 # check_systemd_timing_alignment
 # ---------------------------------------------------------------------------
+
+def _mock_systemd_timing(monkeypatch, cgroup_path, *, user_output, system_output):
+    monkeypatch.setenv("INVOCATION_ID", "test-invocation")
+    monkeypatch.setattr(
+        sf, "open", lambda *_args, **_kwargs: io.StringIO(f"0::{cgroup_path}\n"), raising=False,
+    )
+    outputs = {"user": user_output, "system": system_output}
+
+    def fake_run(command, **_kwargs):
+        manager = "user" if "--user" in command else "system"
+        return subprocess.CompletedProcess(command, 0, stdout=outputs[manager], stderr="")
+
+    monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+
+def test_alignment_ignores_user_manager_default_for_missing_unit(monkeypatch):
+    _mock_systemd_timing(
+        monkeypatch,
+        "/system.slice/hermes-gateway.service",
+        user_output=("LoadState=not-found\nControlGroup=\nTimeoutStopUSec=1min 30s\n"),
+        system_output=(
+            "LoadState=loaded\nControlGroup=/system.slice/hermes-gateway.service\n"
+            "TimeoutStopUSec=3min 30s\n"
+        ),
+    )
+
+    alignment = sf.check_systemd_timing_alignment(180, 30)
+
+    assert alignment is not None
+    assert alignment["mismatch"] is False
+    assert alignment["timeout_stop_sec"] == 210
+    assert alignment["scope"] == "system"
+
+
+def test_alignment_uses_manager_that_owns_running_service_cgroup(monkeypatch):
+    _mock_systemd_timing(
+        monkeypatch,
+        "/system.slice/hermes-gateway.service",
+        user_output=(
+            "LoadState=loaded\n"
+            "ControlGroup=/user.slice/user-1000.slice/user@1000.service/app.slice/hermes-gateway.service\n"
+            "TimeoutStopUSec=3min 30s\n"
+        ),
+        system_output=(
+            "LoadState=loaded\nControlGroup=/system.slice/hermes-gateway.service\n"
+            "TimeoutStopUSec=30s\n"
+        ),
+    )
+
+    alignment = sf.check_systemd_timing_alignment(180, 30)
+
+    assert alignment is not None
+    assert alignment["mismatch"] is True
+    assert alignment["timeout_stop_sec"] == 30
+
+
+def test_alignment_uses_user_manager_for_user_service_cgroup(monkeypatch):
+    user_cgroup = "/user.slice/user-1000.slice/user@1000.service/app.slice/hermes-gateway.service"
+    _mock_systemd_timing(
+        monkeypatch,
+        user_cgroup,
+        user_output=(f"LoadState=loaded\nControlGroup={user_cgroup}\nTimeoutStopUSec=4min\n"),
+        system_output=(
+            "LoadState=loaded\nControlGroup=/system.slice/hermes-gateway.service\n"
+            "TimeoutStopUSec=30s\n"
+        ),
+    )
+
+    alignment = sf.check_systemd_timing_alignment(180, 30)
+
+    assert alignment is not None
+    assert alignment["scope"] == "user"
+    assert alignment["timeout_stop_sec"] == 240
+    assert alignment["mismatch"] is False
+
+
+def test_alignment_is_undetermined_when_no_loaded_unit_owns_cgroup(monkeypatch):
+    _mock_systemd_timing(
+        monkeypatch,
+        "/system.slice/hermes-gateway.service",
+        user_output="LoadState=not-found\nControlGroup=\nTimeoutStopUSec=90s\n",
+        system_output=(
+            "LoadState=loaded\nControlGroup=/system.slice/other.service\n"
+            "TimeoutStopUSec=3min 30s\n"
+        ),
+    )
+
+    assert sf.check_systemd_timing_alignment(180, 30) is None
+
+
+@pytest.mark.parametrize(
+    ("scope", "expected_command"),
+    [
+        ("system", "sudo hermes gateway install --force --system"),
+        ("user", "hermes gateway install --force"),
+    ],
+)
+def test_systemd_timing_warning_preserves_install_scope(monkeypatch, caplog, scope, expected_command):
+    from gateway.run_startup import GatewayStartupMixin
+
+    class _Runner(GatewayStartupMixin):
+        _restart_drain_timeout = 180
+        _cron_drain_timeout = 30
+
+    monkeypatch.setattr(
+        sf,
+        "check_systemd_timing_alignment",
+        lambda *_args: {
+            "unit": "hermes-gateway.service", "scope": scope, "timeout_stop_sec": 30,
+            "drain_timeout": 180, "cron_drain_timeout": 30, "expected_min": 210, "mismatch": True,
+        },
+    )
+    caplog.set_level(logging.WARNING, logger="gateway.run")
+
+    GatewayStartupMixin._start_log_systemd_timing_alignment(_Runner())
+
+    assert expected_command in caplog.text

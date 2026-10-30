@@ -3258,7 +3258,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         if not self._client:
             # Dead transport: classify as send_path_degraded so the delivery ledger's reconnect
             # sweep can replay this; a generic "Not connected" error would strand the output.
-            return SendResult(success=False, error="send_path_degraded", retryable=True)
+            return SendResult(success=False, error="send_path_degraded", retryable=True, not_dispatched=True)
         if not (content or "").strip():
             logger.warning(
                 "[%s] Dropped empty message to chat=%s (caller bug). Call site:\n%s", self.name,
@@ -3276,11 +3276,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             if thread_id:
                 channel = await self._resolve_channel(thread_id)
                 if not channel:
-                    return SendResult(success=False, error=f"Thread {thread_id} not found")
+                    return SendResult(success=False, error=f"Thread {thread_id} not found", not_dispatched=True)
             else:
                 channel = await self._resolve_channel(chat_id)
                 if not channel:
-                    return SendResult(success=False, error=f"Channel {chat_id} not found")
+                    return SendResult(success=False, error=f"Channel {chat_id} not found", not_dispatched=True)
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
                 result = await self._send_to_forum(channel, content)

@@ -1842,7 +1842,7 @@ class TestDeliverResultTimeoutCancelsFuture:
             time.sleep(0.6)
         finally:
             loop.call_soon_threadsafe(loop.stop)
-        assert result is None, f"expected the in-flight send to count as delivered, got {result!r}"
+        assert "delivery uncertain" in result
         standalone_send.assert_not_awaited()
         assert events == ["started", "finished"], "the in-flight send must not be cancelled mid-way"
 
@@ -1902,14 +1902,8 @@ class TestDeliverResultPartialSplitDelivery:
 class TestDeliverResultLiveAdapterUnconfirmed:
     """Regression for #47056.
 
-    When a live adapter's send() returns ``None`` (swallowed exception / busy
-    platform) or a result object that lacks an explicit ``success`` attribute
-    (bare dict / partial object), the scheduler must NOT log "delivered via
-    live adapter" and silently drop the message.  Every unconfirmed shape must
-    fall through to the standalone delivery path so the message actually
-    arrives.  The pre-fix check ``send_result is None or not getattr(...,
-    "success", True)`` let a ``.success``-less object default to True = silent
-    success.
+    An unconfirmed live result must neither claim delivery nor replay a send
+    the provider may already have accepted. Surface the uncertainty instead.
     """
 
     def _run(self, send_value):
@@ -1954,12 +1948,11 @@ class TestDeliverResultLiveAdapterUnconfirmed:
             )
         return result, standalone_send
 
-    def test_none_result_falls_through_to_standalone(self):
-        """send() returning None must trigger the standalone fallback, not a
-        silent "delivered" log."""
+    def test_none_result_is_uncertain_without_standalone_resend(self):
+        """An absent confirmation cannot prove the provider did not accept the send."""
         result, standalone_send = self._run(None)
-        assert result is None, f"standalone should have delivered, got: {result!r}"
-        standalone_send.assert_awaited_once()
+        assert "delivery uncertain" in result
+        standalone_send.assert_not_awaited()
 
 class TestDeliverOriginUnresolvableIsLocal:
     """Regression for #43014.

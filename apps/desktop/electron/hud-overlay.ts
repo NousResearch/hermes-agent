@@ -16,6 +16,18 @@ export interface HudElectronOverlayWindow {
   ): void
 }
 
+/**
+ * Whether entering HUD mode may call `BrowserWindow.hide()` on the main window.
+ *
+ * On macOS the HUD is an auxiliary overlay (all spaces, hidden from Mission
+ * Control). Hiding the main window then leaves the app with no regular window,
+ * and AppKit sends a Quit AppleEvent about two seconds later — the process
+ * exits with no crash report. Keep the main window listed instead.
+ */
+export function hudHidesMainWindow(platform: string): boolean {
+  return platform !== 'darwin'
+}
+
 /** Chrome Electron itself can honour. Compositor IPC is `promoteHudOverlay`. */
 export function applyHudElectronOverlay(win: HudElectronOverlayWindow, platform: string): void {
   win.setAlwaysOnTop(true, platform === 'darwin' ? 'floating' : 'screen-saver')

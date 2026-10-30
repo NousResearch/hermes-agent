@@ -83,7 +83,7 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     assert captured_cmd[unit_index + 1] == "hermes-worker-kanban-t_candidate_restart-run-23"
     assert "MemoryMax=536870912" in captured_cmd
     separator = captured_cmd.index("--")
-    assert captured_cmd[separator + 1 :] == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    assert captured_cmd[separator + 1 :] == [sys.executable, "-P", "-m", "hermes_cli.kanban_worker_client"]
     assert task.assignee is not None
     assert captured_env["HERMES_PROFILE"] == task.assignee
     assert captured_env["HERMES_HOME"] == str(workspace.parent / ".hermes" / "profiles" / task.assignee)
@@ -143,7 +143,7 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
     )
 
     assert kbd._default_spawn(task, str(workspace)) == 4243
-    assert captured_cmd == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    assert captured_cmd == [sys.executable, "-P", "-m", "hermes_cli.kanban_worker_client"]
 
 
 @pytest.mark.platforms("linux")
@@ -182,7 +182,7 @@ def test_oneshot_unit_dispatcher_scope_wraps_or_warns_never_dooms_silently(
     with caplog.at_level("WARNING", logger=process_registry.logger.name):
         kbd._default_spawn(task, str(workspace))
     # Unwrapped: the bare worker argv (the profile owner executes; this client waits for its receipt).
-    assert spawned[-1] == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    assert spawned[-1] == [sys.executable, "-P", "-m", "hermes_cli.kanban_worker_client"]
     warned = [r.getMessage() for r in caplog.records if "KILLED when the unit exits" in r.getMessage()]
     assert len(warned) == 1 and "KillMode=process" in warned[0]
 

@@ -48,8 +48,25 @@ def profile_and_root(tmp_path, monkeypatch):
     return profile_path, root_path
 
 
+def test_only_a_refresh_writes_a_borrowed_grant_through_to_root(profile_and_root, monkeypatch):
+    """A profile borrowing root's grant: a refresh rotates root's chain in place, but a fresh login
+    is the profile's own account and never overwrites root's (the Codex save's split)."""
+    profile_path, root_path = profile_and_root
+    _write_store(profile_path, {"version": 1, "providers": {}})
+    _write_store(root_path, {"version": 1, "providers": {
+        "xai-oauth": {"tokens": {"access_token": "a-root", "refresh_token": "r-root"}}}})
+    monkeypatch.setattr(auth, "refresh_xai_oauth_pure", lambda *_a, **_k: {
+        "access_token": "a-rotated", "refresh_token": "r-rotated", "last_refresh": "2026-09-27T00:00:00Z"})
 
+    auth._refresh_xai_oauth_tokens(
+        {"access_token": "a-root", "refresh_token": "r-root"},
+        token_endpoint="https://auth.x.ai/oauth2/token", timeout_seconds=1.0)
+    assert _read_store(root_path)["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "r-rotated"
+    assert "xai-oauth" not in _read_store(profile_path)["providers"]  # still borrowing root's grant
 
+    auth._save_xai_oauth_tokens({"access_token": "a-login", "refresh_token": "r-login"})
+    assert _read_store(root_path)["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "r-rotated"
+    assert _read_store(profile_path)["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "r-login"
 
 
 def test_write_through_is_noop_in_classic_mode(tmp_path, monkeypatch):

@@ -25,17 +25,27 @@ export function stopOutcome(job: RunFields | undefined, executionId: string): St
     return 'cancelled'
   }
 
+  // Settle by the targeted attempt, never by "some run is live": a newer run started after the
+  // stopped one must not keep this Stop pending (and its button disabled).
+  if (executionId) {
+    const target = [job.live_execution, job.latest_execution].find(execution => execution?.id === executionId)
+
+    if (!target) {
+      return 'cancelled'
+    }
+
+    if (IN_FLIGHT_STATUSES.has(target.status ?? '')) {
+      return 'pending'
+    }
+
+    return target.status === 'cancelled' ? 'cancelled' : 'finished'
+  }
+
   if (jobRunInFlight(job)) {
     return 'pending'
   }
 
-  const latest = job.latest_execution
-
-  if (executionId && latest && latest.id !== executionId) {
-    return 'cancelled'
-  }
-
-  return latest?.status === 'cancelled' ? 'cancelled' : 'finished'
+  return job.latest_execution?.status === 'cancelled' ? 'cancelled' : 'finished'
 }
 
 // A run created this long before a Run-now click (renderer/backend clock skew) still counts as its run.

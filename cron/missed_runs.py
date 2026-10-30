@@ -41,8 +41,12 @@ def job_catches_up(job: dict[str, Any]) -> bool:
     return bool(_cron_config_number("catch_up_missed", True, lambda raw: raw is not False))
 
 
-def count_missed_slots(schedule: dict[str, Any], first: str, now: datetime) -> int:
-    """Occurrences from ``first`` up to ``now`` inclusive, capped at ``_MAX_COUNTED_SLOTS``."""
+def count_missed_slots(
+    schedule: dict[str, Any], first: str, now: datetime, *, timezone: Any = None,
+) -> int:
+    """Occurrences from ``first`` up to ``now`` inclusive, capped at ``_MAX_COUNTED_SLOTS``.
+
+    *timezone* is the job's pin (job record or zone name), as for ``compute_next_run``."""
     from cron.jobs import _instant_after, _parse_aware, compute_next_run
 
     count, cursor = 0, first
@@ -51,7 +55,7 @@ def count_missed_slots(schedule: dict[str, Any], first: str, now: datetime) -> i
         if at is None or _instant_after(at, now):
             break
         count += 1
-        following = compute_next_run(schedule, cursor)
+        following = compute_next_run(schedule, cursor, timezone=timezone)
         cursor = following if following != cursor else None
     return count
 
@@ -87,7 +91,7 @@ def fast_forward_missed_recurring(d: Any, grace: int) -> bool:
     if not new_next:
         return False
     d.scan.persist(d.job["id"], next_run_at=new_next)
-    missed = count_missed_slots(d.schedule, d.next_run, d.scan.now)
+    missed = count_missed_slots(d.schedule, d.next_run, d.scan.now, timezone=d.job)
     capped = missed >= _MAX_COUNTED_SLOTS
     if (_instant_after(_ensure_aware(datetime.fromisoformat(new_next)), d.scan.now)
             and not job_catches_up(d.job)):

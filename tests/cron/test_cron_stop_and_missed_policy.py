@@ -89,6 +89,32 @@ def test_explicit_grace_skips_past_it_unless_the_job_opts_into_catch_up(home):
     assert [r["status"] for r in _ledger(capped["id"])] == ["missed"]
 
 
+def test_missed_slots_count_in_the_jobs_pinned_zone(home):
+    """A 09:00 New York weekday job under a Los Angeles profile, overdue Thu 09:00 → Fri 15:00 NY:
+    two slots (Thu, Fri), not a phantom Thu 09:00 LA occurrence in between."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from cron.missed_runs import count_missed_slots
+
+    (home / "config.yaml").write_text("timezone: America/Los_Angeles\n", encoding="utf-8")
+    ny = ZoneInfo("America/New_York")
+    schedule = jobs.parse_schedule("0 9 * * 1-5")
+    first = datetime(2026, 10, 22, 9, 0, tzinfo=ny).isoformat()
+    now = datetime(2026, 10, 23, 15, 0, tzinfo=ny)
+
+    assert count_missed_slots(schedule, first, now, timezone="America/New_York") == 2
+
+
+def test_a_profile_distribution_carries_the_jobs_missed_run_policy(home):
+    from cron.job_definition import merge_job_definition
+
+    local = jobs.create_job(prompt="brief", schedule="0 7 * * *", deliver="local", catch_up=True)
+    merged = merge_job_definition(dict(local), {"prompt": "brief", "schedule": local["schedule"],
+                                                "catch_up": False})
+    assert merged["catch_up"] is False
+
+
 def test_one_shot_past_grace_skips_by_default_and_fires_once_when_opted_in(home):
     run_at = (jobs._hermes_now() + timedelta(hours=1)).isoformat()
     skipped = jobs.create_job(prompt="stale reminder", schedule=run_at, deliver="local")

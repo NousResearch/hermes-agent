@@ -46,6 +46,14 @@ describe('cron Stop behind a refused Run-now', () => {
     )
     expect(stopOutcome(undefined, 'e1')).toBe('cancelled')
   })
+
+  it('settles a stopped run once a newer run replaces it, so the new run can be stopped', () => {
+    const next = { claimed_at: '2026-10-25T21:01:00Z', id: 'e2', status: 'running' }
+    const stopped = { claimed_at: '2026-10-25T21:00:00Z', id: 'e1', status: 'cancelled' }
+
+    expect(stopOutcome({ latest_execution: next, live_execution: next }, 'e1')).toBe('cancelled')
+    expect(stopOutcome({ latest_execution: stopped, live_execution: null }, 'e1')).toBe('cancelled')
+  })
 })
 
 describe('cron Stop during a Run-now', () => {

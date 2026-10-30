@@ -612,7 +612,9 @@ class TestDuplicateNamesAgreeAcrossSurfaces:
         assert build_preloaded_skills_prompt(["other"])[1:] == (["other"], [])
         # Still refused when that copy is also hidden at offer time (requires_apps).
         a_one = local / "a" / "one" / "SKILL.md"
-        a_one.write_text(a_one.read_text().replace("---\n", "---\nrequires_apps: [no-such-app]\n", 1))
+        a_one.write_text(
+            a_one.read_text(encoding="utf-8").replace("---\n", "---\nrequires_apps: [no-such-app]\n", 1),
+            encoding="utf-8")
         monkeypatch.setattr(skills_tool_module, "_SKILLS_CACHE", {})
         for ident in ("a/one", "one"):
             assert "disabled" in json.loads(skill_view(ident))["error"]

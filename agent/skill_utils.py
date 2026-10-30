@@ -877,7 +877,11 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     matches: list[str] = []
     for root, dirs, files in os.walk(str(skills_dir), followlinks=True):
         has_skill_md = "SKILL.md" in files
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
+        # A directory holding SKILL.md is a skill — a leaf. Descending its subdirectories
+        # taxed every scan with the skill's own bulk (docs/, fixtures/, _sources/...),
+        # and a SKILL.md nested below another skill was never a real skill (zero
+        # occurrences across stock, hub, and 850+ skill corpora).
+        dirs[:] = [] if has_skill_md else [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
         if filename in files:
             matches.append(os.path.join(root, filename))
     yield from map(Path, sorted(matches))

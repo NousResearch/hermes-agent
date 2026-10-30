@@ -11,8 +11,8 @@ Manim's `MathTex` and `Tex` classes, as well as `Axes(include_numbers=True)`, re
 | `Text(...)` | ✅ Works | Any installed font, Unicode support |
 | `MarkupText(...)` | ✅ Works | PangoMarkup for inline styling, `<span>` tags |
 | `Paragraph(...)` | ✅ Works | Multi-line text blocks |
-| `DecimalNumber(...)` | ✅ Works | Numeric displays |
-| `Integer(...)` | ✅ Works | Integer displays |
+| `DecimalNumber(...)` | Requires LaTeX by default | Use `Text(str(value))` for simple labels |
+| `Integer(...)` | Requires LaTeX by default | Use `Text(str(value))` for simple labels |
 | `Dot(...)` | ✅ Works | Points/circles |
 | `Line(...)` | ✅ Works | With `set_stroke(opacity=N)` |
 | `Rectangle(...)` | ✅ Works | All polygram shapes |
@@ -20,7 +20,7 @@ Manim's `MathTex` and `Tex` classes, as well as `Axes(include_numbers=True)`, re
 | `Polygon(...)` | ✅ Works | |
 | `Arc(...)` | ✅ Works | |
 | `Arrow(...)` | ✅ Works | |
-| `Brace(...)` | ✅ Works | |
+| `Brace(...)` | Requires LaTeX | Use geometric lines for a bracket |
 | `VGroup(...)` | ✅ Works | Only VMobjects |
 | `Group(...)` | ✅ Works | Any Mobject |
 | `Axes(...)` | ⚠️ Partial | Set `include_numbers=False`, add manual labels |
@@ -144,20 +144,8 @@ These render correctly in `Text()` without LaTeX:
 | ′ | U+2032 | Prime (minute) |
 | ″ | U+2033 | Double prime (second) |
 
-## Checking if LaTeX is Available
+## Checking prerequisites
 
-```python
-import subprocess, shutil
-has_latex = shutil.which("latex") is not None
-# or
-try:
-    subprocess.run(["latex", "--version"], capture_output=True, check=True)
-    has_latex = True
-except:
-    has_latex = False
-```
-
-If LaTeX is not available, decide your rendering strategy:
-- **Simple annotations/labels**: Use `Text()` with Unicode math (recommended)
-- **Complex formulas**: Install `basictex` (~150MB) or use a system with LaTeX pre-installed
-- **Bar charts/data**: Use manual axis labels as shown above
+Use `terminal` to run `python scripts/check_prerequisites.py --no-latex` from this skill directory.
+For full math typesetting, omit `--no-latex`; the checker requires `latex` and `dvisvgm`.
+Font glyph availability varies; inspect a preview before choosing Unicode math labels.

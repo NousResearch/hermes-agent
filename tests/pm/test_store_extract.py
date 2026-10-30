@@ -7,7 +7,7 @@ import tarfile
 
 import pytest
 
-from pm.store import extract
+from pm.store import extract, flatten_single_dir, tree_digest
 
 
 def _tar(tmp_path, members):
@@ -41,6 +41,24 @@ def test_symlinks_escaping_the_destination_are_rejected(tmp_path, linkname):
     with pytest.raises(tarfile.FilterError):
         extract(archive, tmp_path / "out")
     assert not (tmp_path / "out" / "python/bin/evil").is_symlink()
+
+
+def test_os_metadata_does_not_block_flatten_or_change_digest(tmp_path):
+    tree = tmp_path / "tree"
+    package = tree / "node-v26.7.0-darwin-arm64"
+    package.mkdir(parents=True)
+    (package / "bin").mkdir()
+    (package / "bin/node").write_bytes(b"node")
+
+    flatten_single_dir(tree)
+    baseline = tree_digest(tree)
+    (tree / ".DS_Store").write_bytes(b"finder metadata")
+    (tree / "._node").write_bytes(b"appledouble metadata")
+
+    flatten_single_dir(tree)
+
+    assert (tree / "bin/node").read_bytes() == b"node"
+    assert tree_digest(tree) == baseline
 
 
 def _portable_git(tmp_path):

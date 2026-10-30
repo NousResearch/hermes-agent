@@ -209,6 +209,83 @@ function terminalSections(open: Extract<OpenContextMenu, { kind: 'terminal' }>, 
   ]
 }
 
+function applySelectAll(editable: HTMLElement) {
+  if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+    editable.select()
+
+    return
+  }
+
+  const range = document.createRange()
+
+  range.selectNodeContents(editable)
+
+  const selection = window.getSelection()
+
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+}
+
+function guardEditableSelection(editable: HTMLElement) {
+  let frame: number
+
+  const stop = () => {
+    cancelAnimationFrame(frame)
+    document.removeEventListener('pointerdown', stop, true)
+    document.removeEventListener('keydown', stop, true)
+  }
+
+  const verify = () => {
+    if (!editable.isConnected) {
+      return false
+    }
+
+    const selection = window.getSelection()
+
+    const hasSelection =
+      editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement
+        ? editable.selectionStart !== editable.selectionEnd
+        : selection && !selection.isCollapsed && editable.contains(selection.anchorNode)
+
+    if (document.activeElement !== editable || !hasSelection) {
+      editable.focus()
+      applySelectAll(editable)
+    }
+
+    return true
+  }
+
+  const start = () => {
+    frame = requestAnimationFrame(() => {
+      if (!editable.isConnected) {
+        stop()
+
+        return
+      }
+
+      editable.focus()
+      applySelectAll(editable)
+      const started = performance.now()
+
+      // Cover the full teardown window regardless of the display's frame rate:
+      // Radix can remove the menu and steal focus after early checks have passed.
+      const retry = () => {
+        if (!verify() || performance.now() - started >= 500) {
+          stop()
+
+          return
+        }
+
+        frame = requestAnimationFrame(retry)
+      }
+
+      frame = requestAnimationFrame(retry)
+    })
+  }
+
+  return { start, stop }
+}
+
 /** One section per plugin, already ordered and capped by the resolver; each row
  *  runs after the menu closed, like the built-in edit verbs. */
 function composerItemSections(sections: ComposerMenuRow[][], afterClose: (run: () => void) => void): ReactNode[][] {
@@ -263,26 +340,22 @@ function domSections(
   // (the edit composer re-parents focus on blur) it selected the whole
   // transcript. A renderer range cannot escape the field.
   const selectAllInEditable = () => {
-    withEditableFocus(() => {
-      const editable = target.editable
+    const editable = target.editable
 
-      if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
-        editable.select()
+    closeContextMenu()
 
-        return
-      }
+    if (!editable) {
+      return
+    }
 
-      if (editable) {
-        const range = document.createRange()
+    const { start, stop } = guardEditableSelection(editable)
 
-        range.selectNodeContents(editable)
-
-        const selection = window.getSelection()
-
-        selection?.removeAllRanges()
-        selection?.addRange(range)
-      }
-    })
+    // Listen before the first frame so newer user intent can cancel it too.
+    // The initiating pointerdown precedes onSelect; we do not listen to click
+    // or pointerup, so that same click cannot cancel its own selection.
+    document.addEventListener('pointerdown', stop, true)
+    document.addEventListener('keydown', stop, true)
+    start()
   }
 
   const spellcheckAction = (action: { kind: 'add' | 'replace'; word: string }) => {

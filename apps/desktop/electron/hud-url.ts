@@ -20,13 +20,28 @@ import { pathToFileURL } from 'node:url'
 export function buildHudWindowUrl(
   sessionId: null | string | undefined,
   {
+    connectionId,
     devServer,
     profile,
     rendererIndexPath
-  }: { devServer?: null | string; profile?: null | string; rendererIndexPath?: string } = {}
+  }: {
+    connectionId?: null | string
+    devServer?: null | string
+    profile?: null | string
+    rendererIndexPath?: string
+  } = {}
 ): string {
   const profileKey = typeof profile === 'string' ? profile.trim() : ''
-  const query = `?win=hud${profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''}`
+  // The CONNECTION rides with the profile, same as buildSessionWindowUrl: a bare
+  // profile makes the HUD dial the legacy v1 primary, which on a machine whose
+  // primary is a remote gateway sends a HUD opened from "This device" to the
+  // remote host — where it can see neither this desktop nor its apps.
+  const connectionKey = typeof connectionId === 'string' ? connectionId.trim() : ''
+
+  const query = `?win=hud${profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''}${
+    profileKey && connectionKey ? `&connectionId=${encodeURIComponent(connectionKey)}` : ''
+  }`
+
   const route = sessionId ? `#/${encodeURIComponent(sessionId)}` : '#/'
 
   if (devServer) {

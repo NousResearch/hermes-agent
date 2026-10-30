@@ -1799,39 +1799,21 @@ def _profile_runtime_scope(
     ``set_hermes_home_override`` is a contextvar (reaches the agent worker via ``copy_context()``);
     ``set_secret_scope`` makes the profile ``.env`` the credential source without mutating
     ``os.environ``, so subprocesses never inherit cross-profile secrets."""
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from agent.secret_scope import set_secret_scope, reset_secret_scope
+    from gateway.run_profile_scope import prepare_profile_runtime_scope, bind_profile_runtime_scope
 
-    home_token = secret_token = None
-    try:
-        home_token = set_hermes_home_override(str(profile_home))
-        if prepared_secret_scope is not None:
-            secrets = prepared_secret_scope
-        elif hydrate_secrets:
-            secrets = _load_profile_secret_scope(Path(profile_home))
-        else:
-            from tui_gateway.launch_profile_policy import owner_secret_scope  # caller already hydrated off-loop
-            secrets = owner_secret_scope(Path(profile_home))
-        secret_token = set_secret_scope(secrets, profile_home=str(profile_home))
-        # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
-        # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have
-        # pinned (first-writer-wins backend leak; #68559).
-        from tools.terminal_scope import install_and_reset_profile_terminal_scope
-
-        with install_and_reset_profile_terminal_scope(Path(profile_home)):
-            yield
-    finally:
-        if secret_token is not None:
-            reset_secret_scope(secret_token)
-        if home_token is not None:
-            reset_hermes_home_override(home_token)
+    prepared = prepare_profile_runtime_scope(
+        Path(profile_home), prepared_secret_scope, hydrate_secrets=hydrate_secrets)
+    with bind_profile_runtime_scope(prepared):
+        yield
 
 
 @_asynccontextmanager
 async def _async_profile_runtime_scope(profile_home: Path):
-    """Enter a profile scope without loading secret files on the event loop."""
-    secrets = await asyncio.to_thread(_load_profile_secret_scope, Path(profile_home))
-    with _profile_runtime_scope(Path(profile_home), secrets):
+    """Prepare the COMPLETE policy off-loop; bind only ContextVars in this task."""
+    from gateway.run_profile_scope import prepare_profile_runtime_scope, bind_profile_runtime_scope, run_off_loop
+
+    prepared = await run_off_loop(prepare_profile_runtime_scope, Path(profile_home))
+    with bind_profile_runtime_scope(prepared):
         yield
 
 
@@ -3244,10 +3226,11 @@ def _reconnect_attention_after_secs() -> float:
         return float(_DEFAULT_CONFIG["agent"]["reconnect_attention_after"])
 
 
-def _reconnect_needs_attention(info: dict, now: float) -> bool:
+def _reconnect_needs_attention(info: dict, now: float, threshold: Optional[float] = None) -> bool:
     """True when a reconnect-queue entry has waited long enough for NEEDS_ATTENTION.
     ``queued_at`` is re-stamped on each (re)entry, so only *continuous* failure escalates."""
-    threshold = _reconnect_attention_after_secs()
+    if threshold is None:
+        threshold = _reconnect_attention_after_secs()
     if threshold <= 0:
         return False  # escalation disabled
     queued_at = info.get("queued_at")

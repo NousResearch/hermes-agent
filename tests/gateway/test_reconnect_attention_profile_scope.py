@@ -42,12 +42,20 @@ def test_threshold_follows_bound_profile_scope_a_b_a(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_secondary_reconnect_loop_escalates_under_own_profile(tmp_path, monkeypatch):
+@pytest.mark.parametrize("raising", ["create", "connect"])
+async def test_secondary_reconnect_loop_escalates_under_own_profile(tmp_path, monkeypatch, raising):
     """A secondary profile's reconnect loop flags ``<profile>:<platform>`` NEEDS_ATTENTION at ITS
-    threshold — the launch profile's (100000 here) must not suppress it."""
+    threshold — the launch profile's (100000 here) must not suppress it, even when every attempt
+    raises during an outage (the built-in 7200 default must not replace it either)."""
     launch = _home_with_threshold(tmp_path, "launch", 100000)
     secondary = _home_with_threshold(tmp_path, "sec", 0.01)
+    (secondary / "config.yaml").write_text(yaml.safe_dump({
+        "agent": {"reconnect_attention_after": 0.01},
+        "platforms": {"discord": {"enabled": True}}}), encoding="utf-8")
+    (secondary / ".env").write_text("DISCORD_BOT_TOKEN=FAKE_sec\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda _name: secondary)
+    monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda _home: None)
 
     runner = object.__new__(GatewayRunner)
     runner._running = True
@@ -56,17 +64,20 @@ async def test_secondary_reconnect_loop_escalates_under_own_profile(tmp_path, mo
     writes = []
     monkeypatch.setattr(runner, "_update_platform_runtime_status", lambda key, **kw: writes.append((key, kw)))
 
-    class _RetryableAdapter:
-        has_fatal_error = True
-        fatal_error_retryable = True
+    def create(*_args):
+        if raising == "create":
+            raise RuntimeError("platform outage")
+        return object()
 
-    async def failing_attempt(profile_name, platform):
-        return _RetryableAdapter(), False
+    async def connect(*_args, **_kwargs):
+        raise RuntimeError("platform outage")
 
     async def noop_disconnect(adapter, platform):
         return None
 
-    monkeypatch.setattr(runner, "_secondary_reconnect_attempt", failing_attempt)
+    monkeypatch.setattr(runner, "_create_adapter", create)
+    monkeypatch.setattr(runner, "_configure_profile_adapter", lambda *a: None)
+    monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
     monkeypatch.setattr(runner, "_safe_adapter_disconnect", noop_disconnect)
     monkeypatch.setattr(runner, "_routed_profile_home", lambda name: secondary)
     monkeypatch.setattr(gateway_run, "_reconnect_backoff", lambda attempts: 0.02)

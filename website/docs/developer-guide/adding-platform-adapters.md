@@ -233,6 +233,13 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | Display defaults | `display_tier` picks the built-in tool-progress/streaming tier |
 | Profile clone credential strip | `shared_env_prefixes` keeps tool-shared keys when the adapter is not in use |
 
+Adapter factories run on the gateway loop by default. A factory that needs no running loop
+or loop-bound resources may register `factory_off_loop=True` to prepare the adapter in a
+worker with the owning profile's ContextVars copied in. Discord uses this for constructor-time
+config and persisted-thread reads. Handler wiring and `connect()` still run on the gateway loop.
+Leave the default for factories that call `get_running_loop()` or construct loop-bound clients.
+Feature-detect the field with `dataclasses.fields(PlatformEntry)` on older cores, as below.
+
 ### Service adapters: `trusted_inbound`, `display_tier`, `shared_env_prefixes`
 
 Three optional `ctx.register_platform(...)` / `PlatformEntry` fields exist for adapters that bridge a

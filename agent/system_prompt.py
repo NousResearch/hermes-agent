@@ -135,6 +135,30 @@ def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
     return rendered
 
 
+# Opens the paragraph _active_profile_line emits; build_system_prompt_parts puts
+# it between the plugin sections and the timestamp.
+_ACTIVE_PROFILE_PREFIX = "Active Hermes profile: "
+
+# Labels of the paragraph _timestamp_line emits after the profile paragraph. A
+# timeless Bot Chat prompt drops the start date; with no zone either, its first
+# populated trailer field opens the paragraph (_join_tier strips the newline).
+_STARTED_LABEL = "Conversation started"
+_TIMEZONE_LABEL = "Timezone"
+_TRAILER_LABELS = ("Session ID", "Model", "Provider", "Platform")
+_TIMESTAMP_PARAGRAPH_HEADS = tuple(f"\n\n{label}:" for label in (_STARTED_LABEL, _TIMEZONE_LABEL, *_TRAILER_LABELS))
+
+
+def _past_profile_paragraph(tail: str) -> str:
+    """*tail* (the prompt after the plugin sections) past the one active-profile
+    paragraph the builder emits there, or unchanged when it does not start with
+    one (prompts persisted before the paragraph moved into the volatile tier)."""
+    head = "\n\n" + _ACTIVE_PROFILE_PREFIX
+    if not tail.startswith(head):
+        return tail
+    paragraph_end = tail.find("\n\n", len(head))
+    return tail[paragraph_end:] if paragraph_end >= 0 else ""
+
+
 def _restore_plugin_prompt_sections(prompt: str) -> tuple:
     """Recover frozen section bytes from the persisted full prompt.  Only the
     exact canonical container emitted by core is accepted — user/project text
@@ -148,7 +172,7 @@ def _restore_plugin_prompt_sections(prompt: str) -> tuple:
     if end < 0:
         return ()
     after_end = end + len(PLUGIN_SECTIONS_END)
-    if not prompt[after_end:].startswith("\n\nConversation started:"):
+    if not _past_profile_paragraph(prompt[after_end:]).startswith(_TIMESTAMP_PARAGRAPH_HEADS):
         return ()
     framed = prompt[start:after_end]
     restored = []
@@ -383,7 +407,7 @@ def _active_profile_line(agent: Any) -> str:
         # Without one, keep the ambient (patchable) resolution byte-identical.
         _root_str = str(get_default_hermes_root() if _agent_home_path is not None else get_hermes_home())
         return (
-            "Active Hermes profile: default. Other profiles (if any) live "
+            _ACTIVE_PROFILE_PREFIX + "default. Other profiles (if any) live "
             "under " + _root_str + "/profiles/<name>/. Each profile has its own "
             "skills/, plugins/, cron/, and memories/ that affect a different "
             "session than this one. Do not modify another profile's "
@@ -400,7 +424,7 @@ def _active_profile_line(agent: Any) -> str:
     # NOT get_hermes_home().
     default_root = get_default_hermes_root()
     return (
-        f"Active Hermes profile: {active_profile}. This session reads "
+        f"{_ACTIVE_PROFILE_PREFIX}{active_profile}. This session reads "
         f"and writes {profile_home}/. The default "
         f"profile's data lives at {default_root}/skills/, {default_root}/plugins/, "
         f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
@@ -501,7 +525,7 @@ def _timestamp_line(agent: Any) -> str:
     _bits = _zone_bits(now, _hermes_tz())
     _zone_suffix = f" ({', '.join(_bits)})" if _bits else ""
     _start = _session_start_like(agent, now)
-    timestamp_line = f"Conversation started: {safe_strftime(_start, '%A, %B %d, %Y')}{_zone_suffix}"
+    timestamp_line = f"{_STARTED_LABEL}: {safe_strftime(_start, '%A, %B %d, %Y')}{_zone_suffix}"
     # Second line (maintainer design, salvaging #96224's anchor): long-lived sessions — Bot Mode
     # forever-chats, messenger channels people never close — span many days and many compactions. A lone
     # birth date leads the model to believe it is still living in that old day. The prompt is rebuilt at
@@ -513,9 +537,9 @@ def _timestamp_line(agent: Any) -> str:
         timestamp_line += (f"\nToday's date (as of the last context rebuild): {safe_strftime(now, '%A, %B %d, %Y')} "
                            "— trust this over the start date for what day it is now; query tools for exact time.")
     if getattr(agent, "_bot_chat_timeless_prompt", False):
-        timestamp_line = f"Timezone: {', '.join(_bits)}" if _bits else ""
-    trailer = (("Session ID", agent.session_id if agent.pass_session_id else None), ("Model", agent.model),
-               ("Provider", agent.provider), ("Platform", agent.platform))
+        timestamp_line = f"{_TIMEZONE_LABEL}: {', '.join(_bits)}" if _bits else ""
+    trailer = zip(_TRAILER_LABELS, (agent.session_id if agent.pass_session_id else None, agent.model,
+                                    agent.provider, agent.platform), strict=True)
     return timestamp_line + "".join(f"\n{label}: {value}" for label, value in trailer if value)
 
 

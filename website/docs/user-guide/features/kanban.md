@@ -189,6 +189,37 @@ hermes kanban boards rm atm10-server
 hermes kanban boards rm atm10-server --delete
 ```
 
+### Planner admission for new requests
+
+A trusted workflow can require planning before newly created tasks execute. Enable
+this per board through the Python API:
+
+```python
+from hermes_cli import kanban_db as kb
+
+kb.write_board_metadata("example", intake_profile="planner")
+```
+
+New ordinary tasks then retain `intake_state="pending"` and start in Triage;
+explicitly blocked requests stay blocked. Assignment, creator labels, skills, and
+manual promotion do not satisfy the review. Claims and completion reject pending
+tasks. Existing tasks keep their previous behavior, and disabling enrollment does
+not release pending requests.
+
+The trusted planner holds a native write transaction, validates its source
+snapshot, and calls `specify_triage_task` or `decompose_triage_task` inside
+`hermes_cli.kanban_intake.reviewing(conn, task_id, profile=...,
+source_fingerprint=...)`. The SHA256 fingerprint identifies the reviewed input;
+the caller must check that input under the same write lock. Admission and graph
+changes commit together. Planner-created children inherit the receipt and all
+incoming prerequisites. Recompute readiness after committing an outer transaction.
+Review does not release dependencies or independent approval gates.
+
+A trusted workflow with a separate review contract may wrap its validated creation
+in `hermes_cli.kanban_intake.exempt_creation(conn, reason=...)`. These scopes are
+Python integration APIs; they are not task fields or agent tool arguments. The
+integration owns authorization of the planner and any exemption.
+
 Board resolution order (highest precedence first):
 
 1. Explicit `--board <slug>` on the CLI call.

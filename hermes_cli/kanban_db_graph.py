@@ -103,6 +103,7 @@ def decompose_triage_task(
         _canonical_assignee, _link, _append_event, _insert_comment,
         write_txn, recompute_ready,
     )
+    from hermes_cli.kanban_intake import is_pending, review as intake_review, record_inherited, record_review
 
     if not children:
         return None
@@ -113,12 +114,16 @@ def decompose_triage_task(
     # ONE txn so the fan-out is atomic; helpers that open their own write_txn
     # (create_task, link_tasks, add_comment) must not be called in here.
     now = int(time.time())
-    with write_txn(conn):
+    caller_owns_txn = bool(conn.in_transaction)
+    with write_txn(conn, allow_nested=True):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, workspace_kind, workspace_path, intake_state "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if root_row is None or root_row["status"] != "triage":
+            return None
+        receipt = intake_review(conn, task_id)
+        if is_pending(conn, task_id) and receipt is None:
             return None
         # Dependency links alone do not imply lineage. The completion event is
         # committed with the graph, and survives re-triage or unlinking.
@@ -127,10 +132,18 @@ def decompose_triage_task(
             (task_id,),
         ).fetchone():
             return None
+        root_parent_ids = [row[0] for row in conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id", (task_id,),
+        )]
         child_ids = [
-            _insert_decomposed_child(conn, task_id, root_row, child, author, now)
+            _insert_decomposed_child(conn, task_id, root_row, child, author, now, receipt)
             for child in children
         ]
+        # Every fan-out child must retain the root's prerequisites. Otherwise
+        # planning could make newly-created work claimable before its inputs.
+        for child_id in child_ids:
+            for parent_id in root_parent_ids:
+                _link(conn, parent_id, child_id)
         # Sibling edges within the decomposed graph.
         for idx, child in enumerate(children):
             for p_idx in child.get("parents") or []:
@@ -159,16 +172,83 @@ def decompose_triage_task(
         _append_event(
             conn, task_id, "decomposed", {"child_ids": child_ids, "root_assignee": root_assignee},
         )
+        if receipt is not None:
+            record_review(conn, task_id)
+            for child_id in child_ids:
+                record_inherited(conn, child_id, *receipt)
     # Outside the txn (own IMMEDIATE txn). ``auto_promote=False`` leaves the
     # children in ``todo`` for manual-review-first workflows.
-    if auto_promote:
+    if auto_promote and not caller_owns_txn:
         recompute_ready(conn)
     return child_ids
 
 
+def specify_triage_task(
+    conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
+    body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,
+) -> bool:
+    """Update a triage task and admit it only after a scoped planner review."""
+    from hermes_cli.kanban_db import (
+        _canonical_assignee, _insert_comment, _append_event, write_txn, recompute_ready,
+    )
+    from hermes_cli.kanban_intake import is_pending, review as intake_review, record_review
+
+    if title is not None and not title.strip():
+        raise ValueError("title cannot be blank")
+    assignee = _canonical_assignee(assignee)
+    caller_owns_txn = bool(conn.in_transaction)
+    with write_txn(conn, allow_nested=True):
+        existing = conn.execute(
+            "SELECT title, body, assignee FROM tasks WHERE id = ? AND status = 'triage'",
+            (task_id,),
+        ).fetchone()
+        if existing is None:
+            return False
+        receipt = intake_review(conn, task_id)
+        if is_pending(conn, task_id) and receipt is None:
+            return False
+        sets: list[str] = ["status = 'todo'"]
+        params: list[Any] = []
+        changed_fields: list[str] = []
+        if title is not None and title.strip() != (existing["title"] or ""):
+            sets.append("title = ?")
+            params.append(title.strip())
+            changed_fields.append("title")
+        if body is not None and (body or "") != (existing["body"] or ""):
+            sets.append("body = ?")
+            params.append(body)
+            changed_fields.append("body")
+        if assignee is not None and assignee != (existing["assignee"] or None):
+            sets.append("assignee = ?")
+            params.append(assignee)
+            changed_fields.append("assignee")
+        params.append(task_id)
+        cur = conn.execute(
+            f"UPDATE tasks SET {', '.join(sets)} "
+            f"WHERE id = ? AND status = 'triage'", tuple(params),
+        )
+        if cur.rowcount != 1:
+            return False
+        if changed_fields and author and author.strip():
+            _insert_comment(
+                conn, task_id, author.strip(),
+                "Specified — updated " + ", ".join(changed_fields) + " and promoted to todo.",
+                int(time.time()),
+            )
+        _append_event(
+            conn, task_id, "specified",
+            {"changed_fields": changed_fields} if changed_fields else None,
+        )
+        if receipt is not None:
+            record_review(conn, task_id)
+    if not caller_owns_txn:
+        recompute_ready(conn)
+    return True
+
+
 def _insert_decomposed_child(
     conn: sqlite3.Connection, root_id: str, root_row: sqlite3.Row, child: dict,
-    author: Optional[str], now: int,
+    author: Optional[str], now: int, receipt: Optional[tuple[str, str]] = None,
 ) -> str:
     """Insert one decomposed child as ``todo`` (linked under the root later so
     the dispatcher only ever sees a coherent graph); returns its id.
@@ -183,6 +263,7 @@ def _insert_decomposed_child(
     from hermes_cli.kanban_db import (
         _new_task_id, _canonical_assignee, _append_event,
     )
+    from hermes_cli.kanban_intake import creation_admission
 
     root_ws_kind = root_row["workspace_kind"] or "scratch"
     child_ws_kind = child.get("workspace_kind") or root_ws_kind
@@ -196,15 +277,20 @@ def _insert_decomposed_child(
         child_ws_path = None
     new_id = _new_task_id()
     body = child.get("body")
+    intake_state, intake_profile, _ = creation_admission(conn)
+    if receipt is not None:
+        intake_state, intake_profile = "inherited", receipt[0]
+    initial_status = "triage" if intake_state == "pending" else "todo"
     conn.execute(
         "INSERT INTO tasks "
         "(id, title, body, assignee, status, workspace_kind, "
-        " workspace_path, tenant, created_at, created_by) "
-        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+        " workspace_path, tenant, created_at, created_by, intake_state, intake_profile) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             new_id, child["title"].strip(), body if isinstance(body, str) else None,
-            _canonical_assignee(child.get("assignee")), child_ws_kind, child_ws_path,
-            root_row["tenant"], now, (author or "decomposer"),
+            _canonical_assignee(child.get("assignee")), initial_status,
+            child_ws_kind, child_ws_path, root_row["tenant"], now,
+            (author or "decomposer"), intake_state, intake_profile,
         ),
     )
     _append_event(

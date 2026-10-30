@@ -2017,12 +2017,56 @@ class TestElementTokenAttachment:
         `element_token` in `click`'s inputSchema and REFUSES a bare element_index (`snapshot_id_required`).
         The token must ride along from the live schema alone, or every element click is refused."""
         backend = self._backend_with_session({})  # no capabilities[] at all — the modern shape
-        backend._session.supports_input_property = lambda tool, prop: (tool, prop) == ("click", "element_token")
+        backend._session.supports_input_property = lambda tool, property_name: (tool, property_name) == ("click", "element_token")
         backend._snapshot_tokens = {5: "s00000001:5"}
         backend.click(element=5, button="left")
         _, args = backend._session.call_tool.call_args.args
         assert args["element_token"] == "s00000001:5"
 
+    def test_element_index_dropped_when_schema_replaced_it_with_the_token(self):
+        """cua-driver 0.38 keeps `element_index` in get_window_state's `elements` array but its ACTION tools
+        accept `element_token` only and refuse the superseded key (`unknown argument element_index` under
+        additionalProperties=false), so sending both — what this wrapper used to do — killed every element
+        click on that driver. Drop the index once the live schema advertises the token and not the index."""
+        backend = self._backend_with_session({})
+        backend._session.supports_input_property = lambda tool, property_name: (tool, property_name) == ("click", "element_token")
+        backend._session.has_input_schema = lambda tool: tool == "click"
+        backend._snapshot_tokens = {5: "s0002:5"}
+        backend.click(element=5, button="left")
+        _, args = backend._session.call_tool.call_args.args
+        assert args["element_token"] == "s0002:5"
+        assert "element_index" not in args
+
+    def test_element_index_kept_when_the_schema_was_never_discovered(self):
+        """Stripping the index on a hunch would break every element click on an older driver: without a
+        discovered schema, `supports_input_property` fails closed, so the legacy argument has to stay."""
+        backend = self._backend_with_session({})
+        backend._session.supports_input_property = lambda tool, property_name: (tool, property_name) == ("click", "element_token")
+        backend._session.has_input_schema = lambda tool: False
+        backend._snapshot_tokens = {5: "s0002:5"}
+        backend.click(element=5, button="left")
+        _, args = backend._session.call_tool.call_args.args
+        assert args["element_index"] == 5
+        assert args["element_token"] == "s0002:5"
+
+    def test_gws_args_ask_for_the_structured_tree_when_the_driver_offers_it(self):
+        """cua-driver 0.38 defaults get_window_state to a compact Markdown tree with no per-row token, so a
+        capture from it yields zero tokens and every element action then has nothing to address. Ask for
+        `tree_format: "elements"` when the live schema carries the switch (older drivers reject it)."""
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        modern = CuaDriverBackend()
+        modern._session = MagicMock()
+        modern._session.supports_input_property = lambda tool, prop: (tool, prop) == ("get_window_state", "tree_format")
+        modern._active_pid, modern._active_window_id = 111, 222
+        assert modern._gws_args()["tree_format"] == "elements"
+
+        legacy = CuaDriverBackend()
+        legacy._session = MagicMock()
+        legacy._session.supports_input_property = lambda tool, prop: False
+        legacy._active_pid, legacy._active_window_id = 111, 222
+        assert "tree_format" not in legacy._gws_args()
 
     def test_capture_refreshes_snapshot_tokens(self):
         """A fresh capture should overwrite any stale tokens from a

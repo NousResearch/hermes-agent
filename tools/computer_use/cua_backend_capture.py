@@ -252,6 +252,12 @@ class _CaptureMixin:
         """
         args: dict[str, Any] = {"pid": self._active_pid, "window_id": self._active_window_id,
                                 "session": self._session_id}
+        # cua-driver 0.38 defaults get_window_state to a compact Markdown tree, which carries no
+        # `element_token` per row — and every element action with that driver needs the token. Ask for the
+        # structured array when the driver advertises the switch; older drivers reject unknown args, so the
+        # property has to be in the live schema first.
+        if self._session.supports_input_property("get_window_state", "tree_format"):
+            args["tree_format"] = "elements"
         from tools.computer_use import cua_backend as _cb  # lazy: cua_backend imports this module at import time
         if capped := _cb._cua_configured_ax_max_elements():
             args["max_elements"] = capped

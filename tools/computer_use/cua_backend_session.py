@@ -373,6 +373,12 @@ class _CuaDriverSession:
         properties = schema.get("properties") if isinstance(schema, dict) else None
         return isinstance(properties, dict) and property_name in properties
 
+    def has_input_schema(self, tool: str) -> bool:
+        """True when tools/list advertised a property map for *tool*, so a missing property is meaningful
+        rather than "schema never discovered" (``supports_input_property`` is False in both cases)."""
+        schema = getattr(self, "_tool_schemas", {}).get(tool, {})
+        return isinstance(schema.get("properties") if isinstance(schema, dict) else None, dict)
+
     @property
     def capabilities_discovered(self) -> bool:
         """tools/list populated the map; when False ``_has_tool`` is untrustworthy."""

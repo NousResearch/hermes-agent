@@ -413,6 +413,13 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         if token and (self._session.supports_input_property(name, "element_token")
                       or self._session.supports_capability("accessibility.element_tokens", tool=name)):
             args["element_token"] = token
+            # A driver whose live schema replaced `element_index` with `element_token` rejects the superseded
+            # property outright (`additionalProperties: false` -> "unknown argument element_index"), which killed
+            # every element click on cua-driver 0.38. Once the live schema is known, advertises the token and does
+            # not list the index, drop it: the token carries the same element identity. A schema we never
+            # discovered keeps `element_index` untouched, so older drivers still get the argument they expect.
+            if self._session.has_input_schema(name) and not self._session.supports_input_property(name, "element_index"):
+                args.pop("element_index", None)
         if inject_session:  # setdefault preserves any explicit session a caller already supplied
             args.setdefault("session", self._session_id)
         try:

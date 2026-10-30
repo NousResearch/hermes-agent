@@ -25,6 +25,7 @@ import {
   cookiesHaveLiveSession,
   cookiesHaveSession,
   gatewayTicketFailure,
+  gatewayTicketTransportMessage,
   gatewayWsUrlIpcResult,
   isGatewayAuthRejection,
   localProfileEntry,
@@ -1630,6 +1631,30 @@ test('FIX #95701: a confirmed 401/403 ticket rejection is tagged isReauthRequire
   // confirmed the same way.
   const tagged = gatewayTicketFailure({ needsOauthLogin: true }, 'auth copy', 'transport copy') as any
   assert.equal(tagged.isReauthRequired, true)
+})
+
+test('FIX #98647: a mint timeout names the timeout, not a blanket "could not reach"', () => {
+  // The fetch layer rejected a timeout with a bare Error (no .code), so
+  // gatewayTicketTransportMessage fell through every branch and emitted the
+  // generic copy — hiding both the real fault class (a stalled connect, not a
+  // refused one) and the deadline that expired.
+  const timeout = Object.assign(new Error('Timed out connecting to Hermes backend after 30000ms'), {
+    code: 'ETIMEDOUT'
+  })
+
+  const message = gatewayTicketTransportMessage(timeout)
+
+  assert.match(message, /timed out or the host could not be resolved/)
+  assert.match(message, /network\/VPN path/)
+
+  // A code-less error still gets the generic fallback.
+  assert.match(gatewayTicketTransportMessage(new Error('something odd')), /Try reconnecting\.$/)
+
+  // A refused connection keeps its own, distinct sentence.
+  assert.match(
+    gatewayTicketTransportMessage(Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })),
+    /the connection was refused/
+  )
 })
 
 test('FIX #95701: transport and server failures at the ticket mint stay retryable — never reauth', () => {

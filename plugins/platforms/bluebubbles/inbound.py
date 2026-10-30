@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 _TAPBACK_CODES = {*range(2000, 2006), *range(3000, 3006)}
 _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
 _HYDRATE_RETRY_DELAYS = (0.0, 0.05, 0.15)
+_ATTACHMENT_WAIT_SECONDS = 300.0
+_ATTACHMENT_RETRY_SECONDS = 5.0
 _INBOUND_CACHE_SIZE = 2000
 _INBOUND_CACHE_TTL = 300
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
@@ -34,6 +36,9 @@ class _InboundMessage:
     users: int = 0
     touched: float = field(default_factory=time.monotonic)
     accepted: bool = False
+    attachment_deadline: float = 0.0
+    retry_task: Any = None
+    retry_payload: Any = None
     delivered: set[str] = field(default_factory=set)
     downloaded: dict[str, tuple[str, str]] = field(default_factory=dict)
 
@@ -44,6 +49,40 @@ def _ok():
 
 
 class BlueBubblesInboundMixin:
+    @staticmethod
+    async def _wait_for_attachment_retry(delay):
+        await asyncio.sleep(delay)
+
+    def _schedule_attachment_retry(self, payload, state, message_id):
+        state.retry_payload = payload
+        if not state.attachment_deadline:
+            state.attachment_deadline = time.monotonic() + _ATTACHMENT_WAIT_SECONDS
+        if state.retry_task is not None and not state.retry_task.done():
+            return
+        task = asyncio.create_task(self._retry_pending_attachments(state, message_id))
+        state.retry_task = task
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _retry_pending_attachments(self, state, message_id):
+        # Hold only this message between attempts; other messages may continue in this chat.
+        state.users += 1
+        try:
+            while True:
+                remaining = state.attachment_deadline - time.monotonic()
+                await self._wait_for_attachment_retry(min(_ATTACHMENT_RETRY_SECONDS, max(0, remaining)))
+                response = await self._process_inbound(state.retry_payload, {}, message_id, held=state)
+                if response.status != 503 and state.accepted and all(
+                        not isinstance(a, dict) or not a.get("guid") or a["guid"] in state.delivered
+                        for a in state.record.get("attachments") or []):
+                    state.retry_payload = None
+                    return
+                if time.monotonic() >= state.attachment_deadline:
+                    return
+        finally:
+            state.users -= 1
+            state.retry_task = None
+
     def _extract_payload_record(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
         data = payload.get("data")
         if isinstance(data, dict):
@@ -91,7 +130,15 @@ class BlueBubblesInboundMixin:
                 for delay in _HYDRATE_RETRY_DELAYS:
                     if delay:
                         await asyncio.sleep(delay)
-                    cached = await self._download_attachment(att_guid, att)
+                    remaining = (state.attachment_deadline - time.monotonic()
+                                 if state is not None and state.attachment_deadline else _ATTACHMENT_WAIT_SECONDS)
+                    if remaining <= 0:
+                        break
+                    try:
+                        async with asyncio.timeout(remaining):
+                            cached = await self._download_attachment(att_guid, att)
+                    except TimeoutError:
+                        break
                     if cached:
                         break
             if not cached:
@@ -254,10 +301,16 @@ class BlueBubblesInboundMixin:
                 for guid, cached in held.downloaded.items():
                     current.downloaded.setdefault(guid, cached)
                 current.touched = max(current.touched, held.touched)
+                if held.retry_payload is not None:
+                    current.retry_payload = held.retry_payload
+                    current.attachment_deadline = held.attachment_deadline
+        for message_id, state in list(self._inbound_messages.items()):
+            if state.retry_payload is not None:
+                self._schedule_attachment_retry(state.retry_payload, state, message_id)
         for message_id, state in list(self._inbound_messages.items()):
             if len(self._inbound_messages) <= _INBOUND_CACHE_SIZE:
                 break
-            if not state.users:
+            if not state.users and (state.retry_task is None or state.retry_task.done()):
                 self._inbound_messages.pop(message_id)
 
     def _restore_admitted_content(self, state, message_id):
@@ -280,7 +333,8 @@ class BlueBubblesInboundMixin:
     def _get_inbound_message(self, message_id: Optional[str], record: dict[str, Any]) -> _InboundMessage:
         now = time.monotonic()
         for key, state in list(self._inbound_messages.items()):
-            if not state.users and now - state.touched >= _INBOUND_CACHE_TTL:
+            if (not state.users and (state.retry_task is None or state.retry_task.done())
+                    and now - state.touched >= _INBOUND_CACHE_TTL):
                 self._inbound_messages.pop(key)
         state = self._inbound_messages.get(message_id) if message_id else None
         if state is None:
@@ -289,7 +343,7 @@ class BlueBubblesInboundMixin:
                 for key, old in list(self._inbound_messages.items()):
                     if len(self._inbound_messages) < _INBOUND_CACHE_SIZE:
                         break
-                    if not old.users:
+                    if not old.users and (old.retry_task is None or old.retry_task.done()):
                         self._inbound_messages.pop(key)
                 self._inbound_messages[message_id] = state
         if message_id:
@@ -349,10 +403,14 @@ class BlueBubblesInboundMixin:
         # Known unmentioned group text needs no media I/O; sparse text can still hydrate below.
         if is_group and self.require_mention and text and not self._message_matches_mention_patterns(text):
             return _ok()
-        if record.get("attachments") and self.client:
+        if record.get("attachments") and not state.attachment_deadline:
+            state.attachment_deadline = time.monotonic() + _ATTACHMENT_WAIT_SECONDS
+        if (record.get("attachments") and self.client
+                and time.monotonic() < state.attachment_deadline):
             try:
-                self._merge_inbound_record(record, await self._hydrate_inbound_record(message_id))
-            except (httpx.HTTPError, OSError, ValueError) as exc:
+                async with asyncio.timeout(state.attachment_deadline - time.monotonic()):
+                    self._merge_inbound_record(record, await self._hydrate_inbound_record(message_id))
+            except (httpx.HTTPError, OSError, ValueError, TimeoutError) as exc:
                 logger.warning("[bluebubbles] attachment hydration failed: %s", type(exc).__name__)
         text = self._value(record.get("text"), record.get("message"), record.get("body")) or ""
         if is_group and self.require_mention:
@@ -364,8 +422,13 @@ class BlueBubblesInboundMixin:
         attachments = {att.get("guid") for att in record.get("attachments") or []
                        if isinstance(att, dict) and att.get("guid")} - state.delivered
         if not attachments <= collected:
-            # Keep successful downloads for a later completion; don't consume the caption alone.
-            return web.json_response({"error": "attachments not ready"}, status=503)
+            if not state.attachment_deadline or time.monotonic() < state.attachment_deadline:
+                self._schedule_attachment_retry(payload, state, message_id)
+                return _ok()
+            if state.accepted:
+                return web.json_response({"error": "attachments not ready"}, status=503)
+            text = (text + "\n\n[An attachment was included, but could not be retrieved within five minutes.]").strip()
+            attachments = collected
         if state.accepted:
             if not media_urls:
                 return _ok()
@@ -434,7 +497,14 @@ class BlueBubblesInboundMixin:
         if (self._is_receipt_only_update(event_type, record)
                 and not self._has_pending_inbound_content(message_id)):
             return _ok()
-        state = self._get_inbound_message(message_id, record)
+        return await self._process_inbound(payload, record, message_id)
+
+    async def _process_inbound(self, payload, record, message_id, *, held=None):
+        state = held or self._get_inbound_message(message_id, record)
+        if held is None and (state.retry_task is None or state.retry_task.done()):
+            state.attachment_deadline = 0.0
+        if held is not None:
+            state.users += 1
         try:
             async with state.lock:
                 attachments = {att.get("guid") for att in state.record.get("attachments") or []
@@ -456,3 +526,9 @@ class BlueBubblesInboundMixin:
         finally:
             state.users -= 1
             state.touched = time.monotonic()
+            task = state.retry_task
+            if (state.accepted and task is not None and task is not asyncio.current_task()
+                    and all(not isinstance(a, dict) or not a.get("guid") or a["guid"] in state.delivered
+                            for a in state.record.get("attachments") or [])):
+                state.retry_payload = None
+                task.cancel()

@@ -254,6 +254,12 @@ class BlueBubblesAdapter(BlueBubblesInboundMixin, BasePlatformAdapter):
             self.client = None
 
     async def disconnect(self) -> None:
+        retries = [state.retry_task for state in self._inbound_messages.values()
+                   if state.retry_task is not None]
+        for task in retries:
+            task.cancel()
+        if retries:
+            await asyncio.gather(*retries, return_exceptions=True)
         await self._unregister_webhook()
         await self._close_client()
         if self._runner:

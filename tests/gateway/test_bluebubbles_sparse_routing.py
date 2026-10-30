@@ -68,7 +68,7 @@ async def test_metadata_completion_admits_only_retained_content(pending):
         if pending == "media":
             unavailable = await adapter._handle_webhook(_Request(
                 "updated-message", guid="retained-message", attachments=_ATTACHMENT))
-            assert unavailable.status == 503
+            assert unavailable.status == 200  # Pending media has a tracked background retry.
             assert len(admitted) == 1
             download_ready = True
 

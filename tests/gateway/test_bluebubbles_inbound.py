@@ -236,7 +236,7 @@ class TestBlueBubblesAdmissionBoundaries:
         data = self._payload(chat=dm, text=caption,
                              attachments=[{"guid": "photo", "mimeType": "image/jpeg"}])
         refused = await adapter._handle_webhook(_FakeBlueBubblesRequest(data))
-        assert refused.status == 503
+        assert refused.status == 200  # Deferred media is owned by the background retry.
         assert handled == []
         ready = True
         data["type"] = "updated-message"
@@ -258,7 +258,7 @@ class TestBlueBubblesAdmissionBoundaries:
         monkeypatch.setattr(adapter, "_download_attachment", download)
         data = self._payload(chat={"guid": "any;-;+155****0100"}, attachments=[
             {"guid": "first", "mimeType": "image/jpeg"}, {"guid": "second", "mimeType": "image/jpeg"}])
-        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(data))).status == 503
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(data))).status == 200
         ready = True
         assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(data))).status == 200
         assert calls.count("first") == 1
@@ -296,12 +296,12 @@ class TestBlueBubblesAdmissionBoundaries:
         dm = {"guid": "any;-;+155****0100"}
         data = self._payload(chat=dm, attachments=[
             {"guid": "first", "mimeType": "image/jpeg"}, {"guid": "second", "mimeType": "image/jpeg"}])
-        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(data))).status == 503
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(data))).status == 200
         data["data"]["attachments"][0].update(refresh)
         ready = True
         if "mimeType" in refresh:
             ready = False
-        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(data))).status == 503
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(data))).status == 200
         assert handled == []
         ready = True
         data["data"]["attachments"][0]["transferState"] = 5

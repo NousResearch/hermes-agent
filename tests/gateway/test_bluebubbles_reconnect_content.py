@@ -143,7 +143,7 @@ async def test_partial_download_cache_survives_rebuild(monkeypatch):
     monkeypatch.setattr(old, "_download_attachment", download)
     request = lambda: Request(attachments=[
         {"guid": "first", "mimeType": "image/png"}, {"guid": "second", "mimeType": "image/png"}])
-    assert (await old._handle_webhook(request())).status == 503
+    assert (await old._handle_webhook(request())).status == 200
     new = replace(old)
 
     async def recovered_download(guid, metadata):

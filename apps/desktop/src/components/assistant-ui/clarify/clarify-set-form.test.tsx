@@ -32,13 +32,13 @@ const QUESTIONS = [
   { choices: null, multiSelect: false, qid: 'q2', question: 'Anything else?' }
 ]
 
-function renderSet() {
+function renderSet(questions = QUESTIONS) {
   const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
   rememberServerRequest({ fail: vi.fn(), id: 'request-set', method: 'clarify', params: {}, respond: vi.fn() })
   $activeSessionId.set('session-1')
   $gateway.set({ request } as never)
-  setClarifyRequest({ questions: QUESTIONS, requestId: 'request-set', sessionId: 'session-1' })
-  const args = { questions: QUESTIONS.map(({ choices, question }) => ({ choices, question })) }
+  setClarifyRequest({ questions, requestId: 'request-set', sessionId: 'session-1' })
+  const args = { questions: questions.map(({ choices, question }) => ({ choices, question })) }
 
   const props: ToolCallMessagePartProps = {
     addResult: vi.fn(), args, argsText: JSON.stringify(args), isError: false, respondToApproval: vi.fn(),
@@ -85,5 +85,19 @@ describe('a multi-question clarify set is one form', () => {
     fireEvent.keyDown(screen.getByPlaceholderText(/Type your answer/), { key: 'Enter', ctrlKey: true })
     await waitFor(() => expect(locks(request)).toHaveLength(3))
     expect(locks(request)).toEqual([['q0', 'staging'], ['q1', 'us'], ['q2', 'after 5pm']])
+  })
+
+  it('plain Enter on the last question does not send the set while earlier questions are open', async () => {
+    const request = renderSet([...QUESTIONS.slice(0, 2), { ...QUESTIONS[2], choices: ['now', 'later'] }])
+
+    // Only the last question is answered; the user goes back to it and presses Enter.
+    fireEvent.click(screen.getByRole('button', { name: /later/ }))
+    fireEvent.pointerDown(screen.getByText('Anything else?'))
+    fireEvent.keyDown(window, { key: 'Enter' })
+    // That Enter sent nothing and moved the cursor to the first open question: Enter picks its row.
+    fireEvent.keyDown(window, { key: 'Enter' })
+    fireEvent.keyDown(screen.getByRole('button', { name: /later/ }), { key: 'Enter', ctrlKey: true })
+    await waitFor(() => expect(locks(request)).toHaveLength(3))
+    expect(locks(request)).toEqual([['q0', 'staging'], ['q1', null], ['q2', 'later']])
   })
 })

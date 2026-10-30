@@ -137,12 +137,12 @@ export function useClarifyKeys({
     }
 
     if (isStaged(active, row)) {
-      // Plain Enter submits the set only from the last question or once nothing is left open:
-      // an earlier question moves on to the next unanswered one, so a set is never sent half
-      // answered by accident (Cmd/Ctrl+Enter still submits from anywhere).
-      const next = questionIndex < questions.length - 1 ? nextUnstaged(questionIndex) : null
+      // Plain Enter submits the set only once every question is answered, from any question
+      // (the last one included); otherwise it moves to the first open one, so a set is never
+      // sent half answered by accident (Cmd/Ctrl+Enter still submits from anywhere).
+      const next = questions.findIndex(question => !isStaged(question))
 
-      if (next === null) {
+      if (next < 0) {
         onConfirm()
       } else if (questions[next]?.choices?.length) {
         setCursor({ question: next, row: 0 })
@@ -160,7 +160,7 @@ export function useClarifyKeys({
     }
 
     focusOther(questionIndex)
-  }, [active, focusOther, isStaged, nextUnstaged, onConfirm, pick, questionIndex, questions, row])
+  }, [active, focusOther, isStaged, onConfirm, pick, questionIndex, questions, row])
 
   useEffect(() => {
     if (!enabled || !active) {

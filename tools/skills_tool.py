@@ -77,8 +77,12 @@ def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
     sig.append((str(root), mtime, tuple(names)))
     if depth <= 0:
         return
+    # A skill dir is a leaf (iter_skill_index_files semantics): the catalog only reads its
+    # top-level SKILL.md, so its subdirectories are bulk the signature must not pay for.
+    if is_skill:
+        return
     for name in names:
-        if name not in EXCLUDED_SKILL_DIRS and not (is_skill and name in SKILL_SUPPORT_DIRS):
+        if name not in EXCLUDED_SKILL_DIRS:
             _dir_tree_signature(os.path.join(root, name), sig, depth - 1)
 
 

@@ -698,27 +698,32 @@ when nothing was started.
   byte-identical to the session's, so the first request is mostly cache
   reads.
 * `tools` lists the tool names the fork may call, drawn from the fork
-  allowlist: the tools this plugin registered with `register_tool` (the
-  name's current registration is this plugin's), plus the core tools
-  Hermes marks fork-safe in one central list (currently none). Every
-  other tool is outside it: another plugin's tools, every MCP tool, and
-  every core tool not marked fork-safe, including `delegate_task`,
-  `message_agent`, `cronjob_manage` and the Kanban tools. A name Hermes
-  dispatches before the tool registry (an agent-level tool, a legacy
-  alias, the Tool Search bridge) never counts as the plugin's own, even
-  when the plugin registered it. Naming a tool outside the allowlist
-  returns `None` without spending the token. A tool's handler can start
-  work the fork cannot follow (a subagent, a remote agent task, a cron
-  run, a detached worker, an MCP server's sampling request), and that
-  work would keep neither the fork's tool list nor its auto-denied
-  approvals; a plugin's own handler already runs the plugin's code.
+  allowlist: the names whose call reaches the handler this plugin
+  registered with `register_tool` (the name's current registration is
+  this plugin's, and Hermes dispatches it to the tool registry), plus
+  the core tools Hermes marks fork-safe in one central list (currently
+  none). Every other tool is outside it: another plugin's tools, every
+  MCP tool, and every core tool not marked fork-safe, including
+  `delegate_task`, `message_agent`, `cronjob_manage` and the Kanban
+  tools. A name Hermes dispatches before the tool registry is outside
+  it even when the plugin registered it, because the call would never
+  reach the plugin's handler: an agent-level tool, a legacy alias, the
+  Tool Search bridge, any `connectors__<connector>__<tool>` name, and
+  the session's memory-provider and context-engine tools. Naming a tool
+  outside the allowlist returns `None` without spending the token. A
+  tool's handler can start work the fork cannot follow (a subagent, a
+  remote agent task, a cron run, a detached worker, an MCP server's
+  sampling request), and that work would keep neither the fork's tool
+  list nor its auto-denied approvals; a plugin's own handler already
+  runs the plugin's code.
 * Each named tool must also be advertised to the session, else the call
   returns `None` and spends the token. The fork still *sees* every
   session tool (cache parity); calls outside the list are refused at
   dispatch with a message naming the allowed tools. When the fork
-  starts, the allowlist is read again and a tool that stopped being the
-  plugin's own is refused at dispatch too. An empty list means a
-  tool-less fork.
+  starts, the allowlist is read again against the live session and a
+  tool that stopped being the plugin's own, or that the session now
+  serves before the registry, is refused at dispatch too. An empty list
+  means a tool-less fork.
 * `max_iterations` caps the fork's loop (1 to 16). The fork's aggregate
   input tokens are bounded like the background review's
   (`auxiliary.background_review.max_input_tokens`, default 75% of the

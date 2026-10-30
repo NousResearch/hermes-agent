@@ -43,17 +43,21 @@ _TURN_ORIGIN: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("he
 FORK_SAFE_CORE_TOOLS: frozenset[str] = frozenset()
 
 
-def fork_tool_allowlist(own_tools: Iterable[Any]) -> frozenset[str]:
-    """The tools a plugin fork may hold: ``own_tools`` (the names whose live registration is the
-    requesting plugin's) plus :data:`FORK_SAFE_CORE_TOOLS`. A name dispatch reroutes before the
-    registry (an agent-level inline tool such as ``delegate_task``, a legacy alias, a Tool Search
-    bridge tool) is never the plugin's own: calling it would run core code, not the plugin's."""
-    from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS
-    from model_tools import _LEGACY_TOOL_ALIASES
-    from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
+def fork_tool_allowlist(own_tools: Iterable[Any], *agents: Any) -> frozenset[str]:
+    """The tools a plugin fork may hold: the ``own_tools`` (names whose live registration is the
+    requesting plugin's) that dispatch to that registration's handler, plus
+    :data:`FORK_SAFE_CORE_TOOLS`. A name the dispatcher serves before the registry
+    (:func:`agent.inline_tool_executors.pre_registry_route`: an agent-level tool such as
+    ``delegate_task``, a legacy alias, a Tool Search bridge tool, a connector name, and for each of
+    ``agents`` its context-engine and memory-provider tools) is never the plugin's own: calling it
+    runs connector, provider or core code, not the plugin's."""
+    from agent.inline_tool_executors import pre_registry_route
 
-    rerouted = set(INLINE_TOOL_EXECUTORS) | set(_LEGACY_TOOL_ALIASES) | BRIDGE_TOOL_NAMES
-    return frozenset(n for n in own_tools if isinstance(n, str) and n not in rerouted) | FORK_SAFE_CORE_TOOLS
+    routers = agents or (None,)
+    return frozenset(
+        n for n in own_tools
+        if isinstance(n, str) and all(pre_registry_route(n, agent) is None for agent in routers)
+    ) | FORK_SAFE_CORE_TOOLS
 
 
 def current_turn_origin() -> Optional[str]:
@@ -189,10 +193,10 @@ def start_session_fork(
     returns the plugin's own tool names; it is read here and again when the fork starts. Never
     raises: a fork whose worker thread cannot start returns its handle settled ``error:spawn``."""
     from agent.background_review import _BackgroundReviewRun
-    from agent.side_question_lease import take_lease
+    from agent.side_question_lease import lease_parent, take_lease
 
     names = frozenset(tools) if isinstance(tools, (list, tuple, set, frozenset)) else None
-    refused = names - fork_tool_allowlist(own_tools()) if names is not None else None
+    refused = names - fork_tool_allowlist(own_tools(), lease_parent(token, home)) if names is not None else None
     if refused:
         # A request no session could satisfy: refused before the lease, so the token stays usable.
         logger.info("session_fork plugin=%s outcome=rejected:tool_not_fork_safe %s", plugin_id,
@@ -439,9 +443,10 @@ def _run_job(job: _ForkJob) -> None:
             fork._review_input_token_budget = budget
             fork._loop_aux_task = (PLUGIN_FORK_TASK, {"plugin_id": job.plugin_id})
             _track_child(parent, fork, register=True)
-            # The allowlist is read again here: the dispatch guard holds only tools that are still
-            # the plugin's own (or marked fork-safe), however the job was built.
-            allowed = set(job.tools) & fork_tool_allowlist(job.own_tools())
+            # The allowlist is read again here, against the live session agent and the fork that
+            # dispatches: the guard holds only tools that are still the plugin's own and still
+            # reach its handler (or are marked fork-safe), however the job was built.
+            allowed = set(job.tools) & fork_tool_allowlist(job.own_tools(), parent, fork)
             set_thread_tool_whitelist(allowed, deny_msg_fmt=(
                 "This background task may only call: " + (", ".join(sorted(allowed)) or "no tools")
                 + ". {tool_name} was denied; do not retry it."))

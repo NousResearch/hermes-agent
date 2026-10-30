@@ -294,6 +294,9 @@ class BaseWebSearchProvider(WebSearchProvider):
     def is_available(self) -> bool:
         return bool(provider_env(self.KEY_ENV))
 
+    def search_route_label(self) -> str:
+        return "keyless" if self.KEYLESS and use_keyless(self.NAME, provider_env(self.KEY_ENV)) else ""
+
     def is_keyless_available(self) -> bool:
         from plugins.web.keyless_mcp import keyless_enabled, provider_tier
         return self.KEYLESS and keyless_enabled() and provider_tier(self.NAME) != "paid"

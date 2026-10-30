@@ -62,11 +62,42 @@ Backends return raw page markdown, which can be huge (forum threads, docs sites,
 
 The per-page budget is configurable via `web.extract_char_limit` in `config.yaml` (default `15000`, clamped to 2 000–500 000), and the agent can raise it per-call with the tool's `char_limit` argument.
 
+This all works on the text the backend returns. A backend-side cap such as `web.exa.extract_max_characters` cuts the page before this pipeline runs: text past the cap never reaches the head+tail window or the stored copy, and a larger `char_limit` cannot bring it back.
+
 Each provider dispatch is also bounded by a wall-clock timeout (`web.extract_timeout` in `config.yaml`, default `120` seconds; `0` disables it). A backend that keeps the response open without finishing returns per-URL timeout errors instead of stalling the tool call indefinitely.
 
 ### When truncation gets in the way
 
 If you specifically need the live DOM rather than extracted markdown — for example, a JS-heavy page where extraction returns little content — use `browser_exec` instead: open the page with `new_tab(url)` + `wait_for_load()`, then read it with `page_info()` or a `js()` DOM extraction. It works on the live, rendered page.
+
+---
+
+## Search depth
+
+`web_search` takes an optional `depth` argument that the model sets per call: `quick` for a simple fact check, `standard` (the default) for normal searches, and `deep` for hard research that needs many sources. Each backend maps it to its own option. A `standard` call, or a call with no `depth`, sends exactly the request the backend always sent.
+
+| Backend | `quick` | `standard` | `deep` |
+|---------|---------|------------|--------|
+| **Exa** | `type: lite` | `web.exa.type` (default `auto`) | `type: deep` |
+| **Tavily** | `search_depth: fast` | Tavily's default (`basic`) | `search_depth: advanced` (2 credits) |
+| **Parallel** | `mode: fast` | `PARALLEL_SEARCH_MODE` (default `agentic`) | `mode: agentic` |
+| **Perplexity** (own key) | `search_type: fast` | Perplexity's default (`web`) | same as standard |
+| **Keenable** | `mode: realtime` | Keenable's default (`pro`) | same as standard |
+| **Firecrawl**, **SearXNG**, **Brave Search**, **DDGS**, **xAI**, **OpenAI Native** | no depth setting: every call is the standard request | | |
+
+Depth is also ignored on routes that have no such option: the keyless free tier (Exa, Parallel, Keenable and Firecrawl without a key) and the managed Perplexity route (always `fast`). Tavily's keyless mode takes the same parameters as its keyed mode, so depth still applies there. When the depth the model asked for is not applied, the result carries one line in `data.depth_note` naming what ran instead, for example `brave-free search has no depth setting; ran its standard search`, `exa keyless search has no depth setting; ran its standard search`, or, for a call served by the one-shot keyless rescue, `keyless rescue has no depth setting; ran its standard search`.
+
+OpenAI Native search runs on OpenAI's servers, so Hermes never sees the call or its arguments.
+
+**Cost cap.** `web.max_depth` sets the highest depth the model may use. It defaults to `standard`, so `deep` costs nothing extra until you allow it. A higher request runs at the cap, and the result says so in `data.depth_note` (`depth lowered from deep to standard by web.max_depth`).
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  max_depth: deep   # quick | standard (default) | deep
+```
+
+Setting `max_depth: quick` also turns calls that leave `depth` out into quick searches, and each says so (`depth lowered from standard to quick by web.max_depth`).
 
 ---
 
@@ -76,7 +107,7 @@ Repeat web calls within a short window are served from cache instead of the paid
 
 | Call | Cache | Scope |
 |------|-------|-------|
-| `web_search` — same query (case/whitespace-insensitive), same provider | In-memory memo | Per process |
+| `web_search` — same query (case/whitespace-insensitive), same provider, same depth | In-memory memo | Per process |
 | `web_extract` — same URL, same format, same provider | Full text stored under `~/.hermes/cache/web/` | Shared across CLI, gateway, cron, and subagent processes |
 
 Concurrent identical searches (a parallel subagent fan-out firing the same query at once) are **coalesced into a single backend request** — the first caller pays; the rest share the response. Requested search limits are bucketed up to 10/20/50/100 so near-identical requests (`limit=5` vs `limit=8`) share one entry, with each caller receiving its requested count.
@@ -318,7 +349,22 @@ Neural search with semantic understanding. Good for research and finding concept
 EXA_API_KEY=your-exa-key-here
 ```
 
-Get a key at [exa.ai](https://exa.ai). The free tier includes 1 000 searches/month.
+Get a key at [exa.ai](https://exa.ai). The free tier gives $10 of credits each month (the balance resets on the 1st).
+
+**Optional knobs** (keyed path only; leave unset for Exa's defaults):
+
+```yaml
+web:
+  exa:
+    type: lite                    # auto (default) | lite | fast | deep-lite | deep
+    dynamic_highlights: true      # research-preview beta: one shared highlight budget across results
+    max_age_hours: 24             # Exa refetches its cached pages older than this; 0 = always fresh, -1 = cache only (max 720)
+    extract_max_characters: 20000 # Exa returns at most this many characters per page to web_extract (max 1 000 000)
+```
+
+`lite` costs about 40% less than `auto` ($4 vs $7 per 1 000 searches) at slightly lower quality (79 vs 80.5 on Exa's own 3.0 benchmark). `deep-lite` and `deep` run multi-step research and are slower and more expensive per call. Exa rejects `max_age_hours` on `lite` searches, so it is sent only with `web_extract` in that case. It only controls Exa's own cache: a call that Hermes serves from its [result cache](#result-caching) never reaches Exa, even with `0`. Lower `web.cache_ttl_minutes` or set `web.cache_enabled: false` when every call must be fresh.
+
+`extract_max_characters` is applied by Exa, before Hermes' [long-page handling](#how-web_extract-handles-long-pages). A page longer than the cap arrives cut at the cap: the tail is lost, the stored copy holds only the capped text, and a larger `char_limit` cannot recover the rest. A cap below `web.extract_char_limit` also lowers what the agent sees. Leave it unset to get full pages.
 
 ---
 

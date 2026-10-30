@@ -612,6 +612,22 @@ default-groups = []
 # where extras that only ever coexist on 3.14 (kittentts vs neutts) conflict.
 environments = ["python_version >= '3.14'"]
 override-dependencies = [
+  # filelock 3.32.4 is affected by GHSA-v4x8-3wr5-3wq8 and the 4.2.1
+  # advisory set; msgpack 1.2.1 by GHSA-j586-36cw-2gc2. torch and
+  # huggingface-hub leave filelock unbounded and fal-client leaves msgpack
+  # unbounded (the plugin workspace only caps msgpack at <2), so no declared
+  # constraint blocks the fixed releases. Remove these two lines once the
+  # locked minimums move past them naturally.
+  "filelock>=4.2.1,<5",
+  "msgpack>=1.2.3,<2",
+  # multidict 6.7.1 and oauthlib 3.3.1 (GHSA-54p9-h82j-f925, GHSA-3jp2-3mrg-2vxc
+  # and the 4.0.0 advisory set) survive in installed environments because PM
+  # seeds each venv generation from the previous generation's resolved lock and
+  # uv retains compatible versions. These overrides make the fixed versions
+  # binding for every re-resolution. Remove once PM reseeds from the project
+  # lock or every supported environment has resolved past these once.
+  "multidict>=6.9.1,<7",
+  "oauthlib>=4.0.0,<5",
   # discord.py's latest published version, 2.7.1, pins pynacl at <1.6. however, pynacl 1.5.0 has known vulnerabilities.
   # discord.py has updated pynacl to 1.6 on `main`, but has not yet published a patch release.
   # so, we force-override this to pynacl 1.6. here.

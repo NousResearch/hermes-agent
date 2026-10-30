@@ -359,6 +359,9 @@ def test_detects_common_trailing_action_phrases():
     assert trailing_continue_intent(
         "Not yet. Let me continue and find what you documented."
     )
+    assert trailing_continue_intent(
+        "I'll search your records. Let me pull from all these sources in parallel."
+    )
 
 
 def test_ignores_intent_followed_by_more_content():
@@ -390,6 +393,7 @@ def test_ignores_conversational_future_offers():
     assert not trailing_continue_intent(
         "If you want, I will happily review the PR once CI is green. Just say so!"
     )
+    assert not trailing_continue_intent("Let me know if you want me to continue.")
 
 
 # ── batch-cycle loop breaker (port of can1357/oh-my-pi#10521) ───────────────

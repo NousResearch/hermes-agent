@@ -5,13 +5,13 @@ from __future__ import annotations
 import re
 
 
-# Visible replies retry only when their TAIL announces an immediate action. The common
-# "Let me start/search/continue/finish" forms cover progress narration from aliased local models.
+# Visible replies retry only when their TAIL announces an immediate action. The additional
+# "pull" form covers aliased local models that announce gathering sources before stopping.
 _TRAILING_CONTINUE_INTENT_RE = re.compile(
     r"(?:\blet me now\b|\bi(?:['\u2019])?ll now\b|\bi will now\b"
     r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b"
     r"|(?:\blet me\b|\bi(?:['\u2019]ll| will)\b)\s+(?:now\s+)?"
-    r"(?:start|begin|search|continue|finish)\b)"
+    r"(?:start|begin|search|continue|finish|pull)\b)"
     r"[^.!?\n]{0,100}[.:\u2026]?\s*$", re.IGNORECASE,
 )
 

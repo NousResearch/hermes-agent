@@ -1005,6 +1005,8 @@ platform:
       confirm_title: "Bevestig"
       already_resolved: "Hierdie goedkeuring is reeds afgehandel~"
       expired: "⌛ Goedkeuring het verval — die opdrag is nie uitgevoer nie (reeds uitgetel of elders afgehandel)"
+      no_longer_pending: "⌛ Hierdie goedkeuring wag nie meer nie (dit het verval of is elders beantwoord)"
+      click_failed: "⚠️ Kon nie jou keuse aanteken nie. Klik weer, of antwoord met /approve of /deny."
       by_user: "{label} deur {user}"
       resolved_once: "Eenmalig goedgekeur"
       resolved_session: "Vir sessie goedgekeur"

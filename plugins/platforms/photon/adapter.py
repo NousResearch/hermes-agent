@@ -1054,6 +1054,7 @@ class PhotonAdapter(BasePlatformAdapter):
             self._sidecar_proc = subprocess.Popen(  # noqa: ASYNC220 -- persistent sidecar; callers use the Popen pipes and poll()
                 [self._node_bin, str(_sidecar_dir() / "index.mjs")],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                # detached-spawn: ok — exits on stdin EOF (PHOTON_SIDECAR_WATCH_STDIN), so it dies with this process
                 start_new_session=(sys.platform != "win32"),
                 # Windows: run the persistent sidecar headless so it does not open
                 # (or leave) a visible console window. CREATE_NO_WINDOW only (no

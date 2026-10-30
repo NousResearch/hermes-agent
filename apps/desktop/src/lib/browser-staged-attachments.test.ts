@@ -315,6 +315,37 @@ describe('browser staged attachment transport', () => {
     ])
   })
 
+  // An SVG or ICO has no host path the send can read: a drop or paste of one is refused with the
+  // reason, never left as an image chip pointing at a blob: URL.
+  it.each([
+    ['drop', new File(['<svg xmlns="http://www.w3.org/2000/svg"/>'], 'logo.svg', { type: 'image/svg+xml' })],
+    ['paste', new Blob([new Uint8Array([0, 0, 1, 0])], { type: 'image/x-icon' })]
+  ] as const)('refuses a %s of an image the browser cannot send and says why', async (flow, image) => {
+    const fetchMock = await installBrowser()
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:http://127.0.0.1:9120/image')
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '/workspace', requestGateway: vi.fn() })
+    )
+
+    let attached = true
+
+    await act(async () => {
+      attached = flow === 'drop'
+        ? await result.current.attachDroppedItems([{ file: image as File, path: '' }])
+        : await result.current.attachImageBlob(image)
+    })
+
+    expect(attached).toBe(false)
+    expect($composerAttachments.get()).toEqual([])
+    expect($notifications.get()).toContainEqual(expect.objectContaining({
+      kind: 'error',
+      message: "SVG and ICO images can't be attached in the browser. Attach a PNG, JPEG, GIF, WebP or BMP instead."
+    }))
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(createObjectURL).not.toHaveBeenCalled()
+  })
+
   it.each([
     { remote: false, terminalBackend: 'local', upload: false },
     { remote: true, terminalBackend: 'local', upload: true },

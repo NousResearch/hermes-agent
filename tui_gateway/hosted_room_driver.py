@@ -637,7 +637,10 @@ class HostedRoomRuntime:
             # reason, not the free-form messages retained in the in-memory status.
             reason = 'request_too_large' if getattr(exc, 'reason', None) == 'request_too_large' else 'attempt_failed'
             logger.warning('hosted room task %s: %s', attempt.identity.task_id, reason)
-            if submit_attempted and bool(getattr(exc, "not_admitted", False)):
+            if getattr(exc, "refused_before_submit", False):
+                # File preparation refused work that never started; no retry can change it.
+                self._settle_failure_if_current(attempt, exc)
+            elif submit_attempted and bool(getattr(exc, "not_admitted", False)):
                 try:
                     state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
                 except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:

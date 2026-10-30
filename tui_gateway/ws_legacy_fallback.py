@@ -80,6 +80,24 @@ def _foreign_profile_home(server: Any, profile_id: Any) -> str | None:
     return str(home)
 
 
+def _unavailable(req: dict) -> dict:
+    return {"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": 4064, "message": "profile unavailable"}}
+
+
+def _explicit_profile_request(server: Any, req: dict) -> tuple[dict, str | None] | None:
+    """The home an explicit ``profile`` param names (Desktop's host-scoped routing): the request
+    plus that home ("" = launch), an error frame and None when the name does not resolve here, or
+    None when the request names no profile."""
+    params = req.get("params")
+    if not isinstance(params, dict) or not (explicit := str(params.get("profile") or "").strip()):
+        return None
+    try:
+        named = server._profile_home(explicit)
+    except (OSError, ValueError):  # ProfileUnavailableError is a ValueError
+        return _unavailable(req), None
+    return req, str(named) if named else ""
+
+
 def _ticket_profile_request(server: Any, req: dict, home: str) -> tuple[dict, str | None]:
     """Bind a non-launch ticket's profile into a legacy verb (N86). The verb runs in the ticket's
     home, or in the one an explicit ``profile`` names (Desktop's host-scoped routing), so handlers
@@ -90,13 +108,9 @@ def _ticket_profile_request(server: Any, req: dict, home: str) -> tuple[dict, st
     from hermes_constants import profile_name_for_home
     from tui_gateway.contracts.registry import METHODS
     params = req.get("params") if isinstance(req.get("params"), dict) else {}
-    refused = {"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": 4064, "message": "profile unavailable"}}
-    if explicit := str(params.get("profile") or "").strip():
-        try:
-            named = server._profile_home(explicit)
-        except (OSError, ValueError):  # ProfileUnavailableError is a ValueError
-            return refused, None
-        return req, str(named) if named else ""
+    refused = _unavailable(req)
+    if (explicit := _explicit_profile_request(server, req)) is not None:
+        return explicit
     contract = METHODS.get(req.get("method"))
     if contract is None or "profile" not in contract.params.model_fields:
         return req, home
@@ -149,6 +163,18 @@ def dispatch_legacy(server: Any, req: dict, transport: Any, actor: Any) -> dict 
         req = scoped
     elif home is not None:
         req, target = _ticket_profile_request(server, req, home)
+        if target is None:
+            return req
+        # "" = an explicit ``profile`` naming the launch home: the socket runs in the ticket's
+        # scope (``chat_ws.gateway_ws``), so bind the launch scope (``None`` selects it, process env
+        # credentials included) or a handler that ignores ``profile`` would use the secondary's.
+        scope = server._session_profile_runtime_scope({"profile_home": target or None})
+    elif (req.get("method") not in _SESSION_FALLBACK_ALLOWED
+          and (explicit := _explicit_profile_request(server, req)) is not None):
+        # A launch-profile socket runs in the launch scope (``chat_ws.gateway_ws``), so a verb that
+        # names another profile is bound to it here: a handler that ignores ``profile`` would
+        # otherwise read the launch profile's secrets instead of refusing an unscoped read.
+        req, target = explicit
         if target is None:
             return req
         if target:

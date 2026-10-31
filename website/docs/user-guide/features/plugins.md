@@ -202,6 +202,16 @@ plugins:
   load_timeout_seconds: 10
 ```
 
+A running Hermes process (the gateway, a chat session) records the plugins it could not load, deadline skips
+included, and how often each plugin's hooks raised or timed out. `hermes plugins list` (and `--json`, as a
+`health` list per plugin) and `hermes doctor` read those records from any shell, so a plugin skipped at startup
+is visible without searching the logs. Each process writes its own record under
+`<HERMES_HOME>/cache/plugin-health/`; a record whose process has exited is ignored.
+
+A plugin that is both a general plugin (`kind: standalone`, listed in `plugins.enabled`) and the configured
+`memory.provider` runs `register()` once per loader. Its hooks, tools and system-prompt sections come from the
+general load; the memory loader only supplies the provider instance.
+
 Three ways to flip state:
 
 ```bash

@@ -57,6 +57,7 @@ def cmd_list(args: Any | None = None) -> None:
     # fetch per installed plugin when the catalog host is slow or unreachable.
     removed_entries = catalog.resolved_removed_entries()
     active = _pc()._category_active_names()
+    health = _health_lines(entries)
     rows = [
         (name, _pc()._plugin_status(name, enabled, disabled, key=key, source=source, dir_path=_dir, active=active),
          str(version), description,
@@ -67,7 +68,7 @@ def cmd_list(args: Any | None = None) -> None:
 
     if getattr(args, "json", False):
         keys = ("name", "status", "version", "description", "source", "removed")
-        print(json.dumps([dict(zip(keys, row)) for row in rows], indent=2))
+        print(json.dumps([{**dict(zip(keys, row)), "health": health.get(row[0], [])} for row in rows], indent=2))
         return
 
     if getattr(args, "plain", False):
@@ -107,11 +108,31 @@ def cmd_list(args: Any | None = None) -> None:
     console.print(table)
     for line in removed_lines:
         console.print(line)
+    if health:
+        from rich.markup import escape
+        console.print()
+        console.print("[yellow]Problems reported by running Hermes processes:[/yellow]")
+        for name, lines in health.items():
+            for line in lines:
+                console.print(f"[yellow]⚠ {name}[/yellow] {escape(line)}")
     console.print()
     console.print("[dim]Compact view:[/dim] hermes plugins list --plain --no-bundled")
     console.print("[dim]Interactive toggle:[/dim] hermes plugins")
     console.print("[dim]Enable/disable:[/dim] hermes plugins enable/disable <name>")
     console.print("[dim]Plugins are opt-in by default — only 'enabled' plugins load.[/dim]")
+
+
+def _health_lines(entries: list) -> dict[str, list[str]]:
+    """Load/hook problems running processes recorded for these plugins, by plugin name."""
+    from hermes_cli.plugins_health import describe, read_plugin_health
+    from hermes_constants import get_hermes_home
+    health = read_plugin_health(get_hermes_home())
+    by_name = {}
+    for name, _version, _description, _source, _dir, key in entries:
+        lines = describe(health.get(key) or health.get(name) or {})
+        if lines:
+            by_name[name] = lines
+    return by_name
 
 
 def cmd_show(name: str) -> None:

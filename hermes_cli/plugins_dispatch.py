@@ -336,6 +336,8 @@ class PluginDispatchMixin:
         per call; the set is cleared on unload alongside the timeout-suppression map.
         """
         callback_name = getattr(cb, "__name__", repr(cb))
+        self._record_hook_health(hook_name if surface == "Hook" else f"{surface.lower()}:{hook_name}", cb,
+                                 f"{type(exc).__name__}: {exc}")
         key = (hook_name, getattr(cb, "__module__", ""), getattr(cb, "__qualname__", callback_name),
                type(exc).__name__, str(exc)[:200])
         if key in self._hook_failures_reported:
@@ -345,6 +347,13 @@ class PluginDispatchMixin:
         logger.warning(
             "%s '%s' callback %s raised: %s (%s provides: %s; identical failures are logged at DEBUG from now on)",
             surface, hook_name, callback_name, exc, surface.lower(), ", ".join(sorted(kwargs)) or "no fields")
+
+    def _record_hook_health(self, hook_name: str, cb: Callable, error: str, *, timeout: bool = False) -> None:
+        """Count a failure against the owning plugin so ``hermes plugins list``/``doctor`` can show it."""
+        from hermes_cli.plugins_health import callback_owner, health_for
+        owner = callback_owner(self._plugins, cb)
+        if owner is not None:
+            health_for(self.home_path).record_hook_failure(owner, hook_name, error, timeout=timeout)
 
     def _run_hook_callback_bounded(
         self, hook_name: str, cb: Callable, kwargs: dict[str, Any], timeout: float
@@ -429,6 +438,7 @@ class PluginDispatchMixin:
                     self._hook_abandoned.setdefault(suppression_key, set()).add(gate_key)
             logger.warning(
                 "Hook '%s' callback %s timed out after %gs — skipping", hook_name, callback_name, timeout)
+            self._record_hook_health(hook_name, cb, f"timed out after {timeout:g}s", timeout=True)
             return _HOOK_SKIPPED
         if "exc" in failure:
             raise failure["exc"]
@@ -637,6 +647,7 @@ class PluginDispatchMixin:
                     results.append(ret)
             except TimeoutError:
                 logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
+                self._record_hook_health(hook_name, cb, f"timed out after {timeout:g}s", timeout=True)
                 if fail_closed:  # policy hook: fail closed with a block directive
                     results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
             except (Exception, SystemExit) as exc:

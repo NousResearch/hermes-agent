@@ -544,7 +544,18 @@ class PluginLoaderMixin:
             self._load_plugin_scoped(manifest)
 
     def _load_plugin_scoped(self, manifest: PluginManifest) -> None:
-        """Load one plugin with the manager's home bound as current."""
+        """Load one plugin with the manager's home bound as current, then record the outcome where
+        ``hermes plugins list`` / ``hermes doctor`` in another process can see it."""
+        from hermes_cli.plugins_health import health_for
+        plugin_key = manifest_key(manifest)
+        try:
+            self._load_plugin_attempt(manifest)
+        finally:
+            loaded = self._plugins.get(plugin_key)
+            if loaded is not None:
+                health_for(self.home_path).record_load(plugin_key, None if loaded.enabled else loaded.error)
+
+    def _load_plugin_attempt(self, manifest: PluginManifest) -> None:
         from hermes_cli.plugins import LoadedPlugin, PluginContext, _PLUGINS_DEBUG
         loaded = LoadedPlugin(manifest=manifest)
         plugin_key = manifest_key(manifest)
@@ -603,6 +614,10 @@ class PluginLoaderMixin:
             register_fn(ctx)
             return True
 
+        if manifest.path:
+            # The memory loader may have run this source first: its fallback registrations must not
+            # collide with this load's own (a second prompt section id raises).
+            self._drop_fallback_hooks((manifest.name, str((Path(manifest.path) / "__init__.py").resolve())))
         try:
             if run_with_load_deadline(plugin_key, ctx, _import_and_register):
                 self._attribute_registrations(loaded, plugin_key, registration_start)

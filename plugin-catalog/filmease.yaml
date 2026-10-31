@@ -1,0 +1,20 @@
+name: filmease
+repo: https://github.com/Filmease/filmease-hermes-plugin
+sha: 80c57614048fade106063c8e38d332d3e88b66e5
+description: 'Find streamable movies and manage a FilmEase watchlist, ratings, private reviews,
+  viewing history, taste, and streaming preferences. Portable skill plus remote MCP;
+  FilmEase account and Hermes-managed OAuth required (native config step documented).
+  Remote FilmEase service records authenticated activity and service analytics.'
+maintainer: Filmease
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/Filmease/filmease-hermes-plugin#readme
+version: "0.1.0"
+title: FilmEase
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

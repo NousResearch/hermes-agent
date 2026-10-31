@@ -18,7 +18,18 @@ export function npmCommand({ env = process.env } = {}) {
     for (const name of names) {
       const bin = join(dir, name)
       if (!existsSync(bin)) continue
-      const prefix = dirname(realpathSync(bin))
+      // An npm entry can exist at probe time but stop resolving a moment
+      // later: a dangling shim, an entry dropped by a package-manager GC, or
+      // a lazily-materialized FUSE entry. Keep looking for another usable
+      // installation.
+      let resolved
+      try {
+        resolved = realpathSync(bin)
+      } catch (error) {
+        if (['ENOENT', 'ENOTDIR', 'EACCES', 'ELOOP'].includes(error.code)) continue
+        throw error
+      }
+      const prefix = dirname(resolved)
       const lib = join(prefix, '../lib')
       candidates.push(
         join(prefix, 'node_modules/npm/bin/npm-cli.js'),
@@ -27,7 +38,7 @@ export function npmCommand({ env = process.env } = {}) {
         // Discover the installed JS entrypoint, never parse/execute its shell wrapper.
         ...(existsSync(lib) ? readdirSync(lib).filter(name => name.startsWith('npm')).sort()
           .map(name => join(lib, name, 'bin/npm-cli.js')) : []),
-        realpathSync(bin),
+        resolved,
       )
     }
   }

@@ -242,6 +242,15 @@ vision:
 - **`embed_target_bytes`** — images above the budget (or wider than 1568 px) are downscaled to a JPEG that fits. 256 KB keeps ordinary screenshots cheap; dense phone screenshots of tables can come out unreadable at that size, so raise it (say `1048576`) when the model keeps calling figures "unreadable". Browser screenshots delivered natively use the same budget.
 - **`max_calls_per_image`** — how often the *same* image (region crops of it included; local paths compare by resolved path) may be embedded per session. Once the cap is hit the tool returns `"vision_analyze refused: this image has already been loaded into context N time(s) …"` instead of another embed, so the model answers from what it already sees. Left unset, only delegated `delegate_task` subagents are capped (at 3): they run unattended and cannot be steered mid-loop from the CLI, and a re-load loop there once burned 158 calls on five files. Set a number to cap every session, or `0` for unlimited everywhere.
 
+### Alpha-channel images are flattened before the embed: `vision.flatten_alpha`
+
+Some OpenAI-compatible backends fail on alpha-channel rasters instead of decoding them. Against a GLM/Zai route behind a LiteLLM proxy, an RGBA PNG (the default clipboard-screenshot format on many platforms) hung with no response past 90 seconds, while the same image flattened to opaque answered in seconds. Because the embed is re-sent on every later turn, one RGBA screenshot would wedge the session's vision tooling. Before an image is embedded, alpha-channel PNG/WebP are therefore composited onto an opaque white background and re-encoded as JPEG (quality 85) — visually lossless for opaque screenshots, and the JPEG re-encode also decodes an order of magnitude faster on those routes. Fully opaque images pass through untouched, a failed flatten never rejects the image (the original bytes are sent), and animated GIFs are left alone:
+
+```yaml
+vision:
+  flatten_alpha: true   # default; false sends alpha-channel PNG/WebP unchanged
+```
+
 ### Images in follow-up turns: `vision.replay_recent_images`
 
 The session database stores user messages as text, with one `[screenshot]` line per attached image. A turn whose history is rebuilt from the database (every request to the [API server](api-server.md) that continues a session with `X-Hermes-Session-Id`, `hermes chat --resume`, a gateway restart) used to show the model that placeholder, so a follow-up question about a photo sent one message earlier got a guess.

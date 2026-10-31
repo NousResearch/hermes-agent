@@ -187,6 +187,21 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
         return "", ""
 
 
+def _escalation_refusal(
+    task_id: str, author: Optional[str] = None,
+) -> Optional[kb.TriageEscalationRefusal | kb.DecomposeRefusal]:
+    """The refusal that keeps ``task_id`` in ``triage``, or None.
+
+    Checked BEFORE the aux call: a card parked for a human — or one whose RECORD already
+    decides the work — stays put whatever the specifier would have said, so the LLM
+    round-trip is pure waste. The record refusal is RECORDED here: this pre-aux check returns
+    before ``specify_triage_task`` runs, so no other leg would record it.
+    """
+    with kbc.connect_closing() as conn:
+        with kb.write_txn(conn):
+            return kb.decompose_refusal_guard(conn, task_id, author=author)
+
+
 def specify_task(
     task_id: str,
     *,
@@ -199,6 +214,11 @@ def specify_task(
     task, reason = _load_triage_task(task_id)
     if task is None:
         return SpecifyOutcome(task_id, False, reason)
+
+    audit_author = author or _profile_author()
+    refusal = _escalation_refusal(task_id, audit_author)
+    if refusal is not None:
+        return SpecifyOutcome(task_id, False, refusal.detail)
 
     raw, reason = _call_aux(
         "specify", task_id, aux_task="triage_specifier", system=_SYSTEM_PROMPT,
@@ -226,11 +246,15 @@ def specify_task(
             task_id,
             title=new_title,
             body=new_body,
-            author=author or _profile_author(),
+            author=audit_author,
         )
     if not ok:
-        # Race: promoted/archived between our read and the write.
-        return SpecifyOutcome(task_id, False, "task moved out of triage before promotion")
+        # A refused promotion carries the refusal (triage escalation names the event
+        # and the card); a bare False is the read-then-write race.
+        return SpecifyOutcome(
+            task_id, False,
+            getattr(ok, "detail", None) or "task moved out of triage before promotion",
+        )
     return SpecifyOutcome(task_id, True, "specified", new_title=new_title)
 
 

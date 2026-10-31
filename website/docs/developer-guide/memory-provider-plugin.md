@@ -261,11 +261,42 @@ The gate binds to every compaction authority, not just the Hermes
 summarizer: server-side native compaction (`compression.codex_responses_native`)
 is suppressed while the gate is armed, post-turn micro-compaction
 (`compression.micro_compact`) is forced off at agent init (it absorbs old
-exchanges into a rolling summary with no checkpoint hook in its path), and
+exchanges into a rolling summary with no checkpoint hook in its path), the
+proactive tool-result prune (`compression.proactive_prune_tokens`) is
+suppressed at its call site (off by default, so a default install has nothing
+to suppress there), a plugin context engine that may compact outside
+`compress()` is refused at agent init and has its `on_turn_complete` hook
+withheld per turn (see [Context Engine
+Plugins](./context-engine-plugin.md), "Compaction authority"), and
 the `codex_app_server` API mode is refused at agent init — the codex agent
 compacts its own thread with no truthful pre-compaction boundary, so a
 required checkpoint cannot be guaranteed there. The checkpoint-aware Hermes
-compressor stays the only lossy authority.
+compressor stays the only lossy authority on every path the host can intercept
+or prove safe by hook inference; an engine with its own scheduler and a false
+declaration remain trust boundaries.
+
+### Forks under an armed gate
+
+Hermes runs a second agent without a provider in four places (delegated
+subagents, the curator pass, the batch runner, the Feishu comment responder). With the gate off they stay provider-less. With
+`checkpoint_required` armed such a fork arms the same gate and would fail its
+first compaction with `BLOCKED_MISSING_PREREQUISITE`, so it loads the
+configured provider, initialized with `agent_context="subagent"` (`platform`,
+plus `parent_session_id` where the fork has a parent session, tells the shapes
+apart). The detached review and `/btw` forks are different:
+they persist nothing, so the gate does not apply to them. Two consequences:
+
+- **One `initialize()` per fork** — a round trip per spawn for a
+  network-backed store.
+- **Fork transcripts reach the archive** through `on_pre_compress()`.
+
+The host keeps everything else off for `agent_context="subagent"`, whether or
+not your provider reads the label: no `prefetch()`/`queue_prefetch()`, no
+`sync_turn()`, `on_turn_start()`, `on_session_end()` or `on_delegation()`.
+`initialize()`, `on_session_switch()` and `on_pre_compress()` still run, so a
+checkpoint provider must save on `on_pre_compress()` regardless of how it
+scopes non-primary writes — skipping it there either breaks the checkpoint
+contract (success without a save) or kills the fork at its first compaction.
 
 What your provider receives depends on its declared API version. Version 1
 providers (the implicit default — every pre-existing provider) keep the

@@ -242,6 +242,81 @@ What the host guarantees:
   differs; a selection that shuffles per turn silently forfeits cache reuse
   every turn.
 
+## Compaction authority and `compression.checkpoint_required`
+
+Operators can arm a fail-closed gate, `compression.checkpoint_required`, that
+forbids lossy compaction until a memory provider has committed the transcript
+evidence to a durable store (see
+[Memory Provider Plugins](./memory-provider-plugin.md), "Pre-Compress
+Checkpoints"). The host dispatches `on_pre_compress()` right before your
+engine's `compress()`, so **`compress()` is the only compaction verb the host
+can checkpoint**. An engine that discards durable context from
+`on_turn_complete()`, or from a scheduler of its own, never crosses that seam.
+
+### Declaring your authority
+
+`ContextEngine.compacts_outside_compress` is a tri-state class attribute:
+
+| Value | Meaning |
+|-------|---------|
+| `None` (inherited default) | Undeclared — the host infers a verdict from the hooks you override. |
+| `False` | `compress()` is this engine's **only** lossy authority over the durable transcript; the host's pre-compress checkpoint covers it in full. |
+| `True` | This engine compacts or discards durable context outside `compress()`, where no host-side checkpoint can run. |
+
+Only the singletons `True` and `False` count as a declaration (plugin engines
+and test doubles answer `getattr` with truthy auto-attributes). Left
+undeclared, `engine_compacts_outside_compress()` (`agent/context_engine.py`)
+infers the verdict from the hooks you override; anything it cannot prove safe
+is unsafe: overriding `on_turn_complete()`, or not inheriting from
+`ContextEngine` at all (the directory loader installs whatever `register(ctx)`
+collected). `prune_tool_results_only()` (the host gates its call site),
+`select_context()` (request-only) and `on_session_end()` (session boundary,
+return value discarded) do not count.
+
+### With the gate armed
+
+- **Refused at init** with `BLOCKED_MISSING_PREREQUISITE:
+  compression.checkpoint_required is incompatible with context engine
+  '<ClassName>': <reason>.` — the message names the two ways out (declare
+  `compacts_outside_compress = False`, or disable the key).
+- **`on_turn_complete()` withheld per turn.** Engine slot and hook are plain
+  attributes an engine can grow after init, so the verdict is re-resolved
+  every turn.
+- **Pure observers declare `compacts_outside_compress = False`** and keep
+  receiving the hook.
+
+### The declaration is a contract, not a proof
+
+The declaration takes precedence over the inference, so an engine that declares
+`False` and compacts from `on_turn_complete()` anyway is let through — a false
+statement visible in source rather than a silent hole. An engine with its own
+scheduler, or one that compacts from `update_from_response()`, touches no host
+call path and is invisible to inference: declare `True`. `select_context()`
+stays ungated because it is request-only — do not use it to write durable
+state on the side.
+
+### What the gate suppresses, and what that costs
+
+- The **proactive tool-result prune** (`compression.proactive_prune_tokens`) is
+  suppressed at its call site, covering the built-in and any engine that
+  overrides `prune_tool_results_only()`. It is off by default, so a default
+  install withholds nothing here.
+- **Post-turn micro-compaction** (`compression.micro_compact`) is forced off at
+  agent init.
+- Your engine's **`on_turn_complete()`** is withheld while it resolves to
+  unsafe.
+
+The material those paths would have dropped stays in context until the
+checkpointed threshold compaction handles it. The prune and the withheld
+`on_turn_complete()` each bump the shared
+`agent._checkpoint_gate_suppression_count` and log one warning per process,
+counting only paths that would actually have run (a disabled prune or one
+below its trigger is not counted; an engine that overrides
+`prune_tool_results_only()` owns its trigger policy, so every withheld dispatch
+counts). The operator's side of the trade, documented at the key in
+`cli-config.yaml.example`: an unavailable checkpoint provider halts the session
+instead of compacting unarchived context.
+
 ## Engine tools
 
 Context engines can expose tools the agent calls directly. Return schemas from `get_tool_schemas()` and handle calls in `handle_tool_call()`:
@@ -314,6 +389,8 @@ def clone_for_agent(self):
 ```
 
 `on_session_reset()` is called on `/new` or `/reset` to clear per-session state without a full shutdown.
+
+Those six steps describe the `compress()` path — the one compaction verb the host can checkpoint. An engine that reclaims durable context anywhere else (from `on_turn_complete()`, from `update_from_response()`, or from its own scheduler) must say so with `compacts_outside_compress = True`; see "Compaction authority and `compression.checkpoint_required`" above.
 
 Manual `/compress` on every surface (classic CLI, TUI, Desktop, messaging, ACP) calls your
 engine's `compress()` with `force=True` and the optional focus topic, never the built-in

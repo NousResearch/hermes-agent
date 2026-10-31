@@ -370,27 +370,48 @@ def compress_after_tool_results(
             agent._warn_context_overflow_blocked(
                 _block_reason, _real_tokens, int(getattr(_compressor, "threshold_tokens", 0) or 0)
             )
-        # Proactive tool-result prune (deterministic, no LLM, keeps tail): no-op unless
-        # proactive_prune_tokens is exceeded; commits only past
-        # proactive_prune_min_reclaim_tokens so cache breaks stay episodic.
-        _prune = getattr(_compressor, "prune_tool_results_only", None)
-        if callable(_prune):
-            try:
-                _pruned_msgs, _pruned_n = _prune(messages, current_tokens=_real_tokens)
-            except Exception:
-                logger.debug("proactive tool-result prune failed; skipping", exc_info=True)
-                _pruned_msgs, _pruned_n = messages, 0
-            # Standard no-op caller contract: only commit when the engine returned a
-            # NEW list object with a non-zero count. Do NOT rebuild
-            # conversation_history: rows already carry _DB_PERSISTED_MARKER, and on a
-            # stale in-place flag the helper could seed unpersisted rows.
-            if _pruned_n and _pruned_msgs is not messages:
-                from agent.compaction_events import publish_prune
-
-                publish_prune(agent, messages, _pruned_msgs, _pruned_n)
-                messages = _pruned_msgs
-                # A committed prune is a content-loss boundary like compaction: demoted skill_view /
-                # read_file bodies survive only as one-line markers, so the repeat-read dedup must
-                # stop answering "unchanged" for them or the reload the marker asks for is refused.
-                _reset_read_dedup_caches(effective_task_id, session_id=agent.session_id or "")
+        _pruned_msgs = _proactive_tool_result_prune(agent, _compressor, messages, _real_tokens)
+        if _pruned_msgs is not messages:
+            messages = _pruned_msgs
+            # A committed prune is a content-loss boundary like compaction: demoted skill_view /
+            # read_file bodies survive only as one-line markers, so the repeat-read dedup must
+            # stop answering "unchanged" for them or the reload the marker asks for is refused.
+            _reset_read_dedup_caches(effective_task_id, session_id=agent.session_id or "")
     return _verdict(False)
+
+
+def _proactive_tool_result_prune(agent: Any, compressor: Any, messages: list, current_tokens: int) -> list:
+    """Proactive tool-result prune (deterministic, no LLM, keeps tail): the pruned list when one
+    committed, else the same ``messages`` object. No-op unless proactive_prune_tokens is exceeded;
+    commits only past proactive_prune_min_reclaim_tokens so cache breaks stay episodic.
+
+    Withheld while compression.checkpoint_required is armed: the prune rewrites the durable
+    transcript between compactions, so no checkpoint precedes it. Gating here, not in the
+    compressor, also covers engines that override the hook. Suppression, not refusal (it runs per
+    tool iteration); the material stays in context for the checkpointed threshold compaction.
+    """
+    if getattr(agent, "compression_checkpoint_required", False) is True:
+        from agent.conversation_compression_checkpoint import (
+            _prune_would_have_run, _record_checkpoint_gate_suppression,
+        )
+
+        if _prune_would_have_run(compressor, current_tokens):
+            _record_checkpoint_gate_suppression(agent, "the proactive tool-result prune")
+        return messages
+    prune = getattr(compressor, "prune_tool_results_only", None)
+    if not callable(prune):
+        return messages
+    try:
+        pruned_msgs, pruned_n = prune(messages, current_tokens=current_tokens)
+    except Exception:
+        logger.debug("proactive tool-result prune failed; skipping", exc_info=True)
+        return messages
+    # Standard no-op caller contract: only commit when the engine returned a NEW list object
+    # with a non-zero count. Do NOT rebuild conversation_history: rows already carry
+    # _DB_PERSISTED_MARKER, and on a stale in-place flag the helper could seed unpersisted rows.
+    if not pruned_n or pruned_msgs is messages:
+        return messages
+    from agent.compaction_events import publish_prune
+
+    publish_prune(agent, messages, pruned_msgs, pruned_n)
+    return pruned_msgs

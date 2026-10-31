@@ -686,12 +686,20 @@ compression:
   # uncompressed transcript is preserved for a later retry. The gate binds to
   # every compaction authority: server-side native compaction
   # (codex_responses_native) is suppressed while armed, post-turn
-  # micro-compaction is forced off (no checkpoint hook in its path), and the
-  # codex_app_server API mode is refused at agent init (the codex agent
-  # compacts its own thread — no checkpoint can be guaranteed there). Only
-  # enable it with a checkpoint-capable provider configured — see
+  # micro-compaction is forced off (no checkpoint hook in its path), the
+  # proactive tool-result prune (proactive_prune_tokens) is suppressed at its
+  # call site, a plugin context engine that may compact outside compress() is
+  # refused at agent init and has its on_turn_complete hook withheld per turn
+  # (an engine that only observes may declare compacts_outside_compress =
+  # False), and the codex_app_server API mode is refused at agent init (the
+  # codex agent compacts its own thread — no checkpoint can be guaranteed
+  # there). OPERATOR TRADE: no other reclamation path is left, so if the
+  # checkpoint provider is unavailable the session HALTS with
+  # BLOCKED_MISSING_PREREQUISITE instead of compacting unarchived context.
+  # Only enable it with a checkpoint-capable provider configured — see
   # website/docs/developer-guide/memory-provider-plugin.md
-  # ("Pre-Compress Checkpoints").
+  # ("Pre-Compress Checkpoints") and context-engine-plugin.md
+  # ("Compaction authority and compression.checkpoint_required").
   checkpoint_required: false
 
   # Opt-in compression progress notices on chat platforms (default: false).

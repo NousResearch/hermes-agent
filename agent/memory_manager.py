@@ -232,6 +232,10 @@ class MemoryManager:
         }
         # The profile ``initialize_all`` bound the providers to; tool calls must come from it (#140058).
         self._bound_scope: Optional[dict[str, Any]] = None
+        # Captured at initialize_all(). A fork ("subagent") holds a provider only for the checkpoint gate; its
+        # turn writes and recall must not reach the user's memory. "primary" until initialized, so the legacy
+        # construction path keeps writing.
+        self._agent_context = "primary"
         self._tool_call_keywords_cache: dict[int, Optional[frozenset[str]]] = {}
 
     def _each_provider(self, label: str, call: Callable[[MemoryProvider], Any], *, level: int = logging.DEBUG,
@@ -250,6 +254,13 @@ class MemoryManager:
         """Whether a lifecycle hook may reach the providers: only from the profile they were initialized
         for (#140058; see ``agent/memory_caller_scope.py``). Nothing to reach, nothing to refuse."""
         return not self._providers or caller_scope(self._bound_scope, f"hook {hook}") is not None
+
+    def _fork_turn_hooks_suppressed(self) -> bool:
+        """A fork's writes and recall (on_turn_start, sync, prefetch, session-end extraction, delegation notes)
+        stay off on the host, independent of whether each provider honours ``agent_context``: before the
+        checkpoint gate armed them, forks ran with no provider at all. ``initialize``, ``on_session_switch``
+        and ``on_pre_compress`` (the checkpoint) are not gated."""
+        return self._agent_context == "subagent"
 
     def _tool_call_keywords(self, provider: MemoryProvider) -> Optional[frozenset[str]]:
         """The keywords ``provider.handle_tool_call`` declares; None when it takes any (``**kwargs``, or
@@ -345,6 +356,8 @@ class MemoryManager:
 
     def prefetch_all(self, query: str, *, session_id: str = "") -> str:
         """Merge non-empty prefetch context from all providers (failures are non-fatal)."""
+        if self._fork_turn_hooks_suppressed():
+            return ""
         clean_query = self._strip_skill_scaffolding(query)
         if not clean_query or not self._owner_allows("prefetch"):
             return ""
@@ -421,6 +434,8 @@ class MemoryManager:
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn (see ``sync_all``)."""
+        if self._fork_turn_hooks_suppressed():
+            return
         providers = list(self._providers)
         clean_query = self._strip_skill_scaffolding(query) if providers else None
         if not clean_query or not self._owner_allows("queue_prefetch"):
@@ -451,6 +466,8 @@ class MemoryManager:
         (tool outputs included) go through ``_redact_for_provider`` so secrets are never archived
         verbatim in a provider's store (#115104).
         """
+        if self._fork_turn_hooks_suppressed():
+            return
         providers = list(self._providers)
         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
         if not clean_user_content or not self._owner_allows("sync_turn"):
@@ -611,7 +628,7 @@ class MemoryManager:
         return result
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        if not self._owner_allows("on_turn_start"):
+        if self._fork_turn_hooks_suppressed() or not self._owner_allows("on_turn_start"):
             return
         message = _redact_for_provider(message)
 
@@ -624,7 +641,7 @@ class MemoryManager:
         self._each_provider("on_turn_start failed", _tick)
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
-        if not self._owner_allows("on_session_end"):
+        if self._fork_turn_hooks_suppressed() or not self._owner_allows("on_session_end"):
             return
         messages = _redact_messages_for_egress(messages or [])
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
@@ -697,7 +714,9 @@ class MemoryManager:
 
         ``messages`` is the raw v1 transcript; ``evidence_messages`` is the host-normalized list handed
         only to checkpoint (v2+) providers. With ``require_checkpoint`` at least one checkpoint provider
-        must succeed — its exception propagates so the caller keeps the uncompressed transcript.
+        must succeed — its exception propagates so the caller keeps the uncompressed transcript. Not gated
+        for forks (``_fork_turn_hooks_suppressed``): the checkpoint is why a fork holds a provider, so a v2
+        provider must save here whatever its non-primary write scope.
         """
         if not self._owner_allows("on_pre_compress"):
             if require_checkpoint:  # the caller keeps the uncompressed transcript
@@ -827,7 +846,7 @@ class MemoryManager:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
-        if not self._owner_allows("on_delegation"):
+        if self._fork_turn_hooks_suppressed() or not self._owner_allows("on_delegation"):
             return
         task, result = _redact_for_provider(task, result)
         self._each_provider(
@@ -922,6 +941,8 @@ class MemoryManager:
             from hermes_constants import get_hermes_home
             kwargs["hermes_home"] = str(get_hermes_home())
         self._bound_scope = bound_scope(kwargs["hermes_home"], kwargs.get("agent_identity"))
+        _context = kwargs.get("agent_context")
+        self._agent_context = _context if isinstance(_context, str) and _context.strip() else "primary"
         # One instance, one profile: never rebind an instance another profile's manager bound (#140058).
         for provider in [p for p in self._providers if p.name != "builtin"]:
             if not claim_instance(provider, kwargs["hermes_home"]):

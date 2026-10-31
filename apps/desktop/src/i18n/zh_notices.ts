@@ -4,6 +4,10 @@ import { zhSessionCommands } from './zh_session_commands'
 
 // Shell notices (remote-display toast, butterbar, keep-awake offer), spread into zh.ts.
 export const zhNotices = {
+  gatewayUpdate: {
+    updating: (target, turns) =>
+      `${target ? `正在更新到 ${target}` : '正在更新 Hermes'}${turns > 0 ? ` · 正在完成 ${turns} 个回合` : '…'}`
+  },
   remoteDisplayBanner: {
     message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`
   },
@@ -42,5 +46,5 @@ export const zhNotices = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+  'gatewayUpdate' | 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
 >

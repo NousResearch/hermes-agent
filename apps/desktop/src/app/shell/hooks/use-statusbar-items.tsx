@@ -13,6 +13,7 @@ import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { useChangeWorkspaceItem } from '@/app/shell/hooks/use-change-workspace'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { useFocusedSessionRow } from '@/app/shell/hooks/use-focused-session-row'
+import { useGatewayHealthCopy } from '@/app/shell/hooks/use-gateway-health-copy'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
 import { $paneVisible } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
@@ -389,20 +390,11 @@ export function useStatusbarItems({
   const gatewayOpen = gatewayState === 'open'
   const gatewayConnecting = gatewayState === 'connecting'
 
+  const healthCopy = useGatewayHealthCopy(copy, gatewayState, requestGateway, activeGatewayProfile)
+
   const gatewayHealth = statusBarGatewayHealth({
     connectionState: gatewayState,
-    copy: {
-      backend: copy.backend,
-      checking: copy.gatewayChecking,
-      connecting: copy.gatewayConnecting,
-      messagingDegraded: copy.messagingDegraded,
-      messagingStopped: copy.messagingStopped,
-      needsSetup: copy.gatewayNeedsSetup,
-      offline: copy.gatewayOffline,
-      ready: copy.gatewayReady,
-      restarting: copy.gatewayRestarting,
-      unavailable: copy.gatewayUnavailable
-    },
+    copy: healthCopy,
     inferenceStatus,
     messagingRunning: statusSnapshot?.gateway_running,
     messagingState: statusSnapshot?.gateway_state,

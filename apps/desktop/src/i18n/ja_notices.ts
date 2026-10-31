@@ -4,6 +4,10 @@ import { jaSessionCommands } from './ja_session_commands'
 
 // Shell notices (remote-display toast, butterbar, keep-awake offer), spread into ja.ts.
 export const jaNotices = {
+  gatewayUpdate: {
+    updating: (target, turns) =>
+      `${target ? `${target} に更新中` : 'Hermes を更新中'}${turns > 0 ? ` · ${turns} 件のターンを完了中` : '…'}`
+  },
   remoteDisplayBanner: {
     message: reason =>
       `ソフトウェアレンダリングが有効です — リモートディスプレイを検出しました（${reason}）。ちらつきを防ぐため GPU アクセラレーションは無効化されています。`
@@ -47,5 +51,5 @@ export const jaNotices = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+  'gatewayUpdate' | 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
 >

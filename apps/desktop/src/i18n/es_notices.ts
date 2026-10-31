@@ -4,6 +4,10 @@ import { esSessionCommands } from './es_session_commands'
 
 // Shell notices (remote-display toast, butterbar, keep-awake offer), spread into es.ts.
 export const esNotices = {
+  gatewayUpdate: {
+    updating: (target, turns) =>
+      `${target ? `Actualizando a ${target}` : 'Actualizando Hermes'}${turns > 0 ? ` · terminando ${turns} ${turns === 1 ? 'turno' : 'turnos'}` : '…'}`
+  },
   remoteDisplayBanner: {
     message: reason =>
       `Renderizado por software activo — se detectó una pantalla remota (${reason}). Se desactivó la aceleración por GPU para evitar parpadeos.`
@@ -48,5 +52,5 @@ export const esNotices = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+  'gatewayUpdate' | 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
 >

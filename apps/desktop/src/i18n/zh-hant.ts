@@ -14,7 +14,6 @@ import { zhHantFirstRun } from './zh-hant_first_run'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
-
   catalog: {
     add: '新增',
     added: '已新增',
@@ -137,6 +136,10 @@ export const zhHantOverrides = {
   fileMenu: zhHantChrome.fileMenu,
   boot: zhHantBoot.boot,
   notifications: zhHantDiagnostics.notifications,
+  gatewayUpdate: {
+    updating: (target, turns) =>
+      `${target ? `正在更新至 ${target}` : '正在更新 Hermes'}${turns > 0 ? ` · 正在完成 ${turns} 個回合` : '…'}`
+  },
   remoteDisplayBanner: zhHantBoot.remoteDisplayBanner,
   butterbar: zhHantBoot.butterbar,
   promptNotices: zhHantBoot.promptNotices,

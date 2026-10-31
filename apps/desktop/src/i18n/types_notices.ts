@@ -3,6 +3,11 @@ import type { DesktopCommandNotices } from './types_desktop_commands'
 // Shell notice strings: the remote-display toast, the butterbar, send-outcome toasts and the
 // keep-awake offer; `Translations` spreads this in.
 export interface NoticeTranslations {
+  gatewayUpdate: {
+    /** The gateway finishing its turns before `hermes update` replaces it (status bar, composer). */
+    updating: (target: null | string, turns: number) => string
+  }
+
   remoteDisplayBanner: {
     message: (reason: string) => string
   }

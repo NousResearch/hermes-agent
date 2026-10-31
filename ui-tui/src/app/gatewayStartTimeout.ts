@@ -6,7 +6,10 @@ import {
   backendGaveUpActivity,
   backendSlowStart,
   backendSlowStartStatus,
-  stderrLooksLikeProblem
+  backendUpdating,
+  backendUpdatingActivity,
+  stderrLooksLikeProblem,
+  type UpdateDrain
 } from './userMessages.js'
 
 const STDERR_LINE_CAP = 120
@@ -35,5 +38,13 @@ export function reportGatewayStartTimeout(stderrTail: string | undefined, setSta
 
   for (const line of tailLines) {
     turnController.pushActivity(line.slice(0, STDERR_LINE_CAP), 'error')
+  }
+}
+
+/** Attached to an owner finishing its turns before an update replaces it: say so, not a bare "ready". */
+export function announceUpdateDrain(drain: null | UpdateDrain, setStatus: (status: string) => void) {
+  if (drain) {
+    setStatus(backendUpdating(drain))
+    turnController.pushActivity(`${backendUpdating(drain)} · ${backendUpdatingActivity()}`, 'info')
   }
 }

@@ -1560,7 +1560,17 @@ def _upload_flag_owned_by_curl_or_wget(command: str, flag_start: int) -> bool:
                 break
             if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() in ("curl", "wget"):
                 return True
+            if _word_is_unresolved_expansion(word):
+                # ``$CURL -d …`` / ``"$(which curl)" -T …``: the word may expand to curl, so the
+                # flag cannot be ruled out as an upload.
+                return True
     return False
+
+
+def _word_is_unresolved_expansion(word: str) -> bool:
+    """True when a shell word begins with a parameter expansion, command substitution or backtick
+    (after any opening quotes): what it runs is unknown without executing the shell."""
+    return word.lstrip("'\"").startswith(("$", "`"))
 
 
 def detect_dangerous_command(command: str) -> tuple:

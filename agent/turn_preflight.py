@@ -19,6 +19,9 @@ from agent.conversation_compression import (
     compression_skipped_due_to_lock, context_compression_timed_out,
     conversation_history_after_compression, ensure_compression_feasibility_checked,
 )
+from agent.conversation_compression_wire_fit import (
+    bypass_cooldown_kwargs, wire_overflow_reenters_compression,
+)
 from agent.turn_context import _review_fork_first_request_pending
 from agent.turn_context_compaction import (
     _apply_grown_window, _blocked_compress_reason, _clear_overflow_warn, _refund_api_call,
@@ -58,6 +61,7 @@ def run_preflight_compression(
     agent: Any, v: PreflightGateVerdict, *, compressor: Any, request_pressure_tokens: int,
     provider_overflow_preflight: bool, defer_preflight: Any, moa_prepared_request: Any,
     system_message: Any, user_message: Any, max_compression_attempts: int, effective_task_id: Any,
+    api_messages: Any = None, tools_for_api: Any = None,
 ) -> PreflightGateVerdict:
     """Mirror of the turn-prologue guard chain (defer on noisy estimate → skip in failure
     cooldown → ``should_compress``), rebinding the loop locals on ``v`` and setting
@@ -85,6 +89,15 @@ def run_preflight_compression(
     _compression_cooldown = getattr(
         compressor, "get_active_compression_failure_cooldown", lambda: None
     )()
+    # A failed/aborted compression must NOT give up for the rest of the run: when the
+    # assembled wire request provably cannot fit the model window (the provider would 400
+    # non-retryably), the cooldown must not suppress re-entry. Only a True verdict forces
+    # re-entry; unknown/False keep the cooldown defer behaviour. The send-time guard
+    # (conversation_compression_wire_fit._ensure_request_fits_window) covers exhausted retries.
+    _wire_overflow, _compression_cooldown = wire_overflow_reenters_compression(
+        agent, _compression_cooldown, v.messages, system_prompt=v.active_system_prompt,
+        api_messages=api_messages, api_tools=tools_for_api,
+    )
     _eligible = (
         agent.compression_enabled
         and len(v.messages) > 1
@@ -99,7 +112,13 @@ def run_preflight_compression(
         and (not v._preflight_compression_blocked or provider_overflow_preflight)
         and (not defer_preflight(request_pressure_tokens) or provider_overflow_preflight)
         and not _compression_cooldown
-        and compressor.should_compress(request_pressure_tokens)
+        and (
+            compressor.should_compress(request_pressure_tokens)
+            # Provider-proven overflow (wire-aware): re-enter even when should_compress is
+            # blocked by the cooldown — an aborted compression must not give up for the
+            # rest of the run (bypass_cooldown runs one real attempt with it armed).
+            or _wire_overflow is True
+        )
     ):
         # Managed local runtime: grow the context window before compressing (last
         # resort). Only for a llamacpp provider at the supervised base_url.
@@ -147,6 +166,7 @@ def run_preflight_compression(
         v.messages, v.active_system_prompt = agent._compress_context(
             v.messages, system_message, approx_tokens=request_pressure_tokens,
             task_id=effective_task_id, trigger="pre_api",
+            **bypass_cooldown_kwargs(_wire_overflow),
         )
         if context_compression_timed_out(agent):
             # Progress-aware timeout: never reached the provider — refund the
@@ -296,13 +316,20 @@ def compress_after_tool_results(
 
     if agent.compression_enabled and compression_attempts < max_compression_attempts:
         ensure_compression_feasibility_checked(agent, _real_tokens)
+    # A failed/aborted compression must NOT give up for the rest of the run: when the wire
+    # payload provably cannot fit the model window, force re-entry even while should_compress
+    # is blocked by the summary-failure cooldown (bypass_cooldown runs one real attempt with
+    # the cooldown armed). The deterministic placeholder fallback at send time
+    # covers the case where retries are exhausted.
+    _wire_overflow, _ = wire_overflow_reenters_compression(
+        agent, None, messages, system_prompt=active_system_prompt)
     if (
         agent.compression_enabled
         and compression_attempts < max_compression_attempts
         and not bool(
             getattr(_compressor, "awaiting_real_usage_after_compression", False)
         )
-        and _compressor.should_compress(_real_tokens)
+        and (_compressor.should_compress(_real_tokens) or _wire_overflow is True)
     ):
         compression_attempts += 1
         # Compression is running: reset blocked-overflow warning dedup so a
@@ -314,6 +341,7 @@ def compress_after_tool_results(
         # no-usage fallback), so the overflow guard sees the true size.
         messages, active_system_prompt = agent._compress_context(
             messages, system_message, approx_tokens=_real_tokens, task_id=effective_task_id, trigger="post_tool",
+            **bypass_cooldown_kwargs(_wire_overflow),
         )
         if messages is _post_tool_input and compression_skipped_due_to_lock(agent):
             # Lock-skip no-op is a temporary defer, not evidence about compressibility:

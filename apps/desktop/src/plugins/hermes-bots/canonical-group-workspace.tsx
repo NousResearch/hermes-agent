@@ -1,11 +1,12 @@
 import { Button, host, randomUuid } from '@hermes/plugin-sdk'
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
 
-import { type CanonicalDriverActivity, CanonicalGroupWorkingLine, canonicalMemberPhases } from './canonical-group-activity'
+import { type CanonicalDriverActivity, CanonicalGroupWorkingLine, canonicalMemberName, canonicalMemberPhases } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
 import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
+import { projectCanonicalGroupNames } from './canonical-group-names'
 import { forgetCanonicalGroup } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
@@ -89,8 +90,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       cursor = next
     }
 
+    const room = await projectCanonicalGroupNames(binding, snapshot.room)
+
     if (alive.current && version === revision.current) {
-      setState(snapshot)
+      setState({ ...snapshot, room })
       setEvents(log)
       setReadError('')
     }
@@ -200,7 +203,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       <CanonicalGroupWorkingLine driver={state?.driver_status} labels={labels} members={state?.room.members} phases={phases} />
     </div>
     {(state?.driver_status?.pending_actions || []).map(action => <div className="flex items-center gap-2" key={`${action.kind}:${action.task_id}:${action.execution_generation}`}>
-      <span>{action.member_id}</span>
+      <span>{canonicalMemberName(state?.room.members?.find(member => member.member_id === action.member_id)) || action.member_id}</span>
       {action.kind === 'discard' && <Button disabled={busy} onClick={() => setDiscard({ ...action })}>{labels.discard}</Button>}
       {action.kind === 'retry' && <Button disabled={busy} onClick={() => void act({ ...action })}>{labels.retry}</Button>}
       {action.kind === 'approval' && <><Button disabled={busy} onClick={() => void act({ ...action }, 'once')}>{labels.allowOnce}</Button><Button disabled={busy} onClick={() => void act({ ...action }, 'deny')}>{labels.deny}</Button></>}

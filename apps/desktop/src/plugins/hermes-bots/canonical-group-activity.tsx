@@ -16,7 +16,7 @@ interface ActivityLabels {
   memberWorking: string
 }
 
-const memberName = (member: CanonicalRoomMember) => member.display_name || member.handle || member.member_id
+export const canonicalMemberName = (member?: CanonicalRoomMember) => member?.display_name || member?.handle || member?.member_id
 
 /** One phase per member: a running (or stopping) task outranks one still queued behind it. */
 export function canonicalMemberPhases(driver?: CanonicalDriverActivity): Map<string, CanonicalMemberPhase> {
@@ -44,7 +44,7 @@ export function CanonicalGroupRoster({ members = [], label, labels, phases }: {
 
       return <li className="inline-flex items-center gap-1" data-phase={phase ?? 'idle'} key={member.member_id}>
         {phase === 'working' && <GlyphSpinner ariaLabel={labels.memberWorking} className="text-(--ui-accent)" />}
-        <span className={phase === 'working' ? 'text-(--ui-text-secondary)' : undefined}>{memberName(member)}</span>
+        <span className={phase === 'working' ? 'text-(--ui-text-secondary)' : undefined}>{canonicalMemberName(member)}</span>
         {phase === 'queued' && <span className="text-(--ui-text-quaternary)">· {labels.memberQueued}</span>}
       </li>
     })}
@@ -56,7 +56,7 @@ export function CanonicalGroupWorkingLine({ driver, members = [], labels, phases
   driver?: CanonicalDriverActivity; members?: CanonicalRoomMember[]; labels: ActivityLabels
   phases: Map<string, CanonicalMemberPhase>
 }) {
-  const working = members.filter(member => phases.get(member.member_id) === 'working').map(memberName)
+  const working = members.filter(member => phases.get(member.member_id) === 'working').map(canonicalMemberName)
 
   if (!working.length && !driver?.working) {return null}
 

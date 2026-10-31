@@ -1,4 +1,4 @@
-import { LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
+import { LOCAL_CONNECTION_ID, type ProfileNameMetadata, profileVisibleName, registryBackendScopeKey } from '@hermes/shared'
 import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
@@ -36,11 +36,10 @@ export function normalizeProfileKey(name: string | null | undefined): string {
   return value || 'default'
 }
 
-// Presentation-only label: the display_name from profile.yaml when set (e.g. a
-// renamed default profile), else the canonical name. Never used for
-// comparison or routing — canonical `name` remains the identity everywhere.
-export function profileLabel(profile: Pick<ProfileInfo, 'display_name' | 'name'>): string {
-  return (profile.display_name ?? '').trim() || profile.name
+// Labels follow the shared visible-name policy; comparison and routing keep
+// using canonical `name`.
+export function profileLabel(profile: ProfileNameMetadata): string {
+  return profileVisibleName(profile)
 }
 
 // The profile the running local backend is actually scoped to (mirrors

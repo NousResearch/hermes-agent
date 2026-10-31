@@ -6,7 +6,11 @@ const host = vi.hoisted(() => ({
   state: { connectionId: { get: vi.fn() }, profile: { get: vi.fn() } }
 }))
 
-vi.mock('@hermes/plugin-sdk', async () => ({ host, randomUuid: (await import('@hermes/shared')).randomUuid }))
+vi.mock('@hermes/plugin-sdk', async () => {
+  const shared = await import('@hermes/shared')
+
+  return { host, profileVisibleName: shared.profileVisibleName, randomUuid: shared.randomUuid }
+})
 
 import { actCanonicalGroup, canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup, discoverCanonicalGroups } from './canonical-groups'
 
@@ -42,6 +46,44 @@ it('pins discovery and every subsequent request to its captured authority, inclu
   host.requestProfile.mockResolvedValueOnce({ driver: true }).mockResolvedValueOnce({ rooms: [], next_offset: 0 })
   await expect(discoverCanonicalGroups(route)).rejects.toThrow('pagination')
   expect(host.request).not.toHaveBeenCalled()
+})
+
+it('seats Bot titles as display metadata without changing the profile, handle or target', async () => {
+  const route = captureCanonicalGroupRoute()
+  host.requestProfile.mockImplementation(async (_route, _method, params) => ({
+    room: { room_id: params.room_id, name: params.name, members: params.members }
+  }))
+
+  const { room } = await createCanonicalGroup(route, 'Team', [
+    { name: 'u52a9-u624b', handle: 'helper-2', title: '中文助手', display_name: 'Old name', connectionId: 'source-a' },
+    { name: 'default', handle: 'hermes', connectionId: 'source-a' }
+  ])
+
+  expect(room.members).toEqual([
+    { member_id: 'u52a9-u624b', profile: 'u52a9-u624b', handle: 'helper-2', display_name: '中文助手', target: { kind: 'local', profile: 'u52a9-u624b' } },
+    { member_id: 'default', profile: 'default', handle: 'hermes', target: { kind: 'local', profile: 'default' } }
+  ])
+  expect(host.requestProfile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining(route), 'groups.create', expect.objectContaining({ members: room.members }))
+  expect(host.request).not.toHaveBeenCalled()
+})
+
+it('omits a label the gateway would reject instead of failing the whole group', async () => {
+  const route = captureCanonicalGroupRoute()
+  host.requestProfile.mockImplementation(async (_route, _method, params) => ({
+    room: { room_id: params.room_id, name: params.name, members: params.members }
+  }))
+
+  const { room } = await createCanonicalGroup(route, 'Team', [
+    { name: 'long-title', handle: 'long', title: 'x'.repeat(201), connectionId: 'source-a' },
+    { name: 'other', handle: 'other', connectionId: 'source-a' }
+  ])
+
+  expect(room.members[0]).toEqual({
+    member_id: 'long-title',
+    profile: 'long-title',
+    handle: 'long',
+    target: { kind: 'local', profile: 'long-title' }
+  })
 })
 
 it('creates only same-authority rosters and dispatches exact advertised attempt identities without inference', async () => {

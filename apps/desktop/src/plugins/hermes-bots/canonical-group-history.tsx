@@ -32,8 +32,9 @@ function eventAuthor(event: CanonicalGroupEvent, roster: Map<string, CanonicalRo
 
   const member = roster.get(memberId ?? '')
 
-  // The log's label preserves who spoke even if the roster has since changed.
-  return (isMessage ? event.actor?.display_name : undefined) || member?.display_name || member?.handle ||
+  // A same-authority current primary name wins for seated members. The immutable actor
+  // snapshot still names departed/peer members, or serves as fallback when metadata is unavailable.
+  return member?.current_display_name || (isMessage ? event.actor?.display_name : undefined) || member?.display_name || member?.handle ||
     (isMessage ? event.actor?.id : memberId)
 }
 

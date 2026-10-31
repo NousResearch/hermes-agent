@@ -447,8 +447,9 @@ def static_model_provider_conflict(
     the provider's family that another native vendor's catalog lists — or any foreign-family name
     on the OAuth catalogs with a strict family gate (``_STATIC_FAMILY_PREFIXES``) (#96817) — or an
     unlisted name in another vendor's family on a single-vendor API, including a plugin provider whose
-    declared catalog is one family. ``native_endpoint=False`` (the provider's base URL is redirected
-    to a proxy) keeps that last case undecidable."""
+    declared catalog is one family of bare names (``accounts/fireworks/models/x`` shares a namespace,
+    not a vendor). ``native_endpoint=False`` (the provider's base URL is redirected to a proxy) keeps
+    that last case undecidable."""
     from hermes_cli import models as _m
 
     requested = (model_name or "").strip()
@@ -467,7 +468,9 @@ def static_model_provider_conflict(
     families = {_family_head(m) for m in catalog}
     if _family_head(requested) in families:
         return None
-    single_vendor = normalized in _SINGLE_VENDOR_PROVIDERS or (declared_only and len(families) == 1)
+    single_vendor = normalized in _SINGLE_VENDOR_PROVIDERS or (
+        declared_only and len(families) == 1 and not any("/" in m for m in catalog)
+    )
     strict = normalized in _STATIC_FAMILY_PREFIXES or (
         native_endpoint and single_vendor and _names_another_vendors_family(requested, normalized)
     )
@@ -486,15 +489,20 @@ def launch_model_conflict(model_name: str, provider: Optional[str], model_config
     """``static_model_provider_conflict`` for a session launch: an empty ``provider`` means the one the
     session would build with, and a base URL set for that provider, in config or its env var, is a proxy
     that may serve any family. The caller holds the profile's env scope."""
-    from hermes_cli.auth import PROVIDER_REGISTRY, _provider_env_base_url
+    from agent.secret_scope import get_secret_str
+    from hermes_cli import models as _m
+    from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.runtime_provider import resolve_requested_provider
 
-    provider = str(provider or "").strip() or resolve_requested_provider()
-    redirected = (str(model_config.get("provider") or "").strip().lower() == provider.lower()
+    normalized = _m.normalize_provider(str(provider or "").strip() or resolve_requested_provider())
+    redirected = (_m.normalize_provider(str(model_config.get("provider") or "").strip()) == normalized
                   and bool(str(model_config.get("base_url") or "").strip()))
-    pconfig = PROVIDER_REGISTRY.get(provider.lower())
-    redirected = redirected or bool(pconfig and _provider_env_base_url(pconfig))
-    return static_model_provider_conflict(model_name, provider, native_endpoint=not redirected)
+    pconfig = PROVIDER_REGISTRY.get(normalized)
+    # Through the scope, not os.environ: under multiplex that holds the launch profile's values, and a
+    # daemon never reloads a `.env` edited after it started.
+    env_var = pconfig.base_url_env_var if pconfig else ""
+    redirected = redirected or bool(env_var and get_secret_str(env_var).strip())
+    return static_model_provider_conflict(model_name, normalized, native_endpoint=not redirected)
 
 
 def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:

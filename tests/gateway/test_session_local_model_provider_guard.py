@@ -24,8 +24,23 @@ def plugin_provider():
     _REGISTRY.pop(name, None)
 
 
+@pytest.fixture
+def namespaced_host():
+    """A hosted catalog whose ids share an account path, shaped like Fireworks: one head, many vendors."""
+    from providers import _REGISTRY, register_provider
+    from providers.base import ProviderProfile
+
+    name = "namespaced-host-fixture"
+    register_provider(ProviderProfile(
+        name=name, base_url="https://host.example/v1",
+        fallback_models=("accounts/host/models/kimi-k2", "accounts/host/models/glm-5"),
+    ))
+    yield name
+    _REGISTRY.pop(name, None)
+
+
 @asynccontextmanager
-async def _creator(tmp_path, monkeypatch, provider, *, base_url=""):
+async def _creator(tmp_path, monkeypatch, provider, *, base_url="", dotenv=""):
     from gateway import run
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
@@ -37,7 +52,9 @@ async def _creator(tmp_path, monkeypatch, provider, *, base_url=""):
     home.mkdir()
     (home / "config.yaml").write_text(
         f"model:\n  default: claude-sonnet-5-5\n  provider: {provider}\n  base_url: '{base_url}'\n", encoding="utf-8")
+    (home / ".env").write_text(dotenv, encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(run, "_hermes_home", home)  # the home a new session's `.env` scope reads
     model_config = {"default": "claude-sonnet-5-5", "provider": provider, "base_url": base_url}
     monkeypatch.setattr(run, "_load_gateway_config", lambda *a: {"platform_toolsets": {"cli": []}, "model": model_config})
     store = SessionStore(tmp_path / "sessions", GatewayConfig())
@@ -107,6 +124,69 @@ async def test_coherent_and_undecidable_pairs_still_create(plugin_provider, monk
 async def test_redirected_anthropic_endpoint_stays_undecidable(monkeypatch, tmp_path):
     async with _creator(tmp_path, monkeypatch, "anthropic", base_url="https://proxy.example/anthropic") as create:
         assert create(model="gpt-6.1-terra").session_id
+
+
+@pytest.mark.asyncio
+async def test_a_namespaced_catalog_names_no_vendor_so_stays_undecidable(namespaced_host, monkeypatch, tmp_path):
+    async with _creator(tmp_path, monkeypatch, namespaced_host) as create:
+        assert create(model="deepseek-v4").session_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["anthropic", "claude"])  # `claude` is an alias of the same provider
+async def test_a_base_url_in_the_profile_env_stays_undecidable(monkeypatch, tmp_path, provider):
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    dotenv = "ANTHROPIC_BASE_URL=https://proxy.example/anthropic\n"
+    async with _creator(tmp_path, monkeypatch, "anthropic", dotenv=dotenv) as create:
+        assert create(model="gpt-6.1-terra", provider=provider).session_id
+
+
+@pytest.mark.asyncio
+async def test_an_exact_retry_keeps_the_session_it_already_has(monkeypatch, tmp_path):
+    """The gate runs after the retry returns: a proxy removed since the create is no reason to lose a chat."""
+    from hermes_state_runtime import RuntimeStoreError
+
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    dotenv = "ANTHROPIC_BASE_URL=https://proxy.example/anthropic\n"
+    async with _creator(tmp_path, monkeypatch, "anthropic", dotenv=dotenv) as create:
+        created = create(model="gpt-6.1-terra", request_id="kept")
+        (tmp_path / "home" / ".env").write_text("", encoding="utf-8")
+
+        assert create(model="gpt-6.1-terra", request_id="kept").session_id == created.session_id
+        with pytest.raises(RuntimeStoreError, match="model_provider_conflict"):
+            create(model="gpt-6.1-terra", request_id="new")
+
+
+@pytest.mark.asyncio
+async def test_a_client_reads_the_refusal_off_the_wire(monkeypatch, tmp_path):
+    """Through the RPC dispatch Desktop and the CLI use: a named refusal, and no session behind it."""
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("model:\n  default: claude-sonnet-5-5\n  provider: anthropic\n", encoding="utf-8")
+    monkeypatch.setattr(run, "_hermes_home", home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    store = SessionStore(home / "sessions", GatewayConfig())
+    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+                             _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None)
+    authority = await initialize_session_authority(runner, profile_id=str(home), instance_id="fixture")
+    owner = AuthorityConnection(authority, object(), {"user_id": "owner"})
+    try:
+        response = await owner.dispatch({"id": "c", "method": "session.create", "params": {
+            "request_id": "c", "source": "gui", "cwd": str(home), "toolsets": [], "model": "gpt-6.1-terra"}})
+
+        assert response["error"]["message"] == "model_provider_conflict"
+        assert response["error"]["data"]["field"] == "model"
+        assert "gpt-6.1-terra" in response["error"]["data"]["detail"]
+        assert authority.db.search_sessions(limit=10) == []
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
 
 
 @pytest.mark.asyncio

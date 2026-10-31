@@ -76,6 +76,13 @@ come **first** in the bases list — `class WhatsAppAdapter(Mixin,
 BasePlatformAdapter)` — so the mixin's `format_message` overrides
 `BasePlatformAdapter`'s generic default.
 
+**Local bridges and the auto-started gateway.** A gateway that a client
+started with `--idle-exit` stays up while any messaging adapter is
+enabled, connected or reconnecting. An adapter that bridges to a local
+service, where the connection alone is not work, sets the class
+attribute `keeps_gateway_up = False`. Running turns, attached clients and
+cron jobs still hold the gateway. See `gateway/run_idle_exit.py`.
+
 See `plugins/platforms/irc/`, `plugins/platforms/teams/`, and
 `plugins/platforms/google_chat/` for complete working examples, and
 `website/docs/developer-guide/adding-platform-adapters.md` for the full

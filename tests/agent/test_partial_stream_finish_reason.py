@@ -97,6 +97,42 @@ class TestPartialStreamStubFinishReason:
         )
 
 
+class TestProviderInterruptedFinishReason:
+    """A provider that stops generating for its own reasons (DeepSeek
+    ``insufficient_system_resource``/``aborted``, OpenCode Zen ``network_error``)
+    must not hand the loop a final turn: a complete-looking tool call from that
+    generation would execute, and cut-off text would be the answer."""
+
+    @pytest.mark.parametrize("reason", ["insufficient_system_resource", "aborted", "network_error"])
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_streamed_tool_call_is_never_executable(self, _mock_close, mock_create, reason):
+        chunks = [
+            _make_stream_chunk(tool_calls=[_make_tool_call_delta(0, "call_1", "terminal", '{"command": "echo hi"}')]),
+            _make_stream_chunk(finish_reason=reason),
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = lambda *a, **kw: iter(chunks)
+        mock_create.return_value = mock_client
+
+        response = _make_agent()._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+        assert response.choices[0].message.tool_calls is None
+
+    def test_non_streaming_routes_to_continuation(self):
+        from agent.turn_response_check import _derive_finish_reason
+
+        msg = SimpleNamespace(role="assistant", content="Step one is done and", tool_calls=None)
+        response = SimpleNamespace(
+            id="r", model="test/model", usage=None,
+            choices=[SimpleNamespace(index=0, message=msg, finish_reason="insufficient_system_resource")],
+        )
+
+        assert _derive_finish_reason(_make_agent(), response, []) == FINISH_REASON_LENGTH
+
+
 class TestTerminalChunkFenceException:
     """A superseded writer must still accept the provider's terminal
     finish_reason chunk. Fending that chunk leaves finish_reason None

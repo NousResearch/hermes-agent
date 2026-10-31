@@ -14,6 +14,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason
+from agent.message_sanitization import INTERRUPTED_FINISH_REASONS as _INTERRUPTED_FINISH_REASONS
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_failure_copy import invalid_response_failure_reason, provider_label_for, site_copy, stamp_failure
 from agent.turn_truncation import handle_content_policy_refusal, recover_from_truncation
@@ -78,6 +79,10 @@ def _derive_finish_reason(agent: Any, response: Any, messages: Any) -> str:
         return transport.response_finish_reason(response)
     normalized = transport.normalize_response(response)  # Bedrock already normalized at dispatch
     finish_reason = normalized.finish_reason
+    if finish_reason in _INTERRUPTED_FINISH_REASONS:
+        # Non-streaming twin of _finish_chat_stream's interrupted branch: the provider cut the
+        # generation itself, so continue (text) or re-request (tool calls) via the length path.
+        return "length"
     if agent.api_mode != "bedrock_converse" and agent._should_treat_stop_as_truncated(
         finish_reason, normalized, messages
     ):

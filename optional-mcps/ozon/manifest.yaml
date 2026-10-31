@@ -10,12 +10,14 @@ name: ozon
 description: 'Ozon marketplace: products, prices, stocks, finance, ads, FBO/FBS.'
 source: https://docs.ozon.ru/api/seller
 
-# Local stdio server, source lives in ./server/ (this directory, same repo).
-# It runs in its own venv — see server/README.md to (re)create it; the venv
-# itself is not committed (binary, platform-specific).
+# Local stdio server, source AND venv live in ./server/ (this repo) so the
+# whole connector travels with the fork -- every profile/client using this
+# same hermes-agent checkout gets it, not just whichever one happened to
+# create a venv in some external directory. The venv itself is not
+# committed (binary, platform-specific) -- see server/README.md to create it.
 transport:
   type: stdio
-  command: /home/max/.hermes/mcp-servers/ozon/venv/bin/python3
+  command: /home/max/.hermes/hermes-agent/optional-mcps/ozon/server/venv/bin/python3
   args:
     - /home/max/.hermes/hermes-agent/optional-mcps/ozon/server/ozon_mcp_server.py
   env:

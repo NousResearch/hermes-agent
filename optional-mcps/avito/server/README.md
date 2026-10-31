@@ -10,19 +10,27 @@ transport (auth + HTTP calls).
 
 ## Setup
 
-The server runs in its own virtualenv (kept separate from Hermes's own
-dependencies on purpose — this install's `PYTHONPATH` points at Hermes's
-venv, which breaks a plain system/venv `pip install mcp` unless cleared):
+The server runs in its own virtualenv, created **inside this directory**
+(`./venv`, gitignored) so the whole connector — code and venv together —
+travels with the fork: any profile/client using this same hermes-agent
+checkout gets it, instead of depending on some external directory that
+only exists on whichever machine happened to run the install first.
+(Also kept separate from Hermes's own dependencies on purpose — this
+install's `PYTHONPATH` points at Hermes's venv, which breaks a plain
+system/venv `pip install mcp` unless cleared):
 
 ```bash
-python3 -m venv ~/.hermes/mcp-servers/avito/venv
-PYTHONPATH="" ~/.hermes/mcp-servers/avito/venv/bin/pip install -r requirements.txt
+cd optional-mcps/avito/server
+python3 -m venv venv
+PYTHONPATH="" venv/bin/pip install -r requirements.txt
 ```
 
 The catalog manifest (`../manifest.yaml`) points `transport.command` at
-that venv's `python3` and `transport.args` at `avito_mcp_server.py` in
-this directory. If you move the venv, update the manifest's `command`
-path to match.
+`optional-mcps/avito/server/venv/bin/python3` and `transport.args` at
+`avito_mcp_server.py` in this directory, both as absolute paths under
+this checkout's own location. If this fork is ever cloned somewhere other
+than `/home/max/.hermes/hermes-agent`, update both paths in the manifest
+to match.
 
 ## Auth
 

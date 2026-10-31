@@ -46,17 +46,26 @@ suffix only where two methods share one path, e.g.
 
 ## Setup
 
+Venv lives **inside this directory** (`./venv`, gitignored), so the whole
+connector — code and venv together — travels with the fork: any
+profile/client using this same hermes-agent checkout gets it, instead of
+depending on some external directory that only exists on whichever
+machine happened to run the install first.
+
 ```bash
-python3 -m venv ~/.hermes/mcp-servers/ozon/venv
-PYTHONPATH="" ~/.hermes/mcp-servers/ozon/venv/bin/pip install -r requirements.txt
+cd optional-mcps/ozon/server
+python3 -m venv venv
+PYTHONPATH="" venv/bin/pip install -r requirements.txt
 ```
 
 (`PYTHONPATH=""` matters on this install — it otherwise points at Hermes's
 own venv and breaks a plain `pip install mcp`.)
 
-The catalog manifest (`../manifest.yaml`) points `transport.command` at that
-venv's `python3` and `transport.args` at `ozon_mcp_server.py` in this
-directory. If you move the venv, update the manifest's `command` path.
+The catalog manifest (`../manifest.yaml`) points `transport.command` at
+`optional-mcps/ozon/server/venv/bin/python3` and `transport.args` at
+`ozon_mcp_server.py` in this directory, both as absolute paths under this
+checkout's own location. If this fork is ever cloned somewhere other than
+`/home/max/.hermes/hermes-agent`, update both paths in the manifest.
 
 ## Auth
 

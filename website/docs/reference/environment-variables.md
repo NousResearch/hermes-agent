@@ -52,6 +52,8 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `XIAOMI_BASE_URL` | Override Xiaomi MiMo base URL (default: `https://api.xiaomimimo.com/v1`) |
 | `UPSTAGE_API_KEY` | Upstage API key for Solar models ([console.upstage.ai](https://console.upstage.ai/api-keys)) |
 | `UPSTAGE_BASE_URL` | Override Upstage base URL (default: `https://api.upstage.ai/v1`) |
+| `SCW_SECRET_KEY` | Scaleway Generative APIs secret key (same credential as the Scaleway CLI/SDKs) — European, OpenAI-compatible inference ([console.scaleway.com/iam/api-keys](https://console.scaleway.com/iam/api-keys)) |
+| `SCALEWAY_BASE_URL` | Override Scaleway base URL (default: `https://api.scaleway.ai/v1`; project-scoped: `https://api.scaleway.ai/<project_id>/v1`) |
 | `TOKENHUB_API_KEY` | Tencent TokenHub API key ([tokenhub.tencentmaas.com](https://tokenhub.tencentmaas.com)) |
 | `TOKENHUB_BASE_URL` | Override Tencent TokenHub base URL (default: `https://tokenhub.tencentmaas.com/v1`) |
 | `TOKENPLAN_API_KEY` | Tencent TokenPlan API key (LKEAP; Anthropic Messages endpoint) |

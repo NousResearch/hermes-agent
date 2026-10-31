@@ -55,6 +55,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Qwen OAuth** | `hermes model` → "Qwen OAuth" (provider: `qwen-oauth`; browser PKCE login) |
 | **MiniMax OAuth** | `hermes model` → "MiniMax (OAuth)" (provider: `minimax-oauth`; browser PKCE login) |
 | **StepFun** | `STEPFUN_API_KEY` in `~/.hermes/.env` (provider: `stepfun`) |
+| **Scaleway** | `SCW_SECRET_KEY` in `~/.hermes/.env` (provider: `scaleway`, alias: `scw`; European Generative APIs — GLM, Qwen, DeepSeek, Mistral and more, pay-per-use; the same secret key the Scaleway CLI uses) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
@@ -231,6 +232,10 @@ hermes chat --provider fireworks --model accounts/fireworks/models/kimi-k2p6
 # NovitaAI Model API
 hermes chat --provider novita --model moonshotai/kimi-k2.5
 # Requires: NOVITA_API_KEY in ~/.hermes/.env
+
+# Scaleway Generative APIs (European cloud — GLM, Qwen, DeepSeek, Mistral)
+hermes chat --provider scaleway --model deepseek-v4.1-flash-1017
+# Requires: SCW_SECRET_KEY in ~/.hermes/.env
 
 # Ramp Router (model IDs come from your account's live catalog)
 hermes chat --provider router --model gpt-5.4-mini

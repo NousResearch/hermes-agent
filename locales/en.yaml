@@ -1442,6 +1442,29 @@ platform:
     media:
       gif_downgraded: "[GIF downgraded to file]"
       gif_downgraded_caption: "[GIF downgraded to file]\n{caption}"
+    picker:
+      title_providers: "🤖 Choose Model | Providers"
+      title_models: "🤖 Choose Model | {name}"
+      current_model: "**Current Model**: `{model}`"
+      current_provider: "**Current Provider**: `{provider}`"
+      select_provider_prompt: "Select a model provider below:"
+      provider_models_summary: "Provider: **{name}** (`{slug}`)\nTotal {total} models"
+      page_info: " (Page {page}/{total_pages})"
+      select_model_prompt: "Select a target model to switch to:"
+      btn_prev: "◀ Previous"
+      btn_next: "Next ▶"
+      btn_back: "◀ Back to Providers"
+      btn_cancel: "❌ Cancel"
+      title_switching: "⏳ Switching Model..."
+      switching_body: "Switching to `{model}` by {user}..."
+      title_switched: "✅ Model Switched Successfully"
+      switched_body: "**Model switch active!**\n\n- **Target**: `{model}`\n- **Provider**: `{provider}`\n- **Operator**: {user}"
+      title_failed: "❌ Model Switch Failed"
+      failed_body: "Failed to switch to `{model}` ({provider}): {error}"
+      title_cancelled: "Cancelled"
+      cancelled_body: "Model selection cancelled by {user}."
+      title_expired: "⏳ Picker Expired"
+      expired_body: "This model picker has expired. Please run `/model` again."
 
   google_chat:
     clarify:

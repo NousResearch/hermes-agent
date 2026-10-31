@@ -1884,9 +1884,14 @@ class FeishuAdapter(BasePlatformAdapter):
         current_model: str,
         current_provider: str,
     ) -> dict[str, Any]:
-        curr_m = current_model or "未设置"
-        curr_p = current_provider or "未设置"
-        md = f"**当前模型**：`{curr_m}`\n**当前服务商**：`{curr_p}`\n\n请选择模型服务商 (Provider)："
+        curr_m = current_model or t("gateway.shared.unknown_value")
+        curr_p = current_provider or t("gateway.shared.unknown_value")
+        md_lines = [
+            t("platform.feishu.picker.current_model", model=curr_m),
+            t("platform.feishu.picker.current_provider", provider=curr_p),
+            "",
+            t("platform.feishu.picker.select_provider_prompt"),
+        ]
         buttons = []
         for p in providers:
             slug = str(p.get("slug") or "")
@@ -1905,11 +1910,11 @@ class FeishuAdapter(BasePlatformAdapter):
         for i in range(0, len(buttons), 2):
             action_rows.append(buttons[i:i+2])
         action_rows.append([_card_button(
-            "❌ 取消",
+            t("platform.feishu.picker.btn_cancel"),
             "danger",
             {"hermes_model_picker_action": "cancel", "picker_id": picker_id},
         )])
-        return _card("🤖 选择模型 | 服务商列表", "blue", md, action_rows=action_rows)
+        return _card(t("platform.feishu.picker.title_providers"), "blue", "\n".join(md_lines), action_rows=action_rows)
 
     @staticmethod
     def _build_model_picker_models_card(
@@ -1930,10 +1935,10 @@ class FeishuAdapter(BasePlatformAdapter):
         end = min(start + page_size, total_models)
         page_models = models[start:end]
 
-        md = f"服务商：**{name}** (`{slug}`)\n共 {total_models} 个模型"
+        summary = t("platform.feishu.picker.provider_models_summary", name=name, slug=slug, total=total_models)
         if total_pages > 1:
-            md += f" (第 {page + 1}/{total_pages} 页)"
-        md += "\n\n请点击目标模型进行切换："
+            summary += t("platform.feishu.picker.page_info", page=page + 1, total_pages=total_pages)
+        md = f"{summary}\n\n{t('platform.feishu.picker.select_model_prompt')}"
 
         buttons = []
         for m in page_models:
@@ -1958,13 +1963,13 @@ class FeishuAdapter(BasePlatformAdapter):
         if total_pages > 1:
             if page > 0:
                 nav_buttons.append(_card_button(
-                    "◀ 上一页",
+                    t("platform.feishu.picker.btn_prev"),
                     "default",
                     {"hermes_model_picker_action": "select_provider", "picker_id": picker_id, "provider_slug": slug, "page": page - 1},
                 ))
             if page < total_pages - 1:
                 nav_buttons.append(_card_button(
-                    "下一页 ▶",
+                    t("platform.feishu.picker.btn_next"),
                     "default",
                     {"hermes_model_picker_action": "select_provider", "picker_id": picker_id, "provider_slug": slug, "page": page + 1},
                 ))
@@ -1973,17 +1978,25 @@ class FeishuAdapter(BasePlatformAdapter):
 
         action_rows.append([
             _card_button(
-                "◀ 返回服务商",
+                t("platform.feishu.picker.btn_back"),
                 "default",
                 {"hermes_model_picker_action": "back", "picker_id": picker_id},
             ),
             _card_button(
-                "❌ 取消",
+                t("platform.feishu.picker.btn_cancel"),
                 "danger",
                 {"hermes_model_picker_action": "cancel", "picker_id": picker_id},
             ),
         ])
-        return _card(f"🤖 选择模型 | {name}", "wathet", md, action_rows=action_rows)
+        return _card(t("platform.feishu.picker.title_models", name=name), "wathet", md, action_rows=action_rows)
+
+    @staticmethod
+    def _build_switching_model_picker_card(*, model_id: str, user_name: str) -> dict[str, Any]:
+        return _card(
+            t("platform.feishu.picker.title_switching"),
+            "blue",
+            t("platform.feishu.picker.switching_body", model=model_id, user=user_name),
+        )
 
     @staticmethod
     def _build_resolved_model_picker_card(
@@ -1993,18 +2006,98 @@ class FeishuAdapter(BasePlatformAdapter):
         result_text: str,
         user_name: str,
     ) -> dict[str, Any]:
-        md = f"**模型切换已生效！**\n\n- **目标模型**：`{model_id}`\n- **服务商**：`{provider_slug}`\n- **操作者**：{user_name}"
+        md = t("platform.feishu.picker.switched_body", model=model_id, provider=provider_slug, user=user_name)
         if result_text and result_text.strip():
             md += f"\n\n{result_text.strip()}"
-        return _card("✅ 模型切换成功", "green", md)
+        return _card(t("platform.feishu.picker.title_switched"), "green", md)
+
+    @staticmethod
+    def _build_failed_model_picker_card(
+        *,
+        model_id: str,
+        provider_slug: str,
+        error: str,
+    ) -> dict[str, Any]:
+        return _card(
+            t("platform.feishu.picker.title_failed"),
+            "red",
+            t("platform.feishu.picker.failed_body", model=model_id, provider=provider_slug, error=error),
+        )
 
     @staticmethod
     def _build_cancelled_model_picker_card(*, user_name: str) -> dict[str, Any]:
-        return _card("已取消", "grey", f"模型选择已由 {user_name} 取消。")
+        return _card(t("platform.feishu.picker.title_cancelled"), "grey", t("platform.feishu.picker.cancelled_body", user=user_name))
 
     @staticmethod
     def _build_expired_model_picker_card() -> dict[str, Any]:
-        return _card("⏳ 选择器已过期", "grey", "该模型选择卡片已过期，请重新输入 `/model`。")
+        return _card(t("platform.feishu.picker.title_expired"), "grey", t("platform.feishu.picker.expired_body"))
+
+    async def _patch_card_message(self, message_id: str, card: dict[str, Any]) -> bool:
+        """Update an existing interactive card message in place via PATCH /im/v1/messages/{id}."""
+        if not self._client or not message_id:
+            return False
+        try:
+            import lark_oapi.api.im.v1 as im
+            body = im.PatchMessageRequestBody.builder().content(json.dumps(card, ensure_ascii=False)).build()
+            req = im.PatchMessageRequest.builder().message_id(message_id).request_body(body).build()
+            resp = await self._run_blocking(self._client.im.v1.message.patch, req)
+            return self._response_succeeded(resp)
+        except Exception as exc:
+            logger.warning("[Feishu] Failed to patch card message %s: %s", message_id, exc)
+            return False
+
+    async def _async_resolve_model_picker(
+        self,
+        *,
+        chat_id: str,
+        message_id: str,
+        model_id: str,
+        provider_slug: str,
+        user_name: str,
+        on_model_selected: Any,
+    ) -> None:
+        """Run model switch off the callback thread and patch the card in place."""
+        switch_failed = False
+        result_text = ""
+        try:
+            if callable(on_model_selected):
+                res = on_model_selected(chat_id, model_id, provider_slug)
+                if asyncio.iscoroutine(res):
+                    result_text = await res
+                else:
+                    result_text = str(res or "")
+                try:
+                    error_prefix = t("gateway.model.error_prefix", error="").strip()
+                except Exception:
+                    error_prefix = "Error:"
+                if error_prefix and str(result_text).startswith(error_prefix):
+                    switch_failed = True
+        except Exception as exc:
+            logger.error("[Feishu] Asynchronous model switch failed: %s", exc, exc_info=True)
+            result_text = str(exc)
+            switch_failed = True
+
+        if switch_failed:
+            card = self._build_failed_model_picker_card(
+                model_id=model_id,
+                provider_slug=provider_slug,
+                error=result_text,
+            )
+            fallback_text = f"❌ {result_text}"
+        else:
+            card = self._build_resolved_model_picker_card(
+                model_id=model_id,
+                provider_slug=provider_slug,
+                result_text=result_text,
+                user_name=user_name,
+            )
+            fallback_text = f"✅ {result_text or model_id}"
+
+        patched = False
+        if message_id:
+            patched = await self._patch_card_message(message_id, card)
+        if not patched and chat_id:
+            await self.send_text(chat_id, fallback_text)
 
     async def send_model_picker(
         self,
@@ -2504,10 +2597,15 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _handle_model_picker_card_action(self, *, event: Any, action_value: dict[str, Any], loop: Any) -> Any:
         """Schedule model picker action and return synchronous card response."""
-        picker_id = action_value.get("picker_id")
+        raw_picker_id = action_value.get("picker_id")
+        try:
+            picker_id = int(raw_picker_id) if raw_picker_id is not None else None
+        except (ValueError, TypeError):
+            picker_id = None
         if picker_id is None:
-            logger.debug("[Feishu] Card action missing picker_id, ignoring")
+            logger.debug("[Feishu] Card action missing valid picker_id, ignoring")
             return self._card_response()
+
         state = self._model_picker_state.get(picker_id)
         if not state:
             logger.debug("[Feishu] Model picker %s already resolved or expired", picker_id)
@@ -2539,7 +2637,10 @@ class FeishuAdapter(BasePlatformAdapter):
             if not matched:
                 logger.warning("[Feishu] Selected provider %r not found in picker state", provider_slug)
                 return self._card_response()
-            page = int(action_value.get("page", 0))
+            try:
+                page = int(action_value.get("page", 0))
+            except (ValueError, TypeError):
+                page = 0
             card = self._build_model_picker_models_card(
                 picker_id=picker_id,
                 provider=matched,
@@ -2552,38 +2653,25 @@ class FeishuAdapter(BasePlatformAdapter):
             model_id = str(action_value.get("model_id") or "").strip()
             provider_slug = str(action_value.get("provider_slug") or "").strip()
             on_model_selected = state.get("on_model_selected")
+            open_msg_id = str(getattr(getattr(event, "context", None), "open_message_id", "") or "")
+            target_msg_id = open_msg_id or str(state.get("message_id") or "")
 
-            result_text = ""
-            if callable(on_model_selected):
-                try:
-                    res = on_model_selected(chat_id, model_id, provider_slug)
-                    if asyncio.iscoroutine(res):
-                        is_same_loop = False
-                        try:
-                            is_same_loop = (asyncio.get_running_loop() is loop)
-                        except RuntimeError:
-                            pass
-
-                        if is_same_loop:
-                            loop.create_task(res)
-                            result_text = "切换请求已生效"
-                        else:
-                            fut = asyncio.run_coroutine_threadsafe(res, loop)
-                            result_text = fut.result(timeout=2.5)
-                    else:
-                        result_text = str(res or "")
-                except Exception as exc:
-                    logger.error("[Feishu] Model switch on_model_selected failed: %s", exc)
-                    result_text = str(exc)
-
+            # Pop state immediately to guard against double clicks
             self._model_picker_state.pop(picker_id, None)
-            card = self._build_resolved_model_picker_card(
+
+            # Schedule async model switch and card patch on the event loop
+            coro = self._async_resolve_model_picker(
+                chat_id=chat_id,
+                message_id=target_msg_id,
                 model_id=model_id,
                 provider_slug=provider_slug,
-                result_text=result_text,
                 user_name=user_name,
+                on_model_selected=on_model_selected,
             )
-            return self._card_response(card)
+            self._submit_on_loop(loop, coro)
+
+            # Return immediate in-progress card to avoid 3s callback timeout
+            return self._card_response(self._build_switching_model_picker_card(model_id=model_id, user_name=user_name))
 
         return self._card_response()
 

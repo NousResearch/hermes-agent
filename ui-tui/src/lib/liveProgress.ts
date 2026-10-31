@@ -10,7 +10,7 @@ export const isToolShelfMessage = (msg: Msg | undefined) =>
   Boolean(msg?.kind === 'trail' && !msg.text && !msg.thinking?.trim() && msg.tools?.length)
 
 export const canHoldToolShelf = (msg: Msg | undefined) =>
-  Boolean(msg?.kind === 'trail' && !msg.text && (msg.thinking?.trim() || msg.tools?.length))
+  Boolean(msg?.kind === 'trail' && !msg.text && msg.tools?.length)
 
 export const mergeToolShelfInto = (target: Msg, source: Msg): Msg => ({
   ...target,
@@ -35,22 +35,22 @@ const isBarrierMessage = (msg: Msg | undefined) => {
     return true
   }
 
+  if (msg.kind === 'trail' && msg.thinking?.trim() && !msg.tools?.length) {
+    return true
+  }
+
   return false
 }
-
-const isToolCarryingTrail = (msg: Msg | undefined) => Boolean(msg?.kind === 'trail' && !msg.text && msg.tools?.length)
 
 export const appendToolShelfMessage = (prev: readonly Msg[], msg: Msg): Msg[] => {
   if (!isToolShelfMessage(msg)) {
     return [...prev, msg]
   }
 
-  let fallbackHolder: number | null = null
-
   for (let index = prev.length - 1; index >= 0; index--) {
     const candidate = prev[index]
 
-    if (isToolCarryingTrail(candidate)) {
+    if (canHoldToolShelf(candidate)) {
       const next = [...prev]
 
       next[index] = mergeToolShelfInto(candidate!, msg)
@@ -58,21 +58,9 @@ export const appendToolShelfMessage = (prev: readonly Msg[], msg: Msg): Msg[] =>
       return next
     }
 
-    if (fallbackHolder === null && canHoldToolShelf(candidate)) {
-      fallbackHolder = index
-    }
-
     if (isBarrierMessage(candidate)) {
       break
     }
-  }
-
-  if (fallbackHolder !== null) {
-    const next = [...prev]
-
-    next[fallbackHolder] = mergeToolShelfInto(prev[fallbackHolder]!, msg)
-
-    return next
   }
 
   return [...prev, msg]

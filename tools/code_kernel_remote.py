@@ -52,6 +52,7 @@ import traceback
 KDIR = os.environ["HERMES_KERNEL_DIR"]
 CELLS = os.path.join(KDIR, "cells")
 _CAPTURE_LIMIT = {capture_limit}
+_RETAIN_LIMIT = _CAPTURE_LIMIT + 1
 IDLE_EXIT_SECONDS = {idle_exit}
 
 {cell_source}

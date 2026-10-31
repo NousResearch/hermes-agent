@@ -8,7 +8,9 @@ and that a misbehaving hook callback never breaks the transition.
 
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -66,6 +68,53 @@ def test_claim_fires_hook(kanban_home, captured_hooks):
     assert kw["run_id"] is not None
 
 
+
+
+@pytest.mark.parametrize("kind", ["dependency", "needs_input"])
+def test_block_hook_can_write_committed_board(kanban_home, monkeypatch, kind):
+    """A board-writing plugin must not deadlock its caller (#145885)."""
+    from hermes_cli.kanban_db_notify import add_notify_sub, list_notify_subs
+
+    observations = []
+    mgr = get_plugin_manager()
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="child", assignee="worker")
+        assert kb.claim_task(conn, task_id) is not None
+        running_task = kb.get_task(conn, task_id)
+        assert running_task is not None
+        run_id = running_task.current_run_id
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        kb.link_tasks(conn, parent_id=parent, child_id=task_id, expected_child_run_id=run_id)
+        db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+
+        def subscribe(**kwargs):
+            # Fail immediately if the transition still owns SQLite's writer lock.
+            # The real hook boundary swallows failures, so assert receipts outside it.
+            with closing(sqlite3.connect(db_path, timeout=0, isolation_level=None)) as observer:
+                observer.row_factory = sqlite3.Row
+                observer.execute("BEGIN IMMEDIATE")
+                observer.commit()
+                task = kb.get_task(observer, task_id)
+                assert task is not None
+                events = kb.list_events(observer, task_id)
+                add_notify_sub(observer, task_id=task_id, platform="telegram", chat_id="123")
+                observations.append((task.status, task.current_run_id, events[-1].kind, kwargs))
+
+        monkeypatch.setitem(mgr._hooks, "kanban_task_blocked", [subscribe])
+        assert kb.block_task(conn, task_id, reason="waiting", kind=kind, expected_run_id=run_id)
+        expected_status, expected_event = (
+            ("todo", "dependency_wait") if kind == "dependency" else ("blocked", "blocked")
+        )
+        assert len(observations) == 1
+        status, current_run, event, kwargs = observations[0]
+        assert (status, current_run, event) == (expected_status, None, expected_event)
+        assert kwargs["task_id"] == task_id
+        assert kwargs["run_id"] == run_id
+        assert kwargs["assignee"] == "worker"
+        assert kwargs["reason"] == "waiting"
+        assert len(list_notify_subs(conn, task_id)) == 1
+        assert not kb.block_task(conn, task_id, kind=kind, expected_run_id=run_id)
+        assert len(observations) == 1
 
 
 def test_misbehaving_hook_does_not_break_transition(kanban_home, monkeypatch):

@@ -219,8 +219,8 @@ def _resolve_scope_cwd_placeholder(scope: dict[str, str]) -> None:
 def prepare_profile_terminal_scope(
     hermes_home: Any, *, env_overlay: Optional[dict[str, str]] = None) -> dict[str, str]:
     """The scope ``install_profile_terminal_scope`` installs: the profile's policy, or the refusal scope
-    when it cannot be resolved. Never raises. Reads the profile files under the current context's home
-    override and secret scope; the result can be built in a worker and installed on the loop with
+    when it cannot be resolved. Never raises. Reads the profile files (the managed-scope overlay under the
+    current context's home override); the result can be built in a worker and installed on the loop with
     ``install_and_reset_profile_terminal_scope(prepared=...)``."""
     try:
         return build_profile_terminal_scope(hermes_home, env_overlay=env_overlay)

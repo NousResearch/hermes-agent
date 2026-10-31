@@ -246,9 +246,9 @@ def _read_projection(authority, live, ref, params, kind):
         try:
             return _project(authority, ref, params, kind)
         except KeyError:
-            # Deleted/pruned while this read waited for a worker or the lock (retire_live_sessions pops
-            # on the loop): the projection re-indexes authority.sessions, and a gone session is
-            # not_found, as the loop-side check answers.
+            # Popped from authority.sessions before or during the projection (retire_live_sessions runs
+            # on the loop without this lock): the projection re-indexes the map, and a popped session is
+            # not_found.
             if authority.sessions.get(ref.session_id) is not live:
                 raise RuntimeStoreError('not_found') from None
             raise

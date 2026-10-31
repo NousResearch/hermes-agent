@@ -1,5 +1,6 @@
 """Shared utility functions for hermes-agent."""
 
+import contextvars
 import errno
 import hashlib
 import json
@@ -12,7 +13,7 @@ import sys
 import tempfile
 import threading
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, NamedTuple, Union
 from urllib.parse import urlparse
@@ -409,7 +410,12 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
             write(f)
             f.flush()
             os.fsync(f.fileno())
+            # Taken from the descriptor that is about to be renamed into place: the identity of what THIS call
+            # published (only paid for when a caller asked to record publications).
+            identity = _identity_of_fd(f.fileno()) if _publications.get() is not None else None
         replaced = Path(atomic_replace(tmp_path, path))  # symlink-preserving actual destination
+        if identity is not None:
+            _note_publication(path, identity)
         _restore_file_metadata(replaced, original_owner, mode)
         if fsync_dir:
             fsync_directory(replaced.parent)
@@ -454,13 +460,17 @@ _OPEN_FLAGS = getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_BINARY", 0) | getattr
 
 
 class FileIdentity(NamedTuple):
-    """The file :func:`atomic_create_text` published: ``(st_dev, st_ino, st_size, st_mtime_ns)`` plus the SHA-256 of
-    its bytes. Size and mtime can be forged by an in-place edit; the digest cannot."""
+    """The file a publish left behind: ``(st_dev, st_ino, st_size, st_mtime_ns)`` plus the SHA-256 of its bytes.
+    Size and mtime can be forged by an in-place edit; the digest cannot. ``parent_dev``/``parent_ino`` name the
+    directory the file was published INTO when it was pinned by descriptor (else ``None``): a path that now
+    leads to a different directory is not where this file is."""
     dev: int
     ino: int
     size: int
     mtime_ns: int
     sha256: str
+    parent_dev: int | None = None
+    parent_ino: int | None = None
 
 
 class RemovalResult(NamedTuple):
@@ -468,7 +478,9 @@ class RemovalResult(NamedTuple):
 
     ``status``: ``removed``; ``absent`` (nothing to remove); ``changed`` (what is there is not the file we
     published, so it was KEPT — ``preserved_at`` names where, when it could not go back under its own name);
-    ``failed`` (could not remove it; ``error`` says why, ``preserved_at`` names a leftover aside copy if any).
+    ``quarantined`` (the file is this call's inode but its bytes cannot be vouched for, so it was moved to
+    ``preserved_at`` instead of deleted); ``failed`` (could not remove it; ``error`` says why, ``preserved_at``
+    names a leftover aside copy if any).
     """
     status: str
     preserved_at: str | None = None
@@ -478,11 +490,42 @@ class RemovalResult(NamedTuple):
         return self.status == "removed"
 
 
+# --- who published what -------------------------------------------------------------------------------
+# A cleanup may only delete a file it can prove it published. That proof has to be taken AT the publish — from
+# the descriptor that was written and then linked/renamed into place — not from a later read of the path, which
+# would happily "adopt" a file an independent writer swapped in the moment after the publish returned. A caller
+# that needs it (the skill batch) opens ``record_publications()``; every successful atomic create/write in that
+# context is noted here with the identity of the exact inode it published.
+_publications: contextvars.ContextVar[dict | None] = contextvars.ContextVar("_publications", default=None)
+
+
+@contextmanager
+def record_publications():
+    """Collect ``{Path: FileIdentity}`` for every file published by :func:`atomic_create_text` /
+    :func:`atomic_write_text` (and friends) inside this context, from the publish itself."""
+    log: dict = {}
+    token = _publications.set(log)
+    try:
+        yield log
+    finally:
+        _publications.reset(token)
+
+
+def _note_publication(path: str | Path, identity: FileIdentity) -> None:
+    if (log := _publications.get()) is not None:
+        log[Path(path)] = identity
+
+
+def _forget_publication(path: str | Path) -> None:
+    if (log := _publications.get()) is not None:
+        log.pop(Path(path), None)
+
+
 class _ParentDir:
     """The directory a create/cleanup works in, pinned by descriptor where the platform allows it."""
 
     def __init__(self, path: Path):
-        self.path, self.fd = Path(path), None
+        self.path, self.fd, self.ident = Path(path), None, None
         if _PINNED_DIRS:
             try:
                 self.fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | _OPEN_FLAGS)
@@ -491,6 +534,8 @@ class _ParentDir:
                     raise OSError(errno.ELOOP, f"refusing to write through {self.path}: it is a symbolic link, "
                                                "not a real directory") from exc
                 raise
+            st = os.fstat(self.fd)
+            self.ident = (st.st_dev, st.st_ino)
         elif self.path.is_symlink():
             raise OSError(errno.ELOOP, f"refusing to write through {self.path}: it is a symbolic link, "
                                        "not a real directory")
@@ -506,6 +551,22 @@ class _ParentDir:
             with suppress(OSError):
                 os.close(self.fd)
             self.fd = None
+
+    def moved(self) -> bool:
+        """True when the pinned directory is no longer what ``path`` leads to (renamed away, replaced).
+
+        The descriptor follows the directory wherever it went, ``path`` follows the name: after a rename the
+        two disagree and anything done through the descriptor lands somewhere ``path`` does not point to.
+        Only answerable where a descriptor pins the directory; without one this is ``False``. It is a check,
+        not a guarantee: a rename right after it is not seen.
+        """
+        if self.ident is None:
+            return False
+        try:
+            st = os.lstat(self.path)
+        except OSError:
+            return True
+        return (st.st_dev, st.st_ino) != self.ident
 
     def open(self, name: str, flags: int, mode: int = 0o600) -> int:
         flags |= _OPEN_FLAGS
@@ -554,10 +615,12 @@ def _read_all(fd: int) -> bytes:
     return b"".join(chunks)
 
 
-def _identity_of_fd(fd: int) -> FileIdentity:
+def _identity_of_fd(fd: int, parent: "_ParentDir | None" = None) -> FileIdentity:
     st = os.fstat(fd)
     os.lseek(fd, 0, os.SEEK_SET)
-    return FileIdentity(st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, hashlib.sha256(_read_all(fd)).hexdigest())
+    parent_dev, parent_ino = (parent.ident or (None, None)) if parent is not None else (None, None)
+    return FileIdentity(st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns,
+                        hashlib.sha256(_read_all(fd)).hexdigest(), parent_dev, parent_ino)
 
 
 def _identity_matches(identity: FileIdentity, st: os.stat_result, data: bytes) -> bool:
@@ -565,7 +628,7 @@ def _identity_matches(identity: FileIdentity, st: os.stat_result, data: bytes) -
             and hashlib.sha256(data).hexdigest() == identity[4])
 
 
-def _remove_if(parent: _ParentDir, name: str, matches) -> RemovalResult:
+def _remove_if(parent: _ParentDir, name: str, matches, ambiguous=None) -> RemovalResult:
     """Remove ``name`` from ``parent`` only if ``matches(stat, bytes)`` accepts the file that is really there.
 
     Check-then-unlink cannot be made atomic (POSIX has no compare-and-delete), and a writer that swaps in
@@ -573,9 +636,16 @@ def _remove_if(parent: _ParentDir, name: str, matches) -> RemovalResult:
     private random name, and THAT inode is verified (inode, size, mtime and content hash): only a verified
     file is deleted; anything else is hard-linked back under its name (``link`` never overwrites, so a
     third writer that claimed the name meanwhile is not clobbered) and otherwise stays under the private
-    name, reported through ``preserved_at``. Residual risk, unavoidable without kernel support: a process
-    that already holds the file open can still write into it while it is being deleted; and the name is
-    briefly absent while the file sits under the private name.
+    name, reported through ``preserved_at``. A file that is not verified but for which
+    ``ambiguous(stat, bytes)`` holds (same inode this call created, bytes nobody can vouch for) is NOT put
+    back and NOT deleted: it stays under the private name (``quarantined``) so a loader never sees it as the
+    real file and nothing is lost.
+
+    Residual risk, unavoidable without kernel support (no POSIX compare-and-delete), bounded here and not
+    closed: (1) between the verification and the final ``unlink`` of the private name, a process that
+    already knows that random hidden name — or already holds the verified file open — can still replace or
+    write into it, and that data goes with the unlink; (2) the name is briefly absent while the file sits
+    under the private name.
     """
     try:
         st = parent.lstat(name)
@@ -593,6 +663,7 @@ def _remove_if(parent: _ParentDir, name: str, matches) -> RemovalResult:
     except OSError as exc:
         return RemovalResult("failed", error=str(exc))
     aside_path = str(parent.path / aside)
+    aside_stat, data, verify_error = None, b"", None
     try:
         fd = parent.open(aside, os.O_RDONLY)
         try:
@@ -602,14 +673,15 @@ def _remove_if(parent: _ParentDir, name: str, matches) -> RemovalResult:
         verified = stat.S_ISREG(aside_stat.st_mode) and matches(aside_stat, data)
     except OSError as exc:  # cannot prove it is ours: keep it
         verified, verify_error = False, str(exc)
-    else:
-        verify_error = None
     if verified:
         try:
             parent.unlink(aside)
         except OSError as exc:
             return RemovalResult("failed", preserved_at=aside_path, error=str(exc))
         return RemovalResult("removed")
+    if (ambiguous is not None and aside_stat is not None and stat.S_ISREG(aside_stat.st_mode)
+            and ambiguous(aside_stat, data)):
+        return RemovalResult("quarantined", preserved_at=aside_path)
     try:
         parent.link(aside, name)  # exclusive: fails if anything took the name in the meantime
     except OSError:
@@ -631,23 +703,52 @@ def _create_text_in_place(parent: _ParentDir, name: str, content: str, *, encodi
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
-            return _identity_of_fd(f.fileno())
+            return _identity_of_fd(f.fileno(), parent)
     except BaseException as exc:
         expected = content.encode(encoding)
 
-        def is_our_unfinished_file(st: os.stat_result, data: bytes) -> bool:
-            # Same inode we created AND only bytes we could have written (a prefix of our content). A person
-            # who saved over it in place leaves other bytes, and that file is theirs.
-            written = data.replace(b"\r\n", b"\n") if os.linesep != "\n" else data
-            return (st.st_dev, st.st_ino) == (created.st_dev, created.st_ino) and expected.startswith(written)
+        def normalized(data: bytes) -> bytes:
+            return data.replace(b"\r\n", b"\n") if os.linesep != "\n" else data
 
-        removal = _remove_if(parent, name, is_our_unfinished_file)  # never raises over the original error
-        if removal.status in ("changed", "failed"):
+        def same_inode(st: os.stat_result) -> bool:
+            return (st.st_dev, st.st_ino) == (created.st_dev, created.st_ino)
+
+        def nothing_to_lose(st: os.stat_result, data: bytes) -> bool:
+            # Our inode holding either nothing or exactly the bytes we meant to write: deleting it loses nobody's
+            # data, even if somebody saved the same text over it.
+            return same_inode(st) and (data == b"" or normalized(data) == expected)
+
+        # Anything else on our inode — a prefix of our text included — may be a person's in-place save, and a
+        # prefix cannot tell the two apart: it is kept (quarantined), never deleted, and the error names it.
+        removal = _remove_if(parent, name, nothing_to_lose, lambda st, data: same_inode(st))
+        if removal.status in ("changed", "failed", "quarantined"):
             where = removal.preserved_at or str(parent.path / name)
             logger.warning("atomic_create_text: kept %s after a failed in-place create (%s)", where,
                            removal.error or removal.status)
-            exc.add_note(f"a file that is not this call's unfinished file was kept, not deleted: {where}")
+            exc.add_note(f"A file that cannot be proven to be this call's unfinished text was kept, not deleted: "
+                         f"{where}")
+            exc.preserved_at = where  # type: ignore[attr-defined]  # callers put it in their own error
         raise
+
+
+def _published(parent: _ParentDir, path: Path, identity: FileIdentity) -> FileIdentity:
+    """A create just landed ``identity`` in the pinned ``parent``: if ``path`` no longer leads there, undo it.
+
+    The descriptor follows a directory that was renamed after it was opened; the file would then sit in a
+    directory ``path`` does not name — invisible to the caller, yet loadable by anything that scans for it.
+    """
+    if parent.moved():
+        removal = _remove_if(parent, path.name,
+                             lambda st, data: _identity_matches(identity, st, data))
+        error = OSError(errno.ESTALE, f"{path.parent} was moved or replaced while {path.name} was being created, "
+                                      f"so nothing was published at {path}")
+        if removal.status not in ("removed", "absent"):
+            where = removal.preserved_at or "the moved directory"
+            error.add_note(f"the file that landed in the moved directory could not be removed and was kept: {where}")
+            error.preserved_at = where  # type: ignore[attr-defined]
+        raise error
+    _note_publication(path, identity)
+    return identity
 
 
 def atomic_create_text(path: str | Path, content: str, *, encoding: str = "utf-8", tmp_prefix: str = ".tmp_",
@@ -662,14 +763,19 @@ def atomic_create_text(path: str | Path, content: str, *, encoding: str = "utf-8
     The parent is opened once without following a symlink and every step runs relative to that
     descriptor, so a symlink swapped into its place afterwards is not written through (without descriptor
     support — Windows — only a symlink check beforehand protects). A parent that IS a symlink is refused.
+    A parent renamed away or replaced before the publish is detected right after it (the file is taken
+    back out of the moved directory and ``OSError(ESTALE)`` is raised); a rename after that check is not.
     *mode* is applied before publication, so *path* never shows a looser or tighter mode than asked;
     ``None`` gives what ``open(path, "w")`` would (process umask).
 
     On a filesystem that cannot hard-link, the fallback is an ``O_EXCL`` create-and-write at *path*:
     still exclusive, but a reader can briefly see a partial file and a crash can leave one. Its failure
-    cleanup removes only an unfinished file this call made; a file somebody else wrote into it is kept.
+    cleanup deletes the unfinished file only when it is empty or byte-identical to what was to be written;
+    any other content on that inode is kept under a hidden name and named in the error (``preserved_at``,
+    plus an exception note), because a person's in-place save over it cannot be told from our partial write.
 
-    Returns the :class:`FileIdentity` of the file published, for :func:`unlink_if_unchanged`.
+    Returns the :class:`FileIdentity` of the file published, taken from the publish itself, for
+    :func:`unlink_if_unchanged`.
     """
     path = Path(path)
     if mode is None:
@@ -683,7 +789,7 @@ def atomic_create_text(path: str | Path, content: str, *, encoding: str = "utf-8
                 f.write(content)
                 f.flush()
                 os.fsync(f.fileno())
-                identity = _identity_of_fd(f.fileno())
+                identity = _identity_of_fd(f.fileno(), parent)
             if mode is not None and not hasattr(os, "fchmod"):
                 os.chmod(parent.path / tmp_name, mode)
             try:
@@ -693,8 +799,9 @@ def atomic_create_text(path: str | Path, content: str, *, encoding: str = "utf-8
                         exc.errno in _NO_HARDLINK_ERRNOS or getattr(exc, "winerror", None) in _NO_HARDLINK_WINERRORS):
                     raise
                 logger.debug("atomic_create_text: no hard links for %s (%s); exclusive in-place create", path, exc)
-                return _create_text_in_place(parent, path.name, content, encoding=encoding, mode=mode)
-            return identity
+                return _published(parent, path, _create_text_in_place(parent, path.name, content,
+                                                                      encoding=encoding, mode=mode))
+            return _published(parent, path, identity)
         finally:
             with suppress(OSError):
                 parent.unlink(tmp_name)
@@ -709,20 +816,38 @@ def file_identity(path: str | Path) -> FileIdentity | None:
             try:
                 if not stat.S_ISREG(os.fstat(fd).st_mode):
                     return None
-                return _identity_of_fd(fd)
+                return _identity_of_fd(fd, parent)
             finally:
                 os.close(fd)
     except OSError:
         return None
 
 
+def file_matches_identity(path: str | Path, identity: FileIdentity | tuple) -> bool:
+    """True only if the regular file at *path* (symlinks never followed) is exactly the one *identity* names
+    (inode, size, mtime and content hash). A read-only check: nothing is moved or removed."""
+    path = Path(path)
+    try:
+        with _ParentDir(path.parent) as parent:
+            fd = parent.open(path.name, os.O_RDONLY)
+            try:
+                st = os.fstat(fd)
+                return stat.S_ISREG(st.st_mode) and _identity_matches(identity, st, _read_all(fd))
+            finally:
+                os.close(fd)
+    except OSError:
+        return False
+
+
 def unlink_if_unchanged(path: str | Path, identity: FileIdentity | tuple) -> RemovalResult:
     """Remove *path* only if it still is the file :func:`atomic_create_text` returned *identity* for.
 
     A different file at *path* (another writer replaced ours, or edited it in place — even keeping size and
-    mtime) is KEPT and reported as ``changed``; a removal that cannot be done is reported as ``failed``.
-    Nothing here raises for an OS error: the caller decides what an incomplete cleanup means. See
-    :func:`_remove_if` for how the check-then-delete race is closed and what remains.
+    mtime) is KEPT and reported as ``changed``; a directory that is no longer the one the file was published
+    into (it was moved or replaced) is ``failed``, since the file is not where *path* points; a removal that
+    cannot be done is reported as ``failed``. Nothing here raises for an OS error: the caller decides what an
+    incomplete cleanup means. See :func:`_remove_if` for how the check-then-delete race is closed and what
+    remains.
     """
     path = Path(path)
     try:
@@ -732,7 +857,14 @@ def unlink_if_unchanged(path: str | Path, identity: FileIdentity | tuple) -> Rem
     except OSError as exc:
         return RemovalResult("failed", error=str(exc))
     with parent:
-        return _remove_if(parent, path.name, lambda st, data: _identity_matches(identity, st, data))
+        published_in = tuple(identity[5:7]) if len(identity) >= 7 else (None, None)
+        if parent.ident is not None and None not in published_in and parent.ident != published_in:
+            return RemovalResult("failed", error=f"{path.parent} is no longer the directory the file was published "
+                                                 "into (it was moved or replaced); the file is not at this path")
+        removal = _remove_if(parent, path.name, lambda st, data: _identity_matches(identity, st, data))
+    if removal.status in ("removed", "absent"):
+        _forget_publication(path)
+    return removal
 
 
 def atomic_write_bytes(path: str | Path, content: bytes, *, tmp_prefix: str = ".tmp_",

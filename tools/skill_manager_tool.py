@@ -437,8 +437,12 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
                         "created it while this create was in progress). Nothing was overwritten; review that "
                         "file, or choose another name.")
         except OSError as exc:  # permissions, a swapped/symlinked directory, a full disk, ...
+            kept = getattr(exc, "preserved_at", None)  # a file the failed create kept instead of deleting
+            notes = " ".join(getattr(exc, "__notes__", ()))
             return _err(f"Cannot create skill '{name}': {label} was not published at {target} ({exc}). "
-                        f"Nothing was overwritten; check {target.parent}, then retry.")
+                        + (f"{notes}. " if notes else "")
+                        + f"Nothing was overwritten or deleted that is not this call's; check {target.parent}, "
+                          "then retry.", **({"preserved_at": kept} if kept else {}))
     else:
         atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir)

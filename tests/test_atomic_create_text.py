@@ -16,7 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from utils import atomic_create_text, unlink_if_unchanged
+from utils import (
+    atomic_create_text, atomic_write_text, file_matches_identity, record_publications, unlink_if_unchanged,
+)
 
 TEXT = "내용 ✓ line\nsecond line\n"
 
@@ -370,3 +372,52 @@ def test_a_symlinked_parent_directory_is_refused_and_not_written_through(box):
         atomic_create_text(box / "skill" / "SKILL.md", TEXT)
     assert list(outside.iterdir()) == []
     assert (box / "skill").is_symlink()
+
+
+# --- publisher-owned identity: taken at the publish, never from a later read ------------------------------
+
+def test_record_publications_holds_the_identity_of_the_inode_each_publish_wrote(box):
+    with record_publications() as log:
+        created = atomic_create_text(box / "a.md", TEXT)
+        atomic_write_text(box / "b.md", "second")
+    assert log[box / "a.md"] == created
+    assert set(log) == {box / "a.md", box / "b.md"}
+    assert file_matches_identity(box / "b.md", log[box / "b.md"])
+    assert file_matches_identity(box / "a.md", created)
+
+
+def test_nothing_is_recorded_outside_the_context(box):
+    atomic_create_text(box / "a.md", TEXT)
+    with record_publications() as log:
+        pass
+    assert log == {}
+
+
+@pytest.mark.platforms("posix")
+def test_a_file_replaced_after_the_publish_no_longer_matches_what_was_recorded(box):
+    with record_publications() as log:
+        atomic_write_text(box / "b.md", "robot")
+    (box / "editor.tmp").write_bytes(HUMAN)
+    os.replace(box / "editor.tmp", box / "b.md")  # an editor's atomic save
+    assert not file_matches_identity(box / "b.md", log[box / "b.md"])
+    assert not unlink_if_unchanged(box / "b.md", log[box / "b.md"])
+    assert (box / "b.md").read_bytes() == HUMAN
+
+
+def test_a_removed_publication_is_forgotten_so_a_later_rollback_does_not_retry_it(box):
+    with record_publications() as log:
+        created = atomic_create_text(box / "a.md", TEXT)
+        assert unlink_if_unchanged(box / "a.md", created)
+    assert log == {}
+
+
+@pytest.mark.platforms("posix")
+def test_cleanup_after_the_directory_was_moved_reports_failed_and_leaves_the_file(tmp_path):
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    created = atomic_create_text(skill_dir / "SKILL.md", TEXT)
+    skill_dir.rename(tmp_path / "moved")
+    skill_dir.mkdir()  # somebody put a new, empty directory under the old name
+    result = unlink_if_unchanged(skill_dir / "SKILL.md", created)
+    assert not result and result.status == "failed" and "moved or replaced" in result.error
+    assert (tmp_path / "moved" / "SKILL.md").read_bytes() == TEXT.encode("utf-8")  # not "absent": it is elsewhere

@@ -1524,7 +1524,6 @@ DEFAULT_CONFIG = {
         "thread_require_mention": False,  # require @mention in thread replies too
         "channel_prompts": {},  # per-channel ephemeral system prompts
     },
-
     "discord": {
         "require_mention": True,  # require @mention to respond in server channels
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
@@ -1534,6 +1533,7 @@ DEFAULT_CONFIG = {
         # message in them its own thread (still mention-free). Env: DISCORD_FREE_RESPONSE_AUTO_THREAD.
         "free_response_auto_thread": False,
         "thread_require_mention": False,  # require @mention in threads too (multi-bot threads)
+        "thread_auto_archive_duration": 1440,  # Auto-archive minutes for threads Hermes creates (60/1440/4320/10080)
         # Bot authors must type @thisbot to trigger a reply; Discord reply pings alone do not count.
         # Set False only for trusted legacy relays. Humans are unaffected.
         "bots_require_inline_mention": True,

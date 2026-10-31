@@ -811,7 +811,8 @@ not stop every route to a private host. With it `false`:
 
 Cloud-metadata endpoints are refused on every row except `terminal`, sidecar and
 local Chromium included: a metadata URL written in `browser_exec` code, in a URL a raw CDP call
-fetches, or in a script or HTML it injects is refused before the browser sees it. Raw CDP params the
+fetches, or in a script or HTML it injects is refused before the browser sees it, including a host
+after userinfo (`http://x"@169.254.169.254/`); a raw CDP `url` that cannot be parsed is refused too. Raw CDP params the
 call never fetches are not checked: typed text (`Input.*`), dialog answers, cookie scope URLs and
 request blocking or interception patterns. The check reads the URL literals the agent writes, not a
 URL assembled at run time (string concatenation, escapes) or split by a tab or newline the browser drops; it does not watch the browser afterwards, so a public page that redirects to, or

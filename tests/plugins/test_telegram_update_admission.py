@@ -15,7 +15,7 @@ import pytest
 
 pytest.importorskip("telegram")
 from telegram import InlineQuery, Message, PhotoSize, Sticker, Update
-from telegram.ext import ApplicationHandlerStop, ConversationHandler, Defaults, MessageHandler, TypeHandler, filters
+from telegram.ext import Application, ApplicationHandlerStop, ConversationHandler, Defaults, MessageHandler, TypeHandler, filters
 from telegram.request import BaseRequest
 
 from gateway.config import PlatformConfig
@@ -430,6 +430,49 @@ async def _check_error_cancel_before_entry(monkeypatch, adapter, app, delivered)
     assert len(delivered) == 1
 
 
+@pytest.mark.asyncio
+async def test_cancelled_stop_preserves_pending_claim_release(monkeypatch):
+    entered, release, ptb_stopped = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    tasks, callback_errors = [], []
+    loop = asyncio.get_running_loop()
+    previous_error_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: callback_errors.append(context))
+    try:
+        async with connected(monkeypatch) as (adapter, app, _delivered):
+            async def notify(incoming, context):
+                tasks.append(asyncio.current_task())
+                entered.set()
+                await release.wait()
+
+            app.add_error_handler(notify, block=False)
+            monkeypatch.setattr(adapter, "_cache_replied_media", AsyncMock(side_effect=OSError("before enqueue")))
+            await app.process_update(update(app.bot))
+            await entered.wait()
+
+            async def completed_ptb_stop(self):
+                # Isolate the adapter-owned completion wait from PTB's earlier task wait.
+                ptb_stopped.set()
+
+            with monkeypatch.context() as stopped:
+                stopped.setattr(Application, "stop", completed_ptb_stop)
+                stop = asyncio.create_task(app.stop())
+                await ptb_stopped.wait()
+                stop.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await stop
+                assert not tasks[0].done()
+                callbacks_finished = loop.create_future()
+                tasks[0].add_done_callback(lambda _: callbacks_finished.set_result(None))
+                release.set()
+                await callbacks_finished
+                assert not callback_errors
+                assert not adapter._inflight_update_ids
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        loop.set_exception_handler(previous_error_handler)
+
+
 async def _check_native_error_callback(monkeypatch, adapter, app, stage, failure):
     entered, release = asyncio.Event(), asyncio.Event()
     effects, tasks = [], []
@@ -822,9 +865,11 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
         order.append(f"end {name}")
 
     chat = SimpleNamespace(effective_chat=SimpleNamespace(id=1))
-    tasks = []
+    tasks, coroutines = [], []
     for name in "ABC":
-        tasks.append(asyncio.create_task(processor.process_update(chat, handler(name))))
+        coroutine = handler(name)
+        coroutines.append(coroutine)
+        tasks.append(asyncio.create_task(processor.process_update(chat, coroutine)))
         await asyncio.sleep(0.01)
     tasks[1].cancel()
     await asyncio.sleep(0.01)
@@ -832,6 +877,7 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
     results = await asyncio.gather(*tasks, return_exceptions=True)
     assert results[0] is None and results[2] is None
     assert order == ["start A", "end A", "start C", "end C"]  # C waits for A even after B is cancelled
+    assert all(coroutine.cr_frame is None for coroutine in coroutines)
 
 
 @pytest.mark.asyncio

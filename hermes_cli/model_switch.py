@@ -19,7 +19,7 @@ from hermes_cli.providers import (
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
-from utils import base_url_host_matches, base_url_hostname, base_url_origin
+from utils import base_url_host_matches, base_url_hostname, base_url_origin, same_base_url_origin
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
 from hermes_cli.model_switch_providers import list_authenticated_providers
 
@@ -1429,6 +1429,15 @@ def _switch_provider_label(st: _Switch) -> str:
     return label
 
 
+def _saved_entry_on_other_origin(name: str, base_url: str) -> bool:
+    """True when the saved ``providers.<name>`` points at another origin than *base_url*."""
+    from hermes_cli.config import load_config
+
+    saved = (load_config().get("providers") or {}).get(name)
+    old_url = str(saved.get("base_url") or "") if isinstance(saved, dict) else ""
+    return bool(old_url) and not same_base_url_origin(old_url, base_url)
+
+
 def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
     """Credentials when the provider changed or ``--provider`` was given.
 
@@ -1442,16 +1451,22 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         user_pdef = (resolve_user_provider(explicit_norm, st.user_providers)
                      or resolve_user_provider(st.target_provider, st.user_providers))
     if user_pdef is not None and user_pdef.base_url:
-        ucfg = st.user_providers.get(explicit_norm) or st.user_providers.get(st.target_provider) or {}
+        entry_name = explicit_norm if st.user_providers.get(explicit_norm) else st.target_provider
+        ucfg = st.user_providers.get(entry_name) or {}
         # Key reads go through the per-profile secret scope (multiplexed gateway).
         ukey = _entry_configured_key(ucfg, _scoped_key_env)
-        st.validation_headers = _extra_headers_from_config(ucfg)
         try:
             st.resolve_runtime(
                 requested=st.target_provider, explicit_api_key=ukey or None, explicit_base_url=user_pdef.base_url)
-            st.api_key, st.base_url = st.api_key or ukey, st.base_url or user_pdef.base_url
+            # A keyless entry whose saved copy is for another origin (an unsaved edit moved it): the key
+            # the resolver read from disk belongs to the previous host, so this one is probed keyless.
+            moved = not ukey and _saved_entry_on_other_origin(entry_name, user_pdef.base_url)
+            st.api_key, st.base_url = "" if moved else st.api_key or ukey, st.base_url or user_pdef.base_url
         except Exception:
             st.api_key, st.base_url, st.api_mode = ukey, user_pdef.base_url, ""
+        # The entry's own headers, not the resolver's: it reads the on-disk copy, which an unsaved
+        # edit may have moved to a new host (those headers belong to the previous one).
+        st.validation_headers = _extra_headers_from_config(ucfg)
     elif st.target_provider == "custom" and st.current_base_url:
         # A bare-custom session switching models stays on its endpoint (#45597). Arriving from
         # ANOTHER provider (the per-turn config sync adopting ``provider: custom``) the configured

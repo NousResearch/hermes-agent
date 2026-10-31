@@ -571,6 +571,31 @@ def _detach_main_model_from_provider(cfg: dict[str, Any], provider_key: str, ent
     cfg["model"] = model_cfg
 
 
+_ORIGIN_BOUND_FIELDS = ("api_key", "key_env", "api_key_env", "key_cmd", "extra_headers")
+
+
+def _drop_credentials_on_origin_move(entry: dict[str, Any], old_url: str, new_url: str,
+                                     submitted_key: Optional[str]) -> None:
+    """Strip *entry*'s stored credentials when the edit changes the endpoint's origin.
+
+    Raises 400 when credentials exist and the payload left the key untouched (``None``):
+    reusing them would authenticate to a host they were never entered for.
+    """
+    from utils import same_base_url_origin
+
+    if not old_url or same_base_url_origin(old_url, new_url):
+        return
+    stored = [field for field in _ORIGIN_BOUND_FIELDS if entry.get(field)]
+    if stored and submitted_key is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"The saved API key is for {old_url}, not {new_url}. "
+                    "Enter the API key for the new address to save this change."),
+        )
+    for field in stored:
+        entry.pop(field)
+
+
 def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> tuple[str, dict[str, Any]]:
     name = (body.name or "").strip()
     base_url = (body.base_url or "").strip().rstrip("/")
@@ -684,6 +709,12 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     if body.context_length and body.context_length > 0:
         entry["context_length"] = int(body.context_length)
         entry["models"][model]["context_length"] = int(body.context_length)
+
+    # A stored credential (and hand-written headers, which may carry one) is
+    # bound to the origin it was entered for: an edit that moves the endpoint
+    # to another scheme/host/port must supply that host's key, or an explicit
+    # blank for none, rather than ship the old secret to the new address.
+    _drop_credentials_on_origin_move(entry, str(existing.get("base_url") or ""), base_url, body.api_key)
 
     # API keys never belong in config.yaml: write to .env and reference it via
     # ``key_env`` — the indirection built-in providers use and that

@@ -18,6 +18,7 @@ from hermes_cli.config_backend import refusing_locked_omissions
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
 from tools.transcription_common import STT_MODEL_CATALOG
 from tools.wake_word import _PROVIDER_PREFERENCE
+from utils import same_base_url_origin
 
 if TYPE_CHECKING:
     from hermes_cli.model_switch import ModelSwitchResult
@@ -938,6 +939,9 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
             # The auxiliary resolver already reads auxiliary.<task>.base_url/api_key
             # (_resolve_task_provider_model), so persisting them here is what actually wires the endpoint
             # in. See #65254.
+            if not api_key and not same_base_url_origin(str(slot_cfg.get("base_url") or ""), base_url):
+                # The slot's stored key was entered for its previous host, not this one.
+                clear_model_endpoint_credentials(slot_cfg, clear_api_mode=False)
             slot_cfg["base_url"] = base_url
             if api_key:
                 slot_cfg["api_key"] = api_key

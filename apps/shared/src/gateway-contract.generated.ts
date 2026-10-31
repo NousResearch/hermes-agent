@@ -3240,6 +3240,7 @@ export interface SessionActivateParams {
   profile?: string | null
   cols?: number | null
   omit_messages?: boolean
+  source?: string | null
 }
 export interface SessionActivateResult {
   session_id: string

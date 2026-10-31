@@ -25,12 +25,13 @@ Three defects, each pinned here:
    MEDIA paths under different policy than the gateway's scheduled tick.
 """
 
+import json
 import os
 from pathlib import Path
 
 import pytest
 
-from cron.scheduler import _deliver_result
+from cron.scheduler import _deliver_result, _final_response_from_result
 from cron.scheduler_delivery import _send_media_via_adapter
 
 
@@ -148,6 +149,77 @@ class TestStandaloneWarningsSurfaced:
         )
         assert err is None
 
+
+
+def _tool_turn(tool_name, content, call_id="call-1"):
+    return [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": call_id, "content": content},
+    ]
+
+
+class TestGeneratedMediaDiscovery:
+    """Cron runs a fresh session, so the gateway's auto-append of producer-tool output applies."""
+
+    def test_appends_image_generate_output_when_reply_omits_media(self, media_file):
+        result = {
+            "final_response": "Report ready.",
+            "messages": _tool_turn(
+                "image_generate", json.dumps({"success": True, "image": media_file})
+            ),
+        }
+
+        response = _final_response_from_result(result, "job", "job", object)
+
+        assert response == f"Report ready.\nMEDIA:{media_file}"
+
+    def test_appends_voice_directive_for_tts_output(self, tmp_path):
+        audio = tmp_path / "speech.ogg"
+        audio.write_bytes(b"OggS")
+        result = {
+            "final_response": "Here you go.",
+            "messages": _tool_turn(
+                "text_to_speech",
+                json.dumps({"success": True, "media_tag": f"[[audio_as_voice]]\nMEDIA:{audio}"}),
+            ),
+        }
+
+        response = _final_response_from_result(result, "job", "job", object)
+
+        assert response == f"Here you go.\n[[audio_as_voice]]\nMEDIA:{audio}"
+
+    def test_reply_that_already_declares_media_is_untouched(self, media_file, tmp_path):
+        other = tmp_path / "other.pdf"
+        other.write_bytes(b"%PDF")
+        result = {
+            "final_response": f"Done.\nMEDIA:{other}",
+            "messages": _tool_turn(
+                "image_generate", json.dumps({"success": True, "image": media_file})
+            ),
+        }
+
+        response = _final_response_from_result(result, "job", "job", object)
+
+        assert response == f"Done.\nMEDIA:{other}"
+
+    def test_non_producer_tool_output_is_not_appended(self, media_file):
+        result = {
+            "final_response": "Docs say use MEDIA:<path>.",
+            "messages": _tool_turn("skill_view", f"example\nMEDIA:{media_file}"),
+        }
+
+        response = _final_response_from_result(result, "job", "job", object)
+
+        assert response == "Docs say use MEDIA:<path>."
 
 
 class TestLiveAdapterMediaFailuresSurfaced:

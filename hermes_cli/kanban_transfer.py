@@ -87,8 +87,15 @@ def _scrub_local_state(conn: sqlite3.Connection) -> None:
         """
     )
     # A task caught mid-run is not running anywhere the importer can see.
-    # Send it back to the queue rather than shipping a phantom claim.
+    # Send it back to the queue rather than shipping a phantom claim. That is a
+    # ready-queue RE-ENTRY (exempt from admission), so the wait clock is
+    # re-stamped by the mechanism's one writer.
+    reentered = [r[0] for r in conn.execute(
+        "SELECT id FROM tasks WHERE status = 'running'").fetchall()]
     conn.execute("UPDATE tasks SET status = 'ready' WHERE status = 'running'")
+    if reentered:
+        from hermes_cli import kanban_db_admission as _admission
+        _admission.reenter_ready(conn, reentered)
     conn.execute(
         """
         UPDATE task_runs

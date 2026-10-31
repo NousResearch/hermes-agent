@@ -1,6 +1,10 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as SttLeaseModule from '@/lib/stt-lease'
+import { STT_WARMUP_BUDGET_MS } from '@/lib/stt-lease'
+import { notify } from '@/store/notifications'
+
 import type { MicRecording } from './use-mic-recorder'
 import { useVoiceRecorder } from './use-voice-recorder'
 
@@ -38,10 +42,18 @@ vi.mock('./use-mic-recorder', () => ({
 
 const syncSttLeaseSpy = vi.fn(async (..._args: unknown[]): Promise<void> => undefined)
 
-vi.mock('@/lib/stt-lease', () => ({
-  syncSttLease: (...args: unknown[]) => syncSttLeaseSpy(...args),
-  VOICE_INPUT_LEASE: 'desktop:voice-input:test'
-}))
+vi.mock('@/lib/stt-lease', async importOriginal => {
+  // Real budget/await: the take-budget path under test races the SAME timer
+  // logic production uses; only the lease transport is stubbed.
+  const actual = await importOriginal<typeof SttLeaseModule>()
+
+  return {
+    STT_WARMUP_BUDGET_MS: actual.STT_WARMUP_BUDGET_MS,
+    awaitSttWarmup: actual.awaitSttWarmup,
+    syncSttLease: (...args: unknown[]) => syncSttLeaseSpy(...args),
+    VOICE_INPUT_LEASE: 'desktop:voice-input:test'
+  }
+})
 
 vi.mock('@/store/notifications', () => ({
   notify: vi.fn(),
@@ -108,12 +120,13 @@ describe('useVoiceRecorder STT readiness barrier', () => {
 
   function renderRecorder(
     onTranscribeAudio: (audio: Blob, owner?: unknown) => Promise<string>,
-    onTranscript: (text: string) => void = () => undefined
+    onTranscript: (text: string) => void = () => undefined,
+    maxRecordingSeconds = 30
   ) {
     return renderHook(() =>
       useVoiceRecorder({
         focusInput: () => undefined,
-        maxRecordingSeconds: 30,
+        maxRecordingSeconds,
         onTranscript,
         onTranscribeAudio
       })
@@ -249,6 +262,55 @@ describe('useVoiceRecorder STT readiness barrier', () => {
 
     expect(transcribe).not.toHaveBeenCalled()
     expect(onTranscript).not.toHaveBeenCalled()
+  })
+
+  // #137318: an acquire that never answers (model load wedged under the
+  // backend's shared loader lock) must not swallow the take for the lease
+  // request's full 180 s budget — the take is abandoned with a visible
+  // "unavailable" notice once the warm-up budget elapses.
+  it('abandons the take with a visible notice when the warm-up never settles', async () => {
+    vi.useFakeTimers()
+
+    try {
+      syncSttLeaseSpy.mockImplementation(() => new Promise<void>(() => undefined))
+
+      const transcribe = vi.fn(async () => 'hello world')
+      const onTranscript = vi.fn()
+      const hook = renderRecorder(transcribe, onTranscript, 600)
+
+      await act(async () => {
+        hook.result.current.dictate()
+      })
+      await act(async () => {
+        await Promise.resolve()
+      })
+
+      let stopping: Promise<void> = Promise.resolve()
+      await act(async () => {
+        stopping = hook.result.current.dictate() ?? Promise.resolve()
+        await Promise.resolve()
+      })
+
+      // Barrier holds while the budget runs…
+      expect(transcribe).not.toHaveBeenCalled()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(STT_WARMUP_BUDGET_MS)
+      })
+      await act(async () => {
+        await stopping
+      })
+
+      // …then the take is dropped with a notice, not held hostage.
+      expect(transcribe).not.toHaveBeenCalled()
+      expect(onTranscript).not.toHaveBeenCalled()
+      expect(vi.mocked(notify)).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'warning', title: 'unavailable', message: 'unavailable' })
+      )
+      expect(hook.result.current.voiceStatus).toBe('idle')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('drops a transcript that settles after unmount', async () => {

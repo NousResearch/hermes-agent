@@ -24,6 +24,7 @@ Hermes Agent generates images from text prompts via FAL.ai. Eleven models are su
 | `fal-ai/qwen-image` | ~12s | LLM-based, complex text | $0.02/MP |
 | `fal-ai/krea/v2/medium/text-to-image` | ~15-25s | Illustration, anime, painting, expressive/artistic styles | $0.030–0.035/image |
 | `fal-ai/krea/v2/large/text-to-image` | ~25-60s | Photorealism, raw textured looks (motion blur, grain, film) | $0.060–0.065/image |
+| `bria/fibo-2/generate` | ~5s | Trained only on licensed data (commercial rights); edits 1–4 images | $0.04/image |
 
 Prices are FAL's pricing at time of writing; check [fal.ai](https://fal.ai/) for current numbers.
 

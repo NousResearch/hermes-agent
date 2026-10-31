@@ -407,7 +407,8 @@ def _build_hermes_tools_mcp_entry() -> dict:
     env["HERMES_REDACT_SECRETS"] = env.get("HERMES_REDACT_SECRETS", "true")
     return {
         "command": sys.executable,
-        "args": ["-m", "agent.transports.hermes_tools_mcp_server"],
+        # -P: codex starts this in the user's workspace, which must not shadow Hermes' own packages.
+        "args": ["-P", "-m", "agent.transports.hermes_tools_mcp_server"],
         "env": env,
         # Generous timeouts — image_generate or delegate_task can take a while.
         "startup_timeout_sec": 30.0,

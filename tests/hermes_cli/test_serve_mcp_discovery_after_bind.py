@@ -113,6 +113,7 @@ def test_first_gateway_ws_client_starts_the_armed_discovery_once(monkeypatch):
     import asyncio
 
     from hermes_cli.web_routers import chat_ws
+    from hermes_cli.web_session_sockets import GATEWAY_SOCKET
 
     _reset_discovery_state(monkeypatch)
     calls: list[str] = []
@@ -124,7 +125,9 @@ def test_first_gateway_ws_client_starts_the_armed_discovery_once(monkeypatch):
     )
     assert calls == []
 
-    async def _allowed(ws):
+    async def _allowed(ws, *, allow_internal=False, socket=None):
+        assert allow_internal is True
+        assert socket == GATEWAY_SOCKET  # /api/ws accepts only tickets minted for it
         return True
 
     async def _handle_ws(ws, **kwargs):

@@ -319,8 +319,12 @@ def _memory_provider_is_configured(name: str, provider: Any) -> bool:
 
 
 def _memory_provider_status(row: dict[str, Any], setup: dict[str, Any], configured: bool, schema_fields: list) -> str:
+    from plugins.memory import parked_provider_notice
+
     if row["missing"]:
         return "missing"
+    if parked_provider_notice(row["name"]):  # plugins.disabled parks it: it will not load
+        return "unavailable"
     if not setup.get("dependencies_installed", True):
         return "unavailable"
     if not configured or (not row["available"] and schema_fields):

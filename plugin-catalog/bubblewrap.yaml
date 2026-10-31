@@ -1,6 +1,6 @@
 name: bubblewrap
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: 24d49a4d9cb9141110087499d5e29b7552244cfc
+sha: da8d32406253f1028f587912764bce5a9a416949
 subdir: bubblewrap
 description: 'Bubblewrap terminal backend for Linux: every terminal and execute_code command runs in its own bwrap
   sandbox on this machine at the host''s own paths, with a read-only root, a writable working directory (per
@@ -15,8 +15,8 @@ maintainer: NousResearch
 tier: official
 category: tools
 requires_hermes: ">=0.22.2"
-version: "1.1.0"
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/24d49a4d9cb9141110087499d5e29b7552244cfc/assets/bubblewrap.jpg
+version: "1.2.1"
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/da8d32406253f1028f587912764bce5a9a416949/assets/bubblewrap.jpg
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/bubblewrap
 platforms:
   - linux

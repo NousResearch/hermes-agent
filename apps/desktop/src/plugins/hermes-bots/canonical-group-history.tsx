@@ -1,6 +1,7 @@
 import * as sdk from '@hermes/plugin-sdk'
+import { useEffect, useRef, useState } from 'react'
 
-import { type CanonicalGroupAttachment, CanonicalGroupAttachments } from './canonical-group-attachments'
+import { type CanonicalGroupAttachment, CanonicalGroupAttachments, fetchCanonicalGroupAttachment } from './canonical-group-attachments'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
 
@@ -65,6 +66,93 @@ function EventBody({ event, notice }: { event: CanonicalGroupEvent; notice?: str
   </div>
 }
 
+// Previews download the whole file over RPC; larger or unsized images keep only Download.
+const IMAGE_PREVIEW_MAX_BYTES = 5 * 1024 * 1024
+
+// Automatic previews share a small download budget per connection, in request order; a file already
+// downloading is joined rather than requested again. Manual Download stays outside it. The budget is
+// per connection because a remote whose dial hangs holds its slots for good, and must not stall others.
+type Preview = Awaited<ReturnType<typeof fetchCanonicalGroupAttachment>>
+interface PreviewQueue { slots: number; waiters: Array<() => void> }
+const previewDownloads = new Map<string, Promise<Preview>>()
+const previewQueues = new Map<string, PreviewQueue>()
+
+function releasePreviewSlot(queue: PreviewQueue) {
+  const next = queue.waiters.shift()
+
+  if (next) {next()} else {queue.slots++}
+}
+
+function queuePreview(connectionId: string, key: string, fetch: () => Promise<Preview>, onPreview: (preview: Preview) => void) {
+  const queue = previewQueues.get(connectionId) ?? { slots: 2, waiters: [] }
+  previewQueues.set(connectionId, queue)
+  let cancelled = false
+  const deliver = (download: Promise<Preview>) => void download.then(preview => { if (!cancelled) {onPreview(preview)} }, () => undefined)
+
+  const run = () => {
+    let download = previewDownloads.get(key)
+
+    if (download) {releasePreviewSlot(queue)} else {
+      download = fetch().finally(() => { previewDownloads.delete(key); releasePreviewSlot(queue) })
+      previewDownloads.set(key, download)
+    }
+
+    deliver(download)
+  }
+
+  const running = previewDownloads.get(key)
+
+  if (running) {deliver(running)} else if (queue.slots > 0) {queue.slots--; run()} else {queue.waiters.push(run)}
+
+  // A preview that leaves before its turn gives up its place without sending a request.
+  return () => {
+    cancelled = true
+    const at = queue.waiters.indexOf(run)
+
+    if (at >= 0) {queue.waiters.splice(at, 1)}
+  }
+}
+
+function ImagePreview({ binding, eventId, attachment, disabled }: {
+  binding: CanonicalGroupBinding; eventId: string; attachment: CanonicalGroupAttachment; disabled: boolean
+}) {
+  const [src, setSrc] = useState('')
+  const [near, setNear] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
+  const { attachment_id: attachmentId, size } = attachment
+  const { connectionId, profile, roomId } = binding
+  const previewable = !!attachmentId && size !== undefined && size <= IMAGE_PREVIEW_MAX_BYTES
+
+  // History loads the whole room: fetch only near the viewport. Leaving before its turn gives up the queued place;
+  // a started download runs to completion and is shared if the preview returns.
+  useEffect(() => {
+    const el = box.current
+
+    if (src || disabled || !el) {return}
+    const observer = new IntersectionObserver(entries => setNear(entries[entries.length - 1].isIntersecting), { rootMargin: '200px' })
+    observer.observe(el)
+
+    return () => observer.disconnect()
+  }, [src, disabled])
+
+  useEffect(() => {
+    if (disabled || !near || !attachmentId || !previewable) {return}
+    let url = ''
+    const key = JSON.stringify([connectionId, profile, roomId, eventId, attachmentId])
+
+    // A failed preview leaves the Download button as the way to the file.
+    const cancel = queuePreview(connectionId, key, () => fetchCanonicalGroupAttachment({ connectionId, profile, roomId }, eventId, attachmentId), ({ bytes, mime }) => {
+      url = URL.createObjectURL(new Blob([bytes], { type: mime }))
+      setSrc(url)
+    })
+
+    // Dropping `near` makes a re-shown room wait on the observer again, not refetch every preview seen so far at once.
+    return () => { cancel(); URL.revokeObjectURL(url); setSrc(''); setNear(false) }
+  }, [connectionId, profile, roomId, eventId, attachmentId, disabled, near, previewable])
+
+  return previewable ? <div ref={box}>{src && <img alt={attachment.name} className="max-h-64 max-w-full rounded object-contain" src={src} />}</div> : null
+}
+
 export function CanonicalGroupHistory({ binding, events, members = [], disabled = false }: CanonicalGroupHistoryProps) {
   const labels = useCanonicalGroupLabels()
   const roster = new Map(members.map(member => [member.member_id, member]))
@@ -87,6 +175,7 @@ export function CanonicalGroupHistory({ binding, events, members = [], disabled 
 
     if (!notice && !isMessage) {return null}
     const author = eventAuthor(event, roster, isMessage)
+    const previewEventId = event.room_id === binding.roomId ? event.event_id : undefined
 
     return <div className="grid grid-cols-[minmax(0,1fr)] gap-1 px-2 py-1.5" key={event.seq}>
     <div className="flex items-center gap-2">
@@ -94,6 +183,8 @@ export function CanonicalGroupHistory({ binding, events, members = [], disabled 
       <EventTime timestamp={event.created_at} />
     </div>
     <EventBody event={event} notice={notice} />
+    {previewEventId && event.payload.attachments?.filter(a => a.kind === 'image').map(a =>
+      <ImagePreview attachment={a} binding={binding} disabled={disabled} eventId={previewEventId} key={a.attachment_id ?? a.name} />)}
     {!!event.payload.attachments?.length && <CanonicalGroupAttachments
       attachments={event.payload.attachments.map(attachment => ({ ...attachment, event_id: event.event_id }))}
       binding={binding} disabled={disabled || !event.event_id || event.room_id !== binding.roomId} readOnly />}

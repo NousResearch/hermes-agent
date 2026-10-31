@@ -103,43 +103,59 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
 _REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "true", "yes", "on"}
 
 # Routed multiplex profiles: the import-time snapshot above is the LAUNCH profile's policy. A profile
-# served under a HERMES_HOME override resolves its own ``security.redact_secrets`` (its ``.env``
-# value first, like the standalone bridge in hermes_cli/main.py), cached per home so the hot path
-# stays a dict lookup. Still not a live ``os.environ`` read, so a shell ``export`` cannot flip it.
-_REDACT_ENABLED_BY_HOME: dict = {}
-_REDACT_ENABLED_LOCK = threading.Lock()
+# served under a HERMES_HOME override follows its own ``security.redact_secrets`` (its ``.env`` value
+# first, like the standalone bridge in hermes_cli/main.py). The formatter never reads config or files
+# for it (it runs under the logging handler's lock, per record): the values are recorded when that
+# profile's .env / config is loaded (``note_env_policy`` / ``note_config_policy``) or when log routing
+# is set up for it (``resolve_profile_policy``). Until then the profile redacts (the secure default).
+_ENV_POLICY_BY_HOME: dict = {}     # home key -> raw HERMES_REDACT_SECRETS from its .env, or None
+_CONFIG_POLICY_BY_HOME: dict = {}  # home key -> raw security.redact_secrets from its config, or None
+
+
+def note_env_policy(home_key: str, raw) -> None:
+    _ENV_POLICY_BY_HOME[home_key] = None if raw is None else str(raw)
+
+
+def note_config_policy(home_key: str, raw) -> None:
+    _CONFIG_POLICY_BY_HOME[home_key] = None if raw is None else str(raw)
+
+
+def resolve_profile_policy(home) -> None:
+    """Record ``home``'s redaction policy now (log-routing setup), so its records never wait for it."""
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(home)
+    try:
+        key = hermes_home_key()
+        from hermes_cli.config import load_config_readonly, load_env
+        note_env_policy(key, load_env().get("HERMES_REDACT_SECRETS"))
+        note_config_policy(key, (load_config_readonly().get("security") or {}).get("redact_secrets"))
+    except (Exception, SystemExit) as exc:  # health: allow BLE001 -- unreadable now: stays unknown, which redacts
+        logging.getLogger(__name__).debug("redaction policy for %s not read: %s", home, exc)
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _redact_enabled() -> bool:
-    """Effective redaction switch for the active profile (launch snapshot when no override)."""
+    """Effective redaction switch for the active profile (launch snapshot when no override). Reads
+    only in-memory state: the live secret scope and the recorded per-profile policy."""
     from hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is None:
         return _REDACT_ENABLED
     home_key = hermes_home_key()
-    cached = _REDACT_ENABLED_BY_HOME.get(home_key)
-    if cached is not None:
-        return cached
-    enabled = True
-    try:
-        from agent.secret_scope import current_secret_scope
-        scope = current_secret_scope()
-        raw = scope.get("HERMES_REDACT_SECRETS") if scope else None
-        if raw is None and scope is None:
-            # No live scope (the log listener thread formats routed records): read the profile's own .env, as
-            # its scope would, or a first call there would cache a config-only answer for the whole process.
-            from hermes_cli.config import load_env
-            raw = load_env().get("HERMES_REDACT_SECRETS")
-        if raw is None:
-            from hermes_cli.config import load_config_readonly
-            cfg_val = (load_config_readonly().get("security") or {}).get("redact_secrets")
-            raw = None if cfg_val is None else str(cfg_val)
-        if raw is not None:
-            enabled = str(raw).strip().lower() in {"1", "true", "yes", "on"}
-    except Exception:
-        enabled = True  # unreadable policy: keep the secure default
-    with _REDACT_ENABLED_LOCK:
-        _REDACT_ENABLED_BY_HOME[home_key] = enabled
-    return enabled
+    from agent.secret_scope import current_secret_scope
+    scope = current_secret_scope()
+    raw = scope.get("HERMES_REDACT_SECRETS") if scope else None
+    if raw is None and scope is None:
+        # No live scope (the log listener thread formats routed records): the profile's own .env, as
+        # its scope would have it. Not recorded yet: redact, since .env may opt the profile back in.
+        if home_key not in _ENV_POLICY_BY_HOME:
+            return True
+        raw = _ENV_POLICY_BY_HOME[home_key]
+    if raw is None:
+        raw = _CONFIG_POLICY_BY_HOME.get(home_key)
+    if raw is None:
+        return True
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 # Known API key prefixes -- match the prefix + contiguous token chars.
 # Every pattern MUST start with a literal prefix: _PREFIX_SUBSTRINGS (the cheap
@@ -153,6 +169,11 @@ _PREFIX_PATTERNS = [
     # ``***``. Kept free of nested unbounded repeats so the pattern passes the
     # same structural gate plugins must.
     r"sk-[A-Za-z0-9_-](?:\.?[A-Za-z0-9_-]){9,}",
+    # Context7 API keys: a fixed vendor prefix (``ctx7sk-``) plus an opaque body.
+    # The generic ``sk-`` family cannot catch it: the matcher's lookbehind
+    # rejects a prefix preceded by a word char, and here the ``sk-`` sits inside
+    # ``ctx7sk-`` - so a bare Context7 key passed through unmasked (#142576).
+    r"ctx7sk-[A-Za-z0-9_-]{10,}",
     r"ghp_[A-Za-z0-9]{10,}",            # GitHub PAT (classic)
     r"github_pat_[A-Za-z0-9_]{10,}",    # GitHub PAT (fine-grained)
     r"gho_[A-Za-z0-9]{10,}",            # GitHub OAuth access token
@@ -553,6 +574,12 @@ _URL_BARE_TOKEN_RE = re.compile(
 
 # JWTs always start with "eyJ" (base64 "{"); 1-, 2- and 3-part forms.
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
+
+# Links ``hermes webapp`` prints that sign a browser in as the user: the gateway's browser credential
+# after ``hermes-session=`` and the one-use ticket of a ``/webapp/launch`` link. Both values are
+# URL-safe base64 (43 characters); the 20-character floor leaves placeholders and code (``${token}``).
+_WEBAPP_LINK_CREDENTIAL_RE = re.compile(
+    r"((?<![A-Za-z0-9_-])hermes-session=|/webapp/launch#(?:[^\s#]*?&)?ticket=)[A-Za-z0-9_-]{20,}")
 
 # E.164 phone numbers, 7-15 digits; the lookahead rejects hex strings / identifiers.
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
@@ -980,6 +1007,11 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     if "eyJ" in text:
         text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
+
+    # A Webapp sign-in link signs a browser in as the user, so its credential is masked whatever the
+    # web-URL policy below.
+    if "hermes-session=" in text or "/webapp/launch#" in text:
+        text = _WEBAPP_LINK_CREDENTIAL_RE.sub(lambda m: m.group(1) + "***", text)
 
     if redact_url_credentials:  # opt-in; known credential shapes in URLs are caught above
         # NOTE: Web-URL redaction (query params + userinfo + HTTP access-log request targets) is

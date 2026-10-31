@@ -213,23 +213,16 @@ async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
     stamped = await native.dispatch({'id': 2, 'method': 'session.resume', 'params': {'session_id': 'old-desktop-account'}})
     assert stamped.get('result', {}).get('session_id') == 'old-desktop-account', stamped
     assert [m['content'] for m in stamped['result']['messages']] == ['OLD-DESKTOP-ACCOUNT']
-    # A served remote backend stamped its basic-auth login on the row at creation (#139818). That
-    # stamp is the login's ownership, not a label (#140183 review F1): another login and the host's
-    # own native peer are refused without a write; the same login adopts it once its serve is gone.
+    # A served remote backend stamped its basic-auth login on the row at creation (#139818). Hermes
+    # is single-user and sign-in is owner-only, so that login is the machine owner: the owner's own
+    # native ticket (native Desktop, the TUI) adopts it once its serve is gone (gateway.owner_identity).
     caps = ['session:create', 'session:read', 'session:submit', 'session:control', 'session:approve',
             'session:respond']
-
-    def login(user):
-        subject = 'auth:v1:' + json.dumps(['basic', '', user], separators=(',', ':'))
-        return AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': subject,
-            'profile_id': str(tmp_path), 'instance_id': 'first', 'capabilities': caps})
-    for stranger in (login('bob'), native):
-        refused = await stranger.dispatch({'id': 4, 'method': 'session.resume',
-                                           'params': {'session_id': 'old-desktop-remote'}})
-        assert refused.get('error', {}).get('message') == 'not_found', refused
-        assert db.get_session('old-desktop-remote')['user_id'] == 'basic:hermes'
-    remote = await login('hermes').dispatch({'id': 5, 'method': 'session.resume',
-                                             'params': {'session_id': 'old-desktop-remote'}})
+    from gateway.owner_identity import host_owner_subject
+    owner = AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': host_owner_subject(),
+        'profile_id': str(tmp_path), 'instance_id': 'first', 'capabilities': caps})
+    remote = await owner.dispatch({'id': 5, 'method': 'session.resume',
+                                   'params': {'session_id': 'old-desktop-remote'}})
     assert remote.get('result', {}).get('session_id') == 'old-desktop-remote', remote
     assert [m['content'] for m in remote['result']['messages']] == ['OLD-DESKTOP-REMOTE']
     # Any other identity, or a Nous stamp on a non-Desktop row, still needs its own authority.

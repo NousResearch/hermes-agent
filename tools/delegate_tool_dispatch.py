@@ -246,18 +246,22 @@ def _run_sync_with_note(batch: _Batch, reason: str) -> str:
         result["note"] = _SYNC_FALLBACK_NOTES[reason]
     return json.dumps(result, ensure_ascii=False)
 
-def _resolve_async_wake_sid(origin_wake_sid: str, origin_session_history_delivery: bool = False) -> Optional[str]:
+def _resolve_async_wake_sid(
+    origin_wake_sid: str, origin_session_history_delivery: bool = False, oneshot_session: bool = False,
+) -> Optional[str]:
     """Detached result target: empty for push, a resumable API id, or None for inline.
 
     API completion only persists a row; this does not authorize a model wake. The
-    continuation must read that row, not an authoritative caller-owned snapshot."""
+    continuation must read that row, not an authoritative caller-owned snapshot.
+    *oneshot_session*: the parent's tools[] froze the one-shot ``delegate_task`` ("joined in this call", no
+    list/steer/stop) for the whole session, so a later interactive turn (``chat -q`` then ``--resume``) joins too."""
     from gateway.session_context import get_session_env
 
     # Finite consumers need the result in this tool round. Owner admission scope
     # wins over legacy standalone launch markers, without changing terminal delivery.
     from gateway.session_finite import finite_turn_required
     finite = finite_turn_required()
-    if finite is True or (finite is None and get_session_env("HERMES_SINGLE_QUERY_SESSION") == "1"):
+    if oneshot_session or finite is True or (finite is None and get_session_env("HERMES_SINGLE_QUERY_SESSION") == "1"):
         return None
 
     try:
@@ -431,7 +435,10 @@ def _dispatch_background(batch: _Batch) -> str:
     running synchronously (with an explanatory ``note``) when the session cannot receive detached completions or the
     async pool is at capacity."""
     from tools.delegate_tool import _get_max_async_children
-    wake_sid = _resolve_async_wake_sid(batch.origin_wake_sid, batch.origin_session_history_delivery)
+    wake_sid = _resolve_async_wake_sid(
+        batch.origin_wake_sid, batch.origin_session_history_delivery,
+        oneshot_session=getattr(batch.parent_agent, "_oneshot_session", None) is True,  # agent_is_oneshot's pin
+    )
     if wake_sid is None:
         logger.info("delegate_task: async delivery unsupported on this session runtime; running the batch synchronously instead.")
         return _run_sync_with_note(batch, "no_async")
@@ -479,10 +486,11 @@ def _dispatch_background(batch: _Batch) -> str:
 
 def _run_batch(batch: _Batch, background: bool) -> str:
     """Tool result JSON: a dispatch handle (background) or the joined combined results."""
+    from tools.delegate_tool import session_joins_delegation
     # Every unit of this call shares task_list, so its last joined unit emits the call's one row.
     begin_delegation_run(
         batch.task_list, subagents=len(batch.children), depth=getattr(batch.parent_agent, "_delegate_depth", 0) + 1,
     )
-    if background:
+    if background and not session_joins_delegation(batch.parent_agent):
         return _dispatch_background(batch)
     return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)

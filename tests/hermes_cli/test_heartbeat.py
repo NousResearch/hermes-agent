@@ -1,5 +1,6 @@
 """Tests for /heartbeat (hermes_cli/heartbeat.py)."""
 
+import threading
 import time
 
 import pytest
@@ -144,6 +145,44 @@ def test_due_prompt_fires_once_and_reanchors():
     assert mgr.state.fire_count == 1
     # Immediately after firing it re-anchors — not due again.
     assert mgr.due_prompt() is None
+
+
+@pytest.mark.parametrize("stop,stored", [("clear", None), ("pause", "paused")])
+def test_a_stale_manager_does_not_fire_a_heartbeat_stopped_since(stop, stored):
+    mgr = HeartbeatManager(session_id=f"hb-stale-{stop}")
+    mgr.set("tick", 600).created_at = time.time() - 700  # due in this manager's snapshot
+    getattr(HeartbeatManager(session_id=f"hb-stale-{stop}"), stop)()  # another driver stops it
+    assert mgr.due_prompt() is None
+    state = load_heartbeat(f"hb-stale-{stop}")
+    assert (state.status if state else None) == stored
+
+
+@pytest.mark.parametrize("stop,stored", [("clear", None), ("pause", "paused")])
+def test_a_heartbeat_stopped_during_a_claim_stays_stopped(stop, stored, monkeypatch):
+    from hermes_cli import heartbeat
+    sid = f"hb-race-{stop}"
+    mgr = HeartbeatManager(session_id=sid)
+    mgr.set("tick", 600).created_at = time.time() - 700
+    other = HeartbeatManager(session_id=sid)
+    reread, release = threading.Event(), threading.Event()
+
+    def load(session_id):  # the claim's compare-and-set reread, held open before its write
+        state = load_heartbeat(session_id)
+        reread.set()
+        release.wait(5)
+        return state
+    monkeypatch.setattr(heartbeat, "load_heartbeat", load)
+    claim = threading.Thread(target=mgr.due_prompt)
+    claim.start()
+    assert reread.wait(5)
+    stopper = threading.Thread(target=getattr(other, stop))
+    stopper.start()
+    stopper.join(0.2)  # unserialized, the stop lands here, inside the claim
+    release.set()
+    claim.join(5)
+    stopper.join(5)
+    state = load_heartbeat(sid)
+    assert (state.status if state else None) == stored
 
 
 def test_missed_ticks_coalesce():

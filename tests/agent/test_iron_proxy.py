@@ -645,3 +645,28 @@ def test_bitwarden_importerror_raise_without_fallback(
         )
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/proc cmdline identity is Linux-only")
+def test_pid_alive_reads_a_proxy_that_exited_after_the_liveness_probe_as_dead(hermes_home, monkeypatch):
+    """The pid passes the existence probe, then exits and is reaped before /proc/<pid>/cmdline is
+    read. On Linux the missing entry means the process is gone; the `ps` fallback must not run,
+    because a failed `ps` falls through to "believe the OS: alive" and a dead proxy then blocks
+    start_proxy and shows as running."""
+    import subprocess
+
+    import psutil
+
+    from tests.waiting import wait_until
+
+    monkeypatch.setattr(ip, "_proxy_nonce", None)
+    monkeypatch.setattr(ip, "_read_persisted_nonce", lambda: None)
+    monkeypatch.setattr(ip, "_run", MagicMock(return_value=MagicMock(returncode=1, stdout="")))
+    proxy = subprocess.Popen(["bash", "-c", "exec -a iron-proxy sleep 30"])
+    try:
+        wait_until(lambda: Path(f"/proc/{proxy.pid}/cmdline").read_bytes().startswith(b"iron-proxy"), timeout=15)
+        assert ip._pid_alive(proxy.pid) is True  # control: a live proxy, known by argv[0]
+    finally:
+        proxy.kill()
+        proxy.wait()
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)  # the probe ran before the exit
+    assert ip._pid_alive(proxy.pid) is False
+    ip._run.assert_not_called()

@@ -120,6 +120,18 @@ def _callback_tool(module: str, func: str, callback_attr: str, *arg_specs: _ArgS
     return _tool(module, func, *arg_specs, callback=lambda agent, ctx: getattr(agent, callback_attr, None))
 
 
+def _todo_list(agent, args: dict, ctx: InlineToolContext) -> Any:
+    # An item moved to completed after an edit no passing check followed is marked unverified in the
+    # result (agent/completion_evidence.py): the claim is graded on what ran, never blocked.
+    from agent.completion_evidence import annotate_todo_result
+    from tools.todo_tool import todo_tool
+
+    store = agent._todo_store
+    before = {item["id"]: item["status"] for item in store.read()}
+    result = todo_tool(todos=args.get("todos"), merge=args.get("merge", False), store=store)
+    return annotate_todo_result(result, before, ctx.messages)
+
+
 def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
     session_db = agent._get_session_db_for_recall()
     if not session_db:
@@ -251,10 +263,7 @@ def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
 
 # Order is the historical if/elif order of ``execute_tool_calls_sequential``.
 _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
-    "todo_list": _tool(
-        "tools.todo_tool", "todo_tool", ("todos", "todos"), ("merge", "merge", False),
-        store=lambda agent, ctx: agent._todo_store,
-    ),
+    "todo_list": _todo_list,
     # Bot Mode teammate DM is injected, not registered: only a canonical Bot
     # Chat session carries the schema, and the tool re-gates on the title.
     "message_agent": _tool(

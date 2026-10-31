@@ -615,7 +615,7 @@ _PER_TURN_RESET_STATE: tuple[tuple[str, Any], ...] = (
     ("_harness_metrics_turn", None),
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
-    ("_pre_verify_nudges", 0), ("_lsp_turn_end_notes", 0),
+    ("_pre_verify_nudges", 0), ("_lsp_turn_end_notes", 0), ("_todo_stop_nudges", 0),
 )
 
 

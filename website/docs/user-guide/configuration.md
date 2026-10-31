@@ -1349,6 +1349,20 @@ The evidence that feeds this guard (which test/lint/build commands ran, which fi
 
 For a user/plugin policy gate at the same point — keep the agent going with your own checks — see the [`pre_verify` hook](./features/hooks.md#pre_verify).
 
+Two related signals need no ledger and no config:
+
+- When a `todo_list` write moves an item to `completed` after a file edit that no passing test, build, lint or CI command (exit 0) followed, the tool result carries `"unverified": {"ids": [...], "reason": "..."}`. The write still lands; the model sees the mark and can run the check or say why it can't. Edits made through the shell (`sed -i`, `cat >`) are not seen, so they never trigger it.
+- The `/goal` judge reads the same evidence (see [Standing Goals](#standing-goals-goal)).
+
+### Open todos at the end of a turn
+
+```yaml
+agent:
+  todo_stop_gate: false   # true = one nudge per turn when the answer leaves todo_list items open
+```
+
+With `todo_stop_gate: true`, a text answer that leaves `todo_list` items `pending` or `in_progress` gets one nudge per turn naming them: finish the work, mark the items completed or cancelled, or ask the user. The second answer ends the turn whatever the list says. A turn that started a notifying background process or a background `delegate_task`, or a reply that asks the user for approval, input or a decision, is never nudged. Off by default because each nudge is an extra model call.
+
 ## Standing Goals (`/goal`)
 
 When a standing goal is active, Hermes judges whether each assistant response satisfies it. If not, it feeds a continuation prompt back into the same session and keeps working until the goal is done, the turn budget is exhausted, or the user pauses/clears it. The turn budget is the real backstop — judge failures fail **open** (continue) so a flaky judge never wedges progress.

@@ -1,9 +1,10 @@
 """Text-response stop gates for the conversation turn loop.
 
-When the model stops with a text answer, four gates may instead append the answer as an
+When the model stops with a text answer, five gates may instead append the answer as an
 interim row plus a user-role nudge and continue the turn: late language-server verdicts on this
 turn's edits (a durable row, see ``_late_lsp_verdicts``), verify-on-stop (#65919),
-the ``pre_verify`` plugin hook after code edits, and the kanban worker terminal-tool guard.
+the ``pre_verify`` plugin hook after code edits, the kanban worker terminal-tool guard, and the
+opt-in open-todo gate (``agent/todo_stop_gate.py``, also a durable row).
 Each keeps the candidate answer as a budget-exhaustion fallback
 (``pending_verification_response``) and clears ``final_response`` so the finalizer can tell
 this gate from error exits (#61631). Nothing here imports ``agent.conversation_loop`` at
@@ -92,6 +93,17 @@ def _kanban_stop_nudge(agent, messages) -> Optional[str]:
         return None
 
 
+def _todo_stop_nudge(agent, final_response, messages) -> Optional[str]:
+    """Opt-in (``agent.todo_stop_gate``): one nudge when the answer leaves todo items open."""
+    try:
+        from agent.todo_stop_gate import build_todo_stop_nudge
+
+        return build_todo_stop_nudge(agent, final_response, messages)
+    except Exception:
+        logger.debug("todo stop-gate check failed", exc_info=True)
+        return None
+
+
 _MAX_LSP_TURN_END_NOTES = 3
 
 
@@ -136,7 +148,7 @@ def apply_stop_gates(
     conversation_history: Any, pending_verification_response: Any,
     pending_verification_response_previewed: Any,
 ) -> StopGateVerdict:
-    """Run verify-on-stop → pre_verify hook → kanban stop guard, in that order. Nudges
+    """Run late LSP → verify-on-stop → pre_verify hook → kanban stop guard → open todos, in that order. Nudges
     are user-role rows appended only after the assistant answer row, so role alternation
     holds. Hook lookups are imported lazily from their origin modules (tests patch them
     there)."""
@@ -216,6 +228,21 @@ def apply_stop_gates(
             "(kanban_complete/kanban_request_review/kanban_block) — nudging to finish"
         )
         return verdict
+
+    _todo_nudge = _todo_stop_nudge(agent, final_response, messages)
+    if _todo_nudge:
+        agent._todo_stop_nudges = getattr(agent, "_todo_stop_nudges", 0) + 1
+        final_msg["finish_reason"] = "todo_items_open"
+        _append_interim_answer(agent, final_msg, messages, conversation_history, "todo stop-gate interim flush failed")
+        # A durable row like the LSP note: never stripped later, so no sent byte changes next turn.
+        append_message(messages, {"role": "user", "content": _todo_nudge})
+        agent._session_messages = messages
+        logger.debug("todo stop-gate nudge issued")
+        return StopGateVerdict(
+            continue_turn=True, final_response=None,
+            pending_verification_response=final_response,
+            pending_verification_response_previewed=agent._interim_content_was_streamed(final_response or ""),
+        )
     return StopGateVerdict(
         continue_turn=False, final_response=final_response,
         pending_verification_response=pending_verification_response,

@@ -1223,6 +1223,12 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 500
 
+  # When a text answer leaves todo_list items pending/in_progress, nudge the
+  # model once per turn to finish them, update the list, or ask the user.
+  # Notifying background work and explicit questions to the user are valid
+  # pauses and never nudged. Default: false (each nudge is an extra model call).
+  # todo_stop_gate: false
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

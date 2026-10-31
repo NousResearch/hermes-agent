@@ -274,8 +274,11 @@ def _cmd_import(args):
 # -- handlers that receive an open SessionDB ----------------------------------
 
 def _default_exclude(args):
-    """Hide third-party tool sessions by default, but honour explicit --source."""
-    return None if getattr(args, "source", None) else ["tool"]
+    """Hide non-conversation sessions by default (kanban/tool/oneshot/cron), but honour explicit --source."""
+    if getattr(args, "source", None):
+        return None
+    from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+    return list(INTERNAL_LISTING_SOURCES)
 
 
 def _surface_reader(db):

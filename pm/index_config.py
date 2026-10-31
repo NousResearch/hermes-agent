@@ -125,7 +125,13 @@ def npm_registry(env: Mapping[str, str]) -> str:
             key, sep, candidate = line.partition("=")
             if sep and key.strip().lower() == "registry":
                 value = candidate.strip().strip("\"'")
-    return value.rstrip("/") + "/" if value.startswith(("https://", "http://")) else NPM_PUBLIC_REGISTRY
+    if value.startswith(("https://", "http://")):
+        # An http-scheme registry line must not leak into artifact URLs: the
+        # downloader's https-only policy would refuse the mirror it rewrote
+        # them to, and updates would fail forever (#146742). Mirrors serve
+        # the same pinned bytes over https.
+        return "https://" + value.split("://", 1)[1].rstrip("/") + "/"
+    return NPM_PUBLIC_REGISTRY
 
 
 def npm_registry_url(url: str, env: Mapping[str, str]) -> str:

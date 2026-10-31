@@ -70,5 +70,13 @@ def test_npm_artifacts_follow_the_users_npm_registry(tmp_path, monkeypatch):
     assert pinned_source(lock_url, tmp_path / "npm.tgz", digest).url == "https://npm.corp.example/npm/npm/-/npm-10.9.2.tgz"
     monkeypatch.setenv("NPM_CONFIG_REGISTRY", "https://env.corp.example")
     assert pinned_source(lock_url, tmp_path / "npm.tgz", digest).url == "https://env.corp.example/npm/-/npm-10.9.2.tgz"
+    # An http-scheme mirror line must not produce an http tarball URL: the
+    # downloader's https-only policy would refuse it and updates would fail
+    # forever (#146742). Mirrors serve the same pinned bytes over https.
+    monkeypatch.setenv("NPM_CONFIG_REGISTRY", "http://registry.npmmirror.com")
+    assert pinned_source(lock_url, tmp_path / "npm.tgz", digest).url == "https://registry.npmmirror.com/npm/-/npm-10.9.2.tgz"
+    (tmp_path / ".npmrc").write_text("registry=http://mirror.corp.example/npm/\n", encoding="utf-8")
+    monkeypatch.delenv("NPM_CONFIG_REGISTRY")
+    assert pinned_source(lock_url, tmp_path / "npm.tgz", digest).url == "https://mirror.corp.example/npm/npm/-/npm-10.9.2.tgz"
     other = "https://github.com/x/y/releases/download/v1/y.tgz"
     assert pinned_source(other, tmp_path / "y.tgz", digest).url == other

@@ -180,6 +180,9 @@
             "$ref": "#/$defs/reply_latency_counter"
           },
           {
+            "$ref": "#/$defs/no_reply_counter"
+          },
+          {
             "$ref": "#/$defs/cron_run_counter"
           },
           {
@@ -2378,6 +2381,51 @@
                 "5s_to_15s",
                 "gte_60s",
                 "lt_2s"
+              ]
+            },
+            "platform": {
+              "$ref": "#/$defs/catalog_identifier"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "no_reply_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.gateway.no_reply"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reason",
+            "platform"
+          ],
+          "properties": {
+            "reason": {
+              "enum": [
+                "silent",
+                "interrupted",
+                "empty",
+                "dropped",
+                "delivery_failed",
+                "error"
               ]
             },
             "platform": {

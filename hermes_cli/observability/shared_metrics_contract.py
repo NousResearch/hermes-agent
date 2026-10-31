@@ -307,6 +307,8 @@ EXECUTION_OUTCOMES = frozenset({"failed", "success"})
 PLATFORM_HEALTH_MARK = PLATFORM_HEALTH_METRIC = "hermes.platform.health"
 PLATFORM_DELIVERY_MARK = PLATFORM_DELIVERY_METRIC = "hermes.platform.delivery"
 REPLY_LATENCY_MARK = REPLY_LATENCY_METRIC = "hermes.gateway.reply_latency"
+NO_REPLY_MARK = NO_REPLY_METRIC = "hermes.gateway.no_reply"
+NO_REPLY_REASONS = frozenset({"silent", "interrupted", "empty", "dropped", "delivery_failed", "error"})
 CRON_RUN_MARK = CRON_RUN_METRIC = "hermes.cron.run"
 # Plugin platforms are named only when Nous ships them (plugins/platforms/) or the installer proved a
 # plugin-catalog install (shared_metrics_catalog.platform_metric_name); every other one is ``plugin``.
@@ -957,6 +959,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "failure_class": DELIVERY_FAILURE_CLASSES, "outcome": DELIVERY_OUTCOMES, "platform": ADAPTER_PLATFORMS,
     },
     REPLY_LATENCY_METRIC: {"first_response_bucket": REPLY_LATENCY_BUCKETS, "platform": ADAPTER_PLATFORMS},
+    NO_REPLY_METRIC: {"reason": NO_REPLY_REASONS, "platform": ADAPTER_PLATFORMS},
     CRON_RUN_METRIC: {
         "delivery_kind": CRON_DELIVERY_KINDS, "duration_bucket": DURATION_BUCKETS, "outcome": CRON_RUN_OUTCOMES,
     },
@@ -1178,6 +1181,7 @@ _DECISION_MARK_METRICS = {
     # ---- v4 gateway ----
     PLATFORM_HEALTH_MARK: PLATFORM_HEALTH_METRIC, PLATFORM_DELIVERY_MARK: PLATFORM_DELIVERY_METRIC,
     REPLY_LATENCY_MARK: REPLY_LATENCY_METRIC, CRON_RUN_MARK: CRON_RUN_METRIC,
+    NO_REPLY_MARK: NO_REPLY_METRIC,
     # ---- v4 model ----
     MODEL_TOOL_QUALITY_MARK: MODEL_TOOL_QUALITY_METRIC, MODEL_FRICTION_MARK: MODEL_FRICTION_METRIC,
     CONTEXT_PEAK_MARK: CONTEXT_PEAK_METRIC,

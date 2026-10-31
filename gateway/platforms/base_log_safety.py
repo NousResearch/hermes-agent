@@ -2,6 +2,12 @@
 from urllib.parse import urlsplit
 
 
+def _platform_name(platform) -> str:
+    """Normalize a Platform enum / raw string into a lowercase name."""
+    value = getattr(platform, "value", platform)
+    return str(value or "").lower()
+
+
 def safe_url_for_log(url: str, max_len: int = 80) -> str:
     """Return a URL string safe for logs (no query/fragment/userinfo)."""
     raw = str(url) if max_len > 0 and url is not None else ""

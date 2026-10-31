@@ -19,7 +19,7 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
-from gateway.platforms.base_log_safety import safe_url_for_log
+from gateway.platforms.base_log_safety import _platform_name, safe_url_for_log
 
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
@@ -94,12 +94,6 @@ _HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS = 5.0
 # can't exhaust the shared executor.
 _HISTORY_MEDIA_LOOKUP_MAX_WORKERS = 2
 _HISTORY_MEDIA_LOOKUP_ADMISSION = threading.BoundedSemaphore(_HISTORY_MEDIA_LOOKUP_MAX_WORKERS)
-
-
-def _platform_name(platform) -> str:
-    """Normalize a Platform enum / raw string into a lowercase name."""
-    value = getattr(platform, "value", platform)
-    return str(value or "").lower()
 
 
 def _or_default(thunk, default, exc=(TypeError, ValueError)):
@@ -439,7 +433,7 @@ from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
-from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
+from hermes_cli.observability.shared_metrics_gateway import finish_reply_clock, records_delivery, stop_reply_clock
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
@@ -4538,6 +4532,8 @@ class BasePlatformAdapter(ABC):
                     event, extracted, _final_thread_metadata,
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
+            finish_reply_clock(self, event, session_key, interrupt_event, response,
+                               delivery_attempted, delivery_succeeded)
             await self._release_turn_marker(event)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
@@ -4567,6 +4563,8 @@ class BasePlatformAdapter(ABC):
                 ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
             raise
         except BaseException as e:
+            finish_reply_clock(self, event, session_key, interrupt_event, None,
+                               delivery_attempted, delivery_succeeded, error=True)
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata

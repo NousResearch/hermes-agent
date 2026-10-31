@@ -2640,7 +2640,7 @@ class FeishuAdapter(BasePlatformAdapter):
     # --- Inbound processing pipeline ---
     def _resolve_channel_prompt(self, chat_id: str, parent_id: str | None = None) -> str | None:
         """Honour ``channel_prompts: {<chat_id>: "<prompt>"}`` in PlatformConfig.extra (as Discord/Slack do)."""
-        from gateway.platforms.base import resolve_channel_prompt
+        from gateway.platforms.base_channel_prompts import resolve_channel_prompt
         extra = getattr(getattr(self, "config", None), "extra", None) or {}  # tests build bare adapters
         return resolve_channel_prompt(extra, chat_id, parent_id)
 

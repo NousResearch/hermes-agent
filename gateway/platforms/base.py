@@ -1750,19 +1750,6 @@ _RETRYABLE_ERROR_PATTERNS = (
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
 
 
-def resolve_channel_prompt(config_extra: dict, channel_id: str, parent_id: str | None = None) -> str | None:
-    """Per-channel ephemeral prompt from ``config.extra["channel_prompts"]``: exact *channel_id*
-    first, then *parent_id* (threads inherit the parent prompt). Blank prompts count as absent."""
-    prompts = config_extra.get("channel_prompts") or {}
-    if not isinstance(prompts, dict):
-        return None
-    for key in (channel_id, parent_id):
-        prompt = prompts.get(key) if key else None
-        if prompt is not None and (prompt := str(prompt).strip()):
-            return prompt
-    return None
-
-
 def resolve_channel_skills(
     config_extra: dict, channel_id: str, parent_id: str | None = None) -> list[str] | None:
     """Auto-loaded skill(s) for a channel/thread from ``channel_skill_bindings`` (entries

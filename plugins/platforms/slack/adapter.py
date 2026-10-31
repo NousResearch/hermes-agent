@@ -4410,7 +4410,7 @@ class SlackAdapter(BasePlatformAdapter):
     def _channel_prompt_with_identity(self, channel_id: str, team_id: str) -> Optional[str]:
         """Channel prompt with the bot's Slack identity prepended (ephemeral, never persisted,
         so prompt caching holds) so it won't read a human's mention as a self-mention."""
-        from gateway.platforms.base import resolve_channel_prompt
+        from gateway.platforms.base_channel_prompts import resolve_channel_prompt
         channel_prompt = resolve_channel_prompt(self.config.extra, channel_id, None)
         identity_prompt = self._build_identity_prompt(team_id)
         if identity_prompt:

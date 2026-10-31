@@ -725,6 +725,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     restore_user_proxy_env()  # a gateway an update restarted keeps the user's proxy env, not the update's
     _start_gateway_resolve_terminal_cwd()
 
+    # Owner startup, never incidental imports or ordinary delegated descendants (#87650).
+    os.environ.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
+
     from hermes_cli.resource_limits import apply_nofile_soft_limit
     apply_nofile_soft_limit()
 

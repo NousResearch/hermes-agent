@@ -7,7 +7,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timedelta, timezone, UTC
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from hermes_state_ids import new_session_id
 
@@ -157,6 +157,24 @@ class SessionLifecycleMixin:
             if entry is None or mutate(entry) is False:
                 return False
             self._save()
+            return True
+
+    def set_session_metadata(self, session_key: str, key: str, value: Any) -> bool:
+        """Persist bookkeeping on one existing route without rewriting the routing index.
+
+        The candidate is durable before the live metadata is published. The single-entry save
+        keeps generation/retirement checks and falls back to a full snapshot when needed.
+        """
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None:
+                return False
+            candidate = entry.to_dict()
+            metadata = dict(entry.metadata)
+            metadata[key] = value
+            candidate["metadata"] = metadata
+            self._save_entry(session_key, entry_data=candidate, lock_held=True)
+            entry.metadata[key] = value
             return True
 
     def _update_all_entries_locked(self, mutate) -> int:

@@ -47,6 +47,9 @@ def _inbound_cwd(runner, source):
 async def inbound_references(runner, source, session_key, text):
     """``expand_references`` for an inbound turn: a local session's policy cwd, else the terminal cwd."""
     try:
+        from agent.context_references import may_have_context_references
+        if not may_have_context_references(text):
+            return text, None
         cwd = _inbound_cwd(runner, source)
         context_length = await runner._inbound_model_context_length(source, session_key)
     except Exception as exc:

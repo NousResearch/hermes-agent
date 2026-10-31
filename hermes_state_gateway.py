@@ -324,14 +324,27 @@ class SessionGatewayMixin:
         now = time.time()
         rows = [{'scope': scope, 'key': k, **route_retired_params(k, v, now)} for k, v in entries.items() if k and v]
         def _do(conn):
-            conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
-            if rows:
-                conn.executemany(
-                    "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
-                    "SELECT :scope, :key, :entry, :now WHERE NOT " + ROUTE_RETIRED_SQL,
-                    rows)
-            kept = {r[0] for r in conn.execute("SELECT session_key FROM gateway_routing WHERE scope = ?", (scope,))}
-            return {row['key'] for row in rows} - kept
+            # Retain the atomic replacement contract and re-check every retirement
+            # fence, but avoid deleting/re-inserting unchanged multi-MB routes.
+            existing = dict(conn.execute(
+                "SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?", (scope,)))
+            wanted = {row['key'] for row in rows}
+            removed = set(existing) - wanted
+            if removed:
+                conn.executemany("DELETE FROM gateway_routing WHERE scope=? AND session_key=?",
+                                 [(scope, key) for key in removed])
+            retired = set()
+            for row in rows:
+                if conn.execute("SELECT " + ROUTE_RETIRED_SQL, row).fetchone()[0]:
+                    retired.add(row['key'])
+                    conn.execute("DELETE FROM gateway_routing WHERE scope=? AND session_key=?",
+                                 (scope, row['key']))
+                elif existing.get(row['key']) != row['entry']:
+                    conn.execute(
+                        "INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) "
+                        "VALUES(:scope,:key,:entry,:now) ON CONFLICT(scope,session_key) DO UPDATE SET "
+                        "entry_json=excluded.entry_json, updated_at=excluded.updated_at", row)
+            return retired
         return self._execute_write(_do)
 
     def load_gateway_routing_entries(self, *, scope: str = "") -> dict[str, str]:

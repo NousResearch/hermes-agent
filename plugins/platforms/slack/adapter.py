@@ -13,6 +13,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, ClassVar, Dict, Optional, Any, Tuple, List
+from datetime import datetime, timezone, UTC
 
 aiohttp: Any = None
 try:
@@ -55,11 +56,15 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling modules; support both package and flat plugin-dir import
+    from . import socket_watchdog_policy as _socket_watchdog_policy
     from .block_kit import render_blocks, sanitize_blocks
+    from .roster_heartbeat import should_drop_peer_bot
     from .adapter_slash_lane import SlashHandoffLanes
     from .adapter_slash_payload import slash_command_text, slash_thread_id
 except ImportError:  # pragma: no cover - plugin loaded outside package context
+    import socket_watchdog_policy as _socket_watchdog_policy  # type: ignore
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
+    from roster_heartbeat import should_drop_peer_bot  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
 
@@ -1288,7 +1293,8 @@ class SlackAdapter(BasePlatformAdapter):
             value = state() if callable(state) else state
             if asyncio.iscoroutine(value):
                 value = await value
-            return bool(value)
+            return _socket_watchdog_policy.normalize_connected_state(
+                self, bool(value), now=time.monotonic())
         except Exception:  # pragma: no cover - optional client API
             logger.debug("[Slack] Could not inspect Socket Mode transport state", exc_info=True)
             return None
@@ -1297,21 +1303,8 @@ class SlackAdapter(BasePlatformAdapter):
         """No recent ping/pong on the transport. Slack pings every ``ping_interval`` even when idle,
         and a client stuck on a closed session can still report ``is_connected()``, so staleness is
         the reliable "wedged" signal. Non-numeric attrs (mocked clients) never reconnect."""
-        client = getattr(self._handler, "client", None)
-        if client is None:
-            return False
-        ping_interval = getattr(client, "ping_interval", None)
-        if not isinstance(ping_interval, (int, float)) or ping_interval <= 0:
-            return False
-        last = getattr(client, "last_ping_pong_time", None)
-        if last is None:
-            # No ping yet: healthy right after (re)connect until the grace window elapses.
-            started = self._socket_handler_started_monotonic
-            grace = max(self._socket_first_ping_grace_s, ping_interval * 2)
-            return started is not None and (time.monotonic() - started) > grace
-        if not isinstance(last, (int, float)):
-            return False
-        return (time.time() - last) > (ping_interval * self._socket_ping_stale_factor)
+        return _socket_watchdog_policy.ping_pong_is_stale(
+            self, now_monotonic=time.monotonic(), now_wall=time.time())
 
     async def _restart_socket_mode(self, reason: str) -> None:
         """Reconnect Socket Mode without rebuilding adapter state."""
@@ -2276,7 +2269,7 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] Send error: %s", e, exc_info=True)
             _retryable = self._is_retryable_upload_error(e)
             return SendResult(
-                success=False, error=str(e), retryable=_retryable,
+                success=False, error=f"Slack send timed out: {e}" if isinstance(e, TimeoutError) else str(e), retryable=_retryable,
                 retry_after=self._retry_after_from_exc(e) if _retryable else None)
 
     async def _post_chunks(
@@ -4115,7 +4108,8 @@ class SlackAdapter(BasePlatformAdapter):
             return True
         if thread_marker in self._mentioned_threads or event_thread_ts in self._mentioned_threads:
             return True
-        if is_thread_reply and self._has_active_session_for_thread(
+        if is_thread_reply and await asyncio.to_thread(
+            self._has_active_session_for_thread,
             channel_id=channel_id, thread_ts=event_thread_ts, user_id=user_id, team_id=team_id,
             chat_type=chat_type):
             return True
@@ -4354,7 +4348,8 @@ class SlackAdapter(BasePlatformAdapter):
         thread_root_media_types: list[str] = []
         if not is_thread_reply:
             return channel_context, thread_root_media_urls, thread_root_media_types
-        has_active_thread_session = self._has_active_session_for_thread(
+        has_active_thread_session = await asyncio.to_thread(
+            self._has_active_session_for_thread,
             channel_id=channel_id, thread_ts=event_thread_ts, user_id=user_id, team_id=team_id,
             chat_type="dm" if is_dm else "group")
 
@@ -4375,7 +4370,8 @@ class SlackAdapter(BasePlatformAdapter):
             ) = await self._collect_thread_root_images(
                 channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id)
         elif is_mentioned:
-            await _fetch(after_ts=self._get_thread_watermark(**watermark_args), force_refresh=True)
+            watermark = await asyncio.to_thread(self._get_thread_watermark, **watermark_args)
+            await _fetch(after_ts=watermark, force_refresh=True)
         else:
             # Restart rehydration (#63530 restart gap / #33215): persistent sessions survive gateway
             # restarts, but thread replies posted while the gateway was down never reached the session. On
@@ -4386,12 +4382,13 @@ class SlackAdapter(BasePlatformAdapter):
             rehydration_key = self._thread_rehydration_key(
                 channel_id, event_thread_ts, user_id, team_id)
             if rehydration_key in self._thread_rehydration_checked:
-                self._set_thread_watermark(watermark_ts=ts, **watermark_args)
+                await asyncio.to_thread(
+                    self._set_thread_watermark, watermark_ts=ts, **watermark_args)
                 return channel_context, thread_root_media_urls, thread_root_media_types
-            watermark_ts = self._get_thread_watermark(**watermark_args)
+            watermark_ts = await asyncio.to_thread(self._get_thread_watermark, **watermark_args)
             if watermark_ts:
                 await _fetch(after_ts=watermark_ts, force_refresh=True)
-        self._set_thread_watermark(watermark_ts=ts, **watermark_args)
+        await asyncio.to_thread(self._set_thread_watermark, watermark_ts=ts, **watermark_args)
         self._mark_thread_rehydration_checked(channel_id, event_thread_ts, user_id, team_id)
         return channel_context, thread_root_media_urls, thread_root_media_types
 
@@ -4537,16 +4534,8 @@ class SlackAdapter(BasePlatformAdapter):
         """True when a bot *user* post (peer agent: no bot_id/subtype) must be dropped.
         Such posts would otherwise re-trigger via old thread mentions or active sessions and cause
         agent-agent loops. Under ``mentions`` only the current text counts as a summons."""
-        if not user_id or user_id == bot_uid:
-            return False
-        sender_is_bot_user = self._event_declares_bot_sender(event)
-        if not sender_is_bot_user:
-            sender_is_bot_user = await self._resolve_user_is_bot(
-                user_id, chat_id=channel_id, team_id=team_id)
-        if not sender_is_bot_user:
-            return False
-        allow_bots = self._slack_allow_bots()
-        return allow_bots == "none" or (allow_bots == "mentions" and not is_mentioned)
+        return await should_drop_peer_bot(
+            self, event, user_id, bot_uid, channel_id, team_id, is_mentioned)
 
     def _apply_bot_mention(
         self, text: str, original_text: str, command_probe_text: str, is_command_text: bool,
@@ -4674,7 +4663,8 @@ class SlackAdapter(BasePlatformAdapter):
             media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context,
             reply_expected=self._slack_reply_expected(
                 routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
-                addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
+                addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process,
+                bot_sender=self._event_declares_bot_sender(event)))
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
         if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
@@ -4729,6 +4719,11 @@ class SlackAdapter(BasePlatformAdapter):
             source=source,
             raw_message=event,
             message_id=ts,
+            # The PROVIDER message time, not this delivery's arrival. The admission payload
+            # hashes ``native_text_v1.timestamp`` (session_envelope.py:216); with the dataclass
+            # default ``datetime.now()`` every redelivery of the same message id yields a
+            # different digest and admit_session_input refuses it as admission_conflict.
+            timestamp=datetime.fromtimestamp(float(ts), tz=UTC),
             media_urls=media_urls,
             media_types=media_types,
             media_text_inlined=media_text_inlined,
@@ -6401,19 +6396,19 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _slack_reply_expected(
         self, routing_text: str, bot_uid: Optional[str], *, channel_id: str, addressed: bool,
-        opens_own_session: bool) -> Optional[bool]:
+        opens_own_session: bool, bot_sender: bool = False) -> Optional[bool]:
         """``MessageEvent.reply_expected`` for an admitted message. False (a bare silence marker may
         stand) only when it opens by @mentioning someone else, or is an unaddressed message that a
-        free-response channel admitted as the start of its own session (a new top-level thread).
-        A plain follow-up in a conversation the bot is part of (a thread, or a flat
-        ``reply_in_thread: false`` channel) is None: it is usually meant for the bot, so the
-        gateway keeps its visible fallback (#110952)."""
+        free-response channel admitted as the start of its own session (a new top-level thread),
+        or is a turn sent by a bot peer. A plain follow-up in a conversation the bot is part of
+        (a thread, or a flat ``reply_in_thread: false`` channel) is None: it is usually meant for
+        the bot, so the gateway keeps its visible fallback (#110952)."""
         self_uids = {u for u in (bot_uid, self._bot_user_id) if u}
         if addressed or self._slack_message_mentions_self(routing_text, self_uids):
             return True
         if self._slack_message_addressed_to_other_user(routing_text, self_uids):
             return False
-        return False if opens_own_session and self._slack_is_free_channel(channel_id) else None
+        return False if (opens_own_session and self._slack_is_free_channel(channel_id)) or bot_sender else None
 
     def _slack_message_mentions_self(self, text: str, self_uids: set) -> bool:
         """True when ``text`` @-mentions this bot anywhere, in either ``<@U123>`` or

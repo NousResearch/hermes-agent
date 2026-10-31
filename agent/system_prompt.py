@@ -10,6 +10,8 @@ provider, timestamp line).  See ``references/system-prompt-invariant.md``.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -20,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.delegation_context import owned_kanban_task
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
-    HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, INTERIM_PREAMBLE_GUIDANCE, KANBAN_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
@@ -556,6 +558,21 @@ def _identity_parts(agent: Any, ctx_len: Optional[int]) -> tuple[list[str], bool
     return ([_soul_content], True) if _soul_content else ([DEFAULT_AGENT_IDENTITY], False)
 
 
+# A between-turns TUI rebuild runs while the interim callback is cleared; it says through this context-local flag
+# whether the surface shows interim text (a turn on another thread keeps its own callback and context).
+_interim_surface: contextvars.ContextVar[bool] = contextvars.ContextVar("interim_preamble_surface", default=False)
+
+
+@contextlib.contextmanager
+def interim_preamble_surface(enabled: bool):
+    """Build prompts in this context as if interim assistant text reaches the user (``enabled``)."""
+    token = _interim_surface.set(bool(enabled))
+    try:
+        yield
+    finally:
+        _interim_surface.reset(token)
+
+
 def _guidance_parts(agent: Any) -> list[str]:
     """Universal + tool-aware + model-gated guidance blocks, each gated by its config.yaml key."""
     parts: list[str] = []
@@ -584,6 +601,10 @@ def _guidance_parts(agent: Any) -> list[str]:
     if _model_gate(getattr(agent, "_execution_guidance", "auto"), agent.model, EXECUTION_GUIDANCE_MODELS):
         from agent.prompt_builder import execution_guidance_text
         parts.append(execution_guidance_text(agent.valid_tool_names))
+    # Only where interim text reaches the user (display.interim_assistant_messages): a live callback, or a
+    # between-turns TUI rebuild inside interim_preamble_surface().
+    if getattr(agent, "interim_assistant_callback", None) is not None or _interim_surface.get():
+        parts.append(INTERIM_PREAMBLE_GUIDANCE)
     return parts
 
 

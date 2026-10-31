@@ -2,7 +2,7 @@ name: Prompt surface diff
 
 # PR comment showing what the change does to the model-facing prompt surface: the system prompt
 # and tools[] array a stock install sends, per surface (cli x 4 model families, cli in a code
-# workspace, desktop, telegram, discord, cron). scripts/ci/prompt_surface.py renders both through
+# workspace, desktop, telegram with and without an interim-message callback, discord, cron). scripts/ci/prompt_surface.py renders both through
 # the production code into tests/fixtures/prompt_surface/, which is committed:
 #
 #   * tests/ci/test_prompt_surface.py (Tests lane) fails when that snapshot is stale, so any code

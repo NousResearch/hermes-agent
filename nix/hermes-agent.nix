@@ -44,7 +44,18 @@
   dirty ? false,
   lastModified ? null,
   # Overridable parameters
-  version ? "0.0.0",
+  # Default is the release date: the tag is date-style (v2026.9.24) and
+  # __release_date__ carries it, so a "0.0.0" placeholder is never shipped.
+  version ?
+    let
+      initPy = builtins.readFile (./.. + "/hermes_cli/__init__.py");
+      line = lib.findFirst (l: lib.hasPrefix "__release_date__" l) "" (lib.splitString "\n" initPy);
+      parsed = builtins.match ''[^"]*"([^"]+)".*'' line;
+    in
+    if parsed == null then
+      throw "hermes-agent: no __release_date__ in hermes_cli/__init__.py"
+    else
+      builtins.head parsed,
   distance ? 0,
   extraPythonPackages ? [ ],
   # The optional groups this variant ships; packages.nix owns the lists.

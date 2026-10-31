@@ -15,7 +15,7 @@ auth:
       prompt: "Magic Hour API key (https://magichour.ai/developer?tab=api-keys)"
 
 post_install: |
-  Start a new Hermes session and ask it to call account_retrieve to confirm
+  Start a new Hermes session and ask it to call get_account_info to confirm
   API authorization without generating media. Tool discovery alone does not
   verify access. Creating media uses Magic Hour credits.
 

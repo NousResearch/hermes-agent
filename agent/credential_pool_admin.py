@@ -111,6 +111,15 @@ class CredentialPoolAdminMixin:
                 return None, None, f"No credential #{index}."
             return None, None, f'No credential matching "{raw}".'
 
+    def rename_entry(self, credential_id: str, label: str) -> Optional[PooledCredential]:
+        """Set one entry's label and persist it; None when the id is gone. Callers validate *label*.
+
+        Only ``label`` changes: the write goes through ``_persist``, whose merge keeps a newer
+        on-disk token generation, so a rename can never roll back a concurrently rotated token."""
+        with self._lock:
+            entry = self._find(lambda e: e.id == credential_id)
+            return None if entry is None else self._adopt(entry, label=label)
+
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
         from agent.credential_pool import (
             _borrowed_single_use_pool_root, _next_priority, _profile_owns_pool_provider,

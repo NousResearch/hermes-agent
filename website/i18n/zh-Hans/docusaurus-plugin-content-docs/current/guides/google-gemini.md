@@ -18,6 +18,25 @@ Hermes Agent 通过 **Google AI Studio / Gemini API** 原生支持 Google Gemini
 设置 `GOOGLE_API_KEY` 或 `GEMINI_API_KEY`。Hermes 对 `gemini` provider 会同时检查这两个名称。
 :::
 
+## 身份验证与计费边界
+
+Google 提供多个使用 Gemini 品牌的产品，但它们的凭据、配额和计费彼此独立：
+
+| 产品 | 身份验证与计费 | Hermes 支持情况 |
+|------|----------------|-----------------|
+| Gemini 应用 / Google AI Pro 或 Ultra | 消费者订阅权益；可能包含 AI Studio 界面访问权限，但 Hermes 请求不使用订阅额度 | 不能用于 Hermes 身份验证 |
+| Gemini CLI“使用 Google 登录” | 自 2026 年 6 月 18 日起，Google 不再通过 Gemini CLI 为消费者账号提供服务；Gemini Code Assist Standard 和 Enterprise 订阅不受影响 | Hermes 不导入或复用 Gemini CLI OAuth 凭据 |
+| Google AI Studio / Gemini API | API 密钥，使用 API 专属配额；付费层级的计费单独管理 | 支持 — `provider: gemini` |
+| Vertex AI | Google Cloud 服务账号或应用默认凭据（ADC），使用 GCP 配额和计费 | 支持 — `provider: vertex` |
+
+:::warning Google AI 订阅不能替代 API 配置
+Google AI Pro 和 Ultra [可能包含 AI Studio 界面访问权限](https://support.google.com/googleone/answer/16105039)，但仅凭该订阅无法为 Hermes 的 `gemini` provider 完成身份验证。Hermes 仍需要 [Gemini API 密钥](https://ai.google.dev/gemini-api/docs/api-key)。请求会消耗该密钥的 [API 配额，并在付费层级上单独计费](https://ai.google.dev/gemini-api/docs/billing)，不会占用消费者订阅额度。
+
+Hermes 明确区分这些路径：`gemini` 只读取 AI Studio API 密钥，`vertex` 使用 Google Cloud 凭据。Hermes 不会在使用 `gemini` 时静默改用 Gemini CLI OAuth、Antigravity 或 Vertex 凭据。
+:::
+
+Google 已于 [2026 年 6 月 18 日终止 Gemini CLI 的消费者账号访问](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals)。其 [Gemini CLI 常见问题](https://geminicli.com/docs/resources/faq/#why-cant-i-use-third-party-software-like-claude-code-openclaw-or-opencode-with-gemini-cli)指出，对于第三方编码 Agent，受支持且安全的方式是使用 Google AI Studio API 密钥或 Vertex AI，而不是复用 Gemini CLI OAuth 凭据。
+
 ## 快速开始
 
 ```bash
@@ -205,6 +224,15 @@ GEMINI_API_KEY=...
 ```
 
 然后重新运行 `hermes model`。
+
+### "Unknown provider 'gemini-oauth'"、"google-gemini-cli" 或 "google-antigravity"
+
+这些 provider ID 均不受支持。请从配置中移除它们，并选择以下受支持的路径之一：
+
+- 使用 `provider: gemini` 并设置 `GOOGLE_API_KEY` 或 `GEMINI_API_KEY`，连接 Google AI Studio
+- 使用 `provider: vertex` 并配置 Google Cloud 凭据，连接 Vertex AI
+
+请勿将 Gemini CLI 或 Antigravity OAuth 令牌复制到 Hermes。Google 在 [Gemini CLI 常见问题](https://geminicli.com/docs/resources/faq/#why-cant-i-use-third-party-software-like-claude-code-openclaw-or-opencode-with-gemini-cli)中指出，第三方 Agent 应使用 AI Studio 或 Vertex AI。对于受 [Antigravity 条款](https://antigravity.google/terms)约束的账号，Google 声明，通过第三方软件、工具或服务访问 Antigravity 将违反该协议。
 
 ### "This Google API key is on the free tier"
 

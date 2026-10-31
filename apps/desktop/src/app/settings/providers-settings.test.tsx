@@ -40,6 +40,10 @@ vi.mock('@/store/onboarding', () => ({
   startManualLocalEndpoint: (reason: null | string) => startManualLocalEndpoint(reason)
 }))
 
+vi.mock('./local-models-settings', () => ({
+  LocalModelsSettings: () => <div>Local model management</div>
+}))
+
 // Load once at module scope so no test's 15s budget pays the heavy transform
 // + import (the first-test timeout flake under CI load).
 const { ProvidersSettings } = await import('./providers-settings')
@@ -115,6 +119,37 @@ async function renderProvidersSettings() {
 }
 
 describe('ProvidersSettings', () => {
+  it('keeps accounts separate from API keys while the account catalog is pending or empty', async () => {
+    let resolveProviders!: (value: { providers: OAuthProvider[] }) => void
+    listOAuthProviders.mockReturnValue(new Promise(resolve => {
+      resolveProviders = resolve
+    }))
+    getEnvVars.mockResolvedValue({ WIDGET_API_KEY: keyVar({ provider: 'widget', provider_label: 'Widget' }) })
+    await act(async () => {
+      render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="accounts" />)
+    })
+    expect(screen.queryByText('Widget')).toBeNull()
+    await act(async () => resolveProviders({ providers: [] }))
+    expect(screen.getByText('Connect an account')).toBeTruthy()
+    expect(screen.queryByText('Widget')).toBeNull()
+  })
+
+  it('opens local models even when no account providers are available', async () => {
+    const { $localModelsEnabled } = await import('@/store/local-models-flag')
+    const enabled = $localModelsEnabled.get()
+    $localModelsEnabled.set(true)
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+    try {
+      await act(async () => {
+        render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="local" />)
+      })
+      expect(screen.getByText('Local model management')).toBeTruthy()
+      expect(screen.queryByRole('searchbox')).toBeNull()
+    } finally {
+      $localModelsEnabled.set(enabled)
+    }
+  })
+
   it('reads and saves API keys for the shared Settings target and reloads when it changes', async () => {
     $activeGatewayProfile.set('profile-a')
     $settingsScopeOverride.set('profile-b')

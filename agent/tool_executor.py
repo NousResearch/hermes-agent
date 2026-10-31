@@ -464,6 +464,10 @@ def _parse_tool_call(agent, tool_call, *, flatten_probe: bool = False) -> _Parse
     scope_block = None
     if parse_error is None:
         name, args, scope_block = _unwrap_tool_search_call(agent, name, args, flatten_probe=flatten_probe)
+        # Coerce here, not only at registry dispatch: pre_tool_call hooks, guardrails and middleware
+        # must judge the same shape the tool will run with (a JSON-string array is a list to the tool).
+        from tools.arg_coercion import coerce_tool_args
+        args = coerce_tool_args(name, args)
     return _ParsedCall(tool_call, name, args, [], parse_error, scope_block)
 
 

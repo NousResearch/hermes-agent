@@ -53,7 +53,9 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
             if isinstance(value, str):
                 coerced = _coerce_value(value, expected, schema=prop_schema)
                 if coerced is not value:
-                    args[key] = coerced
+                    # Finish nested repairs now: a second pass (registry dispatch) must be a no-op,
+                    # or pre_tool_call hooks judge a shape the tool never runs with.
+                    args[key] = _normalize_json_strings_for_schema(coerced, prop_schema, root_schema=parameters)
                     continue
                 if value.strip().startswith("["):
                     logger.warning("coerce_tool_args: %s.%s looks like a JSON array string "

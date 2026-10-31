@@ -13,6 +13,7 @@ the realistic runtime context. See the conftest module docstring.
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 
 from tests.docker.conftest import docker_exec, docker_exec_sh, start_container, poll_container
@@ -96,8 +97,12 @@ except urllib.error.HTTPError as h:
     )
     end = time.monotonic() + deadline_s
     last_err = ""
-    while time.monotonic() < end:
-        r = docker_exec_sh(container, probe, timeout=10)
+    while (remaining := end - time.monotonic()) > 0:
+        try:
+            r = docker_exec_sh(container, probe, timeout=min(10.0, remaining))
+        except subprocess.TimeoutExpired as exc:
+            last_err = f"docker exec stalled: {exc}"  # a busy daemon: retry until the deadline
+            continue
         if r.returncode == 0 and r.stdout.strip():
             lines = r.stdout.split("\n", 1)
             try:
@@ -214,14 +219,20 @@ def test_dashboard_insecure_env_var_no_longer_bypasses_gate(
     )
     # Fail-closed: the dashboard process must NOT successfully serve. Probe
     # for a few seconds; /api/status should never become reachable because
-    # start_server raised SystemExit before binding.
-    ok, _ = poll_container(
+    # start_server raised SystemExit before binding. The probe prints curl's
+    # own exit code so a probe that never reached the port (container gone,
+    # curl missing) is not read as "closed": the last attempt must be refused.
+    ok, last = poll_container(
         container_name,
-        "curl -fsS -m 2 http://127.0.0.1:9119/api/status >/dev/null 2>&1",
+        'curl -sS -m 2 -o /dev/null http://127.0.0.1:9119/api/status 2>/dev/null; rc=$?; echo "rc=$rc"; exit $rc',
         deadline_s=12.0,
     )
     assert not ok, (
         "Dashboard must NOT serve on a public bind with --insecure and no "
         "auth provider — the gate fails closed. /api/status became reachable, "
         "meaning the unauthenticated escape hatch is still open."
+    )
+    assert last.strip() == "rc=7", (
+        "Expected the dashboard port to refuse connections (curl rc=7); the "
+        f"probe never observed a refusal, so it proves nothing. Last: {last!r}"
     )

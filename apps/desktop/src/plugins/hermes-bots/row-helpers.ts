@@ -24,8 +24,14 @@ export const A2A_PREFIX_RE = /^Message from (?:agent '[^']+'|🤖[^:]+):\s*/i
 
 /** Classify a roster preview: `{ fromBot: handle|null }`. A preview that
  *  starts with the delivery prefix is a bot-to-bot message — the receiving
- *  bot's row should show WHO sent it, not present it as the human's chat. */
-export function previewKind(preview: null | string | undefined): { fromBot: null | string } {
+ *  bot's row should show WHO sent it, not present it as the human's chat.
+ *  `roster` + `connectionId` name the sender's row on the receiver's source,
+ *  so its handle follows the roster (a real 'hermes' profile keeps @hermes). */
+export function previewKind(
+  preview: null | string | undefined,
+  roster: readonly Partial<RosterRow>[] = [],
+  connectionId?: string
+): { fromBot: null | string } {
   const text = (preview || '').trim()
 
   if (!text) {
@@ -42,8 +48,12 @@ export function previewKind(preview: null | string | undefined): { fromBot: null
     // profile reads @hermes, never @default (#89484).
     const sender = (match[1] || match[2] || '').trim().toLowerCase()
 
+    const row = roster.find(
+      bot => bot?.name === sender && (!connectionId || String(bot?.connectionId || '') === connectionId)
+    )
+
     return {
-      fromBot: sender ? botHandle(sender) : null
+      fromBot: sender ? botHandle(sender, row) : null
     }
   }
 

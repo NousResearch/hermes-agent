@@ -25,14 +25,15 @@ export type FreeTierRequester = <T = unknown>(method: string, params?: Record<st
 export const $freeTierStatus = atom<FreeTierStatus | null>(null)
 
 /**
- * A signed-out free-tier user who should see the standing Sign in: the tier is
- * on with an identity (`available`; a sign-in replaces that identity, so it
- * reads false afterwards) and first-run onboarding does not own the
- * moment. The statusbar chip shows on it, and Simple mode keeps the statusbar up on it.
+ * A signed-out user who should see the standing Sign in: the free tier is on
+ * with an identity (`available`), or a guest identity holds connected apps
+ * without the trial (`has_guest`). A sign-in replaces the identity, so both read
+ * false afterwards. First-run onboarding must not own the moment. The statusbar
+ * chip shows on it, and Simple mode keeps the statusbar up on it.
  */
 export const $freeTierSignInOpen = computed(
   [$freeTierStatus, $onboardingSurfaceClear],
-  (status, clear) => Boolean(status?.available) && clear
+  (status, clear) => Boolean(status?.available || status?.has_guest) && clear
 )
 
 // Fed here, beside the atom, so every importer of this store gets the same link.

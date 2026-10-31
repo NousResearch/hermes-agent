@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict, defaultdict, deque
+from collections.abc import Callable
 from concurrent.futures import Future
 from datetime import datetime, timezone, UTC
 from pathlib import Path
@@ -334,7 +335,7 @@ class TaskStore:
             setattr(self, name, seconds)
         self._tasks: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._watchers: dict[str, list[Future]] = {}
-        self._continuations = {}
+        self._continuations: dict[str, dict[str, tuple[dict[str, Any], Future[tuple[str, str]]]]] = {}
         self._lock = threading.Lock()
 
     @staticmethod
@@ -378,7 +379,8 @@ class TaskStore:
                 rec["state"] = state
                 rec["status_iso"] = now_iso()
 
-    def resume(self, task_id, context_id, agent_slug, tenant, reserve, message_id=""):
+    def resume(self, task_id: str, context_id: str | None, agent_slug: str, tenant: str,
+               reserve: Callable[[str, str], int | None], message_id: str = ""):
         with self._lock:
             rec = self._scoped(task_id, agent_slug, tenant)
             if rec is None:
@@ -400,7 +402,7 @@ class TaskStore:
             history = rec.get("history", []) + [text_message(ROLE_AGENT, rec["reply"], rec["context_id"])]
             rec.update(attempt_id=attempt_id, state=STATE_WORKING, reply="", status_iso=now_iso(),
                        attempt_started_at=time.time(), history=history)
-            future = Future()
+            future: Future[tuple[str, str]] = Future()
             snapshot = dict(rec)
             self._watchers.setdefault(task_id, []).append(future)
             if message_id:

@@ -4,31 +4,33 @@ import http.client
 import json
 import socket
 import threading
+from pathlib import Path
+from typing import Any
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.event import ProcessingOutcome
+from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from plugins.platforms.a2a import adapter as module, protocol
 from tests.waiting import async_wait_until
 
 
-def params(text="hello", **configuration):
+def params(text: str = "hello", **configuration: object) -> dict[str, Any]:
     return {"message": protocol.text_message(protocol.ROLE_USER, text),
             "configuration": configuration}
 
 
-def request(port, method, arguments):
+def request(port: int, method: str, arguments: dict[str, Any]) -> tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     conn.request("POST", "/", json.dumps({"jsonrpc": "2.0", "id": 1,
                  "method": method, "params": arguments}), {"Content-Type": "application/json"})
     return conn, conn.getresponse()
 
 
-def frame(response):
-    lines = []
+def frame(response: http.client.HTTPResponse) -> str:
+    lines: list[bytes] = []
     while line := response.readline():
         if line == b"\n":
             return b"".join(lines).decode()
@@ -37,7 +39,7 @@ def frame(response):
 
 
 @pytest.fixture
-def adapter(monkeypatch):
+def adapter(monkeypatch: pytest.MonkeyPatch) -> module.A2AAdapter:
     monkeypatch.setenv("A2A_PORT", "0")
     monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
     monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
@@ -61,7 +63,7 @@ def test_closed_initial_socket_keeps_result_and_releases_observer(adapter, monke
     async def run():
         entered, release = asyncio.Event(), asyncio.Event()
 
-        async def handle(event):
+        async def handle(event: MessageEvent):
             entered.set()
             await release.wait()
             await adapter.send(event.source.chat_id, "eventual exact result", metadata={"notify": True})
@@ -100,7 +102,7 @@ def test_healthy_stream_survives_old_timer(adapter, reply, state):
     async def run():
         release = asyncio.Event()
 
-        async def handle(event):
+        async def handle(event: MessageEvent):
             await release.wait()
             await adapter.send(event.source.chat_id, reply, metadata={"notify": True})
 
@@ -146,7 +148,7 @@ def test_nonblocking_send_continues_without_waiter_thread(adapter):
     async def run():
         release = asyncio.Event()
 
-        async def handle(event):
+        async def handle(event: MessageEvent):
             await release.wait()
             event._streamed_final_response = "streamed fallback"
             await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
@@ -176,7 +178,7 @@ def test_blocking_send_survives_timer_and_shutdown_releases_it(adapter):
     async def run():
         entered = asyncio.Event()
 
-        async def handle(event):
+        async def handle(event: MessageEvent):
             event._gateway_accepted = True
             entered.set()
 
@@ -336,7 +338,7 @@ def test_shutdown_during_store_notification_still_releases_send_waiter(adapter):
     assert future.result(timeout=0) == (protocol.STATE_COMPLETED, "stored")
 
 
-def test_forwarded_nonblocking_uses_owner_admission(adapter, monkeypatch, tmp_path):
+def test_forwarded_nonblocking_uses_owner_admission(adapter, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     from gateway import session_a2a
     entered = []
 
@@ -404,7 +406,7 @@ def test_completion_io_saturation_preserves_results_and_bounds_workers(adapter, 
 
 
 @pytest.mark.integration
-def test_http_dispatch_and_completion_io_keep_adapter_profile(adapter, monkeypatch, tmp_path):
+def test_http_dispatch_and_completion_io_keep_adapter_profile(adapter, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
 
     home = tmp_path / "served-profile"
@@ -416,7 +418,7 @@ def test_http_dispatch_and_completion_io_keep_adapter_profile(adapter, monkeypat
     homes = []
     monkeypatch.setattr(module.security, "audit", lambda *args: homes.append(get_hermes_home()))
 
-    async def handle(event):
+    async def handle(event: MessageEvent):
         homes.append(get_hermes_home())
         await scoped.send(event.source.chat_id, "profile result", metadata={"notify": True})
 
@@ -443,7 +445,7 @@ def test_watchdog_does_not_fail_a_live_accepted_turn(adapter):
     async def run():
         entered, release = asyncio.Event(), asyncio.Event()
 
-        async def handle(event):
+        async def handle(event: MessageEvent):
             entered.set()
             await release.wait()
             await adapter.send(event.source.chat_id, "long-running result", metadata={"notify": True})
@@ -499,7 +501,7 @@ def test_real_base_queued_turns_keep_task_identity_and_watchdog_ownership(adapte
         release_first, release_second = asyncio.Event(), asyncio.Event()
         seen = []
 
-        async def handle(event):
+        async def handle(event: MessageEvent):
             seen.append(event.message_id)
             if len(seen) == 1:
                 first_entered.set()
@@ -516,7 +518,7 @@ def test_real_base_queued_turns_keep_task_identity_and_watchdog_ownership(adapte
         assert await adapter.connect()
         connections = []
 
-        async def send(text):
+        async def send(text: str):
             arguments = params(text, returnImmediately=True)
             arguments["message"]["contextId"] = "same-context"
             conn, response = await asyncio.to_thread(request, adapter._httpd.server_port, "SendMessage", arguments)
@@ -554,7 +556,7 @@ def test_real_base_queued_turns_keep_task_identity_and_watchdog_ownership(adapte
 
 
 def test_real_base_refusal_releases_execution_ownership(adapter, monkeypatch):
-    async def handle(event):
+    async def handle(event: MessageEvent):
         pytest.fail("refused input must not reach the message handler")
 
     adapter.set_message_handler(handle)

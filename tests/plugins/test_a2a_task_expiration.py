@@ -2,6 +2,8 @@
 import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -12,7 +14,7 @@ from tests.waiting import wait_until
 adapter = lifecycle.adapter
 
 
-def test_terminal_retention_uses_terminal_transition(monkeypatch):
+def test_terminal_retention_uses_terminal_transition(monkeypatch: pytest.MonkeyPatch):
     clock = [100.0]
     monkeypatch.setattr(protocol.time, "time", lambda: clock[0])
     store = protocol.TaskStore(task_retention_seconds=10)
@@ -61,7 +63,7 @@ def test_delayed_question_record_cannot_release_resumed_execution_reservation(ad
     entered, release = threading.Event(), threading.Event()
     original = adapter._outcome_io
 
-    def record(rec):
+    def record(rec: dict[str, Any]) -> None:
         assert adapter.tasks.get(rec["task_id"])["state"] != protocol.STATE_SUBMITTED
         entered.set()
         assert release.wait(5)
@@ -91,7 +93,7 @@ def test_expiry_retries_after_recording_saturation_and_covers_entire_store(adapt
     entered, release = threading.Event(), threading.Event()
     original = adapter._outcome_io
 
-    def record(rec):
+    def record(rec: dict[str, Any]) -> None:
         entered.set()
         assert release.wait(10)
         original(rec)
@@ -161,7 +163,8 @@ def test_cancel_resume_expiry_arbitrate_without_resurrection(adapter, expire):
 
 @pytest.mark.parametrize("key", ["input_wait_timeout_seconds", "task_retention_seconds"])
 @pytest.mark.parametrize("value", [0, -1, "bad", float("nan"), float("inf"), True, None])
-def test_invalid_lifecycle_configuration_fails_at_adapter_boundary(monkeypatch, key, value):
+def test_invalid_lifecycle_configuration_fails_at_adapter_boundary(
+        monkeypatch: pytest.MonkeyPatch, key: str, value: object) -> None:
     from gateway.config import PlatformConfig
     from plugins.platforms.a2a.adapter import A2AAdapter
     monkeypatch.setenv("A2A_PORT", "0")
@@ -173,7 +176,7 @@ def test_cancellation_capacity_refusal_is_retryable_and_eventually_recorded(adap
     entered, release = threading.Event(), threading.Event()
     original = adapter._outcome_io
 
-    def record(rec):
+    def record(rec: dict[str, Any]) -> None:
         entered.set()
         assert release.wait(5)
         original(rec)
@@ -212,7 +215,7 @@ def test_hundreds_of_recorded_interruptions_do_not_consume_execution_slots(adapt
     assert len(protocol.load_conversation("questions", limit=0)) == 520
 
 
-def test_yaml_lifecycle_settings_reach_adapter_without_environment_bridge(tmp_path, monkeypatch):
+def test_yaml_lifecycle_settings_reach_adapter_without_environment_bridge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     import os
     from gateway.config import Platform, load_gateway_config
     from hermes_constants import get_hermes_home

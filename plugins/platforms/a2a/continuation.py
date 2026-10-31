@@ -1,12 +1,16 @@
 """Explicit task references and atomic admission of a new execution attempt."""
+from __future__ import annotations
+
 from collections import deque
+from concurrent.futures import Future
 import hashlib
 from functools import partial
+from typing import Any, cast
 
 from . import protocol, security
 
 
-def validate_identifiers(params):
+def validate_identifiers(params: dict[str, object]) -> dict[str, int | str] | None:
     message = params.get("message")
     if not isinstance(message, dict):
         return {"code": protocol.ERR_INVALID_PARAMS, "message": "message must be an object"}
@@ -18,23 +22,26 @@ def validate_identifiers(params):
     return None
 
 
-def prepare_continuation(adapter, params, peer, agent, generation):
-    message = params["message"]
-    task_id = message["taskId"]
+def prepare_continuation(adapter, params: dict[str, object], peer: str,
+                         agent: dict[str, object], generation: int):
+    message = cast(dict[str, object], params["message"])
+    task_id = cast(str, message["taskId"])
     scope = adapter._scope_for_agent(agent)
     adapter._expire_waits()
     rec = adapter.tasks.get(task_id, *scope)
     if rec is None:
         return _error(protocol.ERR_TASK_NOT_FOUND, "task not found")
-    context_id = message.get("contextId", params.get("contextId"))
+    context_id = cast(str | None, message.get("contextId", params.get("contextId")))
     if context_id is not None and context_id != rec["context_id"]:
         return _error(protocol.ERR_INVALID_PARAMS, "contextId does not match task")
     text = protocol.extract_text(params)
     if not text:
         return _error(protocol.ERR_INVALID_PARAMS, "continuation requires input")
-    rec, future, error, retry = _admit(adapter, task_id, context_id, scope, generation, message.get("messageId", ""))
+    rec, future, error, retry = _admit(adapter, task_id, context_id, scope, generation,
+                                       cast(str, message.get("messageId", "")))
     if error:
         return _error(error, "task cannot accept continuation")
+    rec = cast(dict[str, Any], rec)
     if retry:
         return None, {"task_id": task_id, "context_id": rec["context_id"], "future": future,
                       "created_iso": rec["created_iso"]}
@@ -48,7 +55,9 @@ def prepare_continuation(adapter, params, peer, agent, generation):
                                       generation, input_id, future)
 
 
-def _admit(adapter, task_id, context_id, scope, generation, message_id):
+def _admit(adapter, task_id: str, context_id: str | None,
+           scope: tuple[str, str], generation: int, message_id: str
+           ) -> tuple[dict[str, Any] | None, Future[tuple[str, str]] | None, int | None, bool]:
     with adapter._pending_lock:
         if adapter._admission_closed or adapter._generation != generation:
             return None, None, protocol.ERR_UNSUPPORTED_OPERATION, False
@@ -56,6 +65,8 @@ def _admit(adapter, task_id, context_id, scope, generation, message_id):
             task_id, context_id, *scope, partial(_reserve_attempt, adapter), message_id)
         if error or retry:
             return rec, future, error, retry
+        rec = cast(dict[str, Any], rec)
+        future = cast(Future[tuple[str, str]], future)
         attempt_id = rec["attempt_id"]
         previous = adapter._pending_attempts.get(task_id)
         adapter._attempt_tasks.pop(previous, None)
@@ -69,7 +80,7 @@ def _admit(adapter, task_id, context_id, scope, generation, message_id):
         return rec, future, None, False
 
 
-def _reserve_attempt(adapter, attempt_id, context_id):
+def _reserve_attempt(adapter, attempt_id: str, context_id: str) -> int | None:
     if not adapter._completion_io.reserve(attempt_id):
         return protocol.ERR_RATE_LIMITED
     if not adapter._turns.admit(context_id, protocol.max_pingpong_turns()):
@@ -79,5 +90,5 @@ def _reserve_attempt(adapter, attempt_id, context_id):
     return None
 
 
-def _error(code, message):
+def _error(code: int, message: str) -> tuple[dict[str, dict[str, int | str]], None]:
     return {"error": {"code": code, "message": message}}, None

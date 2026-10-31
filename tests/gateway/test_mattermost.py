@@ -1,4 +1,5 @@
 """Tests for Mattermost platform adapter."""
+import asyncio
 import json
 import os
 import time
@@ -200,9 +201,8 @@ class TestMattermostSend:
         """Tool/status/progress bubbles must stay quiet when the thread is broken."""
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
-        self.adapter._last_post_status = 400
-        self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
-        self.adapter._api_post = AsyncMock(return_value={})
+        self.adapter._api_post = AsyncMock(return_value=(
+            {}, 400, "api.context.invalid_param.app_error: invalid root_id"))
 
         result = await self.adapter.send(
             "channel_1",
@@ -220,9 +220,10 @@ class TestMattermostSend:
         """Notify-worthy replies may fall back flat so the answer is not lost."""
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
-        self.adapter._last_post_status = 400
-        self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
-        self.adapter._api_post = AsyncMock(side_effect=[{}, {"id": "flat_final"}])
+        self.adapter._api_post = AsyncMock(side_effect=[
+            ({}, 400, "api.context.invalid_param.app_error: invalid root_id"),
+            ({"id": "flat_final"}, 200, ""),
+        ])
 
         result = await self.adapter.send(
             "channel_1",
@@ -242,13 +243,53 @@ class TestMattermostSend:
         assert "Mattermost thread delivery failed" in flat_payload["message"]
         assert "Final answer body" in flat_payload["message"]
 
+    @pytest.mark.asyncio
+    async def test_concurrent_send_keeps_its_own_broken_root_fallback(self):
+        """A send that fails while another send awaits its error body must not decide that send's fallback."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(return_value={"root_id": ""})
+        other_send_done = asyncio.Event()
+
+        async def broken_root_body():
+            await other_send_done.wait()
+            return "api.context.invalid_param.app_error: invalid root_id"
+
+        async def server_error_body():
+            other_send_done.set()
+            return "Internal Server Error"
+
+        def respond(url, json, **kwargs):
+            resp = AsyncMock()
+            resp.__aenter__ = AsyncMock(return_value=resp)
+            resp.__aexit__ = AsyncMock(return_value=False)
+            if json.get("root_id") == "bad_root":
+                resp.status, resp.text = 400, broken_root_body
+            elif "root_id" in json:
+                resp.status, resp.text = 500, server_error_body
+            else:
+                resp.status, resp.json = 201, AsyncMock(return_value={"id": "flat_final"})
+            return resp
+
+        self.adapter._session.post = MagicMock(side_effect=respond)
+
+        broken, failed = await asyncio.gather(
+            self.adapter.send("channel_1", "Answer A", reply_to="bad_root", metadata={"notify": True}),
+            self.adapter.send("channel_2", "Answer B", reply_to="live_root", metadata={"notify": True}),
+        )
+
+        assert broken.success is True
+        assert broken.message_id == "flat_final"
+        assert failed.success is False
+        flat = [c.kwargs["json"] for c in self.adapter._session.post.call_args_list
+                if "root_id" not in c.kwargs["json"]]
+        assert [p["channel_id"] for p in flat] == ["channel_1"]
 
     @pytest.mark.asyncio
     async def test_progress_send_with_broken_thread_and_no_recorded_error_stays_quiet(self):
         """Same rule when no post error was recorded: still no flat fallback."""
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
-        self.adapter._api_post = AsyncMock(return_value={})
+        self.adapter._api_post = AsyncMock(return_value=({}, 0, ""))
 
         result = await self.adapter.send(
             "channel_1",

@@ -135,6 +135,23 @@ mcp_servers:
 
 This creates a `mcp-github` toolset you can reference in `--toolsets` or platform configs. The bare server name (`github`) works as an alias. If a server is named like a built-in toolset (`browser`, `web`), that name resolves to the built-in tools **plus** the server's `mcp__<server>__*` tools; neither side shadows the other.
 
+#### Locking a platform's tools (`platform_toolsets`, `no_mcp`)
+
+`platform_toolsets.<platform>` is a saved toolset list for one gateway platform. When it names one or more MCP servers (by bare name or `mcp-<server>`), that list is an allowlist for MCP: only the named servers load. When it names none — including the empty list — Hermes falls back to loading **every globally enabled MCP server**:
+
+```yaml
+mcp_servers:
+  cua-driver: { command: cua-driver, enabled: true }
+  evernote: { command: evernote, enabled: true }
+
+platform_toolsets:
+  email: [clarify, github]   # built-in clarify + ONLY the github server
+  # email: []                # NO built-in toolsets — but still cua-driver AND evernote!
+  # email: [no_mcp]          # zero tools: no built-ins, no MCP servers. The real lockdown.
+```
+
+`no_mcp` is a sentinel, not a toolset: its presence in a platform's list excludes all MCP servers for that platform. Pair it with the built-ins a channel legitimately needs (`[clarify, no_mcp]` pins exactly `clarify`). When locking down a platform that receives untrusted input (email, webhooks), include `no_mcp` in the list — a bare empty list is not a lockdown, and Hermes logs a warning naming the servers the empty list still inherits.
+
 ### Plugin toolsets
 
 Plugins can register their own toolsets via `ctx.register_tool()` during plugin initialization. These appear alongside built-in toolsets and can be enabled/disabled the same way.

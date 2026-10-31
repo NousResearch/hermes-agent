@@ -16,9 +16,9 @@ def config_check_diagnostics(config: dict[str, Any], get_env_value: Callable[[st
     """
     from hermes_cli.config import _platform_manifest_env_entries, _platform_plugin_manifests
     from hermes_cli.plugins_discovery import _get_disabled_plugins
-    from hermes_cli.toolset_validation import saved_toolset_resolver, validate_platform_toolsets
+    from hermes_cli.toolset_validation import platform_toolset_diagnostics
 
-    diagnostics = validate_platform_toolsets(config.get("platform_toolsets"), saved_toolset_resolver(config))
+    diagnostics = platform_toolset_diagnostics(config)
 
     disabled = _get_disabled_plugins()
     for name, manifest in _platform_plugin_manifests(source="bundled"):

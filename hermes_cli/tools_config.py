@@ -56,6 +56,9 @@ def install_cua_driver(*args, **kwargs) -> NoReturn:
 
 # Platforms already warned about an all-invalid platform_toolsets list (warn once, not per resolution).
 _warned_invalid_platform_toolsets: set[str] = set()
+# Platforms already warned about for the empty-list-inherits-MCP case (#147025); warn once per
+# process like _warned_invalid_platform_toolsets, since tool resolution runs per session.
+_warned_empty_platform_mcp: set[str] = set()
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -627,6 +630,18 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     # Explicit non-configurable entries (custom toolsets, MCP server names) pass through.
     explicit_passthrough = {ts for ts in toolset_names if ts not in explicit_known_keys and ts not in platform_default_keys}
     enabled_toolsets |= _merge_mcp_servers(config, toolset_names, explicit_passthrough, include_default_mcp_servers)
+
+    # A saved EMPTY list reads as a lockdown but the include-all fallback above still hands the
+    # platform every globally enabled MCP server — the trap reported in #147025, where an email
+    # platform pinned to [] executed 87 MCP tools. Say it once per platform, per process.
+    if explicitly_configured and not toolset_names and include_default_mcp_servers:
+        _inherited = sorted(enabled_mcp_server_names(config))
+        if _inherited and platform not in _warned_empty_platform_mcp:
+            _warned_empty_platform_mcp.add(platform)
+            logger.warning(
+                "platform '%s' has an empty toolset list but inherits MCP servers: %s. "
+                "Add 'no_mcp' to platform_toolsets.%s to exclude them. See issue #147025.",
+                platform, ", ".join(_inherited), platform)
 
     # Legacy profile opt-in is a fallback only. A saved platform list (even
     # empty) is authoritative, so a later disable cannot silently re-enable it.

@@ -1283,10 +1283,10 @@ def _warn_invalid_platform_toolsets(results: dict[str, Any], quiet: bool) -> Non
     """Surface invalid toolset names in platform_toolsets: ``resolve_toolset()`` returns [] for an
     unknown name, silently disabling the affected tools. Best-effort; never blocks migration."""
     try:
-        from hermes_cli.toolset_validation import saved_toolset_resolver, validate_platform_toolsets
+        from hermes_cli.toolset_validation import platform_toolset_diagnostics
 
         config = read_raw_config()
-        for w in validate_platform_toolsets(config.get("platform_toolsets"), saved_toolset_resolver(config)):
+        for w in platform_toolset_diagnostics(config):
             results["warnings"].append(w)
             if not quiet:
                 print(f"  ⚠ {w}")

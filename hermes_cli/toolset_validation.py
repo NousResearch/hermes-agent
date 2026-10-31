@@ -110,16 +110,32 @@ def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
                          or name in platform_bundles() or name in plugin_names())
 
 
+def platform_toolset_diagnostics(config: dict) -> list[str]:
+    """``validate_platform_toolsets`` wired to the saved resolver and the config's enabled MCP view.
+
+    Both readers (config migration warnings and ``hermes config check``) go through here so the
+    empty-list warning can name the MCP servers the platform still inherits (#147025)."""
+    from hermes_cli.tools_config import enabled_mcp_server_names
+
+    return validate_platform_toolsets(
+        config.get("platform_toolsets"), saved_toolset_resolver(config),
+        inherited_mcp_servers=lambda _platform: sorted(enabled_mcp_server_names(config)))
+
+
 def validate_platform_toolsets(
     platform_toolsets: object, is_valid_toolset: Callable[[str], bool],
     is_allowed_for_platform: Callable[[str, str], bool] = toolset_allowed_for_platform,
+    inherited_mcp_servers: Optional[Callable[[str], list[str]]] = None,
 ) -> list[str]:
     """Return human-readable warnings for a ``platform_toolsets`` mapping.
     Reports: a toolset name ``is_valid_toolset`` rejects (suggesting ``hermes-<platform>`` when that
     would have been valid); a non-empty mapping resolving to zero valid toolsets (agent would start with
     no tools); a platform with no valid toolsets, checked per-platform because the global net is
     suppressed once any platform is valid; and non-list platform values, which fall back to the platform
-    default. ``is_valid_toolset`` is injected so this does no registry imports or I/O."""
+    default. ``is_valid_toolset`` is injected so this does no registry imports or I/O.
+    ``inherited_mcp_servers`` (same injection discipline) reports the MCP server names an *empty*
+    platform list still inherits via ``_merge_mcp_servers``' include-all fallback, so the warning can
+    say what the platform actually gets (#147025)."""
     warnings: list[str] = []
     if not isinstance(platform_toolsets, dict) or not platform_toolsets:
         return warnings
@@ -164,7 +180,24 @@ def validate_platform_toolsets(
 
         if platform_valid_count == 0:
             reason = "is configured with an empty toolset list" if not toolsets else "has no valid toolsets configured"
-            warnings.append(f"platform '{platform}' {reason} — {_NO_TOOLS}")
+            # An empty list is not "no tools": _merge_mcp_servers' include-all fallback still hands
+            # the platform every globally enabled MCP server, so the no-tools claim would be wrong
+            # and the lockdown silent-until-exploited (#147025). Say what it actually gets.
+            if not toolsets and inherited_mcp_servers is not None:
+                try:
+                    inherited = sorted(str(s) for s in (inherited_mcp_servers(str(platform)) or []))
+                except Exception:
+                    inherited = []
+                if inherited:
+                    warnings.append(
+                        f"platform '{platform}' {reason} — it turns off built-in toolsets but "
+                        f"still inherits every enabled MCP server: {', '.join(inherited)}. "
+                        "Add 'no_mcp' to the list to exclude them too, or name toolsets to grant tools."
+                    )
+                else:
+                    warnings.append(f"platform '{platform}' {reason} — {_NO_TOOLS}")
+            else:
+                warnings.append(f"platform '{platform}' {reason} — {_NO_TOOLS}")
 
     if valid_count == 0:
         warnings.append(

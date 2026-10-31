@@ -1006,7 +1006,10 @@ def _local_endpoint_bypass(requested_provider: str, explicit_api_key, explicit_b
     """provider "auto"/unset with a config base_url at a custom/local endpoint routes through the
     OpenAI-compatible resolver, so resolve_provider() cannot pick up an env ANTHROPIC/OPENAI key
     and send the request to a cloud API. Only non-cloud roots take the bypass; match on HOST, not
-    substring, so a look-alike (api.anthropic.com.attacker.test) cannot leak a cloud credential."""
+    substring, so a look-alike (api.anthropic.com.attacker.test) cannot leak a cloud credential.
+    Only when the caller did not name a provider: an explicit one must reach its own endpoint."""
+    if requested_provider not in ("auto", ""):
+        return None
     model_cfg = _get_model_config()
     cfg_base_url = str(model_cfg.get("base_url") or "").strip()
     if (not cfg_base_url or _cfg_provider(model_cfg) not in ("auto", "")
@@ -1046,7 +1049,7 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
       1. disabled-provider guard (``providers.<name>.enabled: false``)
       2. requested-name shortcuts: moa, anthropic@azure, azure-foundry, vertex
       3. named custom provider / llamacpp alias / bare-custom direct alias
-      4. local-endpoint bypass (no explicit creds, config base_url at a non-cloud host)
+      4. local-endpoint bypass (auto request, no explicit creds, config base_url at a non-cloud host)
       5. ``auth.resolve_provider`` → explicit --api-key/--base-url path
       6. credential pool (OpenRouter pool only without custom endpoint/override)
       7. OAuth specs (nous/codex/xai/qwen; "auto" swallows AuthError, logs, and stamps it on a

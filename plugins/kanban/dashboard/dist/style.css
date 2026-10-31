@@ -1609,3 +1609,92 @@
 .hermes-kanban-trash-label {
   font-weight: 500;
 }
+
+/* ------------------------------------------------------------------------
+ * Orca worktree badge (ORCA-06 kanban<->orca auto-link). Pill + state dot
+ * on cards carrying a worktree_id link. State classes map Orca's
+ * RuntimeWorktreeStatus onto the card spec's three states, plus an honest
+ * "unknown" when Orca is unreachable (never a fabricated state).
+ * ------------------------------------------------------------------------ */
+.hermes-kanban-orca-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.6rem;
+  padding: 0.05rem 0.3rem;
+  cursor: pointer;
+  user-select: none;
+  border: 1px solid var(--color-border);
+  color: var(--color-foreground);
+  background: transparent;
+}
+
+.hermes-kanban-orca-badge-dot {
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  flex: none;
+  background: var(--color-muted-foreground, #888);
+}
+
+/* active — live agent session on the worktree (Orca: active/working/permission) */
+.hermes-kanban-orca-badge--active {
+  color: var(--color-success, #3fb950);
+  border-color: color-mix(in srgb, var(--color-success, #3fb950) 45%, var(--color-border));
+  background: color-mix(in srgb, var(--color-success, #3fb950) 12%, transparent);
+}
+
+.hermes-kanban-orca-badge--active .hermes-kanban-orca-badge-dot {
+  background: var(--color-success, #3fb950);
+  animation: hermes-kanban-orca-pulse 1.6s ease-in-out infinite;
+}
+
+/* idle — worktree exists, no live session (Orca: inactive) */
+.hermes-kanban-orca-badge--idle {
+  color: var(--color-warning, #d4b348);
+  border-color: color-mix(in srgb, var(--color-warning, #d4b348) 45%, var(--color-border));
+  background: color-mix(in srgb, var(--color-warning, #d4b348) 12%, transparent);
+}
+
+.hermes-kanban-orca-badge--idle .hermes-kanban-orca-badge-dot {
+  background: var(--color-warning, #d4b348);
+}
+
+/* complete — session ended (Orca: done; failed sessions land here too, outcome in the tooltip) */
+.hermes-kanban-orca-badge--complete {
+  color: var(--color-info, #58a6ff);
+  border-color: color-mix(in srgb, var(--color-info, #58a6ff) 45%, var(--color-border));
+  background: color-mix(in srgb, var(--color-info, #58a6ff) 12%, transparent);
+}
+
+.hermes-kanban-orca-badge--complete .hermes-kanban-orca-badge-dot {
+  background: var(--color-info, #58a6ff);
+}
+
+/* unknown — link exists but Orca state can't be resolved right now */
+.hermes-kanban-orca-badge--unknown {
+  color: var(--color-muted-foreground);
+  border-style: dashed;
+}
+
+/* reveal (click → focus worktree in Orca) in flight */
+.hermes-kanban-orca-badge--busy {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.hermes-kanban-orca-badge-err {
+  color: var(--color-warning, #d4b348);
+}
+
+@keyframes hermes-kanban-orca-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hermes-kanban-orca-badge--active .hermes-kanban-orca-badge-dot {
+    animation: none;
+  }
+}
+

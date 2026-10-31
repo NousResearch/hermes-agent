@@ -946,8 +946,25 @@ async def open_profile_terminal_endpoint(name: str):
             subprocess.Popen(["cmd.exe", "/c", "start", "", command])  # noqa: ASYNC220 -- fire-and-forget spawn; Popen returns immediately and callers need the Popen object
         elif sys.platform == "darwin":
             escaped = command.replace("\\", "\\\\").replace('"', '\\"')
-            subprocess.Popen(["osascript", "-e",  # noqa: ASYNC220 -- fire-and-forget spawn; Popen returns immediately and callers need the Popen object
-                              f'tell application "Terminal"\nactivate\ndo script "{escaped}"\nend tell'])
+            script = (
+                f'tell application "Terminal"\nactivate\ndo script "{escaped}"\nend tell'
+            )
+            # Route through HermesTerminalHelper so the macOS automation prompt
+            # names Hermes with a purpose string instead of the generic,
+            # unexplained "osascript" (see tools/terminal_tool_macos_open.py
+            # and native/hermes_terminal_helper/). Falls back to osascript when
+            # the helper is not installed.
+            from tools.terminal_tool_macos_open import terminal_helper_binary
+
+            helper = terminal_helper_binary()
+            if helper is not None:
+                subprocess.Popen(  # noqa: ASYNC220 -- fire-and-forget spawn; Popen returns immediately and callers need the Popen object
+                    [helper, "custom", script],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                subprocess.Popen(["osascript", "-e", script])  # noqa: ASYNC220 -- fire-and-forget spawn; Popen returns immediately and callers need the Popen object
         else:
             for executable, popen_args in _linux_terminal_commands(command):
                 if await asyncio.to_thread(subprocess.call, ["which", executable], stdout=subprocess.DEVNULL,

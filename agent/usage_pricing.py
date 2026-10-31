@@ -683,6 +683,45 @@ def _unknown_cost(source: CostSource, *notes: str) -> CostResult:
     return CostResult(amount_usd=None, status="unknown", source=source, label="n/a", notes=notes)
 
 
+# The fields a provider may report its own charge in, with the unit of each. One table for every
+# reader: ``estimate_usage_cost`` (canonical usage buckets) and ``agent.turn_usage`` (the raw
+# response, whose field the streamed codex path drops from those buckets). Read apart, the two
+# sites classify the same response differently as soon as one of them learns a new key.
+PROVIDER_COST_FIELDS: tuple[tuple[str, Decimal], ...] = (
+    ("cost_in_usd_ticks", Decimal("1e-10")),  # xAI: 1e-10 USD units
+    ("cost", Decimal(1)),
+    ("total_cost", Decimal(1)),
+)
+
+
+def provider_reported_cost(source: Any) -> Optional[Decimal]:
+    """Cost the provider itself charged for this response, when it says so.
+
+    *source* is either a mapping (``usage.raw_usage``) or an object whose attributes carry the same
+    keys (a provider response/usage object), so both accounting call sites can share this read. A
+    boolean, a negative figure, a string or a non-numeric value is skipped: a reported charge beats
+    any price table, and a wrong one is worse than a table estimate.
+    """
+    if source is None:
+        return None
+    for key, scale in PROVIDER_COST_FIELDS:
+        value = source.get(key) if isinstance(source, dict) else getattr(source, key, None)
+        if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+            continue
+        try:
+            amount = Decimal(str(value)) * scale
+        except (ValueError, ArithmeticError):  # pragma: no cover - defensive
+            continue
+        if amount >= 0:
+            return amount
+    return None
+
+
+def _provider_reported_cost(usage: Any) -> Optional[Decimal]:
+    """The reported charge carried by a ``CanonicalUsage``'s ``raw_usage`` bucket."""
+    return provider_reported_cost(getattr(usage, "raw_usage", None))
+
+
 def estimate_usage_cost(
     model_name: str, usage: CanonicalUsage, *, provider: Optional[str] = None,
     base_url: Optional[str] = None, api_key: Optional[str] = None,
@@ -690,6 +729,14 @@ def estimate_usage_cost(
     from providers import get_provider_profile
     profile = get_provider_profile(provider or '')
     reported = profile.get_usage_cost(model_name, usage) if profile else None
+    if reported is None:
+        _raw_cost = _provider_reported_cost(usage)
+        if _raw_cost is not None:
+            reported = CostResult(
+                amount_usd=_raw_cost, status="actual", source="provider_cost_api",
+                label=format_cost_label(_raw_cost),
+                notes=("Provider-reported cost for this response.",),
+            )
     if reported is not None:
         return reported
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)

@@ -233,6 +233,19 @@ def record_response_usage(
         _agg_cost_model, aggregator_usage, provider=_agg_cost_provider,
         base_url=_agg_cost_base_url, api_key=getattr(agent, "api_key", ""),
     )
+    # A provider that bills this exact request reports the charge on the raw response, which the
+    # canonical buckets drop on the streamed codex path — read it off the response itself so the
+    # spend is actual, not "unknown". The key/scale table lives in ``usage_pricing`` and is shared
+    # with ``estimate_usage_cost``: read separately, the two sites drift apart.
+    from agent.usage_pricing import CostResult as _CostResult, format_cost_label as _fmt_cost
+    from agent.usage_pricing import provider_reported_cost as _reported_cost
+
+    _billed = _reported_cost(getattr(response, "usage", None))
+    if _billed is not None:
+        cost_result = _CostResult(
+            amount_usd=_billed, status="actual", source="provider_cost_api",
+            label=_fmt_cost(_billed), notes=("Provider-reported cost for this response.",),
+        )
     # Cost delta = aggregator + MoA advisor cost (already priced per-advisor at each
     # advisor's own model rate), so state.db's estimated_cost_usd matches the folded
     # token counts.
@@ -270,6 +283,14 @@ def record_response_usage(
                 cache_write_tokens=canonical_usage.cache_write_tokens,
                 reasoning_tokens=canonical_usage.reasoning_tokens,
                 estimated_cost_usd=_cost_delta,
+                # A provider that reports its own charge (xAI's cost_in_usd_ticks)
+                # yields status "actual"; persist it in the actual column, else the
+                # spend never leaves the estimate that often has no price table.
+                actual_cost_usd=(
+                    float(cost_result.amount_usd)
+                    if cost_result.status == "actual" and cost_result.amount_usd is not None
+                    else None
+                ),
                 cost_status=cost_result.status,
                 cost_source=cost_result.source,
                 billing_provider=agent.provider,

@@ -53,6 +53,8 @@ from agent.reasoning_summaries import (
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
 from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.chat_completion_helpers_relay import _relay_stream_identity, _relay_stream_metadata
+from agent.usage_pricing import StreamUsageFields
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
@@ -2456,20 +2458,6 @@ def _is_sse_connection_error(exc: BaseException) -> bool:
     return any(phrase in err_lower for phrase in _SSE_CONN_PHRASES)
 
 
-def _relay_stream_identity(agent, name_default: str) -> dict:
-    """``session_id``/``name``/``model_name`` kwargs for ``relay_llm.stream``."""
-    return {"session_id": str(getattr(agent, "session_id", "") or ""),
-        "name": str(getattr(agent, "provider", "") or name_default),
-        "model_name": str(getattr(agent, "model", "") or "")}
-
-
-def _relay_stream_metadata(agent, api_mode: str) -> dict:
-    call_role = ("delegated" if getattr(agent, "is_subagent", False)
-                 else "fallback" if int(getattr(agent, "_fallback_index", 0) or 0) > 0 else "primary")
-    return {"api_mode": api_mode, "api_request_id": getattr(agent, "_current_api_request_id", None),
-        "call_role": call_role}
-
-
 def _stream_final_text(response) -> str:
     with contextlib.suppress(Exception):
         choices = getattr(response, "choices", None)
@@ -2724,6 +2712,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self.stream_attempt_state = {"current": 0, "cancelled": set(), "discarded_chunks": 0, "discarded_bytes": 0}
         self._stale_counted_attempts: set[int] = set()  # breaker counts each attempt once
         self.managed_stream_holder = {"stream": None}
+        self.usage_fields = StreamUsageFields(None)  # per attempt, from ``_new_diag``
         # Per-attempt: single-writer token, request-local client, raw HTTP response (chat wire).
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
         # The route ``api_kwargs`` was assembled for; a retry must not replay it on another one.
@@ -2849,12 +2838,15 @@ class _StreamingCall(StreamingWaitMonitor):
     def _new_diag(self) -> dict:
         diag = self.agent._stream_diag_init()
         self.clients.diag = diag
+        # The provider's declared usage fields (``usage_response_fields``) ride on one chunk/event.
+        self.usage_fields = StreamUsageFields(self.agent.provider)
         return diag
 
     def _count_chunk(self, diag, chunk) -> None:
         """Stamp liveness for a real chunk; diagnostics are best-effort."""
         self.last_chunk_time["t"] = time.time()
         self.agent._touch_activity("receiving stream response")
+        self.usage_fields.observe(chunk)
         with contextlib.suppress(Exception):
             diag["chunks"] = int(diag.get("chunks", 0)) + 1
             if diag.get("first_chunk_at") is None:
@@ -3212,6 +3204,7 @@ class _StreamingCall(StreamingWaitMonitor):
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
             refusal_parts=refusal_parts)
         carriers.apply(response)
+        self.usage_fields.attach(response)
         if runaway:
             # Cut, not finished: the length path ends the turn on this mark instead of continuing.
             response._runaway_repetition = True
@@ -3486,8 +3479,8 @@ class _StreamingCall(StreamingWaitMonitor):
         if base_final_message is not None:
             self._check_anthropic_message(base_final_message, tool_drop=False)
             if not stream.output_modified:
-                return self._check_anthropic_message(base_final_message)
-        return self._check_anthropic_message(accumulator.response(base_final_message))
+                return self.usage_fields.attach(self._check_anthropic_message(base_final_message))
+        return self.usage_fields.attach(self._check_anthropic_message(accumulator.response(base_final_message)))
 
     # ── retry loop ──────────────────────────────────────────────────────
 

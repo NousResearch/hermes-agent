@@ -38,13 +38,17 @@ from agent.auxiliary_error_shapes import (
 )
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
-from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
+from agent.auxiliary_structured_output import (
+    _route_key, _translate_anthropic_response_format, _without_structured_output_format,
+    remember_structured_output_rejection,
+)
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
     codex_cloudflare_headers as _codex_cloudflare_headers,
     is_official_codex_base_url as _is_official_codex_base_url,
 )
+from agent.aux_accounting import aux_usage_fields
 from agent.codex_runtime import _codex_event_has_content
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 
@@ -1569,6 +1573,7 @@ class _CodexCompletionsAdapter:
         issuer_model = str(resp_kwargs.get("model") or model)
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout, no_progress_timeout=kwargs.get("no_progress_timeout"))
+        usage_fields = aux_usage_fields(self._client)
         try:
             guard.start()
             from agent.codex_runtime import _consume_codex_event_stream
@@ -1586,9 +1591,10 @@ class _CodexCompletionsAdapter:
                 # Responses object (not iterable) — don't hand it to the consumer.
                 if hasattr(event_stream, "output"):
                     final = event_stream
+                    usage_fields.observe(final)
                 else:
                     final = _consume_codex_event_stream(
-                        event_stream, model=issuer_model, on_event=guard.on_event
+                        event_stream, model=issuer_model, on_event=usage_fields.chain(guard.on_event)
                     )
             finally:
                 guard.release_stream(event_stream)
@@ -1616,7 +1622,7 @@ class _CodexCompletionsAdapter:
             tool_calls=tool_calls_raw or None,
         )
         choice = SimpleNamespace(index=0, message=message, finish_reason=finish_reason)
-        return SimpleNamespace(choices=[choice], model=model, usage=usage)
+        return usage_fields.attach(SimpleNamespace(choices=[choice], model=model, usage=usage))
 
 
 class _ChatShim:
@@ -1675,28 +1681,6 @@ class CodexAuxiliaryClient:
 
 class AsyncCodexAuxiliaryClient(_AsyncAuxiliaryClientBase):
     pass
-
-
-def _translate_anthropic_response_format(anthropic_kwargs: dict[str, Any], response_format: Any) -> None:
-    """Merge an OpenAI response format into Anthropic ``output_config``."""
-    if not isinstance(response_format, dict):
-        return
-    format_type = response_format.get("type")
-    if format_type == "json_schema":
-        json_schema = response_format.get("json_schema")
-        if not isinstance(json_schema, dict) or "schema" not in json_schema:
-            return
-        schema = json_schema["schema"]
-    elif format_type == "json_object":
-        # Anthropic SDK has no schema-less JSON mode; only ``json_schema``.
-        schema = {"type": "object"}
-    else:
-        return
-    output_config = anthropic_kwargs.get("output_config")
-    if not isinstance(output_config, dict):
-        output_config = {}
-        anthropic_kwargs["output_config"] = output_config
-    output_config["format"] = {"type": "json_schema", "schema": schema}
 
 
 class _AnthropicCompletionsAdapter:
@@ -1788,13 +1772,15 @@ class _AnthropicCompletionsAdapter:
                 if not isinstance(existing, dict):
                     existing = {}
                 anthropic_kwargs["extra_body"] = {**existing, **passthrough}
+        usage_fields = aux_usage_fields(self._client)
         response = create_anthropic_message(
             self._client,
             anthropic_kwargs,
             # Record provider-response timing every event, but tick forward progress only for
-            # substantive payloads so keepalives can't hold a stalled summary open. None keeps
-            # the fast get_final_message path.
-            on_stream_event=(_anthropic_aux_stream_event_hook() if _aux_progress_active() else None),
+            # substantive payloads so keepalives can't hold a stalled summary open. The usage-field
+            # collector sees each event too: declared fields ride on ``message_delta``, which the
+            # SDK's final snapshot drops.
+            on_stream_event=usage_fields.chain(_anthropic_aux_stream_event_hook() if _aux_progress_active() else None),
         )
         _nr = get_transport("anthropic_messages").normalize_response(response, strip_tool_prefix=self._is_oauth)
         usage = None
@@ -1811,7 +1797,7 @@ class _AnthropicCompletionsAdapter:
             message=SimpleNamespace(content=_nr.content, tool_calls=_nr.tool_calls, reasoning=_nr.reasoning),
             finish_reason=_nr.finish_reason,
         )
-        return SimpleNamespace(choices=[choice], model=model, usage=usage)
+        return usage_fields.finish(SimpleNamespace(choices=[choice], model=model, usage=usage), response)
 
 
 class AnthropicAuxiliaryClient:
@@ -7141,6 +7127,8 @@ class _ChatStreamAccumulator:
         self.finish_reason = self.usage = None
         self.resp_id = ""
         self.resp_model = model or ""
+        # The route's declared top-level usage fields (e.g. on the final usage chunk), for aux accounting.
+        self.usage_fields = aux_usage_fields()
 
     def _check_deadlines(self) -> None:
         """Raise TimeoutError past the total ceiling or the host deadline; a host hard cancel (/stop, session
@@ -7205,6 +7193,7 @@ class _ChatStreamAccumulator:
         self._check_deadlines()
         self.resp_id = getattr(chunk, "id", None) or self.resp_id
         self.resp_model = getattr(chunk, "model", None) or self.resp_model
+        self.usage_fields.observe(chunk)
         chunk_usage = getattr(chunk, "usage", None)
         if chunk_usage:
             self.usage = chunk_usage
@@ -7257,8 +7246,8 @@ class _ChatStreamAccumulator:
             reasoning_details=self.reasoning_details or None,
         )
         choice = SimpleNamespace(index=0, message=message, finish_reason=self.finish_reason or "stop")
-        return SimpleNamespace(id=self.resp_id, model=self.resp_model, object="chat.completion",
-                               choices=[choice], usage=self.usage)
+        return self.usage_fields.attach(SimpleNamespace(
+            id=self.resp_id, model=self.resp_model, object="chat.completion", choices=[choice], usage=self.usage))
 
 
 async def _aggregate_chat_stream_async(

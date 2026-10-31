@@ -17,6 +17,20 @@ from agent.message_content import flatten_message_text
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 
 
+def _relay_stream_identity(agent, name_default: str) -> dict:
+    """``session_id``/``name``/``model_name`` kwargs for ``relay_llm.stream``."""
+    return {"session_id": str(getattr(agent, "session_id", "") or ""),
+        "name": str(getattr(agent, "provider", "") or name_default),
+        "model_name": str(getattr(agent, "model", "") or "")}
+
+
+def _relay_stream_metadata(agent, api_mode: str) -> dict:
+    call_role = ("delegated" if getattr(agent, "is_subagent", False)
+                 else "fallback" if int(getattr(agent, "_fallback_index", 0) or 0) > 0 else "primary")
+    return {"api_mode": api_mode, "api_request_id": getattr(agent, "_current_api_request_id", None),
+        "call_role": call_role}
+
+
 def _tool_call_delta_view(tc_delta: Any) -> Any:
     """Attribute view of a JSON tool-call delta for ``_ToolCallAccumulator.feed`` (written
     against SDK objects). Only ``function`` is wrapped: ``feed`` passes ``extra_content``

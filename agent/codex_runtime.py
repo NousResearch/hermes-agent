@@ -891,9 +891,13 @@ class _CodexResponseAssembler:
     # are real answer text even when its done event never arrives. Bare output_text deltas carry no such proof.
     saw_answer_item_added = False
 
-    def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta):
+    def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta,
+                 usage_fields: Any = None):
         self.model, self.on_text_delta, self.on_reasoning_delta = model, on_text_delta, on_reasoning_delta
         self.on_commentary_message, self.on_first_delta = on_commentary_message, on_first_delta
+        # Provider-declared usage fields (``usage_pricing.StreamUsageFields``), captured from whichever event
+        # carries them (e.g. beside ``response`` on ``response.completed``) and set on the result.
+        self.usage_fields = usage_fields
         self.output_items: list[Any] = []
         # output_index / first-observed sequence per output item, in lockstep, so settled pending calls merge
         # back in stream order.
@@ -1085,6 +1089,8 @@ class _CodexResponseAssembler:
         """Process one event; True when the stream hit a terminal frame."""
         event_type = _event_field(event, "type", "")
         event_type = event_type if isinstance(event_type, str) else ""
+        if self.usage_fields is not None:
+            self.usage_fields.observe(event)
         handler = self._EXACT_HANDLERS.get(event_type) or next((h for m, h in self._FUZZY_HANDLERS if m(event_type)), None)
         return bool(handler(self, event, event_type)) if handler is not None else False
 
@@ -1130,15 +1136,16 @@ class _CodexResponseAssembler:
         # No terminal frame AND no usable content = truncated / rejected stream.
         if not self.saw_terminal and not output:
             raise RuntimeError("Codex Responses stream did not emit a terminal response")
-        return SimpleNamespace(
+        result = SimpleNamespace(
             output=output, output_text="".join(self.text_deltas), usage=self.terminal_usage, status=self.terminal_status,
             id=self.terminal_response_id, model=self.model, incomplete_details=self.terminal_incomplete_details,
             error=self.terminal_error, service_tier=self.terminal_service_tier)
+        return self.usage_fields.attach(result) if self.usage_fields is not None else result
 
 
 def _consume_codex_event_stream(
     event_iter: Any, *, model: str, on_text_delta=None, on_reasoning_delta=None, on_commentary_message=None,
-    on_first_delta=None, on_event=None, interrupt_check=None,
+    on_first_delta=None, on_event=None, interrupt_check=None, usage_fields: Any = None,
 ) -> SimpleNamespace:
     """Consume a Codex Responses SSE stream into a Response-shaped ``SimpleNamespace`` (see
     :class:`_CodexResponseAssembler`; ``status`` is ``completed`` when the stream ended with content but no
@@ -1149,9 +1156,11 @@ def _consume_codex_event_stream(
     callback); ``on_commentary_message`` once per completed ``phase=commentary`` message, before any following
     tool item; ``on_first_delta`` one-shot; ``on_event`` every event before any processing; ``interrupt_check()``
     True breaks the loop and may raise ``TimeoutError`` / ``InterruptedError`` for request retirement that
-    must not become a partial final response."""
+    must not become a partial final response. ``usage_fields``: a ``usage_pricing.StreamUsageFields`` that
+    carries the provider's declared top-level usage fields from the events onto the result."""
     assembler = _CodexResponseAssembler(model=model, on_text_delta=on_text_delta, on_reasoning_delta=on_reasoning_delta,
-                                        on_commentary_message=on_commentary_message, on_first_delta=on_first_delta)
+                                        on_commentary_message=on_commentary_message, on_first_delta=on_first_delta,
+                                        usage_fields=usage_fields)
     for event in event_iter:
         if on_event is not None:
             try:
@@ -1388,6 +1397,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     on_commentary_message = _live(agent._fire_streamed_codex_commentary) if wants_commentary else None
     call_role = ("delegated" if getattr(agent, "is_subagent", False)
                  else "fallback" if int(getattr(agent, "_fallback_index", 0) or 0) > 0 else "primary")
+    from agent.usage_pricing import StreamUsageFields
     for attempt in range(max_stream_retries + 1):
         if not _request_is_current():
             raise TimeoutError("Codex Responses stream request retired before retry")
@@ -1403,6 +1413,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 logger.info("Codex physical stream retry at %.3f (attempt=%s/%s, model=%s)",
                     watchdog_state.retry_started_ts, attempt + 1, max_stream_retries + 1, model)
         intercepted_events: list = []
+        attempt_provider = getattr(agent, "provider", None)  # re-read per attempt, like the chat path
         writer_token["value"] = writer_token["raw_stream"] = event_stream = None
         writer_token["superseded_logged"] = False
         try:
@@ -1411,7 +1422,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     dict(api_kwargs), _open_codex_stream,
                     session_id=str(getattr(agent, "session_id", "") or ""),
                     name=str(getattr(agent, "provider", "") or "codex"), model_name=str(model or ""),
-                    finalizer=lambda: _consume_codex_event_stream(list(intercepted_events), model=model),
+                    finalizer=lambda: _consume_codex_event_stream(
+                        list(intercepted_events), model=model, usage_fields=StreamUsageFields(attempt_provider)),
                     on_stream_created=_codex_stream_created, on_chunk=intercepted_events.append,
                     chunk_adapter=lambda chunk: chunk,
                     completed_response_predicate=lambda r: bool(hasattr(r, "output") and not hasattr(r, "__iter__")),
@@ -1424,6 +1436,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     on_reasoning_delta=_live(agent._fire_reasoning_delta), on_commentary_message=on_commentary_message,
                     on_first_delta=_live(on_first_delta) if on_first_delta is not None else None,
                     on_event=_fenced(_on_event), interrupt_check=_interrupt_or_superseded,
+                    usage_fields=StreamUsageFields(attempt_provider),
                 )
             except transport_errors as exc:
                 if attempt >= max_stream_retries:

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 import re
+import reprlib
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone, UTC
 from decimal import Decimal
-from typing import Any, Dict, Literal, Optional
+from types import SimpleNamespace
+from typing import Any, Dict, Literal, Optional, cast, get_args
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata, strip_codex_context_variant_suffix
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
@@ -496,6 +498,261 @@ def with_served_service_tier(usage: CanonicalUsage, response: Any) -> CanonicalU
     return replace(usage, raw_usage={**(usage.raw_usage or {}), "service_tier": tier.strip().lower()})
 
 
+# Names a profile may not declare in ``usage_response_fields``: the response's own structure, and
+# fields core or the SDKs already read with a meaning of their own (``service_tier``, ``cost``, ...).
+# Also refused: ``model_*`` (pydantic's namespace) and ``*_details``. Declared names are normalized with
+# ``strip().lower()`` and must match ``_USAGE_FIELD_NAME``.
+_RESERVED_USAGE_FIELD_NAMES = frozenset({
+    "id", "object", "created", "created_at", "model", "choices", "content", "output", "output_text", "message",
+    "role", "type", "status", "usage", "error", "delta", "response", "stop_reason", "stop_sequence",
+    "service_tier", "provider", "system_fingerprint", "tool_calls", "finish_reason", "cost", "cost_details",
+    "cache_creation", "speed",
+})
+_USAGE_FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+# A captured field is plain JSON-shaped data at most this deep / with at most this many nodes.
+_USAGE_FIELD_MAX_DEPTH, _USAGE_FIELD_MAX_NODES = 8, 10_000
+
+
+def _declarable_usage_field(name: Any) -> Optional[str]:
+    """``name`` normalized, or None when a profile may not declare it."""
+    name = name.strip().lower() if isinstance(name, str) else ""
+    if (not _USAGE_FIELD_NAME.match(name) or name in _RESERVED_USAGE_FIELD_NAMES
+            or name.startswith("model_") or name.endswith("_details")):
+        return None
+    return name
+
+
+def provider_usage_response_fields(provider: Optional[str]) -> tuple[str, ...]:
+    """Top-level response fields the provider's profile declares as usage data
+    (``ProviderProfile.usage_response_fields``); ``()`` when none, or on any lookup failure."""
+    if not isinstance(provider, str) or not provider:
+        return ()
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider)
+        names = getattr(profile, "usage_response_fields", ()) if profile is not None else ()
+        names = (names,) if isinstance(names, str) else names or ()
+        return tuple(dict.fromkeys(n for n in map(_declarable_usage_field, names) if n))
+    except Exception:  # health: allow BLE001 -- accounting metadata must never break a turn
+        logger.debug("usage_response_fields lookup failed for provider %r", provider, exc_info=True)
+        return ()
+
+
+class _NotPlainData(Exception):
+    pass
+
+
+def _plain_data(value: Any, depth: int, budget: list[int]) -> Any:
+    budget[0] -= 1
+    if budget[0] < 0 or depth > _USAGE_FIELD_MAX_DEPTH:
+        raise _NotPlainData("too large or too deep")
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _plain_data(v, depth + 1, budget) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_data(v, depth + 1, budget) for v in value]
+    if isinstance(value, SimpleNamespace):  # Relay rebuilds rewritten chunks as nested namespaces
+        return {k: _plain_data(v, depth + 1, budget) for k, v in vars(value).items() if not k.startswith("_")}
+    if callable(getattr(type(value), "model_dump", None)):  # pydantic; never a mock's auto-attribute
+        dumped = value.model_dump()
+        if isinstance(dumped, (dict, list)):
+            return _plain_data(dumped, depth, budget)
+    raise _NotPlainData(type(value).__name__)
+
+
+def _plain_field_value(value: Any) -> Any:
+    """``value`` as plain JSON-shaped data (pydantic objects dumped, namespaces turned into dicts), or
+    None when it is not data or is larger/deeper than ``_USAGE_FIELD_MAX_NODES``/``_USAGE_FIELD_MAX_DEPTH``."""
+    try:
+        return _plain_data(value, 0, [_USAGE_FIELD_MAX_NODES])
+    except Exception as exc:  # health: allow BLE001 -- accounting metadata must never break a turn
+        logger.debug("Dropping usage field value of type %s: %s", type(value).__name__, exc)
+        return None
+
+
+def response_usage_field(obj: Any, name: str) -> Any:
+    """Plain value of top-level field ``name`` on a response, stream chunk or event: an attribute,
+    a dict key, or a pydantic ``model_extra`` entry (where the SDKs keep fields they don't model)."""
+    if obj is None:
+        return None
+    value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+    if value is None:
+        extra = getattr(obj, "model_extra", None)
+        value = extra.get(name) if isinstance(extra, dict) else None
+    return None if value is None else _plain_field_value(value)
+
+
+def capture_usage_response_fields(captured: dict[str, Any], obj: Any, names: tuple[str, ...]) -> None:
+    """Record the declared fields present on one stream chunk/event into ``captured`` (latest wins).
+    Never raises: a chunk that cannot be read is skipped."""
+    try:
+        for name in names:
+            value = response_usage_field(obj, name)
+            if value is not None:
+                captured[name] = value
+    except Exception:  # health: allow BLE001 -- accounting metadata must never break a turn
+        logger.debug("Could not read usage fields from %s", type(obj).__name__, exc_info=True)
+
+
+class StreamUsageFields:
+    """Per-stream-attempt collector of the provider's declared usage fields: fed every chunk/event,
+    then attached to the assembled response. Inert (no per-chunk work) for providers declaring none."""
+
+    def __init__(self, provider: Optional[str]):
+        self.names = provider_usage_response_fields(provider)
+        self.captured: dict[str, Any] = {}
+
+    def observe(self, chunk: Any) -> None:
+        if self.names:
+            capture_usage_response_fields(self.captured, chunk, self.names)
+
+    def attach(self, response: Any) -> Any:
+        return attach_usage_response_fields(response, self.captured)
+
+    def finish(self, result: Any, *sources: Any) -> Any:
+        """Observe ``sources`` (e.g. a non-streamed response the caller rebuilds) and attach to ``result``."""
+        for source in sources:
+            self.observe(source)
+        return self.attach(result)
+
+    def chain(self, callback: Any) -> Any:
+        """A per-event callback that observes the event, then calls ``callback``; ``callback`` itself when inert."""
+        if not self.names:
+            return callback
+
+        def on_event(event: Any) -> None:
+            self.observe(event)
+            if callback is not None:
+                callback(event)
+        return on_event
+
+
+def attach_usage_response_fields(response: Any, captured: dict[str, Any]) -> Any:
+    """Put fields captured from a stream onto the assembled response, so streamed and non-streamed
+    responses look alike to :func:`with_response_usage_fields`. Never overwrites a field the response
+    already carries, nor shadows anything its class defines (SDK methods such as ``json``/``copy``);
+    best-effort (a response that refuses the attribute keeps going)."""
+    if response is None or not captured:
+        return response
+    for name, value in captured.items():
+        try:
+            if not hasattr(type(response), name) and response_usage_field(response, name) is None:
+                setattr(response, name, value)
+        except Exception:  # health: allow BLE001 -- accounting metadata must never break a turn
+            logger.debug("Could not attach usage field %r to %s", name, type(response).__name__, exc_info=True)
+    return response
+
+
+def with_response_usage_fields(usage: CanonicalUsage, response: Any, provider: Optional[str]) -> CanonicalUsage:
+    """``usage`` with the provider-declared top-level response fields (``usage_response_fields``) folded
+    into ``raw_usage``, where ``ProviderProfile.get_usage_cost`` reads them. Keys already in the usage
+    object win; a provider that declares nothing gets ``usage`` back unchanged, and so does any failure."""
+    try:
+        names = provider_usage_response_fields(provider)
+        if not names or response is None:
+            return usage
+        raw = usage.raw_usage if isinstance(usage.raw_usage, dict) else {}
+        extras = {}
+        for name in names:
+            if name in raw:
+                continue
+            value = response_usage_field(response, name)
+            if value is not None:
+                extras[name] = value
+        return replace(usage, raw_usage={**raw, **extras}) if extras else usage
+    except Exception:  # health: allow BLE001 -- accounting metadata must never break a turn
+        logger.debug("Could not fold usage fields for provider %r", provider, exc_info=True)
+        return usage
+
+
+# Sanity cap on a provider-reported (``actual``) amount for one call. Core's own estimates get only the
+# store's bound (``hermes_state_runtime`` accepts costs up to 1e12, and anything past it overflows to inf
+# as a float): this function also prices whole-session token totals (insights), which may exceed 1000.
+_MAX_REPORTED_CALL_COST_USD = Decimal(1000)
+_MAX_COMPUTED_COST_USD = Decimal(10) ** 12
+_COST_STATUSES = frozenset(get_args(CostStatus))
+_COST_HOOK_WARNED: set[tuple[str, str]] = set()
+_NOT_AN_AMOUNT = object()
+
+
+def _warn_cost_hook_once(provider: Optional[str], kind: str, message: str, *args: Any, exc_info: bool = False) -> None:
+    """WARNING the first time per (provider, kind), DEBUG after, so a broken plugin can't flood the log."""
+    key = (str(provider or ""), kind)
+    level = logging.DEBUG if key in _COST_HOOK_WARNED else logging.WARNING
+    _COST_HOOK_WARNED.add(key)
+    logger.log(level, message, *args, exc_info=exc_info)
+
+
+def _bounded_repr(value: Any) -> str:
+    """A short repr for a log line; the type name when repr itself fails (e.g. an int past Python 3.11's
+    str-conversion digit limit raises ValueError)."""
+    try:
+        return reprlib.repr(value)
+    except Exception:  # health: allow BLE001 -- a log line must never break a turn
+        return f"<{type(value).__name__}>"
+
+
+def _amount_in_range(amount: Any, *, cap: Optional[Decimal] = None) -> bool:
+    """A finite, non-negative Decimal (at most ``cap`` when given); None (unknown) also passes."""
+    if amount is None:
+        return True
+    if not isinstance(amount, Decimal) or not amount.is_finite() or amount < _ZERO:
+        return False
+    return cap is None or amount <= cap
+
+
+def _plain_amount(amount: Any) -> Any:
+    """A hook's ``amount_usd`` as a plain ``Decimal``: a ``Decimal`` subclass is copied by value (so an
+    overridden ``is_finite`` can't pass inf), an int or float is converted through ``str``. None stays
+    None; anything else (bool, str, NaN/inf, a huge int) is ``_NOT_AN_AMOUNT``."""
+    if amount is None:
+        return None
+    try:
+        if isinstance(amount, Decimal):
+            value = amount if type(amount) is Decimal else Decimal(amount)
+        elif isinstance(amount, (int, float)) and not isinstance(amount, bool):
+            value = Decimal(int(amount)) if isinstance(amount, int) else Decimal(str(float(amount)))
+        else:
+            return _NOT_AN_AMOUNT
+    except Exception:  # health: allow BLE001 -- e.g. an int past the str-conversion digit limit
+        return _NOT_AN_AMOUNT
+    return value if value.is_finite() else _NOT_AN_AMOUNT
+
+
+def _profile_reported_cost(profile: Any, model_name: str, usage: CanonicalUsage,
+                           provider: Optional[str]) -> Optional[CostResult]:
+    """The profile's ``get_usage_cost`` result when it is a usable ``CostResult`` (normalized to a known
+    status and a plain ``Decimal`` amount); None (core pricing) when the hook declines, raises, returns
+    another type, an unknown status, an ``actual`` result without an amount, or an amount out of range."""
+    try:
+        reported = profile.get_usage_cost(model_name, usage)
+    except Exception as exc:  # health: allow BLE001 -- a plugin pricing bug must never break a turn
+        _warn_cost_hook_once(provider, type(exc).__name__, "get_usage_cost failed for provider %r; using core"
+                             " pricing", provider, exc_info=True)
+        return None
+    if reported is None:
+        return None
+    if not isinstance(reported, CostResult):
+        _warn_cost_hook_once(provider, "not-CostResult", "get_usage_cost for provider %r returned %s, not a"
+                             " CostResult; using core pricing", provider, type(reported).__name__)
+        return None
+    status = str.__str__(reported.status) if isinstance(reported.status, str) else None
+    amount = _plain_amount(reported.amount_usd)
+    cap = _MAX_REPORTED_CALL_COST_USD if status == "actual" else _MAX_COMPUTED_COST_USD
+    if (status not in _COST_STATUSES or (status == "actual" and amount is None)
+            or amount is _NOT_AN_AMOUNT or not _amount_in_range(amount, cap=cap)):
+        _warn_cost_hook_once(provider, "unusable-CostResult", "get_usage_cost for provider %r returned amount"
+                             " %s with status %s, which core cannot use; using core pricing", provider,
+                             _bounded_repr(reported.amount_usd), _bounded_repr(reported.status))
+        return None
+    # Always a fresh plain CostResult: a subclass (or a property getter) can't change the amount later.
+    return CostResult(amount_usd=amount, status=cast(CostStatus, status), source=reported.source,
+                      label=reported.label, fetched_at=reported.fetched_at,
+                      pricing_version=reported.pricing_version, notes=reported.notes)
+
+
 def _served_openai_tier(usage: CanonicalUsage) -> Optional[str]:
     return usage.raw_usage.get("service_tier") if isinstance(usage.raw_usage, dict) else None
 
@@ -689,7 +946,7 @@ def estimate_usage_cost(
 ) -> CostResult:
     from providers import get_provider_profile
     profile = get_provider_profile(provider or '')
-    reported = profile.get_usage_cost(model_name, usage) if profile else None
+    reported = _profile_reported_cost(profile, model_name, usage, provider) if profile else None
     if reported is not None:
         return reported
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
@@ -732,6 +989,9 @@ def estimate_usage_cost(
         amount += Decimal(tokens) * rate / _ONE_MILLION
     if entry.request_cost is not None and usage.request_count:
         amount += Decimal(usage.request_count) * entry.request_cost
+    if not _amount_in_range(amount, cap=_MAX_COMPUTED_COST_USD):  # e.g. a malformed, astronomic token count
+        logger.debug("Computed cost %r for %r is out of range; reporting unknown", amount, model_name)
+        return _unknown_cost(entry.source, "usage token counts out of range")
 
     notes: list[str] = []
     status: CostStatus = "estimated"

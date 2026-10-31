@@ -334,7 +334,7 @@ PLATFORM_ERROR_CLASSES = frozenset({"none", "auth", "network", "rate_limited", "
 DELIVERY_OUTCOMES = frozenset({"sent", "failed"})
 DELIVERY_FAILURE_CLASSES = frozenset({"none", "rate_limited", "too_long", "auth", "network", "forbidden", "other"})
 REPLY_LATENCY_BUCKETS = frozenset({"lt_2s", "2s_to_5s", "5s_to_15s", "15s_to_60s", "gte_60s"})
-CRON_RUN_OUTCOMES = frozenset({"success", "failed", "missed", "skipped"})
+CRON_RUN_OUTCOMES = frozenset({"success", "failed", "missed", "skipped", "cancelled"})
 CRON_DELIVERY_KINDS = frozenset({"local", "platform", "webhook", "none", "other"})
 
 # ---- v4 install ----

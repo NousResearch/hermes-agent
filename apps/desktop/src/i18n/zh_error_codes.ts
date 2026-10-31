@@ -38,7 +38,7 @@ export const zhErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   },
   truncated: {
     title: '回复被截断',
-    body: (_provider, model) => `${model || '模型'} 在完成前停止，因此最后一步没有执行。点击“继续”从中断处接着生成。`
+    body: (_provider, model) => `${model || '模型'} 的回复在完成前中断了。点击“继续”从中断处接着生成。`
   },
   loop_error: {
     title: 'Hermes 无法完成此步骤',
@@ -100,5 +100,11 @@ export const zhErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   launch_credentials_unavailable: {
     title: '此聊天的 API 密钥已更改',
     body: '此聊天开始时使用的 API 密钥后来已被更改或删除，因此你的消息未发送。打开的聊天不会自行切换到其他密钥。请使用“开始新会话”以使用当前密钥。'
+  },
+  local_runtime_unavailable: {
+    title: '无法连接本地模型服务器',
+    body: '本地模型服务器尚未运行：它可能仍在启动。请稍后重试，或切换到其他模型。',
+    bodyNoRetry:
+      '本地模型服务器已关闭。请在 Hermes 桌面应用或终端中的 `hermes model` 启动它，或切换到其他模型。'
   }
 }

@@ -25,7 +25,7 @@ JOB_DEFINITION_FIELDS = frozenset({
     "script", "no_agent", "monitor_script", "monitor_url", "context_from",
     "schedule", "schedule_display", "deliver", "origin", "enabled_toolsets",
     "workdir", "attach_to_session", "reasoning_effort", "failure_deliver",
-    "timezone", "grace_minutes",
+    "timezone", "grace_minutes", "catch_up",
 })
 # Also kept in jobs.json, though profile distributions do not refresh them: identity and operator
 # intent (``enabled`` flips only on pause/resume/trigger and terminal completion, never per fire).

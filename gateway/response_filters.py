@@ -223,9 +223,20 @@ def is_machinery_display_kind(display_kind: Any) -> bool:
     return display_kind in MACHINERY_DISPLAY_KINDS
 
 
-def silence_allowed(display_kind: Any, reply_expected: Optional[bool] = None) -> bool:
-    """Whether a successful bare silence marker may remain silent for this turn."""
-    return is_machinery_display_kind(display_kind) or reply_expected is False
+def silence_allowed(
+    display_kind: Any, reply_expected: Optional[bool] = None, *,
+    allow_silence: Optional[bool] = None, agent_result: Optional[dict] = None,
+) -> bool:
+    """Keep existing exemptions; room opt-in additionally requires a healthy completed result.
+
+    Marker recognition stays with the caller. Extra health restrictions apply only to the new
+    room permission, preserving the established internal/unaddressed semantics.
+    """
+    if is_machinery_display_kind(display_kind) or reply_expected is False:
+        return True
+    return (allow_silence is True and isinstance(agent_result, dict)
+            and not any(agent_result.get(k) for k in ("failed", "partial", "interrupted", "error"))
+            and agent_result.get("completed") is not False)
 
 
 def reply_expected_metadata(reply_expected: Optional[bool]) -> dict:

@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -289,7 +290,10 @@ describe('installDesktopPluginFromGit', () => {
   })
 
   it.each([
-    ['a symlinked file inside it', (repo: string) => fs.symlinkSync('/etc/hostname', path.join(repo, 'desktop', 'leak.txt'))],
+    [
+      'a symlinked file inside it',
+      (repo: string) => fs.symlinkSync('/etc/hostname', path.join(repo, 'desktop', 'leak.txt'))
+    ],
     [
       'a symlinked desktop folder',
       (repo: string, outside: string) => {
@@ -341,10 +345,30 @@ describe('installDesktopPluginFromGit', () => {
     fs.writeFileSync(path.join(repo, 'desktop', 'panel.js'), 'replaced\n')
     git('add', '-A')
     git('-c', 'user.email=f@example.com', '-c', 'user.name=F', 'commit', '-qm', 'plain')
-    expect(await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, true)).toMatchObject({ ok: true })
+    expect(await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, true)).toMatchObject({
+      ok: true
+    })
     expect(fs.readdirSync(appRoot)).toEqual([installed.pluginName])
     expect(fs.readFileSync(path.join(appRoot, installed.pluginName!, 'panel.js'), 'utf8')).toBe('replaced\n')
   })
+
+  it("leaves the clone's .git out of a root-layout half and out of its size cap", async () => {
+    // 36 MB of incompressible payload is under the 64 MB cap; counted twice (files + packed .git) it is over.
+    const repo = mkdtemp('hermes-plugin-install-')
+    const appRoot = mkdtemp('hermes-plugin-root-')
+    roots.push(repo, appRoot)
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' })
+    fs.writeFileSync(path.join(repo, 'plugin.js'), 'export function register() {}\n')
+    fs.writeFileSync(path.join(repo, 'asset.bin'), randomBytes(36 * 1024 * 1024))
+    git('init', '-q')
+    git('add', '.')
+    git('-c', 'user.email=fixture@example.com', '-c', 'user.name=Fixture', 'commit', '-qm', 'init')
+
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot)
+
+    expect(result).toMatchObject({ ok: true })
+    expect(fs.readdirSync(path.join(appRoot, result.pluginName!)).sort()).toEqual(['asset.bin', 'plugin.js'])
+  }, 60_000)
 
   it('stamps the package marker on a unified package half and names the folder after the agent package', async () => {
     // Without the marker the Plugins page has no evidence that this copy is the

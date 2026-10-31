@@ -25,6 +25,8 @@ from utils import rmtree_readonly
 
 DESKTOP_PLUGINS_DIR = "desktop-plugins"
 _COMMIT = re.compile(r"[0-9a-f]{40}")
+#: Windows device names: a folder called one of these (whatever its extension) opens the device instead.
+_WINDOWS_DEVICE = re.compile(r"(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|CLOCK\$|COM[0-9¹²³]|LPT[0-9¹²³])", re.IGNORECASE)
 
 
 def desktop_plugins_root() -> Path:
@@ -49,11 +51,13 @@ def _failure(error: str) -> dict[str, Any]:
 def _checked_name(name: Optional[str]) -> str:
     """*name* when it can be one folder under the root, else raise: the name comes from a repository
     (a subdirectory's last segment, a manifest's ``name``) and must never reach a path unresolved. A
-    leading dot is refused too — the root's staging folders use that prefix."""
+    leading dot is refused too — the root's staging folders use that prefix. So are the names Windows
+    reads as something else: a colon makes ``C:..`` a drive-relative path, a device name opens the
+    device, and a trailing dot is dropped."""
     candidate = (name or "").strip()
-    if (not candidate or candidate in (".", "..") or candidate.startswith(".")
-            or "/" in candidate or "\\" in candidate or "\0" in candidate
-            or any(ord(char) < 32 for char in candidate) or len(candidate) > 128):
+    if (not candidate or candidate.startswith(".") or candidate.endswith(".")
+            or any(char in candidate for char in "/\\:\0") or any(ord(char) < 32 for char in candidate)
+            or len(candidate) > 128 or _WINDOWS_DEVICE.fullmatch(candidate.split(".", 1)[0].rstrip(" "))):
         raise _pc().PluginOperationError(
             f"'{name}' is not a desktop plugin folder name: it must be a plain folder name, not a path."
         )

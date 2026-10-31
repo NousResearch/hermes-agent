@@ -146,3 +146,38 @@ async def test_omitted_resume_racing_a_delete_answers_not_found(tmp_path, monkey
     reply = await conn.dispatch({'jsonrpc': '2.0', 'id': 1, 'method': 'session.resume',
                                  'params': {'session_id': ref.session_id, 'omit_messages': True}})
     assert reply['error']['data']['reason'] == 'not_found', reply
+
+
+@pytest.mark.asyncio
+async def test_metadata_resume_returns_no_transcript_or_pending_payloads(tmp_path, monkeypatch):
+    """The admission-only resume keeps routing metadata, not user-visible session payloads."""
+    authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
+    _seed_compacted(authority.db, physical)
+    full = await _resume(authority, actor, ref)
+    omitted = await _resume(authority, actor, ref, omit_messages=True)
+    metadata = await _resume(authority, actor, ref, omit_messages=True,
+                             defer_history=True, display_projection=True)
+
+    assert omitted['todo_state'] == full['todo_state']
+    assert metadata['messages'] == [] and metadata['messages_omitted'] is True
+    assert metadata['message_count'] == omitted['message_count']
+    assert metadata['todo_state'] is None
+    assert metadata['pending'] == metadata['prompts'] == metadata['open_requests'] == []
+    assert metadata['pending_connection'] is None
+    assert 'display_messages' not in metadata
+    serialized = json.dumps(metadata)
+    for canary in ('OLD_Q0', 'TAIL_Q', 'TAIL_A', 'ship it'):
+        assert canary not in serialized
+    for key in ('session_id', 'stored_session_id', 'running', 'authority_epoch',
+                'replay_epoch', 'last_sequence', 'revision', 'execution_generation', 'info'):
+        assert metadata[key] == omitted[key], key
+
+
+@pytest.mark.asyncio
+async def test_runtime_describe_advertises_metadata_resume(tmp_path, monkeypatch):
+    from gateway.session_controls import AuthorityConnection
+    authority, actor, ref, _physical = await _local_session(tmp_path, monkeypatch)
+    conn = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    conn.actor = actor
+    described = await conn.describe(ref, {})
+    assert {'durable-admission-v1', 'metadata-resume-v1'} <= set(described['capabilities'])

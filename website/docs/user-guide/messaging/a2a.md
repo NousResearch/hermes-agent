@@ -27,6 +27,8 @@ gateway:
       enabled: true
       extra:
         port: 9900
+        input_wait_timeout_seconds: 86400
+        task_retention_seconds: 86400
 ```
 
 The outbound client tools ship as the `a2a` toolset, **off by default** — enable it per platform:
@@ -75,9 +77,72 @@ With the platform enabled, Hermes serves:
 
 Inbound tasks are injected into a **live gateway session** — the same agent, memory, and tools that serve your other channels — and the final reply is returned to the caller as the task result. Conversations are keyed by the A2A `contextId`, so a peer can hold a multi-turn exchange.
 
+### Long-running tasks and disconnected clients
+
+`SendMessage` blocks until a terminal or interrupted outcome. To return promptly,
+set `params.configuration.returnImmediately` to `true` and use the returned Task
+ID with `GetTask`. A healthy `SendStreamingMessage` connection receives an initial
+Task (`id` and `contextId`), updates and keepalives until the outcome is available.
+Closing that connection does not cancel accepted work or discard its result.
+`SubscribeToTask` begins with a current Task snapshot; losing one subscriber does
+not affect the task or other subscribers. Terminal subscription replay is retained
+as a compatibility behavior, although v1.0 specifies rejecting those subscriptions.
+
+`TASK_STATE_INPUT_REQUIRED` ends the current wait with the clarification question.
+Continue the same logical task by sending an answer with `message.taskId` and a
+fresh `messageId`. `contextId` is inherited when omitted; an explicit value must
+match the task exactly. This also supports `TASK_STATE_AUTH_REQUIRED`. A message
+carrying only `contextId` starts a new task rather than implicitly resuming one.
+Unknown/purged or inaccessible task IDs return TaskNotFound; terminal tasks reject
+further messages with UnsupportedOperation. Callers cannot select a new task's ID.
+Retries of an accepted continuation message ID observe that attempt while the
+task is nonterminal. After terminal completion, use `GetTask` instead of resending.
+Old HTTP observers keep their original clarification outcome across continuation.
+
+`CancelTask` wins once against a reply
+but does not abort the underlying model turn. Gateway shutdown releases blocking
+requests. Results are kept in memory while this process lives; there is no task
+restart/resumption guarantee. Full conversation logs persist independently; Task
+responses do not promise a complete wire `history`.
+
+Audit/conversation writes use a separate worker drained on ordinary shutdown.
+Admission reserves recording capacity for at most 512 executions or outstanding
+recordings. Recording a clarification releases its slot; continuation reserves a
+distinct slot. Exhaustion explicitly refuses new execution. Canceling an idle
+interrupted task needs a recording slot and can return a retryable capacity error;
+retry cancellation once recording capacity is available. Expiry under saturation
+leaves the task unchanged and retries on later watchdog sweeps or task reads.
+Optional
+webhooks use two workers with at most 128 outstanding jobs and may be dropped
+on overload or shutdown without dropping local records or stored results.
+Local same-context tasks execute individually in sequence; canceling a queued
+task skips its execution. Continuations count toward the context turn cap; retries
+do not. Push configuration survives interruption for later outcomes.
+
+The plugin-local `extra.input_wait_timeout_seconds` cancels abandoned input/auth
+waits with an explicit reason, measured from interruption rather than task creation.
+Polling does not extend the wait. `extra.task_retention_seconds` purges terminal
+results measured from the terminal transition. Both default to **86400 seconds
+(24 hours)** and require positive finite values. These are Hermes policy defaults,
+not A2A requirements. Retention is also capped at 500 terminal tasks, so count
+eviction may remove results sooner. Healthy owned execution survives age and
+disconnection; `A2A_REPLY_TIMEOUT` applies to orphaned work without an execution
+owner and also supplies the default forwarded-profile reply timeout.
+
 Interoperability is verified against the official Python `a2a-sdk` (card resolution, `SendMessage`, streaming).
 
 ## Forwarded profile sessions after the ownership cutover
+
+### Known limitation: adapter-to-owner link failure
+
+Inbound HTTP disconnect safety does **not** guarantee recovery from failure of
+the adapter's separate connection to a forwarded profile's gateway owner. On an
+owner-link timeout or failure, the public task can become `FAILED` while accepted
+owner work continues. Explicit same-task continuation cannot reopen that terminal
+task. The existing context-only resend using the same stable `messageId` can
+reread the owner's admission through a new public task. This retry mechanism is
+distinct from same-task continuation and does not provide complete end-to-end
+recovery. This remains a known issue; full A2A conformance is not claimed.
 
 Forwarding to another local profile now submits to that profile's gateway owner;
 there is no fallback `hermes chat` process writing its session database. New
@@ -131,7 +196,7 @@ Secure by default; every widening step is explicit:
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authenticated peer (dev only) |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20) |
-| `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply. The orphan-task sweep never fails a task before this window elapses (floor 300s), and never while a request is still waiting on it |
+| `A2A_REPLY_TIMEOUT` | `300` | Grace period before orphaned work is marked failed (seconds, clamped to 300–86400); terminal-result retention removes its record later. Also the default forwarded-profile reply timeout. Does not limit healthy local execution or HTTP waits. |
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push-notification signing |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict which skills appear on the Agent Card |
 
@@ -159,4 +224,4 @@ curl -X POST http://your-host:9900/ \
 - **`403` "Host must be a loopback name…" with no token** — without a token the server answers only requests addressed to a loopback name (`localhost`, `127.x.x.x`, `[::1]`) or the `A2A_PUBLIC_URL` host, so a web page on another hostname that resolves to your machine cannot read the card or the served-agent list. Call it by one of those names, set `A2A_PUBLIC_URL` to the name a local proxy forwards, or configure a token.
 - **`403` "Content-Type must be application/json" with no token** — the POST had a missing or non-JSON `Content-Type` (plain `curl -d` sends a form type); add `-H 'Content-Type: application/json'`.
 - **`403` "browser-originated" or "cross-site request refused" with no token** — the request carried an `Origin` header or a cross-site `Sec-Fetch-Site`, which only browsers send. Call it from a local script or SDK, or configure a token.
-- **Replies time out on long tasks** — raise `A2A_REPLY_TIMEOUT` (the orphan sweep follows it, so a late reply is stored, not discarded), or have the caller register a push-notification config and poll `GetTask`.
+- **Long tasks** — use `returnImmediately` and poll `GetTask`, or retain the SSE connection. Client/proxy transport deadlines do not cancel local accepted work. `A2A_REPLY_TIMEOUT` does not limit how long accepted local work may run. Forwarded-profile transport failures still report an unverified reply; retry the same message ID and context to retrieve the owner's durable admission rather than submitting a new turn.

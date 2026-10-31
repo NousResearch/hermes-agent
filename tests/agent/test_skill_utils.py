@@ -4,6 +4,7 @@
 import pytest
 
 from agent.skill_utils import (
+    _skill_platform_list_matches,
     get_disabled_skill_names,
     get_external_skills_dirs,
     is_excluded_skill_path,
@@ -377,6 +378,22 @@ def test_skill_support_path_uses_explicit_discovery_root_not_cwd(tmp_path, monke
 
 
 # ── skill_matches_platform on Termux ──────────────────────────────────────
+
+
+def test_termux_android_matches_linux_tagged_skills():
+    """Termux's Android platform marker remains compatible with Linux skills (#139415)."""
+    assert _skill_platform_list_matches(
+        ["linux", "macos", "windows"],
+        current_platform="android",
+        running_in_termux=True,
+    ) is True
+
+
+def test_non_termux_android_does_not_match_linux_tagged_skills():
+    """The Termux compatibility rule must not widen an unrelated Android host."""
+    assert _skill_platform_list_matches(
+        ["linux"], current_platform="android", running_in_termux=False
+    ) is False
 
 
 

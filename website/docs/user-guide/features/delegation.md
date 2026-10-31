@@ -796,6 +796,8 @@ When `base_url` points at an Anthropic-compatible endpoint — for example a pat
 
 Subagents compact where their parent does: at `compression.threshold` × window (0.50 by default), or the global `compression.threshold_tokens` cap when one is set and lower. `delegation.compression_threshold_tokens` (default `0`, off) adds an optional absolute cap on a child's compaction *trigger*, applied as the lower of it and the ratio threshold; it never touches the request payload or the parent. A token count of at least 16000 enables it; `true` or `"200k"` are config errors that are warned and ignored. It stays off by default because a replay of a 1,393-agent run put 200K–400K caps within 5% of each other in cost once cache prefixes are intact, and every compaction is a chance to lose detail.
 
+Subagents take their prompt-cache tier from `delegation.cache_ttl` (default `"5m"`); `prompt_caching.cache_ttl` only decides whether they cache at all. Set `"1h"` when children run a high-reasoning model whose single generations take more than about four minutes; see [Configuration → Delegation](../configuration.md#delegation).
+
 `delegation.request_overrides` works on **all three** resolution branches — direct `base_url`, named `provider`, and pure inherit — so it always takes effect. Top-level keys are API kwargs (e.g. `service_tier`); an `extra_body` sub-dict is merged into the request's `extra_body`. Explicit values merge **over** runtime- or parent-derived overrides: explicit top-level keys win, and `extra_body` is deep-merged one level, so a provider's own request personality (e.g. `thinking: {type: disabled}`) survives unless your key redefines it. See [Configuration → Delegation](../configuration.md#delegation) for details.
 
 :::tip

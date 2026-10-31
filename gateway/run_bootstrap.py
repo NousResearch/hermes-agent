@@ -351,8 +351,31 @@ async def _start_gateway_start_control_socket(runner):
                 result = {"pending": True, "served_profiles": runner.served_profile_names()}
             return {"multiplex": bool(getattr(runner.config, "multiplex_profiles", False)), **result}
 
+        def _reload_mcp_handler() -> dict:
+            """Schedule MCP reload on the gateway loop without manufacturing a chat event."""
+            future = asyncio.run_coroutine_threadsafe(
+                runner._execute_mcp_reload_from_control(), _main_loop)
+
+            def _log_result(completed) -> None:
+                try:
+                    result = completed.result()
+                except Exception:
+                    logger.warning("Control-socket MCP reload failed", exc_info=True)
+                else:
+                    if result.get("failed_profiles"):
+                        logger.warning(
+                            "Control-socket MCP reload finished with failed profiles: %s",
+                            result["failed_profiles"],
+                        )
+                    else:
+                        logger.info("Control-socket MCP reload finished: %s", result)
+
+            future.add_done_callback(_log_result)
+            return {"reloading": True, "pid": os.getpid()}
+
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler, "identify": _identify_runtime,
+                           "reload-mcp": _reload_mcp_handler,
                            "rescan-profiles": _rescan_profiles_handler,
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),
                            "unserve-profile": unserve_profile_verb(runner),

@@ -699,6 +699,38 @@ class TestBuildSkillInvocationMessage:
         assert msg is not None
         assert "local cli" in msg.lower()
 
+    def test_single_skill_external_roots_load_by_name(self, tmp_path):
+        """A ``skills.external_dirs`` entry may be one skill's own directory. Each such
+        skill's path relative to its root is ``.``, shared by every single-skill root, so
+        loading the command by its directory was ambiguous and returned None. The command
+        must load by its unique catalog name."""
+        import agent.skill_commands as sc_mod
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        empty_local_dir = tmp_path / "no-local-skills"
+        empty_local_dir.mkdir()
+        profile = tmp_path / "profile"
+        profile.mkdir()
+        alpha = _make_skill(tmp_path / "shared", "alpha", body="Alpha body.")
+        beta = _make_skill(tmp_path / "shared", "beta", body="Beta body.")
+        (profile / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {alpha}\n    - {beta}\n", encoding="utf-8"
+        )
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+            patch.object(sc_mod, "_skill_commands_by_key", {}),
+        ):
+            token = set_hermes_home_override(profile)
+            try:
+                alpha_msg = build_skill_invocation_message("/alpha", "go")
+                beta_msg = build_skill_invocation_message("/beta", "go")
+            finally:
+                reset_hermes_home_override(token)
+
+        assert alpha_msg is not None and "Alpha body." in alpha_msg
+        assert beta_msg is not None and "Beta body." in beta_msg
+
 
 class TestSkillDirectoryHeader:
     """The activation message must expose the absolute skill directory and

@@ -197,7 +197,9 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     else:
         _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
 
-    _finalize_child_results(results, batch.task_list, batch.children, batch.parent_agent)
+    # A detached unit's ledger row records each delivered subagent_stop (same gate as _record_finished_child).
+    _finalize_child_results(results, batch.task_list, batch.children, batch.parent_agent,
+                            None if honor_parent_interrupt else batch.unit_id)
     total_duration = round(time.monotonic() - batch.overall_start, 2)
     for entry in results:
         _idx = entry.get("task_index", -1)
@@ -397,6 +399,16 @@ def _units_of(batch: _Batch) -> list[_Batch]:
         members.setdefault(key, []).append((i, t, c))
     return [replace(batch, children=ch, group=(key[1] if key[0] == "g" else None)) for key, ch in members.items()]
 
+def _hook_identities(children: list[tuple]) -> dict[str, dict[str, Any]]:
+    """Per-task ``subagent_start`` identity, persisted with the unit so restart recovery can fire the matching
+    ``subagent_stop`` for children whose owner died before the join."""
+    fields = (("child_session_id", "session_id"), ("child_subagent_id", "_subagent_id"),
+              ("child_role", "_delegate_role"), ("parent_tool_call_id", "_delegate_parent_tool_call_id"),
+              ("model", "model"))  # each child's own route: tasks of one unit can run on different models
+    # Strings only: the map is persisted as JSON on the ledger row.
+    return {str(i): {key: v if isinstance(v := getattr(c, attr, None), str) else None for key, attr in fields}
+            for i, _, c in children}
+
 def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str], routing: dict) -> dict:
     """Hand ONE unit to the async registry; the runner joins on that unit's children only."""
     from tools.async_delegation import dispatch_async_delegation_batch
@@ -420,6 +432,7 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         task_transcripts={str(i): str(unit.live_writers[i].path) for i, _, _ in unit.children
                           if i < len(unit.live_writers) and unit.live_writers[i] is not None
                           and unit.live_writers[i].path is not None},
+        task_children=_hook_identities(unit.children),
         progress_fn=lambda: _batch_progress_token(child_agents), **routing,
     )
 

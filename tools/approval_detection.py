@@ -26,13 +26,21 @@ _HERMES_ENV_PATH = (
 _HERMES_CONFIG_PATH = (
     r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)' r'config\.yaml\b'
 )
+# Hermes' own credential stores, in the default home or a profile's home (~/.hermes/profiles/<name>/): provider
+# tokens (auth.json) and MCP OAuth tokens (mcp-tokens/). The media-delivery denylist (gateway/platforms/base.py)
+# treats the same entries as secret.
+_HERMES_CREDENTIAL_STORE_PATH = (
+    r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'(?:profiles/[^/\s"\'`]+/)?' r'(?:auth\.json\b|mcp-tokens(?:/|(?![\w.-])))'
+)
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
 _CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
 _HOME_PREFIX = r'(?:~|\$home|\$\{home\})/'
 _SECRET_FILE = (
-    rf'(?:{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|{_CREDENTIAL_FILES}|{_PROJECT_ENV_PATH}(?![\w-])'
+    rf'(?:{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|{_HERMES_CREDENTIAL_STORE_PATH}|{_CREDENTIAL_FILES}'
+    rf'|{_PROJECT_ENV_PATH}(?![\w-])'
     rf'|{_HOME_PREFIX}\.(?:aws/credentials|git-credentials|config/gh/hosts\.yml|docker/config\.json|kube/config)\b'
     r'|/etc/(?:shadow|passwd)\b|\bid_(?:rsa|ed25519|ecdsa|dsa)\b)'
 )
@@ -990,8 +998,32 @@ def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:
     return None
 
 
+# Outbound-network APIs an interpreter one-liner can use (python, node/bun/deno, perl, ruby, php, powershell).
+# A heuristic like every pattern here: it is not a taint analysis, and code that is not inline (a script file, a
+# value spliced in at run time) is not seen. "socket" is unanchored on purpose (-MIO::Socket, TCPSocket, net.Socket).
+# urllib.parse is string handling only (bundled skills URL-encode with it), so it does not count.
+_NETWORK_API_RE = re.compile("|".join((
+    r"socket|urllib(?!\.parse\b)|httplib|http\.client|smtplib|ftplib|telnetlib|poplib|imaplib|xmlrpc|httpx|aiohttp",
+    r"\brequests\.[a-z_]+\s*\(|\b(?:import|from)\s+requests\b",
+    r"\b(?:require|import)\s*(?:\(\s*)?['\"](?:node:)?(?:https?|net|tls|dgram|http2)['\"]",
+    r"\bfrom\s+['\"](?:node:)?(?:https?|net|tls|dgram|http2)['\"]|\bfetch\s*\(|xmlhttprequest",
+    r"LWP::|HTTP::Tiny|Net::\w|open-uri|URI\.open|curl_init|fsockopen",
+    r"Invoke-(?:WebRequest|RestMethod)|Net\.WebClient|\b(?:iwr|irm)\b",
+)), re.IGNORECASE)
+
+
+_NETWORK_SCRIPT = "network-capable script"
+
+
+def _script_description(via: str, network: bool) -> str:
+    """Approval key for inline interpreter code. Code that references an outbound-network API gets its own
+    key, so allowlisting the generic "script execution via ..." key does not also approve it."""
+    return f"{_NETWORK_SCRIPT if network else 'script execution'} via {via}"
+
+
 def _execution_flag_findings(command: str):
     """Yield scoped execution mechanisms and any executable payloads."""
+    heredoc_network: bool | None = None  # decided once, on the first heredoc, so many heredocs stay linear
     for segment in _iter_top_level_shell_segments(command):
         for start, _, word in _iter_shell_command_word_spans(segment):
             executable = _deobfuscate_shell_word_for_detection(word)
@@ -1006,9 +1038,12 @@ def _execution_flag_findings(command: str):
                 continue
             args = tokens[1:]
             if family and _interpreter_exec_flag(family, args):
-                yield ("script execution via -e/-c flag", None)
+                yield (_script_description("-e/-c flag", _NETWORK_API_RE.search(" ".join(args)) is not None), None)
             elif family and any(token.startswith("<<") for token in args):
-                yield ("script execution via heredoc", None)
+                # A heredoc body is not part of the segment, so judge the whole command text.
+                if heredoc_network is None:
+                    heredoc_network = _NETWORK_API_RE.search(command) is not None
+                yield (_script_description("heredoc", heredoc_network), None)
             else:
                 if executable_name in _SHELL_NAMES:
                     found, payload = _bash_exec_payload(args)
@@ -1565,7 +1600,15 @@ def detect_dangerous_command(command: str) -> tuple:
             elif pattern_re.search(command_lower):
                 return (True, description, description)
     normalized = _normalize_command_for_detection(command)
-    for description, _ in _execution_flag_findings(normalized):
+    findings = _execution_flag_findings(normalized)
+    first = next(findings, None)
+    if first is not None:
+        description = first[0]
+        # Only the first finding is reported, so a network-capable one anywhere in the command must outrank a
+        # generic one before it, or allowlisting the generic key would approve the whole command. The cheap
+        # whole-command search keeps the early return when no network API appears at all.
+        if not description.startswith(_NETWORK_SCRIPT) and _NETWORK_API_RE.search(normalized):
+            description = next((d for d, _ in findings if d.startswith(_NETWORK_SCRIPT)), description)
         return (True, description, description)
     if _is_shell_token_spliced_gateway_lifecycle(command):
         return (True, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION)

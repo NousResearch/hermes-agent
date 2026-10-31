@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from plugins import plugin_loader as _loader
+
+if TYPE_CHECKING:
+    from agent.context_engine import ContextEngine
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +46,7 @@ def _iter_engine_dirs() -> list[tuple[str, Path]]:
 def discover_context_engines() -> list[tuple[str, str, bool]]:
     """Return ``[(name, description, is_available), ...]`` for every bundled and user engine."""
     return [(name, _loader.read_plugin_description(child),
-             _loader.probe_availability(lambda c=child: _load_engine_from_dir(c)))
+             _loader.probe_availability(lambda c=child: _load_engine_from_dir(c, register=False)))
             for name, child in _iter_engine_dirs()]
 
 
@@ -68,37 +71,49 @@ def load_context_engine(name: str) -> Optional[ContextEngine]:
     )
 
 
-def _load_engine_from_dir(engine_dir: Path) -> Optional[ContextEngine]:
-    """Import an engine module and extract its ContextEngine (register(ctx) or subclass)."""
+def _load_engine_from_dir(engine_dir: Path, *, register: bool = True) -> Optional[ContextEngine]:
+    """Import an engine module and extract its ContextEngine (register(ctx) or subclass).
+    ``register=False`` (listing) keeps the engine's hooks, tools and commands out of the plugin manager."""
     from agent.context_engine import ContextEngine
     name = engine_dir.name
     is_bundled = engine_dir.parent == _CONTEXT_ENGINE_PLUGINS_DIR
     module_name = f"plugins.context_engine.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
     from hermes_cli.plugin_isolation import user_plugin_host
     host = None if is_bundled else user_plugin_host()
+    capture, base_ref = "register_context_engine", "agent.context_engine:ContextEngine"
+    if host is not None and register:
+        return _EngineCollector(name).collect_in_host(host, engine_dir, module_name, capture=capture,
+                                                      base_ref=base_ref)
     if host is not None:
-        return host.load_instance(engine_dir, module_name=module_name, capture="register_context_engine",
-                                  base_ref="agent.context_engine:ContextEngine")
+        return host.load_instance(engine_dir, module_name=module_name, capture=capture, base_ref=base_ref)
     mod = _loader.load_plugin_module(
         module_name, engine_dir, parents=("plugins", "plugins.context_engine"), logger=logger,
         synthetic_namespace=None if is_bundled else _USER_NAMESPACE)
+    # Key the hook group on this profile's directory: a module cached under the same name may have
+    # been imported from another profile's home (#134347), and general discovery keys by this path.
     return mod and _loader.instance_from_module(
-        mod, collector=_EngineCollector(engine_name=name), collected_attr="engine",
-        base_cls=ContextEngine, name=name, logger=logger)
+        mod, collector=_EngineCollector(name, forward=register), collected_attr="engine",
+        base_cls=ContextEngine, name=name, logger=logger, source=str(engine_dir / "__init__.py"))
 
 
-class _EngineCollector(_loader.NoopPluginContext):
+class _EngineCollector(_loader.ForwardingPluginContext):
     """Captures register_context_engine; forwards register_command to the global plugin command
-    registry so engine slash commands behave like plugin ones."""
+    registry so engine slash commands behave like plugin ones. Hooks and other ``register_*``
+    calls are forwarded by the base (hooks as a fallback group, so a reload replaces them)."""
 
-    def __init__(self, engine_name: str = ""):
+    label = "Context engine"
+
+    def __init__(self, engine_name: str = "", *, forward: bool = True):
+        super().__init__(engine_name or "context_engine", forward=forward)
         self.engine = None
-        self._engine_name = engine_name or "context_engine"
+        self._engine_name = self.name
 
     def register_context_engine(self, engine):
         self.engine = engine
 
     def register_command(self, name: str, handler, description: str = "", args_hint: str = "") -> None:
+        if not self._forward:
+            return
         clean = (name or "").lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning("Context engine '%s' tried to register a command with an empty name.",

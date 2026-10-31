@@ -607,9 +607,9 @@ class PluginLoaderMixin:
             if run_with_load_deadline(plugin_key, ctx, _import_and_register):
                 self._attribute_registrations(loaded, plugin_key, registration_start)
                 loaded.enabled = True
-                from hermes_cli.plugins_ledger import _hook_source_of
+                from hermes_cli.plugins_ledger import _loaded_hook_source
 
-                self._drop_fallback_hooks(_hook_source_of(manifest.name, loaded.module))
+                self._drop_fallback_hooks(_loaded_hook_source(loaded))
         except (Exception, SystemExit) as exc:
             # SystemExit too: a plugin module with an unguarded ``main()``/``sys.exit()`` must not take the
             # whole process (and every other plugin's registry) down with it; KeyboardInterrupt still propagates.

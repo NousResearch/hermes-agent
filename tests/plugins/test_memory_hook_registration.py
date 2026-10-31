@@ -8,14 +8,16 @@ from hermes_cli.plugins import get_plugin_manager
 from plugins.memory import load_memory_provider
 
 
-def _install(home, monkeypatch, *, label="first", enabled=True):
+def _install(home, monkeypatch, *, label="first", enabled=True, isolation=None):
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(home / "empty"))
     monkeypatch.delenv("HERMES_ENABLE_PROJECT_PLUGINS", raising=False)
     monkeypatch.chdir(home)
     (home / "config.yaml").write_text(
-        f"plugins:\n  enabled: {'[dual]' if enabled else '[]'}\nmemory:\n  provider: dual\n"
+        f"plugins:\n  enabled: {'[dual]' if enabled else '[]'}\n"
+        + (f"  isolation: {isolation}\n" if isolation else "")
+        + "memory:\n  provider: dual\n"
     )
     plugin = home / "plugins" / "dual"
     plugin.mkdir(parents=True)
@@ -72,6 +74,23 @@ def test_dual_kind_plugin_hooks_run_once(tmp_path, monkeypatch, order):
         assert _contexts(manager) == expected
     finally:
         manager.unload()
+
+
+@pytest.mark.parametrize("order", ["plugin-first", "memory-first"])
+def test_hosted_dual_kind_plugin_hooks_run_once(tmp_path, monkeypatch, order):
+    manager = _install(tmp_path, monkeypatch, isolation="host")
+    host = manager._plugin_host()
+    try:
+        if order == "plugin-first":
+            manager.discover_and_load()
+        assert load_memory_provider("dual") is not None
+        if order == "memory-first":
+            manager.discover_and_load()
+        assert load_memory_provider("dual") is not None
+        assert _contexts(manager) == [{"context": "first"}, {"context": "second"}]
+    finally:
+        manager.unload()
+        host.shutdown()
 
 
 def test_same_name_different_sources_are_not_suppressed(tmp_path, monkeypatch):

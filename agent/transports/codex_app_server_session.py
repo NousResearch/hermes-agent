@@ -715,10 +715,37 @@ class CodexAppServerSession:
         client.respond(rid, handler(self, params))
 
     def _respond_elicitation(self, params: dict) -> dict:
-        """MCP elicitation: auto-accept our own hermes-tools server (opted in by enabling the runtime;
-        exposes nothing codex's shell can't do); decline others so the user opts in via codex's own flow."""
-        action = "accept" if (params.get("serverName") or "") == HERMES_TOOLS_MCP_SERVER_NAME else "decline"
-        return {"action": action, "content": None, "_meta": None}
+        return {"action": self._decide_elicitation(params), "content": None, "_meta": None}
+
+    def _decide_elicitation(self, params: dict) -> str:
+        server = params.get("serverName") or ""
+        if server == HERMES_TOOLS_MCP_SERVER_NAME:  # enabling the runtime opted in to it
+            return "accept"
+        meta = params.get("_meta")
+        # Codex blocks an MCP tool call outright on decline, so tool-call approvals ask the user; the rest fail closed.
+        if (params.get("mode") != "form" or not isinstance(meta, dict)
+                or meta.get("codex_approval_kind") != "mcp_tool_call"):
+            return "decline"
+        return self._decide_mcp_tool_call(server, params.get("message"), meta)
+
+    def _decide_mcp_tool_call(self, server: str, message: Optional[str], meta: dict) -> str:
+        from tools.approval import is_approval_bypass_active, is_approved
+        from tools.approval_context import get_current_session_key
+        from tools.approval_prompt import request_elicitation_consent
+        from tools.mcp_tool_handlers import _format_trust_gate_arguments, _trust_approval_key
+        title = meta.get("tool_title")
+        # Without a tool name a session/always answer could only be filed under the whole server.
+        remember_key = (_trust_approval_key(server, "/".join(filter(None, (meta.get("connector_id"), title))))
+                        if title else None)
+        # Read live, not at session start: /yolo can be toggled while this session lives on.
+        if is_approval_bypass_active() or (remember_key and is_approved(get_current_session_key(), remember_key)):
+            return "accept"
+        label = title or "MCP tool call"
+        description = f"{server}: {label}"
+        if details := meta.get("tool_params_display") or meta.get("tool_params"):
+            description += f"\n{_format_trust_gate_arguments(details)}"
+        return request_elicitation_consent(message or f"Approve {label}?", description,
+                                           surface=f"mcp-elicitation/{server}", remember_key=remember_key)
 
     _SERVER_REQUEST_HANDLERS: dict[str, Callable[..., dict]] = {
         "item/commandExecution/requestApproval": lambda self, p: {"decision": self._decide_exec_approval(p)},

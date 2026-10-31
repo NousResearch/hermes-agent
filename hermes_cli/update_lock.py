@@ -1025,17 +1025,12 @@ _HELD: dict | None = None
 _JOBS: list = []
 
 
-def _try_lock(fd: int, *, shared: bool = False) -> bool:
+def _try_lock(fd: int) -> bool:
     """Take the checkout lock without waiting; False when the owner byte or any lease byte is held.
 
     Windows keeps the owner byte locked and only test-locks the lease bytes; POSIX flocks the file.
-    ``shared`` is the held? probe (:func:`checkout_lock_held`): holders lock exclusively, so a
-    shared try fails only on a holder, and two Python probes never read each other as one (the
-    marker.sh / marker.ps1 probes still lock exclusively). POSIX drops the shared lock when the
-    caller closes ``fd``; Windows gives it straight back.
+    The held? probe is :func:`_try_shared_lock`.
     """
-    if shared:
-        return _try_shared_lock(fd)
     if sys.platform == "win32":
         if not _lock_bytes(fd, _WINDOWS_LOCK_OFFSET):
             return False
@@ -1054,6 +1049,10 @@ def _try_lock(fd: int, *, shared: bool = False) -> bool:
 
 
 def _try_shared_lock(fd: int) -> bool:
+    """The held? probe (:func:`checkout_lock_held`): a shared try over the owner byte and every
+    lease byte. Holders lock exclusively, so it fails only on a holder, and two Python probes never
+    read each other as one (the marker.sh / marker.ps1 probes still lock exclusively). POSIX drops
+    the shared lock when the caller closes ``fd``; Windows gives it straight back."""
     if sys.platform == "win32":
         # msvcrt has no shared mode: LockFileEx without LOCKFILE_EXCLUSIVE_LOCK over the owner byte
         # and the 16 lease bytes. Any LockFileEx failure answers held, as the exclusive probe did;
@@ -1420,9 +1419,10 @@ def checkout_lock_held(install_root: Path | str | None = None) -> bool:
 
     Only a missing lock file is free. One that exists but cannot be opened answers held, the same
     verdict ``marker.sh`` / ``marker.ps1`` and the Desktop probes give, so no reader admits a
-    launch the others would park. A lock call that fails outright (ENOLCK on NFS without lockd,
-    EOPNOTSUPP on some SMB shares) means nothing can hold it: free, so the interrupted-pull repair
-    runs unguarded there as designed."""
+    launch the others would park. A POSIX lock call that fails outright (ENOLCK on NFS without
+    lockd, EOPNOTSUPP on some SMB shares) means nothing can hold it: free, so the interrupted-pull
+    repair runs unguarded there as designed. On Windows any ``LockFileEx`` failure answers held;
+    only a descriptor with no OS handle answers free."""
     if holds_checkout_lock(install_root):
         return True
     path = checkout_lock_path(install_root)
@@ -1433,7 +1433,7 @@ def checkout_lock_held(install_root: Path | str | None = None) -> bool:
     except OSError:
         return True
     try:
-        return not _try_lock(fd, shared=True)
+        return not _try_shared_lock(fd)
     except OSError:
         return False
     finally:

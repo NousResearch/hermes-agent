@@ -1313,6 +1313,29 @@ def _systemd_cli_bits(system: bool) -> tuple[str, str, str]:
     return ("sudo ", " --system", "") if system else ("", "", "--user ")
 
 
+#: Directories covered by sudo's default ``secure_path``. A ``hermes`` resolved outside them
+#: is a user-level install that a printed ``sudo hermes …`` hint cannot reach.
+_SYSTEM_BIN_DIRS = frozenset(
+    {"/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin", "/snap/bin"}
+)
+
+
+def _sudo_hermes_hint_reachable() -> bool:
+    """True when a printed ``sudo hermes …`` hint can actually run on this host.
+
+    A user-level install (``~/.local/bin/hermes`` forwarding into a venv under the invoking
+    user's home) is unreachable for root twice over: ``sudo``'s ``secure_path`` excludes
+    ``~/.local/bin``, so the command is not even found; and even an absolute path fails to
+    import the CLI's dependencies because the install venv lives inside the user's home.
+    Both failures surface only after the user runs the suggested command, so detect the
+    layout here instead of printing a command that cannot work.
+    """
+    exe = shutil.which("hermes")
+    if not exe:
+        return False
+    return os.path.dirname(os.path.realpath(exe)) in _SYSTEM_BIN_DIRS
+
+
 def _wait_for_systemd_service_restart(
     *,
     system: bool = False,
@@ -3857,7 +3880,15 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 
     if not systemd_unit_is_current(system=system):
         print("⚠ Installed gateway service definition is outdated")
-        print(f"  Run: {sudo}hermes gateway restart{scope_flag}  # auto-refreshes the unit")
+        if sudo and not _sudo_hermes_hint_reachable():
+            # ``sudo hermes …`` cannot run for a user-level install (see
+            # _sudo_hermes_hint_reachable). ``systemctl`` restarts the same unit without
+            # needing the CLI at all; refreshing the unit definition itself still needs a
+            # later ``hermes gateway install --system`` from a reachable install.
+            print(f"  Run: {sudo}systemctl restart {svc}")
+            print("  (user-level install: `sudo hermes …` cannot import this CLI's dependencies)")
+        else:
+            print(f"  Run: {sudo}hermes gateway restart{scope_flag}  # auto-refreshes the unit")
         print()
 
     status_cmd = ["status", svc, "--no-pager"] + (["-l"] if full else [])

@@ -1004,7 +1004,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
             return
         notify_registered, scopes, session_db = False, None, None
         profile_home = current.get("profile_home")
+        bridge_caller_token = None
         try:
+            bridge_caller_token = _set_desktop_bridge_caller_for_session(current)
             if not _await_resume_history(sid, current):
                 return
             tokens = _set_session_context(key)
@@ -1032,6 +1034,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             current["agent_error"] = str(e)
             _emit("error", sid, {"message": f"agent init failed: {e}"})
         finally:
+            _reset_desktop_bridge_caller(bridge_caller_token)
             _finish_agent_build(
                 sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db)
             ready.set()
@@ -1759,7 +1762,24 @@ def _gui_surface_toolsets(platform: str) -> set[str]:
     """Toolsets that exist because of the CLIENT (both off ``_HERMES_CORE_TOOLS``; this is the one gate).
     ``platform`` is the SESSION's source, never a process env var: the desktop may drive a URL/cloud
     backend where ``HERMES_DESKTOP`` is unset (AGENTS.md surface rule)."""
-    return {"project", "desktop_ui"} if platform == "desktop" else {"project"}
+    surfaces = {"project"}
+    if platform == "desktop":
+        surfaces.add("desktop_ui")
+        # A desktop client that registered a Computer Use bridge is offering its own machine's keyboard — a
+        # capability of this SESSION, not the backend: a headless gateway with no cua-driver can still drive
+        # it. The scope match at dispatch decides whose machine; this only decides whether the tool is offered.
+        if _session_desktop_bridge_available():
+            surfaces.add("computer_use")
+    return surfaces
+
+
+def _session_desktop_bridge_available() -> bool:
+    """Whether this session's own Desktop bridge is registered."""
+    try:
+        from tools.computer_use.desktop_bridge import desktop_bridge_connected
+        return desktop_bridge_connected()
+    except Exception:
+        return False
 
 
 def _tui_notice(text: str) -> None:
@@ -1981,6 +2001,125 @@ def _probe_config_health(cfg: dict) -> str:
                     warnings.append(f"`display.personality: {personality}` does not match any built-in or "
                                     "`agent.personalities` entry; personality overlay will be skipped.")
     return " ".join(warnings).strip()
+
+
+# ── Computer Use bridge scope ────────────────────────────────────────
+#
+# A Hermes Desktop client can register a Computer Use bridge back to this
+# backend, and an agent turn reaches it only by presenting the same
+# (provider, principal, profile) the socket authenticated as. These helpers
+# carry that identity from the transport that opened the session onto the
+# session record, and bind it around the code paths that can actually call a
+# tool. Every value here comes from the transport — never from RPC params —
+# because the whole point is that a caller cannot name whose keyboard it wants.
+
+
+def _normalized_authenticated_principal(value: Any) -> tuple[str, str] | None:
+    """Normalize only a principal supplied by a trusted transport/session."""
+    if not isinstance(value, (tuple, list)) or len(value) != 2:
+        return None
+
+    provider, subject = (str(part).strip() for part in value)
+
+    return (provider, subject) if provider and subject else None
+
+
+def _transport_authenticated_principal(
+    transport: Transport | None = None,
+) -> tuple[str, str] | None:
+    transport = transport if transport is not None else current_transport()
+
+    return _normalized_authenticated_principal(
+        getattr(transport, "authenticated_principal", None)
+    )
+
+
+def _session_authenticated_principal(session: dict) -> tuple[str, str] | None:
+    return _normalized_authenticated_principal(session.get("authenticated_principal"))
+
+
+def _normalized_desktop_bridge_profile(value: Any) -> str:
+    """Normalize a profile name for bridge routing only."""
+    raw = str(value or "").strip()
+
+    if not raw or raw.lower() == "current":
+        return _current_profile_name()
+
+    try:
+        from hermes_cli import profiles as profiles_mod
+
+        return profiles_mod.normalize_profile_name(raw)
+    except Exception:
+        return ""
+
+
+def _transport_desktop_bridge_identity(
+    transport: Transport | None,
+    *,
+    requested_profile: str | None = None,
+) -> tuple[tuple[str, str] | None, str]:
+    """The verified identity and profile this transport may route a bridge for.
+
+    A requested profile is honored only when the transport's own credential
+    carried whole-machine authority (loopback token / internal credential); a
+    signed-in browser ticket stays pinned to the profile the socket was
+    admitted under.
+    """
+    principal = _transport_authenticated_principal(transport)
+    verified_profile = _normalized_desktop_bridge_profile(
+        getattr(transport, "desktop_bridge_profile", None)
+    )
+
+    if getattr(transport, "allow_desktop_bridge_profile_override", False):
+        requested = str(requested_profile or "").strip()
+
+        if requested and requested.lower() != "current":
+            verified_profile = _normalized_desktop_bridge_profile(requested)
+
+    return principal, verified_profile
+
+
+def _set_desktop_bridge_caller_for_session(
+    session: dict, *, transport: Transport | None = None
+):
+    """Bind the bridge scope for work running on behalf of *session*.
+
+    Fails closed by design: when the requesting transport disagrees with the
+    session's recorded identity — a second window, a different signed-in user,
+    a profile the credential cannot speak for — the scope is bound to None and
+    ``computer_use`` falls back to whatever the backend itself can drive.
+    """
+    principal = _session_authenticated_principal(session)
+    profile = _normalized_desktop_bridge_profile(session.get("profile"))
+    request_transport = transport or current_transport() or session.get("transport")
+    request_principal, request_profile = _transport_desktop_bridge_identity(
+        request_transport,
+        requested_profile=profile,
+    )
+
+    if request_principal is not None and (
+        request_principal != principal or request_profile != profile
+    ):
+        principal = None
+
+    try:
+        from tools.computer_use.desktop_bridge import set_desktop_bridge_caller
+
+        return set_desktop_bridge_caller(principal, profile=profile)
+    except Exception:
+        return None
+
+
+def _reset_desktop_bridge_caller(token) -> None:
+    if token is None:
+        return
+
+    try:
+        from tools.computer_use.desktop_bridge import reset_desktop_bridge_caller
+
+        reset_desktop_bridge_caller(token)
+    except Exception:
+        pass
 
 
 def _current_profile_name() -> str:
@@ -2339,8 +2478,13 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
 def _init_session(
     sid: str, key: str, agent, history: list, cols: int = 80, cwd: str | None = None,
     session_db=None, source: str | None = None, profile_home: str | None = None,
-    explicit_cwd: bool = False):
+    explicit_cwd: bool = False, profile: str | None = None,
+    authenticated_principal: tuple[str, str] | None = None, transport: Transport | None = None):
     now = time.time()
+    bound_transport = transport or current_transport() or _stdio_transport
+    captured_principal, captured_profile = _transport_desktop_bridge_identity(bound_transport, requested_profile=profile)
+    bound_principal = (_normalized_authenticated_principal(authenticated_principal)
+                       if authenticated_principal is not None else captured_principal)
     with _sessions_lock:
         _sessions[sid] = {
             "agent": agent, "session_key": key, "history": history, "history_lock": threading.Lock(),
@@ -2353,8 +2497,11 @@ def _init_session(
             "profile_home": profile_home,
             # In-session /model switch, honored on rebuild (/new, resume) — never leaks to siblings via env vars.
             "model_override": None,
+            # Verified identity for Computer Use bridge routing — see the bridge-scope helpers. Never from RPC params.
+            "profile": _normalized_desktop_bridge_profile(profile or captured_profile),
+            "authenticated_principal": bound_principal,
             # Async events go to the transport that created the session (stdio for Ink, WS for the dashboard).
-            "transport": current_transport() or _stdio_transport,
+            "transport": bound_transport,
         }
         _session_todo_state(_sessions[sid])
     _hydrate_session_cwd(sid, key, session_db, profile_home)
@@ -2402,9 +2549,14 @@ def _deferred_session_record(
     close_on_disconnect: bool = False, display_history_prefix: list | None = None,
     profile_home: Path | None = None, lazy: bool = False, model_override=None,
     resume_runtime_overrides: dict | None = None, todo_state: dict | None = None,
-    explicit_cwd: bool = False) -> dict:
+    explicit_cwd: bool = False, profile: str | None = None,
+    authenticated_principal: tuple[str, str] | None = None, transport: Transport | None = None) -> dict:
     """A live-session record whose AIAgent is built later (lazy watch / cold resume) — _init_session's shape minus the agent."""
     now = time.time()
+    bound_transport = transport or current_transport() or _stdio_transport
+    captured_principal, captured_profile = _transport_desktop_bridge_identity(bound_transport, requested_profile=profile)
+    bound_principal = (_normalized_authenticated_principal(authenticated_principal)
+                       if authenticated_principal is not None else captured_principal)
     return {
         "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
         "close_on_disconnect": close_on_disconnect, "active_session_lease": lease, "cols": cols,
@@ -2418,7 +2570,9 @@ def _deferred_session_record(
         "running": False, "session_key": session_key, "show_reasoning": _load_show_reasoning(),
         "slash_worker": None, "source": source, "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {}, "todo_state": todo_state,
-        "transport": current_transport() or _stdio_transport,
+        "profile": _normalized_desktop_bridge_profile(profile or captured_profile),
+        "authenticated_principal": bound_principal,
+        "transport": bound_transport,
     }
 
 

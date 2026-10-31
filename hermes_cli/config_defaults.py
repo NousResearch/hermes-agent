@@ -2185,8 +2185,16 @@ DEFAULT_CONFIG = {
         # Which machine's keyboard and mouse computer_use drives. `local` (default) = cua-driver on
         # the gateway host; plugins register others via ctx.register_computer_use_provider(). Never
         # inferred: an unrecognized name is an error, not a quiet fall back to the host desktop.
-        # Replaces the HERMES_COMPUTER_USE_BACKEND env var.
+        # Replaces the HERMES_COMPUTER_USE_BACKEND env var. `http-bridge` = a desktop running
+        # `hermes computer-use bridge`, reached at bridge_url below (tunnel it). Hermes Desktop's own bridge
+        # is NOT named here: it belongs to the connection, so it is resolved per session from the socket the
+        # app opened — see the Computer Use docs.
         "provider": "local",
+        # Where the http-bridge provider dials, normally the local end of an SSH/VPN tunnel to the desktop
+        # running the bridge. The bearer token is a secret: .env HERMES_COMPUTER_USE_BRIDGE_TOKEN.
+        "bridge_url": "",
+        # Per-request timeout for http-bridge status and actions.
+        "bridge_timeout_seconds": 30,
         # cua-driver's upstream PostHog telemetry defaults ON; Hermes sets
         # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in every child env unless this is true.
         "cua_telemetry": False,
@@ -2491,6 +2499,9 @@ OPTIONAL_ENV_VARS = {
     "TOOL_GATEWAY_USER_TOKEN": _tool(
         "Explicit Nous Subscriber access token for tool-gateway requests (optional; otherwise "
         "read from the Hermes auth store)", "Tool-gateway user token", None, advanced=True),
+    "HERMES_COMPUTER_USE_BRIDGE_TOKEN": _tool(
+        "Bearer token shared by `hermes computer-use bridge` and the backend that drives it",
+        "Computer Use bridge token", None, tools=["computer_use"], advanced=True),
     "TAVILY_API_KEY": _tool(
         "Tavily API key for AI-native web search and extract (optional — keyless works when "
         "Tavily is selected)", "Tavily API key", "https://app.tavily.com/home",

@@ -84,25 +84,37 @@ def _capture_result(missing_names, setup_skipped=False, gateway_setup_hint=None)
     return {"missing_names": missing_names, "setup_skipped": setup_skipped, "gateway_setup_hint": gateway_setup_hint}
 
 
+def _messaging_surface() -> bool:
+    # Messaging-platform gateway surfaces can't prompt for a secret. Interactive gateway surfaces
+    # (desktop app / TUI) set HERMES_INTERACTIVE (same flag tools/approval.py uses) and register a
+    # callback routing to a secure secret.request overlay.
+    from tools import skills_tool as _st
+    return (_st._turn_secret_capture.get() is None and _is_gateway_surface()
+            and not env_var_enabled("HERMES_INTERACTIVE"))
+
+
+def resolve_secret_capture_callback():
+    """This turn's masked secret-capture callback, or None where none can prompt (messaging, headless)."""
+    from tools import skills_tool as _st
+    if _messaging_surface():
+        return None
+    return _st._turn_secret_capture.get() or _st._secret_capture_callback
+
+
 def _capture_required_environment_variables(
     skill_name: str, missing_entries: list[dict[str, Any]]) -> dict[str, Any]:
     """Prompt for missing secrets via the registered capture callback (if any)."""
-    from tools import skills_tool as _st
     if not missing_entries:
         return _capture_result([])
     missing_names = [entry["name"] for entry in missing_entries]
-    callback = _st._turn_secret_capture.get()
-    # Messaging-platform gateway surfaces can't prompt for a secret, so they get the "unsupported"
-    # hint. Interactive gateway surfaces (desktop app / TUI) set HERMES_INTERACTIVE (same flag
-    # tools/approval.py uses) and register a callback routing to a secure secret.request overlay.
-    if callback is None and _is_gateway_surface() and not env_var_enabled("HERMES_INTERACTIVE"):
+    if _messaging_surface():
         try:
             from gateway.platforms.base import GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE as hint
         except Exception:
             hint = (f"Secure secret entry is not available. Load this skill in the local CLI to be "
                     f"prompted, or add the key to {display_hermes_home()}/.env manually.")
         return _capture_result(missing_names, gateway_setup_hint=hint)
-    if callback is None and (callback := _st._secret_capture_callback) is None:
+    if (callback := resolve_secret_capture_callback()) is None:
         return _capture_result(missing_names)
     remaining_names: list[str] = []
     for entry in missing_entries:

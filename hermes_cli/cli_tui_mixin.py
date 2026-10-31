@@ -678,13 +678,16 @@ class CLITuiMixin:
         state = self._secret_state
         if not state:
             return []
-        prompt = state.get("prompt") or t(
-            "cli.tui.secret_prompt", var_name=state.get('var_name', t("cli.tui.secret_fallback_name")))
-        help_text = (state.get("metadata") or {}).get("help")
-        content_lines = [prompt, t("cli.tui.secret_body")]
-        if help_text:
-            content_lines.insert(1, str(help_text))
-        return self._render_sudo_style_panel(t("cli.tui.secret_title"), content_lines)
+        from cli import _panel_box_width, _wrap_panel_text
+        meta, var_name = state.get("metadata") or {}, state.get("var_name", t("cli.tui.secret_fallback_name"))
+        title = f"🔑 {var_name}" if meta.get("source") == "agent" else t("cli.tui.secret_title")  # not a skill setup
+        prose = [state.get("prompt") or t("cli.tui.secret_prompt", var_name=var_name),
+                 *([str(meta["help"])] if meta.get("help") else [])]
+        # An agent's request is long prose: preview-wrap to size the box, then wrap to its final text width
+        # (a narrow terminal caps the box below the preview width).
+        width = _panel_box_width(title, [row for text in prose for row in _wrap_panel_text(text, 68)]) - 2
+        return self._render_sudo_style_panel(
+            title, [row for text in prose for row in _wrap_panel_text(text, width)] + [t("cli.tui.secret_body")])
 
     def _get_connection_display_fragments(self):
         state = self._connection_state

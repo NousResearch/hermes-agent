@@ -31,8 +31,12 @@ export interface ArtifactLoadResult {
 const ARTIFACT_MESSAGE_PAGE_SIZE = 100
 const MAX_ARTIFACT_MESSAGE_PAGE_JSON_CHARS = 32_000_000
 
-const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
-const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
+// CommonMark link destination: `<…>` (may contain spaces — how a path like
+// `~/My Pictures/x.png` has to be written) or a bare run with one level of
+// balanced parens, then an optional title. Group 2 = bracketed, 3 = bare.
+const MARKDOWN_DESTINATION = String.raw`\(\s*(?:<([^<>\n]+)>|((?:[^\s()]|\([^\s()]*\))+))(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)`
+const MARKDOWN_IMAGE_RE = new RegExp(String.raw`!\[([^\]]*)\]` + MARKDOWN_DESTINATION, 'g')
+const MARKDOWN_LINK_RE = new RegExp(String.raw`\[([^\]]+)\]` + MARKDOWN_DESTINATION, 'g')
 const URL_RE = /https?:\/\/[^\s<>"')`]+/g
 const PATH_RE = /(^|[\s("'`])((?:\/|~[\\/]|\.\.?[\\/]|\\\\)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const WINDOWS_PATH_RE = /(^|[\s("'`])([A-Za-z]:[\\/][^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
@@ -257,6 +261,12 @@ export async function artifactImageSrc(value: string): Promise<string> {
 }
 
 function artifactLabel(value: string): string {
+  // `new URL('C:\\x\\y.png')` parses `c:` as a scheme and keeps the
+  // backslashes in pathname, so a Windows path would label as `\x\y.png`.
+  if (isWindowsPath(value)) {
+    return value.split(/[\\/]/).filter(Boolean).pop() || value
+  }
+
   try {
     const url = new URL(value)
     const item = url.pathname.split('/').filter(Boolean).pop()
@@ -334,7 +344,7 @@ function collectArtifactsFromText(text: string, pushValue: PushValue): void {
   collectMediaValues(text, pushValue)
 
   for (const match of text.matchAll(MARKDOWN_IMAGE_RE)) {
-    pushValue(match[2] || '')
+    pushValue(match[2] || match[3] || '')
   }
 
   for (const match of text.matchAll(MARKDOWN_LINK_RE)) {
@@ -344,7 +354,7 @@ function collectArtifactsFromText(text: string, pushValue: PushValue): void {
       continue
     }
 
-    const value = decodeMediaHrefValue(match[2] || '')
+    const value = decodeMediaHrefValue(match[2] || match[3] || '')
 
     if (looksLikeArtifact(value)) {
       pushValue(value)

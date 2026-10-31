@@ -1,0 +1,58 @@
+# Local catalog entry (not Nous-reviewed — added for this installation only).
+# Wraps Telethon (a real MTProto client for a Telegram USER account, not the
+# Bot API) as MCP tools: dialogs, message read/search/send/edit/delete/pin,
+# group membership, media send/download. Full read+write access, meant for a
+# dedicated agent phone number, not the owner's personal account.
+manifest_version: 1
+
+name: telegram-client
+description: 'Telegram user account: read/send/edit/delete messages, dialogs.'
+source: https://docs.telethon.dev/
+
+# Local stdio server, source lives in ./server/ (this directory, same repo).
+# It runs in its own venv — see server/README.md to (re)create it; the venv
+# itself is not committed (binary, platform-specific).
+transport:
+  type: stdio
+  command: /home/max/.hermes/mcp-servers/telegram-client/venv/bin/python3
+  args:
+    - /home/max/.hermes/hermes-agent/optional-mcps/telegram-client/server/telegram_mcp_server.py
+  env:
+    TELEGRAM_API_ID: "${env:TELEGRAM_API_ID}"
+    TELEGRAM_API_HASH: "${env:TELEGRAM_API_HASH}"
+
+# Not Hermes-managed OAuth: Telegram's own login (phone -> code -> optional
+# 2FA password) is handled inside the server's own telegram_login_* tools,
+# driven through a chat dialog with the user -- there is no single-call
+# login to automate here. Declaring the API credentials gets them
+# prompted-for and saved to .env at install time.
+auth:
+  type: none
+  env:
+    - name: TELEGRAM_API_ID
+      prompt: "Telegram api_id (my.telegram.org/apps -- register an app, not a bot token)"
+    - name: TELEGRAM_API_HASH
+      prompt: "Telegram api_hash (same app registration)"
+
+suggest:
+  keywords:
+    - telegram
+  hosts:
+    - telegram.org
+    - my.telegram.org
+
+post_install: |
+  This logs in as a real Telegram USER account (phone + code + optional 2FA
+  password), not a bot -- use a phone number dedicated to the agent, not
+  your personal one, since it gets full read/write access once logged in.
+
+  Register an app at https://my.telegram.org/apps for the api_id/api_hash
+  just prompted for (not a bot token).
+
+  Then, in a chat with the agent: call telegram_login_start(phone), then
+  telegram_login_code(code) with the code Telegram sends to that phone's
+  app, then telegram_login_password(password) only if that step asks for
+  it (Two-Step Verification). telegram_auth_status() confirms the result.
+
+  Business-scope guidance belongs in a dedicated skill if one gets written;
+  none exists yet for this connector -- call its tools directly.

@@ -1218,7 +1218,7 @@ from plugins.platforms.discord.adapter_authorization import DiscordAuthorization
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
-
+from plugins.platforms.discord.adapter_typing import TypingPaused, typing_http_trace
 
 class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
                      DiscordSlashAuthMixin, BasePlatformAdapter):
@@ -1494,7 +1494,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     self._ready_event.clear()
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
-                intents=intents,
+                intents=intents, http_trace=typing_http_trace(self),
                 allowed_mentions=_build_allowed_mentions(getattr(self.config, "extra", None)),
                 **proxy_kwargs_for_bot(proxy_url),
             )
@@ -4334,20 +4334,18 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start a persistent typing loop (POST typing every 12s; indicator lasts ~10s).
         TYPING_START is unreliable for bots in DMs; 429 sleeps ``retry_after``; CancelledError ends it."""
-        if not self._client:
-            return
-        if chat_id in self._typing_tasks:
+        if not self._client or chat_id in self._typing_paused or chat_id in self._typing_tasks:
             return
 
         async def _typing_loop() -> None:
             try:
-                while True:
+                while chat_id not in self._typing_paused:
                     try:
                         route = discord.http.Route(
                             "POST", "/channels/{channel_id}/typing", channel_id=chat_id,
                         )
                         await self._client.http.request(route)
-                    except asyncio.CancelledError:
+                    except (asyncio.CancelledError, TypingPaused):
                         return
                     except Exception as e:
                         retry_after = self._extract_discord_retry_after(e)
@@ -5706,6 +5704,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
             allow_session="session" in choices, smart_denied=prompt.smart_denied,
             request_id=prompt.request_id,
+            on_resolved=lambda: self.resume_typing_for_chat(prompt.chat_id),
         )
         # Observe BEFORE sending, so a request that settles while the card is in flight still
         # reports its real reason; ``pending_retire`` holds it until the card exists.

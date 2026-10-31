@@ -33,6 +33,47 @@ CYAN='\033[0;36m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+# A function so tests can source this script and run only the PATH step.
+wire_shell_path() {
+    local SHELL_CONFIG=""
+    if [[ "$SHELL" == *"zsh"* ]]; then
+        SHELL_CONFIG="$HOME/.zshrc"
+    elif [[ "$SHELL" == *"bash"* ]]; then
+        SHELL_CONFIG="$HOME/.bashrc"
+        [ ! -f "$SHELL_CONFIG" ] && SHELL_CONFIG="$HOME/.bash_profile"
+    else
+        # Fallback to checking existing files
+        if [ -f "$HOME/.zshrc" ]; then
+            SHELL_CONFIG="$HOME/.zshrc"
+        elif [ -f "$HOME/.bashrc" ]; then
+            SHELL_CONFIG="$HOME/.bashrc"
+        elif [ -f "$HOME/.bash_profile" ]; then
+            SHELL_CONFIG="$HOME/.bash_profile"
+        fi
+    fi
+    [ -n "$SHELL_CONFIG" ] || return 0
+
+    # Touch the file just in case it doesn't exist yet but was selected
+    touch "$SHELL_CONFIG" 2>/dev/null || true
+
+    if echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin$"; then
+        echo -e "${GREEN}✓${NC} ~/.local/bin already on PATH"
+    elif grep -q '\.local/bin' "$SHELL_CONFIG" 2>/dev/null; then
+        echo -e "${GREEN}✓${NC} ~/.local/bin already in $SHELL_CONFIG"
+    elif { printf '\n# Hermes Agent — ensure ~/.local/bin is on PATH\n%s\n' 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_CONFIG"; } 2>/dev/null; then
+        echo -e "${GREEN}✓${NC} Added ~/.local/bin to PATH in $SHELL_CONFIG"
+    else
+        # Read-only managed rc (home-manager, nix-darwin): the user adds it.
+        echo -e "${YELLOW}⚠${NC} Cannot write $SHELL_CONFIG; add ~/.local/bin to PATH in your shell config yourself:"
+        echo '    export PATH="$HOME/.local/bin:$PATH"'
+    fi
+}
+
+# Sourced (tests): stop before setup does any work.
+if [ "${BASH_SOURCE[0]:-$0}" != "$0" ]; then
+    return 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
@@ -224,41 +265,7 @@ fi
 echo -e "${GREEN}✓${NC} Published Hermes commands in $bin_dir"
 
 if [ "$os" != win32 ]; then
-    # Determine the appropriate shell config file
-    SHELL_CONFIG=""
-    if [[ "$SHELL" == *"zsh"* ]]; then
-            SHELL_CONFIG="$HOME/.zshrc"
-        elif [[ "$SHELL" == *"bash"* ]]; then
-            SHELL_CONFIG="$HOME/.bashrc"
-            [ ! -f "$SHELL_CONFIG" ] && SHELL_CONFIG="$HOME/.bash_profile"
-        else
-            # Fallback to checking existing files
-            if [ -f "$HOME/.zshrc" ]; then
-                SHELL_CONFIG="$HOME/.zshrc"
-            elif [ -f "$HOME/.bashrc" ]; then
-                SHELL_CONFIG="$HOME/.bashrc"
-            elif [ -f "$HOME/.bash_profile" ]; then
-                SHELL_CONFIG="$HOME/.bash_profile"
-            fi
-        fi
-
-        if [ -n "$SHELL_CONFIG" ]; then
-            # Touch the file just in case it doesn't exist yet but was selected
-            touch "$SHELL_CONFIG" 2>/dev/null || true
-
-            if ! echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin$"; then
-                if ! grep -q '\.local/bin' "$SHELL_CONFIG" 2>/dev/null; then
-                    echo "" >> "$SHELL_CONFIG"
-                    echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$SHELL_CONFIG"
-                    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_CONFIG"
-                    echo -e "${GREEN}✓${NC} Added ~/.local/bin to PATH in $SHELL_CONFIG"
-                else
-                    echo -e "${GREEN}✓${NC} ~/.local/bin already in $SHELL_CONFIG"
-                fi
-            else
-                echo -e "${GREEN}✓${NC} ~/.local/bin already on PATH"
-            fi
-        fi
+    wire_shell_path
 fi
 
 # ============================================================================

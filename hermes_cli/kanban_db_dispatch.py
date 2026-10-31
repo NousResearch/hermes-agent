@@ -2868,6 +2868,12 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # external worker (#112729): applied to the sanitized env, after every other decision stands.
     from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
     env = pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parent.parent)
+    # The workspace is untrusted as an import root. In particular, a task editing
+    # another Hermes checkout must not import that checkout's ``hermes_cli`` before
+    # the dispatcher's pinned installation: a raw source tree has no committed PM
+    # environment and the worker exits before it can claim ownership. Safe-path
+    # keeps cwd for file tools while PYTHONPATH remains the explicit code source.
+    env["PYTHONSAFEPATH"] = "1"
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.

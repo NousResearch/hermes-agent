@@ -94,6 +94,10 @@ def test_keyed_errors_survive_without_duplicate_submission(transport, status, ke
             assert _extract_http_status(caught.value) == status
             assert caught.value.response.json() == body
             assert "meter_missing" in _managed_fal_billing_error(caught.value, "model")
+            invalid = {"error": {"code": "VALIDATION_ERROR", "message": "invalid resolution", "details": {
+                "field": "resolution", "expected": "one of 480p, 720p", "received": "1080p"}}}
+            caught.value.response.json = lambda: invalid
+            assert "(resolution: expected one of 480p, 720p, received 1080p)" in _managed_fal_billing_error(caught.value, "endpoint")
     else:
         assert client.submit("app", {}, headers=headers).request_id == "r1"
         assert len(requests) == 2

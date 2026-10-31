@@ -3,8 +3,8 @@
 Under a non-local terminal backend, model-supplied local paths passed to
 image_generate / video_generate must resolve through the sandbox-aware media
 resolver (tools.image_source) and reach providers as data: URLs — the same
-boundary vision/video analysis enforce. URLs pass through untouched and the
-local backend is a no-op.
+boundary vision/video analysis enforce. URLs pass through untouched; on the
+local backend image_generate is a no-op while video_generate still inlines.
 """
 
 import base64
@@ -130,3 +130,36 @@ class TestConfineSourceImages:
         payload = json.loads(out)
         assert payload["success"] is False
         assert "Could not read source image" in payload["error"]
+
+    def test_video_generate_inlines_local_paths_on_local_backend(self, monkeypatch, tmp_path):
+        """URL-only video backends (FAL, DeepInfra) never see a raw host path on the local
+        backend: the provider gets a data: URL, and secret files are still refused."""
+        import tools.video_generation_tool as vgt
+
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        home = tmp_path / "h"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        seen = []
+
+        class _Provider:
+            name = "fake"
+
+            def default_model(self):
+                return "m"
+
+            def generate(self, prompt, **kw):
+                seen.append(kw.get("image_url"))
+                return {"success": True, "video": "https://x/v.mp4"}
+
+        monkeypatch.setattr(vgt, "_resolve_active_provider", lambda: _Provider())
+        pic = tmp_path / "pic.png"
+        pic.write_bytes(PNG)
+        payload = json.loads(vgt._handle_video_generate({"prompt": "animate", "image_url": str(pic)}, task_id="t1"))
+        assert payload["success"] is True
+        assert base64.b64decode(seen[0].split(",", 1)[1]) == PNG and seen[0].startswith("data:image/png;base64,")
+
+        (home / ".env").write_text("OPENAI_API_KEY=HOST-PRIVATE-KEY\n")
+        out = vgt._handle_video_generate({"prompt": "animate", "image_url": str(home / ".env")}, task_id="t1")
+        assert json.loads(out)["success"] is False and len(seen) == 1
+        assert "HOST-PRIVATE-KEY" not in out

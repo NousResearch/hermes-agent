@@ -660,7 +660,9 @@ def _prune_unanswered_tool_calls(messages: list[dict]) -> tuple[list[dict], int]
     return pruned, repairs
 
 
-def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
+def _merge_consecutive_users(
+    messages: list[dict], *, agent: Any = None, current_user_msg: Optional[dict] = None,
+) -> tuple[list[dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
     from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
@@ -687,9 +689,7 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             and _plain_text(prev.get("content", "")) and _plain_text(msg.get("content", ""))
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
-            merged_content = (
-                (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
-            )
+            merged_content = _merge_user_content(prev_content, new_content)
             had_api_sidecar = "api_content" in prev
             # Read before the marker is popped below. An unpersisted turn folded in ends the claim:
             # the dict no longer stands for durable rows only.
@@ -702,6 +702,21 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             # unanswered text before it; kept across replay passes (an empty turn absorbs too).
             if prev_content:
                 prev[MERGED_TURN_PREFIX] = prev_content
+            if agent is not None and (prev is current_user_msg or msg is current_user_msg):
+                override = getattr(agent, "_persist_user_message_override", None)
+                if isinstance(override, (str, list)):
+                    agent._persist_user_message_override = _merge_user_content(
+                        override if prev is current_user_msg else prev_content,
+                        override if msg is current_user_msg else new_content,
+                    )
+                    # The override now describes the whole surviving row, not
+                    # just its last input. Do not prepend the history twice.
+                    prev.pop(MERGED_TURN_PREFIX, None)
+                if msg is current_user_msg:
+                    # The older row survives; do not relabel it with the absorbed turn's metadata.
+                    agent._persist_user_message_timestamp = None
+                    agent._persist_user_message_platform_id = None
+                current_user_msg = prev
             # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
             drop_stale_api_content(prev)
             # A display-marker row (e.g. a model-switch marker persisted as role=user on
@@ -775,10 +790,20 @@ def repair_message_sequence(agent, messages: list[dict]) -> int:
     if not messages:
         return 0
     _normalize_sentinel_encoded_content(messages)
+    current_idx = getattr(agent, "_persist_user_message_idx", None)
+    current_user_msg = (
+        messages[current_idx]
+        if isinstance(current_idx, int) and 0 <= current_idx < len(messages) else None
+    )
+    if not isinstance(current_user_msg, dict) or current_user_msg.get("role") != "user":
+        current_user_msg = None
     repairs = 0
     current = messages
     for repair_pass in _SEQUENCE_REPAIR_PASSES:
-        current, made = repair_pass(current)
+        if repair_pass is _merge_consecutive_users:
+            current, made = _merge_consecutive_users(current, agent=agent, current_user_msg=current_user_msg)
+        else:
+            current, made = repair_pass(current)
         repairs += made
     if repairs > 0:
         # Rewrite in place so persistence/return value/DB flush see the repaired sequence.

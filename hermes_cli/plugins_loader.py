@@ -279,6 +279,29 @@ def installed_in_selected_environment(requirements: list[str]) -> bool:
         return False
 
 
+def _subscribe_listener(listeners: list, callback: Callable, what: str) -> Callable[[], None]:
+    """Append a process-owned discovery listener; returns its idempotent unsubscribe callable."""
+    if not callable(callback):
+        raise ValueError(f"{what} requires a callable")
+    listeners.append(callback)
+
+    def _unsubscribe() -> None:
+        try:
+            listeners.remove(callback)
+        except ValueError:
+            pass
+    return _unsubscribe
+
+
+def _fire_listeners(listeners: list, what: str, *args: Any) -> None:
+    """Call each listener; one raising listener never starves the rest."""
+    for callback in list(listeners):
+        try:
+            callback(*args)
+        except Exception:
+            logger.warning("%s listener %r raised", what, callback, exc_info=True)
+
+
 class PluginLoaderMixin:
     def on_plugin_loaded(self, callback: Callable[[list[dict[str, Any]]], Any]) -> Callable[[], None]:
         """Subscribe to "a discovery sweep loaded plugins this process did not have": fires from INSIDE
@@ -294,32 +317,26 @@ class PluginLoaderMixin:
         Listeners belong to the process (gateway runner, TUI server), not to a plugin, so ``unload()``
         never clears them. Returns an unsubscribe callable. Fires on the discovering thread with the
         discovery lock released; marshal onto your own loop."""
-        if not callable(callback):
-            raise ValueError("on_plugin_loaded requires a callable")
-        listeners = self._plugin_loaded_listeners
-        listeners.append(callback)
+        return _subscribe_listener(self._plugin_loaded_listeners, callback, "on_plugin_loaded")
 
-        def _unsubscribe() -> None:
-            try:
-                listeners.remove(callback)
-            except ValueError:
-                pass
-        return _unsubscribe
+    def on_plugins_swept(self, callback: Callable[[], Any]) -> Callable[[], None]:
+        """Subscribe to "a discovery sweep ran": fires after every :meth:`discover_and_load` pass that did not
+        short-circuit (boot and every forced re-discovery), with no payload, including a sweep that only
+        re-registered plugins the process already had, where :meth:`on_plugin_loaded` stays silent. A
+        ``reload_safe`` platform handler comes back under a new wiring generation on such a sweep, so the
+        gateway re-wires on this event. Same thread and lock rules as :meth:`on_plugin_loaded`."""
+        return _subscribe_listener(self._plugins_swept_listeners, callback, "on_plugins_swept")
 
     def _notify_plugin_loaded(self, loaded_before: frozenset) -> None:
-        """Fire every :meth:`on_plugin_loaded` listener for the plugins this sweep added over
-        ``loaded_before``; nothing new = no event. One raising listener never starves the rest."""
+        """Fire every :meth:`on_plugins_swept` listener, then every :meth:`on_plugin_loaded` listener for the
+        plugins this sweep added over ``loaded_before`` (nothing new = no loaded event)."""
+        _fire_listeners(self._plugins_swept_listeners, "plugins-swept")
         if not self._plugin_loaded_listeners:
             return
         from hermes_cli.plugins_activation import activation_summaries
         summaries = [s for s in activation_summaries(self) if s["key"] not in loaded_before]
-        if not summaries:
-            return
-        for callback in list(self._plugin_loaded_listeners):
-            try:
-                callback(summaries)
-            except Exception:
-                logger.warning("plugin-loaded listener %r raised", callback, exc_info=True)
+        if summaries:
+            _fire_listeners(self._plugin_loaded_listeners, "plugin-loaded", summaries)
 
     @staticmethod
     def _platform_name_from_manifest(manifest: PluginManifest) -> str:

@@ -19,8 +19,17 @@ from tools.skills_hub_models import (
 logger = logging.getLogger("tools.skills_hub")
 
 
+# ASCII alphanumeric runs plus individual CJK characters (no spaces between CJK words, #78985).
+_QUERY_TOKEN_RE = re.compile(
+    r"[a-z0-9]+"
+    r"|[\u4e00-\u9fff\u3400-\u4dbf]"   # CJK Unified Ideographs (+ Ext A)
+    r"|[\u3040-\u309f\u30a0-\u30ff]"   # Hiragana + Katakana
+    r"|[\uac00-\ud7af]"                # Hangul Syllables
+)
+
+
 def _query_terms(query: str) -> list[str]:
-    return [term for term in re.split(r"[^a-z0-9]+", query.lower()) if term]
+    return _QUERY_TOKEN_RE.findall(query.lower())
 
 
 def _dedupe_results(results: list[SkillMeta]) -> list[SkillMeta]:

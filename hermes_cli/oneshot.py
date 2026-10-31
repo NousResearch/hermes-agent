@@ -546,12 +546,13 @@ def _run_agent(
     from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
 
     reasoning_config = resolve_reasoning_config(cfg, choice.model)
+    reasoning_pinned = False
     if reasoning is not None and str(reasoning).strip():
         parsed_reasoning = parse_reasoning_effort(reasoning)
         if parsed_reasoning is None:
             logging.warning("Unknown --reasoning '%s', keeping the configured level", reasoning)
         else:
-            reasoning_config = parsed_reasoning
+            reasoning_config, reasoning_pinned = parsed_reasoning, True
 
     # sorted() gives stable ordering for config-derived sets; explicit values preserve user order.
     toolsets_list = _normalize_toolsets(toolsets)
@@ -601,6 +602,7 @@ def _run_agent(
         agent.suppress_status_output = True
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
+        agent.reasoning_pinned = reasoning_pinned  # --reasoning outranks a fallback model's config
 
         aux_before = _auxiliary_usage(session_db, resume_sid) if ledger else {}
         # Relay keys the root conversation to the id at turn entry; compression may rotate

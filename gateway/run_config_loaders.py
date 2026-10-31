@@ -194,6 +194,11 @@ class GatewayConfigLoadersMixin:
             return policy.current_reasoning_config(self, resolved_session_key)
         return self._load_reasoning_config(model)
 
+    def _session_reasoning_pinned(self, session_key: Optional[str]) -> bool:
+        """Whether the session holds a typed ``/reasoning`` level, which a provider fallback keeps."""
+        state = self._peek_session_state(session_key) if session_key else None
+        return state is not None and state.conversation.reasoning_override is not None
+
     def _set_session_reasoning_override(self, session_key: str, reasoning_config: Optional[dict]) -> None:
         """Set or clear the session-scoped reasoning override."""
         if not session_key:

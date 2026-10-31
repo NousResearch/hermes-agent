@@ -1,0 +1,43 @@
+manifest_version: 1
+
+name: fairvalid
+description: >-
+  Verify email addresses, follow verification jobs, read results, and check
+  FairValid workspace credits.
+source: https://github.com/moonlitnayeem/fairvalid-ai/tree/b360f0ba53db724a0c4300f5f22970a3d7d80208
+
+transport:
+  type: http
+  url: https://mcp.fairvalid.com/mcp
+
+auth:
+  type: oauth
+
+tools:
+  default_enabled:
+    - fairvalid_get_balance
+    - fairvalid_get_job
+    - fairvalid_get_results
+
+suggest:
+  keywords:
+    - fairvalid
+  hosts:
+    - fairvalid.com
+
+post_install: |
+  Complete OAuth on https://fairvalid.com and select an existing Live API key
+  for the intended workspace. Its scopes and lifetime cap apply. Never paste
+  credentials or authorization codes into chat.
+  Start with the three read tools. Use `hermes mcp configure fairvalid` to enable
+  email submission or job cancellation only when those actions are wanted.
+  For an authorized connection check, read the balance; this uses no verification
+  credits. Do not submit customer addresses or cancel customer jobs as a test.
+  Live Valid and Invalid checks cost one credit each. Genuine Unknown,
+  unresolved catch-all, technical failures, and unprocessed items have no net
+  verification charge. Retry uncertain submissions only with the same selected
+  API-key identity, idempotency key, and unchanged input.
+  OAuth uses Live keys. Sandbox verification needs a separate direct Test-key
+  connection and documented example.com fixtures.
+  Documentation: https://fairvalid.com/help/mcp
+  Support: nayeem@fairvalid.com

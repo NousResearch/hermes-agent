@@ -172,6 +172,34 @@ def test_tab_never_queues_what_a_prompt_owns(prompt):
         assert not tab.filter(), prompt
 
 
+def test_tab_accepts_a_ghost_suggestion_before_queueing():
+    """While a turn runs, Tab queues typed text only when no history suggestion is shown; with one,
+    Tab falls through to _tui_handle_tab, which accepts the suggestion (#143992)."""
+    from types import SimpleNamespace
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.application.current import set_app
+    from prompt_toolkit.auto_suggest import Suggestion
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.keys import Keys
+    from prompt_toolkit.layout import BufferControl, Layout, Window
+    from hermes_cli.cli_modern_layout import modern_input_rules
+
+    cli = SimpleNamespace(_agent_running=True, _tui_input_rule_height=lambda pos: 1)
+    kb = KeyBindings()
+    modern_input_rules(cli, kb)
+    tab = next(b for b in kb.bindings if b.keys == (Keys.ControlI,))
+    buf = Buffer(document=None)
+    buf.text = "run the tes"
+    app = Application(layout=Layout(Window(BufferControl(buffer=buf))))
+    with set_app(app):
+        assert tab.filter()  # control: no suggestion, Tab queues
+        buf.suggestion = Suggestion("ts again")
+        assert not tab.filter()
+        buf.suggestion = Suggestion("")
+        assert tab.filter()
+
+
 def test_long_user_message_soft_wraps_so_a_resize_reflows_it(monkeypatch):
     """The glyph layout's echo of a long prompt is one logical line per source line: the terminal
     wraps it, so widening the window re-flows it instead of keeping old-width breaks."""

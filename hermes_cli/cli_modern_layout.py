@@ -393,7 +393,9 @@ def modern_input_rules(cli, kb):
         from hermes_cli.cli_subagent_monitor import modal_prompt_active
         buf = get_app().current_buffer
         text = buf.text.strip()
+        # a visible ghost suggestion is Tab's to accept (_tui_handle_tab); queue only without one
         return bool(getattr(cli, "_agent_running", False) and text and buf.complete_state is None
+                    and not (buf.suggestion and buf.suggestion.text)
                     and not _looks_like_slash_command(text) and not text.startswith("!")
                     and not modal_prompt_active(cli))
 

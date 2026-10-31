@@ -412,6 +412,27 @@ describe('a terminal that owns its own zone (Default / Terminal deck / Quad)', (
   })
 })
 
+describe('activating a toggle-gated pane tab', () => {
+  it('opens the terminal store when its tab is activated after a closed boot state', () => {
+    stackTree({ active: 'terminal' })
+
+    const $terminal = atom(false)
+    bindToolPaneCollapse(
+      'terminal',
+      $terminal,
+      () => $terminal.set(false),
+      () => $terminal.set(true)
+    )
+
+    // A closed boot state hands the shared zone to the workspace. Clicking
+    // the still-present terminal tab must reopen its owner store as well.
+    activateTreePane('g-focus', 'terminal')
+
+    expect($terminal.get()).toBe(true)
+    expect(isPaneVisible('terminal')).toBe(true)
+  })
+})
+
 describe('a zone whose header the user hid', () => {
   it('keeps it hidden after a stacked sibling is closed and toggled back', () => {
     stackTree({ tabStrip: 'never' })

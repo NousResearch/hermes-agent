@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import http.cookiejar
 import logging
 import threading
 import urllib.parse
@@ -67,12 +68,15 @@ _DOT_DOT = frozenset({"..", ".%2e", "%2e.", "%2e%2e"})
 
 def relay_client(state):
     """This listener's HTTP client for relayed requests, one per event loop: no redirects followed,
-    no proxy settings from the environment, no read deadline (streams run as long as they run)."""
+    no proxy settings from the environment, no read deadline (streams run as long as they run), and
+    no cookies kept. A gateway refuses a relayed request that carries one, and a cookie is not scoped
+    to a port, so one set by any gateway (or a proxy in front of it) would break later requests."""
     loop = asyncio.get_running_loop()
     held = getattr(state, "webapp_relay_client", None)
     if held is not None and held[0] is loop:
         return held[1]
-    client = httpx.AsyncClient(follow_redirects=False, trust_env=False,
+    no_cookies = http.cookiejar.CookieJar(policy=http.cookiejar.DefaultCookiePolicy(allowed_domains=[]))
+    client = httpx.AsyncClient(follow_redirects=False, trust_env=False, cookies=no_cookies,
                                timeout=httpx.Timeout(connect=15.0, read=None, write=60.0, pool=15.0))
     state.webapp_relay_client = (loop, client)
     return client

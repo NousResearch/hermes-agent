@@ -78,12 +78,12 @@ def has_clipboard_image() -> bool:
 def _write_clipboard_commands(data: bytes) -> list:
     """(argv, run_kwargs) candidates for writing *data*, in platform fallback order."""
     # PowerShell decodes piped stdin with the system ANSI code page (e.g. CP936), not UTF-8, so
-    # stdin-based writes mangle CJK/emoji. Base64 the UTF-8 bytes and decode inside PowerShell
-    # instead (same approach as the TUI's writeClipboardText).
-    b64 = base64.b64encode(data).decode("ascii")
+    # raw UTF-8 on stdin mangles CJK/emoji. Pipe the base64 of the UTF-8 bytes (ASCII, the same in
+    # every code page) and decode inside PowerShell; on the command line it overflowed Windows'
+    # 32,767-character limit past ~24 KB of text (same approach as the TUI's writeClipboardText).
     ps_argv = [*_PS_FLAGS, "-Command", "Set-Clipboard -Value ([System.Text.Encoding]::UTF8"
-               f".GetString([System.Convert]::FromBase64String('{b64}')))"]
-    ps_kw, pipe = {"stdin": subprocess.DEVNULL}, {"input": data}
+               ".GetString([System.Convert]::FromBase64String([Console]::In.ReadToEnd())))"]
+    ps_kw, pipe = {"input": base64.b64encode(data)}, {"input": data}
     linux = sys.platform not in ("darwin", "win32")
     return [(argv, kw) for enabled, argv, kw in (
         (sys.platform == "darwin", ["pbcopy"], pipe),

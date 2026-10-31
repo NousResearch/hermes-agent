@@ -104,38 +104,42 @@ export async function readClipboardText(
 }
 
 // PowerShell on Windows/WSL decodes piped stdin with the system ANSI code
-// page (e.g. CP936), not UTF-8, so $input-based writes mangle CJK/emoji. We
-// instead base64-encode the UTF-8 bytes and pass them as a -Command argument,
-// decoding with UTF8.GetString — this removes the stdin-encoding variable
-// entirely (also immune to BOM injection on redirect). PowerShell entries set
-// stdin=false; every other backend reads UTF-8 stdin natively.
-type WriteCmd = { args: readonly string[]; cmd: string; stdin: boolean }
+// page (e.g. CP936), not UTF-8, so raw UTF-8 on stdin mangles CJK/emoji. We
+// instead pipe the base64 of the UTF-8 bytes (ASCII, the same in every code
+// page) and decode it with UTF8.GetString. It must not ride the -Command
+// argument: Windows caps a command line at 32,767 characters, so copying more
+// than ~24 KB of text failed to spawn (ENAMETOOLONG). PowerShell entries set
+// base64=true; every other backend reads raw UTF-8 stdin natively.
+type WriteCmd = { args: readonly string[]; base64?: boolean; cmd: string }
 
-function _powershellWriteScript(b64: string): string {
-  return `Set-Clipboard -Value ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64}')))`
-}
+const POWERSHELL_WRITE_ARGS = [
+  '-NoProfile',
+  '-NonInteractive',
+  '-Command',
+  'Set-Clipboard -Value ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String([Console]::In.ReadToEnd())))'
+] as const
 
 function writeClipboardCommands(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): WriteCmd[] {
   if (platform === 'darwin') {
-    return [{ cmd: 'pbcopy', args: [], stdin: true }]
+    return [{ cmd: 'pbcopy', args: [] }]
   }
 
   if (platform === 'win32') {
-    return [{ cmd: 'powershell', args: ['-NoProfile', '-NonInteractive'], stdin: false }]
+    return [{ cmd: 'powershell', args: POWERSHELL_WRITE_ARGS, base64: true }]
   }
 
   const attempts: WriteCmd[] = []
 
   if (env.WSL_INTEROP || env.WSL_DISTRO_NAME) {
-    attempts.push({ cmd: 'powershell.exe', args: ['-NoProfile', '-NonInteractive'], stdin: false })
+    attempts.push({ cmd: 'powershell.exe', args: POWERSHELL_WRITE_ARGS, base64: true })
   }
 
   if (env.WAYLAND_DISPLAY) {
-    attempts.push({ cmd: 'wl-copy', args: ['--type', 'text/plain'], stdin: true })
+    attempts.push({ cmd: 'wl-copy', args: ['--type', 'text/plain'] })
   }
 
-  attempts.push({ cmd: 'xclip', args: ['-selection', 'clipboard', '-in'], stdin: true })
-  attempts.push({ cmd: 'xsel', args: ['--clipboard', '--input'], stdin: true })
+  attempts.push({ cmd: 'xclip', args: ['-selection', 'clipboard', '-in'] })
+  attempts.push({ cmd: 'xsel', args: ['--clipboard', '--input'] })
 
   return attempts
 }
@@ -165,29 +169,15 @@ export async function writeClipboardText(
   for (const cmdEntry of candidates) {
     try {
       const ok = await new Promise<boolean>(resolve => {
-        if (cmdEntry.stdin) {
-          const child = start(cmdEntry.cmd, [...cmdEntry.args], {
-            stdio: ['pipe', 'ignore', 'ignore'],
-            windowsHide: true
-          })
+        const child = start(cmdEntry.cmd, [...cmdEntry.args], {
+          stdio: ['pipe', 'ignore', 'ignore'],
+          windowsHide: true
+        })
 
-          child.unref()
-          child.once('error', () => resolve(false))
-          child.once('close', (code: number | null) => resolve(code === 0))
-          child.stdin?.end(text)
-        } else {
-          const b64 = Buffer.from(text, 'utf8').toString('base64')
-          const script = _powershellWriteScript(b64)
-
-          const child = start(cmdEntry.cmd, [...cmdEntry.args, '-Command', script], {
-            stdio: ['ignore', 'ignore', 'ignore'],
-            windowsHide: true
-          })
-
-          child.unref()
-          child.once('error', () => resolve(false))
-          child.once('close', (code: number | null) => resolve(code === 0))
-        }
+        child.unref()
+        child.once('error', () => resolve(false))
+        child.once('close', (code: number | null) => resolve(code === 0))
+        child.stdin?.end(cmdEntry.base64 ? Buffer.from(text, 'utf8').toString('base64') : text)
       })
 
       if (ok) {

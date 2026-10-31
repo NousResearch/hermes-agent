@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { Folder, Plus } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -15,12 +15,35 @@ import type {
 } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
 import { KanbanBadge, type KanbanStatus } from "./KanbanBadge";
-import { SessionRow } from "./SessionRow";
+import { SessionTree, type SessionRowCallbacks } from "@/components/sessions/SessionTree";
 import { FolderTree } from "./FolderTree";
-import { writeKanbanBoard, writeKanbanTask, kanbanPath } from "@/lib/projects";
+import { writeKanbanBoard, writeKanbanTask, kanbanPath, mapProjectSessionToSessionInfo } from "@/lib/projects";
 
 type SessionFilter = "all" | "running" | "done" | "failed" | "notask";
 type TabId = "sessions" | "board" | "folders" | "settings";
+
+/** Adapts ProjectSession[] → SessionInfo[] then renders via SessionTree. */
+function SessionTreeForProject({
+  sessions,
+  navigate,
+}: {
+  sessions: ProjectSession[];
+  navigate: ReturnType<typeof useNavigate>;
+}) {
+  const sessionInfos = useMemo(
+    () => sessions.map(mapProjectSessionToSessionInfo),
+    [sessions],
+  );
+  const callbacks: SessionRowCallbacks = useMemo(
+    () => ({
+      onOpen: (id) => navigate(`/chat?resume=${encodeURIComponent(id)}`),
+      onSelectClick: () => {},
+      isSelected: () => false,
+    }),
+    [navigate],
+  );
+  return <SessionTree sessions={sessionInfos} callbacks={callbacks} showWorkers />;
+}
 
 interface ProjectsWorkbenchProps {
   projects: ProjectSummary[];
@@ -415,7 +438,7 @@ export function ProjectsWorkbench({
                       No sessions
                     </div>
                   ) : (
-                    sessions.map((s) => <SessionRow key={s.id} session={s} />)
+                    <SessionTreeForProject sessions={sessions} navigate={navigate} />
                   )}
                 </div>
               )}

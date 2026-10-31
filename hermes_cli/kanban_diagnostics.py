@@ -679,6 +679,134 @@ def _rule_block_unblock_cycling(task, events, runs, now, cfg) -> list[Diagnostic
     )]
 
 
+# Same one-hour heartbeat gap the dispatcher's ``detect_stale_running`` uses
+# (``_STALE_HEARTBEAT_GAP_SECONDS``). The dispatcher additionally reclaims only
+# when ``dispatch_stale_timeout_seconds`` is set, so this diagnostic can flag a
+# record the dispatcher will leave alone; it reports, it does not reclaim.
+_RUNNING_LIVENESS_HEARTBEAT_GAP_SECONDS = 3600
+
+
+def _age_since(timestamp, now) -> Optional[int]:
+    """Seconds since ``timestamp``; None when it is absent or unreadable."""
+    from hermes_cli import kanban_db as kb
+    epoch = kb._to_epoch(timestamp)  # int / numeric string / ISO-8601, like the dispatcher
+    if epoch is None:
+        return None
+    return max(0, int(now) - epoch)
+
+
+def _rule_running_liveness_stale(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Report a ``running`` record that is not evidence of a live worker.
+
+    A local worker PID is evidence only when its spawn fingerprint still
+    matches.  A child left behind by a worker (such as a test HTTP server) is
+    never consulted: it has no recorded worker PID/fingerprint.  Independently,
+    an old or absent heartbeat means no observable task progress even when the
+    recorded process still exists.  Remote claims do not probe a host-local PID
+    number; their heartbeat is still evaluated.
+
+    Overlap with ``stale_running``: that rule waits for an expired claim plus
+    a grace period, so it stays quiet for the first hour of a dead worker's
+    claim.  This rule fires as soon as the heartbeat is stale or the PID
+    identity is wrong, so a task past both windows may carry both diagnostics;
+    this one is the error-level, immediate signal and ``stale_running`` is the
+    later reclaim-jam warning.
+    """
+    if _task_field(task, "status") != "running":
+        return []
+
+    threshold = _RUNNING_LIVENESS_HEARTBEAT_GAP_SECONDS
+    # Like ``detect_stale_running``, age the CURRENT run: ``tasks.started_at``
+    # keeps the first claim's time across retries, and a heartbeat left over from
+    # an earlier run says nothing about this one. Only a run old enough to have
+    # sent a heartbeat can be stale. Without a run row, fall back to the task.
+    current_run_id = _task_field(task, "current_run_id")
+    current_run = next(
+        (r for r in runs if current_run_id is not None
+         and _task_field(r, "id") == current_run_id),
+        None,
+    )
+    started_at = _task_field(current_run, "started_at")
+    if started_at is None:
+        started_at = _task_field(task, "started_at")
+    last_heartbeat_at = _task_field(task, "last_heartbeat_at")
+    # Heartbeat age and running age are distinct facts: a missing heartbeat has
+    # no age, and the time since start only says how long the run has gone
+    # without one.
+    heartbeat_age = _age_since(last_heartbeat_at, now)
+    running_age = _age_since(started_at, now)
+    if running_age is not None and running_age < threshold:
+        heartbeat_stale = False
+    elif heartbeat_age is not None:
+        heartbeat_stale = heartbeat_age >= threshold
+    else:
+        heartbeat_stale = running_age is not None
+
+    pid = _task_field(task, "worker_pid")
+    fingerprint = _task_field(task, "worker_started_at")
+    claim_lock = str(_task_field(task, "claim_lock") or "")
+    worker_identity_matches = None
+    from hermes_cli import kanban_db as kb
+    local_claim = claim_lock.startswith(kb._host_prefix())
+    if local_claim and pid:
+        from hermes_cli import kanban_db_dispatch as kbd
+        try:
+            worker_identity_matches = bool(kbd._worker_alive(int(pid), fingerprint))
+        except (OSError, TypeError, ValueError):
+            # Diagnostics must not fail closed because /proc is unreadable
+            # or the recorded PID is malformed: identity stays unknown.
+            worker_identity_matches = None
+
+    if not heartbeat_stale and worker_identity_matches is not False:
+        return []
+
+    failures = []
+    if heartbeat_age is not None:
+        if heartbeat_stale:
+            failures.append(
+                f"no fresh heartbeat for {heartbeat_age}s "
+                f"(limit {threshold}s)"
+            )
+    elif heartbeat_stale:
+        failures.append(
+            f"no heartbeat recorded; running for {running_age}s "
+            f"(limit {threshold}s)"
+        )
+    elif running_age is None:
+        failures.append("heartbeat timestamp unavailable")
+    if worker_identity_matches is False:
+        failures.append("recorded worker PID does not match its spawn identity")
+    task_id = str(_task_field(task, "id") or "<task_id>")
+    return [Diagnostic(
+        kind="running_liveness_stale",
+        severity="error",
+        title="Running record lacks live worker evidence",
+        detail=(
+            "This task must not be treated as actively running: "
+            + "; ".join(failures)
+            + ". A surviving child/test server is not task-worker evidence. "
+              "Inspect the run and reclaim only after confirming the worker state."
+        ),
+        actions=[
+            _cli_hint(f"Inspect task: hermes kanban show {task_id}", f"hermes kanban show {task_id}",
+                      suggested=True),
+            DiagnosticAction(kind="reclaim", label="Reclaim task", payload={}),
+        ],
+        first_seen_at=now,
+        last_seen_at=now,
+        count=1,
+        run_id=_task_field(task, "current_run_id"),
+        data={
+            "worker_pid": pid,
+            "worker_identity_matches": worker_identity_matches,
+            "heartbeat_stale": heartbeat_stale,
+            "heartbeat_age_seconds": heartbeat_age,
+            "running_age_seconds": running_age,
+            "heartbeat_limit_seconds": threshold,
+        },
+    )]
+
+
 def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Assigned, unclaimed, ``ready`` for >= cfg["stranded_threshold_seconds"]
     (default 30 min). Deliberately age-based and identity-agnostic so it
@@ -818,6 +946,7 @@ _RULES: list[RuleFn] = [
     _rule_running_with_open_parents,
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
+    _rule_running_liveness_stale,
     _rule_stranded_in_ready,
     _rule_stale_running,
 ]

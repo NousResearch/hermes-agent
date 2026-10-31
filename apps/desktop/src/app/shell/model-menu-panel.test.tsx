@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { $customModels } from '@/store/custom-models'
+import { setShowModelPricing } from '@/store/model-pricing'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $activeSessionId, $currentModel, $currentProvider, setCurrentModelSource } from '@/store/session'
 
@@ -81,7 +82,7 @@ function renderPanel(onSelectModel = vi.fn(), onFollowDefaultModel?: () => void)
     </QueryClientProvider>
   )
 
-  return { onSelectModel, content }
+  return { client, onSelectModel, content }
 }
 
 describe('ModelMenuPanel MoA presets', () => {
@@ -602,4 +603,115 @@ describe('ModelMenuPanel pinned draft', () => {
     await live.content.findByText('Refresh models')
     expect(live.content.queryByText('Use Settings default')).toBeNull()
   })
+})
+
+// a cache-only read started on menu open must not replace an explicit refresh.
+it('keeps refreshed prices when the earlier cache-only catalog read finishes last', async () => {
+  setShowModelPricing(true)
+  let finishInitial!: (value: unknown) => void
+
+  const initial = new Promise(resolve => {
+    finishInitial = resolve
+  })
+
+  const unpriced = { providers: [DEEPSEEK_PROVIDER] }
+
+  const priced = {
+    providers: [
+      {
+        ...DEEPSEEK_PROVIDER,
+        pricing: {
+          'deepseek-v4-pro': { input: '$3.00', output: '$15.00', cache: '$0.30', free: false }
+        }
+      }
+    ]
+  }
+
+  getGlobalModelOptions.mockReset()
+  getGlobalModelOptions.mockReturnValueOnce(initial).mockResolvedValueOnce(priced)
+  const { client, content } = renderPanel()
+  const key = ['model-options', 'default', 'runtime-1']
+
+  try {
+    fireEvent.click(await content.findByText('Refresh models'))
+    await content.findByText('$3.00/$15.00')
+    await act(async () => {
+      finishInitial(unpriced)
+      await initial
+    })
+    await waitFor(() => expect(client.getQueryState(key)?.fetchStatus).toBe('idle'))
+    expect(client.getQueryData(key)).toEqual(priced)
+    expect(content.queryByText('$3.00/$15.00')).not.toBeNull()
+  } finally {
+    act(() => setShowModelPricing(false))
+  }
+})
+
+it('finishes an old refresh in its own scope without cancelling the new session catalog', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  let finishRefresh!: (value: unknown) => void
+  let finishNewRead!: (value: unknown) => void
+
+  const refresh = new Promise(resolve => {
+    finishRefresh = resolve
+  })
+
+  const newRead = new Promise(resolve => {
+    finishNewRead = resolve
+  })
+
+  const original = { providers: [DEEPSEEK_PROVIDER] }
+  const refreshed = { providers: [DEEPSEEK_PROVIDER, MOA_PROVIDER] }
+  const nextCatalog = { providers: [GOOGLE_PROVIDER] }
+
+  const request = vi.fn(async (_method: string, params?: Record<string, unknown>) => {
+    if (params?.refresh) {
+      return refresh
+    }
+
+    return params?.profile === 'personal' ? newRead : original
+  })
+
+  const panel = (profile: string, ownerConnectionId: string) => (
+    <QueryClientProvider client={client}>
+      <DropdownMenu open>
+        <DropdownMenuContent>
+          <ModelMenuPanel
+            onSelectModel={vi.fn()}
+            ownerConnectionId={ownerConnectionId}
+            profile={profile}
+            requestGateway={request as never}
+          />
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </QueryClientProvider>
+  )
+
+  const content = render(panel('work', 'connection-a'))
+  await content.findByText('DeepSeek V4 Pro')
+  fireEvent.click(content.getByText('Refresh models'))
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+
+  // a new backend/profile/session may be selected before the old refresh ends.
+  act(() => $activeSessionId.set('runtime-2'))
+  content.rerender(panel('personal', 'connection-b'))
+  const oldKey = ['model-options', 'work', 'runtime-1', 'owner', 'connection-a']
+  const newKey = ['model-options', 'personal', 'runtime-2', 'owner', 'connection-b']
+  await waitFor(() => expect(client.getQueryState(newKey)?.fetchStatus).toBe('fetching'))
+
+  await act(async () => {
+    finishRefresh(refreshed)
+    await refresh
+  })
+  await waitFor(() => expect(client.getQueryData(oldKey)).toEqual(refreshed))
+  expect(client.getQueryState(newKey)?.fetchStatus).toBe('fetching')
+  expect(client.getQueryData(newKey)).toBeUndefined()
+
+  await act(async () => {
+    finishNewRead(nextCatalog)
+    await newRead
+  })
+  await content.findByText('Gemini 3.1 Pro')
+  expect(client.getQueryData(newKey)).toEqual(nextCatalog)
+  expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
 })

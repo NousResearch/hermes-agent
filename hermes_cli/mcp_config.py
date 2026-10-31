@@ -604,9 +604,13 @@ def _choose_tools(
         choice = input(
             color(f"  Enable all {len(tools)} tools? [Y/n/select]: ", Colors.YELLOW)
         ).strip().lower()
-    except (KeyboardInterrupt, EOFError):
+    except KeyboardInterrupt:
         print()
         _info("Cancelled.")
+        return None
+    except EOFError:
+        print()
+        _error("No answer could be read; server not saved. Re-run with --yes.")
         return None
     if choice in {"n", "no"}:
         _info("Cancelled — server not saved.")

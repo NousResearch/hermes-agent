@@ -24,8 +24,8 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_add_p.add_argument("--command", dest="mcp_command", help="Stdio command (e.g. npx)")
     mcp_add_p.add_argument(
         "-y", "--yes", action="store_true",
-        help="Answer every prompt with its default and enable all discovered tools "
-             "(for scripts, cron and agents); place before --args")
+        help="Skip every prompt: take its default (authentication follows --auth) and enable all "
+             "discovered tools (for scripts, cron and agents); place before --args")
     mcp_add_p.add_argument(
         "--args", nargs=argparse.REMAINDER, default=[],
         help="Arguments for stdio command; must be the last option")

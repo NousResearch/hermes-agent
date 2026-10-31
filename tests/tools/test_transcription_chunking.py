@@ -67,3 +67,15 @@ def test_over_duration_cap_splits_in_order_under_the_cap(tmp_path, monkeypatch):
     assert result["transcript"] == " ".join(f"part{i}" for i in range(1, len(uploads) + 1))
     assert all(u["model"] == "gpt-4o-transcribe" and u["seconds"] <= 10.0 for u in uploads)
     assert sum(u["seconds"] for u in uploads) == pytest.approx(30.0, abs=0.5)
+
+
+def test_mittwald_duration_cap_follows_the_selected_model(tmp_path, monkeypatch):
+    """mittwald caps audio length per model, so the same recording splits for one model and not the other."""
+    monkeypatch.setitem(chunking._MITTWALD_MODEL_MAX_SECONDS, "whisper-large-v3-turbo", 10.0)
+    monkeypatch.setitem(chunking._MITTWALD_MODEL_MAX_SECONDS, "cohere-transcribe-03-2026", 60.0)
+    wav = tmp_path / "call.wav"
+    _tone_with_pauses(wav, 30)
+    _, whisper_uploads = _run(wav, "mittwald", model="whisper-large-v3-turbo")
+    _, cohere_uploads = _run(wav, "mittwald", model="cohere-transcribe-03-2026")
+    assert len(whisper_uploads) >= 3 and all(u["seconds"] <= 10.0 for u in whisper_uploads)
+    assert len(cohere_uploads) == 1 and cohere_uploads[0]["model"] == "cohere-transcribe-03-2026"

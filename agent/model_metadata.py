@@ -20,6 +20,7 @@ import hermes_yaml as yaml
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
 from agent.model_metadata_llamacpp import llamacpp_context
+from agent.model_metadata_payload import _coerce_reasonable_int, _extract_first_int, _iter_nested_dicts
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
@@ -323,6 +324,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     # 1M verified on OpenRouter & Nous portal 2026-08; qwen3-max = 256K Coding Plan snapshot)
     "qwen3.8-max": 1_000_000, "qwen3.8-flash": 1_000_000, "qwen3.6-plus": 1048576, "qwen3.7-plus": 1048576,
     "qwen3-coder-plus": 1000000, "qwen3-coder": 262144, "qwen3-max": 262144, "qwen": 131072,
+    # mittwald AI Hosting (vLLM) — offline fallbacks only: /v1/models reports
+    # ``max_input_tokens`` per model, which the catalog path already reads. Without these the
+    # 131072 "qwen" catch-all above would win for the 245,760/256,000 Qwen builds, and
+    # gpt-oss-120b would take the silent 256K default. Verified live 2026-09-10.
+    "qwen3.5-122b": 245760, "qwen3.6-35b": 256000, "qwen3.8-27b": 256000, "qwen3.5-0.8b": 262144,
+    "ministral-3-14b": 262144, "gpt-oss": 131072,
     # MiniMax — M3 is 1M; M2.x is 204,800. https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000, "minimax": 204800,
     # GLM — Nous + OpenRouter /v1/models (2026-09-09): 5.3 / 5.3-flash 1,310,720 (:batch/:US 1,048,576);
@@ -777,37 +784,6 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
 # Cache the negative verdict in memory only (never on disk — a failure is often transient: server starting,
 # key being fixed) so the very next turn does not re-run the whole waterfall against an endpoint that just
 # answered nothing (#89863).
-def _iter_nested_dicts(value: Any):
-    if isinstance(value, dict):
-        yield value
-        for nested in value.values():
-            yield from _iter_nested_dicts(nested)
-    elif isinstance(value, list):
-        for item in value:
-            yield from _iter_nested_dicts(item)
-
-
-def _coerce_reasonable_int(value: Any, minimum: int = 1024, maximum: int = 10_000_000) -> Optional[int]:
-    if isinstance(value, bool):
-        return None
-    try:
-        result = int(value.strip().replace(",", "") if isinstance(value, str) else value)
-    except (TypeError, ValueError):
-        return None
-    return result if minimum <= result <= maximum else None
-
-
-def _extract_first_int(payload: dict[str, Any], keys: tuple[str, ...]) -> Optional[int]:
-    keyset = {key.lower() for key in keys}
-    for mapping in _iter_nested_dicts(payload):
-        for key, value in mapping.items():
-            if str(key).lower() in keyset:
-                coerced = _coerce_reasonable_int(value)
-                if coerced is not None:
-                    return coerced
-    return None
-
-
 def _extract_flat_context_length(payload: dict[str, Any]) -> Optional[int]:
     """Top-level-only context WINDOW read (no nested walk, so an unrelated nested section can't leak
     a same-named key). ``max_tokens`` is NOT a window key: on OpenAI-compatible passthroughs it is the max OUTPUT."""

@@ -712,8 +712,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 "without scope_id; scoped relay egress may be declined by "
                 "the connector's tenant guard (user_id fallback only).", platform_name, chat_id, chat_type,
             )
+        # The delegation ledger's routing keys carry no thread_id, so a thread route rebuilt
+        # from its session key would drop the thread component and never re-key to its own
+        # route (#144006). Fall back to the parsed key's thread slot — for ``thread`` keys only:
+        # a ``dm`` key's extra slot is the isolated participant, not a thread.
+        derived_thread_id = derived.get("thread_id") if chat_type == "thread" else None
         return SessionSource(
-            platform=platform, chat_id=chat_id, chat_type=chat_type, thread_id=_opt("thread_id"),
+            platform=platform, chat_id=chat_id, chat_type=chat_type,
+            thread_id=_opt("thread_id") or derived_thread_id,
             user_id=_opt("user_id"), user_name=_opt("user_name"), scope_id=scope_id, profile=profile,
         )
 

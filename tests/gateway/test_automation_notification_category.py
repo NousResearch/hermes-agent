@@ -249,3 +249,22 @@ async def test_refused_watch_wake_logs_the_refusal_code(tmp_path, monkeypatch, c
             'Watch notification not admitted for discord chat=42: admission_conflict']
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_thread_wake_rebuilt_from_the_session_key_keeps_its_thread_id(tmp_path, monkeypatch):
+    """A thread route with a pruned store origin (#144006): the wake source is rebuilt from the
+    session key, and that rebuild must keep the thread component so the source re-keys to its
+    own route and the completion is admitted instead of refused with admission_conflict."""
+    runner, authority, _adapter, _source, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'human-1',
+        dict(_SOURCE, chat_type='thread', thread_id='42', parent_chat_id='7'))
+    try:
+        route = metadata['gateway_session_key']
+        runner.session_store._entries[route].origin = None  # pruned routing store
+        evt = {'type': 'completion', 'session_id': 'proc_x', 'session_key': route, 'platform': 'discord',
+               'chat_id': '42', 'chat_type': 'thread', 'exit_code': 0, 'output': 'done', 'started_at': 1.0,
+               'parent_session_id': metadata['gateway_session_id']}
+        assert await runner._inject_watch_notification('[done]', evt) is True
+    finally:
+        authority.db.close()

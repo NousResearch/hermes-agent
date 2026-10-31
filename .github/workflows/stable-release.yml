@@ -7,15 +7,16 @@ run-name: ${{ startsWith(inputs.tag, 'canary.') && 'Canary' || startsWith(inputs
 # every lane that tests or builds the payload is passed that commit.
 #
 # This one workflow is also the canary pipeline (canary-release.yml dispatches it with a
-# canary.<stamp>-vX.Y.Z tag), so a canary runs exactly the jobs a stable release does, with
-# every lane on except the signed-package upgrade arms (scripts/releases/lanes.py CANARY;
-# install-e2e covers old stable -> this commit). Admission emits the policy, and a canary
+# canary.<stamp>-vX.Y.Z tag), so a canary runs exactly the jobs a stable release does, from
+# the same default lanes (scripts/releases/lanes.py CANARY); its signed-package upgrade arms
+# upgrade the last published canary to this one. Admission emits the policy, and a canary
 # differs only in two ways:
 #   - where it publishes: publish-canary moves the canary channels (feeds, Termux APT, the
 #     protected R2 canary head, a GitHub prerelease, the canary Docker aliases). It never runs
 #     publish-bundles, so it never submits to the Store or moves a stable head or alias.
 #   - what green means: publish-canary waits only for the accepted candidate (built, smoked,
-#     staged). Every other suite still runs and turns the run red, but does not hold it back.
+#     staged) and the upgrade arms that ran. Every other suite still runs and turns the run red,
+#     but does not hold it back (unless the claim requires green).
 on:
   workflow_dispatch:
     inputs:
@@ -24,7 +25,7 @@ on:
         required: true
         type: string
       baseline-manifest:
-        description: Optional HTTPS manifest of the previous published stable packages
+        description: Optional HTTPS manifest of the previous published packages of the claim's policy (stable or canary)
         default: ''
         type: string
 
@@ -502,7 +503,7 @@ jobs:
   windows-packaged:
     name: Windows signed-package acceptance
     needs: [admit, transitions-win32]
-    # Without a published stable baseline there is no OLD package to upgrade from.
+    # Without a published baseline (the last stable, or for a canary the last canary) there is no OLD package.
     if: fromJSON(needs.admit.outputs.jobs)['windows-packaged'] && needs.transitions-win32.outputs.baseline != 'none'
     strategy:
       fail-fast: false
@@ -521,7 +522,7 @@ jobs:
   macos-packaged-arm64:
     name: macOS arm64 signed-package acceptance
     needs: [admit, transitions-darwin-arm64]
-    # Without a published stable baseline there is no OLD package to upgrade from.
+    # Without a published baseline (the last stable, or for a canary the last canary) there is no OLD package.
     if: fromJSON(needs.admit.outputs.jobs)['macos-packaged-arm64'] && needs.transitions-darwin-arm64.outputs.baseline != 'none'
     strategy:
       fail-fast: false
@@ -540,7 +541,7 @@ jobs:
   macos-packaged-x64:
     name: macOS x64 signed-package acceptance
     needs: [admit, transitions-darwin-x64]
-    # Without a published stable baseline there is no OLD package to upgrade from.
+    # Without a published baseline (the last stable, or for a canary the last canary) there is no OLD package.
     if: fromJSON(needs.admit.outputs.jobs)['macos-packaged-x64'] && needs.transitions-darwin-x64.outputs.baseline != 'none'
     strategy:
       fail-fast: false
@@ -659,13 +660,22 @@ jobs:
     # candidate pointer and the protected R2 canary head (channel_releases canary). Its claim
     # decides what it waits for: with require-green it publishes only once acceptance passes
     # (every suite green), like a stable release; without it, only the accepted candidate
-    # (built and smoked) gates it and a red suite reports without holding the canary back. The
-    # Store bundle is staged in the archive and never submitted.
-    needs: [admit, candidate-manifest, acceptance]
+    # (built and smoked) and the signed-package upgrade arms gate it: each arm that ran
+    # (last published canary -> this one) passed, or was skipped (lane off, no baseline). A red
+    # suite reports without holding the canary back. The Store bundle is staged in the archive and
+    # never submitted.
+    needs: [admit, candidate-manifest, acceptance, transitions-darwin-arm64, transitions-darwin-x64,
+            transitions-win32, macos-packaged-arm64, macos-packaged-x64, windows-packaged]
     if: >-
       !cancelled() && fromJSON(needs.admit.outputs.jobs)['publish-canary']
       && needs.candidate-manifest.result == 'success'
       && (needs.admit.outputs.require-green != 'true' || needs.acceptance.result == 'success')
+      && contains(fromJSON('["success", "skipped"]'), needs.transitions-darwin-arm64.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.transitions-darwin-x64.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.transitions-win32.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.macos-packaged-arm64.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.macos-packaged-x64.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.windows-packaged.result)
     runs-on: blacksmith-32vcpu-ubuntu-2404
     environment: release-signing
     timeout-minutes: 120
@@ -683,7 +693,7 @@ jobs:
       CANDIDATE_MANIFEST_URL: ${{ needs.candidate-manifest.outputs.manifest-url }}
       CANDIDATE_MANIFEST_SHA256: ${{ needs.candidate-manifest.outputs.manifest-sha256 }}
       RELEASE_NEEDS: ${{ toJSON(needs) }}
-      # channel_releases custody re-requires acceptance when the claim requires green.
+      # channel_releases custody re-requires the upgrade arms, and acceptance when the claim requires green.
       REQUIRE_GREEN: ${{ needs.admit.outputs.require-green }}
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
       CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}

@@ -271,6 +271,8 @@ _CONTEXT_OVERFLOW_PATTERNS = (
     # Together/Fireworks-style: "Input length 131393 exceeds the maximum allowed input length of 131040
     # tokens."  No other pattern in this list matches that wording. (port of anomalyco/opencode#37848)
     "maximum allowed input length",
+    # Strata: "prompt (131808 tokens) leaves no room to answer in the context (131072)".
+    "no room to answer",
 )
 
 # Last entry: OpenRouter 404 when no endpoint supports tool calling —
@@ -1284,6 +1286,11 @@ def _classify_400(c: _Ctx) -> Verdict:
     verdict = _first_match(msg, _400_TAIL_RULES)
     if verdict is not None:
         return verdict
+    # A request already at the window overflows whatever the wording, and compression is the only
+    # recovery: an unrecognised phrasing (Strata's "leaves no room to answer in the context") must
+    # not become a non-retryable format_error that every later turn repeats.
+    if c.approx_tokens >= c.context_length > 0:
+        return _V_CONTEXT_OVERFLOW
     # Generic 400 + large session → probable overflow (Anthropic can return a
     # bare "Error"); proxy shapes are read so a descriptive rejection isn't "bare".
     body_msg = next((m for m in (str(x or "").strip().lower() for x in _body_message_candidates(c.body)) if m), "")

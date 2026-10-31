@@ -15,7 +15,7 @@ import threading
 import time
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
-from agent.pet import render as pet_render
+from agent import terminal_image
 from contextlib import suppress
 from hermes_constants import get_hermes_home
 from prompt_toolkit.application import Application
@@ -414,7 +414,7 @@ class CLITuiRuntimeMixin:
         # Kitty placeholders encode the image id in exact foreground RGB, so the whole app
         # runs 24-bit there. ColorDepth is imported lazily for tests that stub prompt_toolkit.
         extra_kw = {}
-        if pet_render.supports_kitty_placeholders():
+        if terminal_image.supports_kitty_placeholders():
             from prompt_toolkit.output import ColorDepth
 
             extra_kw["color_depth"] = ColorDepth.DEPTH_24_BIT

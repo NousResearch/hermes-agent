@@ -6,7 +6,10 @@ Address resolution per plugin, in order, no derivation ever (settled
   2. manifest update_url differs from the saved tag (or appeared where
      none was saved) → NEEDS-FIXING: fetch refused, tag untouched
   3. no update_url anywhere + git row → git ls-remote vs revision
-  4. neither → manual/unupdatable
+  4. artifact-pinned (archive install, install.json marker) → the live
+     catalog pin vs the marker's recorded commit; remedy is a catalog
+     reinstall, never a git-clone downgrade (UPD-5, est-qrazy)
+  5. neither → manual/unupdatable
 Plus the pip world, stateless: entry-point discovery → installed version
 vs PyPI latest. NEVER mutates anything — no pulls, no row writes, no
 saved-tag changes.
@@ -101,6 +104,16 @@ def check_local_provenance(prov: Provenance) -> CheckResult:
     if prov.klass is ProvenanceClass.SELF_CLONED:
         result.reason = "self-cloned; run `hermes plugins adopt` first"
         return result
+    if prov.klass is ProvenanceClass.ARTIFACT:
+        # class proven: archive install, no .git by design. The update
+        # verdict is computed against the catalog in check_provenanced —
+        # never a git-clone remedy, which would downgrade the install.
+        row = prov.row or {}
+        marker = prov.install_json or {}
+        result.current = (
+            row.get("revision") or marker.get("source_commit") or marker.get("version") or None
+        )
+        return result
 
     row = prov.row or {}
     result.current = row.get("revision") or None
@@ -142,6 +155,83 @@ def held_for_newer_hermes(result: CheckResult) -> Optional[str]:
     return f"needs Hermes {result.min_hermes}; this is {running_hermes_version()}"
 
 
+def _artifact_catalog_name(prov: Provenance) -> str:
+    """The catalog key for an artifact install: the marker's
+    ``source_repo`` reverse-looked-up against the live catalog (repo
+    identity is host/path spelling, same normalization as the kill
+    list), falling back to the plugin dir name — catalog keys usually
+    match it."""
+    marker = prov.install_json or {}
+    repo = marker.get("source_repo")
+    if isinstance(repo, str) and repo.strip():
+        from hermes_cli.plugin_catalog import _normalize_repo, load_catalog_live
+
+        want = _normalize_repo(repo)
+        for entry in load_catalog_live():
+            if entry.repo and _normalize_repo(entry.repo) == want:
+                return entry.name
+    return prov.name
+
+
+def _check_artifact_vs_catalog(prov: Provenance, catalog_name: Optional[str]) -> CheckResult:
+    """The artifact-pinned update answer: the bundle's own install.json
+    against the live catalog pin. The marker is the current identity (a
+    sidecar revision can predate an archive swap); the remedy for a moved
+    pin is the updated archive — never a git clone, which would downgrade
+    the install class (UPD-5, est-qrazy)."""
+    from hermes_cli.plugin_catalog import find_removed, get_live_catalog_entry
+
+    marker = prov.install_json or {}
+    row = prov.row or {}
+    current = marker.get("source_commit") or marker.get("version") or row.get("revision") or None
+    result = CheckResult(
+        name=prov.name, klass=prov.klass.value, current=str(current) if current else None
+    )
+    name = str(catalog_name) if catalog_name else _artifact_catalog_name(prov)
+    removed = None if row.get("allow_removed") is True else (
+        find_removed(name)
+        or find_removed(str(marker.get("source_repo") or row.get("source", "")).split("#", 1)[0])
+    )
+    if removed:
+        result.reason = f"removed from catalog: {removed.reason}"
+        return result
+    entry = get_live_catalog_entry(name)
+    if entry is None:
+        result.reason = "artifact-pinned; catalog entry unavailable, installed pin retained"
+        return result
+    result.min_hermes = entry.requires_hermes or None
+    result.latest = entry.sha
+    cur = str(current or "")
+    if cur and cur.lower() == entry.sha.lower():
+        result.update_available = False
+    elif _FULL_GIT_SHA_RE.fullmatch(cur):
+        result.update_available = True
+        if marker.get("version") and entry.version:
+            result.current, result.latest = str(marker["version"]), entry.version
+    elif marker.get("version") and entry.version:
+        # Like-for-like fields: the version branch compares version vs
+        # version, so current reports the archive version, not the sha.
+        result.update_available = _version_is_newer(entry.version, str(marker["version"]))
+        result.current, result.latest = str(marker["version"]), entry.version
+        if result.update_available is None:
+            result.reason = (
+                f"cannot compare archive version {str(marker['version'])!r} "
+                f"with catalog version {entry.version!r}"
+            )
+    else:
+        result.update_available = None
+        result.reason = (
+            "artifact-pinned; the marker's identifier cannot be compared "
+            "like-for-like with the catalog pin"
+        )
+    if result.update_available is True:
+        result.reason = (
+            f"catalog pin moved; install the updated archive: "
+            f"hermes plugins install {name} --force"
+        )
+    return result
+
+
 def check_provenanced(
     prov: Provenance,
     *,
@@ -153,6 +243,9 @@ def check_provenanced(
     catalog_value = row.get("catalog")
     catalog: dict = catalog_value if isinstance(catalog_value, dict) else {}
     catalog_name = catalog.get("name") or row.get("catalog_name")
+    if prov.klass is ProvenanceClass.ARTIFACT:
+        # The marker answers 'what am I'; the catalog answers 'is it outdated'.
+        return _check_artifact_vs_catalog(prov, catalog_name)
     if catalog_name:
         from hermes_cli.plugin_catalog import find_removed, get_live_catalog_entry
 

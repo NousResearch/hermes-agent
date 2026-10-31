@@ -3216,7 +3216,10 @@ class SlackAdapter(BasePlatformAdapter):
             None,
             (r"^#{1,6}\s+(.+)$", _convert_header, re.MULTILINE),
             (r"\*\*\*(.+?)\*\*\*", lambda m: _ph(f"*_{m.group(1)}_*"), 0),
-            (r"\*\*(.+?)\*\*", _convert_bold, 0),
+            # Bold spans contiguous lines but never a blank one: a paragraph break ends the
+            # emphasis, and a blanket DOTALL would let a stray ** swallow whole paragraphs.
+            # The tempered group stops at the next ** so adjacent spans don't merge.
+            (r"(?<!\*)\*\*(?!\*)((?:(?!\*\*)[^\n]|\n(?!\s*\n))+?)\*\*(?!\*)", _convert_bold, 0),
             # *text* → _text_ only when non-whitespace touches both delimiters ("a * b * c" stays).
             (r"(?<!\*)\*(\S(?:[^*\n]*?\S)?)\*(?!\*)", lambda m: _ph(f"_{m.group(1)}_"), 0),
             (r"~~(.+?)~~", lambda m: _ph(f"~{m.group(1)}~"), 0))

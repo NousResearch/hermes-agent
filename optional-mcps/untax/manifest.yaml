@@ -1,0 +1,32 @@
+name: untax
+manifest_version: 1
+description: Property assessment research, tax-reduction route rechecks, VA facility and form lookups, and consented veteran review packets over Streamable HTTP.
+source: https://github.com/mooshee/untax-mcp
+transport:
+  type: http
+  url: https://untax.io/mcp
+auth:
+  type: none
+tools:
+  default_enabled:
+    - suggest_addresses
+    - get_property_assessment
+    - recheck_property_opportunities
+    - find_va_facilities
+    - get_va_facility
+    - find_va_forms
+    - get_va_form
+    - get_microtransactions_catalog
+    - audit_microtransaction
+    - get_appeal_lifecycle
+suggest:
+  keywords:
+    - property tax
+    - property assessment
+    - tax appeal
+    - veteran tax exemption
+    - untax
+  hosts:
+    - untax.io
+post_install: |
+  No account or API key is required for public county property assessment research, tax-reduction route rechecks, or official VA facility and form lookups. Private owner workspace reviews, consented VA verification connections, and test sandbox orders require Untax OAuth 2.1 sign-in.

@@ -1,18 +1,18 @@
 name: burnclock
 repo: https://github.com/jersilb/burnclock-hermes
-sha: "471c149d1699d115b593751e5d8a503e3036a072"
+sha: "4cd48583b11d29adc95f5a0a855b48ccfb83962e"
 title: Burnclock
-description: "Status-bar chip and left-nav dashboard for the MIT burnclock CLI. The chip reads burnclock's local badge cache; the dashboard adds cached balance, runway, budget and the DeepSeek Flash off-peak clock. The plugin runs no provider refresh and reads no credentials — balances are refreshed by running `burnclock badge --refresh` in a terminal, where the CLI has its own environment. Requires the separately installed burnclock CLI (pip install burnclock) and a populated cache. Disclosure — the chip runs a read-only shell command (cat of the cache) in your active local session every 60 seconds; the dashboard runs the pure-clock offpeak subcommand every 60 seconds. Nothing else is read and no other command is executed."
+description: "Status-bar chip and left-nav dashboard for the MIT burnclock CLI. The chip reads burnclock's local badge cache; the dashboard adds cached balance, runway, budget, the DeepSeek Flash off-peak clock, and an API-keys card. A key entered in the card is sent to the plugin's own local backend, written only to burnclock's keys file (mode 0600), and used only for the explicit `burnclock badge --refresh`; the desktop renderer stores no key and Hermes credentials are never read or forwarded. Requires the separately installed burnclock CLI (pip install burnclock). Disclosure — the chip runs a read-only shell command (cat of the cache) in your active local session every 60 seconds; the dashboard runs the pure-clock offpeak subcommand every 60 seconds. A key save or refresh command runs the burnclock CLI only when the user clicks that action; no other command is executed."
 maintainer: jersilb
 tier: community
 category: desktop
-version: "0.2.1"
+version: "0.3.0"
 requires_hermes: ">=0.22.0"
 platforms: [macos]
 docs_url: https://github.com/jersilb/burnclock-hermes
-image: https://raw.githubusercontent.com/jersilb/burnclock-hermes/471c149d1699d115b593751e5d8a503e3036a072/docs/banner.png
+image: https://raw.githubusercontent.com/jersilb/burnclock-hermes/4cd48583b11d29adc95f5a0a855b48ccfb83962e/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/jersilb/burnclock-hermes/471c149d1699d115b593751e5d8a503e3036a072/docs/chip.png
+  - https://raw.githubusercontent.com/jersilb/burnclock-hermes/4cd48583b11d29adc95f5a0a855b48ccfb83962e/docs/chip.png
 capabilities:
   provides_tools: []
   provides_hooks: []

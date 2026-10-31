@@ -1,0 +1,17 @@
+name: hermes-agent-desktop
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: c0fd96a3fdde852e232270363ca0b1ea57df8755
+subdir: public/hermes-agent-desktop
+description: "Hermes Agent Desktop: operate Windows apps through the accessibility tree instead of the screen. Reads a window's real UI as roles, names, states and refs, then clicks, fills a field, selects an option, toggles a checkbox, scrolls, sends a key combo, and manages windows and the clipboard. Actions are semantic and headless by default, so they do not take focus, move the cursor or synthesize keystrokes, and they fail closed rather than guess. desktop_install downloads the official vercel-labs/agent-desktop release for the running Windows target, verifies the archive against a sha256 pinned in the plugin, and proves the install by running version and status. Disclosure — the plugin runs the agent-desktop executable as a child process with arguments it builds; desktop_install is the only tool that uses the network, fetching the upstream GitHub release and, for an unpinned version, its checksums.txt; it reads window titles, labels, field values and the clipboard on request, which can contain private content. Windows only."
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/c0fd96a3fdde852e232270363ca0b1ea57df8755/public/hermes-agent-desktop/docs/hero.png
+maintainer: apoapostolov
+tier: community
+category: automation
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/hermes-agent-desktop
+version: "1.0.1"
+platforms: [windows]
+capabilities:
+  provides_tools: [desktop_status, desktop_apps, desktop_snapshot, desktop_find, desktop_act, desktop_window, desktop_clipboard, desktop_batch, desktop_install]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

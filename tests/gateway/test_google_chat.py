@@ -1316,6 +1316,21 @@ class TestAttachmentSSRFGuard:
         assert path == str(tmp_path / "out.pdf")
         assert mime == "application/pdf"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content_type, ask", [
+        ("image/png", "upload the file into the chat"),
+        ("application/vnd.google-apps.document", "export it"),
+    ])
+    async def test_drive_picker_share_tells_the_agent_why_no_file_arrived(self, adapter, content_type, ask):
+        """nanoclaw#4176: a Drive-picker share carries only a Drive id the bot cannot download; the
+        agent must learn why instead of receiving an empty turn."""
+        att = {"source": "DRIVE_FILE", "contentType": content_type, "contentName": "Q3 plan",
+               "name": "spaces/S/messages/M/attachments/A", "driveDataRef": {"driveFileId": "1abc"}}
+        env = _make_chat_envelope(text="", attachments=[att])
+        event = await adapter._build_message_event(env["chat"]["messagePayload"]["message"], env)
+        assert event.media_urls == []
+        assert 'Google Drive file "Q3 plan"' in event.text and ask in event.text
+
 
 # ===========================================================================
 # Outbound thread routing (anti-top-level fallback in DMs)

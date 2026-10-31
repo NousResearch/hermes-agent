@@ -1636,12 +1636,10 @@ def _start_chat_background_prefetch() -> None:
         ).start()
 
 
-def _first_run_setup_guard(args) -> None:
-    """No provider configured: offer `hermes setup` (TTY) or exit 1 with guidance."""
+def _first_run_setup_guard(args) -> bool:
+    """Offer setup and return provider readiness, or exit 1 on decline/non-TTY."""
     print()
-    print(
-        "It looks like Hermes isn't configured yet -- no API keys or providers found."
-    )
+    print("It looks like Hermes isn't configured yet -- no API keys or providers found.")
     print()
     print("  Run:  hermes setup")
     print()
@@ -1663,7 +1661,10 @@ def _first_run_setup_guard(args) -> None:
         reply = "n"
     if reply in {"", "y", "yes"}:
         cmd_setup(args)
-        return
+        configured = _has_any_provider_configured()
+        if configured:
+            print("Starting Hermes...")
+        return configured
     print()
     print("You can run 'hermes setup' at any time to configure.")
     sys.exit(1)
@@ -1700,8 +1701,7 @@ def cmd_chat(args):
     # The TUI owns its first-run state: it renders "Setup Required" with in-place /setup.
     # The classic prompt only fronts the classic CLI.
     provider_configured = _has_any_provider_configured()
-    if not use_tui and not provider_configured:
-        _first_run_setup_guard(args)
+    if not use_tui and not provider_configured and not _first_run_setup_guard(args):
         return
 
     _start_chat_background_prefetch()

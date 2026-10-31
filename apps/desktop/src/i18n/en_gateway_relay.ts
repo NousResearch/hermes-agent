@@ -18,6 +18,9 @@ export const enGatewayRelay: GatewayRelayTranslations = {
   remove: 'Remove',
   removeConfirm: label => `Remove ${label}? This gateway stops reaching it, and its grant there is revoked.`,
   removeFailed: 'Could not remove that gateway',
+  removeHere: 'Remove here only',
+  removeUnconfirmed: label =>
+    `Remove ${label} here only? Its grant there keeps working until you revoke it on ${label}.`,
   test: 'Test',
   reachable: 'Reachable',
   unreachable: error => `Not reachable: ${error}`,

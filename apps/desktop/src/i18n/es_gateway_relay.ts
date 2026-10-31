@@ -18,6 +18,9 @@ export const esGatewayRelay: GatewayRelayTranslations = {
   remove: 'Quitar',
   removeConfirm: label => `¿Quitar ${label}? Este gateway dejará de alcanzarlo y se revocará su permiso allí.`,
   removeFailed: 'No se pudo quitar ese gateway',
+  removeHere: 'Quitar solo aquí',
+  removeUnconfirmed: label =>
+    `¿Quitar ${label} solo aquí? Su permiso allí sigue vigente hasta que lo revoques en ${label}.`,
   test: 'Probar',
   reachable: 'Accesible',
   unreachable: error => `No accesible: ${error}`,

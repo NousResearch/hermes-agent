@@ -30,6 +30,15 @@ function servingGateway() {
       return json({ gateways: [MINI] })
     }
 
+    // Mini is down: it cannot confirm it revoked the grant, so only forgetting it here removes it.
+    if (path === '/hermes/api/webapp/relay/gateways/mini' && init?.method === 'DELETE') {
+      return json(
+        url.searchParams.get('forget') === '1'
+          ? { removed: true, revoked: false }
+          : { detail: "Mini did not confirm it revoked this gateway's access: it answered 503.", removed: false }
+      )
+    }
+
     if (path === '/hermes/api/relay/mini/api/profiles') {
       return json({ profiles: [{ name: 'default' }, { name: 'research' }] })
     }
@@ -92,6 +101,27 @@ describe('a Webapp whose gateway relays to others', () => {
       ['mini', 'remote']
     ])
     expect(registry.primary).toBe('local')
+  })
+
+  it('keeps a gateway that did not confirm the revocation until it is removed here only', async () => {
+    const requests = servingGateway()
+    const desktop = install()
+    await desktop.connections!.list()
+    const events: string[] = []
+    desktop.connections!.onChanged!(event => events.push(`${event.connectionId}:${event.reason}`))
+
+    await expect(desktop.connections!.remove('mini')).rejects.toThrow('Mini did not confirm')
+    expect(events).toEqual([])
+
+    await expect(desktop.gatewayRelay!.removeGateway('mini', { forget: true })).resolves.toEqual({
+      removed: true,
+      revoked: false
+    })
+    expect(requests.filter(request => request.method === 'DELETE').map(request => request.search)).toEqual([
+      '',
+      '?forget=1'
+    ])
+    expect(events).toEqual(['mini:removed'])
   })
 
   it("sends a relayed connection's requests through the relay and owns their rows to it", async () => {

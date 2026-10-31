@@ -42,6 +42,10 @@ class PairingError(ValueError):
     """A pairing that cannot start or finish; ``str()`` is shown to the user."""
 
 
+class RevokeUnconfirmed(Exception):
+    """The spoke did not confirm it revoked a grant; ``str()`` is shown to the user."""
+
+
 def _path(home) -> Path:
     return Path(home) / GATEWAYS_PATH
 
@@ -185,10 +189,13 @@ async def finish_pairing(home, *, identity: dict[str, str], state: str, code: st
     granted = {"user_id": grant.get("subject"), "provider": grant.get("provider"), "issuer": grant.get("issuer") or ""}
     if granted != identity:
         # Approved there as someone else: this hub will not act as that account. The spoke keeps a
-        # grant nobody here uses; revoke it so it does not linger.
-        await _revoke_remote(home, key, pairing["url"], grant, client)
-        raise PairingError(f"{pairing['url']} approved the pairing as a different account. Sign in to both "
-                           "gateways with the same account and pair again.")
+        # grant nobody here uses; revoke it so it does not linger, and say so when that fails.
+        failure = await _revoke_remote(home, key, pairing["url"], grant, client)
+        message = f"{pairing['url']} approved the pairing as a different account."
+        if failure is not None:
+            message += (f" The grant it made could not be revoked: {failure}. Revoke it there in "
+                        "Settings → Gateways.")
+        raise PairingError(f"{message} Sign in to both gateways with the same account and pair again.")
     with _lock:
         rows = _read(home)
         row = {"id": _slug(pairing["label"], {r["id"] for r in rows}), "label": pairing["label"],
@@ -202,27 +209,44 @@ async def finish_pairing(home, *, identity: dict[str, str], state: str, code: st
     return row
 
 
-async def _revoke_remote(home, key, url: str, grant: dict[str, Any], client) -> None:
+async def _revoke_remote(home, key, url: str, grant: dict[str, Any], client) -> Optional[str]:
+    """Revoke *grant* on the spoke at *url*, signed as the grant itself; None once the spoke confirms
+    it, otherwise why it is not confirmed (shown to the user)."""
     grant_id, subject = grant.get("grant_id"), grant.get("subject")
     if not grant_id or not subject:
-        return
+        return "it named no grant"
     target = f"/api/webapp/relay/grants/{grant_id}"
     headers = relay.sign_request(key, method="DELETE", target=target, audience=url, grant_id=grant_id,
                                  subject=subject)
     try:
-        await client.delete(f"{url}{target}", headers=headers, timeout=10.0)
-    except httpx.HTTPError as exc:  # best effort: the user can revoke it on the spoke
+        response = await client.delete(f"{url}{target}", headers=headers, timeout=10.0)
+    except httpx.HTTPError as exc:  # transport failure: the spoke is unreachable from this host
         _log.warning("Gateway relay: could not revoke grant at %s: %s", url, exc)
+        return f"it is not reachable from this gateway ({type(exc).__name__})"
+    if response.is_success:
+        return None
+    _log.warning("Gateway relay: %s answered %s to revoking its grant", url, response.status_code)
+    if response.status_code == 401:
+        return "it no longer accepts this gateway's key, so the grant may already be revoked there"
+    return f"it answered {response.status_code}"
 
 
-async def unpair(home, identity: dict[str, str], gateway_id: str, client) -> bool:
-    """Forget *gateway_id* here and revoke its grant on the spoke (best effort)."""
-    row = remove(home, identity, gateway_id)
+async def unpair(home, identity: dict[str, str], gateway_id: str, client, *, forget: bool = False) -> bool:
+    """Revoke *gateway_id*'s grant on the spoke, then forget the gateway here; False when *identity*
+    has no such gateway.
+
+    Raises RevokeUnconfirmed, and keeps the gateway so Remove can run again, when the spoke does not
+    confirm the revocation. *forget* forgets it here without asking the spoke: its grant stays until
+    the user revokes it there."""
+    row = gateway_for(home, identity, gateway_id)
     if row is None:
         return False
-    await _revoke_remote(home, relay.hub_key(home), row["url"],
-                         {"grant_id": row["grant_id"], "subject": row["subject"]}, client)
-    return True
+    if not forget:
+        failure = await _revoke_remote(home, relay.hub_key(home), row["url"],
+                                       {"grant_id": row["grant_id"], "subject": row["subject"]}, client)
+        if failure is not None:
+            raise RevokeUnconfirmed(f"{row['label']} did not confirm it revoked this gateway's access: {failure}.")
+    return remove(home, identity, gateway_id) is not None
 
 
 def public_row(row: dict[str, Any]) -> dict[str, Any]:

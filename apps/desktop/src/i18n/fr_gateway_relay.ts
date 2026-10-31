@@ -19,6 +19,9 @@ export const frGatewayRelay: GatewayRelayTranslations = {
   removeConfirm: label =>
     `Retirer ${label} ? Cette passerelle ne pourra plus l’atteindre, et son autorisation là-bas sera révoquée.`,
   removeFailed: 'Impossible de retirer cette passerelle',
+  removeHere: 'Retirer ici seulement',
+  removeUnconfirmed: label =>
+    `Retirer ${label} ici seulement ? Son autorisation là-bas reste valable jusqu’à ce que vous la révoquiez sur ${label}.`,
   test: 'Tester',
   reachable: 'Joignable',
   unreachable: error => `Injoignable : ${error}`,

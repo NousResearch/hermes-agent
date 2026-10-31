@@ -18,6 +18,8 @@ export const zhHantGatewayRelay: GatewayRelayTranslations = {
   remove: '移除',
   removeConfirm: label => `移除 ${label}？此閘道將無法再存取它，它在對方那裡的授權也會被撤銷。`,
   removeFailed: '無法移除該閘道',
+  removeHere: '僅在此處移除',
+  removeUnconfirmed: label => `僅在此處移除 ${label}？它在對方那裡的授權仍然有效，直到你在 ${label} 上撤銷。`,
   test: '測試',
   reachable: '可存取',
   unreachable: error => `無法存取：${error}`,

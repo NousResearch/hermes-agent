@@ -265,13 +265,19 @@ async def relay_callback(request: Request, state: str = "", code: str = "", erro
 
 
 @router.delete("/api/webapp/relay/gateways/{gateway_id}")
-async def relay_unpair(request: Request, gateway_id: str):
+async def relay_unpair(request: Request, gateway_id: str, forget: bool = False):
+    """Remove a gateway once it confirms it revoked this hub's grant; ``?forget=1`` removes it here
+    only. An unconfirmed revocation keeps the gateway and answers ``removed: false`` with why."""
     _require_relay(request)
-    if not await hub.unpair(_home(request), _own_login(request), gateway_id, _client(request)):
+    try:
+        removed = await hub.unpair(_home(request), _own_login(request), gateway_id, _client(request), forget=forget)
+    except hub.RevokeUnconfirmed as exc:
+        return JSONResponse({"removed": False, "detail": str(exc)}, headers=_NO_STORE)
+    if not removed:
         raise HTTPException(404, "No such gateway")
     from hermes_cli.web_routers.webapp_relay_proxy import close_gateway_sockets
     close_gateway_sockets(gateway_id)
-    return JSONResponse({"removed": True}, headers=_NO_STORE)
+    return JSONResponse({"removed": True, "revoked": not forget}, headers=_NO_STORE)
 
 
 @router.post("/api/webapp/relay/gateways/{gateway_id}/test")

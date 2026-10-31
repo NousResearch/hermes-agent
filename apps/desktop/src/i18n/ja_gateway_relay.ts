@@ -19,6 +19,9 @@ export const jaGatewayRelay: GatewayRelayTranslations = {
   removeConfirm: label =>
     `${label} を削除しますか？ このゲートウェイからは届かなくなり、相手側の許可も取り消されます。`,
   removeFailed: 'そのゲートウェイを削除できませんでした',
+  removeHere: 'ここだけ削除',
+  removeUnconfirmed: label =>
+    `${label} をここだけ削除しますか？ 相手側の許可は、${label} で取り消すまで有効なままです。`,
   test: 'テスト',
   reachable: '到達可能',
   unreachable: error => `到達できません：${error}`,

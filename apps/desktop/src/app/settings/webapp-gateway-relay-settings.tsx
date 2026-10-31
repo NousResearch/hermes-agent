@@ -96,7 +96,21 @@ function RelaySections({ relay }: { relay: NonNullable<Window['hermesDesktop']['
     setBusy(row.id)
 
     try {
-      await window.hermesDesktop.connections?.remove(row.id)
+      const result = await relay.removeGateway(row.id)
+
+      // Kept until it confirms the revocation: removing it here only leaves its grant there standing.
+      if (
+        !result.removed &&
+        (await confirm({
+          confirmLabel: r.removeHere,
+          description: result.detail,
+          destructive: true,
+          title: r.removeUnconfirmed(row.label)
+        }))
+      ) {
+        await relay.removeGateway(row.id, { forget: true })
+      }
+
       await load()
       await refreshConnectionsRegistry()
     } catch (error) {

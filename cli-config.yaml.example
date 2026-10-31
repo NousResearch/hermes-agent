@@ -1514,6 +1514,10 @@ platform_toolsets:
 #         allow_silence: true
 #   slack:
 #     extra:
+#       # Use Slack's native Markdown block for headings, tables, and fenced
+#       # code. Intended for Slack platform-AI apps; takes precedence over
+#       # rich_blocks when both are enabled. Default: false.
+#       markdown_blocks: false
 #       # Render live tool calls as Slack-native plan/task cards. This explicit
 #       # opt-in works even though Slack text tool_progress defaults to off.
 #       native_task_cards: false

@@ -975,6 +975,17 @@ DEFAULT_CONFIG = {
         # on a genuinely hung build. Raise it for deployments with many slow
         # or unreachable MCP servers.
         "build_wait_timeout": 600,
+        # Cross-process file-cache TTL for the account-usage snapshot
+        # (agent/account_usage.py).  A successful /api/oauth/usage or
+        # equivalent response is written to
+        # HERMES_HOME/cache/account_usage/<provider>_<fingerprint>.json and
+        # reused by any other Hermes process that shares the same HERMES_HOME
+        # (gateway, dashboard, cron, CLI) within this window.  Combined with
+        # the in-process 300-s dict cache and the dashboard's 30-s response
+        # cache, upstream HTTP calls are bounded to ≤ 1 per fingerprint per
+        # 2 minutes (i.e. ≤ 1 call/account/2min across all local processes).
+        # Adjust downward for faster UI freshness; upward to reduce API load.
+        "account_usage_file_cache_ttl": 120,
         # Max app-level retry attempts for API errors (connection drops,
         # provider timeouts, 5xx, etc.) before the agent surfaces the
         # failure.  The OpenAI SDK already does its own low-level retries

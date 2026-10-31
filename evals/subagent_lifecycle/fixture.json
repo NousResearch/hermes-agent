@@ -1,0 +1,24 @@
+{
+  "contract_version": 1,
+  "transitions": [
+    {"from": "PENDING", "event": "start", "to": "RUNNING"},
+    {"from": "RUNNING", "event": "succeed", "to": "SUCCEEDED"},
+    {"from": "RUNNING", "event": "fail", "to": "FAILED"},
+    {"from": "RUNNING", "event": "interrupt", "to": "INTERRUPTED"},
+    {"from": "RUNNING", "event": "cancel", "to": "CANCEL_REQUESTED"},
+    {"from": "CANCEL_REQUESTED", "event": "cancel-complete", "to": "CANCELLED"}
+  ],
+  "invalid_transitions": [
+    {"from": "PENDING", "event": "succeed"},
+    {"from": "STARTING", "event": "succeed"},
+    {"from": "SUCCEEDED", "event": "run"},
+    {"from": "FAILED", "event": "cancel"},
+    {"from": "INTERRUPTED", "event": "cancel"},
+    {"from": "CANCELLED", "event": "cancel"}
+  ],
+  "state_notes": {
+    "STARTING": "Enum value retained by the service but never observable: the service moves directly from PENDING to RUNNING. Listed under invalid_transitions as a representative sample documenting that events sourced from it are rejected.",
+    "UNKNOWN": "Not a lifecycle state: reported only as the status/result state of a handle the service cannot resolve."
+  },
+  "terminal_states": ["SUCCEEDED", "FAILED", "INTERRUPTED", "CANCELLED"]
+}

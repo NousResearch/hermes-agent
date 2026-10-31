@@ -497,7 +497,8 @@ def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
 
 
 def _validate_minimax(req: _Request) -> Optional[dict[str, Any]]:
-    """MiniMax has no /models endpoint — static catalog, case-insensitive (ids like MiniMax-M2.7).
+    """MiniMax's catalog is read from ``<base>/v1/models`` (live rows merged with the curated
+    floor) and matched case-insensitively (ids like MiniMax-M2.7).
     Returns None when the catalog is empty."""
     catalog = _static_catalog(req.normalized)
     if not catalog:
@@ -506,7 +507,7 @@ def _validate_minimax(req: _Request) -> Optional[dict[str, Any]]:
     return match.verdict(req) or _soft_accept(
         f"Note: `{req.requested}` was not found in the MiniMax catalog."
         f"{match.suggestion_text}"
-        "\n  MiniMax does not expose a /models endpoint, so Hermes cannot verify the model name."
+        "\n  The model name could not be verified against MiniMax's catalog."
         "\n  The model may still work if it exists on the server."
     )
 

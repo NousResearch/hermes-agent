@@ -5,9 +5,11 @@ import { host } from '@/sdk'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $chatTextScale, setChatTextScale } from '@/store/chat-text-scale'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
+import { $modeContext, setInterfaceMode } from '@/store/interface-mode'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, setSessionListDensity } from '@/store/session-list-density'
+import { $statusbarVisible, setStatusbarVisible } from '@/store/statusbar-prefs'
 import { $tabStripDefault, setTabStripDefault } from '@/store/tabstrip-prefs'
 
 const resetSettings = () => {
@@ -18,6 +20,7 @@ const resetSettings = () => {
   setReasoningCollapsedByDefault(false)
   setComposerPopoutGesturesEnabled(true)
   setChatTextScale(110)
+  setStatusbarVisible(true)
 }
 
 describe('host.settings', () => {
@@ -35,6 +38,7 @@ describe('host.settings', () => {
     host.settings.set('reasoning.collapsedByDefault', true)
     host.settings.set('composerPopout.gesturesEnabled', false)
     host.settings.set('chatTextScale', 125)
+    host.settings.set('statusbarVisible', false)
 
     expect(host.settings.get('sessionListDensity')).toBe('detailed')
     expect(host.settings.get('tabStripDefault')).toBe('always')
@@ -43,6 +47,7 @@ describe('host.settings', () => {
     expect(host.settings.get('reasoning.collapsedByDefault')).toBe(true)
     expect(host.settings.get('composerPopout.gesturesEnabled')).toBe(false)
     expect(host.settings.get('chatTextScale')).toBe(125)
+    expect(host.settings.get('statusbarVisible')).toBe(false)
 
     expect($sessionListDensity.get()).toBe('detailed')
     expect($tabStripDefault.get()).toBe('always')
@@ -51,6 +56,7 @@ describe('host.settings', () => {
     expect($reasoningCollapsedByDefault.get()).toBe(true)
     expect($composerPopoutGesturesEnabled.get()).toBe(false)
     expect($chatTextScale.get()).toBe(125)
+    expect($statusbarVisible.get()).toBe(false)
   })
 
   it('preserves the stores existing persistence schema', () => {
@@ -69,6 +75,7 @@ describe('host.settings', () => {
     host.settings.set('reasoning.collapsedByDefault', true)
     host.settings.set('composerPopout.gesturesEnabled', false)
     host.settings.set('chatTextScale', 150)
+    host.settings.set('statusbarVisible', false)
 
     unsubscribe()
 
@@ -80,7 +87,8 @@ describe('host.settings', () => {
         ['hermes.desktop.intro-splash.v1', 'false'],
         ['hermes.desktop.reasoning.collapsedByDefault', 'true'],
         ['hermes.desktop.composerPopout.gesturesEnabled', 'false'],
-        ['hermes.desktop.chat-text-scale.v1', '150']
+        ['hermes.desktop.chat-text-scale.v1', '150'],
+        ['hermes.desktop.statusbarVisible.v2', 'false']
       ])
     )
   })
@@ -148,6 +156,40 @@ describe('host.settings', () => {
       'Invalid value for desktop setting: backdrop.v1'
     )
 
+    expect(() => (host.settings.set as (key: string, value: unknown) => void)('statusbarVisible', 0)).toThrow(
+      'Invalid value for desktop setting: statusbarVisible'
+    )
+
     expect($backdrop.get()).toBe(false)
+    expect($statusbarVisible.get()).toBe(true)
+  })
+
+  it('reads and writes the effective status bar in Simple mode without touching the stored preference', () => {
+    const context = $modeContext.get()
+    const writes: string[] = []
+
+    const unsubscribe = onPersistenceEvent(event => {
+      if (event.op !== 'read') {
+        writes.push(event.key)
+      }
+    })
+
+    try {
+      $modeContext.set({ ...context, freeTierSignInOpen: false, onboardingOpen: false })
+      setInterfaceMode('simple')
+
+      // Simple rests the bar hidden even though the stored preference is on.
+      expect(host.settings.get('statusbarVisible')).toBe(false)
+
+      // A write is a session reveal, the same as ⌘⇧S pressed in Simple mode.
+      host.settings.set('statusbarVisible', true)
+
+      expect(host.settings.get('statusbarVisible')).toBe(true)
+      expect(writes).not.toContain('hermes.desktop.statusbarVisible.v2')
+    } finally {
+      unsubscribe()
+      setInterfaceMode('advanced')
+      $modeContext.set(context)
+    }
   })
 })

@@ -844,6 +844,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             message_id=msg_id, media_urls=image_urls, media_types=image_media_types,
             timestamp=self._parse_qq_timestamp(timestamp),
         )
+        # STT ran inside the adapter here: tell the turn layer the text is a transcript.
+        event._gateway_stt_transcribed = bool(voice_transcripts)
         await self.handle_message(event)
 
     # ── Quoted-message handling ──

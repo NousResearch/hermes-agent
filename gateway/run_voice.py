@@ -366,6 +366,8 @@ class GatewayVoiceMixin:
             source=source, text=transcript, message_type=MessageType.VOICE,
             raw_message=SimpleNamespace(guild_id=guild_id, guild=None),
             channel_prompt=channel_prompt, auto_skill=auto_skill)
+        # The adapter transcribed this itself, outside the central STT pipeline.
+        event._gateway_stt_transcribed = True
         await adapter.handle_message(event)
 
     def _should_send_voice_reply(

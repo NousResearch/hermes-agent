@@ -1,22 +1,27 @@
 import type { TouchEvent as ReactTouchEvent } from 'react'
 
-import { isMacPlatform } from '@/lib/platform'
-
 import { placeCaretEnd } from './rich-editor'
 
 // A tap, not a scroll, drag or long press (which iOS hands to selection).
 const TAP_MAX_MOVE_PX = 10
 const TAP_MAX_MS = 500
 
-/** Text-entry attributes for the composer editor. Desktop keeps them off: the
- *  composer takes paths, code and commands, and Chromium's macOS
- *  text-replacement path shares the autocorrect gate (spellcheck stays off, so
- *  smart quotes and dashes stay out). A touch host types prose on a soft
- *  keyboard and gets the platform's casing, correction and spelling. */
+/** Text-entry attributes for the composer editor. Spelling is checked on every
+ *  host that has a keyboard: the composer carries prose as often as it carries
+ *  paths, and an unmarked typo reaches the model as a wrong instruction. On
+ *  macOS Electron this is the SYSTEM spell checker (NSSpellChecker), so the
+ *  squiggle, the suggestion menu and the words the user already taught the Mac
+ *  all behave exactly as they do in TextEdit or Word.
+ *
+ *  Automatic substitution stays off everywhere: the same field takes code,
+ *  commands and paths, and a smart quote or an em dash substituted for `"` or
+ *  `--` corrupts them. Casing stays off with it — the editor is not a sentence
+ *  and must not capitalize after a colon or a bullet. A touch host types prose
+ *  on a soft keyboard and gets that keyboard's casing, correction and spelling. */
 export function composerTextEntryProps(touch: boolean) {
   return touch
     ? ({ autoCapitalize: 'sentences', autoCorrect: 'on', spellCheck: true } as const)
-    : ({ autoCapitalize: 'off', autoCorrect: isMacPlatform() ? 'on' : 'off', spellCheck: false } as const)
+    : ({ autoCapitalize: 'off', autoCorrect: 'off', spellCheck: true } as const)
 }
 
 const stillAt = (from: { x: number; y: number }, touch: { clientX: number; clientY: number }) =>

@@ -302,11 +302,12 @@ export interface ThemeSeeds {
   warn: string
 }
 
+// Dark bands match the classic CLI's diff colours (agent/display.py _DIFF_BG).
 const DIFF_DARK = {
-  diffAdded: 'rgb(220,255,220)',
-  diffRemoved: 'rgb(255,220,220)',
-  diffAddedWord: 'rgb(36,138,61)',
-  diffRemovedWord: 'rgb(207,34,46)'
+  diffAdded: 'rgb(20,90,20)',
+  diffRemoved: 'rgb(120,20,20)',
+  diffAddedWord: 'rgb(255,255,255)',
+  diffRemovedWord: 'rgb(255,255,255)'
 }
 
 const DIFF_LIGHT = {
@@ -509,6 +510,11 @@ const ADAPTIVE_BACKGROUNDS: readonly (keyof ThemeColors)[] = [
   'selectionBg'
 ]
 
+const DIFF_PAIRS: readonly (readonly [keyof ThemeColors, keyof ThemeColors])[] = [
+  ['diffAdded', 'diffAddedWord'],
+  ['diffRemoved', 'diffRemovedWord']
+]
+
 // Fill polarity limits: on light terminals a fill must stay light, and vice
 // versa — there is no readable middle for a panel fill on the wrong pole.
 const LIGHT_BG_MIN_LUMINANCE = 0.4
@@ -536,6 +542,18 @@ function adaptColorsToBackground(colors: ThemeColors, isLight: boolean, base: Th
 
     if (isLight ? luminance < LIGHT_BG_MIN_LUMINANCE : luminance > DARK_BG_MAX_LUMINANCE) {
       out[key] = base[key]
+    }
+  }
+
+  // Diff bands are a fill + text pair: a skin tuned for the other polarity
+  // (pastel band, dark text) falls back as a pair, so the base band never
+  // ends up under the skin's text colour.
+  for (const [fill, word] of DIFF_PAIRS) {
+    const luminance = relativeLuminance(out[fill])
+
+    if (luminance !== null && (isLight ? luminance < LIGHT_BG_MIN_LUMINANCE : luminance > DARK_BG_MAX_LUMINANCE)) {
+      out[fill] = base[fill]
+      out[word] = base[word]
     }
   }
 

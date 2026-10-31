@@ -3,7 +3,7 @@ import { mix } from '@hermes/shared/color'
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
-import { $agentDockCollapsed, useAgentRoster } from '../app/agentRoster.js'
+import { $agentDockCollapsed, $agentDockVisible, useAgentRoster } from '../app/agentRoster.js'
 import { type ProcessRow, useProcessRows } from '../app/processRoster.js'
 import { $uiState } from '../app/uiStore.js'
 import { messages } from '../i18n/runtime.js'
@@ -165,13 +165,22 @@ export function LiveAgentsPanel({ cols }: { cols: number }) {
   }, [ticking])
 
   const budget = splitDockBudget(dockRowLimit(stdout?.rows ?? 24), subagents.length, processRows.length)
+  const agentRows = buildAgentRows(subagents, [], now, budget.agents)
+  const processes = buildProcessBlock(processRows, budget.processes)
+  const visible = Boolean(agentRows.running || processes.total)
+
+  useEffect(() => {
+    $agentDockVisible.set(visible)
+  }, [visible])
+
+  useEffect(() => () => $agentDockVisible.set(false), [])
 
   return (
     <AgentsPanelView
       collapsed={collapsed}
       cols={cols}
-      {...buildAgentRows(subagents, [], now, budget.agents)}
-      processes={buildProcessBlock(processRows, budget.processes)}
+      {...agentRows}
+      processes={processes}
       t={theme}
     />
   )

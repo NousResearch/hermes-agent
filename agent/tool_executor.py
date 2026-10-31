@@ -43,7 +43,7 @@ from agent.inline_tool_executors import (
     emit_terminal_post_tool_call,
     tool_hook_ids,
 )
-from agent.message_metadata import stamp_data_use
+from agent.message_metadata import stamp_approval, stamp_data_use
 from agent.session_persistence import sync_rewritten_tool_rows
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
@@ -55,6 +55,7 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
+from tools.approval_tool_gate import pop_record as pop_approval_record
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
@@ -661,12 +662,30 @@ def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_body: dict[str, Any]
     if block_body is not None:
         result = json.dumps(block_body, ensure_ascii=False)
         error_type, error_message = block_error_type, block_body.get("message") or block_body["error"]
+        _emit_blocked_progress(agent, ref, str(error_message))
     else:
         result = agent._guardrail_block_result(guardrail_decision)
         error_type = "guardrail_block"
         error_message = getattr(guardrail_decision, "message", None) or "Tool blocked by guardrail policy"
     ref.emit_post(agent, result, status="blocked", error_type=error_type, error_message=error_message)
     return result
+
+
+def _emit_blocked_progress(agent, ref: _ToolCallRef, message: str) -> None:
+    """A blocked call never starts, but the tool line (CLI/TUI) and a subagent's live transcript
+    must still show it: one started/completed pair whose ``user_summary`` renders as the reason."""
+    callback = agent.tool_progress_callback
+    if not callback:
+        return
+    display_args = _redact_tool_args_for_display(ref.name, ref.args) or ref.args
+    try:
+        preview = _build_tool_preview(ref.name, display_args)
+    except Exception:  # health: allow BLE001 -- display only; the block itself stands
+        preview = None
+    summary = (message.splitlines() or ["BLOCKED"])[0]
+    _safe_callback(callback, "Tool progress", "tool.started", ref.name, preview, display_args)
+    _safe_callback(callback, "Tool progress", "tool.completed", ref.name, None, None, duration=0.0, is_error=True,
+                   result=json.dumps({"error": message, "user_summary": summary}, ensure_ascii=False))
 
 
 def _pre_tool_block(agent, ref: _ToolCallRef):
@@ -1170,6 +1189,7 @@ def _commit_tool_result(
         except Exception as callback_error:
             logging.debug("Tool result metadata callback error: %s", callback_error)
     stamp_data_use(tool_message, sorted(data_use))
+    stamp_approval(tool_message, pop_approval_record(function_name, tool_call_id))
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None

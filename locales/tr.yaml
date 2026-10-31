@@ -1,5 +1,7 @@
 approval:
   dangerous_header: "⚠️  TEHLİKELİ KOMUT: {description}"
+  tool_title: "🔐 Araç onayı: {tool}"
+  command_title: "🔐 Komut onayı"
   choose_long: "      [b]ir kez  |  [o]turum  |  [h]er zaman  |  [r]eddet"
   choose_short: "      [b]ir kez  |  [o]turum  |  [r]eddet"
   prompt_long: "      Seçim [b/o/h/R]: "

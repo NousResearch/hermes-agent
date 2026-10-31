@@ -73,6 +73,15 @@ def stamp_data_use(message: MutableMapping[str, Any], requires: list[str]) -> No
     message["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), DATA_USE: list(requires)}
 
 
+def stamp_approval(message: MutableMapping[str, Any], record: Optional[Mapping[str, Any]]) -> None:
+    """Keep the full-scope approval decision for this call on the durable row only (never sent to
+    a model, so recording it cannot change what the model does)."""
+    if not record:
+        return
+    metadata = message.get("display_metadata")
+    message["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), "approval": dict(record)}
+
+
 def lift_data_use(message: MutableMapping[str, Any]) -> None:
     """Restore a replayed row's ``data_use`` key from its durable ``display_metadata`` copy."""
     metadata = message.get("display_metadata")

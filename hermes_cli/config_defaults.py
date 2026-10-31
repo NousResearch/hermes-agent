@@ -1641,7 +1641,7 @@ DEFAULT_CONFIG = {
         "allowed_rooms": "",  # if set, ONLY respond in these room IDs (whitelist)
     },
     # Approvals for dangerous commands.
-    # mode: manual (always prompt) | smart (aux LLM auto-approves low-risk) | off (= --yolo)
+    # mode: manual (always prompt) | smart | off (= --yolo). scope: dangerous (flagged only) | all (every call).
     # cron_mode / single_query_mode / unattended_mode: deny | approve — what to do when a
     #   cron job, a -q session (HERMES_INTERACTIVE=1 but nobody to answer), or an unattended
     #   platform (webhook, msgraph_webhook, api_server; no /approve channel) hits one.
@@ -1660,7 +1660,7 @@ DEFAULT_CONFIG = {
         # channel — a pending approval there just blocks for the full timeout with nobody to answer (#37284,
         # #87509): deny    — block the command instantly and let the agent find another way (default, safe;
         # mirrors cron_mode deny) approve — auto-approve all dangerous commands on unattended platforms
-        "mode": "smart",
+        "mode": "smart", "scope": "dangerous",
         "timeout": 300,
         "discord_prompt_timeout": 300,  # Discord buttons stay clickable (min 30 s, cap MAX_SAFE_TIMEOUT_S)
         "cron_mode": "deny",

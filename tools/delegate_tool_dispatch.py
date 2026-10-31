@@ -237,6 +237,11 @@ _SYNC_FALLBACK_NOTES = {
         "SYNCHRONOUSLY and the result is included above. Raise "
         "delegation.max_concurrent_children in config.yaml to allow more concurrent background delegations."
     ),
+    "approval_scope": (
+        "approvals.scope is 'all', so every subagent tool call needs the user's approval, and a prompt can only "
+        "reach the user while this turn is running. The subagent(s) ran SYNCHRONOUSLY and the result is included "
+        "above."
+    ),
 }
 
 def _run_sync_with_note(batch: _Batch, reason: str) -> str:
@@ -433,8 +438,12 @@ def _dispatch_background(batch: _Batch) -> str:
     """Dispatch the call as independent async units (see ``_units_of``) and return the tool result JSON. Every unit
     of one call shares ONE pool slot (``slot_key``), so grouping never changes capacity accounting. Falls back to
     running synchronously (with an explanatory ``note``) when the session cannot receive detached completions or the
-    async pool is at capacity."""
+    async pool is at capacity, or when every call is put to a human (``approvals.scope: all``)."""
+    from tools.approval_tool_gate import asks_every_call
     from tools.delegate_tool import _get_max_async_children
+    if asks_every_call():
+        logger.info("delegate_task: approvals.scope is 'all'; running the batch synchronously so its prompts reach the user.")
+        return _run_sync_with_note(batch, "approval_scope")
     wake_sid = _resolve_async_wake_sid(
         batch.origin_wake_sid, batch.origin_session_history_delivery,
         oneshot_session=getattr(batch.parent_agent, "_oneshot_session", None) is True,  # agent_is_oneshot's pin

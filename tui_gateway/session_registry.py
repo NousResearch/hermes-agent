@@ -580,7 +580,7 @@ def _load_resume_transcript(db, stored_id: str, *, model_history_only: bool = Fa
 
 
 def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool = False,
-                               model_history_only: bool = False) -> None:
+                               model_history_only: bool = False, auto_continue: bool = True) -> None:
     """Load a cold resume's transcript off the JSON-RPC response path."""
 
     def _run() -> None:
@@ -615,7 +615,8 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             session["resume_history_ready"].set()
             _emit("session.resume_progress", sid,
                   {"message_count": session["resume_message_count"], "phase": "history", "status": "complete"})
-            _maybe_schedule_auto_continue(sid, session, stored_id)
+            if auto_continue:
+                _maybe_schedule_auto_continue(sid, session, stored_id)
             _start_agent_build(sid, session)
         except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- reported as the resume failure
             if _sessions.get(sid) is not session:

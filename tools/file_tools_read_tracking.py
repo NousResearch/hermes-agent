@@ -45,6 +45,10 @@ _READ_HISTORY_CAP = 500
 _DEDUP_CAP = 1000
 _READ_TIMESTAMPS_CAP = 1000
 _FULL_WRITE_BASELINES_CAP = 1000
+# Whole-file baselines of finished turns, kept so the SAME agent's next turn can inherit them
+# (gateway turns each get a fresh task_id; see inherit_full_write_baselines). Bounded by task.
+_retired_baselines: dict = {}
+_RETIRED_BASELINE_TASKS_CAP = 256
 _NOT_FOUND_CAP = 500
 _NOT_FOUND_TTL_SECONDS = 60.0  # a path that didn't exist may be created soon
 
@@ -425,3 +429,39 @@ def _mark_verification_stale(task_id: str, resolved_paths: list[str],
         mark_workspace_edited(session_id=session_id or task_id, cwd=cwd, paths=paths)
     except Exception:
         logger.debug("verification stale marker failed", exc_info=True)
+
+
+def retire_full_write_baselines(task_id: str | None) -> None:
+    """Park a finishing task's whole-file baselines for :func:`inherit_full_write_baselines`
+    (or drop every parked set when *task_id* is None). Lock must be held."""
+    if not task_id:
+        _retired_baselines.clear()
+        return
+    baselines = (_read_tracker.get(task_id) or {}).get("full_write_baselines")
+    if baselines:
+        _retired_baselines[task_id] = dict(baselines)
+        if len(_retired_baselines) > _RETIRED_BASELINE_TASKS_CAP:
+            _evict_oldest(_retired_baselines, _RETIRED_BASELINE_TASKS_CAP)
+
+
+def inherit_full_write_baselines(previous_task_id: str | None, task_id: str) -> None:
+    """Carry the same agent's previous-turn whole-file baselines into this turn's task.
+
+    Gateway turns run under a fresh task_id each message, and per-turn cleanup drops the old
+    task's tracker, so a file the agent wrote (or fully read) one message earlier looked unseen
+    and ``write_file`` refused it. A baseline is a byte snapshot (inode, size, mtime/ctime ns,
+    sha256) that ``_has_full_write_baseline`` re-checks against disk at write time, so a file
+    changed by anyone in between is still refused. Sibling/subagent tasks never inherit: only
+    the agent's own previous task id is consulted."""
+    if not previous_task_id or previous_task_id == task_id:
+        return
+    with _read_tracker_lock:
+        carried = _retired_baselines.pop(previous_task_id, None)
+        if carried is None:
+            carried = dict((_read_tracker.get(previous_task_id) or {}).get("full_write_baselines", {}))
+        if not carried:
+            return
+        task_data = _task_data(task_id)
+        for resolved, version in carried.items():
+            task_data["full_write_baselines"].setdefault(resolved, version)
+        _cap_read_tracker_data(task_data)

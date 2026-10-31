@@ -7,6 +7,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { getLogs } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { LayoutDashboard, Power, RefreshCw } from '@/lib/icons'
+import { pickFreshestLogTail } from '@/lib/log-tail'
 import { platformStatusTone } from '@/lib/platform-status'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { cn } from '@/lib/utils'
@@ -44,14 +45,25 @@ function useGatewayLogTail(): string[] {
     // error boundary before the .catch even attaches.
     const load = async () => {
       try {
-        const res = await getLogs({ file: 'gui', lines: LOG_TAIL })
+        // gui.log is written only while the backend runs in mode="gui"; attached to the
+        // messaging gateway it is frozen, and tailing it alone showed days-old WARNING lines
+        // as current activity (#146682). Read both and let the newest line decide.
+        const [gui, gateway] = await Promise.all([
+          getLogs({ file: 'gui', lines: LOG_TAIL }).catch(() => null),
+          getLogs({ file: 'gateway', lines: LOG_TAIL }).catch(() => null)
+        ])
 
         if (cancelled) {
           return
         }
 
+        const freshest = pickFreshestLogTail([
+          { file: 'gui', lines: gui?.lines ?? [] },
+          { file: 'gateway', lines: gateway?.lines ?? [] }
+        ])
+
         setLines(
-          res.lines
+          (freshest?.lines ?? [])
             .map(line => line.trim())
             .filter(line => line && !LOG_NOISE_RE.test(line))
             .slice(-LOG_VISIBLE)

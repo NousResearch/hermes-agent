@@ -1,10 +1,11 @@
 """Explicit same-task continuation through HTTP and stale delivery callbacks."""
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
-from gateway.platforms.event import ProcessingOutcome
+from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from plugins.platforms.a2a import protocol
 from tests.plugins import test_a2a_completion_lifecycle as lifecycle
 from tests.waiting import async_wait_until
@@ -16,12 +17,12 @@ request = lifecycle.request
 
 @pytest.mark.integration
 @pytest.mark.parametrize("stream", [False, True])
-def test_http_same_task_continues_with_distinct_attempt_and_old_observer(adapter, stream):
+def test_http_same_task_continues_with_distinct_attempt_and_old_observer(adapter, stream: bool):
     async def run():
-        seen = []
+        seen: list[MessageEvent] = []
         resumed, release = asyncio.Event(), asyncio.Event()
 
-        async def handle(event):
+        async def handle(event: MessageEvent):
             seen.append(event)
             if len(seen) == 1:
                 return "[INPUT_REQUIRED] Which colour?"
@@ -122,7 +123,7 @@ def test_continuation_respects_context_turn_cap_without_stranding_question(adapt
 
 def test_context_only_creates_new_task_and_continuation_retry_after_terminal_is_rejected(adapter):
     async def run():
-        async def handle(event):
+        async def handle(event: MessageEvent):
             return "[INPUT_REQUIRED] Which?" if "hello" in event.text else "done"
 
         adapter.set_message_handler(handle)
@@ -155,7 +156,7 @@ def test_push_configuration_survives_interruption_and_notifies_resumed_outcome(a
     import threading
     pushes, notified = [], threading.Event()
 
-    def push(task_id, context_id, reply, outcome, url):
+    def push(task_id: str, context_id: str, reply: str, outcome: str, url: str) -> None:
         pushes.append((task_id, outcome, url))
         if len(pushes) == 2:
             notified.set()
@@ -190,7 +191,7 @@ def test_shutdown_between_resume_admission_and_dispatch_releases_attempt(adapter
     async def run():
         seen = []
 
-        async def handle(event):
+        async def handle(event: MessageEvent):
             seen.append(event.message_id)
             return "unexpected"
 
@@ -238,7 +239,7 @@ def test_root_scope_does_not_read_list_cancel_or_mutate_foreign_tasks(adapter):
         asyncio.run(adapter.disconnect())
 
 
-def test_sync_forwarding_returns_committed_clarifications_and_final_result(adapter, monkeypatch, tmp_path):
+def test_sync_forwarding_returns_committed_clarifications_and_final_result(adapter, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     from gateway import session_a2a
     from plugins.platforms.a2a import adapter as module
     calls = []
@@ -301,7 +302,7 @@ def test_sync_forwarding_observer_keeps_cancel_outcome_after_retention_purge(ada
     ("terminal", None, -32004), ("foreign", None, -32001),
     (123, None, -32602), (" t ", None, -32001),
 ])
-def test_invalid_continuation_does_not_create_or_execute(adapter, target, context, code):
+def test_invalid_continuation_does_not_create_or_execute(adapter, target: str | int, context: str | None, code: int):
     adapter.tasks.create("t", "c", "peer")
     adapter.tasks.complete("t", protocol.STATE_INPUT_REQUIRED, "Which?")
     adapter.tasks.create("terminal", "c", "peer")
@@ -320,7 +321,7 @@ def test_invalid_continuation_does_not_create_or_execute(adapter, target, contex
         asyncio.run(adapter.disconnect())
 
 
-def test_forwarded_repeated_interruptions_and_retry_have_distinct_owner_admissions(adapter, monkeypatch, tmp_path):
+def test_forwarded_repeated_interruptions_and_retry_have_distinct_owner_admissions(adapter, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     from gateway import session_a2a
     from plugins.platforms.a2a import adapter as module
 

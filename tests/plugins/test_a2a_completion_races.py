@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway.platforms.event import MessageEvent
 from plugins.platforms.a2a import protocol
 from tests.plugins import test_a2a_completion_lifecycle as lifecycle
 from tests.waiting import async_wait_until, wait_until
@@ -63,7 +64,7 @@ def test_shutdown_closes_admission_before_pending_registration(adapter, monkeypa
     async def run():
         seen = []
 
-        async def handle(event):
+        async def handle(event: MessageEvent):
             seen.append(event.message_id)
 
         adapter.set_message_handler(handle)
@@ -94,7 +95,7 @@ def test_three_same_context_requests_execute_individually(adapter, cancel_index)
         entered, release = asyncio.Event(), asyncio.Event()
         seen = []
 
-        async def handle(event):
+        async def handle(event: MessageEvent):
             seen.append(event.message_id)
             entered.set()
             await release.wait()
@@ -133,7 +134,9 @@ def test_watch_snapshot_remains_coherent_after_interruption_and_cancel():
     store = protocol.TaskStore()
     store.create("t", "c", "peer")
     store.complete("t", protocol.STATE_INPUT_REQUIRED, "Question?")
-    snapshot, future = store.watch_snapshot("t")
+    observation = store.watch_snapshot("t")
+    assert observation is not None
+    snapshot, future = observation
     store.complete("t", protocol.STATE_CANCELED)
     assert snapshot["state"] == protocol.STATE_INPUT_REQUIRED
     assert future.result() == (snapshot["state"], snapshot["reply"])
@@ -196,7 +199,7 @@ def test_subscription_uses_atomic_snapshot_during_cancel_and_eviction(adapter, m
 
 def test_recording_capacity_refuses_execution_and_shutdown_drains_accepted_records(adapter):
     async def run():
-        async def handle(event):
+        async def handle(event: MessageEvent):
             pytest.fail("capacity refusal must not execute")
 
         adapter.set_message_handler(handle)

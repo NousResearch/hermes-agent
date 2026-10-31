@@ -1,8 +1,8 @@
 """Ask provider profiles about an endpoint: the named provider first, then the profile serving the host.
 
-Endpoint-keyed ProviderProfile hooks (``client_headers``, ``request_headers``, ``max_tokens_param``,
-``refresh_runtime_credentials``) belong to the provider by name AND to the backend by host: a
-``custom`` route pointed at a plugin provider's host still gets that provider's quirks. The host
+Endpoint-keyed ProviderProfile hooks (``client_headers``, ``anthropic_auth_style``, ``request_headers``,
+``max_tokens_param``, ``refresh_runtime_credentials``) belong to the provider by name AND to the backend by
+host: a ``custom`` route pointed at a plugin provider's host still gets that provider's quirks. The host
 side is ``providers.profile_for_host`` (the profile's declared ``hostnames``), core's one
 endpoint->profile lookup. Only profiles that override the hook are consulted: the base
 implementations are no-ops, and hosted (``plugins.isolation: host``) proxies define only the hooks
@@ -113,24 +113,34 @@ def ask_profile(profile: Any, hook: str, fallback: Any, *args: Any, scope: Any =
         failed.add(sticky)
         if scope is not None or sticky[2:] not in _WARNED:
             _WARNED.add(sticky[2:])
-            logger.warning("provider %s: %s hook failed (%s: %s); using the generic answer for the rest of "
-                           "the session", sticky[2], hook, type(exc).__name__, exc, exc_info=True)
+            if "api_key" in kwargs:  # the hook got a live credential: its exception text/traceback may echo it
+                logger.warning("provider %s: %s hook failed (%s); using the generic answer for the rest of the "
+                               "session", sticky[2], hook, type(exc).__name__)
+            else:
+                logger.warning("provider %s: %s hook failed (%s: %s); using the generic answer for the rest of "
+                               "the session", sticky[2], hook, type(exc).__name__, exc, exc_info=True)
         return fallback
 
 
 def ask_on_error_path(profile: Any, hook: str, fallback: Any, **kwargs: Any) -> Any:
     """*profile*'s answer to an API-error-path *hook* (credential refresh, stale-credential test, refresh
     notice), asked every time: a lost plugin host may be back for the next error. A raise answers
-    *fallback* ("not refreshed"), logged with its traceback once per (provider, hook) per process, so the
-    original API error still reaches the fallback walk instead of escaping its handler."""
+    *fallback* ("not refreshed"), logged once per (provider, hook) per process: with its traceback, except
+    for ``refresh_runtime_credentials`` (it mints tokens, so its exception text may echo one; only the
+    exception type is logged), so the original API error still reaches the fallback walk instead of
+    escaping its handler."""
     try:
         return getattr(profile, hook)(**kwargs)
-    except Exception:  # health: allow BLE001 -- plugin hook boundary; logged with traceback once below
+    except Exception as exc:  # health: allow BLE001 -- plugin hook boundary; logged once below
         key = (getattr(profile, "name", "?"), hook)
         if key not in _ERROR_PATH_WARNED:
             _ERROR_PATH_WARNED.add(key)
-            logger.warning("provider %s: %s hook failed; handling the API error without it", key[0], hook,
-                           exc_info=True)
+            if hook == "refresh_runtime_credentials":
+                logger.warning("provider %s: %s hook failed (%s); handling the API error without it", key[0],
+                               hook, type(exc).__name__)
+            else:
+                logger.warning("provider %s: %s hook failed; handling the API error without it", key[0], hook,
+                               exc_info=True)
         return fallback
 
 
@@ -140,16 +150,21 @@ _ERROR_PATH_WARNED: set[tuple] = set()
 def model_api_mode(profile: Any, model: str, *, api_key: str | None = None) -> str | None:
     """*profile*'s ``api_mode_for_model`` answer for *model* (None = no per-model wire). The ONE guard for
     resolution, ``/model``, resume and the agent: a raising hook (a live catalog fetch, a lost plugin host)
-    answers the profile's declared ``api_mode``, logged with its traceback once per provider per process,
-    so a model pick never fails where runtime resolution succeeded."""
+    answers the profile's declared ``api_mode``, logged once per provider per process (with its traceback,
+    or only the exception type when the hook was handed an ``api_key``, whose text it may echo), so a model
+    pick never fails where runtime resolution succeeded."""
     try:
         return profile.api_mode_for_model(model, api_key=api_key)
-    except Exception:  # health: allow BLE001 -- plugin hook boundary; logged with traceback once below
+    except Exception as exc:  # health: allow BLE001 -- plugin hook boundary; logged once below
         name = getattr(profile, "name", "?")
         if name not in _API_MODE_WARNED:
             _API_MODE_WARNED.add(name)
-            logger.warning("provider %s: api_mode_for_model failed; using its declared api_mode", name,
-                           exc_info=True)
+            if api_key:
+                logger.warning("provider %s: api_mode_for_model failed (%s); using its declared api_mode", name,
+                               type(exc).__name__)
+            else:
+                logger.warning("provider %s: api_mode_for_model failed; using its declared api_mode", name,
+                               exc_info=True)
         return profile.api_mode or "chat_completions"
 
 

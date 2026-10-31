@@ -4,6 +4,7 @@
 (owner-thread close vs stranger-thread abort), credential rotation and route-derived headers.
 """
 import logging
+import re
 import threading
 import time
 from contextlib import suppress
@@ -19,6 +20,9 @@ _QWEN_CODE_VERSION = "0.14.1"  # Qwen Portal mimics the QwenCode CLI
 _OPENAI_SLOT = "_request_client_cache"
 _ANTHROPIC_SLOT = "_request_anthropic_client_cache"
 _NO_SOCKETS_SUFFIX = " — no sockets found; in-flight request may keep running until the provider finishes"
+# A profile-refreshed token goes into an Authorization / x-api-key header: visible ASCII only (no
+# whitespace, CR/LF or control characters, which h11 would reject while repeating the header value).
+_REFRESHED_TOKEN_RE = re.compile(r"[\x21-\x7e]+")
 
 
 def _routermint_headers() -> dict:
@@ -812,8 +816,14 @@ class ClientLifecycleMixin:
 
     def _try_refresh_provider_runtime_credentials(self, *, reason: str) -> bool:
         """Re-mint the live credential through the provider profile's ``refresh_runtime_credentials``
-        and rebuild the shared client (caller enforces the single-shot guard). ``reason``:
-        ``unauthorized`` (401) or ``stale`` (a non-auth error the profile reads as a stale credential)."""
+        and rebuild the client this route uses (caller enforces the single-shot guard): the Anthropic
+        client on ``anthropic_messages`` (``_adopt_refreshed_anthropic_credentials``), else the shared
+        OpenAI client. ``reason``: ``unauthorized`` (401) or ``stale`` (a non-auth error the profile reads
+        as a stale credential). Nothing changes and False means no retry unless the answer is a token of
+        visible ASCII (``[\\x21-\\x7e]+``) with a ``str`` or None base URL, and a refreshed base URL keeps the
+        current origin or moves to an https (or strictly local) host the same named profile claims
+        (``_refreshed_base_url_verdict``). A host-matched (unnamed) owner's move is dropped: the token is
+        adopted on the current route when that profile serves the current host."""
         from agent.conversation_loop import _credential_refresh_profile
         from agent.provider_route_hooks import ask_on_error_path
         profile = _credential_refresh_profile(self)
@@ -821,12 +831,138 @@ class ClientLifecycleMixin:
         if not (isinstance(refreshed, (tuple, list)) and len(refreshed) == 2 and refreshed[0]):
             return False
         token, base_url = refreshed
+        if not (isinstance(token, str) and _REFRESHED_TOKEN_RE.fullmatch(token.strip())
+                and (base_url is None or isinstance(base_url, str))):
+            logger.warning("%s credential refresh returned an invalid (token, base_url) pair; ignoring it",
+                           profile.name)
+            return False
+        token, base_url = token.strip(), (base_url or "").strip() or None
+        if base_url:
+            verdict = self._refreshed_base_url_verdict(profile, base_url)
+            if verdict == "not_named" and self._same_profile(self._host_profile(self.base_url), profile):
+                # A host-matched (custom-route) owner re-mints the token for the route it serves but never
+                # relocates it: adopt the token, keep the base URL.
+                base_url = None
+            elif verdict != "ok":
+                logger.warning("%s credential refresh returned a base URL it may not move the session to; "
+                               "ignoring it", profile.name)
+                return False
+        if self.api_mode == "anthropic_messages":
+            return self._adopt_refreshed_anthropic_credentials(profile, token, base_url)
         self.api_key = token
         if base_url:
             self.base_url = base_url.rstrip("/")
         self._sync_client_kwargs_credentials()
         self._apply_client_headers_for_base_url(str(self.base_url or ""))
         return self._replace_primary_openai_client(reason=f"{profile.name}_credential_{reason}")
+
+    def _refreshed_base_url_verdict(self, profile: Any, base_url: str) -> str:
+        """``"ok"`` when a refresh may move the session to *base_url*, ``"not_named"`` when it passes every
+        check except that *profile* is not the agent's named provider, else ``"refused"``. A refresh may keep
+        the current origin (scheme, host and port: no https->http or port change on the same host) or move to
+        another host only when that URL is https (or a strictly local ``http`` endpoint,
+        ``_cleartext_endpoint_ok``), ``profile_for_host`` maps it back to the refreshing profile, and that
+        profile is the agent's named provider. Non-ASCII hostnames (IDNA maps lookalike dots onto real hosts)
+        and URLs that fail to parse are refused. Anything else would hand the session's prompts (and the fresh
+        token) to an endpoint nobody configured, or send them in cleartext."""
+        from agent.anthropic_endpoints import _cleartext_endpoint_ok
+        from providers import get_provider_profile, profile_for_host
+        from utils import base_url_origin
+        try:
+            new_origin = base_url_origin(base_url)
+            new_host = new_origin[1]
+            if not new_host or not new_host.isascii():
+                return "refused"
+            current_origin = base_url_origin(str(getattr(self, "base_url", "") or ""))
+            if new_host == current_origin[1]:
+                return "ok" if new_origin == current_origin else "refused"
+            if new_origin[0] != "https" and not _cleartext_endpoint_ok(base_url):
+                return "refused"
+            if not self._same_profile(profile_for_host(base_url), profile):
+                return "refused"
+        except ValueError:  # urlparse rejects e.g. "https://[x]": a malformed answer is ignored, not raised
+            return "refused"
+        # Only the agent's NAMED provider may move the session; a profile that owns the refresh merely by
+        # serving the host (a ``custom`` route) may re-mint the token but never relocate the route.
+        named = get_provider_profile(str(getattr(self, "provider", "") or "").strip().lower())
+        return "ok" if self._same_profile(named, profile) else "not_named"
+
+    def _host_profile(self, base_url: Any) -> Any:
+        """The profile ``profile_for_host`` maps *base_url* to, or None (also for a URL that fails to parse)."""
+        from providers import profile_for_host
+        try:
+            return profile_for_host(str(base_url or "")) if base_url else None
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _same_profile(candidate: Any, profile: Any) -> bool:
+        return candidate is not None and (
+            candidate is profile or getattr(candidate, "name", None) == getattr(profile, "name", ""))
+
+    def _adopt_refreshed_anthropic_credentials(self, profile: Any, token: str, base_url: Optional[str]) -> bool:
+        """Swap a profile-refreshed credential into the Anthropic client (a plugin provider serving Claude
+        on an Anthropic Messages endpoint re-mints short-lived tokens; the retry must use them). The swap
+        and rebuild run under the client lock (serializing writers; request-client readers take no lock); a
+        failed rebuild restores every attribute it touched and returns False (no retry). On success the
+        replaced shared client is closed (as the native Anthropic refresh does), the OAuth flag is
+        recomputed, a moved base URL replaces the old one in the compressor and the primary-runtime snapshot,
+        and the new token replaces the old one in every other holder (``_propagate_rotated_anthropic_token``)."""
+        with self._openai_client_lock():
+            snapshot = (self.api_key, self.base_url, self._anthropic_api_key,
+                        getattr(self, "_anthropic_base_url", None), getattr(self, "_anthropic_client", None))
+            self.api_key = token
+            if base_url:
+                self.base_url = base_url.rstrip("/")
+            self._anthropic_api_key, self._anthropic_base_url = self.api_key, self.base_url
+            try:
+                self._rebuild_anthropic_client()
+            except Exception as exc:  # health: allow BLE001 -- like the OpenAI branch, any rebuild failure means no retry; log the type only (SDK errors can echo the credential)
+                (self.api_key, self.base_url, self._anthropic_api_key, self._anthropic_base_url,
+                 self._anthropic_client) = snapshot
+                logger.warning("Anthropic client rebuild after %s credential refresh failed: %s",
+                               profile.name, type(exc).__name__)
+                return False
+        old_token, old_client = snapshot[2], snapshot[4]
+        if old_client is not None and old_client is not self._anthropic_client:
+            with suppress(Exception):
+                old_client.close()
+        self._is_anthropic_oauth = self._anthropic_oauth_flag(self._anthropic_api_key)
+        old_base_url = snapshot[3] or snapshot[1]
+        if old_base_url and old_base_url != self._anthropic_base_url:
+            # A host move must also reach the compressor and the fallback-restore snapshot, or compression
+            # and a primary restore send the new token to the old host.
+            old_urls = {u for u in (snapshot[1], snapshot[3]) if u}
+            cc = getattr(self, "context_compressor", None)
+            if cc is not None and getattr(cc, "base_url", None) in old_urls:
+                cc.base_url = self._anthropic_base_url
+            rt = getattr(self, "_primary_runtime", None) or {}
+            for k in ("base_url", "anthropic_base_url", "compressor_base_url"):
+                if rt.get(k) in old_urls:
+                    rt[k] = self._anthropic_base_url
+        if old_token and old_token != self._anthropic_api_key:
+            self._propagate_rotated_anthropic_token(old_token, self._anthropic_api_key)
+        return True
+
+    def _propagate_rotated_anthropic_token(self, old_token: Any, new_token: str) -> None:
+        """Move every holder of a rotated Anthropic credential to *new_token*. Claude Code revokes the old
+        token on refresh and gateway tokens expire, so agent.api_key, the compressor's main_runtime and the
+        fallback-restore snapshot must all move, or compression / a primary restore 401s for the session."""
+        if self.api_key == old_token:
+            self.api_key = new_token
+        cc = getattr(self, "context_compressor", None)
+        if cc is not None and getattr(cc, "api_key", None) == old_token:
+            cc.api_key = new_token
+        rt = getattr(self, "_primary_runtime", None) or {}
+        if rt.get("anthropic_api_key") == old_token:  # fallback restore rebuilds from the key + flag pair
+            rt["is_anthropic_oauth"] = self._is_anthropic_oauth
+        for k in ("api_key", "anthropic_api_key", "compressor_api_key"):
+            if rt.get(k) == old_token:
+                rt[k] = new_token
+        # The turn's aux runtime was published before the first request triggered this refresh, so
+        # same-turn `auto` aux calls (approvals, goal judge, plugin llm) would still send the revoked token.
+        from agent.auxiliary_key_rotation import rotate_runtime_main_api_key
+        rotate_runtime_main_api_key(old_token, new_token)
 
     def _try_refresh_anthropic_client_credentials(self) -> bool:
         # Only native Anthropic rotates OAuth tokens; other anthropic_messages providers (MiniMax, Alibaba, ...)
@@ -865,23 +1001,7 @@ class ClientLifecycleMixin:
             return False
         old_token = self._anthropic_api_key
         self._anthropic_api_key, self._is_anthropic_oauth = new_token, self._anthropic_oauth_flag(new_token)
-        # Claude Code revokes the old token on refresh: every holder of it (agent.api_key, the compressor's
-        # main_runtime, the fallback-restore snapshot) must move too, or compression 401s for the session's life.
-        if self.api_key == old_token:
-            self.api_key = new_token
-        cc = getattr(self, "context_compressor", None)
-        if cc is not None and getattr(cc, "api_key", None) == old_token:
-            cc.api_key = new_token
-        rt = getattr(self, "_primary_runtime", None) or {}
-        if rt.get("anthropic_api_key") == old_token:  # fallback restore rebuilds from the key + flag pair
-            rt["is_anthropic_oauth"] = self._is_anthropic_oauth
-        for k in ("api_key", "anthropic_api_key", "compressor_api_key"):
-            if rt.get(k) == old_token:
-                rt[k] = new_token
-        # The turn's aux runtime was published before the first request triggered this refresh, so
-        # same-turn `auto` aux calls (approvals, goal judge, plugin llm) would still send the revoked token.
-        from agent.auxiliary_key_rotation import rotate_runtime_main_api_key
-        rotate_runtime_main_api_key(old_token, new_token)
+        self._propagate_rotated_anthropic_token(old_token, new_token)
         return True
 
     # ------------------------------------------------------------------ route-derived client config

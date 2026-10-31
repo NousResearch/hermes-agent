@@ -66,11 +66,14 @@ import { useProfileScope } from "@/contexts/useProfileScope";
 // ``rotate`` mints a new token — used when the user explicitly starts a fresh
 // session so the old keep-alive PTY is NOT reattached (the registry reaps it).
 const PTY_ATTACH_TOKEN_KEY = "hermes.pty.token.chat";
-function ptyAttachToken(rotate = false): string {
+function ptyAttachToken(rotate = false, project = ""): string {
+  const storageKey = project
+    ? `${PTY_ATTACH_TOKEN_KEY}.${encodeURIComponent(project)}`
+    : PTY_ATTACH_TOKEN_KEY;
   let t = "";
   if (!rotate) {
     try {
-      t = window.localStorage.getItem(PTY_ATTACH_TOKEN_KEY) ?? "";
+      t = window.localStorage.getItem(storageKey) ?? "";
     } catch {
       /* private mode / storage blocked */
     }
@@ -80,7 +83,7 @@ function ptyAttachToken(rotate = false): string {
     crypto.getRandomValues(a);
     t = Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
     try {
-      window.localStorage.setItem(PTY_ATTACH_TOKEN_KEY, t);
+      window.localStorage.setItem(storageKey, t);
     } catch {
       /* ignore */
     }
@@ -306,13 +309,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
+  const projectParam = searchParams.get("project");
   // Profile-scoped chat: spawn the PTY under the globally selected
   // management profile. Changing it remounts the terminal (key below /
   // effect dep) so the user explicitly starts a fresh scoped session.
   const { profile: scopedProfile } = useProfileScope();
   const channel = useMemo(
-    () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
-    [resumeParam, scopedProfile],
+    () => generateChannelId(`${resumeParam ?? ""}\0${projectParam ?? ""}\0${scopedProfile}`),
+    [resumeParam, projectParam, scopedProfile],
   );
   const titleScope = `${channel}\0${reconnectNonce}`;
   const sessionTitle =
@@ -921,11 +925,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (unmounting) return;
       const params: Record<string, string> = { channel };
       if (resumeParam) params.resume = resumeParam;
+      if (projectParam) params.project = projectParam;
       if (forceFresh) params.fresh = "1";
       // Keep-alive identity: reattach to this tab's living PTY across
       // refresh/transient drops. A forced-fresh start rotates the token so
       // the previous keep-alive PTY is not reattached (registry reaps it).
-      params.attach = ptyAttachToken(forceFresh);
+      params.attach = ptyAttachToken(forceFresh, projectParam ?? "");
       // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).
@@ -1188,6 +1193,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     channel,
     clearReconnectTimer,
     resumeParam,
+    projectParam,
     scopedProfile,
     reconnectNonce,
   ]);

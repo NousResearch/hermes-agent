@@ -98,6 +98,7 @@ def test_get_projects_returns_project_list(projects_env):
     # Top-level shape
     assert "projects" in data
     assert "unassigned" in data
+    assert data["active_id"] is None
 
     # At least our one project is present
     assert len(data["projects"]) >= 1
@@ -126,6 +127,17 @@ def test_get_projects_returns_project_list(projects_env):
     assert "groups" in unassigned
     assert isinstance(unassigned["sessionCount"], int)
     assert isinstance(unassigned["groups"], list)
+
+
+def test_activate_project_updates_active_pointer(projects_env):
+    client = projects_env["client"]
+    project_id = projects_env["project_id"]
+
+    response = client.post(f"/api/projects/{project_id}/activate")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "active_id": project_id}
+    assert client.get("/api/projects").json()["active_id"] == project_id
 
 
 def test_get_projects_unassigned_counts_non_project_sessions(projects_env):

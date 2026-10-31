@@ -28,6 +28,8 @@ interface ProjectsWorkbenchProps {
   loading: boolean;
   error: string | null;
   initialProjectId?: string;
+  activeProjectId: string | null;
+  onProjectActivate: (id: string) => Promise<void>;
 }
 
 function BoardBar({ counts }: { counts: BoardCounts }) {
@@ -81,6 +83,8 @@ export function ProjectsWorkbench({
   loading,
   error,
   initialProjectId,
+  activeProjectId,
+  onProjectActivate,
 }: ProjectsWorkbenchProps) {
   const navigate = useNavigate();
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -105,6 +109,29 @@ export function ProjectsWorkbench({
   const [confirmTemplate, setConfirmTemplate] = useState(false);
 
   const selectedProject = projects.find((p) => p.id === selectedId) ?? null;
+
+  useEffect(() => {
+    if (!initialProjectId && activeProjectId) setSelectedId(activeProjectId);
+  }, [activeProjectId, initialProjectId]);
+
+  async function selectProject(id: string) {
+    setSelectedId(id);
+    setActiveTab("sessions");
+    try {
+      await onProjectActivate(id);
+    } catch (e) {
+      setPaneError(e instanceof Error ? e.message : "Failed to activate project");
+    }
+  }
+
+  async function openProjectChat(id: string) {
+    try {
+      await onProjectActivate(id);
+      navigate(`/chat?project=${encodeURIComponent(id)}`);
+    } catch (e) {
+      setPaneError(e instanceof Error ? e.message : "Failed to activate project");
+    }
+  }
 
   const loadSessions = useCallback(async () => {
     if (!selectedId) return;
@@ -226,12 +253,16 @@ export function ProjectsWorkbench({
                   : "border-transparent hover:bg-midground/5"
               }`}
               onClick={() => {
-                setSelectedId(p.id);
-                setActiveTab("sessions");
+                void selectProject(p.id);
               }}
             >
               <div className="flex items-center gap-1.5 font-semibold text-[13.5px]">
                 {p.name}
+                {activeProjectId === p.id && (
+                  <span className="font-mono text-[9px] uppercase tracking-wider text-success">
+                    active
+                  </span>
+                )}
                 {runningCount > 0 && (
                   <KanbanBadge status="doing" className="text-[9px] py-0 px-1.5">
                     {runningCount} running
@@ -320,7 +351,7 @@ export function ProjectsWorkbench({
                 ))}
                 <div className="ml-auto self-end">
                   <Button
-                    onClick={() => navigate(`/chat?project=${selectedProject.id}`)}
+                    onClick={() => void openProjectChat(selectedProject.id)}
                   >
                     ▶ New chat in project
                   </Button>

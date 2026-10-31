@@ -783,6 +783,11 @@ export const api = {
     fetchJSON<ProjectsListResponse>(
       appendProfileParam("/api/projects", profile),
     ),
+  activateProject: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean; active_id: string }>(
+      appendProfileParam(`/api/projects/${encodeURIComponent(id)}/activate`, profile),
+      { method: "POST" },
+    ),
   getProjectSessions: (
     id: string,
     filter: "all" | "running" | "done" | "failed" | "notask" = "all",
@@ -2604,6 +2609,7 @@ export interface ProjectSummary {
 
 export interface ProjectsListResponse {
   projects: ProjectSummary[];
+  active_id: string | null;
   unassigned: {
     sessionCount: number;
     groups: UnassignedGroup[];

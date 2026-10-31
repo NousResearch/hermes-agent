@@ -154,7 +154,7 @@ class TestUpgrade:
         out = capsys.readouterr().out
         assert code == 0
         assert f"Signed in as {EMAIL}." in out
-        assert f"Your apps moved to {EMAIL}: gmail." in out
+        assert f"Your apps moved to {EMAIL}: Gmail." in out
         lowered = out.lower()
         for banned in ("guest", "anonymous", "claim"):
             assert banned not in lowered, f"{banned!r} leaked into user-facing output:\n{out}"
@@ -196,7 +196,7 @@ class TestUpgrade:
 
         auth_nous._login_nous(argparse.Namespace(no_browser=True, timeout=15.0), PROVIDER_REGISTRY["nous"])
 
-        assert f"Your apps moved to {EMAIL}: gmail." in capsys.readouterr().out
+        assert f"Your apps moved to {EMAIL}: Gmail." in capsys.readouterr().out
         assert len(portal.claims) == 1
 
 

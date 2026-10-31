@@ -128,6 +128,7 @@ def _run_fresh_recovery_process(
         kwargs["creationflags"] = (
             getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0))
     else:
+        # detached-spawn: ok — awaited with a timeout; the gateway restart it runs must not share the updater's group
         kwargs["start_new_session"] = True
     try:
         return subprocess.run(command, **kwargs, check=False)

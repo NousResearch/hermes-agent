@@ -73,7 +73,7 @@ def test_the_handoff_result_rides_the_completed_state(portal, free_account):
 
     completed = _drain()[-1]
 
-    assert completed.handoff == (f"Your apps moved to {EMAIL}: gmail.", f"Reconnect in {EMAIL}: slack.")
+    assert completed.handoff == (f"Your apps moved to {EMAIL}: Gmail.", f"Reconnect in {EMAIL}: Slack.")
     assert completed.copy.splitlines()[:3] == [f"Signed in as {EMAIL}.", *completed.handoff]
 
 

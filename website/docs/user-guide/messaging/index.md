@@ -154,7 +154,7 @@ user: next message
 
 Failed turns still surface as errors; Hermes does not hide failures just because the text resembles a silence token.
 
-On a message from a person, a bare silence token is replaced by a short notice, because a message that needed a reply must not vanish. Internal wakes such as background-process notifications may stay silent, and so may a message the platform adapter reports as not addressed to the bot. Slack reports this for messages that open by @mentioning someone else and for unmentioned top-level messages that start a new thread in a free-response channel; other platforms always get the notice.
+On a message from a person, a bare silence token is replaced by a short notice, because a message that needed a reply must not vanish. Internal wakes such as background-process notifications may stay silent, and so may a message the platform adapter reports as not addressed to the bot. Slack reports this for messages that open by @mentioning someone else and for unmentioned top-level messages that start a new thread in a free-response channel. Telegram reports it for [group messages not addressed to the bot](telegram.md#letting-the-bot-stay-silent-in-a-group). Other platforms always get the notice.
 
 ## Quick Setup
 
@@ -342,10 +342,44 @@ platforms:
 
 Details:
 
-- All three keys are optional — set only `model`, only `system_prompt`, or any combination. Unset fields fall back to the global defaults.
+- `model`, `provider`, and `system_prompt` are optional. Unset fields fall back to the global defaults. A room can also opt into intentional silence with `allow_silence` (below).
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
+
+## Per-Room Intentional Silence
+
+In multi-agent rooms, a model may choose to end its turn with an explicit silence marker such as
+`NO_REPLY` or `[SILENT]`. To let a successful marker-only turn stay silent even when Hermes was
+mentioned or directly addressed, enable `allow_silence` for that room in the serving profile's
+`config.yaml`:
+
+```yaml
+platforms:
+  matrix:
+    channel_overrides:
+      "!exampleTeamRoom:example.org":
+        allow_silence: true
+```
+
+The default is the existing reply policy: omitted, `null`, or `false` keeps the visible warning
+when a human message needs a reply (or the adapter cannot tell). Internal notifications,
+scheduled heartbeats, and messages known to be unaddressed keep their existing silence exemptions,
+even with `allow_silence: false`. This is a room override, not a profile-wide setting.
+It uses the same chat ID → thread ID → parent ID lookup as other channel overrides; the first
+matching entry wins, including an explicit `false`. An entry that sets only other keys (say a
+thread with just `model:`) also matches first, so repeat `allow_silence` there to keep the
+parent's opt-in.
+
+Restart the gateway after editing configuration so all serving profiles use the updated settings.
+The override affects final delivery only: it does not undo tool actions, retract progress already
+sent, or instruct the model to choose silence. Empty, failed, partial, and interrupted results do
+not gain permission to disappear. Ordinary replies and conversation history stay unchanged. When
+the model wrote a reply beside a housekeeping-only tool call (memory, todo list, skill management
+or session search) and then ended a complete turn on a bare marker, that reply is delivered as the
+final answer, in opted-in rooms too.
+Crash recovery honors a suppression decision only after it was saved for that exact final reply;
+a crash before that point keeps the human-turn safeguard.
 
 ## Security
 
@@ -682,6 +716,8 @@ The plist sets `RunAtLoad`, so loading it starts the gateway. `hermes gateway in
 
 :::info Local Network access (LAN devices fail with "No route to host")
 macOS Local Network Privacy attributes a socket to the executable launchd spawned for the job. A bare venv Python has no application identity, so a launchd-run gateway could not reach LAN hosts (Home Assistant, local model servers) — every connect failed with `errno 65 No route to host` while the same URL worked from Terminal, and no prompt was ever shown to grant it. The generated plist therefore runs the gateway through `/usr/bin/osascript`; a JXA `system()` call starts the gateway without an interactive event-polling loop, and macOS treats its children as osascript's own — an Apple platform binary, exempt from the check. `ps` shows `osascript → stderr_timestamp → gateway run`; stop/restart/KeepAlive behave exactly as before. A plist installed by an older Hermes is refreshed by `hermes gateway install` (or on the next `hermes gateway start`).
+
+Without an installed service, the gateway Hermes starts for you (Hermes Desktop, a chat or TUI client, or the restart after `hermes update`) runs the same way, as a one-off launchd job labelled `com.nousresearch.hermes.runtime.<id>`. A plain child process would lose LAN access as soon as the app that started it quits: macOS then holds the gateway itself responsible, and denies it. The one-off job is never installed in `~/Library/LaunchAgents`, never starts at login and is never restarted by launchd. Because osascript is the responsible app, macOS file-access prompts for that gateway (Documents, Downloads, …) name **osascript**, not Hermes.
 :::
 
 :::tip Picking up new credentials after `hermes auth add` / `hermes auth reset`

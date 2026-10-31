@@ -13,7 +13,7 @@ description: 'Discover priced APIs and pay per request (HTTP 402, x402, MPP) in 
   nobody can answer) and the server is marked untrusted; every profile using the plugin shares the
   same local wallet.'
 maintainer: solana-foundation
-tier: community
+tier: verified
 category: tools
 docs_url: https://github.com/solana-foundation/pay/tree/main/agent-plugins/pay-cli#readme
 version: "0.1.0"

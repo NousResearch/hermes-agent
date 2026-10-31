@@ -7,6 +7,7 @@ failure propagates without changing plugin configuration or the live venv.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 from collections.abc import Mapping
@@ -62,6 +63,29 @@ def members_stamp(plugin_dirs) -> str:
     return h.hexdigest()
 
 
+def _published_store_entries(directory: Path) -> frozenset[str]:
+    """Names of the PM tool-store entries published in *directory*, if it is a store root.
+
+    The container image keeps its store in the ``tools`` package directory, so the snapshot would
+    otherwise copy every pinned interpreter, browser and media binary (about 1.5 GB) into each
+    dependency generation. Nothing builds from them: the build runs the store's own tools in
+    place. A directory counts as a store only when its ``facts.json`` records published entries,
+    and only those entries (plus hash-keyed fetch caches) are left out.
+    """
+    try:
+        facts = json.loads((directory / "facts.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return frozenset()
+    packages = facts.get("packages") if isinstance(facts, dict) else None
+    if not isinstance(packages, dict):
+        return frozenset()
+    names = {fact["entry"] for fact in packages.values()
+             if isinstance(fact, dict) and isinstance(fact.get("entry"), str)}
+    names = {name for name in names if name and Path(name).name == name}
+    names.update(child.name for child in directory.glob("fetch-*") if child.is_dir())
+    return frozenset(name for name in names if (directory / name).is_dir())
+
+
 def _copy_core_inputs(source: Path, destination: Path) -> None:
     """Build from a writable snapshot, never from signed/read-only source."""
     import fnmatch
@@ -89,8 +113,9 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     # environment runs from this snapshot and serves bundled plugins' dashboard/dist/.
     nested_excluded = excluded - {"dist"}
     def ignore(directory, names):
+        published = _published_store_entries(Path(directory))
         return [name for name in names if name in nested_excluded or name.startswith(".")
-                or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
+                or name in published or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
 
     for entry in source.iterdir():
         if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded
@@ -109,8 +134,9 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         shutil.copy2(entry, target)
 
 
-def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path) -> None:
-    """Snapshot core and plugin build inputs into a fresh generation."""
+def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path,
+                        python: Path) -> None:
+    """Snapshot core and plugin build inputs into a fresh generation for the *python* that installs it."""
     source = source.resolve()
     if root.resolve() == source or source.is_relative_to(root.resolve()):
         raise InstallError("venv", "workspace must not replace the core source")
@@ -134,6 +160,7 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         uv_policy.pop("exclude-newer", None)
         uv_policy.pop("exclude-newer-package", None)
         uv_policy["workspace"] = {"members": sorted(members)}
+        _solve_only_for(uv_policy, python)
         text = tomli_w.dumps(document)
     else:
         # A member-less generation syncs frozen against core's own lock.
@@ -157,6 +184,28 @@ def _without_release_age(text: str) -> str:
     return re.sub(r"(?m)^exclude-newer\s*=.*\n", "", text)
 
 
+def _solve_only_for(uv_policy: dict, python: Path) -> None:
+    """Narrow ``tool.uv.environments`` to the platform of the interpreter that installs the generation.
+
+    uv solves every platform the environments admit, and since uv 0.12.14 it fails the whole
+    lock when one fork has no wheels for a dependency: onnxruntime and torch ship none for
+    Android, so a Linux or macOS update evicted the plugin over a platform it never runs on.
+    A generation installs into one interpreter on one machine; only core's committed lock
+    has to cover every platform, and it never passes through here. The interpreter is asked
+    rather than this process, because PM can run under a bootstrap Python (an older Termux
+    interpreter reports ``linux``) while uv evaluates markers against *python*.
+    """
+    import subprocess
+
+    from pm.filesystem import native
+
+    probe = subprocess.run([native(python), "-I", "-c", "import platform, sys; print(sys.platform); print(platform.machine())"],
+                           capture_output=True, text=True, encoding="utf-8", check=True, timeout=60)
+    sys_platform, machine = probe.stdout.split()
+    host = f"sys_platform == {sys_platform!r} and platform_machine == {machine!r}"
+    uv_policy["environments"] = [f"({entry}) and {host}" for entry in uv_policy.get("environments") or []] or [host]
+
+
 def _is_member_candidate(plugin_dir: Path) -> bool:
     return read_python_declaration(plugin_dir).installs_packages
 
@@ -168,7 +217,7 @@ def enabled_plugin_entries(*, proposed_home=None, enabled=None, disabled=None,
 
     The key is what the home's config names, so a caller can edit that home's selection.
     """
-    from pm.plugins_state import _is_directory, enabled_plugins_ordered
+    from pm.plugins_state import enabled_plugins_ordered
 
     selection = enabled_plugins_ordered(
         proposed_home=proposed_home, enabled=enabled, disabled=disabled, installing=installing,
@@ -177,16 +226,25 @@ def enabled_plugin_entries(*, proposed_home=None, enabled=None, disabled=None,
     entries = []
     for plugins_dir, names in selection.items():
         for name in names:
-            relative = Path(name)
-            if relative.is_absolute() or ".." in relative.parts:
-                raise InstallError("venv", f"invalid plugin key: {name}")
-            plugin_dir = plugins_dir / relative
-            proposed = installing is not None and plugin_dir.resolve() == installing.resolve()
-            if not proposed and not _is_directory(plugin_dir):
-                plugin_dir = paths.repo_root() / "plugins" / relative
-            if proposed or _is_directory(plugin_dir):
+            plugin_dir = selected_plugin_dir(plugins_dir, name, installing=installing)
+            if plugin_dir is not None:
                 entries.append((plugins_dir, name, plugin_dir))
     return entries
+
+
+def selected_plugin_dir(plugins_dir: Path, name: str, *, installing: Path | None = None) -> Path | None:
+    """The tree a home's selection key names: its own plugins dir first, then core's, else None."""
+    from pm.plugins_state import _is_directory
+
+    relative = Path(name)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise InstallError("venv", f"invalid plugin key: {name}")
+    plugin_dir = plugins_dir / relative
+    if installing is not None and plugin_dir.resolve() == installing.resolve():
+        return plugin_dir
+    if not _is_directory(plugin_dir):
+        plugin_dir = paths.repo_root() / "plugins" / relative
+    return plugin_dir if _is_directory(plugin_dir) else None
 
 
 def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None,
@@ -365,7 +423,7 @@ def lock_and_sync(
     if root.exists() or root.is_symlink():
         raise InstallError("venv", f"workspace must be fresh: {root}")
     if replay is None:
-        _generate_pyproject(plugin_dirs, root, source=source)
+        _generate_pyproject(plugin_dirs, root, source=source, python=environment.python)
         if seed_lock is not None:
             (root / "uv.lock").write_bytes(seed_lock.read_bytes())
     else:

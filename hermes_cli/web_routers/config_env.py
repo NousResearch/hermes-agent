@@ -12,8 +12,8 @@ import time
 import urllib.parse
 from fastapi import APIRouter
 from hermes_cli.web_routers._common import (
-    REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
-    redacted_credential_preview, scoped_to_thread,
+    REDACTED_CREDENTIAL_WRITE_DETAIL, config_scoped_to_thread, http_failure,
+    is_redacted_credential_preview, redacted_credential_preview, scoped_to_thread,
 )
 from hermes_cli.config_backend import refusing_locked_omissions
 from hermes_cli.web_deps import LateState, late
@@ -102,8 +102,12 @@ async def get_schema(profile: Optional[str] = None):
     # Discovery-driven provider options (voice command providers + memory
     # provider plugins) are merged per-request so providers added after server
     # start still show up, scoped to the requested profile's config.
-    with _config_profile_scope(profile):
-        fields = _schema_with_dynamic_provider_options()
+    # The build reads plugin directories from disk (the memory-provider
+    # overlay ast.parses candidate dirs), which froze the loop — and every
+    # other request, /api/ws included — for seconds per call (#147036).
+    # Same hop as ``get_config`` above and ``config_scoped_to_thread`` in the
+    # sibling routers.
+    fields = await config_scoped_to_thread(profile, _schema_with_dynamic_provider_options)
     return {"fields": fields, "category_order": _CATEGORY_ORDER}
 
 

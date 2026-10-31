@@ -305,8 +305,9 @@ def test_shared_key_ignored_outside_persistent_docker(monkeypatch):
 def _use_home(monkeypatch, tmp_path, name):
     """Run as a real home: ``"default"`` = the Hermes root, ``None`` = a home outside the root (which
     is then its own root), anything else = ``<root>/profiles/<name>``."""
-    monkeypatch.setenv("HOME", str(tmp_path))
-    root = tmp_path / ".hermes"
+    import hermes_constants
+
+    root = hermes_constants._get_platform_default_hermes_home()  # conftest's per-test native root, any OS
     home = root if name == "default" else tmp_path / "elsewhere" if name is None else root / "profiles" / name
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -471,8 +472,9 @@ def test_a_home_the_tui_stamps_custom_keys_one_container_for_every_path(monkeypa
     from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
     from tools.environments.path_utils import sanitize_task_id_for_path
 
-    monkeypatch.setenv("HOME", str(tmp_path))
-    home = tmp_path.joinpath(".hermes", *home_parts)
+    import hermes_constants
+
+    home = hermes_constants._get_platform_default_hermes_home().joinpath(*home_parts)
     home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     _persistent_docker(monkeypatch)

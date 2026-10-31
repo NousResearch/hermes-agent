@@ -59,9 +59,24 @@ export const LOCAL_SESSION_SOURCE_IDS = [
 ]
 const LOCAL_SOURCE_IDS = new Set(LOCAL_SESSION_SOURCE_IDS)
 
-// External messaging platforms that each get their own self-managed sidebar
-// section (fetched separately from local recents). Mirrors the gateway platform
-// adapters; keep in sync with PLATFORM_ICONS in app/messaging/platform-icon.tsx.
+// Sessions that never get their own sidebar section: everything that runs on
+// THIS machine (CLI/TUI/desktop/editor surfaces, finite runs, automation
+// bookkeeping) rather than arriving through a gateway platform adapter. This is
+// the inverse side of `isMessagingSource`: a source outside the set is treated
+// as an external platform, so plugin platforms and custom `--source` tags the
+// label/icon catalogs have never heard of still group into their own section
+// instead of burying their threads under the generic Sessions list (#67794).
+// Union of the two ingest exclusions the sidebar already sends (recents +
+// messaging slices): every id here was already barred from the platform path.
+export const INTERNAL_SESSION_SOURCE_IDS = [...LOCAL_SESSION_SOURCE_IDS, 'cron', 'subagent', 'tool']
+const INTERNAL_SOURCE_IDS = new Set(INTERNAL_SESSION_SOURCE_IDS)
+
+// Platform ids the sidebar knows by name (recents SQL exclusion + label/icon
+// catalogs). NOT the section gate: `isMessagingSource` decides platform
+// membership, so a platform missing here still gets its own section — it just
+// keeps arriving in the recents page until the client re-files it. Keep in sync
+// with PLATFORM_ICONS in app/messaging/platform-icon.tsx where a brand mark
+// exists.
 export const MESSAGING_SESSION_SOURCE_IDS = [
   'telegram',
   'discord',
@@ -84,14 +99,18 @@ export const MESSAGING_SESSION_SOURCE_IDS = [
   'dingtalk',
   'feishu'
 ]
-const MESSAGING_SOURCE_IDS = new Set(MESSAGING_SESSION_SOURCE_IDS)
 
-/** True when a source id is an external messaging platform (gets its own
- *  sidebar section) rather than a local/CLI/desktop session. */
+/** True when a source id is an external platform session (gets its own sidebar
+ *  section) rather than a local/CLI/desktop/automation session. Gateway
+ *  adapters record `source = platform id`, so the test is exclusion-based: any
+ *  source the internal set doesn't name is a platform, and an unrecognized one
+ *  (a new plugin platform, a custom `--source` tag) still gets its own
+ *  collapsible group instead of falling into the generic Sessions list
+ *  (#67794). */
 export function isMessagingSource(source: null | string | undefined): boolean {
   const id = normalizeSessionSource(source)
 
-  return id != null && MESSAGING_SOURCE_IDS.has(id)
+  return id != null && !INTERNAL_SOURCE_IDS.has(id)
 }
 
 export function normalizeSessionSource(source: null | string | undefined): string | null {

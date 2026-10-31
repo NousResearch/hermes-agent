@@ -95,7 +95,7 @@ async def test_push_receipt_requires_real_admission_without_displacing_user(raft
 
 
 @pytest.mark.asyncio
-async def test_notifier_retries_unaccepted_wake_without_repeating_pings(tmp_path, monkeypatch):
+async def test_notifier_retries_unaccepted_wake_without_repeating_pings(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "board.db"))
     runner, adapter, _source, key = setup_route()
     conn = kbc.connect()
@@ -128,6 +128,7 @@ async def test_notifier_retries_unaccepted_wake_without_repeating_pings(tmp_path
             conn.close()
 
     await adapter.connect()
+    caplog.set_level("INFO", logger="gateway.run")
     await tick()  # send works, but no message handler has been installed yet
     assert len(adapter.wire) == 2
     assert unseen("notify+wake") and unseen("wake")
@@ -138,6 +139,9 @@ async def test_notifier_retries_unaccepted_wake_without_repeating_pings(tmp_path
     assert len(adapter.wire) == 2
     assert unseen("notify+wake") and unseen("wake")
     assert failures == {}
+    # A wake that is never accepted is said once per subscription, not every tick.
+    unaccepted = [r for r in caplog.records if "not accepted" in r.getMessage()]
+    assert sorted(r.args[0] for r in unaccepted) == sorted([tids["notify+wake"], tids["wake"]])
     received = []
 
     async def handler(event):

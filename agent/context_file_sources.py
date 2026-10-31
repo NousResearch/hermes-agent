@@ -3,8 +3,9 @@
 Read-only: enumerates the same candidates ``build_context_files_prompt`` loads (through
 ``agent.prompt_builder.discover_context_files`` — one discovery walk, so the listing cannot drift from the
 prompt) and reports, per file, its size and whether it was loaded, truncated over the context-file cap,
-shadowed by a higher-priority context type, blocked by the injection scan (or, for the user's own SOUL.md,
-flagged but loaded), empty/unreadable, or suppressed by the install-tree guard. Nothing here builds a prompt or touches the truncation-warning ContextVar, so it
+shadowed by a higher-priority context type, blocked by the injection scan (or, for a trusted SOUL.md —
+the user's own file or an administrator-pinned managed file — flagged but loaded), empty/unreadable,
+or suppressed by the install-tree guard. Nothing here builds a prompt or touches the truncation-warning ContextVar, so it
 is free of cache impact.
 
 Approximations (the manifest re-derives, it does not re-render): the truncation check sizes the raw
@@ -51,7 +52,8 @@ def _empty_status(path: Path) -> str:
 
 def _loaded_status(content: str, rendered_len: int, max_chars: int, user_authored: bool = False) -> str:
     """Same scan the builder runs (``_scan_context_content``): a hit replaces a project file with a BLOCKED
-    marker; the user's own SOUL.md (*user_authored*) still loads and is reported as ``flagged``."""
+    marker; a trusted SOUL.md (the user's own file, or a managed-scope pin) still loads and is reported
+    as ``flagged``."""
     if _pb._scan_for_threats(content.lstrip("\ufeff"), scope="context"):
         return "flagged" if user_authored else "blocked"
     return "truncated" if rendered_len > max_chars else "loaded"
@@ -87,13 +89,41 @@ def list_context_file_sources(
 
     if not skip_soul:
         home = Path(home_override) if home_override is not None else _pb.get_hermes_home()
-        soul_path = home / "SOUL.md"
-        if _pb._exists_or_denied(soul_path):
-            content = _pb._read_context_file(soul_path)
-            status = (_loaded_status(content, len(content), max_chars, user_authored=True) if content
-                      else _empty_status(soul_path))
-            sources.append(_entry("SOUL.md", soul_path, content, status))
+        entry = _soul_manifest_entry(home, max_chars)
+        if entry is not None:
+            sources.append(entry)
     return sources
+
+
+def _soul_manifest_entry(home: Path, max_chars: int) -> dict[str, Any] | None:
+    """The SOUL.md ``load_soul_md`` would use, else the first empty existing candidate.
+
+    Same precedence as the builder: a non-empty managed file wins over the profile
+    file; an empty or legacy-only managed file does not shadow the profile persona.
+    Both origins are trusted identity files, so a scan hit is ``flagged`` (loaded),
+    not ``blocked``.
+    """
+    from tools.bot_mode_probe import strip_legacy_protocol
+
+    fallback: tuple[Path, str] | None = None
+    for path, _origin in _pb._soul_md_candidates(home):
+        if not _pb._exists_or_denied(path):
+            continue
+        content = _pb._read_context_file(path)
+        if not content:
+            if fallback is None:
+                fallback = (path, content)
+            continue
+        prepared = strip_legacy_protocol(content).strip()
+        if not prepared:
+            continue
+        # Managed and profile souls are both trusted; project files stay blocking.
+        status = _loaded_status(prepared, len(prepared), max_chars, user_authored=True)
+        return _entry("SOUL.md", path, prepared, status)
+    if fallback is None:
+        return None
+    path, content = fallback
+    return _entry("SOUL.md", path, content, _empty_status(path))
 
 
 def context_file_sources_for_agent(agent: Any) -> list[dict[str, Any]]:

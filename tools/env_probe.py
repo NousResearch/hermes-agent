@@ -7,6 +7,7 @@ its own probe in agent/prompt_builder). Toggle: ``agent.environment_probe`` in c
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -79,8 +80,16 @@ def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
 
 
 def _py_out(binary: str, *args: str) -> Optional[str]:
-    """stdout of ``<binary> *args`` when the binary is on PATH and exits 0, else None."""
-    if not shutil.which(binary):
+    """stdout of ``<binary> *args`` when the binary exists and exits 0, else None.
+
+    An absolute path is used directly — under the Nix package ``HERMES_PYTHON``
+    points at a sealed venv that is not on PATH — while a bare name still
+    resolves through PATH.
+    """
+    if os.path.isabs(binary):
+        if not os.path.isfile(binary):
+            return None
+    elif not shutil.which(binary):
         return None
     rc, out, _err = _run([binary, *args])
     return out if rc == 0 else None
@@ -128,11 +137,14 @@ def _resolve_terminal_backend() -> str:
 def _build_probe_line() -> str:
     """Build the one-liner; "" when nothing notable is detected — the goal is to
     save the model from an avoidable wall, not narrate a healthy environment."""
-    py3_ver = _python_version_of("python3")
+    # Under the Nix package (and any sealed install) python3 is not on PATH;
+    # HERMES_PYTHON is exported by the wrapper and points at the venv binary.
+    python3_path = os.environ.get("HERMES_PYTHON") or "python3"
+    py3_ver = _python_version_of(python3_path)
     py_ver = _python_version_of("python")  # for systems with a `python` alias
-    py3_has_pip = _has_pip_module("python3") if py3_ver else False
+    py3_has_pip = _has_pip_module(python3_path) if py3_ver else False
     pip_bound_to = _pip_python_version()
-    py3_pep668 = _detect_pep668("python3") if py3_ver else False
+    py3_pep668 = _detect_pep668(python3_path) if py3_ver else False
     # Bare which() is correct here (unlike Hermes's own uv call sites): this reports
     # the environment *the model will see* in the terminal tool, whose PATH includes
     # the Hermes-managed $HERMES_HOME/bin via local.py.

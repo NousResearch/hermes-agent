@@ -332,10 +332,6 @@ _APPROVAL_LABEL_KEYS = {
 }
 
 
-def _truncate(text: str, limit: int) -> str:
-    return text[:limit] + "..." if len(text) > limit else text
-
-
 def _approval_body(cmd: str, desc: str, *, always: bool = False) -> list:
     """Adaptive Card body blocks for an approval prompt; unless ``always``, empty ``cmd``/``desc`` omit their blocks."""
     body = []
@@ -686,15 +682,16 @@ class TeamsAdapter(BasePlatformAdapter):
         """Adaptive Card: the shared text is split into its header / fenced command / reason blocks."""
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
-        # Button data carries a truncated cmd — just enough to reconstruct the card body.
-        btn_data_base = {"session_key": prompt.session_key, "cmd": _truncate(prompt.command, 200), "desc": prompt.description}
+        # Button data carries the card's own command preview, so the resolved card shows what was asked.
+        cmd = self._truncate_preview(prompt.command, self._EA_CMD_BUDGET)
+        btn_data_base = {"session_key": prompt.session_key, "cmd": cmd, "desc": prompt.description}
         actions = []
         for label, choice, style in prompt.actions:
             kw = {"style": self._EA_CARD_STYLES[style]} if style else {}
             actions.append(ExecuteAction(
                 title=label, verb="hermes_approve",
                 data={**btn_data_base, "hermes_action": self._EA_CARD_ACTIONS[choice]}, **kw))
-        body = _approval_body(self._truncate_preview(prompt.command, self._EA_CMD_BUDGET), prompt.description, always=True)
+        body = _approval_body(cmd, prompt.description, always=True)
         body.append(TextBlock(text=format_approval_deadline_line(approval_timeout_seconds()), wrap=True))
         if prompt.smart_denied:
             body.append(TextBlock(text=self._EA_SMART_DENY_LINE.strip(), wrap=True))

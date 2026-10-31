@@ -360,8 +360,9 @@ class TestTelegramApprovalCallback:
 
 @pytest.mark.asyncio
 async def test_resolved_approval_keeps_the_request_and_appends_the_decision():
-    """The resolved prompt keeps its own rendering (command + reason) with the decision appended; a prompt
-    the appended line pushes past the cap falls back to the decision alone instead of keeping live buttons."""
+    """The resolved prompt keeps its own rendering (command + reason, minus the moot deadline line) with the
+    decision appended; a prompt the appended line pushes past the cap falls back to the decision alone
+    instead of keeping live buttons."""
     for edit_fails in (False, True):
         adapter = _make_adapter()
         adapter._approval_state[7] = "agent:main:telegram:group:12345:99"
@@ -369,7 +370,8 @@ async def test_resolved_approval_keeps_the_request_and_appends_the_decision():
         query.data = "ea:once:7"
         query.message = MagicMock()
         query.message.chat_id = 12345
-        query.message.text_html = "<b>Dangerous command</b>\n<pre>rm -rf ./build &amp;&amp; ls</pre>\nReason: delete"
+        prompt_html = "<b>Dangerous command</b>\n<pre>rm -rf ./build &amp;&amp; ls</pre>\nReason: delete"
+        query.message.text_html = prompt_html + adapter._ea_deadline_line()  # moot once decided: dropped
         query.from_user = MagicMock(first_name="Ana & Bo", id="12345")
         query.edit_message_text = AsyncMock(side_effect=[RuntimeError("Message is too long"), None] if edit_fails else None)
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False), \
@@ -381,5 +383,5 @@ async def test_resolved_approval_keeps_the_request_and_appends_the_decision():
             assert "MARKDOWN_V2" in repr(final["parse_mode"]) and "rm -rf" not in final["text"]
         else:
             assert final["parse_mode"] == "HTML"
-            assert final["text"].startswith(query.message.text_html + "\n\n— ")
+            assert final["text"].startswith(prompt_html + "\n\n— ")
             assert "Ana &amp; Bo" in final["text"]

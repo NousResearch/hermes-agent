@@ -1155,3 +1155,22 @@ async def test_expired_approval_click_keeps_the_request():
         body = await adapter._on_card_action(ctx)
     texts = " ".join(str(block.text) for block in body)
     assert "rm -rf ./build" in texts and "dangerous deletion" in texts
+
+
+@pytest.mark.anyio
+async def test_resolved_card_shows_the_prompts_full_command_preview():
+    """The button data carries the same command preview as the prompt card, so a command longer than a
+    short stub is not cut short on the resolved card."""
+    adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+    adapter._app, adapter._card_action_denied, adapter._invoke_card = object(), (lambda _from: None), (lambda body: body)
+    adapter._send_card = AsyncMock()
+    command = "echo " + "x" * 600 + " END"
+    buttons = []
+    with patch.object(sys.modules[TeamsAdapter.__module__], "ExecuteAction", lambda **kw: buttons.append(kw)):
+        await adapter.send_exec_approval(chat_id="c1", command=command, session_key="s1", description="flagged")
+    ctx = MagicMock()
+    ctx.activity.value.action.data = buttons[0]["data"]
+    with patch("tools.approval.has_blocking_approval", return_value=True), \
+            patch("tools.approval.resolve_gateway_approval", return_value=1):
+        body = await adapter._on_card_action(ctx)
+    assert command in " ".join(str(block.text) for block in body)

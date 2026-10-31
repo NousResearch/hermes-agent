@@ -1808,7 +1808,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "session_key": session_key,
                 "message_id": result.message_id or "",
                 "chat_id": chat_id,
-                "body": card["elements"][0]["content"],  # the resolved card keeps what was asked
+                "body": card["elements"][0]["content"].replace(self._ea_deadline_line(), ""),  # kept; deadline is moot
             }
         return result
 

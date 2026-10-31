@@ -4780,7 +4780,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             label = t("platform.telegram.approval.expired")
             edit_text = t("platform.telegram.approval.expired_detail", label=label)
         await query.answer(text=label[:_TOAST_LIMIT])
-        await edit_keeping_prompt(query, edit_text, self._edit_md_quiet)
+        await edit_keeping_prompt(self, query, edit_text)
         # Typing was paused when the approval was sent; the text /approve and /deny paths resume it too.
         if count and cb["chat_id"] is not None:
             self.resume_typing_for_chat(str(cb["chat_id"]))
@@ -4803,7 +4803,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         label = t(f"platform.telegram.{label_key}")
         await query.answer(text=label[:_TOAST_LIMIT])
         decided = t("platform.telegram.approval.resolved_by_user", label=label, user=user_display)
-        await edit_keeping_prompt(query, decided, self._edit_md_quiet)
+        await edit_keeping_prompt(self, query, decided)
         # The runner stored a handler keyed by session_key; run it and send any returned text as a follow-up.
         try:
             from tools import slash_confirm as _slash_confirm_mod

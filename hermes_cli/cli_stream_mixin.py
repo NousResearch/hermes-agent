@@ -53,6 +53,22 @@ def _terminal_columns(default: int = 80) -> int:
 class CLIStreamMixin:
     """Streaming output, reasoning preview, tool progress callbacks, and busy-command spinner for the interactive CLI"""
 
+    def _interim_assistant_message(self, text: str, *, already_streamed: bool = False) -> None:
+        """Display interim assistant commentary when streaming is off (#147037).
+
+        When display.streaming is false the model's commentary deltas are not
+        routed through stream_delta_callback, so they would be lost. This
+        callback catches them via the interim_assistant_callback path so that
+        mid-turn narration (e.g. Codex commentary) still reaches the user.
+        """
+        if already_streamed or not text or not text.strip():
+            return
+        from cli import _DIM, _RST, _cprint
+        try:
+            _cprint(f"{_DIM}{text.strip()}{_RST}")
+        except Exception:
+            pass
+
     def _on_thinking(self, text: str) -> None:
         """Called by agent when thinking starts/stops. Updates TUI spinner."""
         if getattr(getattr(self, "agent", None), "_mute_notification_reply", False):

@@ -1016,6 +1016,15 @@ def _local_runtime_row(ctx: ConfigContext) -> dict | None:
         from hermes_cli.local_runtime.bootstrap import staged_model_ids
         from hermes_cli.providers import LLAMACPP_ALIASES, LLAMACPP_PROVIDER_ID
 
+        # This row is injected after list_authenticated_providers applies
+        # model_catalog.excluded_providers, so it needs its own alias-aware gate
+        # or the Local row leaks into every picker surface (#140326). Mirrors
+        # _append_unconfigured_rows: unconditional, even when current (#68816),
+        # and the `hermes model` CLI picker's LLAMACPP_ALIASES check.
+        excluded = {str(p).strip().lower() for p in (ctx.excluded_providers or []) if p}
+        if excluded & {a.lower() for a in LLAMACPP_ALIASES}:
+            return None
+
         staged = staged_model_ids()
         if not staged:
             return None

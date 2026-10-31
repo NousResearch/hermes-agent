@@ -1369,8 +1369,14 @@ def _cmd_adopt(args):
     return cmd_adopt(args)
 
 
+def _cmd_attention(args):
+    from hermes_cli.sessions_cmd_attention import cmd_attention
+    return cmd_attention(args)
+
+
 _PRE_DB_HANDLERS = {
     "repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import,
+    "attention": _cmd_attention,
     "repair-profiles": _cmd_repair_profiles,  # opens every profile's store itself
     "set-journal-mode": _cmd_set_journal_mode,  # offline: must not open the store it converts
     "discard": _cmd_discard,  # a gateway control (prompt.resolve_unknown), never a direct store write

@@ -122,7 +122,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         adapter = self._delivery_adapter_for(source)
         if not adapter:
             return
-        config = getattr(self, "config", None)
+        config = self._authorization_config(self._adapter_profile_for_source(source))
         text = str(getattr(config, "unauthorized_dm_decline_message", "") or "").strip()
         try:
             await adapter.send(source.chat_id, text or DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE)
@@ -134,15 +134,18 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         sender's ID and the allowlist fix in the WARNING log and, once per sender, in the home channel."""
         from hermes_constants import display_hermes_home
         platform_name = source.platform.value if source.platform else "unknown"
+        receiver = self._adapter_profile_for_source(source)
+        authorization_home = self._authorization_home_for_source(source)
         hint = unauthorized_owner_hint(
-            platform_name, source.user_id, source.user_name or "", hermes_home=display_hermes_home(),
+            platform_name, source.user_id, source.user_name or "",
+            hermes_home=display_hermes_home(authorization_home),
         )
         logger.warning("Unauthorized user (ignored): %s", hint)
         notifier = getattr(self, "_unauthorized_owner_notifier", None)
         if notifier is None:
             notifier = self._unauthorized_owner_notifier = UnauthorizedOwnerNotifier()
-        if notifier.first_time(platform_name, source.user_id) and getattr(self, "config", None) is not None:
-            await notifier.notify(self, source, hint)
+        if notifier.first_time(platform_name, source.user_id, profile=receiver) and getattr(self, "config", None) is not None:
+            await notifier.notify(self, source, hint, profile=receiver)
 
     async def _hm_admit_event(
         self, event: MessageEvent
@@ -230,7 +233,15 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             # DMs get a pairing code or a one-time decline, groups are ignored. A bot cannot pair, and
             # answering one mid-cooldown is outbound traffic.
             pairable_dm = source.chat_type == "dm" and not getattr(source, "is_bot", False)
-            behavior = self._get_unauthorized_dm_behavior(source.platform, profile=source.profile) if pairable_dm else None
+            behavior = None
+            if pairable_dm:
+                # A routed runtime must not offer pairing that the receiving bot disables.
+                behavior = self._under_authorization_profile(
+                    source,
+                    lambda: self._get_unauthorized_dm_behavior(
+                        source.platform, profile=self._adapter_profile_for_source(source)
+                    ),
+                )
             if behavior == "pair":
                 logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
                 await self._hm_offer_pairing_code(source)

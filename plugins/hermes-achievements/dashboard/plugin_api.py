@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from hermes_constants import get_hermes_home
 
@@ -508,7 +508,84 @@ METRIC_LABELS = {
     "night_sessions": "sessions started late night or before dawn"}
 
 
-def metric_label(metric: str) -> str:
+# ---- Locale / i18n ----
+# Locale catalogs live in ./locales/<code>.json next to this file. English is the
+# catalog language and needs no file: every localized helper falls back to the
+# untranslated value, so a request locale without a catalog (or whose script we do
+# not carry yet, e.g. zh-Hant) renders exactly the English build.
+_LOCALE_DIR = Path(__file__).parent / "locales"
+# Accept-Language tags that resolve to the zh-CN (Simplified) catalog. Traditional
+# Chinese tags (zh-TW, zh-HK, zh-Hant, ...) intentionally resolve to English until
+# a zh-Hant catalog exists — serving Simplified text to a Traditional locale is
+# worse than the English fallback.
+_ZH_HANS_TAGS = {"zh", "zh-cn", "zh-hans", "zh-sg", "cmn", "cmn-hans"}
+
+
+def _load_locale(locale_code: str) -> dict[str, Any]:
+    """Load a locale catalog fresh per call (no cache invalidation to worry about;
+    the JSON is small and /achievements is a local dashboard endpoint)."""
+    path = _LOCALE_DIR / f"{locale_code}.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _resolve_locale(request: Optional[Request]) -> str:
+    """Map a request's Accept-Language header onto a catalog we actually carry."""
+    try:
+        accept = (request.headers.get("accept-language") if request is not None else "") or ""
+    except Exception:
+        return "en"
+    for part in accept.split(","):
+        tag = part.strip().split(";")[0].strip().lower()
+        if tag in _ZH_HANS_TAGS:
+            return "zh-CN"
+    return "en"
+
+
+def _locale_section(locale_code: str, section: str) -> dict[str, Any]:
+    data = _load_locale(locale_code).get(section)
+    return data if isinstance(data, dict) else {}
+
+
+def _localized_tier_name(name: str, locale_code: str) -> str:
+    tiers = _load_locale(locale_code).get("._tiers")
+    if isinstance(tiers, list):
+        try:
+            return tiers[TIER_NAMES.index(name)]
+        except (ValueError, IndexError):
+            return name
+    return name
+
+
+def _apply_locale(item: dict[str, Any], locale_code: str) -> dict[str, Any]:
+    """Overlay translated name/description/category onto a computed achievement dict.
+
+    ``tier`` and ``state`` stay English on purpose: the dashboard derives CSS classes
+    (ha-tier-<tier>) and tier colors from tier names, and the visibility filter
+    compares state strings. Category is display-only (card label, filter pills,
+    share canvas), so it is localized.
+    """
+    if locale_code == "en":
+        return item
+    entry = _load_locale(locale_code).get(item.get("id", ""))
+    if not isinstance(entry, dict):
+        return item
+    clean = dict(item)
+    for field in ("name", "description", "category"):
+        if field in entry:
+            clean[field] = entry[field]
+    return clean
+
+
+def metric_label(metric: str, locale_code: str = "en") -> str:
+    if locale_code != "en":
+        translated = _locale_section(locale_code, "._metrics").get(metric)
+        if translated:
+            return translated
     return METRIC_LABELS.get(metric, metric.replace("_", " "))
 
 
@@ -527,12 +604,67 @@ def criteria_for(definition: dict[str, Any]) -> str:
     return "Requirement: complete the matching Hermes behavior."
 
 
+def localized_criteria(definition: dict[str, Any], locale_code: str) -> str:
+    """Locale-aware criteria text. English (and any locale with a missing catalog
+    entry) delegates to :func:`criteria_for`, so the default wire format stays
+    byte-identical to the untranslated build — no mixed punctuation on the
+    English path."""
+    if locale_code == "en":
+        return criteria_for(definition)
+    s = _locale_section(locale_code, "._strings")
+    prefix = s.get("requirement_prefix")
+    if not prefix:
+        return criteria_for(definition)
+    if definition.get("secret") and definition.get("state") == "secret":
+        return s.get("secret_criteria") or criteria_for(definition)
+    if "threshold_metric" in definition:
+        tiers_list = sorted(definition.get("tiers", []), key=lambda t: t["threshold"])
+        if not tiers_list:
+            return s.get("requirement_workflow") or criteria_for(definition)
+        ladder = ", ".join(f"{_localized_tier_name(t['name'], locale_code)} {t['threshold']}" for t in tiers_list)
+        ladder_label = s.get("tier_ladder") or "Tier ladder"
+        return f"{prefix}：{metric_label(definition['threshold_metric'], locale_code)}。{ladder_label}：{ladder}。"
+    requirements = definition.get("requirements") or []
+    if requirements:
+        parts = "；".join(f"{metric_label(r['metric'], locale_code)} ≥ {int(r.get('gte', 1))}" for r in requirements)
+        return f"{prefix}：{parts}。"
+    return s.get("requirement_complete") or criteria_for(definition)
+
+
 def display_achievement(item: dict[str, Any]) -> dict[str, Any]:
     clean = dict(item)
     if clean.get("state") == "secret":
         return {**clean, "name": "???", "description": "Secret achievement: hidden until Hermes detects the first relevant behavior in your session history.", "criteria": criteria_for(clean), "icon": "secret"}
     clean["criteria"] = criteria_for(clean)
     return clean
+
+
+def localized_display(item: dict[str, Any], locale_code: str) -> dict[str, Any]:
+    """Re-render an already-computed display dict in another locale, for routes
+    that serve the (English) cached snapshot. The secret branch is checked BEFORE
+    the catalog overlay so a translated name/description never leaks a secret's
+    identity through a localized response."""
+    if locale_code == "en":
+        return item
+    if item.get("state") == "secret":
+        clean = dict(item)
+        clean["name"] = "???"
+        hint = _locale_section(locale_code, "._strings").get("secret_hint")
+        if hint:
+            clean["description"] = hint
+        clean["criteria"] = localized_criteria(clean, locale_code)
+        clean["icon"] = "secret"
+        return clean
+    clean = _apply_locale(item, locale_code)
+    clean["criteria"] = localized_criteria(clean, locale_code)
+    return clean
+
+
+def _localize_achievements(items: List[dict[str, Any]], locale_code: str) -> List[dict[str, Any]]:
+    """Apply :func:`localized_display` to a list; English passes through unchanged."""
+    if locale_code == "en":
+        return items
+    return [localized_display(item, locale_code) for item in items]
 
 
 # ---- Scanning + aggregation ----
@@ -844,11 +976,14 @@ def evaluate_all(force: bool = False) -> dict[str, Any]:
 # ---- Routes ----
 
 @router.get("/achievements")
-async def achievements():
+async def achievements(request: Request):
+    locale_code = _resolve_locale(request)
     data = evaluate_all()
     payload = {k: data[k] for k in ["achievements", "unlocked_count", "discovered_count", "secret_count", "total_count", "error", "generated_at"] if k in data}
     payload["is_stale"] = _is_snapshot_stale(data)
     payload["scan_meta"] = {**(data.get("scan_meta") or {}), "status": _scan_status_payload()}
+    # The snapshot cache stays English; localization is a per-request overlay.
+    payload["achievements"] = _localize_achievements(payload["achievements"], locale_code)
     return payload
 
 
@@ -858,20 +993,24 @@ async def scan_status():
 
 
 @router.get("/recent-unlocks")
-async def recent_unlocks():
+async def recent_unlocks(request: Request):
+    locale_code = _resolve_locale(request)
     data = evaluate_all()
-    return sorted([a for a in data["achievements"] if a["unlocked"]], key=lambda a: a.get("unlocked_at") or 0, reverse=True)[:20]
+    unlocked = sorted([a for a in data["achievements"] if a["unlocked"]], key=lambda a: a.get("unlocked_at") or 0, reverse=True)[:20]
+    return _localize_achievements(unlocked, locale_code)
 
 
 @router.get("/sessions/{session_id}/badges")
-async def session_badges(session_id: str):
+async def session_badges(session_id: str, request: Request):
+    locale_code = _resolve_locale(request)
     data = evaluate_all()
     session = next((s for s in data["sessions"] if s["session_id"] == session_id), None)
     if not session:
         return {"session_id": session_id, "badges": []}
     aggregate = aggregate_stats([session])
     results = [(d, evaluate_definition(d, aggregate)) for d in ACHIEVEMENTS]
-    return {"session_id": session_id, "badges": [display_achievement({**d, **r}) for d, r in results if r["unlocked"]]}
+    badges = [display_achievement({**d, **r}) for d, r in results if r["unlocked"]]
+    return {"session_id": session_id, "badges": _localize_achievements(badges, locale_code)}
 
 
 @router.post("/rescan")

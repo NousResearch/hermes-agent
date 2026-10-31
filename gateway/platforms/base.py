@@ -4198,7 +4198,23 @@ class BasePlatformAdapter(ABC):
                 redeliver = getattr(
                     self.gateway_runner, "_redeliver_failed_obligations_for_platform", None)
                 live = self._final_delivery_adapter(event.source)
-                if live is not delivery_adapter and callable(redeliver):
+                # Health may have won the race with the ledger write. Only Telegram exposes a real
+                # receive-path health edge: its current polling generation has completed a getUpdates
+                # round trip. The default ``send_path_degraded=False`` means no such thing for other
+                # adapters (notably a disconnected Discord client), so it cannot justify replaying a
+                # failure through the same adapter. A replacement adapter remains the established
+                # reconnect path for every platform.
+                polling_progress = getattr(live, "_polling_progress_event", None)
+                same_healthy_telegram_adapter = (
+                    live is delivery_adapter
+                    and getattr(live, "platform", None) == Platform.TELEGRAM
+                    and not getattr(live, "send_path_degraded", False)
+                    and isinstance(polling_progress, asyncio.Event)
+                    and polling_progress.is_set()
+                )
+                if callable(redeliver) and (
+                    live is not delivery_adapter or same_healthy_telegram_adapter
+                ):
                     await redeliver(event.source.platform,
                                     profile=getattr(delivery_adapter, "_owner_profile", None))
             elif classify_dead_error(error) is None:  # a dead chat is never retried: no timer to wake

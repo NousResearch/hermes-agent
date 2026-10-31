@@ -47,3 +47,55 @@ class TestPollingHealthConfirmation:
             a._record_polling_progress(1)
         assert not [rec for rec in caplog.records if rec.levelno == logging.INFO]
         assert not a._polling_progress_event.is_set()
+
+    def test_degraded_health_confirmation_replays_failed_final_responses(self):
+        async def exercise():
+            a = _bare_adapter()
+            a._running = True
+            a.gateway_runner = type("Runner", (), {})()
+            owned = set()
+            a.gateway_runner._retain_background_task = lambda task: (owned.add(task), task.add_done_callback(owned.discard), task)[-1]
+            calls = []
+
+            async def redeliver(platform, *, profile=None):
+                calls.append((platform, profile))
+
+            a.gateway_runner._redeliver_failed_obligations_for_platform = redeliver
+            a._write_runtime_status_safe = lambda *args, **kwargs: None
+            a._owner_profile = "default"
+
+            assert a._record_polling_progress(1) is True
+            await asyncio.sleep(0)
+            assert calls == [(Platform.TELEGRAM, "default")]
+            assert a._send_path_degraded is False
+
+        asyncio.run(exercise())
+    def test_health_replay_task_is_gateway_owned_and_logs_failure(self, caplog):
+        async def exercise():
+            a = _bare_adapter()
+            a._running = True
+            owned = set()
+            runner = type("Runner", (), {})()
+
+            def retain(task):
+                owned.add(task)
+                task.add_done_callback(owned.discard)
+                return task
+
+            runner._retain_background_task = retain
+            a.gateway_runner = runner
+
+            async def redeliver(*_args, **_kwargs):
+                raise RuntimeError("offline replay probe")
+
+            runner._redeliver_failed_obligations_for_platform = redeliver
+            a._write_runtime_status_safe = lambda *args, **kwargs: None
+            a._owner_profile = "default"
+            with caplog.at_level(logging.WARNING, logger="plugins.platforms.telegram.adapter"):
+                assert a._record_polling_progress(1) is True
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+            assert not owned
+            assert any("delivery replay after polling recovery failed" in r.message for r in caplog.records)
+
+        asyncio.run(exercise())

@@ -47,6 +47,7 @@ import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { AllowlistField } from './allowlist-field'
+import { DiscordBotCheck } from './discord-bot-check'
 import { PlatformAvatar } from './platform-icon'
 import { TelegramQrSetup } from './telegram-qr-setup'
 
@@ -844,6 +845,15 @@ function PlatformDetail({
         </section>
       )}
 
+      {platform.id === 'discord' && (
+        <section>
+          <SectionTitle>{m.discordCheck.checkBot}</SectionTitle>
+          <div className="mt-3">
+            <DiscordBotCheck key={discordCheckKey(platform, scopeProfile)} platform={platform} scopeProfile={scopeProfile} />
+          </div>
+        </section>
+      )}
+
       <section>
         <SectionTitle>{m.getCredentials}</SectionTitle>
         <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
@@ -1022,6 +1032,13 @@ const PLATFORM_INTRO: Record<string, string> = {
     'Expose Hermes as an OpenAI-compatible API. Set an auth key, then point Open WebUI / LobeChat / etc. at the host:port.',
   webhook:
     'Run an HTTP server that other tools (GitHub, GitLab, custom apps) can POST to. Use the secret to verify signatures.'
+}
+
+// A new or cleared token remounts the check, so a result never outlives the bot it describes.
+function discordCheckKey(platform: MessagingPlatformInfo, scopeProfile: string | undefined): string {
+  const token = platform.env_vars.find(field => field.key === 'DISCORD_BOT_TOKEN')
+
+  return `${scopeProfile ?? ''}:${token?.is_set ? token.redacted_value ?? 'set' : ''}`
 }
 
 const introCopy = (platform: MessagingPlatformInfo, m: Translations['messaging']) =>

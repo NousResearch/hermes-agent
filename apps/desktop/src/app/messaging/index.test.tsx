@@ -26,9 +26,11 @@ const watchGatewayRestartOutcome = vi.fn()
 const startTelegramOnboarding = vi.fn()
 const getTelegramOnboardingStatus = vi.fn()
 const applyTelegramOnboarding = vi.fn()
+const checkDiscordBot = vi.fn()
 const notify = vi.fn()
 
 vi.mock('@/hermes', () => ({
+  checkDiscordBot: (profile?: null | string) => checkDiscordBot(profile),
   approvePairing: (platformId: string, requestId: string, profile?: null | string) =>
     approvePairing(platformId, requestId, profile),
   getMessagingPlatforms: (profile?: null | string) => getMessagingPlatforms(profile),
@@ -104,6 +106,105 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+})
+
+describe('MessagingView Discord bot check', () => {
+  const result = {
+    app_id: '123',
+    bot_name: 'Test bot',
+    owners: [],
+    message_content: false,
+    server_members: false,
+    server_count: 0,
+    invite_url: 'https://discord.com/oauth2/authorize?client_id=123',
+    bot_settings_url: 'https://discord.com/developers/applications/123/bot'
+  }
+
+  async function showDiscord(saved = true) {
+    $settingsScopeOverride.set('discord_test')
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          id: 'discord',
+          name: 'Discord',
+          configured: saved,
+          env_vars: [
+            {
+              key: 'DISCORD_BOT_TOKEN',
+              redacted_value: saved ? '••••••' : null,
+              is_set: saved,
+              is_password: true,
+              required: true,
+              advanced: false,
+              description: 'Bot token',
+              prompt: 'Bot token',
+              url: null
+            }
+          ]
+        })
+      ]
+    })
+    await renderMessaging()
+  }
+
+  afterEach(() => $settingsScopeOverride.set(null))
+
+  it('checks the saved bot in the selected profile and opens its settings and invite', async () => {
+    checkDiscordBot.mockResolvedValue(result)
+    await showDiscord()
+    fireEvent.click(await screen.findByRole('button', { name: 'Check bot' }))
+    expect(checkDiscordBot).toHaveBeenCalledWith('discord_test')
+    expect(await screen.findByText('Test bot')).toBeTruthy()
+    expect(screen.getByText(/Discord will refuse/)).toBeTruthy()
+    expect(screen.getByText(/isn't in any server yet/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Open Bot settings' }))
+    expect(openExternalLink).toHaveBeenCalledWith(result.bot_settings_url)
+    fireEvent.click(screen.getByRole('button', { name: 'Add to a server' }))
+    expect(openExternalLink).toHaveBeenCalledWith(result.invite_url)
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    expect(checkDiscordBot).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps errors inline and the card interactive for retry', async () => {
+    checkDiscordBot
+      .mockRejectedValueOnce(new Error('Discord rejected the saved token.'))
+      .mockResolvedValueOnce({ ...result, message_content: true, server_members: true, server_count: 1 })
+    await showDiscord()
+    fireEvent.click(await screen.findByRole('button', { name: 'Check bot' }))
+    expect(await screen.findByText(/Discord rejected the saved token/)).toBeTruthy()
+    const retry = screen.getByRole('button', { name: 'Check bot' })
+    expect(retry.hasAttribute('disabled')).toBe(false)
+    expect(screen.getByRole('switch', { name: 'Enable Discord' }).hasAttribute('disabled')).toBe(false)
+    fireEvent.click(retry)
+    expect(await screen.findByText('Message Content Intent is on.')).toBeTruthy()
+    expect(screen.queryByText(/Discord rejected/)).toBeNull()
+    expect(screen.queryByText(/Discord will refuse/)).toBeNull()
+  })
+
+  it('drops an old result once a different token is saved', async () => {
+    checkDiscordBot.mockResolvedValue(result)
+    updateMessagingPlatform.mockResolvedValue({ hot_served: false })
+    await showDiscord()
+    fireEvent.click(await screen.findByRole('button', { name: 'Check bot' }))
+    expect(await screen.findByText('Test bot')).toBeTruthy()
+    const saved = await getMessagingPlatforms('discord_test')
+    const field = saved.platforms[0].env_vars[0]
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [{ ...saved.platforms[0], env_vars: [{ ...field, redacted_value: '••••new' }] }]
+    })
+    fireEvent.change(await screen.findByLabelText('Bot token'), { target: { value: 'another-bot-token' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+    })
+    await waitFor(() => expect(screen.queryByText('Test bot')).toBeNull())
+    expect(screen.queryByRole('button', { name: 'Add to a server' })).toBeNull()
+  })
+
+  it('requires a saved token before checking', async () => {
+    await showDiscord(false)
+    expect((await screen.findByRole('button', { name: 'Check bot' })).hasAttribute('disabled')).toBe(true)
+    expect(checkDiscordBot).not.toHaveBeenCalled()
+  })
 })
 
 // Static import at module scope (after the hoisted vi.mock calls) so the

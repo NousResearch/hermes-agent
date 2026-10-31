@@ -107,6 +107,7 @@ Any knob at `0` disables the whole WebSocket liveness probe. Values that fail to
 
 :::tip[Shortcut: let the wizard do Steps 5–7]
 Create the application and copy the bot token (Steps 1–4), then run `hermes gateway setup` and pick **Discord**. Hermes checks the token with Discord, tells you if **Message Content Intent** is off (with a link straight to the toggle), prints a ready-made invite link for your server, and allowlists you as the bot's owner — no Developer Mode needed.
+Desktop → Messaging → Discord → **Check bot** runs the same checks and gives you the invite link.
 :::
 
 ## Step 1: Create a Discord Application

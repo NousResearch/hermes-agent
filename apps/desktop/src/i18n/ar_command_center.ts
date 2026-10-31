@@ -196,6 +196,18 @@ export const arCommandCenter = {
     restartNow: 'إعادة التشغيل الآن',
     restarting: 'جارٍ إعادة التشغيل…',
     restartFailedManual: 'فشلت إعادة تشغيل البوابة — أعد تشغيلها يدويًا وتحقق من سجلات البوابة.',
+    discordCheck: {
+      checkBot: 'فحص البوت',
+      checking: 'جارٍ الفحص…',
+      checkAgain: 'الفحص مجددًا',
+      saveFirst: 'احفظ رمز بوت Discord أولًا.',
+      intentOn: 'خيار Message Content Intent مفعّل.',
+      intentOff: 'خيار Message Content Intent معطّل. سيرفض Discord الاتصال حتى تفعّله في إعدادات البوت.',
+      openSettings: 'فتح إعدادات البوت',
+      membersOptional: 'اختياري: فعّل Server Members Intent للسماح للأشخاص حسب اسم المستخدم أو الدور.',
+      noServers: 'لم ينضم البوت إلى أي خادم بعد.',
+      addToServer: 'إضافة إلى خادم'
+    },
     telegramQr: {
       title: 'اختر طريقة ربط بوت Telegram',
       subtitle: 'كلا الخيارين يربط بوتًا تتحكم به ويحفظ بياناته في هذا التثبيت من Hermes فقط.',

@@ -1,0 +1,34 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: talktoads
+description: 'TalkToAds: run Meta (Facebook + Instagram) ads by chat. Reports, audits, reel boosts; new ads start paused.'
+source: https://github.com/IndianAppGuy/talktoads-agent
+
+# Official vendor-hosted remote MCP (URL-only). OAuth 2.1 + Dynamic Client
+# Registration with PKCE (S256); AS metadata with registration_endpoint at
+# /.well-known/oauth-authorization-server. Same pattern as gamma.
+
+transport:
+  type: http
+  url: https://talktoads.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - talktoads
+    - meta ads
+    - facebook ads
+    - instagram ads
+  hosts:
+    - talktoads.com
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to TalkToAds
+  with Facebook (or run `hermes mcp login talktoads`). Approve access
+  to your ad accounts, then restart the session so tools load. Everything
+  the agent creates starts paused and only goes live after you say so.

@@ -4827,39 +4827,121 @@ def _classify_session_kind(session: Dict[str, Any]) -> Dict[str, Any]:
 
     Added fields (all additive — existing clients ignore unknown keys):
     - ``kind``: "subagent" | "kanban_worker" | "main"
-    - ``kanban_task_id``: task id string when kind=="kanban_worker", else null
+    - ``parent_session_id``: value from the session row (string or None)
+    - ``kanban_task_id``: task id string when kind=="kanban_worker", else null.
+      Priority: (a) origin_json.kanban_task_id > (b) cwd /.worktrees/<task_id> pattern.
     - ``child_count``: set to 0 here; caller fills it in from a batch query
 
     Classification rules:
     - ``subagent``: source == 'subagent' OR parent_session_id is not null/empty.
       (Subagents are always spawned with source='subagent' by delegate_tool.py.)
-    - ``kanban_worker``: cwd matches the /.worktrees/t_<hex> pattern used by the
-      kanban dispatcher when it creates a git worktree for a task.
+    - ``kanban_worker``: (a) origin_json carries kanban_task_id, OR
+      (b) cwd matches the /.worktrees/t_<hex> pattern used by the kanban
+      dispatcher when it creates a git worktree for a task.
+      Priority a > b; existing sessions without origin_json fall back to b.
     - ``main``: everything else.
     """
+    import json as _json
+
     source = session.get("source") or ""
     parent = session.get("parent_session_id") or ""
     cwd = session.get("cwd") or ""
+    origin_raw = session.get("origin_json") or ""
 
     # Subagent check — must come first so a subagent launched inside a worktree
     # (rare but possible) is still tagged subagent, not kanban_worker.
     if source == "subagent" or bool(parent):
-        return {"kind": "subagent", "kanban_task_id": None, "child_count": 0}
+        return {
+            "kind": "subagent",
+            "parent_session_id": session.get("parent_session_id"),
+            "kanban_task_id": None,
+            "child_count": 0,
+        }
 
-    # Kanban worker: dispatcher always creates a .worktrees/<task_id> dir.
+    # Kanban worker — priority (a): origin_json carries kanban_task_id.
+    # The spawn path writes this since the field was added, so new sessions are
+    # detected without the cwd heuristic.
+    if origin_raw:
+        try:
+            origin = _json.loads(origin_raw)
+            task_id = origin.get("kanban_task_id") or ""
+            if task_id:
+                return {
+                    "kind": "kanban_worker",
+                    "parent_session_id": session.get("parent_session_id"),
+                    "kanban_task_id": task_id,
+                    "child_count": 0,
+                }
+        except Exception:
+            pass
+
+    # Kanban worker — priority (b): dispatcher creates a .worktrees/<task_id> dir.
+    # Covers all existing sessions that predate the origin_json write.
     m = _KANBAN_WORKTREE_RE.search(cwd)
     if m:
-        return {"kind": "kanban_worker", "kanban_task_id": m.group(1), "child_count": 0}
+        return {
+            "kind": "kanban_worker",
+            "parent_session_id": session.get("parent_session_id"),
+            "kanban_task_id": m.group(1),
+            "child_count": 0,
+        }
 
-    return {"kind": "main", "kanban_task_id": None, "child_count": 0}
+    return {
+        "kind": "main",
+        "parent_session_id": session.get("parent_session_id"),
+        "kanban_task_id": None,
+        "child_count": 0,
+    }
+
+
+def _resolve_project_ids_batch(
+    sessions: List[Dict[str, Any]],
+) -> Dict[str, Optional[str]]:
+    """Return {session_id: project_id_or_None} for every session in the list.
+
+    Uses the same folder-index logic as ``_project_for_session`` in
+    ``tui_gateway.project_tree`` but batches all sessions against the project
+    registry in one pass (2 DB opens, O(sessions × path_depth) dict lookups).
+    Kanban worktree cwds (``<primary>/.worktrees/<task>``) are matched because
+    the folder-index ancestor walk reaches the project's primary_path naturally.
+    Returns an empty dict (and logs nothing) on any error — callers leave
+    ``project_id`` as null on failure.
+    """
+    try:
+        from hermes_cli import projects_db as _pdb
+        from tui_gateway.project_tree import _FolderIndex, _project_for_session
+    except Exception:
+        return {}
+    try:
+        with _pdb.connect_closing() as _conn:
+            projects = [p.to_dict() for p in _pdb.list_projects(_conn)]
+    except Exception:
+        return {}
+    if not projects:
+        return {s["id"]: None for s in sessions}
+    index = _FolderIndex(projects)
+    result: Dict[str, Optional[str]] = {}
+    for s in sessions:
+        proj = _project_for_session(s, index, None)
+        result[s["id"]] = proj.get("id") if proj else None
+    return result
 
 
 def _enrich_session_list(db, sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Add kind/kanban_task_id/child_count to each session row in-place.
+    """Add kind/parent_session_id/kanban_task_id/child_count/child_counts/project_id
+    to each session row in-place.
 
     Uses a single batch SQL query to count subagent children for the surfaced
     main sessions, so N sessions costs 1 extra query regardless of N.
     Additive only — existing clients that ignore unknown keys are unaffected.
+
+    New fields (all additive):
+    - ``kind``: "main" | "subagent" | "kanban_worker"
+    - ``parent_session_id``: value from the session row (string or None)
+    - ``kanban_task_id``: task id when kind=="kanban_worker", else None
+    - ``child_count``: scalar subagent count (backward-compat)
+    - ``child_counts``: {"subagent": n, "kanban_worker": n} for direct children
+    - ``project_id``: id of the owning project, or None
     """
     if not sessions:
         return sessions
@@ -4872,19 +4954,53 @@ def _enrich_session_list(db, sessions: List[Dict[str, Any]]) -> List[Dict[str, A
     if main_ids and db is not None:
         try:
             placeholders = ",".join("?" * len(main_ids))
+            # One query counts children by kind so we can fill both the
+            # backward-compat scalar ``child_count`` and the new split dict.
             rows = db._conn.execute(
-                f"SELECT parent_session_id, COUNT(*) AS cnt "
+                f"SELECT parent_session_id, source, cwd, origin_json, COUNT(*) AS cnt "
                 f"FROM sessions "
-                f"WHERE parent_session_id IN ({placeholders}) AND source = 'subagent' "
-                f"GROUP BY parent_session_id",
+                f"WHERE parent_session_id IN ({placeholders}) "
+                f"GROUP BY parent_session_id, source, cwd, origin_json",
                 main_ids,
             ).fetchall()
-            counts: Dict[str, int] = {row[0]: row[1] for row in rows}
+            # Accumulate split counts per parent.
+            split_counts: Dict[str, Dict[str, int]] = {}
+            for row in rows:
+                pid = row[0]
+                # When classifying a child for counting purposes, we clear
+                # parent_session_id so the subagent check (``bool(parent)``)
+                # doesn't fire for non-subagent children that naturally have
+                # a parent_session_id set. Kind is determined by source and
+                # cwd/origin_json only.
+                child_session = {
+                    "id": "",
+                    "source": row[1],
+                    "parent_session_id": None,
+                    "cwd": row[2],
+                    "origin_json": row[3],
+                }
+                child_kind = _classify_session_kind(child_session).get("kind", "main")
+                if child_kind not in ("subagent", "kanban_worker"):
+                    continue
+                bucket = split_counts.setdefault(pid, {"subagent": 0, "kanban_worker": 0})
+                bucket[child_kind] = bucket.get(child_kind, 0) + int(row[4] or 0)
             for s in sessions:
                 if s.get("kind") == "main":
-                    s["child_count"] = counts.get(s["id"], 0)
+                    sc = split_counts.get(s["id"], {"subagent": 0, "kanban_worker": 0})
+                    s["child_counts"] = sc
+                    # Backward-compat scalar = subagent count (same as before).
+                    s["child_count"] = sc.get("subagent", 0)
         except Exception:
-            pass  # child_count stays 0 — graceful degradation
+            pass  # child_count/child_counts stay 0 — graceful degradation
+
+    # Resolve project_id for all sessions in one batch.
+    try:
+        pid_map = _resolve_project_ids_batch(sessions)
+        for s in sessions:
+            s["project_id"] = pid_map.get(s["id"])
+    except Exception:
+        for s in sessions:
+            s.setdefault("project_id", None)
 
     return sessions
 
@@ -5002,9 +5118,17 @@ def get_sessions(
             _enrich_session_list(db, sessions)
             # Apply post-enrichment kind filter (additive — existing callers
             # that don't pass kind= are unaffected).
-            kind_filter = (kind or "").strip().lower()
-            if kind_filter in ("main", "subagent", "kanban_worker"):
-                sessions = [s for s in sessions if s.get("kind") == kind_filter]
+            # Accepts a single value ("main") or comma-separated list
+            # ("main,kanban_worker") so the desktop tree view can fetch
+            # exactly the lanes it needs in one request.
+            _VALID_KINDS = frozenset({"main", "subagent", "kanban_worker"})
+            kind_filters = {
+                k.strip().lower()
+                for k in (kind or "").split(",")
+                if k.strip().lower() in _VALID_KINDS
+            }
+            if kind_filters:
+                sessions = [s for s in sessions if s.get("kind") in kind_filters]
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()

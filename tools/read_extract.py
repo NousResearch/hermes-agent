@@ -591,7 +591,7 @@ def _extract_sqlite(path: str) -> str:
             cols = [d[0] for d in cur.description]
             rows = cur.fetchall()
             if rows:
-                out.append("| " + " | ".join(cols) + " |")
+                out.append("| " + " | ".join(_sqlite_cell(col) for col in cols) + " |")
                 out.append("|" + "---|" * len(cols))
                 for row in rows:
                     cells = [_sqlite_cell(v) for v in row]
@@ -613,7 +613,8 @@ def _sqlite_cell(value: Any) -> str:
         return "NULL"
     if isinstance(value, (bytes, bytearray)):
         return f"<blob {len(value)} bytes>"
-    text = str(value).replace("|", "\\|").replace("\n", " ")
+    text = str(value).replace("\\", "\\\\").replace("|", "\\|")
+    text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ")
     return text if len(text) <= _SQLITE_CELL_CHARS else text[:_SQLITE_CELL_CHARS - 1] + "…"
 
 

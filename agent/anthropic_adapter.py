@@ -521,27 +521,34 @@ def build_anthropic_client(api_key, base_url: str | None = None, timeout: float 
 
 
 def build_anthropic_bedrock_client(region: str, timeout: float | None = None):
-    """AnthropicBedrock client for Bedrock Claude models (boto3 default credential chain). The
+    """AnthropicBedrock client for Bedrock Claude models (scoped bearer, then AWS chain). The
     SDK's native Bedrock adapter gives full Claude feature parity (prompt caching, thinking
     budgets, adaptive thinking, fast mode) that Converse lacks. The common betas plus
     ``context-1m-2025-08-07`` are attached: without the latter Bedrock caps Opus 4.6/4.7 at 200K.
     A configured ``bedrock.guardrail`` rides as InvokeModel headers so every client built here
     (primary, auxiliary, per-request rebuild) enforces it. ``timeout`` is the resolved
     ``providers.bedrock`` request timeout; None keeps the 900s read / 10s connect default."""
-    from agent.bedrock_adapter import bedrock_guardrail_headers, scoped_aws_session_kwargs
+    from agent.bedrock_adapter import bedrock_guardrail_headers, resolve_bedrock_bearer_token, scoped_aws_session_kwargs
     sdk = _require_sdk("the Bedrock provider")
     if not hasattr(sdk, "AnthropicBedrock"):
         raise ImportError("anthropic.AnthropicBedrock not available. Run: hermes pm repair")
-    # Routed multiplex profile: its own AWS_* from the secret scope (the SDK would otherwise read the
-    # launch profile's process env); unscoped passes nothing and keeps the default chain.
-    scoped = scoped_aws_session_kwargs()
+    bearer = resolve_bedrock_bearer_token()
+    scoped = {} if bearer else scoped_aws_session_kwargs()
     aws_kwargs = {"aws_access_key": scoped.get("aws_access_key_id"), "aws_secret_key": scoped.get("aws_secret_access_key"),
                   "aws_session_token": scoped.get("aws_session_token"), "aws_profile": scoped.get("profile_name")}
-    return sdk.AnthropicBedrock(
-        aws_region=region, timeout=_client_timeout(timeout), **{k: v for k, v in aws_kwargs.items() if v},
+    # The SDK has no opt-out for its process-env bearer fallback. Construct without IAM arguments
+    # and with an explicit key, then install the selected auth before publishing the client.
+    # Its IAM attributes are read at signing time; changing os.environ would race other profiles.
+    client = sdk.AnthropicBedrock(
+        api_key=bearer or "", aws_region=region, timeout=_client_timeout(timeout),
         max_retries=0,  # retry belongs to hermes's outer loop (honors Retry-After)
         default_headers={**_beta_header([*_COMMON_BETAS, _CONTEXT_1M_BETA]), **bedrock_guardrail_headers()},
     )
+    client.api_key = bearer or None
+    for name, value in aws_kwargs.items():
+        if value:
+            setattr(client, name, value)
+    return client
 
 
 def _normalize_to_mcp_wire(name: str) -> str:

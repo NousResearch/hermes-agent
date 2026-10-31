@@ -1,0 +1,61 @@
+# Local catalog entry (not Nous-reviewed — added for this installation only).
+# Wraps the Ozon Seller API (api-seller.ozon.ru) and Performance API
+# (api-performance.ozon.ru) as MCP tools: 222 documented endpoints across
+# 18 categories (products, prices/stocks, analytics, finance, reviews,
+# rating, seller info, FBS/FBO postings, FBP, carriage, returns, orders,
+# delivery, documents, polygon, digital postings, ads). Business-logic
+# guidance for which API/report to use lives separately in the ozon-*
+# Hermes skills (unchanged by this connector).
+manifest_version: 1
+
+name: ozon
+description: 'Ozon marketplace: products, prices, stocks, finance, ads, FBO/FBS.'
+source: https://docs.ozon.ru/api/seller
+
+# Local stdio server, source lives in ./server/ (this directory, same repo).
+# It runs in its own venv — see server/README.md to (re)create it; the venv
+# itself is not committed (binary, platform-specific).
+transport:
+  type: stdio
+  command: /home/max/.hermes/mcp-servers/ozon/venv/bin/python3
+  args:
+    - /home/max/.hermes/hermes-agent/optional-mcps/ozon/server/ozon_mcp_server.py
+  env:
+    OZON_API_KEY: "${env:OZON_API_KEY}"
+    OZON_CLIENT_ID: "${env:OZON_CLIENT_ID}"
+    OZON_PERFORMANCE_CLIENT_ID: "${env:OZON_PERFORMANCE_CLIENT_ID}"
+    OZON_PERFORMANCE_CLIENT_SECRET: "${env:OZON_PERFORMANCE_CLIENT_SECRET}"
+
+# Not Hermes-managed OAuth: Seller API uses static Client-Id/Api-Key headers,
+# Performance API uses its own OAuth2 client_credentials handled inside the
+# server's tools. Declaring the four credentials here just gets them
+# prompted-for and saved to .env at install time.
+auth:
+  type: none
+  env:
+    - name: OZON_API_KEY
+      prompt: "Ozon Seller API key (Seller account -> Settings -> API keys)"
+    - name: OZON_CLIENT_ID
+      prompt: "Ozon Seller Client-Id (numeric, shown next to the API key)"
+    - name: OZON_PERFORMANCE_CLIENT_ID
+      prompt: "Ozon Performance (Реклама) client_id"
+    - name: OZON_PERFORMANCE_CLIENT_SECRET
+      prompt: "Ozon Performance (Реклама) client_secret"
+
+suggest:
+  keywords:
+    - ozon
+  hosts:
+    - ozon.ru
+
+post_install: |
+  Seller API keys: Seller personal account -> Settings -> API keys.
+  Performance API credentials: Реклама (Performance) cabinet -> API section.
+  All four are prompted above and saved to .env; no separate login step.
+
+  Call ozon_list_endpoints() first to see the 18 categories, then
+  ozon_list_endpoints(category) for exact paths before calling
+  ozon_seller_call / ozon_performance_call.
+
+  Business-scope guidance (which API/report fits a task) is in the ozon-*
+  Hermes skills; call this connector's tools directly once installed.

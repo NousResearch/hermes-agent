@@ -48,14 +48,44 @@ def shutdown_memory_and_context(agent: Any, messages: list | None = None) -> Non
         shutdown_context_engine(agent)
 
 
-def shutdown_context_engine(agent: Any) -> None:
-    """Select teardown once under the lock; invoke outside it for re-entrant plugins."""
+def claim_engine_session_end(agent: Any) -> bool:
+    """Claim engine teardown for the session-end path; mirrors ``MemoryManager.claim_teardown``,
+    the sibling used by ``shutdown_memory_and_context()`` above.
+
+    The first session-end claim wins and may re-take; False means a soft release already shut the
+    engine down. Gateways take this BEFORE queueing their bounded hard cleanup, so if the wait
+    times out and the same agent is later soft-evicted (``release_clients()``), the soft path can
+    never land ``engine.shutdown()`` ahead of the hard path's ``on_session_end`` — an engine that
+    has skipped later ingests after ``shutdown()`` would break, and a shutdown racing a running
+    ``on_session_end`` would half-kill the plugin (#147087 race).
+    """
+    lock = getattr(agent, "_context_engine_shutdown_lock", _CONTEXT_ENGINE_SHUTDOWN_FALLBACK_LOCK)
+    with lock:
+        if getattr(agent, "_context_engine_teardown_claim", None) == "soft_release":
+            return False
+        agent._context_engine_teardown_claim = "session_end"
+        return True
+
+
+def shutdown_context_engine(agent: Any, *, soft: bool = False) -> None:
+    """Select teardown once under the lock; invoke outside it for re-entrant plugins.
+
+    ``soft=True`` (cache eviction through ``release_clients()``) defers to a session-end claim:
+    the hard path owns the ``on_session_end`` -> ``shutdown()`` order. With no claim, the soft
+    release claims once for itself so a later soft release on the same agent never re-shuts.
+    """
     engine = None
     lock = getattr(agent, "_context_engine_shutdown_lock", _CONTEXT_ENGINE_SHUTDOWN_FALLBACK_LOCK)
     with lock:
         if not getattr(agent, "_context_engine_shutdown", False):
-            agent._context_engine_shutdown = True
-            engine = getattr(agent, "context_compressor", None)
+            claim = getattr(agent, "_context_engine_teardown_claim", None)
+            if soft and claim == "session_end":
+                pass  # the session-end path owns this engine; it shuts down in its finally
+            else:
+                if soft and claim is None:
+                    agent._context_engine_teardown_claim = "soft_release"
+                agent._context_engine_shutdown = True
+                engine = getattr(agent, "context_compressor", None)
     if engine is not None:
         try:
             engine.shutdown()

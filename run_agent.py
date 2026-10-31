@@ -937,7 +937,10 @@ class AIAgent(
         # agent.context_engine.shutdown_context_engine's once-flag — no second latch.
         if getattr(self, "_context_engine_owned", True):
             from agent.context_engine import shutdown_context_engine
-            _quietly(shutdown_context_engine, self)
+            # soft=True: a session-end claim (taken before the gateway queues its hard cleanup)
+            # keeps on_session_end ahead of engine.shutdown(); without one, this release owns the
+            # shutdown and stays idempotent through the module once-flag.
+            _quietly(lambda: shutdown_context_engine(self, soft=True))
 
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never

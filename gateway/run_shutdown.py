@@ -1243,6 +1243,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         profile's scope from ``session_key`` when the caller has none, exactly like cache eviction."""
         if agent is None:
             return
+        # Claim session-end ownership of the context engine BEFORE the bounded job is queued, not
+        # at job start: if the wait below expires, the caller proceeds and the agent may be
+        # soft-evicted while this job is still queued or running — its release_clients() must then
+        # defer engine.shutdown() to this path (#147087; mirrors the memory claim below).
+        with suppress(Exception):
+            from agent.context_engine import claim_engine_session_end
+            claim_engine_session_end(agent)
         if context.startswith("shutdown") or context == "session expiry":
             with suppress(Exception):
                 agent._end_session_on_close = False
@@ -1266,6 +1273,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         """Best-effort cleanup for temporary or cached agent instances."""
         if agent is None:
             return
+        # Engine claim for inline callers (a queued caller already claimed before queueing):
+        # idempotent, mirrors the memory claim below (#147087).
+        with suppress(Exception):
+            from agent.context_engine import claim_engine_session_end
+            claim_engine_session_end(agent)
         with suppress(Exception):
             if hasattr(agent, "shutdown_memory_provider"):
                 # Drain queued memory writes BEFORE teardown: shutdown_all() gives the single serialized

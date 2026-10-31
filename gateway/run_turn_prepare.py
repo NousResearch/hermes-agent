@@ -25,6 +25,7 @@ from gateway.session import (
 )
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
+from gateway.turn_timing import timed_hygiene
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
@@ -702,7 +703,7 @@ class GatewayTurnPrepareMixin:
         # from []. Restore task-local context here (before the broad cleanup finally).
         try:
             history = await self.async_session_store.load_transcript(session_entry.session_id)
-            history = await self._hmwa_run_session_hygiene(
+            history = await timed_hygiene(event, self._hmwa_run_session_hygiene,
                 event, source, session_entry, session_key, history, _quick_key, run_generation,
             )
         except TranscriptReadError:

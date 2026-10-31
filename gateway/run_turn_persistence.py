@@ -29,6 +29,7 @@ from gateway.session import (
 from gateway.session_detached import detached_route_of
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
+from gateway.turn_timing import log_response_timing
 from gateway.warning_notifications import diagnostic_wake_muted
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
@@ -59,7 +60,7 @@ class GatewayTurnPersistenceMixin:
         self, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
         persist_user_display_kind: Optional[str] = None,
-        reply_expected: Optional[bool] = None,
+        reply_expected: Optional[bool] = None, turn_timing=None, message_timestamp=None,
     ):
         """Turn the raw agent result into the outbound text: sentinel/silence handling, response
         logging, resume-pending clear, empty-response normalization, and identity-guarded
@@ -111,6 +112,8 @@ class GatewayTurnPersistenceMixin:
             _platform_name, source.chat_id or "unknown", session_key or "unknown",
             time.time() - _msg_start_time, agent_result.get("api_calls", 0), len(response),
         )
+
+        log_response_timing(turn_timing, message_timestamp, agent_result, _platform_name, session_key, logger)
 
         # Successful turn: clear the consecutive-restart stuck-loop counter and resume_pending (set
         # by drain-timeout shutdown) so later messages don't get the restart-interruption note.

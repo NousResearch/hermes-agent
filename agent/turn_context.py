@@ -602,6 +602,7 @@ def _bind_turn_identity(
 # Per-turn agent state reset at turn start (retry counters, guardrail halt, file-mutation
 # verifier). ``_turns_since_memory`` / ``_iters_since_skill`` are deliberately NOT reset.
 _PER_TURN_RESET_STATE: tuple[tuple[str, Any], ...] = (
+    ("_turn_tool_seconds", 0.0), ("_turn_compaction_seconds", 0.0),
     ("_invalid_tool_retries", 0), ("_invalid_json_retries", 0), ("_empty_content_retries", 0),
     ("_incomplete_scratchpad_retries", 0), ("_codex_incomplete_retries", 0),
     # Consecutive Codex reasoning-only (no answer, no tool call) responses, kept apart from

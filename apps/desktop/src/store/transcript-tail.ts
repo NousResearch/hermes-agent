@@ -213,7 +213,30 @@ export function recordTranscriptTail(
   // entry (a no-op write) still bumps it to the MRU end.
   const keepTruncated = page.messages.length === 0 && existing?.possiblyTruncated
 
-  setTranscriptTailEntry(key, keepTruncated ? existing : tailStateFromPage(page, route))
+  const computed = keepTruncated ? existing : tailStateFromPage(page, route)
+
+  // A re-hydration must never REGRESS the paging cursor. `nextOffset` is how
+  // far back the store has already paged ("Show earlier" backfill), while the
+  // tile refresh re-reads the newest page on every resume/reconnect. Taking
+  // the fresh page's offset unconditionally reset that cursor to the
+  // hydration page's own start, so every click after a refresh spent itself
+  // re-fetching rows the store already held — the walk never reached the
+  // unfetched history and the action never retired (measured live on a
+  // compressed-lineage session: cursor reset 600→120 per refresh, click
+  // pipeline wedged at the point of the first reset). A TRUNCATED fresh
+  // page says rows exist beyond it, so its own shape is the authority on
+  // "there is more" and the deeper cursor stands: the shape still arms the
+  // action, at the cursor, so genuinely new history below it stays
+  // reachable. A COMPLETE fresh page (rewind/revalidation determined the
+  // transcript is shorter than the cursor suggests) still replaces the
+  // entry — that is the one honest way the cursor goes down, alongside the
+  // accounted retention rewind.
+  const recorded =
+    existing && !keepTruncated && computed.possiblyTruncated && computed.nextOffset < existing.nextOffset
+      ? { ...computed, nextOffset: existing.nextOffset }
+      : computed
+
+  setTranscriptTailEntry(key, recorded)
 }
 
 /** Advance the bookkeeping after one older backfill page landed. */

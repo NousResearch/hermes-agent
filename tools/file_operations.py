@@ -910,15 +910,15 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             file_size=file_size, file_ends_with_newline=file_ends_with_newline)
 
     def _native_read_enabled(self) -> bool:
-        """Whether ``read_file`` and ``search_files`` may bypass the shell: only POSIX + a backend whose
-        files are the host's (``uses_host_filesystem``: the file is on this host, path already native;
-        Windows keeps the shell path since file_operations holds Git-Bash-style paths there).
-        ``HERMES_NATIVE_FILE_READ=0`` turns the fast path off."""
+        """Whether ``read_file`` and ``search_files`` may bypass the shell: only POSIX + ``LocalEnvironment``
+        (file is on this host, path already native; Windows keeps the shell path since
+        file_operations holds Git-Bash-style paths there). ``HERMES_NATIVE_FILE_READ=0``
+        turns the fast path off."""
         flag = os.environ.get("HERMES_NATIVE_FILE_READ", "1").strip().lower()
         if flag in ("0", "false", "no", "off"):
             return False
-        # Same "are these the host's files" test the LSP path uses; an attribute read
-        # and self.env is never rebound, so nothing to memoize.
+        # Same "is this env the local host" test the LSP path uses; isinstance is
+        # microseconds and self.env is never rebound, so nothing to memoize.
         return sys.platform != "win32" and self._lsp_local_only()
 
     def _native_path(self, path: str) -> str:
@@ -1172,7 +1172,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         truncated_lines = any(len(line) > max_line_length for line in read_output.split('\n'))
         return ReadResult(
             content=self._add_line_numbers(read_output, offset), total_lines=total_lines,
-            file_size=file_size, truncated=truncated, hint=hint,
+            file_size=file_size, ends_with_newline=file_ends_with_newline,
+            truncated=truncated, hint=hint,
             truncated_lines=True if truncated_lines else None)
 
     # Confusable characters seen in real filenames, collapsed after NFC.
@@ -1710,9 +1711,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         exclusions = self._macos_search_exclusions(path)
         if exclusions and not result.error:
             skipped = ", ".join(item.split("/")[-1] for item in exclusions)
-            protected = (
+            result.warning = (
                 "Skipped macOS protected folders during broad search to avoid "
                 f"an unattended privacy prompt: {skipped}. Search a protected "
                 "folder directly when access is intentional.")
-            result.warning = f"{result.warning} {protected}" if result.warning else protected
         return result

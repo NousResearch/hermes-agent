@@ -71,6 +71,7 @@ class TestReadFileOneRoundTrip:
         # The final newline terminates line 3; it does not start a phantom
         # ``4|`` line (`cat -n` semantics).
         assert r.content == "1|one\n2|two\n3|three"
+        assert r.ends_with_newline is True
         assert (r.total_lines, r.file_size, r.truncated) == (3, 14, False)
 
     def test_no_trailing_newline_needs_no_extra_probe(self, shell, tmp_path):
@@ -81,6 +82,8 @@ class TestReadFileOneRoundTrip:
         # ``cut`` newline-terminates the last line; the artifact is stripped
         # from the same reply that used to need a fifth ``tail -c 1`` call.
         assert r.content == "1|a\n2|b"
+        assert r.ends_with_newline is False
+        assert r.to_dict()["ends_with_newline"] is False
         # The unterminated final line counts: 2 lines, not wc -l's 1 (#3907).
         assert r.total_lines == 2
 
@@ -90,6 +93,7 @@ class TestReadFileOneRoundTrip:
         r = ops.read_file(p, offset=3, limit=2)
         assert len(calls) == 1
         assert r.content == "3|l3\n4|l4"
+        assert r.ends_with_newline is True
         assert r.truncated is True and r.total_lines == 10
         assert "offset=5" in r.hint
 
@@ -106,6 +110,8 @@ class TestReadFileOneRoundTrip:
         r = ops.read_file(_write(tmp_path, "e.txt", b""))
         assert len(calls) == 1
         assert r.error is None and r.content == "" and r.total_lines == 0
+        assert r.ends_with_newline is None
+        assert "ends_with_newline" not in r.to_dict()
         assert "empty" in r.hint
 
     def test_bom_stripped_on_first_page(self, shell, tmp_path):
@@ -118,6 +124,16 @@ class TestReadFileOneRoundTrip:
         ops, _calls = shell
         r = ops.read_file(_write(tmp_path, "g.txt", b"x\r\ny\r\n"))
         assert r.content == "1|x\r\n2|y\r"
+        assert r.ends_with_newline is True
+
+    def test_real_trailing_blank_line_and_newline_only(self, shell, tmp_path):
+        ops, _calls = shell
+        blank = ops.read_file(_write(tmp_path, "blank.txt", b"one\n\n"))
+        only = ops.read_file(_write(tmp_path, "only.txt", b"\n"))
+        assert blank.content == "1|one\n2|"
+        assert blank.ends_with_newline is True
+        assert only.content == "1|"
+        assert only.ends_with_newline is True
 
     def test_long_line_clamped_and_marked(self, shell, tmp_path):
         ops, calls = shell
@@ -310,7 +326,15 @@ class TestNativeRead:
         r = ops.read_file(_write(tmp_path, "a.txt", b"one\ntwo\n"))
         assert calls == []
         assert r.error is None and r.content == "1|one\n2|two"
+        assert r.ends_with_newline is True
         assert (r.total_lines, r.file_size) == (2, 8)
+
+    def test_native_read_reports_missing_final_newline(self, native, tmp_path):
+        ops, calls = native
+        r = ops.read_file(_write(tmp_path, "b.txt", b"one\ntwo"))
+        assert calls == []
+        assert r.content == "1|one\n2|two"
+        assert r.ends_with_newline is False
 
     def test_kill_switch_routes_to_the_shell(self, native, tmp_path, monkeypatch):
         ops, calls = native

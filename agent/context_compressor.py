@@ -3824,7 +3824,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # one — silence before it is prompt build, silence after it is the summary provider.
         logger.info(
             "Compression summary call dispatched: model=%s prompt_chars=%s prompt_build_ms=%s",
-            self.summary_model or self.model, f"{len(prompt):,}", _latency_info["prompt_build_ms"],
+            call_kwargs.get("model") or "auto", f"{len(prompt):,}", _latency_info["prompt_build_ms"],
         )
         try:
             with aux_interrupt_protection():

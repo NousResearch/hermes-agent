@@ -131,5 +131,49 @@ def test_user_dotenv_overrides_project_dotenv(tmp_path, monkeypatch):
     assert mod._env_lookup("HYPERLIQUID_USER_ADDRESS") == "0xuserhome"
 
 
+def test_main_delegations_json_surfaces_staked_hype(monkeypatch, capsys):
+    mod = load_module()
+    monkeypatch.setenv("HYPERLIQUID_USER_ADDRESS", "0xstaker")
+
+    summary = {
+        "delegated": "423.32",
+        "undelegated": "1.5",
+        "totalPendingWithdrawal": "10",
+        "nPendingWithdrawals": 2,
+    }
+
+    with patch.object(mod, "_post_info", return_value=summary) as mock_post:
+        exit_code = mod.main(["delegations", "--json"])
+
+    stdout = capsys.readouterr().out
+    rendered = json.loads(stdout)
+
+    assert exit_code == 0
+    assert mock_post.call_args[0][0] == {"type": "delegatorSummary", "user": "0xstaker"}
+    assert rendered == {
+        "user": "0xstaker",
+        "delegated": "423.32",
+        "undelegated": "1.5",
+        "total_pending_withdrawal": "10",
+        "n_pending_withdrawals": 2,
+    }
 
 
+def test_main_delegations_default_render_includes_staked(capsys):
+    mod = load_module()
+
+    summary = {
+        "delegated": "423.32",
+        "undelegated": "0",
+        "totalPendingWithdrawal": "0",
+        "nPendingWithdrawals": 0,
+    }
+
+    with patch.object(mod, "_post_info", return_value=summary):
+        exit_code = mod.main(["delegations", "0xabc"])
+
+    stdout = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Delegated (staked):" in stdout
+    assert "423.32" in stdout

@@ -3,6 +3,9 @@ import type { SessionInfo } from '@/types/hermes'
 export interface SidebarSessionEntry {
   branchStem?: string
   session: SessionInfo
+  /** Number of branch children nested under this session — present on parent
+   *  rows so the sidebar can offer a fold/unfold toggle. Leaves omit it. */
+  childCount?: number
 }
 
 export interface FlattenSessionsOptions {
@@ -13,9 +16,50 @@ export interface FlattenSessionsOptions {
    * their parent; sibling branches stay ordered by their own recency.
    */
   preserveOrder?: boolean
+  /** Parent session ids whose branch children are folded away. The parent row
+   *  stays (carrying its `childCount`) but its whole subtree is not emitted. */
+  collapsedParentIds?: ReadonlySet<string>
 }
 
 const recency = (session: SessionInfo): number => session.last_active || session.started_at || 0
+
+/** Leading branch sequence number from a title, e.g. `《典中古罗》01 剧本拆解` or
+ *  `EP01 分镜编译`. Prefers the digits right after a closing book-title mark,
+ *  then an `EP`-prefixed episode number. `null` when the title carries none. */
+const TITLE_SEQUENCE = /(?:》\s*|^EP\s*)(\d{1,4})/i
+
+const titleSequence = (session: SessionInfo): number | null => {
+  const title = session.title?.trim()
+
+  if (!title) {
+    return null
+  }
+
+  const match = title.match(TITLE_SEQUENCE)
+
+  return match ? Number(match[1]) : null
+}
+
+/** Sibling branches sort by their title sequence (ascending); a branch without
+ *  one keeps the recency order it had. Numbered branches lead unnumbered ones. */
+const compareBranchSiblings = (left: SessionInfo, right: SessionInfo): number => {
+  const leftSeq = titleSequence(left)
+  const rightSeq = titleSequence(right)
+
+  if (leftSeq !== null && rightSeq !== null) {
+    return leftSeq - rightSeq || recency(right) - recency(left)
+  }
+
+  if (leftSeq !== null) {
+    return -1
+  }
+
+  if (rightSeq !== null) {
+    return 1
+  }
+
+  return recency(right) - recency(left)
+}
 
 /**
  * Parent id to nest under, or undefined for a top-level sibling.
@@ -139,7 +183,7 @@ export function flattenSessionsWithBranches(
   }
 
   for (const siblings of childrenByParent.values()) {
-    siblings.sort((left, right) => recency(right) - recency(left))
+    siblings.sort(compareBranchSiblings)
   }
 
   // A group sorts by its freshest member, so activity on any branch lifts the
@@ -173,16 +217,45 @@ export function flattenSessionsWithBranches(
   const out: SidebarSessionEntry[] = []
   const seen = new Set<string>()
 
+  // Folded parents still consume their descendants here: the trailing sweep
+  // would otherwise surface the hidden children as top-level orphans.
+  const markSubtreeSeen = (session: SessionInfo) => {
+    if (seen.has(session.id)) {
+      return
+    }
+
+    seen.add(session.id)
+
+    for (const child of childrenByParent.get(session.id) ?? []) {
+      markSubtreeSeen(child)
+    }
+  }
+
   const emit = (session: SessionInfo, branchStem?: string) => {
     if (seen.has(session.id)) {
       return
     }
 
     seen.add(session.id)
-    out.push(branchStem ? { branchStem, session } : { session })
 
-    const children = childrenByParent.get(session.id)
-    children?.forEach((child, index) => emit(child, index === children.length - 1 ? '└─ ' : '├─ '))
+    const children = childrenByParent.get(session.id) ?? []
+    const entry: SidebarSessionEntry = branchStem ? { branchStem, session } : { session }
+
+    if (children.length > 0) {
+      entry.childCount = children.length
+    }
+
+    out.push(entry)
+
+    if (children.length > 0) {
+      if (options.collapsedParentIds?.has(session.id)) {
+        for (const child of children) {
+          markSubtreeSeen(child)
+        }
+      } else {
+        children.forEach((child, index) => emit(child, index === children.length - 1 ? '└─ ' : '├─ '))
+      }
+    }
   }
 
   const roots = sessions.filter(session => !nestedIds.has(session.id)).map((session, index) => ({ index, session }))

@@ -230,3 +230,37 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
             "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
     assert receipt["classification"] == "auth"
     assert "'ghost'" in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+
+
+# --- #143828: the documented OWNER placeholder is refused before persistence ---
+
+@pytest.mark.parametrize("contract", [
+    "OWNER/retailtwin-ai", "OWNER/REPO", "owner/retailtwin-ai", "Owner/repo",
+    "https://github.com/OWNER/REPO/pull/12",
+])
+def test_owner_placeholder_contract_is_rejected(contract):
+    from hermes_cli.kanban_pr_acceptance import validate_contract
+    with pytest.raises(ValueError, match="OWNER placeholder"):
+        validate_contract(contract)
+
+
+@pytest.mark.parametrize("contract, expected", [
+    (None, "local-only"), ("local-only", "local-only"),
+    ("actual-owner/retailtwin-ai", "actual-owner/retailtwin-ai"), ("acme/repo", "acme/repo"),
+    ("owners/repo", "owners/repo"), ("acme/owner", "acme/owner"),
+    ("https://github.com/acme/repo/pull/7", "https://github.com/acme/repo/pull/7"),
+])
+def test_real_contracts_are_unchanged(contract, expected):
+    from hermes_cli.kanban_pr_acceptance import validate_contract
+    assert validate_contract(contract) == expected
+
+
+def test_placeholder_contract_creates_no_task(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    kb.init_db()
+    with connect() as conn:
+        with pytest.raises(ValueError, match="OWNER placeholder"):
+            kb.create_task(conn, title="placeholder", completion_contract="OWNER/retailtwin-ai")
+        assert conn.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
+        tid = kb.create_task(conn, title="real", completion_contract="actual-owner/retailtwin-ai")
+        assert kb.get_task(conn, tid).completion_contract == "actual-owner/retailtwin-ai"

@@ -281,12 +281,13 @@ _OFFICIAL_DOCS_PRICING[("openai", "gpt-6-astra")] = _snap(
 
 # GPT-6 Sol / Luna (the 5.6 Sol/Luna successors): same 272K whole-request tier as Astra
 # (2x input + cache, 1.5x output). Cache write = 1.25x input, cache read = 0.10x input.
-# Terra has no published model page yet, so it deliberately has no row.
 for _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _write_above in (
     ("gpt-6-sol", "2.00", "10.00", "0.20", "2.50", "4.00", "15.00", "0.40", "5.00"),
     # 6.1 Sol: same input/output as 6 Sol, but cached input is 0.05x input (not 0.10x).
     ("gpt-6.1-sol", "2.00", "10.00", "0.10", "2.50", "4.00", "15.00", "0.20", "5.00"),
     ("gpt-6-luna", "0.10", "0.50", "0.01", "0.125", "0.20", "0.75", "0.02", "0.25"),
+    # 6.1 Terra (model page 2026-10-26): cached input 0.05x input, like 6.1 Sol.
+    ("gpt-6.1-terra", "1.00", "5.00", "0.05", "1.25", "2.00", "7.50", "0.10", "2.50"),
 ):
     _OFFICIAL_DOCS_PRICING[("openai", _slug)] = _snap(
         _inp, _out, _read, _write,

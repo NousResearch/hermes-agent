@@ -94,3 +94,16 @@ def test_gpt61_sol_900k_is_opt_in_exact_and_billed_as_the_base():
     assert _CODEX_OAUTH_STALE_ADVERTISED_CTX < _verified_codex_ctx_for_slug("gpt-6.1-sol-900k") < 922_000  # 1.05M context - 128K max output
     assert _OFFICIAL_DOCS_PRICING[("openai", "gpt-6.1-sol-900k")] is _OFFICIAL_DOCS_PRICING[("openai", "gpt-6.1-sol")]
     assert _compression_threshold_for_model("gpt-6.1-sol-900k", provider="openai-codex") is None
+
+
+def test_gpt61_terra_keeps_max_and_none_on_openai_routes_and_is_priced():
+    """6.1 Terra takes the full none..max ladder (model page + live API, 2026-10-27): ``max`` must not
+    clamp to ``xhigh`` on Codex/OpenAI, and the direct API bills it from the published rate card."""
+    from agent.reasoning_effort import clamp_effort
+    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+
+    for slug in ("gpt-6.1-terra", "openai/gpt-6.1-terra"):
+        efforts = codex_supported_efforts(slug)
+        assert clamp_effort("max", efforts) == "max" and "none" in efforts, slug
+    entry = _OFFICIAL_DOCS_PRICING[("openai", "gpt-6.1-terra")]
+    assert entry.cache_read_cost_per_million == entry.input_cost_per_million / 20

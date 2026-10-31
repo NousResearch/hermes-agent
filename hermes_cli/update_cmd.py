@@ -1553,6 +1553,25 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
         no_gateway_restart=no_gateway_restart)
 
 
+def _update_runs_inside_gateway() -> bool:
+    """True when any running Hermes gateway is this process or one of its ancestors.
+
+    This catches updates launched from a bot/dashboard/cron that runs inside the
+    gateway's own process tree. In that situation a normal update would try to
+    pause/restart the gateway and, worse, can attempt in-place state.db repair
+    while the live gateway still holds the file, which causes corruption.
+    """
+    with _best_effort('Could not detect gateway ancestry: %s'):
+        from hermes_cli.gateway import (
+            _is_pid_ancestor_of_current_process,
+            find_gateway_pids,
+        )
+        for pid in find_gateway_pids(all_profiles=True):
+            if _is_pid_ancestor_of_current_process(pid):
+                return True
+    return False
+
+
 def _begin_update_receipt_and_plan(args):
     """Open the receipt and snapshot the fleet before changing the checkout."""
     # Structured receipt: record what this run discovers/does/skips so silent failures are diagnosable.
@@ -1833,6 +1852,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
+
+    if not opts.no_gateway_restart and _update_runs_inside_gateway():
+        print("⚠ This update is running inside a gateway process tree.")
+        print("  Switching to --no-gateway-restart mode to avoid killing the updater")
+        print("  and to prevent in-place state.db repair while the gateway is live.")
+        print("  Restart the gateway separately after the update finishes:")
+        print("    hermes gateway restart")
+        print()
+        opts.no_gateway_restart = True
+        _completion_receipt.record_followup(
+            "gateway_restart",
+            "deferred: update launched inside gateway tree",
+            retry="hermes gateway restart",
+        )
 
     print("☤ Updating Hermes Agent...")
     print()

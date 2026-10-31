@@ -479,7 +479,16 @@ def _verify_and_restore_state_dbs_post_update() -> None:
 
     See #97994.
     """
-    from hermes_cli.update_cmd import get_hermes_home
+    from hermes_cli.update_cmd import get_hermes_home, _update_runs_inside_gateway
+    if _update_runs_inside_gateway():
+        print()
+        print("⚠ state.db integrity checks are deferred because this update is running")
+        print("  inside a gateway process tree. After the gateway is restarted, run:")
+        print("    hermes sessions repair")
+        print("  If repair reports corruption, recover with:")
+        print("    hermes sessions recover --source ~/.hermes/state.db --output recovered-state.db")
+        print()
+        return
     home = get_hermes_home()
     _verify_and_restore_one_state_db(home, label="default home")
     with _best_effort('Sibling-profile state.db guard sweep failed: %s'):

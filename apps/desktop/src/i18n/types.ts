@@ -3687,6 +3687,15 @@ export interface Translations extends NoticeTranslations {
     popIn: string
     popOut: string
     linkHint: string
+    float: {
+      dock: string
+      dockLeft: string
+      dockRight: string
+      float: string
+      label: string
+      minimize: string
+      restore: string
+    }
     sourceLineTitle: string
     source: string
     renderedPreview: string
@@ -3753,6 +3762,8 @@ export interface Translations extends NoticeTranslations {
       address: string
       addressPlaceholder: string
       blankPageBody: string
+      blankPageShortcuts: string
+      blankPageTitle: string
       finishedRestarting: (message?: string) => string
       failedRestarting: (message: string) => string
       unknownError: string
@@ -3772,6 +3783,14 @@ export interface Translations extends NoticeTranslations {
       fallbackTitle: string
       annotate: string
       annotateOn: string
+      annotateTools: string
+      annotatePicker: string
+      annotateDraw: string
+      annotateArrow: string
+      annotateBox: string
+      annotateEllipse: string
+      annotateUndo: string
+      annotateClear: string
       annotateNeedPage: string
       annotateFailed: string
       commenting: string

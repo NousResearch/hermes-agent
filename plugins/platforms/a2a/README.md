@@ -19,6 +19,8 @@ gateway:
       enabled: true
       extra:
         port: 9900
+        input_wait_timeout_seconds: 86400
+        task_retention_seconds: 86400
 
 # peers you want to call (outbound):
 a2a_agents:
@@ -66,22 +68,57 @@ The existing terminal-task subscription replay is retained for compatibility;
 this differs from the v1.0 rule rejecting terminal subscriptions.
 
 Completion callbacks store the redacted result before waking request waiters.
-Results remain queryable in memory while the process lives (up to 500 terminal
-tasks); conversation logs do not provide task restart/resumption. Cancellation
+Results remain queryable in memory while the process lives; conversation logs
+do not provide task restart/resumption. Cancellation
 wins at most once against completion and does not abort the underlying turn.
-Clarification replies end the current observation; send the answer in the same
-context to start the next task.
+Clarification replies end the current observation. To continue that logical task,
+send the answer with `message.taskId` set to its ID and a fresh `messageId`.
+`contextId` may be omitted (inherited from the task); if supplied it must match
+literally. This works for `INPUT_REQUIRED` and `AUTH_REQUIRED`. A context-only
+message creates a new task; it never implicitly resumes an interrupted task.
+Unknown or purged task IDs return TaskNotFound; terminal tasks reject messages
+with UnsupportedOperation. Task IDs cannot be chosen by callers.
+
+Each continuation gets an independent internal execution identity. Old sends,
+cleanup callbacks and HTTP observers cannot complete or observe the next attempt.
+Repeating a continuation's message ID while the task is nonterminal observes that
+accepted attempt without executing again. After the task becomes terminal, even
+that resend is rejected; retrieve its result with `GetTask`. Continuations count
+toward the context's anti-loop cap; retry observations do not. Push configuration
+remains attached across clarification and is captured separately for each outcome.
 
 Local tasks in one context execute in sequence so gateway input coalescing cannot
 merge accepted tasks. Cancellation of a queued task skips its execution.
 
 Audit and conversation writes use a separate single worker, drained on ordinary
-shutdown. Admission reserves recording capacity (512 active, interrupted, or
-not-yet-recorded tasks); exhaustion refuses new execution explicitly. Webhooks
+shutdown. Admission reserves recording capacity (512 executions or outstanding
+recordings); a recorded clarification releases its slot. A resumed attempt
+reserves a distinct slot even if its preceding write is still queued. Exhaustion
+refuses new execution explicitly. Cancellation of an idle interrupted task needs
+a recording slot: overload returns a retryable capacity error without canceling
+or losing its record. Expiry retries on the next watchdog sweep or task read.
+Webhooks
 use two workers with at most 128 outstanding jobs. Saturation or shutdown may
 drop optional pushes, never local records or stored results. Shutdown releases
 request waiters and joins running I/O (webhook requests have a 10s timeout).
-Terminal retention follows completion recency, not task creation order.
+`extra.input_wait_timeout_seconds` expires input/auth waits into `CANCELED` with an
+explicit reason, measured from entering the interrupted state. Polling does not
+renew this deadline. `extra.task_retention_seconds` purges terminal results by
+terminal-transition age. Both default to 86400 seconds (24 hours), require positive
+finite values, and are Hermes policies rather than A2A mandates. The 500-terminal
+count cap can evict results sooner. Owned execution has no age deadline; genuine
+unowned work still uses the separate orphan grace. Tasks are in-memory and do not
+resume after process restart. Full conversations remain in the persistence log;
+the Task response does not advertise a complete wire `history`.
+
+**Forwarded-owner link limitation:** inbound HTTP disconnect safety does not
+guarantee recovery when the adapter's separate link to a forwarded profile owner
+times out or fails. Accepted owner work may continue while the adapter's public
+task becomes `FAILED`; same-task continuation cannot recover that terminal facade.
+The existing context-only resend with the same stable `messageId` can reread the
+owner admission through a new public task. This is distinct from same-task
+continuation and is not complete end-to-end recovery. No full A2A conformance is
+claimed.
 
 ## Security
 

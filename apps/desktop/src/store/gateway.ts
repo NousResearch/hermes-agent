@@ -36,8 +36,10 @@ import { notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
 import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
-export { useGatewayActivationEpoch } from '@/store/gateway-activation-epoch'
+export type { SpawnPriority } from './gateway-request-owner'
 
+import { type GatewayRequestOptions, gatewayRequestOwnerValidator, type SpawnPriority } from './gateway-request-owner'
+export { useGatewayActivationEpoch } from '@/store/gateway-activation-epoch'
 // ── Multi-profile gateway routing ──────────────────────────────────────────
 // Concurrent sessions across profiles need concurrent sockets: the renderer's
 // event handler is already session-keyed, so the only thing stopping two
@@ -50,15 +52,9 @@ export { useGatewayActivationEpoch } from '@/store/gateway-activation-epoch'
 
 const normKey = (profile: string | null | undefined): string => (profile ?? '').trim() || 'default'
 
-// Dial intent callers attach to a user-initiated open. The canonical
-// `hermes gateway ensure` path has no local slot pool, so the hint changes
-// nothing about the dial itself; it survives as the option shape the SDK,
-// Settings scopes and session creation pass so an explicit user gesture stays
-// distinguishable from ambient hydration at the call site.
-export type SpawnPriority = 'foreground' | 'background'
-
-// Read connection state through a call so TS control-flow analysis doesn't
-// narrow the getter to a constant across guards (it genuinely changes).
+// `spawnPriority` carries user intent for downstream policy; canonical ensure
+// has no local slot pool, so it remains metadata today.
+// Call the getter because connection state genuinely changes across guards.
 const isOpen = (gateway: HermesGateway | null): boolean => gateway?.connectionState === 'open'
 
 interface RegistryConfig {
@@ -1230,7 +1226,7 @@ export async function requestGatewayForProfile<T>(
   params: Record<string, unknown> = {},
   timeoutMs?: number,
   signal?: AbortSignal,
-  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
+  { beforeRequest, spawnPriority = 'background' }: { beforeRequest?: () => Promise<void>; spawnPriority?: SpawnPriority } = {}
 ): Promise<T> {
   const route = await gatewayForProfile(profile, true, spawnPriority)
 
@@ -1239,6 +1235,7 @@ export async function requestGatewayForProfile<T>(
       throw new Error(`Hermes gateway unavailable for profile "${route.key}"`)
     }
 
+    await beforeRequest?.()
     const routedParams = route.scopeProfile ? { ...params, profile: route.key } : params
 
     // Same arity contract as the ambient path in session-request-router: only
@@ -1276,13 +1273,14 @@ export async function requestGatewayForAgent<T>(
   params: Record<string, unknown> = {},
   timeoutMs?: number,
   signal?: AbortSignal,
-  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
+  { expectedConnectionOwner, expectedOwner, spawnPriority = 'background' }: GatewayRequestOptions = {}
 ): Promise<T> {
   const key = normKey(profile)
   const scope = registryBackendScopeKey(connectionId, key)
+  const assertExpectedOwner = gatewayRequestOwnerValidator(connectionId, key, { expectedConnectionOwner, expectedOwner, spawnPriority })
 
   if (scope === key) {
-    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
+    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { beforeRequest: assertExpectedOwner, spawnPriority })
   }
 
   // A primary remote selected from the connection registry carries its source
@@ -1296,10 +1294,11 @@ export async function requestGatewayForAgent<T>(
   if (isPrimaryRegistryRoute(connectionId, key)) {
     traceAgentRoute(scope, 'primary')
 
-    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
+    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { beforeRequest: assertExpectedOwner, spawnPriority })
   }
 
   if (await ridesPrimaryBackend(connectionId, key)) {
+    await assertExpectedOwner()
     traceAgentRoute(scope, 'primary-shared')
 
     return requestOnPrimaryGateway<T>(method, { ...params, profile: key }, timeoutMs, signal)
@@ -1327,6 +1326,7 @@ export async function requestGatewayForAgent<T>(
 
   try {
     await openSecondaryForRequest(entry, spawnPriority)
+    await assertExpectedOwner()
 
     const result = await (timeoutMs === undefined && signal === undefined
       ? entry.gateway.request<T>(method, params)

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
 import type { SidebarListRow } from '@/lib/session-date-groups'
+import { sessionOwnerRowKey } from '@/store/session-request-router'
+import { makeSessionInfo } from '@/test/session-info'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
@@ -85,6 +87,13 @@ describe('rankSessions', () => {
       'newest',
       'middle'
     ])
+  })
+
+  it('ranks same-id rows by immutable owner key', () => {
+    const alpha = makeSessionInfo({ connection_id: 'gateway-a', id: 'same' })
+    const beta = makeSessionInfo({ connection_id: 'gateway-b', id: 'same' })
+
+    expect(rankSessions([alpha, beta], [sessionOwnerRowKey(beta), sessionOwnerRowKey(alpha)])).toEqual([beta, alpha])
   })
 })
 

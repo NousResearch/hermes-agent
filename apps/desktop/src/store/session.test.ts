@@ -56,6 +56,7 @@ import {
   rotateFreshDraftKey,
   sessionBelongsToProfile,
   sessionMatchesStoredId,
+  sessionOwnerPinId,
   sessionOwnerRouteFromRow,
   sessionPinId,
   setComposerSelectionOwner,
@@ -386,6 +387,21 @@ describe('sessionPinId', () => {
     // After auto-compression the entry surfaces under a fresh tip id but keeps
     // the original root — pinning on the root keeps the pin stable.
     expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
+  })
+
+  it('keeps connectionless pin identity stable across route-binding rotation', () => {
+    const before = session({ id: 'root', _desktop_route_binding: 'launch-a', profile: 'worker' })
+
+    const after = session({
+      id: 'tip',
+      _desktop_route_binding: 'launch-b',
+      _lineage_root_id: 'root',
+      profile: 'worker'
+    })
+
+    expect(sessionOwnerPinId(before)).toBe('root')
+
+    expect(sessionOwnerPinId(after)).toBe('root')
   })
 })
 

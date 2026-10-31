@@ -125,9 +125,9 @@ import {
   $sessionsLoading,
   $unreadFinishedSessionIds,
   markAllSessionsRead,
-  sessionPinId
+  sessionOwnerPinId
 } from '@/store/session'
-import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
+import { $sessionDotStateById, sessionDotStateForRow, sessionStatusBucket } from '@/store/session-dot-state'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
@@ -379,8 +379,8 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onRetrySessions: () => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
-  onDeleteSession: (sessionId: string) => void
-  onArchiveSession: (sessionId: string) => void
+  onDeleteSession: (session: SessionInfo) => void
+  onArchiveSession: (session: SessionInfo) => void
   onBranchSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
   /** Create a brand-new session and open it as a tile. `dir` is the dock edge
@@ -501,14 +501,8 @@ export function ChatSidebar({
   // Toggle the persisted read-state watermark from a row menu. The row's own
   // `unread` prop mirrors what the dot paints; flip it and let the backend
   // become the truth (optimistic update + rollback in markSessionUnread).
-  const toggleUnread = (storedId: string) => {
-    const row = $sessions.get().find(r => r.id === storedId)
-
-    if (!row) {
-      return
-    }
-
-    markSessionUnread(storedId, row.unread !== true).catch(err => notifyError(err, s.row.unreadFailed))
+  const toggleUnread = (row: SessionInfo) => {
+    markSessionUnread(row, row.unread !== true).catch(err => notifyError(err, s.row.unreadFailed))
   }
 
   // Only surface the profile switcher when more than one profile exists, so
@@ -615,7 +609,7 @@ export function ChatSidebar({
   // (same rule as the overview overlay), so filtering to Home keeps Home's rows.
   const sessionMatchesFilters = useCallback(
     (session: SessionInfo) => {
-      if (statusFilter.length && !statusFilter.includes(sessionStatusBucket(dotStates[session.id]))) {
+      if (statusFilter.length && !statusFilter.includes(sessionStatusBucket(sessionDotStateForRow(dotStates, session)))) {
         return false
       }
 
@@ -703,34 +697,13 @@ export function ChatSidebar({
     [pinnedSessionIds, sessionByAnyId, visibleSessions, cronSessions, messagingSessions, unconfirmedPinWrites]
   )
 
-  // Every id a pin is reachable under: the raw stored ids, plus BOTH identities
-  // of each session we resolved one to. A pin is stored on the durable lineage
-  // root, but the lists that must filter it out are fed from three independent
-  // fetches (recents, the messaging slice, the backend project tree) and each
-  // can surface the same conversation under either its live tip or its root.
-  // Comparing one identity against the other is how a pinned session ended up
-  // rendered twice — once in Pinned, once in its project group.
-  const pinnedIdentitySet = useMemo(() => {
-    const ids = new Set(pinnedSessionIds)
+  // Owner-qualified lineage ids keep same-id sessions on different gateways
+  // independently pinnable while still collapsing a compressed tip to its root.
+  const pinnedIdentitySet = useMemo(() => new Set(pinnedSessions.map(sessionOwnerPinId)), [pinnedSessions])
 
-    for (const session of pinnedSessions) {
-      ids.add(session.id)
-
-      if (session._lineage_root_id) {
-        ids.add(session._lineage_root_id)
-      }
-    }
-
-    return ids
-  }, [pinnedSessionIds, pinnedSessions])
-
-  // A pinned session belongs to the Pinned section and nowhere else, so every
-  // other list filters it out. Match on either identity the row carries — a
-  // backend snapshot can surface either side of a compression tip rotation.
+  // A pinned session belongs to the Pinned section and nowhere else.
   const isPinnedSession = useCallback(
-    (session: SessionInfo) =>
-      pinnedIdentitySet.has(session.id) ||
-      (session._lineage_root_id != null && pinnedIdentitySet.has(session._lineage_root_id)),
+    (session: SessionInfo) => pinnedIdentitySet.has(sessionOwnerPinId(session)),
     [pinnedIdentitySet]
   )
 
@@ -1551,7 +1524,7 @@ export function ChatSidebar({
       ids.map(id => {
         const session = sessionByAnyId.get(id)
 
-        return session ? sessionPinId(session) : id
+        return session ? sessionOwnerPinId(session) : id
       })
     )
 

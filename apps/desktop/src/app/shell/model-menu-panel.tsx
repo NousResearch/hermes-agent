@@ -28,7 +28,7 @@ interface ModelMenuPanelProps extends ModelMenuHostProps {
  * controller that gives a selection its meaning HERE (`useModelMenuController`).
  */
 export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPanelProps) {
-  const { gateway, ownerConnectionId, profile = 'default', requestGateway } = props
+  const { gateway, ownerConnectionId, profile = 'default', requestGateway, scope } = props
   const { t } = useI18n()
   const copy = t.shell.modelMenu
   const [refreshing, setRefreshing] = useState(false)
@@ -59,6 +59,7 @@ export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPane
         profile,
         refresh: true,
         request: requestGateway,
+        scope,
         sessionId: activeSessionId
       })
 
@@ -107,6 +108,7 @@ export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPane
       ownerConnectionId={ownerConnectionId}
       profile={profile}
       request={requestGateway}
+      scope={scope}
       sessionId={activeSessionId}
     />
   )

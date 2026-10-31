@@ -23,6 +23,7 @@ vi.mock('@/store/gateway', async importActual => ({
 
 import { queryClient } from '@/lib/query-client'
 import { $connection, $gatewayState } from '@/store/session'
+import { $settingsOwner } from '@/store/settings-scope'
 
 import { VaultSettings } from './vault-settings'
 
@@ -32,7 +33,7 @@ const renderVault = (route = '/settings?tab=vault') =>
   render(
     <MemoryRouter initialEntries={[route]}>
       <QueryClientProvider client={queryClient}>
-        <VaultSettings />
+        <VaultSettings settingsOwner={$settingsOwner.get() ?? undefined} />
       </QueryClientProvider>
     </MemoryRouter>
   )
@@ -51,7 +52,7 @@ beforeEach(() => {
   requestGateway.mockReset()
   requestGatewayForAgent.mockReset()
   queryClient.clear()
-  $connection.set(null)
+  $connection.set({ baseUrl: '', connectionId: 'local', mode: 'local', profile: 'default', token: '' } as never)
   $gatewayState.set('open')
 })
 
@@ -76,8 +77,15 @@ describe('VaultSettings', () => {
       'vault.list',
       {},
       undefined,
-      undefined,
-      { spawnPriority: 'foreground' }
+      expect.any(AbortSignal),
+      expect.objectContaining({
+        expectedConnectionOwner: expect.objectContaining({ mode: 'local' }),
+        expectedOwner: expect.objectContaining({
+          connectionOwner: expect.objectContaining({ mode: 'local' }),
+          profile: 'default'
+        }),
+        spawnPriority: 'foreground'
+      })
     )
   })
 

@@ -6,6 +6,7 @@ import {
   getElevenLabsVoices,
   getMemoryProviderConfig,
   getStatus,
+  refreshStatusAuth,
   restartGateway,
   saveMemoryProviderConfig,
   setApiRequestProfile,
@@ -53,6 +54,7 @@ describe('backend action helpers are profile-scoped', () => {
     setApiRequestProfile('coder')
 
     void getStatus()
+    void refreshStatusAuth()
     void restartGateway()
     void updateHermes()
     void checkHermesUpdate()

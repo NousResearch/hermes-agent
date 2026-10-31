@@ -1,6 +1,11 @@
-import { atom, computed } from 'nanostores'
+import { atom, computed, onMount } from 'nanostores'
 
+import type { ConnectionOwner, HermesConnection, RecycleBackendScope } from '@/global'
+import type { ProfileScope } from '@/hermes'
+import { translateNow } from '@/i18n'
+import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $connection } from '@/store/session'
 
 // ── Shared settings "Applies to" scope ──────────────────────────────────────
 // One selection shared by every config-backed settings page (Model, Workspace,
@@ -29,6 +34,245 @@ export const $settingsScopeEditsNonDefault = computed([$settingsScopeProfile, $p
 
   return selected !== normalizeProfileKey(defaultProfile?.name)
 })
+
+// ponytail: use Electron's resolved identity; never infer a remote owner from a URL.
+// Env/unmatched remotes have a descriptor but deliberately no registry identity.
+const $settingsConnectionId = computed($connection, connection => {
+  if (!connection) {
+    return null
+  }
+
+  if (Object.hasOwn(connection, 'connectionId')) {
+    return typeof connection.connectionId === 'string' && connection.connectionId.trim()
+      ? connection.connectionId
+      : null
+  }
+
+  return connection.mode === 'local' ? 'local' : null
+})
+
+let previousConnectionOwner: ConnectionOwner | null = null
+
+function sameHeaders(left?: Record<string, string>, right?: Record<string, string>): boolean {
+  const leftEntries = Object.entries(left ?? {})
+  const rightEntries = Object.entries(right ?? {})
+
+  return leftEntries.length === rightEntries.length && leftEntries.every(([key, value]) => right?.[key] === value)
+}
+
+function sameConnectionOwner(left: ConnectionOwner, right: ConnectionOwner): boolean {
+  return (
+    left.mode === right.mode &&
+    left.baseUrl === right.baseUrl &&
+    left.token === right.token &&
+    left.authMode === right.authMode &&
+    left.remoteHost === right.remoteHost &&
+    left.remoteIdentity === right.remoteIdentity &&
+    left.remoteKind === right.remoteKind &&
+    sameHeaders(left.headers, right.headers)
+  )
+}
+
+function connectionOwnerFrom(connection: HermesConnection): ConnectionOwner {
+  return {
+    mode: connection.mode,
+    baseUrl: connection.baseUrl,
+    token: connection.token,
+    authMode: connection.authMode,
+    remoteHost: connection.remoteHost,
+    remoteIdentity: connection.remoteIdentity,
+    remoteKind: connection.remoteKind,
+    headers: connection.headers
+  }
+}
+
+const $settingsConnectionOwner = computed($connection, connection => {
+  const hasRegisteredClaim = Boolean(connection && Object.hasOwn(connection, 'connectionId'))
+
+  const registeredId =
+    hasRegisteredClaim && typeof connection?.connectionId === 'string' ? connection.connectionId.trim() : ''
+
+  if (!connection?.mode || (hasRegisteredClaim && !registeredId)) {
+    previousConnectionOwner = null
+
+    return null
+  }
+
+  const next = connectionOwnerFrom(connection)
+
+  if (previousConnectionOwner && sameConnectionOwner(previousConnectionOwner, next)) {
+    return previousConnectionOwner
+  }
+
+  previousConnectionOwner = next
+
+  return next
+})
+
+// The foreground process is only authoritative for its own profile. A named
+// Settings selection can use a different pooled port/token on the same gateway.
+const $settingsForegroundProfile = computed([$connection, $activeGatewayProfile], (connection, active) =>
+  normalizeProfileKey(connection?.profile ?? active)
+)
+
+const $settingsTarget = computed(
+  [$settingsConnectionId, $settingsScopeProfile, $settingsConnectionOwner, $settingsForegroundProfile],
+  (connectionId, profile, connectionOwner, foregroundProfile) => ({
+    connectionId,
+    profile,
+    connectionOwner,
+    foregroundProfile
+  })
+)
+
+const $resolvedSettingsConnection = atom<{
+  target: ReturnType<typeof $settingsTarget.get>
+  connectionOwner: ConnectionOwner
+} | null>(null)
+
+interface SettingsOwner {
+  cacheOwner?: ConnectionOwner
+  connectionId: null | string
+  profile?: string
+  connectionOwner?: ConnectionOwner
+  connectionOwnerProfile?: string
+  legacyConnection?: ConnectionOwner
+  legacyConnectionProfile?: string
+}
+
+export function settingsGatewayRequestOwnership(scope: ProfileScope) {
+  if (!scope || typeof scope !== 'object') {
+    return {}
+  }
+
+  const sourceOwner = scope.connectionOwner ?? scope.legacyConnection
+
+  if (!sourceOwner) {
+    return {}
+  }
+
+  return {
+    expectedConnectionOwner: scope.cacheOwner ?? sourceOwner,
+    expectedOwner: {
+      profile: scope.connectionOwnerProfile ?? scope.legacyConnectionProfile ?? scope.profile ?? 'custom',
+      connectionOwner: sourceOwner
+    }
+  }
+}
+
+export function settingsRecycleScope(scope: ProfileScope): RecycleBackendScope | undefined {
+  if (!scope || typeof scope !== 'object') {
+    return scope
+  }
+
+  const profile = scope.profile?.trim()
+
+  if (scope.connectionId === null && scope.legacyConnection) {
+    return { connectionId: null, legacyConnection: scope.legacyConnection, ...(profile ? { profile } : {}) }
+  }
+
+  const connectionId = scope.connectionId?.trim()
+  const recycleOwner = scope.cacheOwner ?? scope.connectionOwner
+
+  if (connectionId && recycleOwner) {
+    return { connectionId, connectionOwner: recycleOwner, ...(profile ? { profile } : {}) }
+  }
+
+  throw new Error('Restart requires an exact connection and profile.')
+}
+
+// Resolve only while Settings has a consumer. Electron owns routing; no URL
+// from the renderer is used to acquire the selected profile's descriptor.
+onMount($resolvedSettingsConnection, () => {
+  let current: ReturnType<typeof $settingsTarget.get> | null = null
+  let generation = 0
+
+  const acquire = (target: ReturnType<typeof $settingsTarget.get>) => {
+    const version = ++generation
+    current = target
+    $resolvedSettingsConnection.set(null)
+
+    if (!target.connectionOwner || target.profile === target.foregroundProfile) {
+      return
+    }
+
+    const resolve = window.hermesDesktop?.getConnectionFor
+
+    if (!resolve) {
+      return
+    }
+
+    void resolve({
+      connectionId: target.connectionId,
+      profile: target.profile,
+      priority: 'foreground',
+      expectedOwner: { profile: target.foregroundProfile, connectionOwner: target.connectionOwner }
+    })
+      .then(connection => {
+        if (current === target && generation === version && (connection.connectionId ?? null) === target.connectionId) {
+          $resolvedSettingsConnection.set({ target, connectionOwner: connectionOwnerFrom(connection) })
+        }
+      })
+      // Unavailable ownership stays disabled; never fall back to the foreground.
+      .catch(error => {
+        if (current === target && generation === version) {
+          notifyError(error, translateNow('settings.config.failedLoad'), {
+            action: {
+              label: translateNow('skills.refresh'),
+              onClick: () => {
+                if (current === target && generation === version) {
+                  acquire(target)
+                }
+              }
+            }
+          })
+        }
+      })
+  }
+
+  const unlisten = $settingsTarget.subscribe(acquire)
+
+  return () => {
+    current = null
+    unlisten()
+  }
+})
+
+export const $settingsOwner = computed(
+  [$settingsTarget, $resolvedSettingsConnection],
+  (target, resolved): null | SettingsOwner => {
+    const { connectionId, profile, connectionOwner, foregroundProfile } = target
+    const requestProfile = profile === 'custom' ? undefined : profile
+
+    const selectedOwner =
+      profile === foregroundProfile ? connectionOwner : resolved?.target === target ? resolved.connectionOwner : null
+
+    if (connectionId && connectionOwner) {
+      if (!selectedOwner) {
+        return null
+      }
+
+      return profile === foregroundProfile
+        ? { connectionId, ...(requestProfile ? { profile: requestProfile } : {}), connectionOwner: selectedOwner }
+        : {
+            cacheOwner: selectedOwner,
+            connectionId,
+            ...(requestProfile ? { profile: requestProfile } : {}),
+            connectionOwner,
+            connectionOwnerProfile: foregroundProfile
+          }
+    }
+
+    return selectedOwner?.mode === 'remote' && selectedOwner.baseUrl
+      ? {
+          connectionId: null,
+          ...(requestProfile ? { profile: requestProfile } : {}),
+          legacyConnection: selectedOwner,
+          legacyConnectionProfile: profile
+        }
+      : null
+  }
+)
 
 // ── Request-scope form (THE value to hand to API helpers) ──────────────────
 // The store contract and the API contract disagree about `null`:

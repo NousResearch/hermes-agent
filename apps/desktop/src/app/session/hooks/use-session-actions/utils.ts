@@ -64,7 +64,7 @@ import { runtimeSessionOwner, sessionTileOwnerRoute } from '@/store/session-stat
 // Re-exported for the many session-actions/tile call sites that already import
 // it from here; the canonical definition lives in @/store/session.
 export { sessionMatchesStoredId }
-import { sessionOwnerRouteFromRow, type SessionOwnerScope } from '@/store/session-request-router'
+import { sessionOwnerRouteFromRow, sessionOwnerRowKey, type SessionOwnerScope } from '@/store/session-request-router'
 import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRuntimeInfo } from '@/types/hermes'
 
@@ -1787,9 +1787,14 @@ export function sessionShouldHaveTranscript(session: SessionInfo | undefined): b
 export type ListedSessionSlice = 'cron' | 'messaging' | 'sessions'
 
 export function findListedSession(
-  storedSessionId: string
+  target: SessionInfo | string
 ): { session: SessionInfo; slice: ListedSessionSlice } | undefined {
-  const match = (session: SessionInfo) => sessionMatchesStoredId(session, storedSessionId)
+  const targetKey = typeof target === 'string' ? null : sessionOwnerRowKey(target)
+  const targetId = typeof target === 'string' ? target : target.id
+
+  const match = (session: SessionInfo) =>
+    targetKey ? sessionOwnerRowKey(session) === targetKey : sessionMatchesStoredId(session, targetId)
+
   const fromMessaging = $messagingSessions.get().find(match)
 
   if (fromMessaging) {
@@ -1811,8 +1816,12 @@ export function findListedSession(
   return undefined
 }
 
-export function dropListedSession(storedSessionId: string): void {
-  const keep = (session: SessionInfo) => !sessionMatchesStoredId(session, storedSessionId)
+export function dropListedSession(target: SessionInfo | string): void {
+  const targetKey = typeof target === 'string' ? null : sessionOwnerRowKey(target)
+  const targetId = typeof target === 'string' ? target : target.id
+
+  const keep = (session: SessionInfo) =>
+    targetKey ? sessionOwnerRowKey(session) !== targetKey : !sessionMatchesStoredId(session, targetId)
 
   setSessions(prev => prev.filter(keep))
   setMessagingSessions(prev => prev.filter(keep))
@@ -1830,10 +1839,11 @@ export function listedSliceTarget(session: SessionInfo): ListedSessionSlice {
 
 export function restoreListedSession(session: SessionInfo, slice?: ListedSessionSlice): void {
   const target: ListedSessionSlice = slice ?? listedSliceTarget(session)
+  const restoredKey = sessionOwnerRowKey(session)
 
   const prepend = (prev: SessionInfo[]) => [
     session,
-    ...prev.filter(existing => !sessionMatchesStoredId(existing, session.id))
+    ...prev.filter(existing => sessionOwnerRowKey(existing) !== restoredKey)
   ]
 
   if (target === 'messaging') {

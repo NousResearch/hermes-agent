@@ -389,6 +389,15 @@ class TestFailureAttribution:
         (hermes_home / "auth.json").write_text(
             json.dumps({"version": 1, "credential_pool": {"anthropic": entries}})
         )
+        # Prevent _seed_from_singletons from discovering real external credentials
+        # (e.g. ~/.claude/.credentials.json) when anthropic is configured on the
+        # host.  A test entry with source="manual" makes is_provider_explicitly_
+        # configured("anthropic") return True, which would add real claude_code
+        # entries and corrupt single-entry pool assertions.
+        monkeypatch.setattr(
+            "agent.credential_pool._seed_from_singletons",
+            lambda provider, pool_entries: (False, set()),
+        )
         from agent.credential_pool import load_pool
 
         return load_pool("anthropic")

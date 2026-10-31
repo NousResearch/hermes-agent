@@ -53,6 +53,36 @@ and push notification configs (inline or via
 memory — and the reply is returned over A2A. Completed tasks stay queryable
 via `tasks/get`.
 
+### Connections and completion
+
+`SendMessage` waits for a terminal or interrupted outcome by default. Set
+`configuration.returnImmediately: true` to receive the live Task promptly and
+retrieve the result later with `GetTask`. `SendStreamingMessage` starts with a
+Task containing its `id` and `contextId`, then sends updates and keepalives until
+completion or an interrupted outcome such as `TASK_STATE_INPUT_REQUIRED`.
+Disconnecting an SSE client releases only that observer: accepted work continues.
+`SubscribeToTask` starts with the current Task snapshot and observes the same result.
+The existing terminal-task subscription replay is retained for compatibility;
+this differs from the v1.0 rule rejecting terminal subscriptions.
+
+Completion callbacks store the redacted result before waking request waiters.
+Results remain queryable in memory while the process lives (up to 500 terminal
+tasks); conversation logs do not provide task restart/resumption. Cancellation
+wins at most once against completion and does not abort the underlying turn.
+Clarification replies end the current observation; send the answer in the same
+context to start the next task.
+
+Local tasks in one context execute in sequence so gateway input coalescing cannot
+merge accepted tasks. Cancellation of a queued task skips its execution.
+
+Audit and conversation writes use a separate single worker, drained on ordinary
+shutdown. Admission reserves recording capacity (512 active, interrupted, or
+not-yet-recorded tasks); exhaustion refuses new execution explicitly. Webhooks
+use two workers with at most 128 outstanding jobs. Saturation or shutdown may
+drop optional pushes, never local records or stored results. Shutdown releases
+request waiters and joins running I/O (webhook requests have a 10s timeout).
+Terminal retention follows completion recency, not task creation order.
+
 ## Security
 
 - **No token ⇒ localhost only.** The server binds `127.0.0.1` and refuses to
@@ -89,7 +119,7 @@ via `tasks/get`.
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authed peer (dev only). |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity. |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20). |
-| `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply; the orphan sweep never fails a task before this window (floor 300s) or while a request still waits on it. |
+| `A2A_REPLY_TIMEOUT` | `300` | Legacy orphan-record grace in seconds, clamped to 300–86400s and swept every 60s. Only records without an execution owner can expire; live accepted/queued local work remains protected until completion callbacks or shutdown, regardless of connected observers. No HTTP observation or local execution deadline. Also the default forwarded-profile transport timeout; an unverified owner reply does not cancel accepted owner work. |
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push signing. |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict skills on the Agent Card. |
 

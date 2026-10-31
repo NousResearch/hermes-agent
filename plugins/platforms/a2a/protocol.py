@@ -27,6 +27,8 @@ STATE_SUBMITTED, STATE_WORKING, STATE_INPUT_REQUIRED = "TASK_STATE_SUBMITTED", "
 STATE_COMPLETED, STATE_FAILED = "TASK_STATE_COMPLETED", "TASK_STATE_FAILED"
 STATE_CANCELED, STATE_REJECTED = "TASK_STATE_CANCELED", "TASK_STATE_REJECTED"
 TERMINAL_STATES = frozenset({STATE_COMPLETED, STATE_FAILED, STATE_CANCELED, STATE_REJECTED})
+INTERRUPTED_STATES = frozenset({STATE_INPUT_REQUIRED, "TASK_STATE_AUTH_REQUIRED"})
+OBSERVABLE_OUTCOMES = TERMINAL_STATES | INTERRUPTED_STATES
 ROLE_USER, ROLE_AGENT = "ROLE_USER", "ROLE_AGENT"
 
 # A reply starting with this marker is a clarification request -> TASK_STATE_INPUT_REQUIRED (marker stripped).
@@ -382,31 +384,51 @@ class TaskStore:
         with self._lock:
             return dict(rec) if (rec := self._scoped(task_id, agent_slug, tenant)) else None
 
-    def complete(self, task_id: str, state: str, reply: str = "") -> Optional[dict]:
-        """Transition a task to a terminal state. Idempotent."""
+    def complete(self, task_id: str, state: str, reply: str = "", *, consume_push: bool = False,
+                 record_outcome=None) -> Optional[dict]:
+        """Store a terminal/interrupted outcome once; cancellation can end an interrupted task."""
         with self._lock:
             rec = self._tasks.get(task_id)
             if not rec or rec["state"] in TERMINAL_STATES:
+                return None
+            if rec["state"] in INTERRUPTED_STATES and state != STATE_CANCELED:
                 return None
             rec.update(state=state, reply=reply, completed_at=time.time())
             watchers = self._watchers.pop(task_id, [])
             self._trim_locked()
             out = dict(rec)
+            if record_outcome is not None:
+                record_outcome(out)
+            if consume_push:
+                rec["push_url"] = ""
         for fut in watchers:
             if not fut.done():
                 fut.set_result((state, reply))
         return out
 
     def watch(self, task_id: str, agent_slug: str = "", tenant: str = "") -> Optional[Future]:
+        observation = self.watch_snapshot(task_id, agent_slug, tenant)
+        return observation[1] if observation else None
+
+    def watch_snapshot(self, task_id: str, agent_slug: str = "", tenant: str = "") -> Optional[tuple[dict, Future]]:
         with self._lock:
             if not (rec := self._scoped(task_id, agent_slug, tenant)):
                 return None
             fut: Future = Future()
-            if rec["state"] in TERMINAL_STATES:
-                fut.set_result((rec["state"], rec.get("reply", "")))
-            else:
+            snapshot = dict(rec)
+            if rec["state"] not in OBSERVABLE_OUTCOMES:
                 self._watchers.setdefault(task_id, []).append(fut)
-            return fut
+        if snapshot["state"] in OBSERVABLE_OUTCOMES:
+            fut.set_result((snapshot["state"], snapshot.get("reply", "")))
+        return snapshot, fut
+
+    def unwatch(self, task_id: str, future: Future) -> None:
+        with self._lock:
+            watchers = self._watchers.get(task_id, [])
+            if future in watchers:
+                watchers.remove(future)
+            if not watchers:
+                self._watchers.pop(task_id, None)
 
     def list(self, context_id: str = "", state: str = "", page_size: int = 50, offset: int = 0,
              agent_slug: str = "", tenant: str = "", with_total: bool = False):
@@ -423,15 +445,20 @@ class TaskStore:
         return (page, next_offset, total) if with_total else (page, next_offset)
 
     def fail_orphans(self, timeout_seconds: float = 300, *, exclude: set[str] | None = None) -> list[str]:
+        return [tid for tid in self.stale_ids(timeout_seconds, exclude=exclude)
+                if self.complete(tid, STATE_FAILED, "[task orphaned — no reply produced]")]
+
+    def stale_ids(self, timeout_seconds: float, *, exclude: set[str] | None = None) -> list[str]:
         excluded = exclude or set()
         with self._lock:
             stale = [tid for tid, rec in self._tasks.items()
-                     if tid not in excluded and rec["state"] not in TERMINAL_STATES
+                     if tid not in excluded and rec["state"] not in OBSERVABLE_OUTCOMES
                      and time.time() - rec["created_at"] > timeout_seconds]
-        return [tid for tid in stale if self.complete(tid, STATE_FAILED, "[task orphaned — no reply produced]")]
+        return stale
 
     def _trim_locked(self) -> None:
-        terminal = [tid for tid, rec in self._tasks.items() if rec["state"] in TERMINAL_STATES]
+        terminal = sorted((tid for tid, rec in self._tasks.items() if rec["state"] in TERMINAL_STATES),
+                          key=lambda tid: self._tasks[tid]["completed_at"])
         for tid in terminal[:max(0, len(terminal) - self._MAX_TERMINAL)]:
             self._tasks.pop(tid, None)
 

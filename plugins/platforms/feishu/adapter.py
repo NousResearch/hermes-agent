@@ -322,6 +322,7 @@ class FeishuAdapterSettings:
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
     allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
+    mention_roster_path: str = ""  # JSON file mapping agent names → open_id for outbound @ conversion
 
 
 @dataclass
@@ -1344,6 +1345,10 @@ class FeishuAdapter(BasePlatformAdapter):
         self._approval_counter = itertools.count(1)
         self._update_prompt_state: dict[int, dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
+        # Outbound mention auto-conversion: name→open_id roster loaded from mention_roster_path.
+        self._mention_roster_cache: Optional[dict[str, str]] = None
+        self._mention_roster_mtime: float = 0.0
+        self._mention_pattern: Optional[re.Pattern] = None
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: OrderedDict[str, str] = OrderedDict()
         self._load_seen_message_ids()
@@ -1418,6 +1423,7 @@ class FeishuAdapter(BasePlatformAdapter):
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
+            mention_roster_path=str(extra.get("mention_roster_path", "")).strip(),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -2015,9 +2021,88 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] Failed to get chat info for %s", chat_id, exc_info=True)
             return fallback
 
+    def _get_mention_roster(self) -> dict[str, str]:
+        """Load and cache the name→open_id roster from mention_roster_path.
+
+        Reloads when the file's mtime changes so roster edits take effect without restart.
+        Returns an empty dict when no path is configured or loading fails.
+        """
+        path = getattr(self, "_mention_roster_path", "") or ""
+        if not path:
+            return {}
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            return {}
+        cache = getattr(self, "_mention_roster_cache", None)
+        if cache is not None and mtime == getattr(self, "_mention_roster_mtime", 0.0):
+            return cache
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError, ValueError):
+            logger.warning("[Feishu] Failed to load mention roster from %s", path)
+            return {}
+        roster: dict[str, str] = {}
+        for _agent_key, info in (data.get("agents") or {}).items():
+            if not isinstance(info, dict):
+                continue
+            name = str(info.get("name", "")).strip()
+            bot_id = str(info.get("bot_id", "")).strip()
+            if name and bot_id:
+                roster[name] = bot_id
+                # Also register the base name without a ▶ suffix (e.g. "数据管家▶Mac" → "数据管家")
+                # so that "@数据管家" is converted just like "@数据管家▶Mac".
+                if "\u25b6" in name:  # ▶
+                    base = name.split("\u25b6")[0].strip()
+                    if base and base not in roster:
+                        roster[base] = bot_id
+        self._mention_roster_cache = roster
+        self._mention_roster_mtime = mtime
+        # Build a compiled regex: @name1|@name2|... sorted by length desc for longest-match-first.
+        names = sorted(roster.keys(), key=len, reverse=True)
+        self._mention_pattern = (
+            re.compile(r"@(" + "|".join(re.escape(n) for n in names) + ")")
+            if names else None
+        )
+        logger.info("[Feishu] Loaded mention roster (%d names) from %s", len(roster), path)
+        return roster
+
+    def _convert_plain_mentions(self, content: str) -> str:
+        """Convert plain-text @岗位名 in outbound messages to native Feishu <at> tags.
+
+        When a bot writes "@数据管家▶Mac" as plain text, Feishu does not create a mention
+        event, so the target bot's require_mention gate rejects the message. This method
+        rewrites such plain-text mentions into ``<at user_id="ou_...">name</at>`` tags that
+        Feishu's md renderer turns into real mentions.
+
+        Already-native ``<at ...>...</at>`` tags are left intact — the name inside them is
+        preceded by ``>``, not ``@``, so the ``@name`` pattern does not match.
+        """
+        if "@" not in content:
+            return content
+        pattern = getattr(self, "_mention_pattern", None)
+        if pattern is None:
+            roster = self._get_mention_roster()
+            if not roster:
+                return content
+            pattern = getattr(self, "_mention_pattern", None)
+            if pattern is None:
+                return content
+
+        def _replace(match: re.Match) -> str:
+            name = match.group(1)
+            open_id = self._mention_roster_cache.get(name, "") if self._mention_roster_cache else ""
+            if not open_id:
+                return match.group(0)
+            return f'<at user_id="{open_id}">{name}</at>'
+
+        return pattern.sub(_replace, content)
+
     def format_message(self, content: str) -> str:
-        """Feishu text messages are plain text by default."""
-        return content.strip()
+        """Feishu text messages are plain text by default; plain-text @mentions are
+        converted to native <at> tags so bot-to-bot handoffs trigger mention events."""
+        return self._convert_plain_mentions(content.strip())
 
     # --- Inbound event handlers ---
     def _on_message_event(self, data: Any) -> None:

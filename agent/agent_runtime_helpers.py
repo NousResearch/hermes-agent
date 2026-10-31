@@ -1598,8 +1598,7 @@ def dump_api_request_debug(
             print(json.dumps(_redacted_payload, ensure_ascii=False, indent=2, default=str))
         return dump_file
     except Exception as dump_error:
-        if agent.verbose_logging:
-            logger.warning("Failed to dump API request debug payload: %s", dump_error)
+        logger.warning("Failed to dump API request debug payload: %s", dump_error, exc_info=True)
         return None
 
 

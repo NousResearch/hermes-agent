@@ -11,12 +11,15 @@ answer, and exited with the task unstarted. On an unattended multi-step job
 The fix keys on the provider contract violation itself
 (``finish_reason == "tool_calls"`` with zero ``tool_calls``) and re-prompts,
 bounded to 3 consecutive stalls, with the budget resetting after any
-successful tool round so it guards each stall rather than the whole run. A
-genuine ``finish_reason="stop"`` text turn is unaffected.
+successful tool round so it guards each stall rather than the whole run. It
+also recovers when a model emits a trailing ``card`` + ``<invoke>`` block as
+plain text with ``finish_reason="stop"`` instead of using the provider's
+structured tool channel. Genuine text turns are unaffected.
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -67,6 +70,52 @@ def _dropped_tool_call_response(content: str):
 
 
 class TestDroppedToolCallRecovery:
+    def test_textual_invoke_stop_reprompts_instead_of_exiting(self, loop_agent, tmp_path):
+        """A known tool emitted as trailing XML text is an attempted call,
+        not a final answer, even when the provider reports a clean stop."""
+        from tests.agent.test_run_agent import _mock_response, _mock_tool_call
+        from hermes_state import SessionDB
+
+        loop_agent.valid_tool_names = {"web_search"}
+        leaked = (
+            "I will search now.\n\ncard\n"
+            '<invoke name="web_search">\n'
+            '<parameter name="query">Hermes</parameter>\n'
+            "</invoke>"
+        )
+        loop_agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=leaked),
+            _mock_response(content="", finish_reason="tool_calls", tool_calls=[
+                _mock_tool_call("web_search", '{"query":"Hermes"}', call_id="native-call"),
+            ]),
+            _mock_response(content="Found the result."),
+        ]
+
+        with (
+            closing(SessionDB(db_path=tmp_path / "state.db")) as db,
+            patch.object(loop_agent, "_session_db", db),
+            patch.object(loop_agent, "_session_db_created", False),
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+            patch("model_tools.handle_function_call", return_value="search result") as execute,
+        ):
+            result = loop_agent.run_conversation("search for Hermes")
+            assert loop_agent._flush_messages_to_session_db(result["messages"])
+            saved = db.get_messages_as_conversation(loop_agent.session_id)
+
+        assert loop_agent.client.chat.completions.create.call_count == 3
+        execute.assert_called_once()
+        assert execute.call_args.args[:2] == ("web_search", {"query": "Hermes"})
+        assert "Found the result." in result["final_response"]
+        assert saved[-1]["content"] == "Found the result."
+        assert all(leaked != msg.get("content") for msg in saved)
+        assert not any("provider-native structured tool call" in (msg.get("content") or "") for msg in saved)
+        requests = loop_agent.client.chat.completions.create.call_args_list
+        retry_messages = requests[1].kwargs["messages"]
+        assert "provider-native structured tool call" in retry_messages[-1]["content"]
+        assert retry_messages[0] == requests[0].kwargs["messages"][0]
+
     def test_dropped_tool_call_reprompts_instead_of_exiting(self, loop_agent):
         """finish_reason=tool_calls with an empty tool_calls array must
         re-prompt the model to emit the call rather than exiting the loop
@@ -125,7 +174,49 @@ class TestDroppedToolCallRecovery:
         )
         assert "Here is your answer." in result["final_response"]
 
-    def test_persistent_dropped_tool_calls_are_bounded(self, loop_agent):
+    @pytest.mark.parametrize(
+        "content",
+        [
+            (
+                'For example: <invoke name="memory"></invoke> is transcript '
+                "data, not a tool call."
+            ),
+            (
+                "A provider may represent a memory call like this:\n"
+                '<invoke name="memory">\n'
+                '<parameter name="target">memory</parameter>\n'
+                "</invoke>"
+            ),
+            'card\n<invoke name="not_a_real_tool"></invoke>',
+            'card\n<invoke name="memory">incomplete',
+            'card\n<invoke name="memory"></invoke>\nThis is an example.',
+            '```xml\ncard\n<invoke name="memory"></invoke>\n```',
+            'postcard\n<invoke name="memory"></invoke>',
+            '<think>card\n<invoke name="memory"></invoke></think>\nHere is your answer.',
+        ],
+    )
+    def test_non_call_invoke_text_is_unaffected(self, loop_agent, content):
+        """Explanatory text, including trailing known-tool examples, and
+        unknown tool names must not be mistaken for executable tool intent."""
+        from tests.agent.test_run_agent import _mock_response
+
+        loop_agent.valid_tool_names = {"memory"}
+        loop_agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=content, finish_reason="stop"),
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("explain tool-call markup")
+
+        assert loop_agent.client.chat.completions.create.call_count == 1
+        assert loop_agent._strip_think_blocks(content).strip() == result["final_response"]
+
+    @pytest.mark.parametrize("textual", [False, True])
+    def test_persistent_dropped_tool_calls_are_bounded(self, loop_agent, textual):
         """If the model never emits a call, the recovery must give up after a
         bounded number of consecutive stalls instead of looping forever."""
         from tests.agent.test_run_agent import _mock_response
@@ -133,9 +224,14 @@ class TestDroppedToolCallRecovery:
         # Stage plenty of dropped-tool-call responses followed by a clean stop,
         # so that if the bound is respected the loop exits on its own well
         # before exhausting the staged responses (no StopIteration).
-        loop_agent.client.chat.completions.create.side_effect = [
-            _dropped_tool_call_response("Let me check.") for _ in range(9)
-        ] + [_mock_response(content="done", finish_reason="stop")]
+        loop_agent.valid_tool_names = {"memory"}
+        stalled = (
+            _mock_response(content='card\n<invoke name="memory"></invoke>')
+            if textual else _dropped_tool_call_response("Let me check.")
+        )
+        loop_agent.client.chat.completions.create.side_effect = [stalled] * 9 + [
+            _mock_response(content="done", finish_reason="stop"),
+        ]
 
         with (
             patch.object(loop_agent, "_persist_session"),
@@ -151,7 +247,8 @@ class TestDroppedToolCallRecovery:
         )
         assert result is not None
 
-    def test_nudge_pair_is_ephemeral_scaffolding(self, loop_agent):
+    @pytest.mark.parametrize("textual", [False, True])
+    def test_nudge_pair_is_ephemeral_scaffolding(self, loop_agent, textual):
         """The re-prompt pair (interim assistant turn + synthetic user nudge)
         must be flagged as ephemeral scaffolding so persistence never writes
         it to the durable transcript — a resumed session must not replay the
@@ -160,8 +257,13 @@ class TestDroppedToolCallRecovery:
         from agent.session_persistence import _is_ephemeral_scaffolding
         from tests.agent.test_run_agent import _mock_response
 
+        loop_agent.valid_tool_names = {"memory"}
+        stalled = (
+            _mock_response(content='card\n<invoke name="memory"></invoke>')
+            if textual else _dropped_tool_call_response("Let me verify the PR.")
+        )
         loop_agent.client.chat.completions.create.side_effect = [
-            _dropped_tool_call_response("Let me verify the PR."),
+            stalled,
             _mock_response(content="All checks pass. Approved.", finish_reason="stop"),
         ]
 

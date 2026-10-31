@@ -96,6 +96,11 @@ class PluginLedgerMixin:
         )
         return self._track_registration(manifest, kind, name, lease.dispose)
 
+    def _owns_registration(self, plugin_key: str, kind: str, key: str) -> bool:
+        """Whether ``plugin_key`` holds a live ``(kind, key)`` registration in this manager."""
+        return any(r.kind == kind and r.key == key and r.active
+                   for r in self._ownership_ledger.get(plugin_key, ()))
+
     def _active_persistent(self) -> list[PluginRegistration]:
         """Live persistent registrations across every plugin in the ownership ledger."""
         return [r for owned in self._ownership_ledger.values() for r in owned if r.persistent and r.active]
@@ -293,7 +298,8 @@ class PluginLedgerMixin:
             self._ownership_ledger, self._plugins, self._hooks, self._middleware,
             self._plugin_tool_names, self._plugin_platform_names, self._cli_commands,
             self._plugin_commands, self._plugin_skills, self._automation_blueprints, self._portable_mcp_servers,
-            self._portable_mcp_server_plugins, self._aux_tasks, self._system_prompt_sections, self._approval_transports,
+            self._portable_mcp_server_plugins, self._aux_tasks, self._system_prompt_sections,
+            self._review_destinations, self._approval_transports,
             self._slack_action_handlers, self._predeclared_modules, self._predeclared_tools,
             self._platform_handler_factories,
         ):

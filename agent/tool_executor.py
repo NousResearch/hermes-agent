@@ -198,28 +198,51 @@ def _resolve_concurrent_tool_timeout() -> float | None:
     )
 
 
-def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) -> bool:
-    """Flush tool-call progress to the session DB before projecting it to any UI: tool side
-    effects can kill/restart the process before turn-end persistence runs."""
+def _flush_session_db_after_tool_progress(
+    agent,
+    messages: list,
+    *,
+    stage: str,
+    storage_env=None,
+    budget_config=None,
+) -> bool:
+    """Persist tool progress, carrying ready delegation evidence once per batch.
+
+    The last result of a complete tool batch is the only same-turn carrier. It
+    is enriched before the batch's first durable commit, so history remains
+    append-only and every provider sees the ordinary assistant/tool role shape.
+    """
     from agent.conversation_loop import _maybe_inject_run_budget_wrapup
     from agent.turn_iteration_prep import _maybe_inject_iteration_budget_warning
-
-    # Persist exactly the checkpoint text the next model call will see, before stamping
-    # this tool result as durable. Already-written rows must never be rewritten later.
     _maybe_inject_run_budget_wrapup(agent, messages)
     _maybe_inject_iteration_budget_warning(agent, messages)
+
+    from agent.delegation_inject import prepare_tool_boundary_inject, release_tool_boundary_inject
+    completed_batch_size = prepare_tool_boundary_inject(
+        agent, messages, storage_env=storage_env, budget_config=budget_config)
+
     try:
-        persisted = agent._flush_messages_to_session_db(messages) is not False
+        flush_result = agent._flush_messages_to_session_db(messages)
+        persisted = flush_result is not False
         if not persisted:
             agent._incremental_persistence_failed = True
-            # The flush recorded any classified cause; default to 'unknown' only if nothing more specific exists.
+            # The flush caught its own exception and returned False; the
+            # classified cause (if any) was captured at the catch site. Only
+            # fall back to 'unknown' when nothing more specific is recorded.
             if getattr(agent, "_last_persistence_error_cause", None) is None:
                 agent._last_persistence_error_cause = "unknown"
+            release_tool_boundary_inject(agent, messages, completed_batch_size)
+        else:
+            from agent.delegation_inject import settle_tool_boundary_inject
+            settle_tool_boundary_inject(
+                agent, messages, completed_batch_size=completed_batch_size, flush_result=flush_result)
         return persisted
     except Exception as exc:
         agent._incremental_persistence_failed = True
         from hermes_state import classify_persistence_error
+
         agent._last_persistence_error_cause = classify_persistence_error(exc)
+        release_tool_boundary_inject(agent, messages, completed_batch_size)
         logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
         return False
 
@@ -351,7 +374,10 @@ def _append_skipped_tool_results(
                 status="cancelled", error_type=hook_error_type, error_message=f"Tool execution skipped. {interrupt_skip_wording(agent)}",
             )
         if flush_stage is not None:
-            flushed = _flush_session_db_after_tool_progress(agent, messages, stage=f"{flush_stage} {name}")
+            flushed = _flush_session_db_after_tool_progress(
+                agent, messages, stage=f"{flush_stage} {name}",
+                storage_env=get_active_env(effective_task_id), budget_config=_budget_for_agent(agent),
+            )
             if not flushed and stop_on_flush_failure:
                 return False
     return True
@@ -1171,7 +1197,10 @@ def _commit_tool_result(
             logging.debug("Tool result metadata callback error: %s", callback_error)
     stamp_data_use(tool_message, sorted(data_use))
     messages.append(tool_message)
-    if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
+    if not _flush_session_db_after_tool_progress(
+        agent, messages, stage=f"tool result {function_name}",
+        storage_env=get_active_env(effective_task_id), budget_config=budget,
+    ):
         return None
 
     if not blocked:
@@ -1760,7 +1789,10 @@ def _append_invalid_arguments_result(agent, messages: list, ref: _ToolCallRef, p
     """Emit + append the parse-error result for a call whose arguments were not a JSON object."""
     ref.emit_invalid_arguments(agent, parse_error)
     messages.append(make_tool_result_message(ref.name, parse_error, ref.call_id))
-    return _flush_session_db_after_tool_progress(agent, messages, stage=f"invalid tool arguments {ref.name}")
+    return _flush_session_db_after_tool_progress(
+        agent, messages, stage=f"invalid tool arguments {ref.name}",
+        storage_env=get_active_env(ref.task_id), budget_config=_budget_for_agent(agent),
+    )
 
 
 def _run_sequential_call(

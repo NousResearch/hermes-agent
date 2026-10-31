@@ -31,6 +31,11 @@ USAGE_ANCHOR_MODEL_CONFIG_KEY = "_usage_anchor"
 _FINGERPRINT_KEYS = ("role", "content", "api_content", "tool_call_id", "tool_calls")
 
 
+class _Anchor(dict):
+    _rows = ()
+    _prefix_fp = None
+
+
 def message_fingerprint(msg: Any) -> Optional[str]:
     """Stable digest of one transcript message over its provider-visible, persisted fields."""
     if not isinstance(msg, dict):
@@ -40,6 +45,34 @@ def message_fingerprint(msg: Any) -> Optional[str]:
         raw = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=True, separators=(",", ":"))
     except (TypeError, ValueError):
         raw = repr(sorted(payload.items()))
+    return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
+
+
+def _priced_row(msg, old):
+    values = tuple(msg.get(k) for k in _FINGERPRINT_KEYS)
+    hit = old is not None and old[0] is msg and all(
+        value is saved and (value is None or isinstance(value, str))
+        for value, saved in zip(values, old[1]))
+    return (msg, values, old[2] if hit else message_fingerprint(msg)), hit
+
+
+def _priced_rows(messages, base_count, memo=()):
+    rows, unchanged = [], len(memo) == base_count
+    for i, msg in enumerate(messages[:base_count]):
+        if not isinstance(msg, dict):
+            return [], False
+        row, hit = _priced_row(msg, memo[i] if i < len(memo) else None)
+        if not row[2]:
+            return [], False
+        rows.append(row)
+        unchanged = unchanged and hit
+    return rows, unchanged
+
+
+def _prefix_fingerprint(rows):
+    if not rows:
+        return None
+    raw = json.dumps([(values[0], fp) for _, values, fp in rows], separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
 
 
@@ -53,15 +86,8 @@ def _priced_prefix_fingerprint(messages: list[dict[str, Any]], base_count: int) 
     """
     if base_count <= 0 or len(messages) < base_count:
         return None
-    fps = []
-    for msg in messages[:base_count]:
-        fp = message_fingerprint(msg)
-        if not fp:
-            return None
-        role = msg.get("role") if isinstance(msg, dict) else None
-        fps.append((role, fp))
-    raw = json.dumps(fps, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
+    rows, _ = _priced_rows(messages, base_count)
+    return _prefix_fingerprint(rows)
 
 
 def capture_usage_anchor(prompt_tokens: Any, completion_tokens: Any, messages: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
@@ -74,14 +100,17 @@ def capture_usage_anchor(prompt_tokens: Any, completion_tokens: Any, messages: l
     if pt <= 0 or not isinstance(messages, list) or not messages:
         return None  # some endpoints omit usage — caller keeps its anchor
     last = messages[-1]
-    return {
+    rows, _ = _priced_rows(messages, len(messages))
+    anchor = _Anchor({
         "prompt_tokens": pt,
         "completion_tokens": max(0, ct),
         "base_count": len(messages),
         "base_last_role": last.get("role") if isinstance(last, dict) else None,
-        "base_last_fp": message_fingerprint(last),
-        "base_prefix_fp": _priced_prefix_fingerprint(messages, len(messages)),
-    }
+        "base_last_fp": rows[-1][2] if rows else message_fingerprint(last),
+        "base_prefix_fp": _prefix_fingerprint(rows),
+    })
+    anchor._rows, anchor._prefix_fp = rows, anchor["base_prefix_fp"]
+    return anchor
 
 
 def _anchor_matches(messages: list[dict[str, Any]], anchor: dict[str, Any]) -> bool:
@@ -95,14 +124,23 @@ def _anchor_matches(messages: list[dict[str, Any]], anchor: dict[str, Any]) -> b
     if not isinstance(base_msg, dict) or base_msg.get("role") != anchor.get("base_last_role"):
         return False
     fp = anchor.get("base_last_fp")
-    if not isinstance(fp, str) or not fp or message_fingerprint(base_msg) != fp:
+    memo = getattr(anchor, "_rows", ())
+    # The last row first: a stale anchor fails on one hash instead of the whole prefix.
+    last_old = memo[base_count - 1] if len(memo) == base_count else None
+    if not isinstance(fp, str) or not fp or _priced_row(base_msg, last_old)[0][2] != fp:
+        return False
+    rows, unchanged = _priced_rows(messages, base_count, memo)
+    if not rows:
         return False
     prefix_fp = anchor.get("base_prefix_fp")
-    return (
+    matches = (
         isinstance(prefix_fp, str)
         and bool(prefix_fp)
-        and _priced_prefix_fingerprint(messages, base_count) == prefix_fp
+        and (anchor._prefix_fp if unchanged else _prefix_fingerprint(rows)) == prefix_fp
     )
+    if matches and isinstance(anchor, _Anchor):
+        anchor._rows, anchor._prefix_fp = rows, prefix_fp
+    return matches
 
 
 def anchored_context_tokens(messages: list[dict[str, Any]], anchor: Optional[dict[str, Any]], *, charge_stale_thinking: bool = True) -> Optional[int]:
@@ -183,6 +221,7 @@ def restore_usage_anchor(agent: Any, conversation_history: Optional[list[dict[st
         return
     if anchor is None:
         return
+    anchor = _Anchor(anchor)
     if _anchor_matches(conversation_history, anchor):
         agent._usage_anchor = anchor
     else:
@@ -200,4 +239,4 @@ def persisted_anchor_tokens(session_db: Any, session_id: Any, messages: Any) -> 
     except Exception:
         logger.debug("usage anchor load failed", exc_info=True)
         return None
-    return anchored_context_tokens(messages, anchor) if anchor else None
+    return anchored_context_tokens(messages, _Anchor(anchor)) if anchor else None

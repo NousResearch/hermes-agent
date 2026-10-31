@@ -47,7 +47,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | Command | Purpose |
 |---------|---------|
 | `hermes chat` | Interactive or one-shot chat with the agent. |
-| `hermes model` | Interactively choose the default provider and model. |
+| `hermes model` | Interactively choose the default provider and model; `--list` prints a provider's model ids without the picker. |
 | `hermes moa` | Configure named Mixture of Agents presets selectable from the model picker. |
 | `hermes fallback` | Manage fallback providers tried when the primary model errors. |
 | `hermes gateway` | Run or manage the messaging gateway service. |
@@ -270,6 +270,15 @@ Use this when you want to:
 - pick from provider-specific model lists
 - configure a custom/self-hosted endpoint
 - save the new default into config
+
+To see which model ids a provider serves without opening the picker (works in scripts and over SSH without a TTY):
+
+```bash
+hermes model --list                        # configured provider; * marks the saved default
+hermes model --list --provider anthropic   # any provider id
+hermes model --list --json                 # {"schema_version": 1, "provider", "current", "models": [...]}
+hermes model --list --refresh              # re-fetch the live catalog first
+```
 
 :::warning hermes model vs /model — know the difference
 **`hermes model`** (run from your terminal, outside any Hermes session) is the **full provider setup wizard**. It can add new providers, run OAuth flows, prompt for API keys, and configure endpoints.

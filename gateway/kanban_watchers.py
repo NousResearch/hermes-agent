@@ -149,7 +149,7 @@ class GatewayKanbanWatchersMixin:
         """Undo a claimed notification cursor after send failure."""
         self._kanban_sub_op(board, "rewind_notify_cursor", sub, claimed_cursor=claimed_cursor, old_cursor=old_cursor)
 
-    async def _deliver_kanban_artifacts(self, *, adapter, chat_id: str, metadata: dict, event_payload: Optional[dict], task) -> None:
+    async def _deliver_kanban_artifacts(self, *, adapter, chat_id: str, metadata: dict, event_payload: Optional[dict], task, board: Optional[str] = None) -> None:
         """Upload artifact files referenced by a completed kanban task.
 
         Sources, in priority order: ``event_payload['artifacts']``,
@@ -178,6 +178,11 @@ class GatewayKanbanWatchersMixin:
             expanded = os.path.expanduser(path) if path else ""
             if expanded and expanded not in candidates and os.path.isfile(expanded):
                 candidates.append(expanded)
+        if not candidates:
+            return
+
+        from gateway.kanban_watchers_artifacts import confined_artifact_paths
+        candidates = await asyncio.to_thread(confined_artifact_paths, candidates, task, board)
         if not candidates:
             return
 

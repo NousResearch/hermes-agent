@@ -470,6 +470,17 @@ gateway:
     not_found: "Session not found in database."
     current_with_title: "📌 Session: `{session_id}`\nTitle: **{title}**"
     current_no_title: "📌 Session: `{session_id}`\nNo title set. Usage: `/title My Session Name`"
+  project:
+    list_header: "📁 **Projects** (✅ = this session's project):"
+    list_footer: "\nMove this session: `/project <name>`"
+    none: "No projects yet. Create one with `hermes project create <name> <folder>` (CLI) or the desktop sidebar."
+    list_failed: "⚠️ Could not read projects: {error}"
+    not_found: "⚠️ No project named `{name}`. Try `/project` to list them."
+    archived: "⚠️ Project `{name}` is archived — restore it first (`hermes project restore`)."
+    no_folder: "⚠️ Project `{name}` has no folder to move into. Add one with `hermes project add-folder`."
+    bad_path: "⚠️ Project `{name}`'s folder does not exist on this host: `{path}`"
+    move_failed: "⚠️ Could not move the session: {error}"
+    moved: "📁 Session moved to project **{name}** — workspace `{path}`. Tools and desktop grouping follow from the next turn."
   topic:
     not_telegram_dm: "The /topic command is only available in Telegram private chats."
     no_session_db: "Session database not available."

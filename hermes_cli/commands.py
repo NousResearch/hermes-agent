@@ -181,6 +181,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",), desktop="terminal"),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]", argument_mode="mixed"),
+    CommandDef("project", "Show or move this session to a project workspace", "Session",
+               args_hint="[name]", desktop="terminal"),
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),
 
     # Configuration

@@ -17,9 +17,9 @@ function firstLine(text: string): string {
  * one piece with the composer card (no bordered alert-in-a-card). It never
  * disables the composer — slash commands (`/topup`, `/model`, `/login`) stay
  * usable — it only offers recovery: Nous opens Settings → Billing in-app, other
- * providers deep-link out. It is the one surface for the active chat; a wall in a
- * background chat also raises a sticky toast, and the turn's card only speaks when
- * this banner is not up for that chat.
+ * providers deep-link out. The failed turn's card also names the wall (it can't
+ * know whether this banner is on screen: a collapsed drawer, a popped-out
+ * composer); a wall in a background chat also raises a sticky toast.
  */
 export function BillingBanner({ sessionId }: { sessionId: null | string }) {
   const active = useStore($billingBlock)

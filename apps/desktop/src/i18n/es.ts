@@ -6,6 +6,7 @@ import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
 import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
+import { esCronControl } from './es_cron_control'
 import { esErrorCodes } from './es_error_codes'
 import { esErrorLayers } from './es_error_layers'
 import { esFirstRun } from './es_first_run'
@@ -3358,6 +3359,7 @@ export const esOverrides = {
     declined: 'Cambio de modelo cancelado: rechazaste el aviso del nivel con entrenamiento de datos.'
   },
   cron: {
+    control: esCronControl,
     close: 'Cerrar cron',
     title: 'Tareas programadas',
     count: count => `${count} ${count === 1 ? 'tarea' : 'tareas'}`,
@@ -4928,7 +4930,7 @@ export const esOverrides = {
         truncated: {
           title: 'La respuesta quedó incompleta',
           body: (_provider: string, model: string) =>
-            `${model || 'El modelo'} alcanzó su límite de salida antes de terminar, así que no se ejecutó nada. Continúa para retomarlo donde se detuvo.`
+            `${model || 'El modelo'} se detuvo antes de terminar su respuesta. Continúa para retomarlo donde se detuvo.`
         },
         invalid_response: {
           title: 'No se pudo leer la respuesta',

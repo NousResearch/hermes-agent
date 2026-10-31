@@ -6,6 +6,7 @@ import { introZh } from './intro-zh'
 import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
+import { zhCronControl } from './zh_cron_control'
 import { zhErrorCodes } from './zh_error_codes'
 import { zhErrorLayers } from './zh_error_layers'
 import { zhFirstRun } from './zh_first_run'
@@ -2838,6 +2839,7 @@ export const zhOverrides = {
   },
 
   cron: {
+    control: zhCronControl,
     close: '关闭定时任务',
     title: '定时任务',
     count: count => `${count} 个任务`,

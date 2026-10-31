@@ -29,13 +29,24 @@ export function isFallbackSwitchStatus(kind: string | undefined, text: string): 
   return /model fallback|provider fallback|switched to fallback|switching to fallback/i.test(text)
 }
 
-/** The toast for a gateway `error` in a session that is NOT on screen (its card can't be seen).
- *  The stable id collapses the same error from multiple background threads into one toast. For
- *  a recovered code the message is the card's glossed sentence with the raw gateway text as the
+/** The toast for a gateway `error`, raised only when the card can't fully say it: a session off
+ *  screen, or a bare error (no recovered code) whose card copy is generic — the server's own
+ *  sentence is often the fix (e.g. which process holds a lock). On screen, a recovered code's
+ *  card already explains it (one event, one surface). The stable id collapses the same error
+ *  from multiple threads into one toast. For a recovered code the message is the card's glossed sentence with the raw gateway text as the
  *  dimmed detail; otherwise the server copy is the message and there is no detail to repeat.
  *  No Retry action: assistant-ui's reload is per-thread, and for the codes recovered here a
  *  retry would fail identically anyway. */
-function toastBackgroundGatewayError(errorMessage: string, surface: ErrorSurface | null, toastMessage: string): void {
+function toastGatewayError(
+  errorMessage: string,
+  surface: ErrorSurface | null,
+  toastMessage: string,
+  onScreen: boolean
+): void {
+  if (onScreen && surface) {
+    return
+  }
+
   if (surface?.code === 'disk_full') {
     notifyError(new Error(errorMessage), translateNow('notifications.errors.diskFull'))
 
@@ -353,10 +364,8 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
 
     if (looksLikeProviderSetup) {
       requestDesktopOnboarding(errorMessage)
-    } else if (!isActiveEvent) {
-      // One event, one surface: the inline card already explains this failure
-      // where the user is acting; the toast is only for a session off screen.
-      toastBackgroundGatewayError(errorMessage, surface, toastMessage)
+    } else {
+      toastGatewayError(errorMessage, surface, toastMessage, isActiveEvent)
     }
 
     if (sessionId) {

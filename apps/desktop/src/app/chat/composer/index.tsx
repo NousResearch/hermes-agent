@@ -192,7 +192,7 @@ export function ChatBar({
   const awaitingInput = useStore(scope.$awaitingInput)
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
   const activeQueueSessionKey = useComposerQueueScopeKey(queueSessionKey, sessionId, freshDraftKey)
-  const statusDrawer = useStatusDrawer(activeQueueSessionKey, sessionId)
+  const statusDrawer = useStatusDrawer(activeQueueSessionKey)
   const { codingDrawerId, collapsed: statusDrawerCollapsed, statusDrawerId, toggle: toggleStatusDrawer } = statusDrawer
 
   const requestBusyConfig = useCallback<GatewayRequester>(

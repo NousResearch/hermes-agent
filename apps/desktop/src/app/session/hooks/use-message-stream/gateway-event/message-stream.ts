@@ -39,7 +39,7 @@ function firstBillingLine(text: string): string {
  * composer. A wall in a session that is NOT on screen also raises one sticky,
  * billing-specific toast — never the generic "Hermes error" — with a smart CTA
  * (Nous → in-app Settings → Billing, other providers → their billing page); on
- * screen the banner alone carries it (one event, one surface).
+ * screen the banner and the turn's card carry it, so no toast repeats them.
  */
 function surfaceBillingBlock(sessionId: string, raw: unknown, toast: boolean): void {
   if (!raw || typeof raw !== 'object') {

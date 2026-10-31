@@ -63,7 +63,8 @@ export class FakeWebSocket {
       return
     }
 
-    if (frame.method !== 'ping') {
+    // `ping` for tests calling it directly; the liveness probe sends `gateway.ping`.
+    if (frame.method !== 'ping' && frame.method !== 'gateway.ping') {
       return
     }
 

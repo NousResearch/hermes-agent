@@ -13,12 +13,16 @@ import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useContext, useEffect, useId, useMemo, useState } from 'react'
 import { useInRouterContext, useNavigate } from 'react-router'
 
-import { requestModelMenuToggle } from '@/app/chat/composer/focus'
+import {
+  type ComposerTarget,
+  requestComposerInsert,
+  requestComposerSubmit,
+  requestModelMenuToggle
+} from '@/app/chat/composer/focus'
 import { useComposerScope } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
 import { SETTINGS_ROUTE } from '@/app/routes'
 import { useBillingApi } from '@/app/settings/billing/api'
-import errorCardCloseIcon from '@/assets/error-card/close.svg'
 import { dispatchedTo } from '@/components/assistant-ui/thread/agent-delivery'
 import { ChangedFilesCard } from '@/components/assistant-ui/thread/changed-files-card'
 import {
@@ -45,13 +49,12 @@ import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
 import type { Translations } from '@/i18n/types'
-import { writeClipboardText } from '@/lib/clipboard'
 import {
   ERROR_SETUP_GUIDE_URLS,
   type ErrorActionId,
   errorCardActions,
   errorCardSeverity,
-  errorRecoveryPlan,
+  errorCardShowsDiagnostics,
   type ErrorSurface,
   formatCountdown,
   formatErrorDiagnostics,
@@ -71,7 +74,8 @@ import {
   MoreHorizontal,
   RefreshCwIcon,
   SmilePlusIcon,
-  VolumeXIcon
+  VolumeXIcon,
+  XIcon
 } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { markAssistantIdSpoken } from '@/lib/spoken-reply'
@@ -79,7 +83,7 @@ import { $touchPointer } from '@/lib/touch-interaction'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
-import { $billingBlock, requestBillingSettings } from '@/store/billing-block'
+import { $billingBlock, requestBillingSettings, runBillingRecovery } from '@/store/billing-block'
 import { DESKTOP_BUTTON_ACTIONS, recordAction } from '@/store/desktop-metrics'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { notifyError } from '@/store/notifications'
@@ -952,25 +956,10 @@ const ErrorCard: FC<{ onDismiss?: () => void }> = ({ onDismiss }) => {
   const errorText = useErrorText()
   const [detailsOpen, setDetailsOpen] = useState(false)
   const detailsId = useId()
-  const runtimeId = useStore(useSessionView().$runtimeId)
-  const billingBlock = useStore($billingBlock)
-
-  // Out of credits: the banner above the composer owns it while it is up for this chat.
-  // Without it (no descriptor, dismissed, another chat's wall) the card says it. A plan's
-  // usage limit always gets the card: its buttons are the switch / credits actions.
-  if (
-    surface?.layer === 'billing' &&
-    surface.code !== 'usage_window' &&
-    billingBlock &&
-    billingBlock.sessionId === runtimeId
-  ) {
-    return null
-  }
-
   const { body, title } = errorCardText(copy, surface)
   const severity = errorCardSeverity(surface)
   // A plan limit is not a fault: no diagnostics to bury the actions that fix it.
-  const diagnostics = errorRecoveryPlan(surface).diagnostics
+  const diagnostics = errorCardShowsDiagnostics(surface)
 
   return (
     <ErrorPrimitive.Root className="aui-error-card" data-severity={severity} data-slot="aui_error-card" role="alert">
@@ -1000,52 +989,10 @@ const ErrorCard: FC<{ onDismiss?: () => void }> = ({ onDismiss }) => {
       )}
       {severity === 'degraded' && onDismiss && (
         <button aria-label={copy.dismissError} className="aui-error-card-close" onClick={onDismiss} type="button">
-          <img alt="" height={16} src={errorCardCloseIcon} width={16} />
+          <XIcon aria-hidden className="size-4" />
         </button>
       )}
     </ErrorPrimitive.Root>
-  )
-}
-
-// Nous DS CopyButton glyph: pixelarticons "copy-sharp" at rest, "check" for the
-// 2s feedback window, 70% opacity at rest and full under the cursor.
-const ErrorCopyGlyph: FC<{ label: string; text: string }> = ({ label, text }) => {
-  const { t } = useI18n()
-  const [copied, setCopied] = useState(false)
-
-  useEffect(() => {
-    if (!copied) {
-      return
-    }
-
-    const timer = window.setTimeout(() => setCopied(false), 2000)
-
-    return () => window.clearTimeout(timer)
-  }, [copied])
-
-  const name = copied ? t.common.copied : label
-
-  return (
-    <button
-      aria-label={name}
-      className="aui-error-copy-glyph"
-      data-copied={copied || undefined}
-      onClick={() =>
-        void writeClipboardText(text).then(
-          () => setCopied(true),
-          () => undefined
-        )
-      }
-      type="button"
-    >
-      <svg aria-hidden fill="currentColor" height="16" viewBox="0 0 24 24" width="16">
-        {copied ? (
-          <path d="M10 18H8v-2h2v2Zm-2-2H6v-2h2v2Zm4-2v2h-2v-2h2Zm-6 0H4v-2h2v2Zm8 0h-2v-2h2v2Zm2-2h-2v-2h2v2Zm2-2h-2V8h2v2Zm2-2h-2V6h2v2Z" />
-        ) : (
-          <path d="M6 6h16v2H6zM2 2h16v2H2zm4 6h2v12H6zM2 4h2v12H2zm4 16h16v2H6zM20 8h2v12h-2zm-4-4h2v2h-2zM2 16h4v2H2z" />
-        )}
-      </svg>
-    </button>
   )
 }
 
@@ -1079,7 +1026,7 @@ const ErrorDetailsBlock: FC<{ errorText: string; hidden: boolean; id: string; su
           <code className="aui-error-details-raw" data-selectable-text="true">
             {errorText}
           </code>
-          <ErrorCopyGlyph label={copy.errorCopyRaw} text={errorText} />
+          <CopyButton appearance="icon" className="aui-error-copy-glyph" label={copy.errorCopyRaw} text={errorText} />
         </div>
       )}
       <div className="aui-error-details-links">
@@ -1124,7 +1071,6 @@ const ErrorCardActionRow: FC<{ surface?: ErrorSurface }> = ({ surface }) => {
 }
 
 interface ErrorActionContext {
-  aui: ReturnType<typeof useAui>
   className: string
   copy: Translations['assistant']['thread']
   gatewayProfile: string | null | undefined
@@ -1132,6 +1078,15 @@ interface ErrorActionContext {
   link: boolean
   ownerProfile: string | null | undefined
   surface?: ErrorSurface
+  target: ComposerTarget
+}
+
+// Continue a cut-off reply: send "continue" through this chat's composer as if typed. When no
+// composer can take a submit right now, leave the word in the input for the user to send.
+function continueCutOffReply(target: ComposerTarget) {
+  if (!requestComposerSubmit('continue', { target })) {
+    requestComposerInsert('continue', { target })
+  }
 }
 
 const textButton = (className: string, onClick: () => void, label: ReactNode) => (
@@ -1139,6 +1094,38 @@ const textButton = (className: string, onClick: () => void, label: ReactNode) =>
     {label}
   </button>
 )
+
+// Out of credits runs the same recovery as the banner and toast: the failing provider's own
+// billing page (Nous → Settings → Billing). A plan limit is Nous billing. Without this chat's
+// billing descriptor Hermes doesn't know where a third-party provider bills, so no button.
+const sameProvider = (a?: string | null, b?: string | null) =>
+  Boolean(a && b && a.trim().toLowerCase() === b.trim().toLowerCase())
+
+const OpenBillingAction: FC<{ className: string; label: string; surface?: ErrorSurface }> = ({
+  className,
+  label,
+  surface
+}) => {
+  const runtimeId = useStore(useSessionView().$runtimeId)
+  const wall = useStore($billingBlock)
+
+  // This chat's wall, and only for the provider this card failed on: a later wall from another
+  // provider in the same chat must not retarget an older card.
+  const block =
+    surface?.code !== 'usage_window' &&
+    wall?.sessionId === runtimeId &&
+    sameProvider(wall.block.provider, surface?.provider)
+      ? wall.block
+      : null
+
+  const nousBilling = surface?.code === 'usage_window' || (surface?.provider || 'nous').toLowerCase() === 'nous'
+
+  if (!block && !nousBilling) {
+    return null
+  }
+
+  return textButton(className, () => (block ? runBillingRecovery(block) : requestBillingSettings()), label)
+}
 
 // One renderer per action (Error System Overhaul action table → the app's existing handlers).
 const ERROR_ACTION_RENDERERS: Record<ErrorActionId, (ctx: ErrorActionContext) => ReactNode> = {
@@ -1148,7 +1135,9 @@ const ERROR_ACTION_RENDERERS: Record<ErrorActionId, (ctx: ErrorActionContext) =>
     return suggestion ? <SwitchToModelAction className={className} suggestion={suggestion} /> : null
   },
   use_credits: ({ className }) => <UseCreditsAction className={className} />,
-  open_billing: ({ className, copy }) => textButton(className, requestBillingSettings, copy.errorOpenBillingSettings),
+  open_billing: ({ className, copy, surface }) => (
+    <OpenBillingAction className={className} label={copy.errorOpenBillingSettings} surface={surface} />
+  ),
   retry: ({ className, copy }) => (
     <ActionBarPrimitive.Reload asChild>
       <button
@@ -1208,12 +1197,8 @@ const ERROR_ACTION_RENDERERS: Record<ErrorActionId, (ctx: ErrorActionContext) =>
           copy.errorOpenHermesFolder
         )
       : null,
-  continue: ({ aui, className, copy }) =>
-    textButton(
-      className,
-      () => aui.thread().append({ content: [{ text: 'continue', type: 'text' }], role: 'user' }),
-      copy.errorContinue
-    ),
+  continue: ({ className, copy, target }) =>
+    textButton(className, () => continueCutOffReply(target), copy.errorContinue),
   open_provider_settings: ({ className, copy, surface }) => {
     const url = providerSettingsUrl(surface)
 
@@ -1246,13 +1231,12 @@ const ErrorActionControl: FC<{
   variant: 'link' | 'primary'
 }> = ({ action, inRouter, surface, variant }) => {
   const { t } = useI18n()
-  const aui = useAui()
+  const { target } = useComposerScope()
   const gatewayProfile = useStore($activeGatewayProfile)
   const ownerProfile = useOwnerProfile()
   const link = variant === 'link'
 
   return ERROR_ACTION_RENDERERS[action]({
-    aui,
     // Nous DS Button (portal /ds/components/button): the one action is `secondary`,
     // the optional second one is `ghost`.
     className: link ? 'aui-error-btn aui-error-btn-ghost' : 'aui-error-btn aui-error-btn-secondary',
@@ -1261,7 +1245,8 @@ const ErrorActionControl: FC<{
     inRouter,
     link,
     ownerProfile,
-    surface
+    surface,
+    target
   })
 }
 

@@ -21,6 +21,7 @@ Usage:
 Exit status:
     0 — no Windows footguns found (or all matches suppressed)
     1 — at least one unsuppressed match
+    2 — a scan target cannot be walked (e.g. a bare filesystem root)
 
 Encoding policy: READS pass encoding='utf-8-sig' (Windows tooling —
 PowerShell Set-Content/Out-File, some editors — BOM-prefixes files it
@@ -535,8 +536,34 @@ def should_scan_file(path: Path) -> bool:
     return False
 
 
+class FilesystemRootError(ValueError):
+    """A scan target was a bare filesystem anchor (``/``, ``C:\\``).
+
+    ``iter_files()`` walks directories with ``os.walk``, so an anchor means
+    walking an entire drive: minutes to hours of I/O, and never what the
+    caller meant by naming a path.
+    """
+
+
+def is_filesystem_root(path: Path) -> bool:
+    """True when ``path`` is a bare anchor naming no directory inside one.
+
+    Compares against the path's own anchor so it holds on POSIX (``/``) and
+    Windows (``C:\\``, ``\\\\server\\share``) alike. A drive-relative path such
+    as ``C:foo`` keeps its anchor but is not the anchor itself, so it is not
+    a root.
+    """
+    return bool(path.anchor) and path == Path(path.anchor)
+
+
 def iter_files(paths: Iterable[Path]) -> Iterable[Path]:
     for p in paths:
+        if is_filesystem_root(p):
+            raise FilesystemRootError(
+                f"{p} is a filesystem root, not a directory inside one — "
+                f"scanning it would walk the whole filesystem. "
+                f"Pass a file or a subdirectory instead."
+            )
         if p.is_file():
             if should_scan_file(p):
                 yield p
@@ -934,17 +961,23 @@ def main(argv: list[str]) -> int:
 
     total_matches = 0
     files_scanned = 0
-    for path in iter_files(roots):
-        files_scanned += 1
-        matches = scan_file(path, FOOTGUNS)
-        for lineno, line, fg in matches:
-            rel = path.relative_to(REPO_ROOT).as_posix()
-            print(f"{rel}:{lineno}: [{fg.name}]")
-            print(f"    {line.strip()}")
-            print(f"    — {fg.message}")
-            print(f"    Fix: {fg.fix.splitlines()[0]}")
-            print()
-            total_matches += 1
+    try:
+        for path in iter_files(roots):
+            files_scanned += 1
+            matches = scan_file(path, FOOTGUNS)
+            for lineno, line, fg in matches:
+                rel = path.relative_to(REPO_ROOT).as_posix()
+                print(f"{rel}:{lineno}: [{fg.name}]")
+                print(f"    {line.strip()}")
+                print(f"    — {fg.message}")
+                print(f"    Fix: {fg.fix.splitlines()[0]}")
+                print()
+                total_matches += 1
+    except FilesystemRootError as exc:
+        # Refuse loudly instead of starting an os.walk that covers a whole
+        # drive and never finishes.
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
 
     if total_matches:
         print(

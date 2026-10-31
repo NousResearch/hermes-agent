@@ -199,7 +199,7 @@ fallback_providers:
 | CLI sessions (interactive and `hermes -z` one-shot) | ✔ (at startup when the primary's credentials/quota fail, mid-session, and a chain added or edited while a chat is open applies from its next turn) |
 | Messaging gateway (Telegram, Discord, etc.) | ✔ |
 | Desktop app / TUI chats | ✔ (a chain added or edited while a chat is open applies from its next turn) |
-| Subagent delegation | ✔ (`delegation.fallback_providers` when set; otherwise only unpinned children inherit the parent chain; `[]` disables) |
+| Subagent delegation | ✔ (`delegation.fallback_providers` when set; otherwise only unpinned children inherit the parent chain; `[]` disables. A route's chain is also tried when its primary refuses at credential resolution with an auth, quota or transient network error. A misconfigured primary (an unknown provider name, an API-key provider without a key, a provider with no endpoint, or an external-process CLI that is not installed) still refuses the task. Any other credential error, such as an expired login whose refresh failed or a provider that is not signed in yet, walks the chain as the main session does.) |
 | Cron jobs | ✔ (unpinned jobs inherit the configured chain; a job with its own provider/model/base_url never falls back to it) |
 | Auxiliary tasks on `provider: auto` | ✔ (try per-task fallback, then the main fallback chain before built-in aux discovery) |
 
@@ -457,5 +457,5 @@ To keep fallback for a job, leave it unpinned and choose its model with `cron.mo
 | Approval classification | Layered (see above) | `auxiliary.approval` |
 | Title generation | Layered (see above) | `auxiliary.title_generation` |
 | Triage specifier | Layered (see above) | `auxiliary.triage_specifier` |
-| Delegation | Uses `delegation.fallback_providers` when declared; otherwise only unpinned children inherit the parent chain | `delegation.provider` / `delegation.model` / `delegation.fallback_providers` |
+| Delegation | Uses `delegation.fallback_providers` when declared; otherwise only unpinned children inherit the parent chain. A route's chain is also tried when its primary refuses at credential resolution with an auth, quota or transient network error. A misconfigured primary (an unknown provider name, an API-key provider without a key, no endpoint, a CLI that is not installed) still refuses | `delegation.provider` / `delegation.model` / `delegation.fallback_providers` |
 | Cron jobs | Unpinned jobs inherit the configured `fallback_providers` chain; a job with its own `provider` / `model` / `base_url` never falls back to it | Per-job `provider` / `model`, or `cron.model` / `cron.model_provider` |

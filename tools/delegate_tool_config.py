@@ -420,12 +420,14 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
         _merge_request_overrides(request_overrides, explicit_request_overrides),
     )
 
-def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
-    """``delegation.provider`` branch: full bundle via the runtime provider system."""
+def _runtime_provider_credentials(v: dict, explicit_request_overrides, explicit_runtime: Optional[dict] = None) -> dict:
+    """``delegation.provider`` branch: full bundle via the runtime provider system. ``explicit_runtime`` carries
+    a fallback entry's ``explicit_base_url`` / ``explicit_api_key`` for ``resolve_runtime_provider``."""
     configured_provider = v["provider"]
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        runtime = resolve_runtime_provider(requested=configured_provider, target_model=v["model"])
+        runtime = resolve_runtime_provider(requested=configured_provider, target_model=v["model"],
+                                           **(explicit_runtime or {}))
     except Exception as exc:
         raise ValueError(
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "

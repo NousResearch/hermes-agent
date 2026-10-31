@@ -187,23 +187,37 @@ def _refuse_under_worker_snapshot(home: Path) -> None:
             f"cannot run as the profile at {home}. Delegate without a profile.")
 
 
+def _profile_runtime(home: Path, request: dict[str, Any]) -> tuple[dict[str, Any], Any]:
+    """``(runtime, model)`` for one ``resolve_runtime_provider`` request inside the profile's scope."""
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    try:
+        rt = resolve_runtime_provider(**request)
+    except Exception as exc:
+        raise DelegationRouteError(f"Profile at {home} has no usable model provider: {exc}") from exc
+    return rt, request["target_model"] or rt.get("model") or None
+
+
 def _profile_route(home: Path) -> TaskRoute:
     """The profile's own primary route, resolved inside its scope (its config.yaml + secrets). The
-    child never borrows the launching profile's key, pool, fallback chain or reasoning level."""
+    child never borrows the launching profile's key, pool, fallback chain or reasoning level. A primary that
+    refuses on an auth or quota error walks the profile's own ``fallback_providers``."""
     from hermes_cli.config import load_config_readonly
-    from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_constants import resolve_reasoning_config
-    from tools.delegate_tool_config import ResolvedReasoning, _credential_bundle, _require_pinned_command
+    from tools.delegate_tool_config import (
+        ResolvedReasoning, _credential_bundle, _require_pinned_command, _resolve_child_fallback_chain,
+    )
+    from tools.delegate_tool_resolve_fallback import entry_runtime_request, resolve_with_fallback
     _refuse_under_worker_snapshot(home)
     with delegated_profile_scope(home):
         cfg = load_config_readonly() or {}
         request = _profile_model_request(cfg)
-        try:
-            rt = resolve_runtime_provider(**request)
-        except Exception as exc:
-            raise DelegationRouteError(f"Profile at {home} has no usable model provider: {exc}") from exc
-        model = request["target_model"] or rt.get("model") or None
         fallback = cfg.get("fallback_providers")
+        (rt, model), remaining = resolve_with_fallback(
+            lambda: _profile_runtime(home, request),
+            lambda: _resolve_child_fallback_chain(None, {"fallback_providers": fallback}, pinned=True),
+            lambda entry: _profile_runtime(home, entry_runtime_request(entry)))
+    if remaining is not None:
+        fallback = remaining
     # A named custom provider resolves to provider "custom": keep its name as the identity (as delegation.provider
     # does) so two named providers sharing one URL never lease each other's pool.
     requested = str(rt.get("requested_provider") or "").strip()
@@ -233,8 +247,8 @@ def _with_inherited_fallback(route: dict[str, Any], config: Mapping[str, Any]) -
 def _resolve_route(route: dict[str, Any], parent_agent: Any, backend: str) -> TaskRoute:
     if route.get("profile"):
         return replace(_profile_route(_profile_home(route["profile"])), backend=backend)
-    from tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam
-    creds = _resolve_delegation_credentials(route, parent_agent)
+    from tools.delegate_tool_resolve_fallback import config_route_credentials
+    creds, route = config_route_credentials(route, parent_agent)
     if route.get("service_tier") not in (None, ""):
         from tools.delegate_tool_tuning import task_service_tier
         creds = {**creds, **task_service_tier(str(route["service_tier"]), creds, parent_agent)}
@@ -335,5 +349,5 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
 def route_for_config(routing_cfg: dict[str, Any], parent_agent: Any) -> TaskRoute:
     """The route an internal caller's explicit config block describes (``/review`` ->
     ``auxiliary.review``); bypasses the provider, as those callers own their route."""
-    from tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam
-    return TaskRoute(_resolve_delegation_credentials(routing_cfg, parent_agent), routing_cfg)
+    from tools.delegate_tool_resolve_fallback import config_route_credentials
+    return TaskRoute(*config_route_credentials(routing_cfg, parent_agent))

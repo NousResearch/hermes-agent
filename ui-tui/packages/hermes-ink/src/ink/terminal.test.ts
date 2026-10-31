@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { isSynchronizedOutputSupported, needsAltScreenResizeScrollbackClear, writeDiffToTerminal } from './terminal.js'
+import {
+  isSynchronizedOutputSupported,
+  isSyncOutputSupported,
+  needsAltScreenResizeScrollbackClear,
+  setSynchronizedOutputSupported,
+  writeDiffToTerminal
+} from './terminal.js'
 import { BSU, ESU } from './termio/dec.js'
 
 describe('terminal resize quirks', () => {
@@ -35,6 +41,67 @@ describe('synchronized output detection', () => {
 
   it('reports no support for an unknown terminal', () => {
     expect(isSynchronizedOutputSupported({ TERM: 'xterm-256color' })).toBe(false)
+  })
+})
+
+describe('DECRQM 2026 probe upgrades the env-based guess', () => {
+  const withEnv = (vars: Record<string, string | undefined>, run: () => void) => {
+    const saved = { TMUX: process.env.TMUX, ZELLIJ: process.env.ZELLIJ }
+
+    for (const [k, v] of Object.entries(vars)) {
+      if (v === undefined) {
+        delete process.env[k]
+      } else {
+        process.env[k] = v
+      }
+    }
+
+    try {
+      run()
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) {
+          delete process.env[k]
+        } else {
+          process.env[k] = v
+        }
+      }
+    }
+  }
+
+  it('turns sync output on when the terminal answers DECRQM (the SSH case)', () => {
+    // sshd forwards TERM but not TERM_PROGRAM, so the env guess is false on a
+    // perfectly capable remote terminal. The probe reply is the real answer.
+    withEnv({ TMUX: undefined, ZELLIJ: undefined }, () => {
+      setSynchronizedOutputSupported(false)
+      expect(isSyncOutputSupported()).toBe(false)
+
+      setSynchronizedOutputSupported(true)
+      expect(isSyncOutputSupported()).toBe(true)
+    })
+  })
+
+  it('never upgrades inside tmux, which proxies the query to the outer terminal', () => {
+    withEnv({ TMUX: '/tmp/tmux-1/default,1,0', ZELLIJ: undefined }, () => {
+      setSynchronizedOutputSupported(false)
+      setSynchronizedOutputSupported(true)
+      expect(isSyncOutputSupported()).toBe(false)
+    })
+  })
+
+  it('never upgrades inside Zellij', () => {
+    withEnv({ TMUX: undefined, ZELLIJ: '0' }, () => {
+      setSynchronizedOutputSupported(false)
+      setSynchronizedOutputSupported(true)
+      expect(isSyncOutputSupported()).toBe(false)
+    })
+  })
+
+  it('always honours a downgrade, multiplexer or not', () => {
+    withEnv({ TMUX: '/tmp/tmux-1/default,1,0', ZELLIJ: undefined }, () => {
+      setSynchronizedOutputSupported(false)
+      expect(isSyncOutputSupported()).toBe(false)
+    })
   })
 })
 

@@ -32,8 +32,11 @@ EXECUTIONS_FILE: Optional[Path] = None
 INCIDENT_STATES = ("detected", "alerted", "resolved", "closed")
 _FAILURE_TYPE_ORDER = (
     ("rate_limit", (r"\b429\b", "rate limit", "usage limit", "quota")),
-    ("timeout", ("timeout", "timed out")),
-    ("auth", (r"\b401\b", "unauthorized", "authentication", "auth")),
+    # Leading word boundary so identifiers that merely end in the keyword (``snapshot_timeouts=0``,
+    # ``resource_authority``) don't misclassify an unrelated script failure, while an optional
+    # ``_suffix`` keeps the field spellings providers actually emit (``auth_token``, ``timeout_ms``).
+    ("timeout", (r"\btimeouts?(?:_\w+)?\b", "timed out")),
+    ("auth", (r"\b401\b", "unauthorized", "authentication", r"\bauth(?:_\w+)?\b")),
     ("delivery", ("delivery", "deliver", "delivering")),
     ("config", ("config", "configuration", "validation")),
     ("script", ("script", "no_agent")),

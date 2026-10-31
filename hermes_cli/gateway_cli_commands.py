@@ -40,14 +40,58 @@ def _reload(cli, connection, cmd):
 
 def _handoff(cli, connection, cmd):
     from cli import _cprint
-    from hermes_cli.gateway_chat_commands import refusal
-    _cprint(f"  {refusal('handoff')}")
-    return True
-
+    import time
+    platform_name = cmd.partition(" ")[2].strip().lower()
+    if not platform_name:
+        _cprint("  usage: /handoff <platform>")
+        return True
+    try:
+        result = connection.call("handoff.request", session_id=cli.session_id, platform=platform_name) or {}
+    except GatewayClientError as exc:
+        _cprint(f"  /handoff: {exc}")
+        return True
+    if not result.get("queued"):
+        _cprint(f"  /handoff: {result}")
+        return True
+    _cprint(f"  Handoff queued to {platform_name} ({result.get('home_name', '')}); waiting...")
+    pending_deadline = time.time() + 60.0
+    running_deadline = None
+    next_heartbeat = None
+    while True:
+        try:
+            row = connection.call("handoff.state", session_id=cli.session_id) or {}
+        except GatewayClientError as exc:
+            _cprint(f"  /handoff: {exc}")
+            return True
+        state = row.get("state") or ""
+        if state == "completed":
+            _cprint("  Handoff completed.")
+            return False
+        if state == "failed":
+            _cprint(f"  Handoff failed: {row.get('error')}")
+            return True
+        if state == "running":
+            if running_deadline is None:
+                running_deadline = time.time() + 900.0
+                next_heartbeat = time.time() + 30.0
+            if time.time() >= running_deadline:
+                _cprint("  Handoff timed out; leaving row for the watcher.")
+                return True
+            if next_heartbeat and time.time() >= next_heartbeat:
+                _cprint("  ... still running ...")
+                next_heartbeat = time.time() + 30.0
+        else:
+            if time.time() >= pending_deadline:
+                try:
+                    connection.call("handoff.fail", session_id=cli.session_id, error="client poll timeout")
+                except GatewayClientError:
+                    pass
+                _cprint("  Handoff not claimed in time.")
+                return True
+        time.sleep(0.5)
 
 _ROUTES = {"diff": _diff, "reload": _reload, "handoff": _handoff}
-# Named refusals: nothing runs, so the gateway is not told (no ``pre_command``).
-REFUSED = frozenset({"handoff"})
+REFUSED = frozenset()
 
 
 def run(cli, canonical, cmd):

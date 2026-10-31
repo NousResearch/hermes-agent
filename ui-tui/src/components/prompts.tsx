@@ -7,6 +7,7 @@ import { clarifyAnswerText, clarifyRevisitState } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 
+import { MdInline } from './markdown.js'
 import { chipRowProps } from './overlayPrimitives.js'
 import { TextInput } from './textInput.js'
 
@@ -329,11 +330,13 @@ export function ClarifyPrompt({ cols = 80, onCancel, onQuestionAnswer, req, t }:
 
         return (
           <Box flexDirection="column" key={q.qid}>
-            <Text>
-              <Text bold={isActive} color={isActive ? t.color.text : t.color.muted}>
-                {marker} {q.question}
+            {/* Models write questions and choices in Markdown: render **bold**, `code` and links, not literal markers. */}
+            {q.question.split('\n').map((line, li) => (
+              <Text bold={isActive} color={isActive ? t.color.text : t.color.muted} key={li}>
+                {li === 0 ? `${marker} ` : '  '}
+                <MdInline t={t} text={line} />
               </Text>
-            </Text>
+            ))}
 
             {answer !== undefined ? (
               // The locked answer on its own line, in the ok color, so the
@@ -364,7 +367,7 @@ export function ClarifyPrompt({ cols = 80, onCancel, onQuestionAnswer, req, t }:
                       <Text color={t.color.muted} {...chipRowProps(t, sel === ci)}>
                         {sel === ci ? '▸ ' : '  '}
                         {multi && ci < activeChoices.length ? (picked.includes(c) ? '[x] ' : '[ ] ') : ''}
-                        {ci + 1}. {c}
+                        {ci + 1}. {ci < activeChoices.length ? <MdInline t={t} text={c} /> : c}
                       </Text>
                     </Text>
                   ))}

@@ -19,12 +19,20 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextvars
+import logging
 import threading
+import time
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 # A worker that cannot start is a real fault (OS thread limit); bound the boot wait so it surfaces as
 # a slow first tick instead of hanging the warm-up.
 _WARM_TIMEOUT_S = 30.0
+
+# A scope walk still running after this long gets one WARNING (see :func:`resolve_off_loop`). Read at
+# call time, so a test or an operator can lower it on the module.
+_STALL_WARN_S = 30.0
 
 _pool: concurrent.futures.Executor | None = None
 _pool_lock = threading.Lock()
@@ -60,10 +68,27 @@ async def resolve_off_loop(func: Callable[..., Any], /, *args: Any) -> Any:
 
     The executor hop carries the caller's context, like ``_run_in_executor_with_context``, so a
     contextvar a caller bound before the hop still reads the same on the worker.
+
+    Deliberately unbounded. There is one worker, so ticks serialize behind a slow walk, and a walk
+    that wedges (a hung FUSE mount under the multiplex homes walk) blocks the awaiting watcher
+    coroutine for as long as it lasts. That costs watcher latency only, never loop time: the loop
+    keeps serving probes. A timeout could not cancel the walk anyway (a running thread cannot be
+    cancelled), so it would only orphan the work and let the next tick queue behind it unseen.
+    Instead a walk still running after ``_STALL_WARN_S`` logs one WARNING and is awaited as before.
     """
     ctx = contextvars.copy_context()
 
     def _run() -> Any:
         return ctx.run(func, *args)
 
-    return await asyncio.get_running_loop().run_in_executor(_scope_pool(), _run)
+    loop = asyncio.get_running_loop()
+    started = time.monotonic()
+    name = getattr(func, "__qualname__", repr(func))
+    stall_warning = loop.call_later(
+        _STALL_WARN_S, lambda: logger.warning(
+            "Handoff scope walk %s still running after %.1fs on the scope worker; later watcher "
+            "ticks queue behind it (still awaiting, not cancelled)", name, time.monotonic() - started))
+    try:
+        return await loop.run_in_executor(_scope_pool(), _run)
+    finally:
+        stall_warning.cancel()

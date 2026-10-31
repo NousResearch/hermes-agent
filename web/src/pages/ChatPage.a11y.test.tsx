@@ -16,7 +16,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  *     labelled region (`role="region"` + non-empty `aria-label`);
  *   - the single registered custom key handler lets Tab/Shift-Tab escape the
  *     terminal (WCAG 2.1.2 No Keyboard Trap) while passing ordinary keys and
- *     non-keydown events through to the terminal.
+ *     non-keydown events through to the terminal;
+ *   - text committed as `insertText` still reaches the PTY while that mode is
+ *     on (#145296) — the mode costs xterm's insertText handling, not the
+ *     user's typing.
  */
 
 class FakeFitAddon {
@@ -45,6 +48,7 @@ class FakeTerminal {
     registerOscHandler: vi.fn(),
   };
   unicode = { activeVersion: "" };
+  textarea: HTMLTextAreaElement | null = null;
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
@@ -92,7 +96,11 @@ class FakeTerminal {
 
   scrollToBottom() {}
 
-  open() {}
+  open() {
+    // Real xterm creates the hidden textarea here; the input path under test
+    // listens on it.
+    this.textarea = document.createElement("textarea");
+  }
 
   paste() {}
 
@@ -281,6 +289,43 @@ describe("ChatPage composer screen-reader accessibility (#36784)", () => {
     // The constructor option, not a post-hoc DOM patch: xterm only creates
     // the offscreen textarea screen readers need when this is true.
     expect(FakeTerminal.instances[0].options.screenReaderMode).toBe(true);
+  });
+
+  it("forwards soft-keyboard insertText to the PTY while screenReaderMode stays on", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    await act(async () => socket.onopen?.());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    socket.send.mockClear();
+
+    const terminal = FakeTerminal.instances[0];
+    // The accessibility contract from #36784 must survive: the fix reads the
+    // textarea instead of disabling the mode.
+    expect(terminal.options.screenReaderMode).toBe(true);
+    const textarea = terminal.textarea!;
+
+    await act(async () => {
+      textarea.value = "æ";
+      textarea.dispatchEvent(
+        new InputEvent("input", {
+          data: "æ",
+          inputType: "insertText",
+          bubbles: true,
+        }),
+      );
+    });
+
+    expect(socket.send).toHaveBeenCalledWith("æ");
+    expect(textarea.value).toBe("");
   });
 
   it("exposes the terminal host as a labelled region in the accessibility tree", async () => {

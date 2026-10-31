@@ -53,11 +53,22 @@ function readCgroupLimitMb() {
   return null
 }
 
+// MemAvailable in MB: on Linux libuv reads it from /proc/meminfo. Elsewhere
+// freemem() counts only free pages, which is not a comparable reading.
+function linuxAvailableMb() {
+  return process.platform === 'linux' ? Math.floor(os.freemem() / (1024 * 1024)) : null
+}
+
 // 75% of the cgroup limit when constrained (mirrors the TUI launcher's heap
-// sizing), else the conservative ceiling. Never below the GC-thrash floor.
-function boundedHeapMb() {
-  const limitMb = readCgroupLimitMb()
-  const sized = limitMb ? Math.floor(limitMb * 0.75) : MAX_HEAP_MB
+// sizing); with no limit (a plain VPS) 60% of the host's available memory, so
+// a small box never gets a ceiling above its RAM; else the conservative
+// ceiling. Never below the GC-thrash floor. Mirrors hermes_cli/web_build_limits.py.
+export function boundedHeapMb({ cgroupLimitMb = readCgroupLimitMb(), hostAvailableMb = linuxAvailableMb() } = {}) {
+  const sized = cgroupLimitMb
+    ? Math.floor(cgroupLimitMb * 0.75)
+    : hostAvailableMb != null
+      ? Math.floor(hostAvailableMb * 0.6)
+      : MAX_HEAP_MB
   return Math.max(MIN_HEAP_MB, Math.min(MAX_HEAP_MB, sized))
 }
 

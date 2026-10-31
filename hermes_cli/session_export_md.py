@@ -152,7 +152,10 @@ def file_sha256(path: Path | str) -> str:
 def verify_export_file(path: Path | str, session: dict[str, Any]) -> tuple[bool, str]:
     if not Path(path).exists():
         return False, "file missing"
-    text = Path(path).read_text(encoding="utf-8-sig")
+    # newline="": universal-newline reading folds a ``\r`` in a message (progress output, CRLF files)
+    # into ``\n``, so a faithful export would fail its own digest.
+    with open(path, encoding="utf-8-sig", newline="") as fh:
+        text = fh.read()
     match = _SHA_LINE_RE.search(text)
     if not match:
         return False, "sha256 marker missing"
@@ -199,7 +202,8 @@ def write_session_markdown(
     path = _export_dir(output_dir) / safe_session_filename(session, fmt=fmt)
     if path.exists() and not force:
         raise FileExistsError(str(path))
-    path.write_text(render_session_markdown(session, fmt=fmt), encoding="utf-8")
+    # newline="": the file holds exactly the text the embedded digest covers (no ``\r\n`` on Windows).
+    path.write_text(render_session_markdown(session, fmt=fmt), encoding="utf-8", newline="")
     return path
 
 

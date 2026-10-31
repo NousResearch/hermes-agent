@@ -68,10 +68,7 @@ async def resolve_image_source(
             "Unrecognized image source scheme. Use an http(s) URL, a local "
             "file path, a file:// URI, or a data: URL.",
             src=s)
-    # Everything else is a filesystem path — including bare relative names like "pic.png"
-    # (a path-shape gate here regressed them once).
-    candidate = s[len("file://"):] if s.lower().startswith("file://") else s
-    p = Path(os.path.expanduser(candidate))
+    p = _local_path(s)
     host_target = _permitted_host_read_target(p, ctx)
     if host_target is not None and host_target.is_file():
         _guard_credential_read(host_target, s)
@@ -81,6 +78,22 @@ async def resolve_image_source(
         # Any path was host-readable, so a miss means the file doesn't exist.
         raise SourceNotFound(f"media file not found: '{p}'", src=s, origin="file")
     return await _resolve_container_fallback(p, ctx, s, permitted)
+
+
+def _local_path(s: str) -> Path:
+    # Everything that is not a data:/http(s)/other-scheme URL is a filesystem path — including bare
+    # relative names like "pic.png" (a path-shape gate here regressed them once).
+    return Path(os.path.expanduser(s[len("file://"):] if s.lower().startswith("file://") else s))
+
+
+def host_file_for(src: str, ctx: ResolveContext) -> Optional[Path]:
+    """The host file ``resolve_image_source`` reads for ``src``; None for a data:/URL source or a path
+    that is only readable inside the sandbox. Guards on local images judge this same file."""
+    s = src.strip() if isinstance(src, str) else ""
+    if not s or s.startswith(("data:", "http://", "https://")) or (
+            _SCHEME_RE.match(s) and not s.lower().startswith("file://")):
+        return None
+    return _permitted_host_read_target(_local_path(s), ctx)
 
 
 def _guard_credential_read(host_target: Path, src: str) -> None:

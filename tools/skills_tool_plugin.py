@@ -51,6 +51,77 @@ def _safe_frontmatter(path: Path | None = None, *, content: str | None = None) -
     return {}
 
 
+# (support dir, globs, recursive, files only) — order is the linked_files key order.
+_LINKED_FILE_SPECS = (
+    ("references", ["*.md"], False, False),
+    ("templates", ["*.md", "*.py", "*.yaml", "*.yml", "*.json", "*.tex", "*.sh"], True, False),
+    ("assets", ["*"], True, True),
+    ("scripts", ["*.py", "*.sh", "*.bash", "*.js", "*.ts", "*.rb"], False, False))
+
+
+def _has_dot_dir_component(rel_path: str) -> bool:
+    """Whether a relative POSIX file path lies under a hidden directory."""
+    return any(part.startswith(".") for part in rel_path.split("/")[:-1])
+
+
+def _skill_linked_files(skill_dir: Path | None) -> dict:
+    """references/templates/assets/scripts + auto-discovered custom subdirectories
+    of a directory skill (empty groups dropped). Excludes files under any
+    dot-directory at any depth."""
+    files: dict = {}
+    # Standard subdirectories (hardcoded specs)
+    if skill_dir:
+        for sub, globs, recursive, files_only in _LINKED_FILE_SPECS:
+            base = skill_dir / sub
+            found = [
+                f.relative_to(skill_dir).as_posix() for g in globs if base.exists()
+                for f in (base.rglob(g) if recursive else base.glob(g))
+                if not files_only or f.is_file()]
+            # Filter out files under any dot-directory component
+            found = [p for p in found if not _has_dot_dir_component(p)]
+            if found:
+                files[sub] = found
+
+        # Auto-discover custom subdirectories (not in the standard 4)
+        custom = _discover_skill_subdirs(skill_dir) - set(k for k, *_ in _LINKED_FILE_SPECS)
+        for sub in sorted(custom):
+            base = skill_dir / sub
+            entries = []
+            for f in base.rglob("*"):
+                if f.is_file():
+                    rel = f.relative_to(skill_dir).as_posix()
+                    if not _has_dot_dir_component(rel):
+                        entries.append(rel)
+            if entries:
+                files[sub] = entries
+    return files
+
+
+def _discover_skill_subdirs(skill_dir: Path) -> set[str]:
+    """Scan a skill directory and return names of subdirectories that
+    contain discoverable content files — for linked_files discovery.
+
+    This is used for read-side discovery only; write validation remains separate.
+    """
+    seen: set[str] = set()
+    if not skill_dir.exists():
+        return seen
+    try:
+        for entry in skill_dir.iterdir():
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+            for f in entry.rglob("*"):
+                if not _has_dot_dir_component(f.relative_to(skill_dir).as_posix()) and f.is_file() and f.suffix in {
+                    ".md", ".py", ".sh", ".bash", ".yaml", ".yml",
+                    ".json", ".js", ".ts", ".rb", ".tex", ".txt",
+                }:
+                    seen.add(entry.name)
+                    break
+    except PermissionError:
+        pass
+    return seen
+
+
 def _available_skill_files(skill_dir: Path) -> dict[str, list[str]]:
     """Non-SKILL.md files grouped by support dir (+ "other" for known source extensions
     elsewhere); empty groups dropped. Excludes files under any dot-directory at any depth."""
@@ -60,7 +131,7 @@ def _available_skill_files(skill_dir: Path) -> dict[str, list[str]]:
             continue
         rel = f.relative_to(skill_dir).as_posix()
         # Skip files under any dot-directory component
-        if any(part.startswith(".") for part in rel.split("/")):
+        if _has_dot_dir_component(rel):
             continue
         top = rel.split("/", 1)[0] if "/" in rel else None
         if top in _SUPPORT_DIRS or f.suffix in _SKILL_FILE_EXTS:

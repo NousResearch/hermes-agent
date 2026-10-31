@@ -1147,7 +1147,7 @@ class TestSkillLinkedFiles:
 
     def _make_skill_with_dirs(self, tmp_path, extra_dirs=None, dot_files=None):
         """Helper: create a skill with standard + extra subdirs and optional dot-dir files."""
-        from tools.skills_tool import _skill_linked_files
+        from tools.skills_tool_plugin import _skill_linked_files
 
         skill_dir = tmp_path / "linked-test"
         skill_dir.mkdir()
@@ -1167,7 +1167,7 @@ class TestSkillLinkedFiles:
         return skill_dir, _skill_linked_files(skill_dir)
 
     def test_includes_standard_subdirs(self, tmp_path):
-        skill_dir, result = self._make_skill_with_dirs(tmp_path)
+        _skill_dir, result = self._make_skill_with_dirs(tmp_path)
         assert "references" in result
         assert "templates" in result
         assert result["references"] == ["references/api.md"]

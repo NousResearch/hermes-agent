@@ -216,7 +216,10 @@ gateway:
   insights:
     invalid_days: "Valor --days inválido: {value}"
     error: "Erro ao gerar análise: {error}"
+  curator:
+    parse_error: "⚠ Could not parse `/curator` arguments: {error}. Quote a value that contains a space or an apostrophe."
   kanban:
+    parse_error: "⚠ Could not parse `/kanban` arguments: {error}. Quote a value that contains a space or an apostrophe."
     error_prefix: "⚠ erro do kanban: {error}"
     subscribed_suffix: "(subscrito — receberás uma notificação quando {task_id} terminar ou bloquear)"
     truncated_suffix: "… (truncado; usa `hermes kanban …` no teu terminal para a saída completa)"

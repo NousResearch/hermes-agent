@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from urllib.parse import unquote
 
 # Raw-bytes INGEST budget: deliberately the 50MB download cap, NOT the 20MB provider
 # payload cap — that one is enforced post-resize at the call sites.
@@ -50,6 +51,25 @@ class ResolvedImage:
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
+def _percent_decoded_path(raw: str) -> Optional[Path]:
+    """URL-decoded local path for ``raw``, or ``None`` when decoding changes nothing.
+
+    Models re-emit a path they were handed in URL-encoded form: a skill or table lists a file as
+    ``Name Last - CV.pdf`` and the tool call arrives as ``Name%20Last%20-%20CV.pdf``. On disk that
+    is a literal miss, so a file that exists reads as ``SourceNotFound``. Returns a candidate to
+    try, never a rewrite — callers keep the string as given when it resolves.
+    """
+    if "%" not in raw:
+        return None
+    try:
+        decoded = unquote(raw)
+    except Exception:  # malformed escape: not a path this helper should guess at
+        return None
+    if decoded == raw:
+        return None
+    return Path(os.path.expanduser(decoded))
+
+
 async def resolve_image_source(
     src: str, ctx: ResolveContext, *, permitted: tuple = ("image",)) -> ResolvedImage:
     if not isinstance(src, str) or not src.strip():
@@ -72,6 +92,13 @@ async def resolve_image_source(
     # (a path-shape gate here regressed them once).
     candidate = s[len("file://"):] if s.lower().startswith("file://") else s
     p = Path(os.path.expanduser(candidate))
+    # Consulted only when the string as given is not a file: a path that genuinely contains
+    # "%20" keeps resolving to itself, so this cannot shadow a real filename.
+    if not p.is_file():
+        decoded = _percent_decoded_path(candidate)
+        if (decoded is not None and decoded.is_file()
+                and _permitted_host_read_target(decoded, ctx) is not None):
+            p = decoded
     host_target = _permitted_host_read_target(p, ctx)
     if host_target is not None and host_target.is_file():
         _guard_credential_read(host_target, s)

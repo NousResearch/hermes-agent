@@ -236,7 +236,10 @@ def test_is_relay_media_url_distinguishes_rehost_from_public():
     public URLs (CDN pass-throughs) do not. None/empty never raise."""
     c = RelayMediaClient("https://conn.example", "gw1", "sec")
     assert c.is_relay_media_url("https://conn.example/relay/media/aa11") is True
-    assert c.is_relay_media_url("http://other.host:8080/relay/media/x") is True
+    assert c.is_relay_media_url("http://other.host:8080/relay/media/x") is False
+    assert c.is_relay_media_url("https://attacker.com/relay/media/aa11") is False
+    assert c.is_relay_media_url("https://conn.example:8443/relay/media/aa11") is False
+    assert c.is_relay_media_url("file:///etc/passwd") is False
     assert c.is_relay_media_url("https://cdn.discordapp.com/attachments/1/2/v.ogg") is False
     assert c.is_relay_media_url("https://conn.example/relay/mediafile") is False
     assert c.is_relay_media_url("") is False
@@ -286,3 +289,44 @@ async def test_download_routes_auth_decision_through_is_relay_media_url(monkeypa
     assert await c.download("https://cdn.discordapp.com/attachments/1/2/i.png")
     assert asked[-1] == "https://cdn.discordapp.com/attachments/1/2/i.png"
     assert len(seen) == 1 and "Authorization" not in seen[0]
+
+
+@pytest.mark.asyncio
+async def test_download_rejects_non_http_schemes_and_protects_credentials(monkeypatch):
+    """ensure download refuses non-http schemes and never leaks bearer to foreign hosts."""
+    c = RelayMediaClient("https://conn.example", "gw1", "sec")
+
+    # non-http schemes rejected immediately without urlopen
+    assert await c.download("file:///etc/passwd") is None
+    assert await c.download("ftp://example.com/test.png") is None
+    assert await c.download("javascript:alert(1)") is None
+    assert await c.download("data:image/png;base64,AAAA") is None
+
+    seen: list[dict] = []
+
+    class _Resp:
+        headers = {"Content-Type": "image/png", "Content-Length": "4"}
+
+        def read(self, *_a):
+            return b"\x89PNG"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    def _fake_urlopen(req, timeout=None):  # noqa: ARG001
+        seen.append(dict(req.headers))
+        return _Resp()
+
+    import urllib.request as _ur
+
+    monkeypatch.setattr(_ur, "urlopen", _fake_urlopen)
+
+    # downloading from attacker url containing /relay/media/ must not leak auth header
+    res = await c.download("https://attacker.com/relay/media/secret")
+    assert res is not None
+    assert len(seen) == 1
+    assert "Authorization" not in seen[0]
+

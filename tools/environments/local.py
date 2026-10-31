@@ -488,13 +488,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     # Terminal descendants of a Kanban worker are ordinary child processes,
     # not dispatcher-owned workers.  Strip the parent's run identity so a
     # nested ``hermes`` invocation cannot heartbeat or close the parent run.
-    try:
-        from hermes_cli.kanban_db import KANBAN_WORKER_ENV_KEYS
-    except Exception:
-        KANBAN_WORKER_ENV_KEYS = frozenset()
-    for key in tuple(sanitized):
-        if key in KANBAN_WORKER_ENV_KEYS:
-            sanitized.pop(key, None)
+    _scrub_kanban_worker_env_keys(sanitized)
 
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         sanitized.pop(_marker, None)
@@ -504,6 +498,25 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     sanitized = _scrub_delegated_child_kanban_env(sanitized)
 
     return sanitized
+
+
+def _scrub_kanban_worker_env_keys(env: dict) -> None:
+    """Strip KANBAN_WORKER_ENV_KEYS from *env* in-place.
+
+    Terminal descendants of a Kanban worker are ordinary child processes,
+    not dispatcher-owned workers.  Removing the parent's run-identity vars
+    (HERMES_KANBAN_TASK, HERMES_KANBAN_RUN_ID, HERMES_KANBAN_CLAIM_LOCK,
+    etc.) prevents a nested ``hermes`` invocation from heartbeating or
+    closing the parent run.  Must be called unconditionally on every spawn
+    surface — not just the delegate_task child path.
+    """
+    try:
+        from hermes_cli.kanban_db import KANBAN_WORKER_ENV_KEYS
+    except Exception:
+        KANBAN_WORKER_ENV_KEYS = frozenset()
+    for key in tuple(env):
+        if key in KANBAN_WORKER_ENV_KEYS:
+            env.pop(key, None)
 
 
 def _scrub_delegated_child_kanban_env(env: dict[str, str]) -> dict[str, str]:
@@ -644,6 +657,9 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # also need the delegate_task child lineage marker.  Otherwise a child
     # context that later imports Kanban DB code in the spawned process would
     # still see the parent's HERMES_HOME but lose the DB mutation guard.
+    # Also scrub KANBAN_WORKER_ENV_KEYS unconditionally so any spawned helper
+    # that shells out to ``hermes`` cannot heartbeat or mutate the parent run.
+    _scrub_kanban_worker_env_keys(env)
     env = _scrub_delegated_child_kanban_env(env)
 
     return env
@@ -1207,6 +1223,16 @@ def _make_run_env(env: dict) -> dict:
         run_env.pop(_marker, None)
 
     _apply_windows_msys_bash_env_defaults(run_env)
+
+    # Foreground terminal children of a Kanban worker must not inherit the
+    # parent's run-identity vars.  Without this scrub a nested ``hermes``
+    # invocation launched from the foreground terminal would see 7 or more
+    # HERMES_KANBAN_* vars (TASK, RUN_ID, CLAIM_LOCK, …) and could heartbeat
+    # or mutate the parent run.  Apply unconditionally — same as the
+    # background/PTY path in _sanitize_subprocess_env — before the
+    # delegate_task child strip that only fires when a delegation context
+    # is active.
+    _scrub_kanban_worker_env_keys(run_env)
 
     run_env = _scrub_delegated_child_kanban_env(run_env)
 

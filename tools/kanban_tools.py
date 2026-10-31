@@ -197,6 +197,75 @@ def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     return None
 
 
+def _verify_run_identity(task_id: str) -> Optional[str]:
+    """Fail-closed: mirror heartbeat_worker's session/home identity check.
+
+    ``kanban_complete`` and ``kanban_block`` mutate run state.  A nested
+    ``hermes`` subprocess that inherited HERMES_KANBAN_* env vars (before the
+    spawn-side scrub was applied) would have a *different* HERMES_SESSION_ID
+    than the original dispatcher worker, so this check detects it.
+
+    Mirrors the identity check inside ``kanban_db.heartbeat_worker``:
+    compare caller's session_id / worker_home against the first heartbeat
+    event recorded for the active run.  Returns None when allowed (including
+    when there is not enough information to decide — fail-open on unknowns),
+    or a tool-error string when the identity clearly does not match.
+
+    Only enforced for dispatcher-spawned workers (HERMES_KANBAN_RUN_ID set).
+    """
+    run_id = _worker_run_id(task_id)
+    if run_id is None:
+        return None  # CLI / orchestrator / locally-driven — no run tracking.
+
+    session_id = os.environ.get("HERMES_SESSION_ID") or None
+    worker_home = os.environ.get("HERMES_HOME") or None
+    if session_id is None and worker_home is None:
+        return None  # Nothing to compare against — fail open.
+
+    try:
+        kb, conn = _connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT payload FROM task_events
+                 WHERE task_id = ? AND run_id = ? AND kind = 'heartbeat'
+                 ORDER BY created_at ASC, id ASC LIMIT 1
+                """,
+                (task_id, run_id),
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return None  # Fail open on DB / import errors.
+
+    if not row or not row["payload"]:
+        return None  # No prior heartbeat — identity not yet established.
+
+    try:
+        identity = json.loads(row["payload"])
+    except Exception:
+        return None
+
+    recorded_sid = identity.get("session_id")
+    recorded_home = identity.get("worker_home")
+    mismatch = (
+        (recorded_sid is not None and session_id != recorded_sid)
+        or (recorded_home is not None and worker_home != recorded_home)
+    )
+    if mismatch:
+        logger.warning(
+            "kanban mutation rejected: identity mismatch task=%s run=%s "
+            "caller_session=%s recorded_session=%s",
+            task_id, run_id, session_id, recorded_sid,
+        )
+        return tool_error(
+            f"worker identity mismatch (session_id or worker_home differs from "
+            f"run {run_id} identity); refusing to mutate task {task_id}. "
+            f"This guard prevents a nested subprocess from hijacking the parent run."
+        )
+    return None
+
+
 def _connect(board: Optional[str] = None):
     """Import + connect lazily so the module imports cleanly in non-kanban
     contexts (e.g. test rigs that import every tool module).
@@ -554,6 +623,9 @@ def _handle_complete(args: dict, **kw) -> str:
     ownership_err = _enforce_worker_task_ownership(tid)
     if ownership_err:
         return ownership_err
+    identity_err = _verify_run_identity(tid)
+    if identity_err:
+        return identity_err
     summary = args.get("summary")
     metadata = args.get("metadata")
     result = args.get("result")
@@ -734,6 +806,9 @@ def _handle_block(args: dict, **kw) -> str:
     ownership_err = _enforce_worker_task_ownership(tid)
     if ownership_err:
         return ownership_err
+    identity_err = _verify_run_identity(tid)
+    if identity_err:
+        return identity_err
     reason = args.get("reason")
     if not reason or not str(reason).strip():
         return tool_error("reason is required — explain what input you need")

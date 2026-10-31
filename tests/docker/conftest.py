@@ -257,7 +257,7 @@ def poll_container(
         last = r.stdout
         if r.returncode == 0:
             return True, last
-        time.sleep(interval_s)
+        time.sleep(min(interval_s, max(0.0, end - time.monotonic())))
     if not completed:
         raise AssertionError(f"No probe of {container} completed within {deadline_s}s; {last}")
     return False, last

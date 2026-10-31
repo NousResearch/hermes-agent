@@ -104,3 +104,18 @@ def test_stall_after_a_completed_probe_keeps_its_output(monkeypatch):
     failed = SimpleNamespace(returncode=1, stdout="HOME=/root", stderr="")
     monkeypatch.setattr(docker_conftest, "docker_exec_sh", _scripted_exec(clock, [failed, "stall"]))
     assert docker_conftest.poll_container("c", "probe", deadline_s=12.0) == (False, "HOME=/root")
+
+
+@pytest.mark.parametrize("module", [docker_conftest, test_dashboard], ids=["poll_container", "_http_probe"])
+def test_sleep_between_failed_probes_stops_at_the_deadline(monkeypatch, module):
+    """The pause after a failed probe never runs past the deadline the caller gave."""
+    clock = _Clock()
+    monkeypatch.setattr(module, "time", clock)
+    failed = SimpleNamespace(returncode=1, stdout="", stderr="")
+    monkeypatch.setattr(module, "docker_exec_sh", _scripted_exec(clock, [failed]))
+    if module is docker_conftest:
+        assert module.poll_container("c", "probe", deadline_s=1.0) == (False, "")
+    else:
+        with pytest.raises(AssertionError, match="never returned HTTP"):
+            module._http_probe("c", "/api/status", deadline_s=1.0)
+    assert clock.now <= 1.0

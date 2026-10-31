@@ -45,53 +45,58 @@ This is the shape that covers the workloads `delegate_task` can't:
 
 The eight canonical collaboration patterns are catalogued in [Collaboration patterns](#collaboration-patterns) below.
 
-## PR completion contracts
+## PR/MR completion contracts
 
-Declare PR work at creation with `--completion-contract OWNER/REPO` (or an exact
-`https://github.com/OWNER/REPO/pull/123` URL for existing work). `kanban_create`
-accepts the same `completion_contract`. Use `local-only` for intentionally local
-work; existing and undeclared cards retain that default. Prose URLs are not policy.
+Declare remote code work at creation with `--completion-contract OWNER/REPO` (or an exact
+`https://github.com/OWNER/REPO/pull/123` / `https://gitlab.com/GROUP/REPO/-/merge_requests/123`
+URL for existing work). `kanban_create` accepts the same `completion_contract`. Use
+`local-only` for intentionally local work; existing and undeclared cards retain that
+default. Prose URLs are not policy.
 
-After publishing, pass `metadata.published_pr` to completion. The first matching
-URL binds the card permanently; retries cannot substitute a green sibling PR.
+After publishing, pass `metadata.published_pr` to completion. For an `OWNER/REPO`
+contract, the first matching exact GitHub PR or GitLab MR URL binds both forge and
+publication permanently; retries cannot substitute a green sibling on either forge.
 CLI `show --json` and `kanban_show` expose the persisted contract.
 
 The shared `complete_task` boundary covers worker tools, CLI, review approval and
-dashboard completion. It reads classic branch protection and active ruleset
-required contexts, paginates exact-head check runs and legacy statuses, then
+dashboard completion. For GitHub, it reads classic branch protection and active
+ruleset required contexts, paginates exact-head check runs and legacy statuses, then
 re-reads the PR head/base. Optional failed/skipped telemetry does not veto accepted
-required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
-neutral **required** evidence cannot complete the card. Neither can zero-run
-acceptance, unreadable policy or GitHub API failures. A repository without required
-checks needs a local-only contract. `gh` must be authenticated with read access to
-the repository's checks and rules; no remote writes are performed by this gate.
-Acceptance reads run as the **assignee profile's** `gh` login — its `GH_TOKEN` /
-`GH_CONFIG_DIR` from the profile's own `.env`, never the ambient login of the
-process completing the card. On multi-profile hosts (one GitHub identity per
-org), sign `gh` in per profile (`GH_CONFIG_DIR` in that profile's `.env`). The
-token must live in the profile's `.env` (or a configured secret source): a
-`GH_TOKEN` merely exported in the shell or a systemd unit is scrubbed from the
-`gh` child and never re-added. An assignee profile with no `gh` login of its
-own — or one that no longer exists — is refused `not logged in` rather than
-falling through to `~/.config/gh`; unassigned cards still use the ambient
-login. A login that cannot see the repository is rejected with
-`classification=auth`, naming the profile and repository, instead of a
-retryable infra failure.
+required checks. For GitLab.com, it reads the exact MR and accepts only the newest
+pipeline for the current MR head when its status is `success`, then re-reads the MR
+head/base. A missing, pending, running, failed, cancelled, stale or unreadable pipeline
+cannot complete the card.
+
+For GitHub, zero-run acceptance, unreadable policy or API failures are also rejected;
+a repository without required checks needs a local-only contract. `gh` must have read
+access to checks and rules. For GitLab, `glab` must have read API access to the project.
+No remote writes are performed by this gate.
+
+Acceptance reads run as the **assignee profile's** forge login — `GH_TOKEN` /
+`GH_CONFIG_DIR` for GitHub or `GITLAB_TOKEN` / `GLAB_CONFIG_DIR` for GitLab — from the
+profile's own `.env`, never the ambient login of the process completing the card. On
+multi-profile hosts, authenticate the relevant CLI per profile. A token merely exported
+in the launch shell or systemd unit is scrubbed from the child and never re-added. An
+assignee profile with no matching forge login of its own — or one that no longer exists
+— is refused rather than falling through to ambient config; unassigned cards still use
+the ambient login. A login that cannot see the repository is rejected with
+`classification=auth`, naming the profile and forge, instead of a retryable infra
+failure.
 
 Rejection retains the active card and workspace. Durable `pr_acceptance` events
 store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery
 instructions; `last_failure_error` surfaces the next step. Fix failures, rerun
 infrastructure checks or wait, then retry completion. Use `kanban_block` when
-human action is needed. Generic GitHub `failure` cannot establish whether a test
+human action is needed. Generic CI `failure` cannot establish whether a test
 or artifact upload failed; inspect its retained URL. Explicit infrastructure
 conclusions and API failures are classified separately. No extra worker is spawned.
 
 Receipt persistence and the terminal write recheck run/status/contract ownership
 under one SQLite lock: a reclaimed worker cannot complete or attach acceptance to
-the new run. The final GitHub read is a completion-time snapshot, not a distributed
+the new run. The final forge read is a completion-time snapshot, not a distributed
 transaction or a continuous post-completion monitor. This is a single-user lifecycle
 guard, not OS isolation against arbitrary direct database writes. GitHub Enterprise
-is not covered. Related publication/lifecycle work: #91230, #84254, #52311; local
+and self-managed GitLab are not covered. Related publication/lifecycle work: #91230, #84254, #52311; local
 verification and publication alone are not remote acceptance.
 
 ## Kanban vs. `delegate_task`

@@ -183,6 +183,23 @@ def _wrap_command_script(
     if snapshot_ready:
         parts.append(f"source {quoted_snap} >/dev/null 2>&1 || true")
     parts += restore
+    if snapshot_ready:
+        # Snapshot ``export -p`` can restore secrets / GIT_TERMINAL_PROMPT
+        # after the Popen env was sanitized. Re-apply terminal hardening
+        # after passthrough restore and immediately before the user command.
+        try:
+            from tools.environments.local import _post_source_env_hardening_script
+
+            harden = _post_source_env_hardening_script()
+            if harden:
+                parts.append(harden)
+        except Exception:
+            parts.append(
+                "unset -v NPM_TOKEN NPM_AUTH_TOKEN NODE_AUTH_TOKEN "
+                "PYPI_TOKEN TWINE_PASSWORD CARGO_REGISTRY_TOKEN 2>/dev/null || true\n"
+                "export GIT_TERMINAL_PROMPT=0\n"
+                "export GCM_INTERACTIVE=Never"
+            )
     parts += [
         'export AI_AGENT="${AI_AGENT:-hermes-agent}" HERMES_AGENT="${HERMES_AGENT:-true}"',
         'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"',

@@ -449,6 +449,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | Hook | Category | Exact timing and return behavior | Explicit payload fields | Privacy / sensitivity |
 |---|---|---|---|---|
 | [`pre_tool_call`](#pre_tool_call) | Directive/control | Once before execution; any valid `block` wins over any `approve` (then the first valid `approve`), and `modify` returns are shallow-merged into the tool arguments. | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace` | Raw arguments may contain user content, paths, commands, or secrets. |
+| `pre_tool_call_final` | Policy gate | After every `pre_tool_call` modifier and immediately before dispatch. Only `block` is honored; callback errors and timeouts fail closed. Each callback receives an isolated copy. | Same fields as `pre_tool_call`; `args` contains the final arguments Hermes will dispatch. | Final arguments may contain user content, paths, commands, or secrets. |
 | `post_tool_call` | Observer | After blocked, error, or successful result; return ignored. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace` | Result/error text may contain arbitrary tool or user content and secrets. |
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
@@ -562,6 +563,18 @@ def my_callback(tool_name: str, args: dict, task_id: str, **kwargs):
 | `task_id` | `str` | Session/task identifier. Empty string if not set. |
 
 **Fires:** In `model_tools.py`, inside `handle_function_call()`, before the tool's handler runs. Fires once per tool call — if the model calls 3 tools in parallel, this fires 3 times.
+
+### Final argument policy: `pre_tool_call_final`
+
+Hermes runs this hook after all `pre_tool_call` callbacks have finished modifying arguments and immediately before the tool handler is dispatched. Its `args` are the final arguments that will be passed to the handler. Each callback receives a detached copy, so one plugin cannot change what another plugin evaluates or alter the arguments Hermes dispatches.
+
+This hook is for policy checks that must evaluate the exact operation being executed. Return `{"action": "block", "message": "..."}` to stop it. `approve`, `modify`, and other return values are ignored; use `pre_tool_call` for argument changes and the regular approval flow. A callback exception, timeout, or policy dispatch failure blocks the tool call.
+
+```python
+def check_final_command(tool_name: str, args: dict, **kwargs):
+    if tool_name == "terminal" and args.get("command", "").startswith("rm -rf /"):
+        return {"action": "block", "message": "This command is blocked by policy"}
+```
 
 **Return value — block or require approval:**
 

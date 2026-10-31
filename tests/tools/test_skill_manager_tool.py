@@ -1551,13 +1551,15 @@ class TestLockedGuard:
         assert autonomous["success"] is False, autonomous
         assert "could not be verified" in autonomous["error"], autonomous
         assert foreground["success"] is True, foreground
+
+
 # ---------------------------------------------------------------------------
 # _discover_skill_subdirs — custom subdirectory auto-discovery
 # ---------------------------------------------------------------------------
 
 
 def test_discover_skill_subdirs_finds_custom_subdirs(tmp_path):
-    from tools.skill_manager_tool import _discover_skill_subdirs
+    from tools.skills_tool_plugin import _discover_skill_subdirs
     skill_dir = tmp_path / "my-skill"
     skill_dir.mkdir()
     (skill_dir / "steps").mkdir()
@@ -1573,7 +1575,7 @@ def test_discover_skill_subdirs_finds_custom_subdirs(tmp_path):
 
 
 def test_discover_skill_subdirs_skips_empty(tmp_path):
-    from tools.skill_manager_tool import _discover_skill_subdirs
+    from tools.skills_tool_plugin import _discover_skill_subdirs
     skill_dir = tmp_path / "my-skill"
     skill_dir.mkdir()
     (skill_dir / "empty").mkdir()
@@ -1584,7 +1586,7 @@ def test_discover_skill_subdirs_skips_empty(tmp_path):
 
 
 def test_discover_skill_subdirs_skips_dot_dirs(tmp_path):
-    from tools.skill_manager_tool import _discover_skill_subdirs
+    from tools.skills_tool_plugin import _discover_skill_subdirs
     skill_dir = tmp_path / "my-skill"
     skill_dir.mkdir()
     (skill_dir / ".hidden").mkdir()
@@ -1598,7 +1600,7 @@ def test_discover_skill_subdirs_skips_dot_dirs(tmp_path):
 def test_discover_skill_subdirs_nested_dot_dir_does_not_hide_subdir(tmp_path):
     """Files inside a nested dot-directory (e.g. steps/.hidden/x.md)
     must not cause the parent subdir to appear in discovered subdirs."""
-    from tools.skill_manager_tool import _discover_skill_subdirs
+    from tools.skills_tool_plugin import _discover_skill_subdirs
     skill_dir = tmp_path / "my-skill"
     skill_dir.mkdir()
     steps = skill_dir / "steps"
@@ -1613,14 +1615,14 @@ def test_discover_skill_subdirs_nested_dot_dir_does_not_hide_subdir(tmp_path):
 
 
 def test_discover_skill_subdirs_nonexistent_dir_returns_empty(tmp_path):
-    from tools.skill_manager_tool import _discover_skill_subdirs
+    from tools.skills_tool_plugin import _discover_skill_subdirs
     result = _discover_skill_subdirs(tmp_path / "nope")
     assert result == set()
 
 
 def test_discover_skill_subdirs_includes_standard_subdirs(tmp_path):
     """Standard dirs like references/ should also be discoverable."""
-    from tools.skill_manager_tool import _discover_skill_subdirs
+    from tools.skills_tool_plugin import _discover_skill_subdirs
     skill_dir = tmp_path / "my-skill"
     skill_dir.mkdir()
     (skill_dir / "references").mkdir()

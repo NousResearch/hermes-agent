@@ -6,6 +6,7 @@ import json
 import logging
 import urllib.request
 
+from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort, requested_effort
 from hermes_cli.urllib_security import open_credentialed_url
 from providers import get_provider_profile, register_provider
 from providers.base import ProviderProfile, _profile_user_agent
@@ -44,11 +45,21 @@ class CommandCodeProfile(ProviderProfile):
     ) -> tuple[dict, dict]:
         """DeepSeek ids (``deepseek/deepseek-v4-flash``) get the native DeepSeek wire
         controls: DeepSeek V4+ defaults to thinking when ``thinking`` is omitted, so
-        without them ``/reasoning`` never reaches the request (#95232). Other model
-        families stay a no-op — CommandCode declares no reasoning vocabulary for them."""
+        without them ``/reasoning`` never reaches the request (#95232). Every other
+        family takes the standard top-level ``reasoning_effort`` — the relay accepts
+        it and silently drops ``extra_body.reasoning`` (#125628). The core
+        ``supports_reasoning`` allowlist does not know this host, so like DeepInfra
+        (#111872) the effort is emitted without gating on that flag."""
         m = (model or "").strip()
         if not m.lower().startswith("deepseek/"):
-            return {}, {}
+            # Unset/disabled/none stays omitted: the relay defaults thinking on, but no
+            # probe confirms "none" is a working off switch here (omission is the proven
+            # safe shape), and an absent effort must not be guessed onto the wire.
+            effort = requested_effort(reasoning_config)
+            if not effort or effort == "none":
+                return {}, {}
+            clamped = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
+            return ({}, {"reasoning_effort": clamped}) if clamped in OPENAI_COMPAT_WIRE_EFFORTS else ({}, {})
         # Registry lookup, not a module import: the deepseek shim is only a loader-injected
         # sys.modules entry, and the registry honours a user override of the profile.
         native = get_provider_profile("deepseek")
@@ -61,6 +72,14 @@ class CommandCodeProfile(ProviderProfile):
 
 class CommandCodeAnthropicProfile(CommandCodeProfile):
     """CommandCode — Anthropic Messages API-compatible endpoint."""
+
+    def build_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
+    ) -> tuple[dict, dict]:
+        """Claude ids ride the Anthropic Messages wire, whose adapters take reasoning via
+        the private ``_reasoning_config`` kwarg — an OpenAI-style top-level
+        ``reasoning_effort`` projected here would ship as an unknown request field."""
+        return {}, {}
 
     def fetch_models(
         self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0

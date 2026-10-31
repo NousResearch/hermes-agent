@@ -736,6 +736,19 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     return project_history_commentary(projected_messages, home=home)
 
 
+def _history_session_target(db, session_id: str) -> tuple[str, str]:
+    """Keep a local conversation's address while reading its current transcript."""
+    from hermes_state_local import POLICY_PREFIX
+    from hermes_state_local_lineage import local_physical_target
+
+    with db._read_ctx() as conn:
+        if conn.execute("SELECT 1 FROM state_meta WHERE key = ?",
+                        (POLICY_PREFIX + session_id,)).fetchone() is not None:
+            return session_id, local_physical_target(conn, session_id)
+    sid = db.resolve_resume_session_id(session_id)
+    return sid, sid
+
+
 @manage_router.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(
     session_id: str, profile: Optional[str] = None, limit: Optional[int] = Query(None, ge=0),
@@ -748,7 +761,7 @@ async def get_session_messages(
         sid = _resolve_session_id(db, session_id)
         if not sid:
             return None
-        sid = db.resolve_resume_session_id(sid)
+        address, sid = _history_session_target(db, sid)
         # Always page (an omitted limit used to load whole transcripts). Explicit
         # pagination anchors at the start; the default view is the latest page.
         default_page = limit is None
@@ -760,7 +773,7 @@ async def get_session_messages(
         # prefetch only shows the child continuation's messages after a
         # compression rotation, hiding the pre-compaction transcript
         # (#51058).
-        return sid, _limit, db.get_messages(
+        return address, _limit, db.get_messages(
             sid, limit=_limit, offset=offset, latest=latest_page,
             include_compacted=include_compacted, include_ancestors=True)
 
@@ -783,7 +796,7 @@ async def get_session_messages(
             "returned": len(projected_messages)}}
 
 
-def _timeline_session_id(db, session_id: str, owner: str) -> str:
+def _timeline_session_target(db, session_id: str, owner: str) -> tuple[str, str]:
     # Durable jump addresses are exact ids, never title/prefix guesses. A NULL
     # legacy owner belongs to this profile's store, just like /messages pages.
     def owned(sid):
@@ -792,10 +805,10 @@ def _timeline_session_id(db, session_id: str, owner: str) -> str:
 
     if not owned(session_id):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
-    sid = db.resolve_resume_session_id(session_id)
+    address, sid = _history_session_target(db, session_id)
     if not owned(sid):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
-    return sid
+    return address, sid
 
 
 @manage_router.get("/api/sessions/{session_id}/timeline")
@@ -813,8 +826,8 @@ async def get_session_timeline(
     owner = _serving_profile(profile)
 
     def _read(db):
-        sid = _timeline_session_id(db, session_id, owner)
-        return {"session_id": sid, "profile": owner,
+        address, sid = _timeline_session_target(db, session_id, owner)
+        return {"session_id": address, "profile": owner,
                 **read_timeline(db, sid, limit=limit, after_row_id=after_row_id)}
 
     return await asyncio.to_thread(_with_db, profile, _read, read_only=True)
@@ -831,11 +844,11 @@ async def get_session_messages_around(
     owner = _serving_profile(profile)
 
     def _read(db):
-        sid = _timeline_session_id(db, session_id, owner)
+        address, sid = _timeline_session_target(db, session_id, owner)
         page = read_around(db, sid, row_id, limit=limit)
         if page is None:
             raise HTTPException(status_code=404, detail="Prompt not found")
-        return {"session_id": sid, "profile": owner, **page}
+        return {"session_id": address, "profile": owner, **page}
 
     result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
     result["messages"] = await asyncio.to_thread(

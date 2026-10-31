@@ -38,6 +38,12 @@ def os_family() -> str:
 
 
 @functools.cache
+def macos_version() -> tuple[int, ...]:
+    """Numeric macOS product version, or an empty tuple on other hosts."""
+    return tuple(int(part) for part in platform.mac_ver()[0].split(".") if part.isdecimal())
+
+
+@functools.cache
 def process_arch() -> str:
     """Return the architecture of this Python process."""
     if sys.platform == "win32":

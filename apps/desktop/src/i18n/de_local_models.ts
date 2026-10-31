@@ -3,6 +3,22 @@ import type { TranslationOverride } from '@hermes/shared/i18n'
 import type { Translations } from './types'
 
 export const deLocalModels: TranslationOverride<Translations['settings']['localModels']> = {
+  engineChoice: 'Inferenz-Engine',
+  engineChoiceDetail: 'Wähle eine Engine und darunter ein Modell als Standard für neue Chats.',
+  engineSwitchFailed: 'Inferenz-Engine konnte nicht gewechselt werden',
+  engineStatusFailed:
+    'Engine-Auswahl konnte nicht geladen werden. Aktualisiere die verbundene Hermes-Laufzeit und versuche es erneut.',
+  omlxUnsupported: 'oMLX benötigt einen Mac mit Apple Silicon.',
+  omlxInstalled: 'oMLX-Laufzeit installiert',
+  omlxInstall: 'oMLX installieren',
+  omlxDetail: 'Hermes installiert und verwaltet oMLX lokal. Es verwendet MLX-Modelle statt llama.cpp-GGUF-Dateien.',
+  omlxActionFailed: 'oMLX-Aktion fehlgeschlagen',
+  omlxNoModels: 'Lade zuerst ein MLX-Modell herunter.',
+  omlxRepoLabel: 'Hugging-Face-Modellrepository',
+  omlxRepoHint:
+    'Gib ein Repository im MLX-Format ein. Modelldateien werden im verwalteten oMLX-Ordner gespeichert; vorhandene GGUF-Dateien bleiben unverändert.',
+  omlxDownload: 'Modell herunterladen',
+
   connectionChanged: 'Verbindung für lokale Modelle geändert',
   title: 'Lokale Modelle',
   runtimeTitle: 'Lokale Laufzeit',

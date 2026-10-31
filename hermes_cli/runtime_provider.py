@@ -1080,6 +1080,11 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
         logger.info("model.openai_runtime=codex_app_server overrides the %s runtime (source=%s); its credential/endpoint "
                     "is not used — the app-server authenticates with its own login", runtime.get("provider"), runtime.get("source"))
     runtime["api_mode"] = api_mode
+    if runtime.get("provider") == "custom":
+        from hermes_cli.local_runtime.omlx import BASE_URL, ensure_for_runtime
+
+        if str(runtime.get("base_url", "")).rstrip("/") == BASE_URL:
+            ensure_for_runtime(runtime, load_config())
     return runtime
 
 

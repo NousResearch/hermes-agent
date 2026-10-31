@@ -3,6 +3,23 @@ import type { TranslationOverride } from '@hermes/shared/i18n'
 import type { Translations } from './types'
 
 export const frLocalModels: TranslationOverride<Translations['settings']['localModels']> = {
+  engineChoice: 'Moteur d’inférence',
+  engineChoiceDetail:
+    'Choisissez un moteur, puis un modèle ci-dessous comme modèle par défaut des nouvelles conversations.',
+  engineSwitchFailed: 'Impossible de changer de moteur',
+  engineStatusFailed: 'Impossible de charger les moteurs. Mettez à jour le moteur Hermes connecté et réessayez.',
+  omlxUnsupported: 'oMLX nécessite un Mac Apple Silicon.',
+  omlxInstalled: 'Moteur oMLX installé',
+  omlxInstall: 'Installer oMLX',
+  omlxDetail:
+    'Hermes installe et gère oMLX localement. Il utilise des modèles MLX, pas les fichiers GGUF de llama.cpp.',
+  omlxActionFailed: 'Échec de l’action oMLX',
+  omlxNoModels: 'Téléchargez un modèle MLX pour commencer.',
+  omlxRepoLabel: 'Dépôt de modèles Hugging Face',
+  omlxRepoHint:
+    'Saisissez un dépôt au format MLX. Les fichiers sont téléchargés dans le dossier oMLX géré ; les fichiers GGUF existants restent inchangés.',
+  omlxDownload: 'Télécharger le modèle',
+
   connectionChanged: 'La connexion des modèles locaux a changé',
   title: 'Modèles locaux',
   runtimeTitle: 'Moteur local',

@@ -7,12 +7,19 @@ import { describe, expect, it, vi } from 'vitest'
 // be in place BEFORE the store module is evaluated (hoisted above the imports)
 // so GLASS_SUPPORTED resolves false and GLASS_IS_WINDOWS collapses to false.
 //
-// That is the exact shape of the bug this test guards: the $translucency
-// computed used to pass GLASS_IS_WINDOWS as the "isWindows" argument to
-// resolveTranslucency. On Win10 glass is unsupported, so GLASS_IS_WINDOWS is
-// false and the fallback defaults came from the MAC table instead of the
-// WINDOWS table. The fix passes isWindowsPlatform() instead, which is true
-// on Win32 regardless of glass support.
+// Two bugs meet here, both about the same lever:
+//
+//  1. (#90824) The `$translucency` computed used to pass GLASS_IS_WINDOWS as the
+//     "isWindows" argument to resolveTranslucency. On Win10 glass is unsupported,
+//     so GLASS_IS_WINDOWS is false and the fallback defaults came from the MAC
+//     table instead of the WINDOWS table. The fix passes isWindowsPlatform()
+//     instead, which is true on Win32 regardless of glass support.
+//  2. The Windows table's sidebar TINT default (29) then leaked into `clear`
+//     mode, where the same number is the native window opacity — so a fresh
+//     Win10 profile faded its whole window to 0.94113. Clear mode has its own
+//     default now (off): the untouched profile resolves 0 while still proving
+//     the WINDOWS table won, because `material`/`scope` are the table's and not
+//     the mac's.
 vi.hoisted(() => {
   Object.defineProperty(globalThis.navigator, 'platform', { configurable: true, value: 'Win32' })
   Object.defineProperty(globalThis.window, 'hermesDesktop', {
@@ -28,6 +35,13 @@ import { $translucency, $translucencyBook, GLASS_SUPPORTED, setAppearance } from
 // The Windows table must win on Win10, even when tint matches macOS.
 const WINDOWS_DARK = defaultTranslucencyValues('dark', true)
 const WINDOWS_LIGHT = defaultTranslucencyValues('light', true)
+const MAC_DARK = defaultTranslucencyValues('dark', false)
+const MAC_LIGHT = defaultTranslucencyValues('light', false)
+
+// Untouched Win10 profile: the windows table minus the glass tint, which has no
+// meaning in clear mode (see `clearModeDefault` in @hermes/shared/translucency).
+const UNTOUCHED_DARK = { ...WINDOWS_DARK, intensity: 0, mode: 'clear' as const }
+const UNTOUCHED_LIGHT = { ...WINDOWS_LIGHT, intensity: 0, mode: 'clear' as const }
 
 describe('Win10 translucency defaults (regression for #90824)', () => {
   it('runs its assertions for real in this environment', () => {
@@ -40,14 +54,16 @@ describe('Win10 translucency defaults (regression for #90824)', () => {
   it('resolves an untouched profile to the WINDOWS defaults, not the mac ones', () => {
     // Untouched profile: no persisted book, so the store falls through to the
     // platform defaults. The store's initial appearance is dark.
-    expect($translucency.get()).toEqual({ ...WINDOWS_DARK, mode: 'clear' })
+    expect($translucency.get()).toEqual(UNTOUCHED_DARK)
 
-    expect($translucency.get().material).not.toBe(defaultTranslucencyValues('dark', false).material)
+    expect($translucency.get().material).toBe(WINDOWS_DARK.material)
+    expect($translucency.get().material).not.toBe(MAC_DARK.material)
 
     // Light appearance must resolve the windows light table too.
     setAppearance('light')
-    expect($translucency.get()).toEqual({ ...WINDOWS_LIGHT, mode: 'clear' })
-    expect($translucency.get().material).not.toBe(defaultTranslucencyValues('light', false).material)
+    expect($translucency.get()).toEqual(UNTOUCHED_LIGHT)
+    expect($translucency.get().material).not.toBe(MAC_LIGHT.material)
+    setAppearance('dark')
   })
 
   it('keeps the mode clear when glass is unsupported', () => {
@@ -56,12 +72,23 @@ describe('Win10 translucency defaults (regression for #90824)', () => {
     expect($translucency.get().mode).toBe('clear')
   })
 
+  // The second find: this used to be 29 here, i.e. a fresh Win10 window born at
+  // 0.94113 opacity, text included. An untouched clear profile is now opaque.
+  it('starts fully opaque, because clear mode never inherits the tint default', () => {
+    expect($translucency.get().intensity).toBe(0)
+    expect($translucency.get().fade).toBe(0)
+
+    setAppearance('light')
+    expect($translucency.get().intensity).toBe(0)
+    setAppearance('dark')
+  })
+
   it('still resolves windows defaults after an explicit reset to an empty book', () => {
     // A fresh book with no values is the same "untouched" shape the store
     // starts from; the platform defaults must still be the windows ones.
     $translucencyBook.set({ mode: 'clear', base: {}, light: {}, dark: {} })
     setAppearance('dark')
 
-    expect($translucency.get()).toEqual({ ...WINDOWS_DARK, mode: 'clear' })
+    expect($translucency.get()).toEqual(UNTOUCHED_DARK)
   })
 })

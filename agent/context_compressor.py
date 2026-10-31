@@ -1156,6 +1156,13 @@ _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
 # MEDIA delivery directives must not reach the summarizer — if one leaks into the summary, the downstream
 # model may re-emit it as an active directive on the next turn, triggering bogus attachment sends (#14665).
 _MEDIA_DIRECTIVE_RE = re.compile(r"MEDIA:\S+")
+# Forged turn labels: any line-start "[ROLE ...]:" prefix is escaped, including longer
+# names that merely start with a role word ([USER_ID]:), because nothing after the role
+# prefix is trustworthy. Summarizer input is already lossy; readability is not a goal here.
+_TURN_LABEL_RE = re.compile(
+    r"^([^\S\n]*)\[((?:USER|ASSISTANT|SYSTEM|TOOL RESULT)[^\]\n]*)\]:",
+    re.IGNORECASE | re.MULTILINE,
+)
 # Pre-#44454 alias. A summarizer that still emits it must be replaced, not prepended.
 _LEGACY_ACTIVE_TASK_HEADING = "## Active Task"
 _TASK_SNAPSHOT_HEADINGS = (HISTORICAL_TASK_HEADING, _LEGACY_ACTIVE_TASK_HEADING)
@@ -1169,6 +1176,11 @@ def _redact_compaction_text(text: Any) -> str:
     ``force=True`` overrides ``security.redact_secrets: false``; URL credentials are redacted too, since
     summaries persist and re-enter every later prompt."""
     return redact_sensitive_text(text or "", force=True, redact_url_credentials=True)
+
+
+def _neutralize_turn_labels(text: str) -> str:
+    """Quote embedded turn labels so content cannot impersonate transcript boundaries."""
+    return _TURN_LABEL_RE.sub(r"\1 \\[\2]:", text)
 
 
 def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:
@@ -3417,6 +3429,7 @@ class ContextCompressor(
         # Redact the FULL args before cutting: delimited secrets (PEM BEGIN…END) only match whole, so a
         # pre-redaction cut would leave a key body straddling the cut unredacted in the persisted summary.
         args = _redact_compaction_text(fn.get("arguments", ""))
+        args = _neutralize_turn_labels(args)
         if len(args) > self._TOOL_ARGS_MAX:
             args = args[:self._TOOL_ARGS_HEAD] + "..."
         return f"  {fn.get('name', '?')}({args})"
@@ -3436,6 +3449,7 @@ class ContextCompressor(
             # Strip inline <think>-style blocks: scratch work wastes summarizer context and risks being kept as fact.
             if role == "assistant" and content:
                 content = strip_think_blocks(None, content)
+            content = _neutralize_turn_labels(content)
             if len(content) > self._CONTENT_MAX:
                 content = elide_middle(content, self._CONTENT_HEAD, self._CONTENT_TAIL)
             if role == "tool":
@@ -3598,27 +3612,6 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             if heading not in summary:
                 summary += build()
         return summary
-
-    @classmethod
-    def _bound_summary_input(cls, content: str) -> str:
-        """Cap total summarizer input, keeping head and tail and marking the omitted middle."""
-        if len(content) <= cls._SUMMARY_INPUT_MAX_CHARS:
-            return content
-
-        marker_template = (
-            "\n\n...[summary input truncated: omitted "
-            "{omitted:,} chars from the middle to keep compression prompt bounded]...\n\n"
-        )
-        # Marker width can change with the omitted count; estimate, then rebuild once.
-        omitted = len(content)
-        for _ in range(2):
-            marker = marker_template.format(omitted=omitted)
-            remaining = max(cls._SUMMARY_INPUT_MAX_CHARS - len(marker), 0)
-            head_chars = int(remaining * 0.45)
-            tail_chars = remaining - head_chars
-            omitted = max(len(content) - head_chars - tail_chars, 0)
-        tail = content[-tail_chars:].lstrip() if tail_chars else ""
-        return content[:head_chars].rstrip() + marker + tail
 
     # Lean-mode sampling slice count: 8 keeps slices ~20K chars at the 160K cap.
     _SAMPLED_INPUT_SLICES = 8

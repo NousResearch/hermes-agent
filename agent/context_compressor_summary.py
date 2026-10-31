@@ -1,4 +1,4 @@
-"""Summary-hook dispatch and cancellation rollback for context compression."""
+"""Summary-input bounding, hook dispatch and cancellation rollback for context compression."""
 
 from __future__ import annotations
 
@@ -27,6 +27,30 @@ def _accepts_keyword_argument(callable_obj: Any, name: str) -> bool:
 
 
 class SummaryDispatchMixin:
+    @classmethod
+    def _bound_summary_input(cls, content: str) -> str:
+        """Cap total summarizer input, keeping head and tail and marking the omitted middle."""
+        if len(content) <= cls._SUMMARY_INPUT_MAX_CHARS:
+            return content
+
+        marker_template = (
+            "\n\n...[summary input truncated: omitted "
+            "{omitted:,} chars from the middle to keep compression prompt bounded]...\n\n"
+        )
+        # Marker width can change with the omitted count; estimate, then rebuild once.
+        omitted = len(content)
+        for _ in range(2):
+            marker = marker_template.format(omitted=omitted)
+            remaining = max(cls._SUMMARY_INPUT_MAX_CHARS - len(marker), 0)
+            head_chars = int(remaining * 0.45)
+            tail_chars = remaining - head_chars
+            omitted = max(len(content) - head_chars - tail_chars, 0)
+        tail = content[-tail_chars:] if tail_chars else ""
+        # Keep a partial line inline: clipping must not expose a forged turn label.
+        if tail and content[-tail_chars - 1] != "\n" and tail.partition("\n")[0].strip():
+            marker = marker.rstrip("\n") + " "
+        return content[:head_chars].rstrip() + marker + tail.lstrip()
+
     def _apply_summary_route(self, call_kwargs: dict, pinned: Optional[dict[str, Any]] = None) -> None:
         """Pin the summary route onto ``call_kwargs`` for both compression entry points.
 

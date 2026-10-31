@@ -2260,12 +2260,12 @@ DEFAULT_CONFIG = {
         # latest message / creation) about once per min_interval_hours at CLI/gateway/cron startup.
         # Open, pinned, or mid-turn sessions are never deleted; stale automation sessions whose
         # process died are *closed*, then get a full retention window before removal.
-        # Off by default (deleting history is opt-in). While the user's config.yaml has no
-        # auto_prune key, every surface asks once the disk holding state.db runs low
-        # (hermes_cli/prune_advisor.py); either answer writes the key and ends the question.
+        # Deleting history is opt-in; without auto_prune, prune_advisor asks once on low disk (either answer ends it).
         "auto_prune": False,
         # Inactive days of ended-session history to keep (= `hermes sessions prune`).
         "retention_days": 90,
+        # cron/kanban/subagent without auto_prune; human continuations, pinned and open rows kept.
+        "source_retention_days": {},
         # Auto-archive (soft-hide, never delete) sessions with no activity for auto_archive_days,
         # once per min_interval_hours. Pinned sessions are exempt.
         "auto_archive": False,

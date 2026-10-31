@@ -60,14 +60,12 @@ def _run_state_db_auto_maintenance(session_db) -> None:
                 min_interval_hours=int(cfg.get("min_interval_hours", 24)),
             )
 
-        if not cfg.get("auto_prune", False):
+        from hermes_cli.session_retention_config import auto_prune_kwargs
+        kwargs = auto_prune_kwargs(cfg)
+        if kwargs is None:
             return
         session_db.maybe_auto_prune_and_vacuum(
-            retention_days=int(cfg.get("retention_days", 90)),
-            min_interval_hours=int(cfg.get("min_interval_hours", 24)),
-            min_vacuum_interval_days=int(cfg.get("min_vacuum_interval_days", 30)),
-            vacuum=bool(cfg.get("vacuum_after_prune", True)),
-            sessions_dir=_hermes_home_maint / "sessions",
+            **kwargs, sessions_dir=_hermes_home_maint / "sessions",
         )
     except Exception as exc:
         logger.debug("state.db auto-maintenance skipped: %s", exc)

@@ -1190,6 +1190,19 @@ Key tables in `state.db`:
 
 ### Automatic Cleanup
 
+To bound automation history without enabling global pruning, set `sessions.source_retention_days` (default `{}`):
+```yaml
+sessions:
+  auto_prune: false
+  source_retention_days: {cron: 30, subagent: 14}
+```
+
+This key only deletes ended `cron`, `kanban`, and `subagent` sessions past their inactivity window. It keeps pinned and open sessions, everything outside those sources, any automation session with more than one user-role message or a user message more than 30 seconds after the run started, and cron rows not finalized by the scheduler (`cron_complete`, `cron_incomplete_no_output`), stale-open sweep (`startup_orphan_reap`), or compression (`compression`).
+Runs the agent itself extended also stay: nudges, max-iterations summary requests, late LSP notes, Kanban goal/recovery turns and most context compressions (the summary is usually stored as a user-role message) add user-role messages. These kept runs age out only under global `auto_prune`. Every compression segment must qualify, so a cron lineage whose last segment a person re-ended (such as with `cli_close`) is kept.
+A cron, Kanban or subagent session that had no messages yet, which a person resumed within its first 30 seconds and wrote exactly one message into, looks like an automation run and can be deleted by this key (for cron only if the scheduler or the stale-open sweep finalized it).
+
+Stale open automation rows close first, then age a full window before deletion. A subagent's own transcript goes; its parent chat keeps its summary. Disk space returns through the gated VACUUM below or `hermes sessions optimize`. With global pruning on, source windows only tighten the global window; these protections apply to this key's passes only.
+
 - Gateway conversations persist across inactivity; use `/new` or `/reset` for an explicit boundary
 - Before reset, the agent saves memories and skills from the expiring session
 - Auto-pruning (**off by default**; opt in): when `sessions.auto_prune` is `true`, ended sessions inactive for `sessions.retention_days` (default 90) are pruned at CLI/gateway/cron startup

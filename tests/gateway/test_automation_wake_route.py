@@ -209,3 +209,202 @@ async def test_relay_wake_row_reverifies_the_source_it_stores(tmp_path, monkeypa
         assert restore_native(row['payload'], runner).source.message_id is None
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_wake_after_a_reset_borrows_the_previous_conversations_envelope(tmp_path, monkeypatch):
+    """A conversation created by /new has no committed input yet. A background result dispatched from
+    it must still reach it, borrowing the predecessor's identity (the live adapter revalidates the
+    connector proof). Without the fallback it was refused not_found and dropped after 8 attempts."""
+    runner, authority, _adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        route = metadata['gateway_session_key']
+        fresh = runner.session_store.reset_session(route)
+        assert fresh is not None and fresh.session_id != metadata['gateway_session_id']
+        event = {'type': 'completion', 'session_id': 'proc-fresh', 'started_at': 1, 'session_key': route,
+                 'parent_session_id': fresh.session_id}
+        assert await runner._inject_watch_notification('fresh done', event) is True
+        rows = list_session_admissions(authority.db, session_id=authority.logical_owner(fresh.session_id),
+                                       pending_only=False)
+        wake = rows[-1]
+        assert wake['payload']['native_text_v1']['automation']['owner'] == fresh.session_id
+        assert 'fresh done' in wake['payload']['text']
+        # The borrowed envelope passes the drain's pre-claim route proof, not only admission.
+        from gateway.session_contract import SessionRef
+        from gateway.session_envelope import check_native_route
+        await check_native_route(runner, wake['payload'],
+                                 authority.physical_target(SessionRef(authority.profile_id, fresh.session_id)),
+                                 _source, runner._adapter_for_source(_source))
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_wake_prefers_the_fresh_conversations_own_envelope(tmp_path, monkeypatch):
+    """Once the fresh conversation admits a human message, its own envelope wins over the predecessor."""
+    from gateway.session_ingress_context import native_callback
+    runner, authority, adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        route = metadata['gateway_session_key']
+        fresh = runner.session_store.reset_session(route)
+        assert fresh is not None
+        human = MessageEvent(text='fresh human', message_id='human-2',
+                             source=adapter.build_source(chat_id='42', chat_type='dm', user_id='42',
+                                                         user_name='human', message_id='human-2'))
+        with native_callback(runner, human, tmp_path):
+            await authority.admit_native(human)
+        event = {'type': 'completion', 'session_id': 'proc-fresh', 'started_at': 1, 'session_key': route,
+                 'parent_session_id': fresh.session_id}
+        assert await runner._inject_watch_notification('fresh done', event) is True
+        rows = list_session_admissions(authority.db, session_id=authority.logical_owner(fresh.session_id),
+                                       pending_only=False)
+        current = next(r['payload']['native_text_v1'] for r in reversed(rows[:-1])
+                       if 'native_text_v1' in r['payload'] and 'automation' not in r['payload']['native_text_v1'])
+        wake = rows[-1]['payload']['native_text_v1']
+        assert wake['source'] == {k: v for k, v in current['source'].items() if k != 'message_id'}
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_wake_walks_more_than_one_reset(tmp_path, monkeypatch):
+    """Two resets in a row: the walk reaches the conversation that still holds the envelope."""
+    runner, authority, _adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        route = metadata['gateway_session_key']
+        runner.session_store.reset_session(route)
+        fresh = runner.session_store.reset_session(route)
+        assert fresh is not None
+        event = {'type': 'completion', 'session_id': 'proc-twice', 'started_at': 1, 'session_key': route,
+                 'parent_session_id': fresh.session_id}
+        assert await runner._inject_watch_notification('twice done', event) is True
+        rows = list_session_admissions(authority.db, session_id=authority.logical_owner(fresh.session_id),
+                                       pending_only=False)
+        assert 'twice done' in rows[-1]['payload']['text']
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_wake_without_any_envelope_still_refuses(tmp_path, monkeypatch):
+    """A route whose whole lineage has no committed input still refuses; the fallback is not a blanket admit."""
+    runner, authority, adapter, _source, _metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        empty_source = adapter.build_source(chat_id='99', chat_type='dm', user_id='42',
+                                            user_name='human', message_id=None)
+        empty = runner.session_store.get_or_create_session(empty_source)
+        fresh = runner.session_store.reset_session(empty.session_key)
+        assert fresh is not None
+        event = MessageEvent(text='notice', source=empty_source,
+                             internal=True, metadata={'gateway_session_key': empty.session_key,
+                                                      'gateway_session_id': fresh.session_id})
+        with pytest.raises(RuntimeStoreError, match='not_found'):
+            await authority.admit_automation(adapter, event, 'notice')
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_wake_after_nine_resets_still_reaches_the_old_envelope(tmp_path, monkeypatch):
+    """The bound is generous enough for a long reset chain; only a malformed chain exhausts it."""
+    runner, authority, _adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        route = metadata['gateway_session_key']
+        fresh = None
+        for _ in range(9):
+            fresh = runner.session_store.reset_session(route)
+        assert fresh is not None
+        event = {'type': 'completion', 'session_id': 'proc-nine', 'started_at': 1, 'session_key': route,
+                 'parent_session_id': fresh.session_id}
+        assert await runner._inject_watch_notification('nine done', event) is True
+        rows = list_session_admissions(authority.db, session_id=authority.logical_owner(fresh.session_id),
+                                       pending_only=False)
+        assert 'nine done' in rows[-1]['payload']['text']
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_wake_does_not_borrow_across_users_on_a_shared_route(tmp_path, monkeypatch):
+    """A shared group route omits the sender, so a predecessor's envelope from another user is refused."""
+    fields = {**_SOURCE, 'chat_type': 'group', 'thread_id': None}
+    runner, authority, adapter, _source, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'human-1', fields, group_sessions_per_user=False)
+    try:
+        route = metadata['gateway_session_key']
+        fresh = runner.session_store.reset_session(route)
+        assert fresh is not None
+        event = MessageEvent(text='notice', source=adapter.build_source(**{**fields, 'user_id': '7'}),
+                             internal=True, metadata={'gateway_session_key': route,
+                                                      'gateway_session_id': fresh.session_id,
+                                                      'requester_user_id': '7'})
+        with pytest.raises(RuntimeStoreError, match='not_found'):
+            await authority.admit_automation(adapter, event, 'notice')
+        # The same route's own user still resolves.
+        own = MessageEvent(text='notice', source=adapter.build_source(**{**fields, 'user_id': '42'}),
+                           internal=True, metadata={'gateway_session_key': route,
+                                                    'gateway_session_id': fresh.session_id,
+                                                    'requester_user_id': '42'})
+        assert await authority.admit_automation(adapter, own, 'notice') is not None
+        # The first wake's automation envelope must not let a second requester reuse user 42.
+        again = MessageEvent(text='notice', source=adapter.build_source(**{**fields, 'user_id': '7'}),
+                             internal=True, metadata={'gateway_session_key': route,
+                                                      'gateway_session_id': fresh.session_id,
+                                                      'requester_user_id': '7'})
+        with pytest.raises(RuntimeStoreError, match='not_found'):
+            await authority.admit_automation(adapter, again, 'notice')
+        # A legacy event without a producer identity must not reuse user 42's automation envelope.
+        legacy = MessageEvent(text='notice', source=adapter.build_source(**{**fields, 'user_id': '42'}),
+                              internal=True, metadata={'gateway_session_key': route,
+                                                       'gateway_session_id': fresh.session_id})
+        with pytest.raises(RuntimeStoreError, match='not_found'):
+            await authority.admit_automation(adapter, legacy, 'notice')
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_wake_crosses_an_intermediate_compression_tip(tmp_path, monkeypatch):
+    """Reset, compress, reset again: the walk normalizes the compression tip and reaches the envelope."""
+    runner, authority, _adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        route = metadata['gateway_session_key']
+        first = runner.session_store.reset_session(route)
+        assert first is not None
+        tip = first.session_id + '-tip'
+        authority.db.append_message(first.session_id, 'user', 'fresh')
+        authority.db.publish_compression_child(parent_session_id=first.session_id, child_session_id=tip,
+                                               source='discord', messages=[{'role': 'user', 'content': 'summary'}],
+                                               require_compression_lease=False)
+        assert runner.session_store.advance_compression_session(route, first.session_id, tip) is not None
+        second = runner.session_store.reset_session(route)
+        assert second is not None
+        assert (authority.db.get_session(second.session_id) or {}).get('parent_session_id') == tip
+        event = {'type': 'completion', 'session_id': 'proc-compressed', 'started_at': 1,
+                 'session_key': route, 'parent_session_id': second.session_id}
+        assert await runner._inject_watch_notification('compressed done', event) is True
+        rows = list_session_admissions(authority.db, session_id=authority.logical_owner(second.session_id),
+                                       pending_only=False)
+        assert 'compressed done' in rows[-1]['payload']['text']
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_wake_does_not_follow_a_delegate_or_branch_parent(tmp_path, monkeypatch):
+    """Only a reset predecessor is borrowed; delegate and ended branch edges are not."""
+    from gateway.session_automation import wake_route_envelope
+    from gateway.session_contract import SessionRef
+    _runner, authority, _adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        root = metadata['gateway_session_id']
+        authority.db.create_session('branch-test', source='telegram', parent_session_id=root,
+                                    model_config={'_branched_from': root})
+        authority.db.create_session('delegate-test', source='subagent', parent_session_id=root,
+                                    model_config={'_delegate_from': root})
+        authority.db.end_session(root, 'session_switch')  # /branch --here closes the parent
+        assert wake_route_envelope(authority, SessionRef(authority.profile_id, 'branch-test')) is None
+        assert wake_route_envelope(authority, SessionRef(authority.profile_id, 'delegate-test')) is None
+        assert wake_route_envelope(authority, SessionRef(authority.profile_id, root)) is not None
+    finally:
+        authority.db.close()

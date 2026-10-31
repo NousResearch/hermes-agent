@@ -40,6 +40,17 @@ export function xmlWellFormedSvg(svg: string): string {
     node.removeAttribute('xmlns')
   }
 
+  // Prevent `<foreignObject>` from clipping labels when sub-pixel or fallback
+  // font metrics in the isolated `<img>` document differ slightly from the DOM
+  // measurement pass.
+  for (const fo of el.querySelectorAll('foreignObject')) {
+    if (!fo.hasAttribute('overflow')) {
+      fo.setAttribute('overflow', 'visible')
+    }
+
+    fo.style.setProperty('overflow', 'visible')
+  }
+
   return new XMLSerializer().serializeToString(el)
 }
 

@@ -83,9 +83,12 @@ describe('xmlWellFormedSvg', () => {
   })
 
   it('keeps the label content: the line break and the non-breaking space', () => {
-    const label = parseXml(xmlWellFormedSvg(MERMAID_LABEL_SVG)).querySelector('p')
+    const doc = parseXml(xmlWellFormedSvg(MERMAID_LABEL_SVG))
+    const label = doc.querySelector('p')
+    const fo = doc.querySelector('foreignObject')
 
     expect(label?.querySelectorAll('br')).toHaveLength(1)
     expect(label?.textContent).toBe('ab c')
+    expect(fo?.getAttribute('overflow')).toBe('visible')
   })
 })

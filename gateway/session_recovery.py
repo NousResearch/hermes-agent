@@ -334,7 +334,7 @@ class SessionRecoveryMixin:
         if not callable(recorder):
             return
         from gateway.session_api import api_storage_source
-        from gateway.session_a2a import storage_source
+        from gateway.session_a2a import created_surface_of, storage_source
         from gateway.session_identity import transport_profile_of
         peer = dict(
             source=storage_source(db, source, session_id, api_storage_source(db, session_id, source.platform.value)), user_id=source.user_id, session_key=session_key,
@@ -344,7 +344,8 @@ class SessionRecoveryMixin:
                 session_id, **peer, display_name=display_name or source.chat_name,
                 origin_json=_origin_json(source),
                 include_compression_ancestors=include_compression_ancestors,
-                transport_profile=transport_profile or transport_profile_of(source))
+                transport_profile=transport_profile or transport_profile_of(source),
+                created_source=created_surface_of(db, source))
         except TypeError:
             try:  # older SessionDB without display_name/origin_json kwargs
                 recorder(session_id, **peer)

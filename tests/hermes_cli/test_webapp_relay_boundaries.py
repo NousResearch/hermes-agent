@@ -6,7 +6,9 @@ transport, so the hub's real pairing and proxy code talk to it as they would ove
 answers the code exchange itself, so it chooses what it calls its grant, and it serves whatever it
 likes. The other gateway is the relay app itself, paired to itself at ``WEBAPP``.
 """
+import asyncio
 import json
+import threading
 import urllib.parse
 
 import httpx
@@ -16,8 +18,13 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from starlette.routing import Route
 
+from hermes_cli.web_routers import webapp_relay_proxy
 # _relay_app is the relay_app fixture.
 from tests.hermes_cli.test_webapp_relay import ORIGIN, WEBAPP, _pair, _relay_app, _sign_in
+from tests.waiting import wait_until
+
+# The production client factory, before the relay_app fixture swaps in a fresh client per call.
+_REAL_RELAY_CLIENT = webapp_relay_proxy.relay_client
 
 EVIL = "http://evil.spoke:8000"
 
@@ -191,3 +198,63 @@ def test_a_paired_gateway_redirect_within_itself_resolves_under_its_relay(relay_
     for to, expected in (("/a/../b?x=1", f"{base}/b?x=1"), ("/a/%2E/b/.", f"{base}/a/b/"), ("/a/b/..", f"{base}/a/")):
         sent = browser.get(f"{base}/redirect", params={"to": to}, follow_redirects=False)
         assert sent.status_code == 307 and sent.headers["location"] == expected, (to, sent.status_code, sent.headers)
+
+
+@pytest.fixture
+def cookie_gateway():
+    """A gateway on a real loopback port that sets a cookie on /set and reports the Cookie header
+    each request brought, behind whatever cookie-setting proxy a real one might sit."""
+    import uvicorn
+
+    seen = {"cookies": []}
+
+    async def token(_request: Request):
+        return JSONResponse({"grant_id": "cookie-grant", "subject": "stub-user-1", "provider": "stub", "issuer": "",
+                             "scopes": []})
+
+    async def set_cookie(request: Request):
+        seen["cookies"].append(request.headers.get("cookie"))
+        return JSONResponse({}, headers={"Set-Cookie": "edge=sticky; Path=/"})
+
+    async def echo(request: Request):
+        seen["cookies"].append(request.headers.get("cookie"))
+        return JSONResponse({})
+
+    app = Starlette(routes=[Route("/api/webapp/relay/token", token, methods=["POST"]), Route("/set", set_cookie),
+                            Route("/echo", echo)])
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, lifespan="off", log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    wait_until(lambda: server.started or not thread.is_alive(), what="the loopback gateway starting")
+    assert server.started
+    port = server.servers[0].sockets[0].getsockname()[1]
+    try:
+        yield f"http://127.0.0.1:{port}", seen
+    finally:
+        server.should_exit = True
+        thread.join(10)
+
+
+def test_the_relay_carries_no_cookie_from_one_relayed_request_to_the_next(relay_app, monkeypatch, cookie_gateway):
+    # The hub's real client, which lives as long as its event loop: the browser's requests below
+    # share one loop, as they do on a running gateway.
+    monkeypatch.setattr(webapp_relay_proxy, "relay_client", _REAL_RELAY_CLIENT)
+    url, seen = cookie_gateway
+    browser = relay_app.browser()
+    _sign_in(browser)
+    started = browser.post("/api/webapp/relay/gateways", json={"url": url, "label": "Edge"}, headers=ORIGIN)
+    state = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(started.json()["authorize_url"]).query))["state"]
+    back = browser.get(f"/webapp/relay/callback?state={state}&code=anything", follow_redirects=False)
+    assert "relay=connected" in back.headers["location"], back.headers["location"]
+    row = browser.get("/api/webapp/relay/gateways").json()["gateways"][0]
+
+    async def browse():
+        transport = httpx.ASGITransport(app=relay_app.server.app)
+        signed_in = {"cookie": "; ".join(f"{name}={value}" for name, value in browser.cookies.items())}
+        async with httpx.AsyncClient(transport=transport, base_url=WEBAPP, headers=signed_in) as tab:
+            assert (await tab.get(f"/api/relay/{row['id']}/set")).status_code == 200
+            followed = await asyncio.gather(*(tab.get(f"/api/relay/{row['id']}/echo") for _ in range(4)))
+            assert [r.status_code for r in followed] == [200] * 4
+
+    asyncio.run(browse())
+    assert seen["cookies"] == [None] * 5

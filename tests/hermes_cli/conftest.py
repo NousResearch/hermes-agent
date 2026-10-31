@@ -5,6 +5,16 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _skip_setup_model_verification(request, monkeypatch):
+    """Setup tests use no live provider unless they explicitly opt in."""
+    if "real_setup_model_verification" in request.fixturenames:
+        return
+    from hermes_cli import setup_verify
+    monkeypatch.setattr(setup_verify, "verify_model_route",
+                        lambda *_a, **_kw: setup_verify.VerifyResult(False, "skipped"))
+
+
 @pytest.fixture
 def all_assignees_spawnable(monkeypatch):
     """Pretend every assignee maps to a real Hermes profile.

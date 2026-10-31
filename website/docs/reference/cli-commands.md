@@ -396,7 +396,7 @@ the full guide, supported languages, and configuration knobs.
 ## `hermes setup`
 
 ```bash
-hermes setup [model|tts|terminal|gateway|tools|agent] [--non-interactive] [--reset] [--quick] [--reconfigure] [--portal]
+hermes setup [model|tts|terminal|gateway|tools|agent] [--non-interactive] [--reset] [--quick] [--reconfigure] [--portal] [--no-verify]
 ```
 
 **Easiest path:** `hermes setup --portal` — OAuth into Nous Portal and opt into the [Tool Gateway](../user-guide/features/tool-gateway.md) in one shot.
@@ -422,6 +422,7 @@ Options:
 | Option | Description |
 |--------|-------------|
 | `--quick` | On returning-user runs: only prompt for items that are missing or unset. Skip items you already have configured. |
+| `--no-verify` | Skip the live model check at setup completion. App-server and other unsupported runtimes report a skip. |
 | `--non-interactive` | Use defaults / environment values without prompts. |
 | `--reset` | Reset configuration to defaults before setup. |
 | `--reconfigure` | Backwards-compat alias — bare `hermes setup` on an existing install now does this by default. |
@@ -430,14 +431,15 @@ Options:
 ## `hermes portal`
 
 ```bash
-hermes portal [status|open|tools]
+hermes portal [login|info|status|open|tools] [--no-verify]
 ```
 
-Inspect Nous Portal auth, Tool Gateway routing, and reach the subscription page. Subcommand-less invocation runs `status`.
+Log in and complete setup, inspect Nous Portal auth and Tool Gateway routing, or reach the subscription page. With no subcommand, run the one-shot setup. `--no-verify` skips its live model check (also available on `portal login`).
 
 | Subcommand | Description |
 |------------|-------------|
-| `status` (default) | Portal auth state + per-tool Tool Gateway routing summary. Also shown when no subcommand is given. |
+| `login` (default) | Log in and complete one-shot setup. |
+| `info` / `status` | Portal auth state + per-tool Tool Gateway routing summary. |
 | `open` | Open `portal.nousresearch.com/manage-subscription` in your default browser. |
 | `tools` | List every Tool Gateway partner (Firecrawl, FAL, OpenAI TTS, Browser Use, Modal) and which are routed via Nous. |
 

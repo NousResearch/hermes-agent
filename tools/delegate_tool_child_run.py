@@ -903,6 +903,9 @@ class _ChildRun:
         # Resolved after seed_workspace so a multimodal goal's text part carries the worktree note too.
         _images = list(getattr(child, "_delegate_images", None) or [])
         user_message: Any = _build_child_goal_message(self.goal, _images, child) if _images else self.goal
+        # action='continue': the child's saved transcript, so ``self.goal`` (the follow-up) is its next turn.
+        _history = getattr(child, "_delegate_continue_history", None)
+        resume = {"conversation_history": _history} if isinstance(_history, list) else {}
 
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
@@ -911,7 +914,7 @@ class _ChildRun:
             # A profile-routed child converses as that profile (config, secrets, skills, terminal policy).
             with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
                 return child.run_conversation(
-                    user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
+                    user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text, **resume,
                 )
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)

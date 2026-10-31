@@ -910,7 +910,7 @@ Failed jobs always deliver regardless of the `[SILENT]` marker — only successf
 
 ### Declaring a failed run
 
-Only runtime failures (exceptions, timeouts, an unreachable model) mark a run as failed. When the agent itself
+Runtime failures (exceptions, timeouts, an unreachable model) mark a run as failed. When the agent itself
 finishes its turn but the work did not get done — for example a delegated subagent or a script it ran failed —
 it can declare the run failed by putting `[CRON_FAILURE]` alone on the **first line** of its response, followed
 by the explanation:
@@ -925,6 +925,10 @@ all reflect it) and the failure notice is delivered like any other failed run. T
 under `~/.hermes/cron/output/` for triage. The marker is strict: mentioning or quoting `[CRON_FAILURE]` anywhere
 else in a report leaves the run successful. Script-only (`no_agent`) jobs ignore it — a script signals failure
 with a non-zero exit code.
+
+A run in which every tool call was refused before it ran (by a plugin, guardrail, scope or middleware,
+or a terminal command denied by the approval policy) is recorded as failed automatically.
+A run where at least one tool ran, or a text-only run, is unchanged.
 
 ## Script timeout
 

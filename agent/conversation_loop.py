@@ -1812,11 +1812,13 @@ def run_conversation(
     """
     from agent.turn_context import export_current_turn_boundary
     from agent.turn_finalizer import settle_held_final
+    from agent import turn_tool_tally
     from agent.voice_turn_route import end_voice_turn_route
     from tools.vision_tools_history_budget import native_turn_images
 
     # Steer / redirect / interrupt set this mid-turn; the result reports whether the turn ran untouched.
     agent._turn_user_intervened = False
+    turn_tool_tally.reset(agent)
     # Images attached natively to this user turn stay visible to vision_analyze for the turn, so
     # it does not embed the same pixels a second time into the same request (#76411).
     with native_turn_images(user_message):
@@ -1844,6 +1846,7 @@ def run_conversation(
     result = export_current_turn_boundary(agent, result, user_message)
     if isinstance(result, dict):
         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))
+    turn_tool_tally.export(agent, result)
     _close_durable_failed_turn(agent, result)
     return result
 

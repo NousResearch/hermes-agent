@@ -1,0 +1,27 @@
+name: hermes-autonomous
+repo: https://github.com/xiaok/hermes-autonomous
+sha: 9083ebc77c45551e3b36a2ac89e92986d0ee7008
+description: >-
+  Proactive follow-ups: reads the recent conversation, finds things worth returning to
+  (care / utility / risk / curiosity) and comes back at the right moment — a check on the
+  weather before a trip, the price of something bought yesterday, or just "did your throat
+  get better?". Event-driven rather than a daily digest: a cheap no-LLM gate runs on the
+  cron tick and only wakes the agent when something is actually due, with a 90-minute
+  send cooldown, silence 23:00–08:00, at most one message and three items per wake.
+  Disclosure — it reads the Hermes session database (~/.hermes/state.db), read-only, and
+  only rows the owner wrote in their own DM/group topics; it writes only its own
+  plugin-data directory; the plugin code itself makes no network requests (during a
+  review the agent may look facts up with Hermes' own tools); it runs one local Python
+  helper for the /followups command, spawns no Hermes subprocess and bypasses no approval;
+  no credentials are read and there is no telemetry.
+maintainer: xiaok
+tier: community
+category: automation
+requires_hermes: ">=0.22"
+version: "0.4.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

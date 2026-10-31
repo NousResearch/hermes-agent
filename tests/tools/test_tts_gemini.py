@@ -48,6 +48,11 @@ def mock_gemini_response(fake_pcm_bytes):
     return resp
 
 
+def _riff(*chunks):
+    body = b"".join(struct.pack("<4sI", cid, len(b)) + b + b"\x00" * (len(b) & 1) for cid, b in chunks)
+    return struct.pack("<4sI4s", b"RIFF", 4 + len(body), b"WAVE") + body
+
+
 class TestWrapPcmAsWav:
     def test_riff_header_structure(self):
         from tools.tts_tool_delivery import _wrap_pcm_as_wav
@@ -124,6 +129,34 @@ class TestGenerateGeminiTts:
         assert data[8:12] == b"WAVE"
         # Audio payload should match the PCM we put in
         assert data[44:] == fake_pcm_bytes
+
+    def test_riff_response_keeps_only_the_audio(self, tmp_path, monkeypatch, fake_pcm_bytes):
+        """Gemini 3.8 TTS returns a full WAV with a trailing C2PA manifest chunk. Neither the
+        upstream header nor the manifest may reach the audio payload: wrapped as PCM they play
+        as a click and a full-scale burst."""
+        from tools.tts_tool import _generate_gemini_tts
+
+        manifest = b"\x00\x00\x17\xadjumb\x00\x00\x00\x1ejumdc2pa" + b"SynthID" * 40
+        upstream = _riff(
+            (b"fmt ", struct.pack("<HHIIHH", 1, 1, 24000, 48000, 2, 16)),
+            (b"data", fake_pcm_bytes),
+            (b"C2PA", manifest),
+        )
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {"candidates": [{"content": {"parts": [
+            {"inlineData": {"mimeType": "audio/wav", "data": base64.b64encode(upstream).decode()}},
+        ]}}]}
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        output_path = str(tmp_path / "test.wav")
+
+        with patch("requests.post", return_value=resp):
+            _generate_gemini_tts("Hi", output_path, {"gemini": {"model": "gemini-3.8-flash-lite-tts"}})
+
+        data = (tmp_path / "test.wav").read_bytes()
+        assert data.count(b"RIFF") == 1
+        assert data[36:40] == b"data"
+        assert data[44:] == fake_pcm_bytes
+        assert b"jumb" not in data
 
     def test_x_goog_api_client_header_is_set(self, tmp_path, monkeypatch, mock_gemini_response):
         """Gemini TTS requests should include Hermes client context."""

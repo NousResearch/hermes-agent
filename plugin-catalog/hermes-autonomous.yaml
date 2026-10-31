@@ -1,6 +1,6 @@
 name: hermes-autonomous
 repo: https://github.com/xiaok/hermes-autonomous
-sha: a9e8c3d34ea42091c954e7c206adca5ff57f82c4
+sha: 9083ebc77c45551e3b36a2ac89e92986d0ee7008
 description: >-
   Proactive follow-ups: reads the recent conversation, finds things worth returning to
   (care / utility / risk / curiosity) and comes back at the right moment — a check on the
@@ -18,7 +18,7 @@ maintainer: xiaok
 tier: community
 category: automation
 requires_hermes: ">=0.22"
-version: "0.4.0"
+version: "0.4.1"
 platforms: []
 capabilities:
   provides_tools: []

@@ -367,12 +367,17 @@ when a human message needs a reply (or the adapter cannot tell). Internal notifi
 scheduled heartbeats, and messages known to be unaddressed keep their existing silence exemptions,
 even with `allow_silence: false`. This is a room override, not a profile-wide setting.
 It uses the same chat ID → thread ID → parent ID lookup as other channel overrides; the first
-matching entry wins, including an explicit `false`.
+matching entry wins, including an explicit `false`. An entry that sets only other keys (say a
+thread with just `model:`) also matches first, so repeat `allow_silence` there to keep the
+parent's opt-in.
 
 Restart the gateway after editing configuration so all serving profiles use the updated settings.
 The override affects final delivery only: it does not undo tool actions, retract progress already
 sent, or instruct the model to choose silence. Empty, failed, partial, and interrupted results do
-not gain permission to disappear. Ordinary replies and conversation history stay unchanged.
+not gain permission to disappear. Ordinary replies and conversation history stay unchanged. When
+the model wrote a reply beside a housekeeping-only tool call (memory, todo list, skill management
+or session search) and then ended a complete turn on a bare marker, that reply is delivered as the
+final answer, in opted-in rooms too.
 Crash recovery honors a suppression decision only after it was saved for that exact final reply;
 a crash before that point keeps the human-turn safeguard.
 

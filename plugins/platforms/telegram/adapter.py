@@ -7132,6 +7132,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             chat_id=str(chat.id), chat_name=chat.title or (chat.full_name if has_full_name else None), chat_type=chat_type,
             user_id=(str(user.id) if user else (str(chat.id) if chat_type in {"dm", "channel"} else None)),
             user_name=user_name, thread_id=thread_id_str, chat_topic=chat_topic, message_id=str(message.message_id),
+            # A topic lives inside its chat: the route anchor channel-level profile_routes and the
+            # Kanban notifier read for thread-shaped sources (same shape as Matrix/Slack threads).
+            parent_chat_id=str(chat.id) if thread_id_str else None,
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
         reply_to_id, reply_to_text = self._reply_context(message)
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt

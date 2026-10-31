@@ -190,3 +190,25 @@ export function readLocalSkinPayload(
 
   return skin ? { profile, skin } : null
 }
+
+interface LocalSkinIpcMain {
+  on(channel: string, listener: (event: { returnValue: unknown; sender: { id: number } }) => void): void
+}
+
+/**
+ * The preload reads this small, sanitized payload synchronously so the renderer
+ * can register the local skin before its first theme paint. It stays independent
+ * of the selected gateway, which can be an offline remote primary. The window
+ * route is more specific than the global next-launch preference: a peer can be
+ * booting another profile while that preference changes.
+ */
+export function registerLocalSkinIpc(
+  ipcMain: LocalSkinIpcMain,
+  hermesHome: string,
+  windowProfile: (senderId: number) => null | string | undefined,
+  primaryProfile: () => null | string | undefined
+): void {
+  ipcMain.on('hermes:skin:local', event => {
+    event.returnValue = readLocalSkinPayload(hermesHome, windowProfile(event.sender.id), primaryProfile())
+  })
+}

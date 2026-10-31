@@ -5,12 +5,14 @@ import { setApiRequestLocalMode } from '@/api/client'
 import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
+import { browserPageBasePath, readBrowserDefaultProjectDir } from '@/lib/browser-settings'
 import type { ChatMessage } from '@/lib/chat-messages'
 import {
   activeConnectionScopeSuffix,
   connectionScopeSuffix,
   rescopeConnectionScopedStores
 } from '@/lib/connection-scoped'
+import { hostHas } from '@/lib/host-capabilities'
 import { isMessagingSource } from '@/lib/session-source'
 import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
@@ -1165,6 +1167,12 @@ export const $awaitingResponse = atom(false)
 // resume on the next render/focus/reconnect instead of stranding the window.
 // Null whenever the active route has a healthy (or in-flight) resume.
 export const $resumeFailedSessionId = atom<string | null>(null)
+// Stored-session id whose last resume RPC failed while the REST fallback still
+// painted its history: readable, but bound to no runtime, so a turn running
+// there never streams its reply in. use-resume-reattach re-attempts the resume
+// quietly. Unlike $resumeFailedSessionId it never ends in the exhausted
+// overlay, which would cover the history the window can already show.
+export const $resumeReattachSessionId = atom<string | null>(null)
 export interface SessionResumeRequest {
   authoritativeSnapshot?: boolean
   ownerRoute?: SessionOwnerRoute
@@ -1612,6 +1620,7 @@ export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshD
 export { $freshDraftKey, rotateFreshDraftKey } from './composer'
 
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
+export const setResumeReattachSessionId = (next: Updater<string | null>) => updateAtom($resumeReattachSessionId, next)
 
 export const requestSessionResume = (
   sessionId: string,
@@ -1851,7 +1860,7 @@ export const $currentCwdExplicit = atom(false)
 
 export const setCurrentCwdExplicit = (next: Updater<boolean>) => updateAtom($currentCwdExplicit, next)
 
-export const workspaceCwdForNewSession = (): string => {
+export const workspaceCwdForNewSession = (profile?: string): string => {
   // A bare new chat starts DETACHED — no inherited cwd, so the composer's coding
   // rail (which keys off $currentCwd) shows no branch and the first message runs
   // in the gateway's default rather than silently in the last repo you touched.
@@ -1865,6 +1874,17 @@ export const workspaceCwdForNewSession = (): string => {
   // the wrong workspace was the #57911 symptom. Resume/restore still reads
   // the remembered cwd via ensureDefaultWorkspaceCwd (where it remains
   // remote-keyed and intentionally sticky).
+  //
+  // A browser host stores that default folder per profile. The process cache
+  // holds the folder of the profile the window last synced (boot, a connection
+  // apply, Settings), and a rail switch does not refill it, so a browser new
+  // chat reads its own profile's key and stays detached when it never chose one.
+  const owner = profile?.trim()
+
+  if (owner && hostHas('originScopedPrefs')) {
+    return readBrowserDefaultProjectDir(browserPageBasePath(), owner)
+  }
+
   return getConfiguredDefaultProjectDir()
 }
 

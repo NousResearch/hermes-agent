@@ -1,5 +1,6 @@
-// Canonical local authority wire adapter. Remote legacy transports keep their
-// existing protocol; unsupported explicit semantics fail before network admission.
+// Canonical session authority wire adapter, for private native dials and remote owners
+// advertising session_authority in gateway.ready. Remote legacy servers keep their
+// existing protocol; wire negotiation never changes the transport's auth credentials.
 
 import { randomUuid } from '@hermes/shared'
 

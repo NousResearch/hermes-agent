@@ -1,5 +1,6 @@
 """Shared slash command helpers for skills (CLI and gateway both invoke /skill-name)."""
 
+import functools
 import json
 import logging
 import os
@@ -12,6 +13,7 @@ from hermes_constants import display_hermes_home
 from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import load_skills_config as _load_skills_config, preprocess_skill_content
 from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ _publish_lock = threading.Lock()
 # applied by hermes_cli/commands_platforms.py, not here.
 _SKILL_INVALID_CHARS = re.compile(r"[^\w-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+_SKILL_TRIGGER_WORD = re.compile(r"^\w[\w\s-]*\w$|^\w$")
 
 # Skill-scaffolding markers. A /skill (or /bundle) turn is expanded into a
 # model-facing message embedding the full skill body; memory providers storing
@@ -248,6 +251,106 @@ def _resolve_skill_commands_project() -> Optional[str]:
     from agent.skill_utils import find_project_root
     root = find_project_root()
     return str(root) if root is not None else None
+
+
+def _extract_skill_triggers(frontmatter: dict[str, Any]) -> list[str]:
+    """Return normalized ``metadata.hermes.triggers`` phrases. Top-level ``triggers:``
+    is ignored on purpose: bundled skills use it as informal prose, not as opt-in."""
+    metadata = frontmatter.get("metadata")
+    hermes_meta = metadata.get("hermes") if isinstance(metadata, dict) else None
+    raw_triggers = hermes_meta.get("triggers") if isinstance(hermes_meta, dict) else None
+    if raw_triggers is None:
+        return []
+    if not isinstance(raw_triggers, list):
+        raw_triggers = [raw_triggers]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in raw_triggers:
+        trigger = re.sub(r"\s+", " ", str(value or "").strip())
+        if not trigger:
+            continue
+        dedupe_key = trigger.casefold()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(trigger)
+    return normalized
+
+
+@functools.lru_cache(maxsize=1024)
+def _compile_skill_trigger_pattern(trigger: str) -> re.Pattern[str]:
+    """Build a boundary-aware regex for a skill trigger phrase."""
+    normalized = re.sub(r"\s+", " ", trigger.strip())
+    body = r"\s+".join(re.escape(part) for part in normalized.split(" "))
+    if _SKILL_TRIGGER_WORD.fullmatch(normalized):
+        pattern = rf"\b{body}\b"
+    else:
+        pattern = rf"(?<!\w){body}(?!\w)"
+    return re.compile(pattern, re.IGNORECASE)
+
+
+def _no_scanned_skill_declares_triggers() -> bool:
+    """True when THIS identity's skill and plugin maps were already scanned and none declares triggers.
+
+    Scoped to the current ``(platform, home, project)`` identity, and to a plugin projection taken for
+    the same home: another profile's or project's cache saying "no triggers" says nothing about this
+    one, and letting it answer would skip this identity's scan and silently disable every trigger here.
+    Reads only the in-memory caches (no config read, no dir-signature walk), so a plain turn on an
+    install without triggered skills pays nothing. Before the first scan of this identity it answers
+    False and the full path runs once. A skill given triggers later is picked up by the next rescan
+    (``/reload-skills``, a new session, or any palette/completion refresh), as documented.
+    """
+    key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(),
+           _resolve_skill_commands_project())
+    with _publish_lock:
+        commands = _skill_commands_by_key.get(key)
+        plugin_map, plugin_tag = _plugin_skill_commands, _plugin_skill_commands_tag
+    if commands is None or plugin_tag is None or plugin_tag[0] != key[1]:
+        return False
+    for info in (*commands.values(), *plugin_map.values()):
+        if info.get("triggers"):
+            return False
+    return True
+
+
+def find_triggered_skill_command(
+    user_message: str,
+) -> tuple[str, dict[str, Any], str] | None:
+    """Return the best matching skill command for a plain user message."""
+    if not isinstance(user_message, str):
+        return None
+
+    text = user_message.strip()
+    if not text or text.startswith("/"):
+        return None
+    if _no_scanned_skill_declares_triggers():
+        return None
+    if not is_truthy_value(_load_skills_config().get("auto_triggers"), default=True):
+        return None
+
+    best_match: tuple[int, int, str, str, dict[str, Any]] | None = None
+    # Same interactive map /skill uses, without refreshing its /reload-skills snapshot.
+    commands = _merge_interactive_skill_commands(get_skill_commands(), get_plugin_skill_commands())
+    for cmd_key, skill_info in commands.items():
+        for trigger in skill_info.get("triggers") or []:
+            if not _compile_skill_trigger_pattern(trigger).search(text):
+                continue
+            candidate = (
+                len(trigger),
+                len(skill_info.get("name") or ""),
+                cmd_key,
+                trigger,
+                skill_info,
+            )
+            if best_match is None or candidate > best_match:
+                best_match = candidate
+
+    if best_match is None:
+        return None
+
+    _, _, cmd_key, trigger, skill_info = best_match
+    return cmd_key, skill_info, trigger
 
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
@@ -510,7 +613,8 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dic
                        name, cmd_key, commands[cmd_key]["name"])
         return
     commands[cmd_key] = {"name": name, "description": description or f"Invoke the {name} skill",
-                         "skill_md_path": str(skill_md), "skill_dir": str(skill_md.parent)}
+                         "skill_md_path": str(skill_md), "skill_dir": str(skill_md.parent),
+                         "triggers": _extract_skill_triggers(frontmatter)}
 
 
 def scan_skill_commands() -> dict[str, dict[str, Any]]:
@@ -711,6 +815,7 @@ def _scan_plugin_skill_commands(manager, metadata: list, tag: tuple) -> dict[str
                                                   or f"Invoke the {qualified} plugin skill").strip(),
             "skill_identifier": qualified, "skill_md_path": str(skill_md),
             "skill_dir": str(skill_md.parent), "source": "plugin",
+            "triggers": _extract_skill_triggers(parsed),
         }
     with _publish_lock:
         _plugin_skill_commands, _plugin_skill_commands_tag = commands, tag

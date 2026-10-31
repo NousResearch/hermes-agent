@@ -1,6 +1,20 @@
 """CLI notification ownership, structured queueing and last-moment consumption."""
 
 
+def input_is_system_authored(item) -> bool:
+    """Explicit provenance for one queued input: True when the turn is system-authored.
+
+    Background turns arrive in several shapes — ``ProcessNotificationBatch`` (completion),
+    ``TimelineNotification`` (heartbeat, delegation, diagnostic, rendered batch) and a plain
+    ``SystemNotification`` string (watch match / watch-disabled). The turn router asks this instead
+    of inspecting the text: a notification body is never user-authored, whatever it says.
+    """
+    from tools.process_registry_notifications import (
+        ProcessNotificationBatch, SystemNotification, TimelineNotification)
+
+    return isinstance(item, (TimelineNotification, SystemNotification, ProcessNotificationBatch))
+
+
 class CLIProcessNotificationsMixin:
     def _owns_process_notification(self, event: dict) -> bool:
         """Whether this session owns a delegation event (pre-compression keys resolve to their continuation; fail closed)."""
@@ -44,8 +58,8 @@ class CLIProcessNotificationsMixin:
         from tools.process_registry import process_registry
         from tools.async_delegation import claim_event_delivery, complete_event_delivery
         from tools.process_registry_notifications import (
-            HEARTBEAT_DISPLAY_KIND, ProcessNotificationBatch, TimelineNotification, group_process_notifications,
-            heartbeat_display_text)
+            HEARTBEAT_DISPLAY_KIND, ProcessNotificationBatch, SystemNotification, TimelineNotification,
+            group_process_notifications, heartbeat_display_text)
 
         claimed = []
         for event, text in process_registry.drain_notifications(
@@ -67,7 +81,8 @@ class CLIProcessNotificationsMixin:
             elif evt_type == "heartbeat":
                 pending = TimelineNotification(text, heartbeat_display_text(event), HEARTBEAT_DISPLAY_KIND)
             else:
-                pending = TimelineNotification.for_delegation(text, event) if evt_type == "async_delegation" else text
+                pending = (TimelineNotification.for_delegation(text, event)
+                           if evt_type == "async_delegation" else SystemNotification(text))
                 from agent.notification_presentation import diagnostic_process_event
                 if diagnostic_process_event(event) and not isinstance(pending, TimelineNotification):
                     pending = TimelineNotification(text, text, "internal_notification", "diagnostic")

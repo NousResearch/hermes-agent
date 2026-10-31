@@ -16,6 +16,7 @@ import {
   slashIconElement
 } from '@/components/assistant-ui/directive-text'
 import { referenceKind, referenceRe, unwrapReferenceValue } from '@/components/assistant-ui/reference-kinds'
+import { translateNow } from '@/i18n'
 
 import { slashCommandMatches, type SlashCommandScanOptions } from './slash-refs'
 
@@ -132,7 +133,14 @@ export function refChipHtml(kind: string, rawValue: string, displayLabel?: strin
 
   const label = displayLabel || refChipLabel(kind, id)
 
-  return `<span contenteditable="false" title="${escapeHtml(id)}" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" ${refAttrsHtml(kind)}>${directiveIconSvg(kind)}${escapeHtml(label)}</span>`
+  const annotationAttrs =
+    kind === 'annotation' ? `role="button" tabindex="0" aria-label="${escapeHtml(label)}"` : `title="${escapeHtml(id)}"`
+
+  return `<span contenteditable="false" ${annotationAttrs} data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" ${refAttrsHtml(kind)}>${directiveIconSvg(kind)}${escapeHtml(label)}${kind === 'annotation' ? annotationRemoveHtml() : ''}</span>`
+}
+
+function annotationRemoveHtml() {
+  return `<span data-annotation-remove role="button" tabindex="0" aria-label="${escapeHtml(translateNow('common.remove'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></span>`
 }
 
 export function refChipElement(kind: string, rawValue: string, displayLabel?: string) {
@@ -142,12 +150,24 @@ export function refChipElement(kind: string, rawValue: string, displayLabel?: st
 
   chip.contentEditable = 'false'
   chip.title = id
+
+  if (kind === 'annotation') {
+    chip.removeAttribute('title')
+    chip.setAttribute('role', 'button')
+    chip.tabIndex = 0
+    chip.setAttribute('aria-label', displayLabel || refChipLabel(kind, id))
+  }
+
   chip.dataset.refText = text
   chip.dataset.refId = id
   chip.dataset.refKind = kind
   chip.className = 'ref'
   chip.dataset.ref = referenceKind(kind)
   chip.append(directiveIconElement(kind), document.createTextNode(displayLabel || refChipLabel(kind, id)))
+
+  if (kind === 'annotation') {
+    chip.insertAdjacentHTML('beforeend', annotationRemoveHtml())
+  }
 
   return chip
 }

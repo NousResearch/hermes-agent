@@ -146,7 +146,14 @@ jobs:
               exit 1
             fi
             # The helper aborted. Repeat the merge and drop the workflow files.
-            git merge --no-ff -m "merge upstream ${TAG} into Linux packaging" "$TAG" || true
+            set +e
+            git merge --no-ff -m "merge upstream ${TAG} into Linux packaging" "$TAG"
+            MERGE_CODE=$?
+            set -e
+            if [ "$MERGE_CODE" -ne 0 ] && [ ! -f .git/MERGE_HEAD ]; then
+              echo "::error::Repeating the upstream merge failed before any conflict could be resolved."
+              exit 1
+            fi
             if [ -f .git/MERGE_HEAD ]; then
               while IFS= read -r conflict; do
                 [ -z "$conflict" ] && continue

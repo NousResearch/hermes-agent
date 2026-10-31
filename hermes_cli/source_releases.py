@@ -178,6 +178,15 @@ def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=N
                         version=request["sourceVersion"], build_id=request["buildId"])
 
 
+def _git_failure_detail(failure: BaseException) -> str:
+    """git's own last stderr line; the exception alone names only the command."""
+    stderr = getattr(failure, "stderr", None)
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    lines = [line.strip() for line in str(stderr or "").splitlines() if line.strip()]
+    return lines[-1] if lines else str(failure)
+
+
 def _describe_release_failure(failure: BaseException) -> str:
     """A transport failure names its cause (a rate limit is not "no release")."""
     if isinstance(failure, (urllib.error.URLError, TimeoutError)):
@@ -185,6 +194,10 @@ def _describe_release_failure(failure: BaseException) -> str:
 
         # The request that failed, not the configuration: a rejected token retries anonymously.
         return describe_github_failure(failure, authenticated=getattr(failure, "hermes_authenticated", False))
+    if isinstance(failure, (OSError, subprocess.SubprocessError)):
+        # The git leg never got an answer from origin, which is a fact about this
+        # machine; "no published release" would send the reader to the vendor (#137244).
+        return f"Could not reach the release repository (git transport failed): {_git_failure_detail(failure)}"
     return f"No published stable release could be verified: {failure}"
 
 

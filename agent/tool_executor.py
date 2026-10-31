@@ -443,6 +443,17 @@ def _unwrap_tool_search_call(
     return function_name, function_args, scope_block
 
 
+def _bridge_rejection_target(function_name: str, function_args: dict) -> tuple[str, dict]:
+    """Match successful bridged calls so a corrected call resets the tool's failures."""
+    from tools.tool_search import resolve_underlying_call
+
+    with contextlib.suppress(Exception):
+        name, args, error = resolve_underlying_call(function_args)
+        if name and not error:
+            return name, args
+    return function_name, function_args
+
+
 @dataclass
 class _ParsedCall:
     """One model tool call after alias canonicalization, arg parsing and bridge unwrap."""
@@ -475,6 +486,7 @@ class _ManagedToolResult:
     blocked: bool
     dispatched: bool
     data_use: frozenset[str] = frozenset()
+    bridge_rejected: bool = False
 
 
 class _ToolTimeoutResult(str):
@@ -735,10 +747,17 @@ def _dispatch_authorized_once(
         guardrail_decision = agent._tool_guardrails.before_call(ref.name, ref.args)
         if guardrail_decision.allows_execution:
             guardrail_decision = None
+    elif block_error_type == "tool_scope_block":
+        guardrail_decision = agent._tool_guardrails.before_call(*_bridge_rejection_target(ref.name, ref.args), loop_caps=False)
+        if guardrail_decision.allows_execution:
+            guardrail_decision = None
+        else:
+            block_body = None
 
     if block_body is not None or guardrail_decision is not None:
         _advance_start_order()
         state.blocked = True
+        state.bridge_rejected = block_error_type == "tool_scope_block" and guardrail_decision is None
         return _blocked_tool_result(
             agent, ref,
             block_body=block_body, block_error_type=block_error_type, guardrail_decision=guardrail_decision,
@@ -1083,6 +1102,7 @@ def _commit_tool_result(
     effect_disposition,
     observed: bool = False,
     data_use: frozenset[str] = frozenset(),
+    bridge_rejected: bool = False,
     error_preview: Callable[[Any], Any] = lambda result: result,
     success_log_chars: Optional[int] = None,
     verbose_text: Callable[[Any], Any] = lambda result: result,
@@ -1090,8 +1110,8 @@ def _commit_tool_result(
     """Observe (``observed`` results only) and log the outcome; mark the tool done; persist/
     spill, hint, wrap and append the result; flush the session DB; project ``tool.completed``.
 
-    Blocked calls never ran, so they are neither guardrail-observed nor fed to the file-
-    mutation verifier; ``success_log_chars`` (sequential path) also logs the completion line.
+    Only bridge rejections are guardrail-observed among blocked calls; none reach the
+    file-mutation verifier. ``success_log_chars`` (sequential path) also logs completion.
     Returns ``(persisted_result, display_result, risk_metadata)`` (``display_result`` =
     pre-persist content for UI previews) or ``None`` when the flush failed (stop the batch).
     """
@@ -1105,6 +1125,11 @@ def _commit_tool_result(
         if not blocked:
             function_result = agent._append_guardrail_observation(
                 function_name, function_args, function_result, failed=is_error, tool_call_id=tool_call_id,
+            )
+        elif bridge_rejected:
+            name, args = _bridge_rejection_target(function_name, function_args)
+            function_result = agent._append_guardrail_observation(
+                name, args, function_result, failed=True, tool_call_id=tool_call_id,
             )
         if is_error:
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, error_preview(function_result))
@@ -1261,6 +1286,7 @@ class _ToolOutcome:
     is_error: bool
     blocked: bool
     data_use: frozenset[str] = frozenset()
+    bridge_rejected: bool = False
 
 
 def _start_order_gate_timeout(batch_timeout: float | None) -> float:
@@ -1352,7 +1378,7 @@ class _ConcurrentBatch:
         # Approval/sudo callbacks (thread-local) and the agent turn's ContextVars are propagated by
         # propagate_context_to_thread() at the submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
         start = time.time()
-        blocked = dispatched = False
+        blocked = dispatched = bridge_rejected = False
         data_use: frozenset[str] = frozenset()
         try:
             managed = _run_agent_tool_execution_middleware(
@@ -1373,6 +1399,7 @@ class _ConcurrentBatch:
             )
             result, ref.args, ref.trace = managed.result, managed.args, managed.middleware_trace
             blocked, dispatched, data_use = managed.blocked, managed.dispatched, managed.data_use
+            bridge_rejected = managed.bridge_rejected
         except _BatchAbandoned:
             logger.info("tool %s abandoned at start-order gate; skipping dispatch", ref.name)
             return None
@@ -1397,7 +1424,7 @@ class _ConcurrentBatch:
             logger.info(
                 "tool %s completed (%.2fs, %d chars)", ref.name, duration, result_chars
             )
-        return _ToolOutcome(ref, result, duration, is_error, blocked, data_use)
+        return _ToolOutcome(ref, result, duration, is_error, blocked, data_use, bridge_rejected)
 
     def run_worker(self, index: int, start_order: int) -> None:
         """Worker function executed in a thread."""
@@ -1568,6 +1595,7 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
             agent, messages, ref, function_result,
             budget=budget, tool_duration=tool_duration, is_error=is_error, blocked=blocked,
             effect_disposition=effect_disposition, observed=r is not None, data_use=r.data_use if r else frozenset(),
+            bridge_rejected=r.bridge_rejected if r else False,
             error_preview=lambda res: _multimodal_text_summary(res)[:200],
         )
         if committed is None:
@@ -1843,6 +1871,7 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
         agent, messages, ref, function_result,
         budget=budget, tool_duration=tool_duration, is_error=_is_error_result, blocked=managed.blocked,
         effect_disposition="unknown" if _execution_timed_out else None, observed=True, data_use=managed.data_use,
+        bridge_rejected=managed.bridge_rejected,
         error_preview=lambda res: res[:200] if isinstance(res, str) and not agent.verbose_logging else res,
         success_log_chars=_result_len,
         verbose_text=_multimodal_text_summary,

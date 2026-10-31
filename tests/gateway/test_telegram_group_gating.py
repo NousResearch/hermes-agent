@@ -1015,9 +1015,10 @@ def test_sibling_bot_explicit_mention_still_dispatches_and_is_not_observed():
     assert adapter._should_observe_unmentioned_group_message(human) is False
 
 
-def _replying_to(message, *, user_id=None, message_id=10):
+def _replying_to(message, *, user_id=None, message_id=10, sender_chat=None):
     message.reply_to_message = SimpleNamespace(
-        from_user=SimpleNamespace(id=user_id) if user_id else None, message_id=message_id, text="earlier", caption=None)
+        from_user=SimpleNamespace(id=user_id) if user_id else None, message_id=message_id, text="earlier", caption=None,
+        sender_chat=SimpleNamespace(id=sender_chat, type="channel") if sender_chat else None)
     return message
 
 
@@ -1041,6 +1042,8 @@ def _with_media(message, kind):
     (_replying_to(_group_message("anyone up for dinner?", thread_id=5), user_id=222, message_id=5), None),
     (_replying_to(_group_message("agreed?")), None),
     (_replying_to(_group_message("agreed")), None),
+    (_replying_to(_group_message("when does it start?"), user_id=777000, sender_chat=-1009), None),
+    (_replying_to(_group_message("agreed"), user_id=1087968824, sender_chat=-100), None),
     (_with_media(_group_message(None), "voice"), None),
     (_with_media(_group_message(None), "audio"), None),
     (_with_media(_group_message(None, caption="the fridge arrives on saturday"), "voice"), False),
@@ -1049,7 +1052,7 @@ def _with_media(message, kind):
     "mention", "reply-to-bot", "wake-word", "caption-command", "indented-command", "dm",
     "reply-to-other-member", "opens-with-other-mention", "chatter",
     "question", "mentions-other-mid-question", "forum-topic-root", "reply-to-unknown-author",
-    "reply-to-unknown-author-statement",
+    "reply-to-unknown-author-statement", "reply-to-channel-autoforward", "reply-to-anonymous-admin",
     "voice-note", "audio-file", "captioned-voice-chatter", "photo-without-caption",
 ])
 def test_reply_expected_follows_who_the_group_message_addresses(message, expected):

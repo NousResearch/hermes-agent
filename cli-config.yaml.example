@@ -1505,6 +1505,13 @@ platform_toolsets:
 #         priority:
 #           - my_plugin_command
 #           - my-important-skill
+#   matrix:
+#     channel_overrides:
+#       "!exampleTeamRoom:example.org":
+#         # Successful explicit NO_REPLY/[SILENT] finals stay silent, even when addressed.
+#         # Omitted/null/false keeps the current reply policy; failures remain visible.
+#         # Restart the gateway after changing room overrides.
+#         allow_silence: true
 #   slack:
 #     extra:
 #       # Render live tool calls as Slack-native plan/task cards. This explicit

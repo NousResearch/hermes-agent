@@ -344,9 +344,9 @@ class AuthorityConnection:
             # ``_load_gateway_config`` / ``build_policy(get_hermes_home())`` never snapshot the
             # launch profile's config into a served secondary's session. Under a single profile
             # the scope is that profile's own home, so behaviour is unchanged.
-            from gateway.session_authorities import owner_scope
+            from gateway.session_authorities import async_owner_scope
             from gateway.session_connections import METHODS as CONNECTION_METHODS, session_owned
-            with owner_scope(self.authority):
+            async with async_owner_scope(self.authority):
                 if method in GROUP_METHODS or method == 'profiles.list':
                     result = await dispatch_group_control(self, method, params)
                 elif method not in handlers or (method in CONNECTION_METHODS and not session_owned(params)):

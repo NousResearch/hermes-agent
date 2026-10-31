@@ -1794,7 +1794,7 @@ def _load_profile_secret_scope(profile_home: Path) -> dict:
 @_contextmanager
 def _profile_runtime_scope(
     profile_home: Path, prepared_secret_scope: Optional[dict] = None, *,
-    hydrate_secrets: bool = True):
+    hydrate_secrets: bool = True, prepared_terminal_scope: Optional[dict] = None):
     """Scope config/skills/memory AND credentials to a profile for one turn (multiplexed path only).
     ``set_hermes_home_override`` is a contextvar (reaches the agent worker via ``copy_context()``);
     ``set_secret_scope`` makes the profile ``.env`` the credential source without mutating
@@ -1818,7 +1818,7 @@ def _profile_runtime_scope(
         # pinned (first-writer-wins backend leak; #68559).
         from tools.terminal_scope import install_and_reset_profile_terminal_scope
 
-        with install_and_reset_profile_terminal_scope(Path(profile_home)):
+        with install_and_reset_profile_terminal_scope(Path(profile_home), prepared=prepared_terminal_scope):
             yield
     finally:
         if secret_token is not None:

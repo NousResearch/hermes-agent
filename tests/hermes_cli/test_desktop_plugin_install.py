@@ -206,6 +206,32 @@ def test_remove_leaves_a_linked_plugin_alone_and_names_nothing_outside_the_root(
     assert "No desktop plugin named 'ghost'" in install.remove_desktop_plugin("ghost")["error"]
 
 
+@pytest.mark.parametrize("name", ["C:", "C:..", "D:outside", "nul .js", "CON", "nul.txt", "Com1", "LPT¹.js", "CONIN$", "clock$.js", "gizmo."])
+def test_remove_refuses_a_name_windows_reads_as_a_drive_or_a_device(home, name):
+    # On Windows, root / "C:" is the root itself and root / "C:.." its parent: a delete would wipe them.
+    root = _root(home)
+    (root / "keep").mkdir(parents=True)
+    if os.name != "nt":
+        (root / name).mkdir()
+
+    result = install.remove_desktop_plugin(name, force=True)
+
+    assert result["ok"] is False and "folder name" in result["error"]
+    assert (root / "keep").is_dir()
+    assert os.name == "nt" or (root / name).is_dir()
+
+
+def test_a_package_named_like_a_windows_drive_path_is_refused(home, repo):
+    sha = _commit(repo, {"plugin.yaml": "name: 'D:outside'\n", "__init__.py": "",
+                         "desktop/plugin.js": "export default {}\n"})
+
+    result = install.install_desktop_plugin(URL, ref=sha, force=True)
+
+    assert result["ok"] is False
+    assert "folder name" in result["error"]
+    assert not any(_root(home).iterdir())
+
+
 def _catalog(monkeypatch, sha: str) -> None:
     from hermes_cli import plugins_cmd_catalog
     entry = SimpleNamespace(install_identifier=URL, sha=sha)

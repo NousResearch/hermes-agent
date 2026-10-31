@@ -46,6 +46,10 @@ const SOURCE_ALIASES: Record<string, string[]> = {
 // Exported so the recents fetch can keep these in the main list while the
 // messaging fetch excludes them. `acp` runs as a local stdio process spawned
 // by an editor, and its rows must never land in the messaging slice either.
+// `mobile` is self-reported by the dashboard's web chat when the client claims a
+// phone viewport: it is a local conversation with no platform adapter behind it,
+// so it has to page through recents (where resume/delete exist) instead of being
+// handed to a per-platform section that cannot open it (#146814).
 export const LOCAL_SESSION_SOURCE_IDS = [
   'acp',
   'cli',
@@ -54,6 +58,7 @@ export const LOCAL_SESSION_SOURCE_IDS = [
   'gateway',
   'kanban',
   'local',
+  'mobile',
   'oneshot',
   'tui'
 ]

@@ -7,7 +7,10 @@ from gateway.owner_identity import same_owner
 from gateway.session_route_recovery import _messaging_platform, mountable
 
 # Local labels (a cron run is a canonical local session whose last viewer is its own fire).
-_LOCAL_SOURCES = ('cli', 'tui', 'gui', 'desktop', 'local', 'cron')
+# 'mobile' is self-reported by the dashboard's web chat on a phone viewport: a local
+# conversation with no platform adapter, so the picker must resume it like a local row
+# instead of skipping it as "neither local nor messaging" (#146814).
+_LOCAL_SOURCES = ('cli', 'tui', 'gui', 'desktop', 'local', 'cron', 'mobile')
 
 
 def _excluded_sources():

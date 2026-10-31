@@ -1,5 +1,6 @@
 """Regression coverage for PR-state-aware Kanban respawn guards."""
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -11,13 +12,15 @@ from hermes_cli import kanban_pr_acceptance as acceptance
 
 
 @pytest.fixture
-def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    acceptance._pr_state_cache.clear()
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
-    return home
+    yield home
+    acceptance._pr_state_cache.clear()
 
 
 @pytest.mark.parametrize(

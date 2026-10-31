@@ -167,13 +167,8 @@ export function splitRewindSubmit(params: Record<string, unknown>): { rewind: Re
   return { rewind: null, submit }
 }
 
-// Session verbs only the legacy sidecar implements: it looks the session up in its own table,
-// which never holds an owner session, and answers `session not found` (read by the renderer as a
-// reaped runtime). Refused by name until the owner serves them.
-// `preview.restart` is served by the owner (gateway/session_tui_side.py).
-const SIDECAR_SESSION_VERBS = new Set(['handoff.request', 'handoff.state', 'handoff.fail'])
-
-// The manage_connections card's calls the owner serves for a session-owned operation (gateway/session_connections.py); any other session-owned connector call stays refused.
+// `preview.restart` and `handoff.*` are served by the owner (gateway/session_tui_side.py).
+// Sidecar-only session methods remain refused by the missing-handler check below.
 const OWNER_CONNECTION_VERBS = new Set([
   'connection.respond',
   'connectors.operation.status',
@@ -205,7 +200,7 @@ function canonicalProducerFrame(method: string, params: Record<string, unknown>)
     (params.owner as { type?: unknown } | undefined)?.type === 'session' &&
     !OWNER_CONNECTION_VERBS.has(method)
 
-  if (SIDECAR_SESSION_VERBS.has(method) || sessionConnector) {
+  if (sessionConnector) {
     throw new Error(`${method} is not available on the shared gateway yet`)
   }
 

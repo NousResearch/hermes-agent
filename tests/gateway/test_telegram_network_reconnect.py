@@ -205,11 +205,56 @@ async def test_general_pool_drain_is_bounded_when_close_hangs(monkeypatch):
     monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 0.05, raising=False)
 
     await asyncio.wait_for(
-        adapter._drain_general_connections_after_pool_timeout(), timeout=1
+        adapter._drain_general_connections(), timeout=1
     )
 
     general_req.shutdown.assert_awaited_once()
     general_req.initialize.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_general_path_reconnect_drains_general_pool():
+    """A heartbeat/progress failure may reset the shared general pool."""
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 1
+
+    mock_app, mock_polling_req = _make_mock_app()
+    general_req = AsyncMock()
+    general_req.shutdown = AsyncMock()
+    general_req.initialize = AsyncMock()
+    mock_app.bot._request = (mock_polling_req, general_req)
+    adapter._app = mock_app
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._handle_polling_network_error(
+            OSError("proxy disconnected"), drain_general=True
+        )
+
+    general_req.shutdown.assert_awaited_once()
+    general_req.initialize.assert_awaited_once()
+    mock_polling_req.shutdown.assert_awaited_once()
+    mock_polling_req.initialize.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recovery_schedule_preserves_general_path_signal():
+    """The general-path marker survives scheduling into the recovery task."""
+    adapter = _make_adapter()
+    seen = []
+
+    async def recover(error, *, drain_general=False):
+        seen.append(drain_general)
+
+    adapter._handle_polling_network_error = recover
+    adapter._schedule_polling_recovery(
+        OSError("proxy disconnected"),
+        reason="heartbeat probe",
+        drain_general=True,
+    )
+    task = adapter._polling_error_task
+    assert task is not None
+    await task
+    assert seen == [True]
 
 
 @pytest.mark.asyncio

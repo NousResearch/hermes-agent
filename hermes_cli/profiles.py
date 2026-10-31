@@ -20,7 +20,7 @@ from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
-from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
+from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES
 from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
@@ -175,11 +175,10 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "browser-profiles", "browser_profiles",  # live CDP profiles, Browser Use CLI dir (Cookies, Login Data)
     "pairing", "platforms/pairing", "feishu_comment_pairing.json",
     "whatsapp/session", "platforms/whatsapp/session", "matrix/store", "platforms/matrix/store",
-    "cache/bws_cache.json", "cache/bws_cache.enc.json",
+    *SECRET_CACHE_STORES,           # Bitwarden / 1Password value caches, Photon sidecar token
     "workspace/meetings/node_token.json",  # google_meet node RPC secret
     "weixin/accounts",              # WeChat bot tokens + per-peer context tokens
     ".copilot_jwt.json",            # exchanged Copilot API token
-    "runtime/photon-sidecar.json",  # Photon sidecar auth token
     "proxy",                        # iron-proxy CA key + proxy tokens
     "chrome-debug",                 # /browser connect Chrome profile (cookies, logins)
     "home",                         # subprocess HOME: gh, git, ssh, npm and skill-CLI credentials

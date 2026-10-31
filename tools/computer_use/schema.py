@@ -50,6 +50,13 @@ _PROPERTIES: dict[str, Any] = {
             "(no image; useful for text-only models)."
         ),
     },
+    "menus": {
+        "type": "boolean",
+        "description": (
+            "Only for action='capture'. Include the app menu-bar accessibility subtree. Defaults to false "
+            "because menu entries can expose recent document names."
+        ),
+    },
     "app": {
         "type": "string",
         "description": (

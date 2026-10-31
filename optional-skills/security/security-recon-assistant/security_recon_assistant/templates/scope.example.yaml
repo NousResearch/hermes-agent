@@ -1,0 +1,5 @@
+allowed_domains:
+  - scanme.nmap.org
+  # - .example.com  # (wildcards not supported yet)
+excluded:
+  - bad-host.example

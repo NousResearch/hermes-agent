@@ -1,0 +1,52 @@
+# Python artefacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Tests et rapports
+.pytest_cache/
+coverage.xml
+htmlcov/
+.reports/
+*.json  # rapports générés
+*.html  # rapports générés
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs et données temporaires
+logs/
+*.log
+cache/
+.data/
+
+# Environnements virtuels locaux (au cas où)
+.venv/
+venv/
+env/
+
+# Fichiers de configuration sensibles (les utilisateurs doivent créer les leurs)
+scope.yaml  # fichier de scope perso
+
+# macOS
+.DS_Store

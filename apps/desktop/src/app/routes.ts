@@ -1,4 +1,4 @@
-import { atom, onMount } from 'nanostores'
+import { atom, onMount, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
@@ -136,6 +136,12 @@ export interface SidebarNavContribution {
   path: string
   /** `'advanced'` keeps the row out of Simple mode; unset shows it everywhere. */
   tier?: InterfaceTier
+  /** Optional live count shown at the row's end (hidden at 0, capped at 99+).
+   *  An atom so the row updates without re-registering the contribution. */
+  count?: ReadableAtom<number>
+  /** Accessible label for the count, e.g. `n => \`${n} unseen\``. Receives the
+   *  real value, not the capped text. */
+  countLabel?: (count: number) => string
 }
 
 // ── Contributed profile-group header — the `sidebar.profileGroup.header` area ─

@@ -239,6 +239,34 @@ def test_github_source_rejects_symlink_in_referenced_directory(monkeypatch):
     assert source.fetch("owner/repo/skill") is None
 
 
+def test_github_source_accepts_referenced_directory_path(monkeypatch):
+    """A SKILL.md that mentions a sub-directory (``scripts/calculators``) must not be rejected as a
+    symlink escape: git ``tree`` entries are directories, not links. Regression for
+    tradermonty/claude-trading-skills/skills/crypto-regime-analyzer, which failed with
+    "Rejected non-regular referenced file" and surfaced to users as a bogus "stale index entry"."""
+    source = GitHubSource(GitHubAuth())
+    skill_md = (
+        "---\nname: dir-ref\ndescription: d\n---\n"
+        "Calculators live in `scripts/calculators` and the entry point is `scripts/run.py`.\n"
+    )
+    monkeypatch.setattr(source, "_fetch_file_content", lambda _repo, path, ref=None: skill_md)
+    monkeypatch.setattr(source, "_fetch_file_bytes", lambda _repo, path, ref=None: b"x")
+    source._tree_cache["owner/repo"] = (
+        "main",
+        [
+            {"path": "skill/SKILL.md", "type": "blob", "mode": "100644"},
+            {"path": "skill/scripts", "type": "tree", "mode": "040000"},
+            {"path": "skill/scripts/calculators", "type": "tree", "mode": "040000"},
+            {"path": "skill/scripts/calculators/a.py", "type": "blob", "mode": "100644"},
+            {"path": "skill/scripts/run.py", "type": "blob", "mode": "100644"},
+        ],
+    )
+
+    bundle = source.fetch("owner/repo/skill")
+    assert bundle is not None
+    assert set(bundle.files) == {"SKILL.md", "scripts/calculators/a.py", "scripts/run.py"}
+
+
 def test_github_source_fetch_downloads_full_skill_directory(monkeypatch):
     """Support files a skill keeps outside SKILL.md-linked paths still install.
 

@@ -28,6 +28,19 @@ pytest.importorskip("numpy")
 
 
 class TestSentenceChunker:
+    @pytest.mark.parametrize("sentence", ["这是第一句话。", "这是一个问题？", "回答非常清楚！", "最初の文章です。"])
+    def test_cjk_sentence_is_ready_without_trailing_whitespace(self, sentence):
+        chunker = ts.SentenceChunker.from_config({"streaming": {"min_len": 6}})
+        assert chunker.feed(sentence[:-1]) == []
+        assert chunker.feed(sentence[-1]) == [sentence]
+        assert chunker.flush() == []
+
+    def test_short_cjk_fragments_still_honor_min_len(self):
+        chunker = ts.SentenceChunker(min_len=6)
+        assert chunker.feed("好。") == []
+        assert chunker.feed("继续说吧。剩余") == ["好。继续说吧。"]
+        assert chunker.flush() == ["剩余"]
+
     def test_cuts_sentence_the_moment_its_boundary_arrives(self):
         c = ts.SentenceChunker()
         assert c.feed("This is the first full") == []

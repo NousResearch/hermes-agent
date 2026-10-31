@@ -20,7 +20,7 @@ class CanonicalSessionParams(ProfileParams):
 
 class CanonicalCreateParams(ProfileParams):
     request_id: str | None = None
-    source: Literal['cli', 'tui', 'gui', 'acp', 'tool', 'oneshot'] = 'cli'
+    source: Literal['cli', 'tui', 'gui', 'desktop', 'acp', 'tool', 'oneshot'] = 'cli'
     cwd: str | None = None
     # The sessions-row ``cwd`` when it differs from the execution ``cwd`` (the classic CLI records
     # main's stamp: the launch dir, ``""`` = none); ``cwd`` stays where the tools run.

@@ -83,6 +83,11 @@ _TURN_PROFILE: ContextVar = ContextVar('follow_profile_read', default=None)  # (
 # ``oneshot`` (finite ``chat -q`` / ``-z`` runs) run as the CLI but keep their own stored label, so human
 # pickers hide them (INTERNAL_LISTING_SOURCES).
 SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 'cli', 'oneshot': 'cli'}
+# Creation labels a client may send that are not a surface of their own: ``desktop`` is the label the
+# gateway STORES for ``gui`` (``SURFACES['gui']``), so a third-party client that copies a session row's
+# label back creates with it. The legacy adoption lane applies the same mapping to stored rows
+# (``hermes_state_local_migration.LEGACY_CREATION_SOURCES``); a test pins the two equal.
+SURFACE_ALIASES = {'desktop': 'gui'}
 # ``tool`` and ``oneshot`` stay stored under their own labels so pickers can hide them.
 # Every other creation label is rewritten to ``source='local'`` on peer refresh.
 _KEEP_STORED_LABEL = frozenset({'tool', 'oneshot'})
@@ -423,6 +428,10 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
         from gateway.session_a2a import build_forward_policy
         return build_forward_policy(params, config, private_secrets=private_secrets)
     unknown = sorted(set(params) - CREATE_FIELDS)
+    # A stored label a client copied back (``desktop``) resolves to its surface before the check; an
+    # unknown label still refuses ``source``.
+    if isinstance(source, str):
+        source = SURFACE_ALIASES.get(source, source)
     if unknown or not isinstance(source, str) or source not in SURFACES:
         _refuse(f'params.{unknown[0]}' if unknown else 'source',
                 'unknown create field' if unknown else f'not a surface: {source!r}')
@@ -477,7 +486,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
         rules = json.dumps(rules, sort_keys=True)
     # Values stay out of the request: ``launch_request`` is echoed to every viewer of the session.
     request = {k: v for k, v in params.items() if k not in {'request_id', 'api_key', 'client_env'}}
-    request.setdefault('source', 'cli')
+    request['source'] = source
     from gateway.session_local_mcp import private_editor_request
     private_editor_request(request, private_secrets)
     _extract_config_secrets(config, private_secrets)

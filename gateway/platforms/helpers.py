@@ -535,6 +535,58 @@ def balance_fences_across_chunks(chunks: list[str]) -> list[str]:
     return out
 
 
+def _is_table_line(line: str) -> bool:
+    return line.strip().startswith('|') or bool(TABLE_SEPARATOR_RE.match(line))
+
+
+def _table_header_above(lines: list[str], i: int) -> int:
+    """Index of the header row of the pipe table containing ``lines[i]``, else -1."""
+    while i >= 1 and _is_table_line(lines[i]):
+        if TABLE_SEPARATOR_RE.match(lines[i]) and lines[i - 1].strip().startswith('|'):
+            return i - 1
+        i -= 1
+    return -1
+
+
+def _split_inside_table(head: str, tail: str) -> bool:
+    return (_is_table_line(head.rstrip('\n').rsplit('\n', 1)[-1])
+            and tail.lstrip().startswith('|'))
+
+
+def table_rollback_point(text: str, split_at: int, fits) -> int:
+    """When ``text[:split_at]`` ends inside a pipe table that *fits* whole in a fresh chunk,
+    return the offset of its header line so the table moves intact; else *split_at*."""
+    if not _split_inside_table(text[:split_at], text[split_at:]):
+        return split_at
+    head_lines = text[:split_at].split('\n')
+    lines = head_lines + [text[split_at:].lstrip().split('\n', 1)[0]]  # sees a separator just past the cut
+    header = _table_header_above(lines, len(lines) - 1)
+    if header <= 0:
+        return split_at
+    start = len('\n'.join(lines[:header])) + 1
+    if header >= len(head_lines) - 2:  # header (+ separator) with no rows never ends a chunk
+        return start
+    end = start
+    for line in text[start:].split('\n'):
+        if not _is_table_line(line):
+            break
+        end += len(line) + 1
+    return start if fits(text[start:end].rstrip('\n')) else split_at
+
+
+def table_header_to_repeat(chunk: str, rest: str, max_units: int, len_fn=len):
+    """Header + separator lines to prepend to *rest* when *chunk* ended mid-table, else None
+    (also None when the header alone exceeds *max_units*, so a huge header can't stall)."""
+    if not _split_inside_table(chunk, rest):
+        return None
+    lines = chunk.rstrip('\n').split('\n')
+    header = _table_header_above(lines, len(lines) - 1)
+    if header < 0:
+        return None
+    block = f"{lines[header]}\n{lines[header + 1]}"
+    return block if len_fn(block) <= max_units else None
+
+
 def fence_state_after(text: str, in_code: bool = False, lang: str = "") -> tuple[bool, str]:
     """Walk ``text`` line by line toggling on ``` lines; return the final (in_code, lang)."""
     for line in text.split("\n"):

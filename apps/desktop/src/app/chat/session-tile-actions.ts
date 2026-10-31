@@ -56,11 +56,10 @@ import {
   deepCutConfirmRequest,
   durableRowIdsForRebind,
   finalizeStoppedMessages,
-  planConfirmedEdit,
   planConfirmedReload,
+  planEditAfterConfirm,
   planRestore,
   rebindSurvivorRowIds,
-  revalidateEditPlan,
   runRewindSubmit,
   sealAcceptedCorrection,
   type SurvivorUserRowIds
@@ -735,25 +734,28 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       const planning = readMessages()
       const runtimeAtPlan = runtimeIdRef.current
       const confirmDeep = () => confirm(deepCutConfirmRequest(t.assistant.thread))
-      const forceDeep = answeredFor !== undefined && answeredFor === planning
-      const planned = await planConfirmedEdit(planning, edited, forceDeep ? async () => true : confirmDeep)
-      const forced = planned && forceDeep ? { ...planned, confirmDeepTruncate: true } : planned
 
-      // A confirm is a wait of user length: an answer given after a runtime rebind is not for this one.
-      if (!forced || runtimeIdRef.current !== runtimeAtPlan) {
-        return
-      }
+      // Same plan/confirm/re-aim step as the primary edit; an answer given after a runtime rebind
+      // is not for this one.
+      const planned = await planEditAfterConfirm({
+        answeredFor,
+        confirmDeep,
+        current: readMessages,
+        edited,
+        planning,
+        stillOwned: () => runtimeIdRef.current === runtimeAtPlan
+      })
 
-      // Same re-aim as the primary edit: a stream may have grown the transcript during the confirm.
-      const messages = forced.confirmDeepTruncate ? readMessages() : planning
-      const plan = messages === planning ? forced : revalidateEditPlan(forced, planning, messages, edited)
-
-      if (!plan) {
+      if (planned === 'moved') {
         // The edited turn moved while the confirm was open: nothing was sent.
         notify({ kind: 'warning', message: copy.editFailed })
+      }
 
+      if (!planned || planned === 'moved') {
         return
       }
+
+      const { messages, plan } = planned
 
       const sessionId = runtimeIdRef.current
 

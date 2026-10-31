@@ -56,3 +56,22 @@ def test_normal_multimodal_result_is_unchanged(tmp_path, monkeypatch):
     (tool_msg,) = _run_sequential(_make_agent(), _envelope(small))
     assert tool_msg["content"][0] == {"type": "text", "text": small + "\nscreenshot captured"}
     assert not Path(tmp_path, "cache", "spillover").exists()
+
+
+def test_two_oversized_text_parts_keep_distinct_spill_files(tmp_path, monkeypatch):
+    """Every text part of one envelope persists under the same tool_call_id; neither stub may end up
+    pointing at the other part's text."""
+    from agent.tool_executor import _persist_multimodal_text_parts
+    from tools.budget_config import DEFAULT_BUDGET
+    from tools.tool_result_storage import extract_persisted_path
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    first, second = "PART-A\n" + "a" * 120_000, "PART-B\n" + "b" * 120_000
+    envelope = {"_multimodal": True, "content": [
+        {"type": "text", "text": first},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,QUJD"}},
+        {"type": "text", "text": second},
+    ]}
+    out = _persist_multimodal_text_parts(envelope, "browser_exec", "call_x", None, DEFAULT_BUDGET)
+    paths = [extract_persisted_path(p["text"]) for p in out["content"] if p.get("type") == "text"]
+    assert [Path(p).read_text(encoding="utf-8") for p in paths] == [first, second]

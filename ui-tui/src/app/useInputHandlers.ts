@@ -153,6 +153,31 @@ export function shouldFallThroughForScroll(key: {
   return false
 }
 
+/**
+ * When approval/clarify/confirm overlays are active, their own useInput
+ * handlers must receive keystrokes (arrow keys, numbers, Enter).  The global
+ * handler intercepts only Ctrl+C, so the user can deny/dismiss, and Ctrl+T,
+ * which opens the agents overlay — all other keys fall through to the
+ * component-level handlers.
+ *
+ * Scroll inputs (wheel / PageUp / PageDown / Shift+↑↓) are special:
+ * they must reach the transcript scroll handlers even with a
+ * prompt up.  Long-thread context the prompt is asking about often
+ * lives above the visible viewport, and being unable to read it while
+ * answering felt like the prompt had locked the entire UI.  The global
+ * handler skips the prompt-overlay early-return for scroll keys so they fall
+ * through to the wheel / PageUp / Shift+arrow handlers.
+ */
+const isPromptOverlay = (overlay: OverlayState): boolean =>
+  Boolean(
+    overlay.approval ||
+      overlay.billing ||
+      overlay.clarify ||
+      overlay.confirm ||
+      overlay.connection ||
+      overlay.subscription
+  )
+
 export function applyVoiceRecordResponse(
   response: null | VoiceRecordResponse,
   starting: boolean,
@@ -495,31 +520,20 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (isBlocked) {
-      // When approval/clarify/confirm overlays are active, their own useInput
-      // handlers must receive keystrokes (arrow keys, numbers, Enter).  Only
-      // intercept Ctrl+C here so the user can deny/dismiss — all other keys
-      // fall through to the component-level handlers.
-      //
-      // Scroll inputs (wheel / PageUp / PageDown / Shift+↑↓) are special:
-      // they must reach the transcript scroll handlers below even with a
-      // prompt up.  Long-thread context the prompt is asking about often
-      // lives above the visible viewport, and being unable to read it while
-      // answering felt like the prompt had locked the entire UI.  Explicitly
-      // skip the prompt-overlay early-return for scroll keys so they fall
-      // through to the wheel / PageUp / Shift+arrow handlers below.
-      const promptOverlay =
-        overlay.approval ||
-        overlay.billing ||
-        overlay.clarify ||
-        overlay.confirm ||
-        overlay.connection ||
-        overlay.subscription
-
+      const promptOverlay = isPromptOverlay(overlay)
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
+
+      // Ctrl+T over a prompt opens the agents overlay; the prompt stays pending and unmounted
+      // until the overlay closes, and Ctrl+C closes only the overlay.
+      if (promptOverlay && overlay.agents) {
+        return isCtrl(key, ch, 'c') ? patchOverlayState({ agents: false }) : undefined
+      }
 
       if (promptOverlay && !fallThroughForScroll) {
         if (isCtrl(key, ch, 'c')) {
           cancelOverlayFromCtrlC()
+        } else if (isCtrl(key, ch, 't')) {
+          patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
         }
 
         return

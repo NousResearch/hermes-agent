@@ -328,6 +328,17 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
     _registered = False
     fire_owner = None
 
+    # hjs-5cm: stamp the transient prompt the same way trigger_job persists it for a
+    # manual run, so the EXISTING single-fire pick-up in run_one_job applies — the
+    # external cron worker payload carries only the job dict, and an extra_prompt
+    # kwarg alone dies at the process boundary (event rails lost the Run Context
+    # block). In-memory only: it rides the payload and dies with this fire;
+    # mark_job_run clears it from the run that consumed it.
+    if extra_prompt:
+        from hermes_time import now as _hermes_now
+        _stamp = _hermes_now().isoformat()
+        job = dict(job, manual_run_prompt=extra_prompt, manual_run_at=_stamp)
+
     registration_owner = object()
     running_future = Future()
     running_future.set_running_or_notify_cancel()

@@ -26,6 +26,121 @@ if str(ROOT) not in sys.path:
 from agent.secret_sources import bitwarden as bw
 
 
+@pytest.fixture
+def bitwarden_source(monkeypatch):
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
+    monkeypatch.setattr(bw, "find_bws", lambda **_kw: Path("/fake/bws"))
+    return bw.BitwardenSource()
+
+
+def test_source_merges_projects_first_name_wins(bitwarden_source, monkeypatch, tmp_path):
+    calls = []
+    projects = {
+        "own": ({"OWN_KEY": "own-only", "SHARED_KEY": "own-secret"}, ["own warning"]),
+        "shared": ({"TEAM_KEY": "team-only", "SHARED_KEY": "shared-secret"}, ["shared warning"]),
+        "third": ({"SHARED_KEY": "third-secret"}, ["third warning"]),
+    }
+
+    def fake_fetch(**kwargs):
+        calls.append(kwargs)
+        return projects[kwargs["project_id"]]
+
+    monkeypatch.setattr(bw, "fetch_bitwarden_secrets", fake_fetch)
+    result = bitwarden_source.fetch({
+        "project_id": "own", "extra_project_ids": ["shared", "third"],
+        "cache_ttl_seconds": 42, "server_url": "https://vault.bitwarden.eu",
+        "encrypted_cache": {"enabled": True, "max_stale_seconds": 123},
+    }, tmp_path)
+
+    assert result.ok
+    assert result.secrets == {
+        "OWN_KEY": "own-only", "TEAM_KEY": "team-only", "SHARED_KEY": "own-secret",
+    }
+    assert calls == [{
+        "access_token": "0.t", "project_id": pid, "binary": Path("/fake/bws"),
+        "cache_ttl_seconds": 42.0, "server_url": "https://vault.bitwarden.eu",
+        "home_path": tmp_path, "encrypted_cache_enabled": True,
+        "encrypted_cache_max_stale_seconds": 123.0,
+    } for pid in projects]
+    assert result.warnings == [
+        "own warning", "shared warning",
+        "bitwarden: SHARED_KEY is in project own and shared; using own", "third warning",
+    ]
+    for secret in ("own-secret", "shared-secret", "third-secret"):
+        assert secret not in " ".join(result.warnings)
+
+
+@pytest.mark.parametrize("error,kind", [
+    ("network unavailable", bw.ErrorKind.NETWORK),
+    ("unauthorized (401)", bw.ErrorKind.AUTH_FAILED),
+])
+def test_source_extra_project_failure_is_fatal(
+    bitwarden_source, monkeypatch, tmp_path, error, kind,
+):
+    calls = []
+
+    def fake_fetch(**kwargs):
+        calls.append(kwargs["project_id"])
+        if kwargs["project_id"] == "shared-project":
+            raise RuntimeError(error)
+        return {"OWN_KEY": "own-secret"}, ["own warning"]
+
+    monkeypatch.setattr(bw, "fetch_bitwarden_secrets", fake_fetch)
+    result = bitwarden_source.fetch({
+        "project_id": "own", "extra_project_ids": ["shared-project", "unused"],
+    }, tmp_path)
+
+    assert not result.ok
+    assert result.secrets == {}
+    assert result.error_kind == kind
+    assert error in result.error
+    assert "shared-project" in result.error
+    assert result.warnings == ["own warning"]
+    assert calls == ["own", "shared-project"]
+    if kind == bw.ErrorKind.AUTH_FAILED:
+        assert result.error.startswith("Bitwarden rejected the machine-account access token (BWS_ACCESS_TOKEN)")
+
+
+@pytest.mark.parametrize("extras", [{}, {"extra_project_ids": []}])
+def test_source_without_extra_projects_fetches_once(bitwarden_source, monkeypatch, tmp_path, extras):
+    calls = []
+
+    def fake_fetch(**kwargs):
+        calls.append(kwargs["project_id"])
+        return {"KEY": "value"}, ["original warning"]
+
+    monkeypatch.setattr(bw, "fetch_bitwarden_secrets", fake_fetch)
+    result = bitwarden_source.fetch({"project_id": "own", **extras}, tmp_path)
+
+    assert calls == ["own"]
+    assert result.ok
+    assert result.secrets == {"KEY": "value"}
+    assert result.warnings == ["original warning"]
+
+
+@pytest.mark.parametrize("extras,expected", [
+    (["own", "shared", "shared", "own", "third", "third", "", None, 7, {}, []],
+     ["own", "shared", "third"]),
+    ("shared", ["own", "shared"]),
+    ("", ["own"]),
+    (None, ["own"]),
+    (17, ["own"]),
+    ({"project": "shared"}, ["own"]),
+])
+def test_source_filters_extra_projects(bitwarden_source, monkeypatch, tmp_path, extras, expected):
+    calls = []
+
+    def fake_fetch(**kwargs):
+        calls.append(kwargs["project_id"])
+        return {}, []
+
+    monkeypatch.setattr(bw, "fetch_bitwarden_secrets", fake_fetch)
+    result = bitwarden_source.fetch({"project_id": "own", "extra_project_ids": extras}, tmp_path)
+
+    assert result.ok
+    assert calls == expected
+
+
 @pytest.fixture(autouse=True)
 def _reset_caches():
     bw._reset_cache_for_tests()
@@ -399,7 +514,6 @@ def test_stale_fallback_skipped_on_auth_failure(monkeypatch, tmp_path):
             access_token="0.t", project_id="proj-1", binary=fake_binary,
             cache_ttl_seconds=300, home_path=home,
         )
-
 
 
 

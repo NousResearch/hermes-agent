@@ -335,6 +335,10 @@ class BitwardenSource(SecretSource):
             "access_token_env": {"description": "Env var holding the machine-account access token",
                                  "default": "BWS_ACCESS_TOKEN"},
             "project_id": {"description": "BSM project UUID", "default": ""},
+            "extra_project_ids": {
+                "description": "Further project UUIDs read after project_id; the first project that holds a name wins",
+                "default": [],
+            },
             "cache_ttl_seconds": {"description": "Fresh disk+memory cache TTL; 0 disables fresh-cache reuse",
                                   "default": 300},
             "encrypted_cache": {"description": "Encrypted last-good cache for network/timeout fallback",
@@ -366,16 +370,37 @@ class BitwardenSource(SecretSource):
         encrypted_cfg = cfg.get("encrypted_cache")
         encrypted_cfg = encrypted_cfg if isinstance(encrypted_cfg, dict) else {}
 
+        extra_ids = cfg.get("extra_project_ids", [])
+        if not isinstance(extra_ids, list):
+            extra_ids = [extra_ids] if isinstance(extra_ids, str) else []
+        project_ids = list(dict.fromkeys(
+            [project_id] + [pid for pid in extra_ids if isinstance(pid, str) and pid]
+        ))
+        secrets = {}
+        owners = {}
+        warned = set()
         try:
-            secrets, warnings = fetch_bitwarden_secrets(
-                access_token=access_token, project_id=project_id, binary=binary,
-                cache_ttl_seconds=coerce_float(cfg.get("cache_ttl_seconds", 300), 300.0),
-                server_url=str(cfg.get("server_url", "") or "").strip(), home_path=home_path,
-                encrypted_cache_enabled=bool(encrypted_cfg.get("enabled", False)),
-                encrypted_cache_max_stale_seconds=coerce_float(encrypted_cfg.get("max_stale_seconds", 0), 0.0),
-            )
+            for pid in project_ids:
+                project_secrets, warnings = fetch_bitwarden_secrets(
+                    access_token=access_token, project_id=pid, binary=binary,
+                    cache_ttl_seconds=coerce_float(cfg.get("cache_ttl_seconds", 300), 300.0),
+                    server_url=str(cfg.get("server_url", "") or "").strip(), home_path=home_path,
+                    encrypted_cache_enabled=bool(encrypted_cfg.get("enabled", False)),
+                    encrypted_cache_max_stale_seconds=coerce_float(encrypted_cfg.get("max_stale_seconds", 0), 0.0),
+                )
+                result.warnings.extend(warnings)
+                for name, value in project_secrets.items():
+                    if name not in owners:
+                        secrets[name] = value
+                        owners[name] = pid
+                    elif name not in warned:
+                        result.warnings.append(
+                            f"bitwarden: {name} is in project {owners[name]} and {pid}; using {owners[name]}"
+                        )
+                        warned.add(name)
         except RuntimeError as exc:
-            result.fail(str(exc), _classify_bws_error(str(exc)))
+            message = f"{exc} (project {pid})" if len(project_ids) > 1 else str(exc)
+            result.fail(message, _classify_bws_error(str(exc)))
             if result.error_kind == ErrorKind.AUTH_FAILED:  # say what the raw OAuth reject means first
                 result.error = ("Bitwarden rejected the machine-account access token "
                                 f"({access_token_env}) — it was likely revoked, expired, "
@@ -383,7 +408,6 @@ class BitwardenSource(SecretSource):
             return result
 
         result.secrets = secrets
-        result.warnings.extend(warnings)
         return result
 
 

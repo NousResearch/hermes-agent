@@ -65,6 +65,19 @@ hermes secrets bitwarden status
 
 From now on, every `hermes` invocation pulls fresh secrets at startup. You'll see a one-line summary in stderr the first time secrets are applied in a process.
 
+## Shared projects
+
+Keep team keys in a shared project and add it to each profile's `config.yaml`:
+
+```yaml
+secrets:
+  bitwarden:
+    project_id: <own project uuid>
+    extra_project_ids: [<shared project uuid>]
+```
+
+The machine account needs read access to every listed project. Hermes reads `project_id` first, then `extra_project_ids` in order. The first project holding a name wins; duplicate names produce a warning without exposing secret values.
+
 ## CLI
 
 | Command | What it does |
@@ -106,6 +119,7 @@ secrets:
     enabled: false
     access_token_env: BWS_ACCESS_TOKEN
     project_id: ""
+    extra_project_ids: []
     server_url: ""
     cache_ttl_seconds: 300
     encrypted_cache:
@@ -120,6 +134,7 @@ secrets:
 | `enabled` | `false` | Master switch. When false, Bitwarden is never contacted. |
 | `access_token_env` | `BWS_ACCESS_TOKEN` | Env var name that holds the bootstrap token. Change this if you already use `BWS_ACCESS_TOKEN` for something else. |
 | `project_id` | `""` | UUID of the project to sync from. |
+| `extra_project_ids` | `[]` | Further project UUIDs read after `project_id`; the first project holding a name wins. |
 | `server_url` | `""` | Bitwarden region or self-hosted endpoint. Empty = `bws` default (US Cloud, `https://vault.bitwarden.com`). Set to `https://vault.bitwarden.eu` for EU Cloud, or your own URL for self-hosted. Plumbed into the `bws` subprocess as `BWS_SERVER_URL`. |
 | `cache_ttl_seconds` | `300` | How long an in-process or disk fetch result is reused. Set to `0` to disable fresh-cache reuse. |
 | `encrypted_cache.enabled` | `false` | Store the last successful fetch in an AES-GCM encrypted cache at `~/.hermes/cache/bws_cache.enc.json`. |

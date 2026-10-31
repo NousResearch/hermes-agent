@@ -27,6 +27,8 @@ gateway:
       enabled: true
       extra:
         port: 9900
+        input_wait_timeout_seconds: 86400
+        task_retention_seconds: 86400
 ```
 
 The outbound client tools ship as the `a2a` toolset, **off by default** — enable it per platform:
@@ -86,23 +88,60 @@ Closing that connection does not cancel accepted work or discard its result.
 not affect the task or other subscribers. Terminal subscription replay is retained
 as a compatibility behavior, although v1.0 specifies rejecting those subscriptions.
 
-`TASK_STATE_INPUT_REQUIRED` ends the current wait with the clarification question;
-send the answer using the same `contextId`. `CancelTask` wins once against a reply
+`TASK_STATE_INPUT_REQUIRED` ends the current wait with the clarification question.
+Continue the same logical task by sending an answer with `message.taskId` and a
+fresh `messageId`. `contextId` is inherited when omitted; an explicit value must
+match the task exactly. This also supports `TASK_STATE_AUTH_REQUIRED`. A message
+carrying only `contextId` starts a new task rather than implicitly resuming one.
+Unknown/purged or inaccessible task IDs return TaskNotFound; terminal tasks reject
+further messages with UnsupportedOperation. Callers cannot select a new task's ID.
+Retries of an accepted continuation message ID observe that attempt while the
+task is nonterminal. After terminal completion, use `GetTask` instead of resending.
+Old HTTP observers keep their original clarification outcome across continuation.
+
+`CancelTask` wins once against a reply
 but does not abort the underlying model turn. Gateway shutdown releases blocking
-requests. Results are kept in memory while this process lives, with retention of
-up to 500 terminal tasks; there is no task restart/resumption guarantee.
+requests. Results are kept in memory while this process lives; there is no task
+restart/resumption guarantee. Full conversation logs persist independently; Task
+responses do not promise a complete wire `history`.
 
 Audit/conversation writes use a separate worker drained on ordinary shutdown.
-Admission reserves recording capacity for at most 512 active, interrupted, or
-not-yet-recorded tasks; exhaustion explicitly refuses new execution. Optional
+Admission reserves recording capacity for at most 512 executions or outstanding
+recordings. Recording a clarification releases its slot; continuation reserves a
+distinct slot. Exhaustion explicitly refuses new execution. Canceling an idle
+interrupted task needs a recording slot and can return a retryable capacity error;
+retry cancellation once recording capacity is available. Expiry under saturation
+leaves the task unchanged and retries on later watchdog sweeps or task reads.
+Optional
 webhooks use two workers with at most 128 outstanding jobs and may be dropped
 on overload or shutdown without dropping local records or stored results.
 Local same-context tasks execute individually in sequence; canceling a queued
-task skips its execution. Terminal retention uses completion recency.
+task skips its execution. Continuations count toward the context turn cap; retries
+do not. Push configuration survives interruption for later outcomes.
+
+The plugin-local `extra.input_wait_timeout_seconds` cancels abandoned input/auth
+waits with an explicit reason, measured from interruption rather than task creation.
+Polling does not extend the wait. `extra.task_retention_seconds` purges terminal
+results measured from the terminal transition. Both default to **86400 seconds
+(24 hours)** and require positive finite values. These are Hermes policy defaults,
+not A2A requirements. Retention is also capped at 500 terminal tasks, so count
+eviction may remove results sooner. Healthy owned execution survives age and
+disconnection; the separate legacy orphan grace applies only to unowned work.
 
 Interoperability is verified against the official Python `a2a-sdk` (card resolution, `SendMessage`, streaming).
 
 ## Forwarded profile sessions after the ownership cutover
+
+### Known limitation: adapter-to-owner link failure
+
+Inbound HTTP disconnect safety does **not** guarantee recovery from failure of
+the adapter's separate connection to a forwarded profile's gateway owner. On an
+owner-link timeout or failure, the public task can become `FAILED` while accepted
+owner work continues. Explicit same-task continuation cannot reopen that terminal
+task. The existing context-only resend using the same stable `messageId` can
+reread the owner's admission through a new public task. This retry mechanism is
+distinct from same-task continuation and does not provide complete end-to-end
+recovery. This remains a known issue; full A2A conformance is not claimed.
 
 Forwarding to another local profile now submits to that profile's gateway owner;
 there is no fallback `hermes chat` process writing its session database. New

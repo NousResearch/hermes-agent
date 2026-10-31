@@ -30,27 +30,36 @@ class CompletionIO:
             self._reserved.add(task_id)
             return True
 
+    def release_reservation(self, attempt_id):
+        with self._lock:
+            if attempt_id in self._reserved:
+                self._reserved.remove(attempt_id)
+                self._record_slots.release()
+
     def record(self, callback, record):
-        task_id = record["task_id"]
+        task_id = record.get("recording_id", record["task_id"])
         with self._lock:
             if self._closed:
                 logger.error("A2A: recording closed for task %s", task_id)
-                return
+                return False
             if task_id not in self._reserved:
                 if not self._record_slots.acquire(blocking=False):
                     logger.error("A2A: recording capacity exhausted for task %s", task_id)
-                    return
+                    return False
                 self._reserved.add(task_id)
-            future = self._records.submit(copy_context().run, callback, record)
-        future.add_done_callback(lambda done: self._record_finished(done, record))
+            self._reserved.remove(task_id)
+            committed = threading.Event()
+            self._records.submit(copy_context().run, self._record, callback, record, committed)
+        return committed.set
 
-    def _record_finished(self, future, record):
-        if record["state"] not in protocol.INTERRUPTED_STATES:
-            with self._lock:
-                self._reserved.discard(record["task_id"])
+    def _record(self, callback, record, committed):
+        try:
+            committed.wait()
+            callback(record)
+        except Exception:
+            logger.exception("A2A: local recording failed")
+        finally:
             self._record_slots.release()
-        if future.exception() is not None:
-            logger.error("A2A: local recording failed", exc_info=future.exception())
 
     @property
     def closed(self):

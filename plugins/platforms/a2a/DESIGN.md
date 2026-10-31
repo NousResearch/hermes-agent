@@ -61,8 +61,10 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
    it does not skip canceled entries and misroute their late replies to a successor.
    `on_processing_complete` also handles failures,
   cancellations, empty replies, and the gateway's streamed-final-response stash.
-- **Task store:** every task (including terminal ones, bounded to the last
-   500 by completion recency) stays queryable via `tasks/get` / `tasks/list`, and `tasks/subscribe`
+- **Task store:** terminal tasks are retained for `extra.task_retention_seconds`
+   (default 86400 seconds) after their terminal transition, bounded additionally
+   to the last 500 by completion recency. Count eviction may shorten age retention.
+   Tasks stay queryable via `tasks/get` / `tasks/list`, and `tasks/subscribe`
   reattaches to a running task's stream via store watchers. A watchdog fails
   stale records without an execution owner after the bounded legacy reply-timeout
   grace. Accepted local work, including queued turns, stays owned until completion
@@ -72,7 +74,31 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   schedule completion I/O; no detached-task waiter threads are created.
 - **input-required:** the platform hint tells the agent to start a reply with
   `[INPUT_REQUIRED]` when it needs clarification; the adapter maps that to
-  `TASK_STATE_INPUT_REQUIRED` with the question in `status.message`.
+   `TASK_STATE_INPUT_REQUIRED` with the question in `status.message`.
+- **Continuation:** only an explicit `message.taskId` resumes an input/auth wait;
+   `contextId` alone still creates a new task. A task-only message inherits the
+   exact context. Unknown/purged and out-of-scope references return TaskNotFound,
+   mismatched contexts return invalid params, and terminal or active tasks reject
+   new messages with UnsupportedOperation. Scoped resource APIs compare the selected
+   slug and tenant exactly, including the empty root scope. Each resumed execution
+   gets a fresh opaque attempt ID carried through event delivery, forwarding and
+   cleanup. The original creation identity/time remains fixed. Old observer futures
+   retain their own outcome. Unanchored legacy context-FIFO delivery is restricted
+   to initial attempts because it cannot prove continuation ownership.
+   Continuations count toward the existing context turn cap; retries do not.
+   Repeated continuation message IDs observe the accepted attempt while the task
+   remains nonterminal. Terminal tasks reject all sends, including repeats;
+   clients retrieve those results with GetTask. Forwarded continuations retain the
+   context but use independent owner input admissions per message.
+- **Wait expiration:** `extra.input_wait_timeout_seconds` (default 86400 seconds)
+   starts at the input/auth interruption, never creation or polling. Expiry cancels
+   with an explicit input/auth wait-expired reason. Resume, cancellation and expiry
+   arbitrate under the store lock, checking attempt identity and the deadline.
+   Both lifecycle durations must be positive finite values. These 24-hour defaults
+   are Hermes policy, not protocol mandates. Purged tasks return TaskNotFound.
+   Task state is not durable across process restart. Full context conversation
+   logs remain intact; partial internal clarification history is not serialized
+   as a purported complete Task history.
 - **Push notifications:** config accepted inline in `message/send`
   (`configuration.taskPushNotificationConfig`) or via the create method
   (returns `configId` + `createdAt`). On terminal transition the callback
@@ -81,19 +107,41 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   bearer token), with SSRF-guarded callback URLs.
 - **Completion I/O:** admission reserves one of 512 recording slots before execution;
    a separate single worker writes audit/conversation records and drains on shutdown.
-   Interrupted tasks retain their reservation until cancellation or adapter shutdown.
-   Capacity exhaustion refuses new execution. Recording is queued at the stored
-   transition before observers wake. Two independent push workers allow at most
+    A reservation belongs to an execution attempt, not its public task ID. Queueing
+    transfers the slot to that record; finishing any outcome, including clarification,
+    releases it without touching a successor's reservation. Cancellation/expiry of
+    an interrupted task reserves a separate outcome slot. Saturation leaves the
+    state unchanged: cancellation returns a retryable capacity error and expiry
+    retries on subsequent watchdog sweeps or GetTask/ListTasks/continuation reads.
+    Capacity exhaustion refuses new execution. Recording is queued atomically with
+    the winning transition. Its worker waits on a commit gate released outside the
+    task lock, before observers wake; no disk I/O or Future callbacks run under that
+    lock. This uses one recording worker, not a waiting thread per task.
+    Two independent push workers allow at most
    128 jobs; overload or shutdown may drop only optional pushes. The owning profile
    context is copied per job. Shutdown joins running workers. Push URLs are
-  captured at transition time so delayed workers cannot consume later configs.
+   captured at transition time so delayed workers cannot consume later configs;
+   interruptions preserve the config for subsequent outcomes.
 - **Observation:** blocking sends and healthy SSE streams wait for terminal or
   interrupted outcomes without the old HTTP reply timer. Explicit
   `returnImmediately` returns a live task. Subscribers receive a current Task
   snapshot and unregister on disconnect. Terminal subscription replay remains a
   legacy compatibility behavior, rather than a claim of full v1.0 conformance.
 
+## Forwarded-owner link failure limitation
+
+Incoming HTTP observation and the adapter-to-profile-owner transport are separate
+links. Disconnect-safe inbound execution does not promise recovery if the latter
+times out or fails. The existing forwarding boundary reports an unverified reply
+as a terminal `FAILED` public task, even though accepted work may continue at the
+owner. That facade cannot accept explicit same-task continuation. A context-only
+resend with the same stable message ID uses the existing owner-admission retry
+mechanism via a new public task; it is not same-task continuation or complete
+end-to-end recovery. Recovery of this terminal facade remains a separate known
+issue. This implementation does not claim full A2A conformance.
+
 ## v1.0 wire format notes
+
 - Task states / roles are SCREAMING_SNAKE_CASE (TASK_STATE_*, ROLE_*).
 - Parts are member-presence discriminated — no kind field. All three
   Part types are supported: text (text + mediaType), file
@@ -182,6 +230,7 @@ plugins/platforms/a2a/
 ├── __init__.py      # register(): platform adapter + client tools
 ├── adapter.py       # inbound A2A v1.0 server (stdlib http.server)
 ├── completion.py    # bounded completion I/O offload
+├── continuation.py  # explicit task-reference validation and attempt admission
 ├── tools.py         # outbound client tools
 ├── protocol.py      # Agent Card, JSON-RPC framing, task store, persistence
 ├── security.py      # auth/identity, injection filters, redaction, audit

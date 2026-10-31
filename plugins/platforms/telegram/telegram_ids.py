@@ -43,3 +43,17 @@ def parse_send_target(ref):
     if parsed:
         return parsed
     return parse_nonempty(parse_telegram_username_target(ref) or "")
+
+
+def parse_telegram_message_id(value: Any) -> int | None:
+    """A reply anchor as a Telegram message id (a positive int), or ``None`` when it is not one.
+
+    Anchors are opaque event ids upstream: a route wake (kanban-wake, loop-tick) carries a synthetic
+    JSON identity, and raw ``int()`` on it failed every reply into the session (#139611); an
+    unanchored reply is strictly better than a failed send."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    text = str(value).strip() if value is not None else ""
+    return int(text) if text.isascii() and text.isdigit() and int(text) > 0 else None

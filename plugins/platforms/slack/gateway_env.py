@@ -28,4 +28,5 @@ AUTHZ = {
     "allowed_users_env": "SLACK_ALLOWED_USERS",
     "allow_all_env": "SLACK_ALLOW_ALL_USERS",
     "allow_bots_env": "SLACK_ALLOW_BOTS",
+    "allowlist_suppresses_pairing": True,
 }

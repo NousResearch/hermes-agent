@@ -43,6 +43,38 @@ async def test_resuming_a_finalized_local_session_leaves_it_ended(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_resume_accepts_the_unique_22_character_local_hint(tmp_path, monkeypatch):
+    authority, connection, ref = await _ended_local_session(tmp_path, monkeypatch)
+    try:
+        hint = ref.session_id[:22]
+        assert hint.startswith('local-') and len(hint) == 22
+
+        reply = await connection.dispatch({'id': 1, 'method': 'session.resume',
+                                           'params': {'session_id': hint}})
+
+        assert reply['result']['session_id'] == ref.session_id
+    finally:
+        await connection.close()
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_ambiguous_or_missing_local_hints(tmp_path, monkeypatch):
+    authority, connection, ref = await _ended_local_session(tmp_path, monkeypatch)
+    try:
+        hint = ref.session_id[:22]
+        authority.db.create_session(ref.session_id[:-1] + ('0' if ref.session_id[-1] != '0' else '1'), 'local')
+
+        for candidate in (hint, 'local-', 'local-' + 'f' * 16):
+            reply = await connection.dispatch({'id': candidate, 'method': 'session.resume',
+                                               'params': {'session_id': candidate}})
+            assert reply['error']['data']['reason'] == 'not_found'
+    finally:
+        await connection.close()
+        authority.db.close()
+
+
+@pytest.mark.asyncio
 async def test_first_admitted_turn_reopens_a_finalized_local_session_before_execution(tmp_path, monkeypatch):
     authority, connection, ref = await _ended_local_session(tmp_path, monkeypatch)
     seen = []

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -753,6 +754,50 @@ def mcp_servers_awaiting_connect() -> list[str]:
     run, or one whose earlier connect failed. Read-only — what the next :func:`discover_mcp_tools`
     would connect."""
     return _awaiting_connect(_enabled_config_names(), _core._mcp_registry_scope())
+
+
+# One settings-driven reconnect at a time (see restart_mcp_servers_with_new_inputs).
+_RESTART_LOCK = threading.Lock()
+
+
+def restart_mcp_servers_with_new_inputs(names: set[str]) -> list[str]:
+    """Reconnect each live server in *names* whose resolved launch inputs (stdio command/env/cwd,
+    HTTP url/headers) no longer hash to what it connected with, e.g. after a plugin settings form
+    saved a new ``${VAR}`` its ``env`` passes through. A server whose inputs did not change keeps
+    its connection. Returns the names restarted.
+
+    Serialized: a second save waits for the first reconnect, then compares against what THAT one
+    connected with, so a newer key is never lost to an older in-flight start. A connection this
+    profile only borrows (same inputs as another profile's) is left running for its owner; this
+    profile just detaches and connects its own."""
+    with _RESTART_LOCK:
+        scope = _core._mcp_registry_scope()
+        owned, borrowed = [], []
+        with _owner_secret_scope():
+            servers = _config._load_mcp_config()
+            for name in sorted(names):
+                config = servers.get(name)
+                with _core._lock:
+                    key = _resolve_server_key(name, scope, current=False)
+                    server = _core._servers.get(key)
+                recorded = getattr(server, "_resolved_identity", None)
+                if config is None or recorded is None or not mcp_server_enabled(config):
+                    continue
+                # Render as the connect path does (plugin servers join the config after load's render pass).
+                if _registration._adopter_identity_digest(name, _config._interpolate_env_vars(config)) != recorded:
+                    (owned if key == _server_key(name, scope, current=False) else borrowed).append((name, key))
+        if not owned and not borrowed:
+            return []
+        changed = sorted(name for name, _key in owned + borrowed)
+        logger.info("MCP server(s) %s: launch inputs changed; reconnecting", ", ".join(changed))
+        if owned:
+            _lifecycle.shutdown_mcp_servers(scope=scope, names={name for name, _key in owned})
+        for _name, key in borrowed:
+            _registration._remove_server_scope(key, scope)
+        for name in changed:
+            _clear_connect_failure(name)
+        discover_mcp_tools()
+        return changed
 
 
 def _forget_lazy_server(key) -> None:

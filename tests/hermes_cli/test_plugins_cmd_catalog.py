@@ -538,3 +538,24 @@ def test_catalog_rows_maps_resolves_the_live_catalog_once(monkeypatch):
 
     monkeypatch.setattr(cat, "load_catalog_live", boom)
     assert cat.catalog_rows_maps() == ({}, {}, {})
+
+
+@pytest.mark.parametrize("gateway_pid", [None, 4242], ids=["no-gateway", "gateway-running"])
+def test_brief_install_prints_the_pin_and_outcome_and_a_restart_hint_only_for_a_gateway(
+        world, monkeypatch, gateway_pid):
+    """First-time setup already said what it installs and why, so ``brief`` leaves out the catalog
+    description, the clone line and the "Installed" panel; with no gateway running or installed (a
+    first-time setup) there is nothing to restart, so no restart hint either."""
+    from rich.panel import Panel
+    printed: list = []
+    monkeypatch.setattr(pc, "_console", lambda: type("C", (), {"print": lambda self, *a, **k: printed.extend(a)})())
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: gateway_pid)  # no reload answered
+    monkeypatch.setattr("hermes_cli.gateway._installed_service_kind", lambda: None)
+
+    pc.cmd_install("cat-plugin", enable=True, brief=True)
+
+    text = "\n".join(str(p) for p in printed if not isinstance(p, Panel))
+    assert "pinned @" in text and "Plugin [bold]cat-plugin[/bold] enabled" in text
+    assert not any(isinstance(p, Panel) for p in printed)
+    assert "maintained by" not in text and "Cloning" not in text
+    assert ("Restart the gateway" in text) is bool(gateway_pid)

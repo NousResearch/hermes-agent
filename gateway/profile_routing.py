@@ -49,7 +49,14 @@ def _whatsapp_user_chat_ids_match(platform: str, left: Optional[str], right: Opt
 
 
 class ProfileRouteRejected(RuntimeError):
-    """An explicit route matched a profile this gateway does not serve."""
+    """An explicit route matched a profile this gateway does not serve (``profile``, when known)."""
+
+    @property
+    def profile(self):
+        return self.args[1] if len(self.args) > 1 else None
+
+    def __str__(self):
+        return str(self.args[0]) if self.args else ''
 
 
 @dataclass(frozen=True)

@@ -23,13 +23,20 @@ def test_config_credentials_recover_only_exact_source(tmp_path, monkeypatch):
     policy = bind_launch_key(owner(instance='old'), 'session', policy, None, config_secrets=private)
     assert policy.config(owner())['model']['api_key'] == cfg['model']['api_key']
     assert cfg['model']['api_key'] not in json.dumps(asdict(policy))
-    for wrong in (owner(profile='wrong'), owner(path=tmp_path)):
-        with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable'):
+    for wrong, mismatched in ((owner(profile='wrong'), 'profile'), (owner(path=tmp_path), 'home')):
+        with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable') as refused:
             policy.config(wrong)
-    with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable'):
-        replace(policy, model='other-policy').config(owner())
+        assert refused.value.field == mismatched
+    # A whole-policy stamp that predates the current snapshot (a profile edit rewrote the frozen
+    # config after the reference froze -- a repointed base_url, keys unchanged) degrades to
+    # per-entry verification instead of stranding the session: the recovered values are still
+    # fingerprint-gated against the live config.yaml.
+    stale = replace(policy, model='other-policy')
+    assert stale.config(owner())['model']['api_key'] == cfg['model']['api_key']
     cfg['model']['api_key'] = 'changed-unrelated-token'
     (home / 'config.yaml').write_text(json.dumps(cfg))
+    with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable'):
+        stale.config(owner())
     with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable'):
         policy.config(owner())
 

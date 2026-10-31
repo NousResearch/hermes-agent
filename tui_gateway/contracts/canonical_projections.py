@@ -107,5 +107,8 @@ for _name, _params, _result in (
     ('groups.create', CanonicalRoomCreateParams, GroupsCreateResult),
     ('groups.approve', CanonicalRoomApproveParams, GroupsApproveResult),
     ('bot_relay.deliver', CanonicalBotDeliverParams, CanonicalBotDeliverResult),
+    # The sender's finalize of a refusal marked ``admitted: false``: the same identity, answered
+    # with the id's terminal not-sent receipt or its existing admission (``gateway/session_bot.py``).
+    ('bot_relay.settle', CanonicalBotDeliverParams, CanonicalBotDeliverResult),
 ):
     canonical_method(_name, params=_params, result=_result)

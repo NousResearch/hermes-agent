@@ -292,6 +292,20 @@ describe('session-control store', () => {
     expect($sessionControlBySession.get().s1!.snapshot!.revision).toBe(FULL_SNAPSHOT.revision)
   })
 
+  it('reports a refused action by the reason the gateway gave, not its code', async () => {
+    applySessionControlSnapshot('s1', FULL_SNAPSHOT)
+    const detail = 'No active goal. Set one with /goal <text>.'
+    useGateway(
+      vi.fn(async () => {
+        throw new JsonRpcGatewayError('goal_not_active', { code: 4001, data: { detail, reason: 'goal_not_active' } })
+      })
+    )
+
+    await expect(runSessionControlAction('s1', 'subgoal.add', { text: 'cite the changelog' })).rejects.toThrow(detail)
+
+    expect($sessionControlBySession.get().s1).toMatchObject({ error: detail, pendingAction: null })
+  })
+
   it('keeps a pending action current through an event and publishes its later failure', async () => {
     applySessionControlSnapshot('s1', FULL_SNAPSHOT)
     const response = deferred<unknown>()

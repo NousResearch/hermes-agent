@@ -115,7 +115,7 @@ it('sidebar edits fall back to the base write only when the backend lacks the fe
   await setSessionUnreadRemote('old', false, 'work')
   await deleteSession('old', { connectionId: 'server', profile: 'work' })
   expect(writes.map(write => [write.method, write.body])).toEqual([
-    ['PATCH', { title: 'name', profile: 'work' }], ['PATCH', { archived: true, profile: 'work' }],
+    ['PATCH', { title: 'name', profile: 'work' }], ['PATCH', { archived: true, pinned: false, profile: 'work' }],
     ['PATCH', { pinned: true, profile: 'work' }], ['PATCH', { unread: false, profile: 'work' }], ['DELETE', undefined]])
   expect(new URL(writes[4].path, 'http://localhost').search).toBe('?profile=work')
 
@@ -151,7 +151,7 @@ it('sidebar edits on an older headless serve fall back to the base write', async
   await setSessionUnreadRemote('ssh', false, 'work')
   await deleteSession('ssh', { connectionId: 'server', profile: 'work' })
   expect(writes.map(write => [write.method, write.body])).toEqual([
-    ['PATCH', { title: 'name', profile: 'work' }], ['PATCH', { archived: true, profile: 'work' }],
+    ['PATCH', { title: 'name', profile: 'work' }], ['PATCH', { archived: true, pinned: false, profile: 'work' }],
     ['PATCH', { pinned: true, profile: 'work' }], ['PATCH', { unread: false, profile: 'work' }], ['DELETE', undefined]])
 
   // FastAPI's bare 404 is no route verdict: it keeps the fenced path and writes nothing.

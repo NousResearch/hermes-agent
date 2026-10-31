@@ -52,10 +52,24 @@ def request_editor_edit(proposal):
     return decision.get('resolved') and decision.get('choice') == 'once'
 
 
+def _policy_requester(policy):
+    """The session's edit approval policy in front of the editor's consent (main's ACP modes): Accept
+    Edits / Don't Ask let an edit run unasked; sensitive paths and everything else still ask."""
+    from acp_adapter.edit_approval import should_auto_approve_edit
+    if policy.edit_approval_policy == 'ask':
+        return request_editor_edit
+
+    def request(proposal):
+        if should_auto_approve_edit(proposal, policy.edit_approval_policy, policy.cwd):
+            return True
+        return request_editor_edit(proposal)
+    return request
+
+
 @contextmanager
 def editor_scope(policy):
     from acp_adapter.edit_approval import set_edit_approval_requester, reset_edit_approval_requester
-    token = set_edit_approval_requester(request_editor_edit if policy.source == 'acp' else None)
+    token = set_edit_approval_requester(_policy_requester(policy) if policy.source == 'acp' else None)
     try:
         yield
     finally:

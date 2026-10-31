@@ -14,11 +14,11 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
     cache_image_from_bytes,
-    safe_url_for_log,
     utf16_len,
     _prefix_within_utf16_limit,
     cache_audio_from_bytes,
 )
+from gateway.platforms.base_log_safety import safe_url_for_log
 from gateway.platforms.event import MessageEvent
 
 
@@ -659,6 +659,23 @@ class TestMediaDeliveryDefaultMode:
             "gateway.platforms.base._HERMES_ROOT",
             hermes_dir,
         )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
+
+    @pytest.mark.parametrize("rel", ["webapp/session-token", "webapp/native-sign-in-tokens.json"])
+    def test_denylist_blocks_the_webapps_sign_in_files(self, tmp_path, monkeypatch, rel):
+        """The Webapp's browser credential and its listener's grants to native apps under
+        ``~/.hermes/webapp/`` never deliver as native media, as the agent's file tools never read them."""
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        (hermes_dir / "webapp").mkdir(parents=True)
+        secret = hermes_dir / rel
+        secret.write_text("t" * 43 + "\n")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 

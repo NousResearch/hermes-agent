@@ -45,7 +45,7 @@ def test_kanban_submission_enters_single_query_approval_context(tmp_path, monkey
 
     monkeypatch.setattr('gateway.session_ingress.execute_admission', execute)
 
-    async def submit(actor, submission):
+    async def submit(actor, submission, **kwargs):
         await execute_finite_admission(authority, ref, {'admission_id': 'admission', 'payload': submission.payload})
         return AdmissionReceipt('admission', ref, 1, 'queued', None, 1, None)
 
@@ -160,8 +160,8 @@ def test_retry_of_pre_finite_kanban_admission_returns_original_receipt(kanban_ow
     authority = owner.authority
     real_submit = authority.submit
 
-    async def pre_finite_submit(actor, submission):
-        # The payload run_task committed before this change: no finite flag.
+    async def pre_finite_submit(actor, submission, **kwargs):
+        # The payload run_task committed before this change: no finite flag (and no card marker).
         payload = {k: v for k, v in submission.payload.items() if k != 'finite'}
         return await real_submit(actor, type(submission)(submission.request_id, submission.ref, payload, submission.intent))
 
@@ -202,6 +202,99 @@ def test_admission_lookup_matches_only_the_exact_durable_key(kanban_owner):
             for wrong in ({'principal_id': 'someone-else'}, {'session_id': 'other-session'},
                           {'request_id': 'kanban:other'}):
                 assert find_session_admission(db, **{**key, **wrong}) is None
+        finally:
+            await owner.close()
+
+    asyncio.run(scenario())
+
+
+def _lose_across_restart(authority, sid):
+    """Claim the card's admission under this owner, then a new owner epoch boots on the same store
+    and runs the real boot recovery (fence ``unknown``, then settle the unattended ones)."""
+    from gateway.session_unattended_unknown import settle_recovered_unattended
+    from hermes_state_runtime import (begin_runtime_epoch, claim_session_input, list_session_admissions,
+                                      recover_session_inputs)
+    db = authority.db
+    claimed = claim_session_input(db, epoch=authority.epoch, session_id=sid)
+    assert claimed and claimed['status'] == 'started'
+    epoch = begin_runtime_epoch(db, instance_id='owner-2')
+    assert recover_session_inputs(db, epoch=epoch) == 1
+    settle_recovered_unattended(db, epoch)
+    [row] = list_session_admissions(db, session_id=sid, pending_only=False)
+    return row
+
+
+def test_kanban_card_fenced_unknown_across_owner_epochs_settles_interrupted(kanban_owner):
+    """#134889 KB-8: a card attempt lost across an owner restart has nobody to resend it; the
+    dispatcher's trusted marker makes boot recovery settle it interrupted instead of pausing."""
+    from gateway.session_kanban import run_task
+
+    owner = kanban_owner(_CONFIG)
+
+    async def scenario():
+        try:
+            sid = (await run_task(owner.connection, owner.params))['session_id']
+            row = _lose_across_restart(owner.authority, sid)
+            assert (row['status'], row['outcome']) == ('terminal', 'interrupted'), row
+            notices = [m['content'] for m in owner.authority.db.get_messages(sid)
+                       if m.get('display_kind') == 'failed_turn']
+            assert notices and 'automat' in notices[0].lower(), notices
+        finally:
+            await owner.close()
+
+    asyncio.run(scenario())
+
+
+def test_card_admitted_before_the_marker_keeps_pausing_and_retries_cleanly(kanban_owner, monkeypatch):
+    """Upgrade compat: an attempt main committed without the marker resubmits its exact payload on
+    retry (original receipt, no admission_conflict) and keeps today's pause when lost."""
+    from gateway.session_kanban import run_task
+
+    owner = kanban_owner(_CONFIG)
+    authority = owner.authority
+    real_submit = authority.submit
+
+    async def unmarked_submit(actor, submission, **kwargs):
+        kwargs.pop('_kanban_card', None)  # the admission main committed: no producer marker
+        return await real_submit(actor, submission, **kwargs)
+
+    async def scenario():
+        try:
+            monkeypatch.setattr(authority, 'submit', unmarked_submit)
+            first = await run_task(owner.connection, owner.params)
+            monkeypatch.setattr(authority, 'submit', real_submit)
+            assert await run_task(owner.connection, owner.params) == first
+            row = _lose_across_restart(authority, first['session_id'])
+            assert row['status'] == 'unknown', row
+        finally:
+            await owner.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_client_cannot_mint_the_kanban_card_marker(kanban_owner):
+    """The marker is the dispatcher's, never a client payload field: session.submit and the
+    authority's public payload both refuse it, so a person's turn can't opt out of the pause."""
+    from gateway.session_contract import Submission
+    from gateway.session_kanban import run_task
+    from hermes_state_runtime import RuntimeStoreError
+
+    owner = kanban_owner(_CONFIG)
+    authority = owner.authority
+
+    async def scenario():
+        try:
+            sid = (await run_task(owner.connection, owner.params))['session_id']
+            from gateway.session_contract import SessionRef
+            ref = SessionRef(authority.profile_id, sid)
+            forged = {'text': 'x', 'kanban_card_v1': {'task_id': owner.params['task_id'], 'run_id': owner.params['run_id']}}
+            with pytest.raises(RuntimeStoreError) as refused:
+                await authority.submit(owner.connection.actor, Submission('forged', ref, forged, 'queue'))
+            assert refused.value.reason == 'invalid_params'
+            with pytest.raises(RuntimeStoreError) as refused:
+                owner.connection.subscriptions[sid] = object()
+                owner.connection.submission(ref, {'session_id': sid, 'submission_id': 'f2', **forged})
+            assert refused.value.reason == 'invalid_params'
         finally:
             await owner.close()
 

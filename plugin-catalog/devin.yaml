@@ -1,6 +1,6 @@
 name: devin
 repo: https://github.com/Adolanium/hermes-devin
-sha: bcfeeeb8e6a1798595b266a3d2271eebb90aeef2
+sha: 45ae46b935503d9271492001564690f153a0fdb9
 subdir: ""
 title: Hermes Devin
 description: "Delegate coding tasks to the Devin CLI, on your computer or in Devin Cloud, with live progress cards and change review in Hermes Desktop. Every launch goes through Hermes approval; Cloud runs need a separate Cloud-managed-permissions confirmation. Disclosure — spawns the vendor devin CLI from PATH or cli_path (devin acp, devin acp --cloud, devin --print, devin auth status, devin models list); the CLI edits files and runs shell commands in a folder the model picks (any folder unless allowed_roots is set) under the configured permission mode (accept-edits/smart auto-allow edits, dangerous auto-allows everything and needs allow_dangerous: true), and talks to Cognition's servers; Devin Cloud runs use Cognition-managed permissions that Hermes does not gate. Every model-initiated launch goes through Hermes approval; follow-ups typed on a Desktop run card and answers to Devin's prompts on the card start or allow actions on that click without a Hermes prompt (unanswered card prompts are denied after 300 s by default). Uses the existing Devin CLI login and stores no credentials; Hermes provider, bot and tool secrets are stripped from the child environment (extra_env is passed as set). Background runs continue after the turn up to their timeout and post Devin's output back into the conversation as a message when they finish. Run history (prompts, diffs, command output) and model preferences are saved under plugin-data/devin unless persist_runs is off. Independent community add-on, not affiliated with Cognition."
@@ -8,6 +8,7 @@ maintainer: Adolanium
 tier: community
 category: tools
 docs_url: https://github.com/Adolanium/hermes-devin#readme
+image: https://raw.githubusercontent.com/Adolanium/hermes-devin/45ae46b935503d9271492001564690f153a0fdb9/assets/catalog-banner.png
 version: "0.1.1"
 screenshots:
   - https://raw.githubusercontent.com/Adolanium/hermes-devin/bcfeeeb8e6a1798595b266a3d2271eebb90aeef2/assets/screenshots/desktop-review.png

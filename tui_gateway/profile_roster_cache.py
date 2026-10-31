@@ -36,6 +36,9 @@ from utils import mtime_is_racy
 # profile leaves one stale entry, so a memo is dropped whole once it grows past any plausible fleet.
 _SESSION_CACHE: dict[str, tuple[tuple, dict]] = {}
 _UI_META_CACHE: dict[str, tuple[tuple, dict]] = {}
+# The canonical gateway's rows also depend on who reads them (its owner filter): keyed by
+# (profile path, reader).
+_READER_SESSION_CACHE: dict[tuple, tuple[tuple, dict]] = {}
 _MAX_ENTRIES = 512
 
 _STORE_FILES = ("state.db", "state.db-wal")
@@ -90,6 +93,13 @@ def cached_session_fields(profile_path: str | Path, compute: Callable[[], dict])
     return _cached(_SESSION_CACHE, str(profile_path), store_signature(profile_path), compute, dict)
 
 
+def cached_reader_session_fields(profile_path: str | Path, reader: tuple,
+                                 compute: Callable[[], dict]) -> dict[str, Any]:
+    """``cached_session_fields`` for fields that also depend on *reader*, a hashable principal key."""
+    return _cached(_READER_SESSION_CACHE, (str(profile_path), reader), store_signature(profile_path),
+                   compute, dict)
+
+
 def cached_ui_meta_fields(profile_dir: str | Path, compute: Callable[[], dict]) -> dict[str, Any]:
     """``compute()``'s fields, reused while the profile's ``profile.yaml`` has not changed.
 
@@ -106,3 +116,5 @@ def invalidate(profile_path: str | Path | None = None) -> None:
             cache.clear()
         else:
             cache.pop(str(profile_path), None)
+    for key in [key for key in _READER_SESSION_CACHE if profile_path is None or key[0] == str(profile_path)]:
+        _READER_SESSION_CACHE.pop(key, None)

@@ -1011,7 +1011,8 @@ All commands are also available as a slash command in the interactive CLI and in
 | Config key | Default | What it does |
 |------------|---------|--------------|
 | `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
-| `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
+| `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress` and the per-provider [`kanban.provider_concurrency`](#per-provider-concurrency-budget); all must allow a spawn for it to proceed. |
+| `kanban.provider_concurrency` | unset (unlimited) | Per-provider spawn budget (#123654). A mapping of provider keys to max concurrent workers, counted host-wide (all boards) by the provider each worker would actually use — never per profile. Keys: canonical provider ids (`anthropic`, `openrouter`, …), `custom:<base-url>` (normalized: lowercase host, default port dropped), and the pseudo-buckets `auto` (unpinned routes), `moa` (MoA presets), `unknown` (unresolvable routes), `default` (fallback cap for unlisted keys). A key set to `null` is explicitly unbudgeted. Over-budget spawns are deferred (never killed) to the next tick and surface in `hermes kanban dispatch --json` (`skipped_provider_budget`) and the dispatch suppression line; `hermes kanban diagnostics` prints per-key `running/cap` counts. |
 | `kanban.dispatch_profiles` | unset (any existing profile) | Per-home claim allowlist for boards shared across Hermes homes. When the key is present, this home's dispatcher only claims cards whose assignee is listed — fail-closed: an empty list, `null` or a bare `dispatch_profiles:` claims nothing, and a config read that fails logs a warning and claims nothing; other assignees land in `skipped_nonspawnable`. Only omitting the key means "any existing profile". `hermes kanban diagnostics` prints the resolved value for this home (`any`, the listed names, or `none (fail-closed: …)`). See [Shared boards across homes](#shared-boards-across-homes). |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
@@ -1022,6 +1023,38 @@ kanban:
   auto_promote_children: false
   default_workdir: ~/work/active-project
 ```
+
+#### Per-provider concurrency budget
+
+`kanban.provider_concurrency` caps how many workers may run **against the same provider at once** — the provider quota is account-wide, so a fan-out across several profiles that all use `anthropic` should not multiply an Anthropic rate limit by the number of profiles (#123654). The cap is keyed by the provider each worker would actually use (the "requested route at admission"), never by the assignee:
+
+```yaml
+kanban:
+  provider_concurrency:
+    anthropic: 2          # at most 2 workers on Anthropic at once, host-wide
+    openrouter: 4
+    custom:https://llm.example.internal/v1: 8   # a named/direct custom endpoint
+    default: 3            # fallback cap for any key not listed above
+```
+
+Key rules:
+
+- A key is the **resolved provider** at spawn time: the task's `model:`/`provider:` overrides first, else the assignee profile's configured model route. Pin `model.provider` in a profile (or per task) to control its bucket.
+- Custom endpoints key by `custom:<base-url>` — normalized (lowercase host, default port dropped, no path suffix beyond normalization); two named providers pointing at the same URL share one bucket. Bare `custom:` keys are not valid; use the URL form.
+- Pseudo-buckets: `auto` (routes with no pinned provider), `moa` (MoA presets), `unknown` (unresolvable routes) can be budgeted like any provider.
+- `default` is a **per-key fallback cap** for unlisted keys, not a shared pool. A key set to `null` is explicitly unbudgeted (overrides `default`).
+
+What is counted: running workers **host-wide** (this gateway ticks every board, and sibling boards' running rows count against the same key), keyed by the `provider_key` recorded at claim time — so lowering a cap never kills running workers, and counts survive gateway restarts and later profile edits. Rows whose key predates this feature (NULL) are re-derived for counting if their assignee is a Hermes profile; control-plane lanes (assignees that are not Hermes profiles) are never counted. Enforcement is soft: one gateway never overshoots its own budget; a concurrently running manual `hermes kanban dispatch` can (bounded by its own caps).
+
+Liveness: the gateway reads `provider_concurrency` **at boot** — like its sibling caps, a config edit applies on the next gateway restart. A manual `hermes kanban dispatch` reads it per invocation, and the (deprecated) standalone `hermes kanban daemon` re-reads it every tick, so those pick edits up without a restart.
+
+Over-budget tasks are **deferred, never killed** — they stay `ready`/`review` with no failure count, no events, and no claim, and are retried on the next tick. Deferrals surface as:
+
+- `Deferred (provider budget <key> <current>/<cap>): <task>` in `hermes kanban dispatch` output, and `skipped_provider_budget` in `--json`;
+- `provider_budget[<key>]=<current>/<cap>` in the dispatch suppression summary line;
+- `hermes kanban diagnostics` printing `kanban.provider_concurrency: <key> <running>/<cap> …` per key (with the inferred count and, for keys at cap, the number of ready/review rows `waiting` on that key), or `off` when disabled.
+
+Out of scope for v1 (#123654): honoring 429/`Retry-After` responses directly, budgeting fallback chains (the run records the key it was admitted under), MoA fan-out internals (a MoA run budgets as `moa`), and a dashboard "Nudge" affordance.
 
 ### Scheduled task starts (`scheduled_at`)
 

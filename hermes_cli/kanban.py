@@ -680,15 +680,66 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     # What this home believes it may claim on a shared board (#113620).
     allowlist = kbd.dispatch_profile_allowlist_summary()
 
+    # Per-provider concurrency budget snapshot (#123654): host-wide running
+    # counts per key with caps and waiting rows, read-only. "off" when the
+    # budget is disabled.
+    provider_line = "off"
+    provider_field: dict = {"enabled": False}
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        _pc_raw = (load_config_readonly() or {}).get("kanban", {}).get("provider_concurrency")
+    except Exception:
+        _pc_raw = None
+    if isinstance(_pc_raw, dict) and _pc_raw:
+        from hermes_cli.kanban_provider_budget import (
+            RouteKeyResolver, describe_budget_line, parse_provider_concurrency,
+            provider_budget_snapshot,
+        )
+
+        _budgets = parse_provider_concurrency(_pc_raw)
+        if _budgets is not None:
+            _resolver = RouteKeyResolver(
+                profile_exists=kbd._profile_exists_fn(),
+                profile_inputs=kbd._provider_route_inputs,
+                scope=kbd._assignee_route_scope,
+            )
+            with kbc.connect_closing() as conn:
+                # Host-wide (D9): the SAME counting path the dispatcher's gate
+                # uses — this board plus sibling boards via the shared board
+                # iterator — so diagnostics can never disagree with enforcement.
+                _snap = provider_budget_snapshot(
+                    conn, getattr(args, "board", None), _budgets,
+                    resolver=_resolver, profile_exists=kbd._profile_exists_fn(),
+                    iter_other_boards=kbd._iter_other_board_conns,
+                )
+            provider_line = describe_budget_line(_snap, _budgets.default)
+            provider_field = {
+                "enabled": True,
+                "default": _budgets.default,
+                "budgets": {
+                    key: {"running": d["running"], "inferred": d["inferred"],
+                          "cap": d["cap"], "waiting": d["waiting"]}
+                    for key, d in _snap.items()
+                },
+            }
+
     if getattr(args, "json", False):
         # Per-task rows unchanged; the home-scope allowlist rides as a trailing row
         # (task_id null) so existing `payload[0]["diagnostics"]` consumers keep working.
         _print_json([{"task_id": tid, **meta.get(tid, {}), "diagnostics": [d.to_dict() for d in dl]}
                      for tid, dl in diags_by_task.items()]
-                    + [{"task_id": None, "dispatch_profiles": allowlist, "diagnostics": []}])
+                    + [{"task_id": None, "dispatch_profiles": allowlist,
+                        "provider_concurrency": provider_field, "diagnostics": []}])
         return 0
 
     print(f"kanban.dispatch_profiles: {allowlist}")
+    print(f"kanban.provider_concurrency: {provider_line}")
+    if provider_field.get("enabled"):
+        _has_auto = any(k == "auto" for k in provider_field.get("budgets", {}))
+        if _has_auto:
+            print("  (profiles with no pinned model.provider budget as 'auto'; pin "
+                  "model.provider in the profile to budget it by name)")
     if not diags_by_task:
         print("No active diagnostics on this board.")
         return 0

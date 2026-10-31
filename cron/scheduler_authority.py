@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import json
+import time
 import uuid
 
 
@@ -104,11 +105,25 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 raise
         record['receipt'] = receipt
         save()
-        delay, progress = .1, None
+        delay, progress, answered = .1, None, time.monotonic()
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 await call('cancel', receipt)
-            state = await call('status', receipt)
+            try:
+                state = await call('status', receipt)
+            except TimeoutError:
+                # The socket is still up: an owner busy with a wave of delegated children can answer
+                # one poll past the RPC budget while its run is alive (#142414). Only silence past the
+                # job's own inactivity budget (0: unlimited) leaves the run unverified; a hang-up is
+                # never retried.
+                from cron.scheduler import _cron_inactivity_seconds
+                budget = _cron_inactivity_seconds()
+                if 0 < budget <= time.monotonic() - answered:
+                    raise
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 2.0)
+                continue
+            answered = time.monotonic()
             if state.get('progress_at') not in (None, progress):
                 # The owner's agent is still working: refresh OUR ledger row (the owner's stamp is
                 # fenced to the row's owner), once per owner stamp, so the stale-claim sweep measures

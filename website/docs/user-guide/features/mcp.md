@@ -87,7 +87,12 @@ card works the same way in the desktop app (a dialog), the terminal UI
    list failed, the card says "Authorized. Tools unavailable." and the agent can
    run discovery again later without asking you to authorize again.
 
-In messaging apps there is no card; the agent relays the commands below.
+In messaging apps (Telegram, Slack, Discord) there is no card; Hermes shows a
+sign-in link. With the gateway's Webapp enabled and `webapp.public_url` set,
+OAuth sign-in finishes through that public address and the tools become available
+on your next message, without confirming again. Without it, the link only
+completes in a browser on the gateway machine. Providers with a pinned loopback
+redirect still require that local browser.
 
 ```bash
 hermes mcp                   # interactive picker (default)

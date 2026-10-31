@@ -72,6 +72,11 @@ class GatewayDashboardMount:
         change it there), the listener's pre-mount snapshot before."""
         return self.web.app.state if self.web is not None else self._state
 
+    @property
+    def public_url(self) -> str | None:
+        """The Webapp public address this listener answers to, before or after the dashboard mounts."""
+        return _listener_public_url(getattr(self._state, "webapp", None)) or None
+
     def _bind_state(self, web) -> None:
         webapp = getattr(self._state, "webapp", None)
         # The browser credential before any app state: one the home cannot store fails the mount

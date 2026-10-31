@@ -142,6 +142,52 @@ class TestTrustGateAtCallTime:
         fake_session.call_tool.assert_not_awaited()
 
 
+    def test_approval_card_masks_credential_qualified_key_fields(self, fake_session, monkeypatch):
+        """Regression for #143974: ``aws_secret_access_key`` / ``secretKey`` style argument
+        names mask on the approval card even with log redaction turned off."""
+        import agent.redact
+        monkeypatch.setattr(agent.redact, "_REDACT_ENABLED", False)
+        _set_trust("srv", "untrusted")
+        handler = _mcp_handlers._make_tool_handler("srv", "trigger_build", 30.0)
+        args = {
+            "payload": [
+                {
+                    "aws_secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                    "secretKey": "django-insecure-canary-value",
+                },
+                {"signing_key": "opaque-signing-material-1234567890"},
+            ],
+            "cache_key": "ordinary-cache-key-value",
+        }
+
+        with patch(
+            "tools.approval_prompt.request_elicitation_consent",
+            return_value="decline",
+        ) as consent:
+            handler(args)
+
+        message = consent.call_args.args[0]
+        for secret in (
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "django-insecure-canary-value",
+            "opaque-signing-material-1234567890",
+        ):
+            assert secret not in message
+        assert "ordinary-cache-key-value" in message
+        assert "***" in message
+        # The original arguments the RPC would receive stay untouched.
+        assert args == {
+            "payload": [
+                {
+                    "aws_secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                    "secretKey": "django-insecure-canary-value",
+                },
+                {"signing_key": "opaque-signing-material-1234567890"},
+            ],
+            "cache_key": "ordinary-cache-key-value",
+        }
+        fake_session.call_tool.assert_not_awaited()
+
     def test_denied_approval_blocks_rpc(self, fake_session):
         """'decline' blocks the call — the RPC must never fire."""
         _set_trust("srv", "untrusted")

@@ -475,6 +475,47 @@ class TestPythonReprFields:
         assert redact_sensitive_text(text, force=True) == text
 
     @pytest.mark.parametrize(
+        "key",
+        [
+            "aws_secret_access_key",
+            "AWS_SECRET_ACCESS_KEY",
+            "SecretAccessKey",
+            "SECRET_KEY",
+            "secretKey",
+            "privateKey",
+            "signing_key",
+            "encryption_key",
+            "master_key",
+            "hmac_key",
+        ],
+    )
+    def test_credential_qualified_key_field_is_redacted(self, key):
+        """Regression for #143974: ``*_key`` credential names mask like ``client_secret``."""
+        from agent.redact import is_secret_field_name
+
+        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        assert is_secret_field_name(key) is True
+        text = f"{{'{key}': '{secret}'}}"
+
+        result = redact_sensitive_text(text, force=True)
+
+        assert secret not in result
+        assert f"'{key}': '***'" in result
+
+    @pytest.mark.parametrize(
+        "key",
+        ["key", "sort_key", "cache_key", "primary_key", "idempotency_key"],
+    )
+    def test_bare_and_metadata_key_fields_stay_readable(self, key):
+        """Regression for #143974: only credential-qualified ``key`` words mask."""
+        from agent.redact import is_secret_field_name
+
+        value = "ordinary-value-1234567890"
+        assert is_secret_field_name(key) is False
+        text = f"{{'{key}': '{value}'}}"
+        assert redact_sensitive_text(text, force=True) == text
+
+    @pytest.mark.parametrize(
         "value",
         [
             "apostrophe-near-head-'1234567890",

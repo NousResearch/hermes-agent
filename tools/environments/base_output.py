@@ -24,6 +24,10 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 _UNBOUNDED_CAPTURE_CHARS = 2**63 - 1
 
 _SPILL_MAX_AGE_S = 7 * 86400
+# Pruning stats every spill file; with thousands of spills that dominated each terminal call.
+_SPILL_PRUNE_INTERVAL_S = 600.0
+_spill_pruned_at: dict[str, float] = {}
+_spill_prune_lock = threading.Lock()
 
 
 class _BoundedOutputCollector:
@@ -183,7 +187,7 @@ def _new_output_collector(proc, bounded_capture: bool) -> _BoundedOutputCollecto
     try:
         spill_dir = get_hermes_home() / "cache" / "terminal-output"
         spill_path = spill_dir / f"out-{int(time.time())}-{os.getpid()}-{id(proc) & 0xffff:x}.log"
-        if spill_dir.is_dir():
+        if spill_dir.is_dir() and _claim_spill_prune(spill_dir):
             cutoff = time.time() - _SPILL_MAX_AGE_S
             for old in spill_dir.glob("out-*.log"):
                 try:
@@ -194,6 +198,18 @@ def _new_output_collector(proc, bounded_capture: bool) -> _BoundedOutputCollecto
     except Exception:
         spill_path = None
     return _BoundedOutputCollector(capture_limit, spill_path=spill_path)
+
+
+def _claim_spill_prune(spill_dir: Path) -> bool:
+    """True at most once per ``_SPILL_PRUNE_INTERVAL_S`` per spill dir."""
+    now = time.monotonic()
+    key = str(spill_dir)
+    with _spill_prune_lock:
+        last = _spill_pruned_at.get(key)
+        if last is not None and now - last < _SPILL_PRUNE_INTERVAL_S:
+            return False
+        _spill_pruned_at[key] = now
+        return True
 
 
 def _finalize_wait_result(collector: _BoundedOutputCollector, rendered: str, returncode: int | None) -> dict:

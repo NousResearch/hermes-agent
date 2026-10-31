@@ -332,6 +332,21 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
 
 
 def release_media_after_delivery(authority, row):
-    """Keep the off-loop collector owned until shutdown/profile retirement joins it."""
-    from gateway.session_runtime_workers import track_mutation
-    return track_mutation(authority, asyncio.to_thread(_release_media, authority, row))
+    """Queue terminal media collection on the authority's one off-loop collector.
+
+    Each collection can scan the whole transcript; running them one at a time bounds the worker
+    threads and pooled read connections they hold however many media turns settle meanwhile.
+    The collector is tracked, so shutdown and profile retirement join it."""
+    queue = getattr(authority, '_media_release_queue', None)
+    if queue is None:
+        queue = authority._media_release_queue = []
+    queue.append(row)
+    task = getattr(authority, '_media_release_task', None)
+    if task is None or task.done():
+        from gateway.session_runtime_workers import track_mutation
+        authority._media_release_task = track_mutation(authority, _collect_queued_media(authority, queue))
+
+
+async def _collect_queued_media(authority, queue):
+    while queue:
+        await asyncio.to_thread(_release_media, authority, queue.pop(0))

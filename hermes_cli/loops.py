@@ -760,7 +760,6 @@ __all__ = [
     "LOOP_COMPLETE_MARKER",
     "WAKEUP_PROMPT_TEMPLATE",
     "WAKEUP_PROMPT_WITH_UNTIL_TEMPLATE",
-    "wakeup_payload_digest",
     "LoopManager",
     "LoopState",
     "clear_loop",
@@ -774,4 +773,5 @@ __all__ = [
     "parse_loop_args",
     "response_signals_complete",
     "save_loop",
+    "wakeup_payload_digest",
 ]

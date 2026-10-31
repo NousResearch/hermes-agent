@@ -35,6 +35,7 @@ def _loop_wakeup_transcript_len(runner, session_key) -> int:
             return -1
         return len(runner.session_store.load_transcript(entry.session_id))
     except Exception:
+        logger.debug("loop wakeup: transcript probe failed; rolling back tick", exc_info=True)
         return -1
 
 
@@ -57,6 +58,7 @@ def _loop_wakeup_prompt_landed(runner, session_key, text: str, since: int) -> bo
             return False
         turns = runner.session_store.load_transcript(entry.session_id)[since:]
     except Exception:
+        logger.debug("loop wakeup: landed probe failed; rolling back tick", exc_info=True)
         return False
     want = wakeup_payload_digest(text)
     for turn in reversed(turns[-50:]):  # a landed prompt is seconds old; the tail is enough

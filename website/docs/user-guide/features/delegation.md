@@ -233,6 +233,8 @@ delivered records are bounded and profile-local.
 
 ### Child background-process notifications
 
+A terminal receipt keeps `notify_on_complete: true` when its completion watcher is armed. For delegated children, `notification_suppressed` separately reports the current delivery policy. Handing a running process to the parent preserves that watcher and changes ownership; the receipt is a launch-time snapshot, not confirmation of eventual delivery.
+
 Background processes a subagent starts (e.g. `npm ci` with
 `notify_on_complete`) technically route their completion and watch-pattern
 notifications to the **parent** conversation, because anything that outlives

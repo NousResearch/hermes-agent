@@ -6,8 +6,9 @@ limit, tracks usage, and may expose tools. ContextCompressor is the default;
 Lifecycle: on_session_start() -> per API response update_from_response() -> per turn
 should_compress() / compress() -> on_session_end() at real session boundaries only
 (CLI exit, /reset, gateway expiry), never per-turn -> shutdown() when an agent holding
-the instance is torn down (possibly repeatedly per object; only instance-opened resources,
-never a backend shared with the registered instance or other agents' clones).
+the instance is torn down — hard teardown or gateway cache eviction of an agent-owned
+instance (possibly repeatedly per object; only instance-opened resources, never a backend
+shared with the registered instance or other agents' clones).
 """
 
 import copy
@@ -262,9 +263,11 @@ class ContextEngine(ABC):
         once if your plugin hands one instance to every agent. Release only resources this
         instance opened itself (for example a connection your clone_for_agent() reopened);
         never close a backend shared with the registered instance or other agents' clones.
-        Gateway agent-cache evictions (idle TTL, LRU cap, memory pressure) do not call this yet:
-        they release the agent through release_clients(), so a cache-evicted agent's engine
-        keeps its resources until garbage collection or process exit.
+        Gateway agent-cache evictions (idle TTL, LRU cap, memory pressure) call this for
+        agent-owned engines: they release the agent through release_clients(), which runs
+        agent.context_engine.shutdown_context_engine(soft=True). A session-end claim
+        (claim_engine_session_end, taken before the gateway queues its hard cleanup) keeps
+        on_session_end ahead of it. The shared registered instance stays open.
         Default: no-op.
         """
 

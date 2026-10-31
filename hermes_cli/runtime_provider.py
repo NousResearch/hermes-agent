@@ -559,7 +559,7 @@ from hermes_cli.runtime_provider_custom import (
     _lift_model_capabilities, _normalize_base_url_for_match, _normalize_custom_provider_name, _resolve_named_custom_runtime,
     _try_resolve_from_custom_pool, canonical_custom_identity, codex_model_provider_id, expand_direct_api_alias,
     find_custom_provider_identity,
-    find_custom_provider_identity_by_model, has_named_custom_provider, is_routable_provider,
+    find_custom_provider_identity_by_model, has_named_custom_provider, heal_keyless_bare_custom, is_routable_provider,
 )
 from hermes_cli.runtime_provider_backends import (
     _is_external_process_provider, _resolve_azure_foundry_runtime, _resolve_bedrock_runtime,
@@ -1069,6 +1069,10 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     requested_provider, explicit_base_url = expand_direct_api_alias(requested_provider, explicit_base_url)
     _raise_if_local_alias_missing_endpoint(requested_provider, explicit_base_url)
     runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    if requested_provider == "custom" and not runtime.get("api_key"):
+        healed = heal_keyless_bare_custom(explicit_api_key, target_model)
+        if healed:
+            return healed
     _raise_for_credentialless_bare_custom(requested_provider, runtime)
     # model.openai_runtime is applied ONCE, after the ladder: every rung (pool, OAuth store,
     # explicit --api-key/--base-url, env key) hardcodes the wire api_mode for openai/openai-codex,

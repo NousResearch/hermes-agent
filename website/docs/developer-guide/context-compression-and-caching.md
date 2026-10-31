@@ -577,6 +577,11 @@ auxiliary summarizer runs as before, in the same compression attempt:
 
 The summary call is billed to the session like any auxiliary compression call
 (the API reports it in `usage.iterations`; the top-level counters are zero).
+If `compression.prepare_ahead` already has a valid prepared checkpoint, automatic
+compression reuses it without making another native or auxiliary summary call.
+Manual, focus and overflow-recovery compactions still request a fresh summary,
+using the native source when its coverage and cache are eligible.
+
 Measured on Opus 5.5: a compaction between turns read the whole conversation
 from the cache (64,198 of 64,202 tokens); one inside a tool loop read the
 conversation up to the running tool round and wrote that round to the cache

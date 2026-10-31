@@ -3159,7 +3159,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                     "[%s] Telegram network error, scheduling reconnect: %s", self.name, _redact_telegram_error_text(error))
                 self._spawn_polling_recovery(loop, self._handle_polling_network_error(error))
             else:
-                logger.error("[%s] Telegram polling error: %s", self.name, _redact_telegram_error_text(error), exc_info=True)
+                logger.error("[%s] Telegram polling error (%s): %s", self.name, type(error).__name__, _redact_telegram_error_text(error))  # no exc_info: tracebacks skip redaction
 
         self._polling_error_callback_ref = _polling_error_callback  # reused by _handle_polling_conflict
         drop_pending = self._cold_boot_drop_pending(is_reconnect=is_reconnect)
@@ -5233,9 +5233,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                         chat_id=chat_id, file_path=audio_path, caption=caption, reply_to=reply_to, metadata=metadata)
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            logger.error(
-                "[%s] Failed to send Telegram voice/audio, falling back to base adapter: %s", self.name,
-                _redact_telegram_error_text(e), exc_info=True)
+            forbidden = "voice_messages_forbidden" in str(e).lower()  # recipient privacy setting, not a fault
+            logger.log(logging.INFO if forbidden else logging.ERROR, "[%s] Failed to send Telegram voice/audio to chat %s, falling back to base adapter: %s",
+                       self.name, chat_id, _redact_telegram_error_text(e), exc_info=not forbidden)
             return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
         finally:
             if _transcoded_voice_path:

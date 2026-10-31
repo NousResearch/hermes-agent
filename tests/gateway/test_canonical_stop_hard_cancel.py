@@ -1,4 +1,5 @@
-"""Canonical Stop (Desktop, Ink, classic CLI view, ACP) is main's Stop: hard-cancel + end the session's delegations."""
+"""Canonical Stop (Desktop, Ink, classic CLI view, ACP) hard-cancels the turn and leaves background delegations
+running: a background subagent is independent of the chat that spawned it (Teknium ruling); `/stop` ends them."""
 import asyncio
 from unittest.mock import MagicMock
 
@@ -31,7 +32,7 @@ def _delegation(ad, monkeypatch, parent):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('when', ['adopted', 'before_adoption'])
-async def test_canonical_stop_hard_cancels_and_ends_the_sessions_delegations(tmp_path, monkeypatch, when):
+async def test_canonical_stop_hard_cancels_the_turn_and_keeps_background_delegations(tmp_path, monkeypatch, when):
     from gateway import session_finite
     from tools import async_delegation as ad
 
@@ -58,5 +59,5 @@ async def test_canonical_stop_hard_cancels_and_ends_the_sessions_delegations(tmp
         stopped.set()
         await asyncio.wait_for(authority.sessions['s'].task, 5)
     assert agent.stops == ['hard'], f'canonical Stop delivered {agent.stops}; main hard-cancels'
-    assert own.called, "the session's background delegation kept running after Stop"
+    assert not own.called, "Stop of the turn ended the session's background delegation"
     assert not foreign.called, "Stop ended another session's delegation"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Optional
 
@@ -37,7 +38,7 @@ _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
 
 # Providers that want bare names with dots preserved.
 _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
-    "copilot", "copilot-acp", "openai-codex"})
+    "openai-codex"})
 
 # Providers whose native naming is authoritative -- pass through unchanged.
 _AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
@@ -226,18 +227,18 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         bare = _strip_matching_provider_prefix(name, provider)
         return bare if "/" in bare else _dots_to_hyphens(bare)
 
-    # Copilot's own normalizer knows the alias table (vendor stripping, dash-to-dot repair for Claude)
-    # and live-catalog lookups; without it dash-notation Claude ids hit HTTP 400 model_not_supported.
-    # See issue #6879.
-    if provider in {"copilot", "copilot-acp"}:
-        try:
-            from hermes_cli.models import normalize_copilot_model_id
+    # A profile that owns its id space (alias table, dash-to-dot repair) answers first; a wrong
+    # notation otherwise hits HTTP 400 model_not_supported. See issue #6879.
+    from providers import get_provider_profile
 
-            normalized = normalize_copilot_model_id(name)
-            if normalized:
-                return normalized
-        except Exception:
-            pass  # fall through to the generic strip-vendor behaviour
+    profile = get_provider_profile(provider)
+    try:
+        normalized = profile.normalize_model_id(name) if profile is not None else None
+    except Exception:  # a plugin hook failing must not break normalization: generic rules take over
+        logging.getLogger(__name__).debug("normalize_model_id(%s) failed", provider, exc_info=True)
+        normalized = None
+    if normalized:
+        return normalized
 
     if provider in _STRIP_VENDOR_ONLY_PROVIDERS:
         stripped = _strip_matching_provider_prefix(name, provider)

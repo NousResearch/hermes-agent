@@ -1,6 +1,7 @@
 import type { ComponentProps, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 
+import { hostHas } from '@/lib/host-capabilities'
 import { ArrowUpRight } from '@/lib/icons'
 import { IS_MAC } from '@/lib/keybinds/combo'
 import { $alwaysExternalLinks } from '@/store/external-links'
@@ -18,8 +19,9 @@ const URL_RE =
 // Explicit-scheme / www. URLs only — no bare-domain matching. Used where the
 // surrounding text is full of filename-shaped tokens (e.g. `agent.log`,
 // `errors.log` in a /debug report) that the bare-domain branch of URL_RE would
-// otherwise mistake for domains and linkify.
-const EXPLICIT_URL_RE = /(?:https?:\/\/|www\.)[^\s<>"'`]+[^\s<>"'`.,;:!?)]/gi
+// otherwise mistake for domains and linkify. A `www.` match must not continue a
+// path or word (`/tmp/www.config`, `C:\…\www.config` stay literal).
+const EXPLICIT_URL_RE = /(?:https?:\/\/|(?<![\w.\-/\\@])www\.)[^\s<>"'`]+[^\s<>"'`.,;:!?)]/gi
 
 const DOMAIN_RE = /^(?:www\.)?[a-z0-9](?:[a-z0-9-]*\.)+[a-z]{2,}(?::\d+)?(?:[/?#][^\s]*)?$/i
 const SKIP_PROTO_RE = /^(?:file|data|mailto|javascript|blob|chrome|about|hermes):/i
@@ -247,10 +249,12 @@ export function hudForcesNativeLinks(search = typeof window === 'undefined' ? ''
 /**
  * Where a link the user clicked should open.
  *
- * A web page opens in the in-app browser — that pane exists so reading a doc
+ * In Electron, a web page opens in the in-app browser — that pane exists so reading a doc
  * doesn't cost a context switch out of Hermes, and it is the surface the agent
  * can see. ⌘/Ctrl-click (or middle-click) escapes to the real browser, which is
  * where you go for anything needing your logged-in session or a password.
+ * Webapp links open in a browser tab by default because sites often reject
+ * embedded pages. Keep that handoff synchronous so it retains the click gesture.
  *
  * Everything that ISN'T a web page — `mailto:`, `file:`, a custom scheme — has
  * no business in the webview and always hands off to the OS. The HUD has no
@@ -266,6 +270,7 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
 
   if (
     options.native ||
+    !hostHas('inAppLinks') ||
     $alwaysExternalLinks.get() ||
     isConnectorAuthorizationLink(target) ||
     hudForcesNativeLinks() ||

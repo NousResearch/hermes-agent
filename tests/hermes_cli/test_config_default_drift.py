@@ -4,7 +4,29 @@ User-set config values whose upstream default changed should surface an
 informational notice — without ever rewriting the user's value.
 """
 
+import pytest
+
 from hermes_cli.config_migrations import DEFAULT_HISTORY, collect_default_drift
+
+
+@pytest.mark.parametrize("quiet", [True, False])
+def test_real_migration_persists_version_and_retains_user_value(tmp_path, monkeypatch, capsys, quiet):
+    from hermes_cli import config
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "_config_version: 32\ncompression:\n  hygiene_hard_message_limit: 400\n"
+    )
+
+    result = config.migrate_config(interactive=False, quiet=quiet)
+
+    saved = config.read_raw_config()
+    assert saved["_config_version"] == DEFAULT_CONFIG["_config_version"]
+    assert saved["compression"]["hygiene_hard_message_limit"] == 400
+    assert any("compression.hygiene_hard_message_limit" in warning for warning in result["warnings"])
+    assert ("Config default changed since your last version" in capsys.readouterr().out) is (not quiet)
+
 
 
 class TestCollectDefaultDrift:

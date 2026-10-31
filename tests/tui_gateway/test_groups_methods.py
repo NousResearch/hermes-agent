@@ -722,8 +722,8 @@ def test_retry_and_approval_controls_forward_only_exact_local_coordinates(
         turn_id="turn-1",
     )
     service = SimpleNamespace(
-        retry_room_task=lambda room_id, task_id: (
-            calls.append(("retry", room_id, task_id))
+        retry_room_task=lambda room_id, **kwargs: (
+            calls.append(("retry", room_id, kwargs))
             or {
                 "identity": identity,
                 "status": "queued",
@@ -740,7 +740,7 @@ def test_retry_and_approval_controls_forward_only_exact_local_coordinates(
     retried = _result(
         srv._methods["groups.retry"](
             1,
-            {"room_id": "room-1", "task_id": "task-1"},
+            {"room_id": "room-1", "member_id": "ops", "task_id": "task-1", "execution_generation": 1},
         )
     )
     approved = _result(
@@ -768,7 +768,7 @@ def test_retry_and_approval_controls_forward_only_exact_local_coordinates(
     }
     assert approved == {"approved": True, "result": {"resolved": 1}}
     assert calls == [
-        ("retry", "room-1", "task-1"),
+        ("retry", "room-1", {"member_id": "ops", "task_id": "task-1", "execution_generation": 1}),
         (
             "approve",
             "room-1",

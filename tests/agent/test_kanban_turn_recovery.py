@@ -493,7 +493,7 @@ def owner_worker(tmp_path, clear_kanban_env, monkeypatch):
             def get_messages_as_conversation(self, _sid):
                 return [{"role": "user", "content": "from-store"}]
 
-            def run_conversation(self, message, conversation_history=None):
+            def run_conversation(self, message, conversation_history=None, **_kwargs):
                 entered.append(message)
                 result = script() if callable(script) else script[seen["n"]]
                 seen["n"] += 1

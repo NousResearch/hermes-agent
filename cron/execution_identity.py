@@ -1,7 +1,9 @@
 """Which cron execution the current code runs inside, for plugins (``ctx.current_cron_execution()``).
 
 The scheduler binds it once it has won the execution's ``claimed`` → ``running`` transition (or a
-restart-safe worker adopted it) and resets it when the fire ends. It is a ContextVar, so it follows
+restart-safe worker adopted it) and resets it when the fire ends. A fire's send that waits in the
+durable delivery queue is drained by the gateway inside that same identity, bound from the
+execution ledger row (``cron.scheduler.drain_delivery_queue``). It is a ContextVar, so it follows
 the agent onto the threads the scheduler already runs it on via ``contextvars.copy_context()`` and
 never leaks to another concurrently firing job or profile. Model output cannot reach it: tool
 subprocesses do not share the interpreter. Delegated children read ``None`` — they are not the

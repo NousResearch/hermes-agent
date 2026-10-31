@@ -17,6 +17,7 @@ import os
 import plistlib
 import re
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -77,7 +78,8 @@ class GatewayJob:
         if self.pid not in (None, wrapper_pid) or not (timeout := _budget(self._deadline, 5)):
             return
         try:
-            out = subprocess.run(["pgrep", "-P", str(wrapper_pid)], capture_output=True, text=True, encoding="utf-8",
+            out = subprocess.run(["pgrep", "-P", str(wrapper_pid)], capture_output=True, text=True,
+                                 encoding="utf-8" if sys.platform == "win32" else None, errors="replace",
                                  timeout=timeout, check=False, stdin=subprocess.DEVNULL).stdout.split()
         except (OSError, subprocess.TimeoutExpired):
             out = []

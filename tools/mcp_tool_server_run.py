@@ -222,6 +222,15 @@ class MCPServerRunMixin:
                     "self-probe until it is re-enabled", self.name)
                 paused = True
                 continue
+            # An OAuth auth-failure park promises "parking until credentials change": until a new
+            # token/client file (`hermes mcp login` from another process) or an edited endpoint/auth
+            # config appears, the probe can only replay the dead refresh token (a 400 at the token
+            # endpoint) and then fail the non-interactive authorize step, every interval.
+            if (outcome == "self-probe" and self._auth_park_credentials is not None
+                    and self._oauth_credential_snapshot() == self._auth_park_credentials):
+                logger.debug("MCP server '%s': parked on authentication; credentials unchanged, "
+                             "skipping self-probe", self.name)
+                continue
             # Nobody asked for this revival: a self-probe must never open a browser OAuth flow. The
             # OAuth provider runs inside THIS task (the SDK's auth flow sits in the transport), so a
             # task-local ContextVar reaches it; it stays set for the task's life — every later
@@ -238,6 +247,29 @@ class MCPServerRunMixin:
                 outcome,
             )
             return False
+
+    def _oauth_credential_snapshot(self) -> tuple:
+        """What an OAuth re-authorization changes: the stat of this server's token and client
+        files plus its endpoint/auth config on disk. Stat only; no token bytes are read."""
+        from tools import mcp_tool_config as _config
+        from tools.mcp_oauth import HermesTokenStorage
+
+        storage = HermesTokenStorage(self.name)
+        entry = (_config._load_mcp_config() or {}).get(self.name) or {}
+        return storage.credential_stamp(), repr([entry.get(k) for k in self._REMOTE_REBIND_KEYS])
+
+    def _arm_auth_probe_park(self, root: BaseException) -> None:
+        """Gate the self-probe of an OAuth auth-failure park (see ``_park``) on the credentials the
+        failed attempt STARTED with, so a login that landed while it was in flight still wakes
+        the probe. Not armed when the last token refresh was inconclusive (the authorization
+        server answered 5xx or throttled): the refresh token may still be good, and only the
+        timed probe can find out once the server recovers."""
+        if self._attempt_credentials is None or not _errors._is_auth_error(root):
+            return  # not an OAuth server (no snapshot was taken), or not an auth failure
+        from tools.mcp_oauth_manager import get_manager
+
+        if not get_manager().refresh_was_inconclusive(self.name):
+            self._auth_park_credentials = self._attempt_credentials
 
     def _still_configured_enabled(self) -> bool:
         """Whether ``mcp_servers`` on disk still wants this server connected: entry present
@@ -353,6 +385,10 @@ class MCPServerRunMixin:
                             reset_secret_scope(scope_token)
                 rebuild = True
                 self._auth_park = None
+                # Every attempt starts ungated; only an auth-failure park of THIS attempt re-arms.
+                self._auth_park_credentials = None
+                self._attempt_credentials = (
+                    self._oauth_credential_snapshot() if self._auth_type == "oauth" else None)
                 run_transport = self._run_http if self._is_http() else self._run_stdio
                 self._resolved_identity = None  # the transport publishes the inputs it connects with
                 if not await self._on_clean_return(await run_transport(config), budget):
@@ -488,6 +524,7 @@ class MCPServerRunMixin:
             self._log_park("MCP server '%s' failed initial %s (state: connecting → parked): %s: %s",
                            self.name, detail, type(root).__name__, root)
             self._arm_auth_park(root)
+            self._arm_auth_probe_park(root)
             return await self._park_initial_failure(exc, "after permanent initial failure", budget)
         budget.initial_retries += 1
         if budget.initial_retries > _core._MAX_INITIAL_CONNECT_RETRIES:
@@ -523,6 +560,7 @@ class MCPServerRunMixin:
             "MCP server '%s' hit a permanent error, parking without retries; will self-probe every %ds "
             "(state: connected → parked): %s: %s", self.name, _core._PARKED_RETRY_INTERVAL, type(root).__name__, root)
         self._arm_auth_park(root)
+        self._arm_auth_probe_park(root)
         return await self._park_and_rearm("from parked state (permanent error)", budget)
 
     def _arm_auth_park(self, root: BaseException) -> None:

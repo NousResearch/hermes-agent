@@ -8,7 +8,7 @@ import random
 import re
 import threading
 import time
-from datetime import datetime, timezone, UTC
+from datetime import datetime, timedelta, timezone, UTC
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
@@ -90,6 +90,18 @@ def _resets_in_seconds(m: re.Match[str]) -> Optional[float]:
     return float(m.group(1) or 0) * 3600 + float(m.group(2) or 0) * 60 + float(m.group(3) or 0)
 
 
+# Zhipu (bigmodel) writes quota-window resets as a Beijing-time (UTC+8) wall clock inside the
+# message — "[1310][...您的限额将在 2026-10-14 21:16:13 重置。]" — with no Retry-After header and
+# no seconds field. Parsed against UTC+8 by provider convention; a past timestamp yields a
+# negative delta, which callers treat as already-reset.
+_ZH_ABSOLUTE_RESET_RE = re.compile(r"将在\s*(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})\s*重置")
+
+
+def _zh_absolute_reset_seconds(m: re.Match[str]) -> float:
+    dt = datetime(*(int(g) for g in m.groups()), tzinfo=timezone(timedelta(hours=8)))
+    return (dt - datetime.now(UTC)).total_seconds()
+
+
 # An explicit "retry after N s" wins over "resets in ..." (the credential pool's precedence):
 # a body carrying both describes a short throttle inside a long quota window, and the
 # shorter explicit wait is the one the provider actually asks for.
@@ -98,6 +110,7 @@ RETRY_DELAY_PATTERNS = (
     (_RETRY_AFTER_SECONDS_RE, lambda m: float(m.group(1))),
     (_RESETS_IN_SECONDS_FIELD_RE, lambda m: float(m.group(1))),
     (_RESETS_IN_RE, _resets_in_seconds),
+    (_ZH_ABSOLUTE_RESET_RE, _zh_absolute_reset_seconds),
 )
 
 

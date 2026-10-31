@@ -72,3 +72,17 @@ class TestResetDelayOneTable:
 
         assert reset_delay_from_message("resets in the future, maybe") is None
         assert "reset_at" not in _normalize_error_context({"message": "resets in the future, maybe"})
+
+    def test_zhipu_chinese_absolute_timestamp_parses(self):
+        """Zhipu weekly-cap 1310 states the reset as a Beijing-time wall clock in prose
+        ("[1310][...您的限额将在 2026-10-14 21:16:13 重置。]") — no header, no seconds field.
+        The delta must reach the usage-window gate so multi-hour windows stay off the ladder."""
+        future = (datetime.now(UTC) + timedelta(hours=23)).astimezone(timezone(timedelta(hours=8)))
+        msg = f"[1310][提示:您的限额将在 {future:%Y-%m-%d %H:%M:%S} 重置。]"
+        delay = reset_delay_from_message(msg)
+        assert delay == pytest.approx(23 * 3600, abs=5)
+
+        past = (datetime.now(UTC) - timedelta(hours=1)).astimezone(timezone(timedelta(hours=8)))
+        past_msg = f"[1310][您的限额将在 {past:%Y-%m-%d %H:%M:%S} 重置。]"
+        past_delay = reset_delay_from_message(past_msg)
+        assert past_delay is not None and past_delay < 0

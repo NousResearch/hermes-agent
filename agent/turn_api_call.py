@@ -91,6 +91,9 @@ def perform_api_call(
     _use_streaming = _should_stream(agent)
 
     def _perform_api_call(next_api_kwargs):
+        from agent.chat_completion_helpers import _deepseek_preflight_body_check
+
+        _deepseek_preflight_body_check(agent, next_api_kwargs)
         if agent.api_mode == "codex_responses":
             from agent.codex_responses_adapter import drops_replay_item_ids
 

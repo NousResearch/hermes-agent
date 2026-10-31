@@ -1,4 +1,5 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
+import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import {
   type ClipboardEvent,
@@ -30,6 +31,7 @@ import { sessionCompacting } from '@/store/compaction'
 import { draftRetry } from '@/store/composer-draft-retry'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
+import { $composerEnterSends } from '@/store/composer-prefs'
 import { parkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
@@ -61,6 +63,7 @@ import { COMPOSER_AREAS } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
+import { canSteerLiveDraft, resolveComposerEnterKeyIntent } from './enter-key-mode'
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
@@ -967,38 +970,102 @@ export function ChatBar({
       return
     }
 
-    // Cmd/Ctrl+Enter queues a follow-up while a turn runs. Plain Enter steers
-    // a text-only draft, so both live-turn actions stay reachable by keyboard.
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
-      event.preventDefault()
+    const handleEscapeKey = () => {
+      // Editing a queued turn → Esc cancels the edit, restoring the prior draft.
+      if (queueEdit) {
+        event.preventDefault()
+        exitQueuedEdit('cancel')
 
-      if (busy && !disabled) {
-        // As with plain Enter, source the just-typed content from the DOM so a
-        // fast keypress cannot queue a stale draft.
-        const editorText = liveComposerDraft(editorRef.current, draftRef.current)
-
-        if (editorText !== draftRef.current) {
-          draftRef.current = editorText
-          setComposerText(editorText)
-        }
-
-        queueDraft()
+        return
       }
 
-      return
+      // Otherwise Esc interrupts the running turn (Stop-button parity) — unless
+      // the turn is parked waiting on the user, where Esc must not discard the
+      // pending prompt. An explicit halt, so it parks the queue too.
+      if (busy && !awaitingInput) {
+        event.preventDefault()
+        triggerHaptic('cancel')
+        void Promise.resolve(haltRun())
+      }
     }
 
-    if (event.key === 'Enter' && !event.shiftKey) {
+    const syncLiveDraft = (editorText: string) => {
+      // Adopt the live DOM text so a fast keypress never acts on a render-lagged draft.
+      if (editorText !== draftRef.current) {
+        draftRef.current = editorText
+        setComposerText(editorText)
+      }
+    }
+
+    const handleEnterKey = () => {
+      // Resolve Enter from the live DOM, not render-derived composer state.
+      // Default mode: Enter sends, Shift+Enter is the editor's newline,
+      // Cmd/Ctrl+Enter sends when idle and queues while busy. Multiline-first
+      // mode (desktop.composer.enter_sends = false): Enter inserts a newline,
+      // Cmd/Ctrl+Enter sends/queues, Shift+Enter steers a text-only live turn.
+      const editorText = liveComposerDraft(editorRef.current, draftRef.current)
+      const trimmedEditorText = editorText.trim()
+      const enterSends = $composerEnterSends.get()
+
+      const enterIntent = resolveComposerEnterKeyIntent({
+        busy,
+        canSteer: canSteerLiveDraft({
+          attachmentCount: attachments.length,
+          blocked: compacting || !!blockingPrompt || !!queueEdit || !onSteer,
+          busy,
+          text: trimmedEditorText
+        }),
+        enterSends,
+        key: event.key,
+        modKey: event.metaKey || event.ctrlKey,
+        shiftKey: event.shiftKey
+      })
+
+      if (enterIntent === 'native') {
+        return
+      }
+
       event.preventDefault()
 
+      if (enterIntent === 'newline') {
+        recordUndoPoint()
+        insertComposerContentsAtCaret(event.currentTarget, '\n')
+        flushEditorToDraft(event.currentTarget)
+      } else if (enterIntent === 'queue') {
+        queueFromEnter(editorText, trimmedEditorText, enterSends)
+      } else if (enterIntent === 'steer') {
+        syncLiveDraft(editorText)
+        steerDraft()
+      } else {
+        submitFromEnter(trimmedEditorText)
+      }
+    }
+
+    const queueFromEnter = (editorText: string, trimmedEditorText: string, enterSends: boolean) => {
+      if (disabled) {
+        return
+      }
+
+      syncLiveDraft(editorText)
+
+      // In multiline mode Cmd/Ctrl+Enter is also the only submit chord, so
+      // keep the composer's immediate slash-command path while a turn runs;
+      // ordinary prompts and attachments still queue.
+      if (!enterSends && attachments.length === 0 && SLASH_COMMAND_RE.test(trimmedEditorText)) {
+        submitDraft()
+      } else {
+        queueDraft()
+      }
+    }
+
+    const submitFromEnter = (trimmedEditorText: string) => {
       // Decide from the DOM, not React state. `hasComposerPayload` is derived
       // from the AUI composer state, which lags the latest keystroke by a
       // render, so on fast typing / IME the just-typed text isn't in state yet.
       // Without the live read, a real message typed while prompts are queued
       // would drain the queue instead of sending. submitDraft() re-syncs and
       // sends the live editor text.
-      const editorText = liveComposerDraft(editorRef.current, draftRef.current)
-      const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
+      const hasLivePayload = trimmedEditorText.length > 0 || attachments.length > 0
 
       if (disabled) {
         return
@@ -1030,27 +1097,12 @@ export function ChatBar({
       }
 
       submitDraft()
-
-      return
     }
 
-    if (event.key === 'Escape') {
-      // Editing a queued turn → Esc cancels the edit, restoring the prior draft.
-      if (queueEdit) {
-        event.preventDefault()
-        exitQueuedEdit('cancel')
-
-        return
-      }
-
-      // Otherwise Esc interrupts the running turn (Stop-button parity) — unless
-      // the turn is parked waiting on the user, where Esc must not discard the
-      // pending prompt. An explicit halt, so it parks the queue too.
-      if (busy && !awaitingInput) {
-        event.preventDefault()
-        triggerHaptic('cancel')
-        void Promise.resolve(haltRun())
-      }
+    if (event.key === 'Enter') {
+      handleEnterKey()
+    } else if (event.key === 'Escape') {
+      handleEscapeKey()
     }
   }
 

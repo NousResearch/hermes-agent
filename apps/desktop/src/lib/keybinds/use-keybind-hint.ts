@@ -1,9 +1,10 @@
 import { useStore } from '@nanostores/react'
 
 import { $registryVersion } from '@/contrib/registry'
+import { $composerEnterSends } from '@/store/composer-prefs'
 import { $bindings, bindingsFor } from '@/store/keybinds'
 
-import { KEYBIND_READONLY } from './actions'
+import { readonlyKeybindsFor } from './actions'
 import { formatCombo } from './combo'
 
 // The formatted first combo for `actionId`, or null when unbound. Rebindable
@@ -12,6 +13,7 @@ import { formatCombo } from './combo'
 // tooltip shows just the text label with no trailing hint.
 export function useKeybindHint(actionId: string): string | null {
   const bindings = useStore($bindings)
+  const enterSends = useStore($composerEnterSends)
 
   // `bindingsFor`, not a raw `bindings[id]`: $bindings is seeded at module init
   // from the actions known THEN, so a plugin action contributed later isn't in
@@ -26,7 +28,7 @@ export function useKeybindHint(actionId: string): string | null {
     return formatCombo(rebindable)
   }
 
-  const readonly = KEYBIND_READONLY.find(entry => entry.id === actionId)
+  const readonly = readonlyKeybindsFor(enterSends).find(entry => entry.id === actionId)
 
   if (readonly) {
     return formatCombo(readonly.keys[0])

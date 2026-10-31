@@ -2610,9 +2610,9 @@ DEFAULT_CONFIG = {
         # of the active theme's own sans stack so missing glyphs still fall through. Empty = the
         # theme's face. The terminal pane is terminal.font_family.
         "font_family": "",
-        # Git repo discovery for the Projects sidebar. Empty roots are a safe
-        # no-op; users must explicitly configure roots for filesystem scanning.
-        # Session-derived projects remain available.
+        "composer": {"enter_sends": True},  # False: Enter = newline, Ctrl/Cmd+Enter sends/queues, Shift+Enter steers
+        # Git repo discovery for the Projects sidebar. Empty roots are a safe no-op; users must
+        # explicitly configure roots for filesystem scanning. Session-derived projects remain available.
         "repo_scan_enabled": True,
         "repo_scan_roots": [],
         "repo_scan_exclude_paths": [],

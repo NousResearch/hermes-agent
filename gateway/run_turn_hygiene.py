@@ -39,6 +39,20 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def compaction_agent_scope(source: Optional[SessionSource], session_key: str) -> dict[str, Any]:
+    """Constructor kwargs that tell a temporary compaction agent's memory provider the truth: the
+    conversation's own platform and identity (so a checkpoint lands in that user's/chat's scope) and
+    ``agent_context="flush"`` (a host helper running no turns, never a new primary session)."""
+    from gateway.run import _platform_config_key
+    scope: dict[str, Any] = {"gateway_session_key": session_key, "agent_context": "flush"}
+    if source is not None:
+        if source.platform:
+            scope["platform"] = _platform_config_key(source.platform)
+        for name in ("user_id", "user_id_alt", "user_name", "chat_id", "chat_name", "chat_type", "thread_id"):
+            scope[name] = getattr(source, name, None)
+    return scope
+
+
 class GatewayTurnHygieneMixin:
     @dataclasses.dataclass
     class _HygienePlan:
@@ -661,7 +675,7 @@ class GatewayTurnHygieneMixin:
             _hyg_codex_outcome, session_entry.session_id, _hyg_codex_auto, f"{plan.approx_tokens:,}",
         )
 
-    async def _hmwa_hygiene_build_agent(self, _hyg_model, _hyg_runtime, session_entry):
+    async def _hmwa_hygiene_build_agent(self, _hyg_model, _hyg_runtime, session_entry, source=None, session_key=""):
         """Build the detached hygiene ``AIAgent`` with the live session's system prompt. Returns
         ``(agent, sync_session_db)``."""
         from gateway.run import _GATEWAY_HYGIENE_PLATFORM, _seed_hygiene_system_prompt
@@ -688,6 +702,7 @@ class GatewayTurnHygieneMixin:
             **_hyg_runtime, model=_hyg_model, max_iterations=4, quiet_mode=True,
             skip_memory=not _hyg_checkpoint_required, enabled_toolsets=["memory"],
             session_id=session_entry.session_id, session_db=_hyg_session_db,
+            **compaction_agent_scope(source, session_key),
         )
         _seed_hygiene_system_prompt(_hyg_agent, _hyg_session_row)
         # The stamp only marks this agent as no real surface. Since #104414 Platform is not a
@@ -704,7 +719,8 @@ class GatewayTurnHygieneMixin:
         continue with (compressed or original) on ``attempt.history``."""
         from gateway.run import HygieneTurnHoldExceeded
         from agent.conversation_compression import CompressionCommitFence
-        _hyg_agent, _hyg_session_db = await self._hmwa_hygiene_build_agent(_hyg_model, _hyg_runtime, session_entry)
+        _hyg_agent, _hyg_session_db = await self._hmwa_hygiene_build_agent(
+            _hyg_model, _hyg_runtime, session_entry, source, session_key)
         attempt.agent = _hyg_agent
         try:
             # Hygiene owns the session binding, so prefer in-place compaction over minting a

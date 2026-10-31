@@ -316,3 +316,71 @@ def test_hermes_subprocess_env_unengaged_preserves_fallback(monkeypatch):
     # not engaged (autouse fixture leaves _session_context_engaged False)
     env = hermes_subprocess_env()
     assert env.get("HERMES_SESSION_KEY") == "cli-fallback-key"
+
+
+# --------------------------------------------------------------------------- #
+# Defect A-2: HERMES_KANBAN_* scrub on ALL spawn surfaces
+# --------------------------------------------------------------------------- #
+
+def _kanban_worker_keys():
+    """Return KANBAN_WORKER_ENV_KEYS from the module under test."""
+    from hermes_cli.kanban_db import KANBAN_WORKER_ENV_KEYS
+    return KANBAN_WORKER_ENV_KEYS
+
+
+def test_make_run_env_strips_kanban_worker_keys(monkeypatch, tmp_path):
+    """_make_run_env (foreground terminal) must remove all KANBAN_WORKER_ENV_KEYS.
+
+    The background/PTY path (_sanitize_subprocess_env) was already fixed in
+    main 71c7d86b3.  This test guards the foreground path introduced by A-2.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    keys = _kanban_worker_keys()
+    for key in keys:
+        monkeypatch.setenv(key, f"fake_{key}")
+
+    from tools.environments.local import _make_run_env
+    run_env = _make_run_env({})
+
+    leaked = {k for k in run_env if k in keys}
+    assert leaked == set(), (
+        f"_make_run_env leaked KANBAN_WORKER_ENV_KEYS into foreground child env: {leaked}"
+    )
+
+
+def test_make_run_env_strips_kanban_keys_passed_explicitly(monkeypatch, tmp_path):
+    """KANBAN_WORKER_ENV_KEYS supplied via the explicit env dict are also stripped."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    keys = _kanban_worker_keys()
+    for key in keys:
+        monkeypatch.delenv(key, raising=False)
+
+    from tools.environments.local import _make_run_env
+    extra = {k: f"explicit_{k}" for k in keys}
+    run_env = _make_run_env(extra)
+
+    leaked = {k for k in run_env if k in keys}
+    assert leaked == set(), (
+        f"_make_run_env leaked explicit KANBAN keys: {leaked}"
+    )
+
+
+def test_hermes_subprocess_env_strips_kanban_worker_keys(monkeypatch, tmp_path):
+    """hermes_subprocess_env (non-terminal helper) must also scrub KANBAN keys."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    keys = _kanban_worker_keys()
+    for key in keys:
+        monkeypatch.setenv(key, f"fake_{key}")
+
+    env = hermes_subprocess_env(inherit_credentials=False)
+    leaked = {k for k in env if k in keys}
+    assert leaked == set(), (
+        f"hermes_subprocess_env leaked KANBAN_WORKER_ENV_KEYS: {leaked}"
+    )

@@ -3031,3 +3031,160 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Defect A-2 (2층 가드): _verify_run_identity guards complete / block
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def _running_worker_with_heartbeat(monkeypatch, tmp_path):
+    """Set up a real running kanban task with an established heartbeat identity."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    tid = kb.create_task(conn, title="identity-test", assignee="worker")
+    task = kb.claim_task(conn, tid)
+    assert task is not None, "claim_task returned None — task may not be in ready state"
+    run_id = task.current_run_id
+
+    # Record the original worker's heartbeat identity.
+    kb.heartbeat_worker(
+        conn, tid,
+        expected_run_id=run_id,
+        session_id="original-session-abc",
+        worker_home=str(home),
+    )
+    conn.close()
+
+    return tid, run_id, home
+
+
+def test_complete_rejected_when_session_id_mismatches(
+    monkeypatch, tmp_path, _running_worker_with_heartbeat
+):
+    """kanban_complete must be rejected when session_id differs from heartbeat identity.
+
+    This is the 2층 가드: even if a nested subprocess inherits HERMES_KANBAN_TASK
+    and HERMES_KANBAN_RUN_ID, its different HERMES_SESSION_ID is caught here.
+    """
+    tid, run_id, home = _running_worker_with_heartbeat
+
+    # Simulate a nested hermes: same TASK/RUN_ID but different session.
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_SESSION_ID", "intruder-session-xyz")  # different!
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"summary": "hijacked completion"})
+    d = json.loads(out)
+    assert d.get("ok") is not True, (
+        f"kanban_complete succeeded with mismatched session_id: {out}"
+    )
+    assert "identity mismatch" in out or "error" in out.lower(), out
+
+    # Verify task is still running — not done.
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    task = kb.get_task(conn, tid)
+    conn.close()
+    assert task is not None
+    assert task.status == "running", (
+        f"Task was mutated despite session_id mismatch; status={task.status}"
+    )
+
+
+def test_block_rejected_when_session_id_mismatches(
+    monkeypatch, tmp_path, _running_worker_with_heartbeat
+):
+    """kanban_block must be rejected when session_id differs from heartbeat identity."""
+    tid, run_id, home = _running_worker_with_heartbeat
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_SESSION_ID", "intruder-session-xyz")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from tools import kanban_tools as kt
+    out = kt._handle_block({"reason": "hijacked block"})
+    d = json.loads(out)
+    assert d.get("ok") is not True, (
+        f"kanban_block succeeded with mismatched session_id: {out}"
+    )
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    task = kb.get_task(conn, tid)
+    conn.close()
+    assert task is not None
+    assert task.status == "running", (
+        f"Task was mutated despite session_id mismatch; status={task.status}"
+    )
+
+
+def test_complete_allowed_when_session_id_matches(
+    monkeypatch, tmp_path, _running_worker_with_heartbeat
+):
+    """kanban_complete must succeed when session_id matches the heartbeat identity."""
+    tid, run_id, home = _running_worker_with_heartbeat
+
+    # Same session as the heartbeat.
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_SESSION_ID", "original-session-abc")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"summary": "legitimate completion"})
+    d = json.loads(out)
+    assert d.get("ok") is True, f"kanban_complete failed unexpectedly: {out}"
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    task = kb.get_task(conn, tid)
+    conn.close()
+    assert task is not None
+    assert task.status == "done", f"Expected done, got {task.status}"
+
+
+def test_complete_allowed_without_prior_heartbeat(monkeypatch, tmp_path):
+    """Without a prior heartbeat event, _verify_run_identity fails open.
+
+    A worker that completes before heartbeating (fast tasks, first-turn done)
+    must not be locked out.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    tid = kb.create_task(conn, title="fast-task", assignee="worker")
+    task = kb.claim_task(conn, tid)
+    assert task is not None
+    run_id = task.current_run_id
+    conn.close()
+
+    # No heartbeat recorded — identity is unknown.
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_SESSION_ID", "any-session-at-all")
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"summary": "fast task done"})
+    d = json.loads(out)
+    assert d.get("ok") is True, (
+        f"kanban_complete blocked unexpectedly when no heartbeat exists: {out}"
+    )

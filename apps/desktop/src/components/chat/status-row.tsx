@@ -87,7 +87,7 @@ export function StatusRow({
         <div
           className={cn(
             'status-row-actions flex shrink-0 items-center gap-0.5',
-            !trailingVisible && 'opacity-0 group-hover/status-row:opacity-100 group-focus-within/status-row:opacity-100'
+            !trailingVisible && 'opacity-30 group-hover/status-row:opacity-100 group-focus-within/status-row:opacity-100'
           )}
         >
           {trailing}

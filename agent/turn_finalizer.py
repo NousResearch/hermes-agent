@@ -57,8 +57,12 @@ def _record_kanban_budget_exhausted(
     guarantees idempotence — if another path already closed the run this is a no-op — so it is safe to call
     from multiple exit paths.
     """
+    # Pin the failure to THIS worker's run: once the worker has handed off
+    # (kanban_complete/block/review) or a successor run owns the card, the
+    # wrap-up exhaustion must not record ``timed_out`` or notify a retry.
+    _raw_run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    expected_run_id = int(_raw_run_id) if _raw_run_id.isdigit() else None
     try:
-        from hermes_cli import kanban_db as _kb
         from hermes_cli import kanban_db_connect as _kbc
         from hermes_cli import kanban_db_dispatch as _kbd
         _conn = _kbc.connect()
@@ -74,6 +78,7 @@ def _record_kanban_budget_exhausted(
                 release_claim=True,
                 end_run=True,
                 event_payload_extra={"budget_used": api_call_count, "budget_max": max_iterations},
+                expected_run_id=expected_run_id,
             )
         finally:
             with suppress(Exception):

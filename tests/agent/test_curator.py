@@ -484,8 +484,7 @@ def test_protected_builtin_never_archived_even_when_stale(curator_env, monkeypat
     bundled skill under prune_builtins — it backs a load-bearing UX path and
     must survive every curator pass.
 
-    The shipped set is currently empty (``plan`` graduated to a built-in
-    command), so the mechanism is exercised with a sentinel name."""
+    The mechanism is exercised with a sentinel name, independent of the shipped set."""
     u = curator_env["usage"]
     c = curator_env["curator"]
     skills_dir = curator_env["home"] / "skills"

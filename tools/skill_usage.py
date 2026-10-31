@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
-from agent.skill_utils import is_excluded_skill_path, is_external_skill_path
+from agent.skill_utils import ESSENTIAL_SKILLS, is_excluded_skill_path, is_external_skill_path
 from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,8 @@ _VALID_STATES = {STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED}
 
 # Load-bearing built-ins (by frontmatter ``name``) the curator must NEVER archive/consolidate regardless of
 # ``curator.prune_builtins``, pins or LLM judgment — archiving one breaks its slash command. Keep tiny.
-PROTECTED_BUILTIN_SKILLS: set[str] = set()
+# Essential skills are always protected: the system prompt points at them unconditionally.
+PROTECTED_BUILTIN_SKILLS: set[str] = set(ESSENTIAL_SKILLS)
 
 
 def is_protected_builtin(skill_name: str) -> bool:
@@ -646,10 +647,11 @@ def archive_skill(skill_name: str) -> tuple[bool, str]:
 
 def restore_skill(skill_name: str) -> tuple[bool, str]:
     """Move an archived skill back to the flat layout (nesting NOT reconstructed). Refuses a name now colliding with
-    a hub skill, or a bundled built-in unless ``curator.prune_builtins`` is on (restoring lifts a prune)."""
+    a hub skill, or a bundled built-in unless ``curator.prune_builtins`` is on (restoring lifts a prune). A protected
+    built-in is always restorable: it must never stay archived."""
     if is_hub_installed(skill_name):
         return False, f"skill '{skill_name}' is now hub-installed; restore would shadow the upstream version"
-    if is_bundled(skill_name) and not _prune_builtins_enabled():
+    if is_bundled(skill_name) and not (_prune_builtins_enabled() or is_protected_builtin(skill_name)):
         return False, f"skill '{skill_name}' is now bundled; restore would shadow the upstream version"
     archive_root = _archive_dir()
     if not archive_root.exists():

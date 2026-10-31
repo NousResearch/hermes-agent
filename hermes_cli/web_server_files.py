@@ -429,7 +429,9 @@ def _parse_managed_roots(raw: str, *, create_root: bool = True) -> list[Path]:
         p = Path(trimmed).expanduser()
         if not p.is_absolute():
             raise ValueError(f"{_MANAGED_FILES_ROOT_ENV} segments must be absolute paths: {segment!r}")
-        if p.exists() and not p.is_dir():
+        if not p.exists():
+            raise ValueError(f"{_MANAGED_FILES_ROOT_ENV} path does not exist: {segment!r}")
+        if not p.is_dir():
             raise ValueError(f"{_MANAGED_FILES_ROOT_ENV} path is not a directory: {segment!r}")
         resolved = _ensure_managed_root(p) if create_root else _canonical_path(p)
         roots.append(resolved)
@@ -439,7 +441,10 @@ def _parse_managed_roots(raw: str, *, create_root: bool = True) -> list[Path]:
 def _managed_files_policy(request: Optional[Request], *, create_root: bool = True) -> ManagedFilesPolicy:
     raw_forced_root = os.environ.get(_MANAGED_FILES_ROOT_ENV, "").strip()
     if raw_forced_root:
-        roots = _parse_managed_roots(raw_forced_root, create_root=create_root)
+        try:
+            roots = _parse_managed_roots(raw_forced_root, create_root=create_root)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
         locked: list[Path] | Path = roots[0] if len(roots) == 1 else roots
         return ManagedFilesPolicy(default_path=roots[0], locked_root=locked, can_change_path=False)
 

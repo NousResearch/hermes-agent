@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from starlette.testclient import TestClient
 
 from hermes_cli import web_server
@@ -110,6 +111,7 @@ def test_multi_root_path_under_second_root(monkeypatch, tmp_path, test_client):
     """A git repo located under the second root is allowed by review routes."""
     root1 = tmp_path / "root1"
     root2 = tmp_path / "root2"
+    root1.mkdir(parents=True, exist_ok=True)
     repo2 = _init_repo(root2 / "project2")
     roots_str = f"{root1}{os.pathsep}{root2}"
     monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", roots_str)
@@ -159,7 +161,7 @@ def test_multi_root_path_outside_all_roots(monkeypatch, tmp_path, test_client):
     ],
 )
 def test_multi_root_malformed_values_raise_error(monkeypatch, tmp_path, bad_value):
-    """Malformed values (empty segments, relative paths) raise a validation error."""
+    """Malformed values (empty segments, relative paths) raise ValueError in parse and 400 in policy."""
     # Prefix relative paths with an absolute one for mixed cases
     if "something" in bad_value:
         bad_value = bad_value.replace("something", str(tmp_path))
@@ -168,14 +170,83 @@ def test_multi_root_malformed_values_raise_error(monkeypatch, tmp_path, bad_valu
 
     monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", bad_value)
     with pytest.raises(ValueError):
+        web_server_files._parse_managed_roots(bad_value, create_root=False)
+    with pytest.raises(HTTPException) as exc_info:
         web_server_files._managed_files_policy(None, create_root=False)
+    assert exc_info.value.status_code == 400
 
 
 def test_multi_root_file_instead_of_directory_raises_error(monkeypatch, tmp_path):
-    """An existing file passed as a root raises a validation error."""
+    """An existing file passed as a root raises ValueError in parse and 400 in policy."""
     file_path = tmp_path / "some_file.txt"
     file_path.write_text("hello", encoding="utf-8")
     monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(file_path))
     with pytest.raises(ValueError):
+        web_server_files._parse_managed_roots(str(file_path), create_root=False)
+    with pytest.raises(HTTPException) as exc_info:
         web_server_files._managed_files_policy(None, create_root=False)
+    assert exc_info.value.status_code == 400
+    assert file_path.name in exc_info.value.detail
+
+
+def test_multi_root_nonexistent_path_raises_error(monkeypatch, tmp_path):
+    """A nonexistent path passed as a root raises ValueError in parse and 400 in policy."""
+    missing = tmp_path / "does_not_exist"
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(missing))
+    with pytest.raises(ValueError) as parse_exc:
+        web_server_files._parse_managed_roots(str(missing), create_root=False)
+    assert "path does not exist" in str(parse_exc.value)
+    assert missing.name in str(parse_exc.value)
+
+    with pytest.raises(HTTPException) as exc_info:
+        web_server_files._managed_files_policy(None, create_root=False)
+    assert exc_info.value.status_code == 400
+    assert missing.name in exc_info.value.detail
+
+
+def _make_file_path(tmp: Path) -> str:
+    p = tmp / "file.txt"
+    p.write_text("hi", encoding="utf-8")
+    return str(p)
+
+
+@pytest.mark.parametrize(
+    ("env_value_fn", "expected_fragment"),
+    [
+        (lambda tmp: f"{tmp / 'root1'}{os.pathsep}{os.pathsep}{tmp / 'root2'}", "contains an empty segment"),
+        (lambda tmp: f"{tmp / 'root1'}{os.pathsep}rel/path", "segments must be absolute paths"),
+        (_make_file_path, "path is not a directory"),
+        (lambda tmp: str(tmp / "missing_dir"), "path does not exist"),
+    ],
+)
+def test_multi_root_malformed_cases_return_400_via_api(monkeypatch, tmp_path, test_client, env_value_fn, expected_fragment):
+    """Each malformed case returns HTTP 400 with a descriptive detail naming the segment."""
+    (tmp_path / "root1").mkdir(exist_ok=True)
+    (tmp_path / "root2").mkdir(exist_ok=True)
+    repo = _init_repo(tmp_path / "root1" / "repo")
+
+    env_val = env_value_fn(tmp_path)
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", env_val)
+
+    # Test GET /api/git/review/list returns 400 with detail
+    list_resp = test_client.get("/api/git/review/list", params={"path": str(repo)})
+    assert list_resp.status_code == 400, list_resp.text
+    list_detail = list_resp.json().get("detail", "")
+    assert expected_fragment in list_detail
+    assert "HERMES_DASHBOARD_FILES_ROOT" in list_detail
+
+    # Test GET /api/git/review/diff returns 400 with detail
+    diff_resp = test_client.get("/api/git/review/diff", params={"path": str(repo), "file": "a.txt"})
+    assert diff_resp.status_code == 400, diff_resp.text
+    diff_detail = diff_resp.json().get("detail", "")
+    assert expected_fragment in diff_detail
+    assert "HERMES_DASHBOARD_FILES_ROOT" in diff_detail
+
+    # Test GET /api/git/review/commit-context returns 400 with detail
+    ctx_resp = test_client.get("/api/git/review/commit-context", params={"path": str(repo)})
+    assert ctx_resp.status_code == 400, ctx_resp.text
+    ctx_detail = ctx_resp.json().get("detail", "")
+    assert expected_fragment in ctx_detail
+    assert "HERMES_DASHBOARD_FILES_ROOT" in ctx_detail
+
 

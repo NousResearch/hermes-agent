@@ -56,6 +56,10 @@ _KANBAN_ENV_VARS: tuple[str, ...] = (
     "HERMES_KANBAN_RUN_ID",
     "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_KANBAN_DISPATCH_IN_GATEWAY",
+    # Git / goal-loop pins injected by the dispatcher (kanban_db.py:9499-9510)
+    "HERMES_KANBAN_BRANCH",
+    "HERMES_KANBAN_GOAL_MODE",
+    "HERMES_KANBAN_GOAL_MAX_TURNS",
     # Timing overrides that can affect dispatch behavior in tests
     "HERMES_KANBAN_CLAIM_TTL_SECONDS",
     "HERMES_KANBAN_CRASH_GRACE_SECONDS",

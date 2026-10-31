@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -24,7 +25,7 @@ import pytest
 
 import hermes_cli.kanban_db as kb
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
-from tests.hermes_cli._kanban_isolation import pin_kanban_db
+from tests.hermes_cli._kanban_isolation import _KANBAN_ENV_VARS, pin_kanban_db
 
 
 # ---------------------------------------------------------------------------
@@ -576,4 +577,82 @@ class TestKanbanDBIsolation:
             f"tasks: {count_before} → {count_after}.\n"
             "This means the DB isolation fix is broken and real DB leaks "
             "would occur in dispatcher-spawned pytest sessions."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Drift-prevention invariant — _KANBAN_ENV_VARS ⊇ vars used in kanban_db.py
+# ---------------------------------------------------------------------------
+
+
+class TestKanbanIsolationDrift:
+    """Invariant: _KANBAN_ENV_VARS must cover every HERMES_KANBAN_* env var
+    that kanban_db.py reads or injects.
+
+    This is NOT a change-detector snapshot test.  It asserts a *relationship*
+    between two data sets: the isolation allow-list and the source that defines
+    what the dispatcher actually injects.  Any new env var added to
+    kanban_db.py that is missing from _KANBAN_ENV_VARS would allow a
+    dispatcher-injected var to survive into a test process and corrupt the
+    real DB.
+    """
+
+    def test_isolation_list_covers_all_kanban_env_vars_in_source(self):
+        """_KANBAN_ENV_VARS ⊇ {every HERMES_KANBAN_[A-Z_]+ in kanban_db.py}.
+
+        Reads kanban_db.py as text, extracts every unique HERMES_KANBAN_*
+        token, and asserts that _KANBAN_ENV_VARS contains them all.
+        """
+        kanban_db_src = (
+            Path(__file__).parent.parent.parent
+            / "hermes_cli"
+            / "kanban_db.py"
+        )
+        source_text = kanban_db_src.read_text(encoding="utf-8")
+        # Extract every HERMES_KANBAN_<UPPER_WORD> token from the source.
+        found_in_source: set[str] = set(
+            re.findall(r"HERMES_KANBAN_[A-Z_]+", source_text)
+        )
+
+        isolation_set = set(_KANBAN_ENV_VARS)
+        missing = found_in_source - isolation_set
+        assert not missing, (
+            f"_KANBAN_ENV_VARS is missing env vars that kanban_db.py uses.\n"
+            f"Add these to _KANBAN_ENV_VARS in tests/hermes_cli/_kanban_isolation.py:\n"
+            f"  {sorted(missing)}\n"
+            "Without this, dispatcher-injected vars survive into test processes "
+            "and can corrupt the real ~/.hermes/kanban.db."
+        )
+
+    def test_goal_loop_vars_stripped_by_pin_kanban_db(self, tmp_path, monkeypatch):
+        """Regression: BRANCH/GOAL_MODE/GOAL_MAX_TURNS must be stripped by pin_kanban_db.
+
+        The dispatcher injects these three vars when spawning goal-mode workers
+        (kanban_db.py:9499-9510).  Without stripping them, a worker running
+        pytest would inherit the dispatcher's goal-loop state across test boundaries.
+
+        Sets all three in the environment, calls pin_kanban_db(), then asserts
+        none of them remain in os.environ.
+        """
+        dispatcher_vars = {
+            "HERMES_KANBAN_BRANCH": "hermes-stab/some-task-branch",
+            "HERMES_KANBAN_GOAL_MODE": "1",
+            "HERMES_KANBAN_GOAL_MAX_TURNS": "20",
+        }
+        for key, val in dispatcher_vars.items():
+            monkeypatch.setenv(key, val)
+
+        # Verify the vars are present before pin_kanban_db.
+        for key in dispatcher_vars:
+            assert key in os.environ, f"{key} not set before pin_kanban_db"
+
+        pin_kanban_db(tmp_path, monkeypatch)
+
+        # After pin, none of the three vars should remain.
+        still_present = [k for k in dispatcher_vars if k in os.environ]
+        assert not still_present, (
+            f"pin_kanban_db() did NOT strip dispatcher-injected goal-loop vars:\n"
+            f"  {still_present}\n"
+            "These vars must be listed in _KANBAN_ENV_VARS in "
+            "tests/hermes_cli/_kanban_isolation.py."
         )

@@ -681,8 +681,8 @@ def failed_delegations_for_session(
         rows = conn.execute(
             f"""SELECT delegation_id, state, dispatched_at, completed_at, task_json, result_json FROM async_delegations
                 WHERE ({owner_sql}) AND state NOT IN ('running','finalizing') AND completed_at >= ?
-                ORDER BY completed_at DESC LIMIT ?""",
-            (*(val for _, val in selectors), cutoff, limit)).fetchall()
+                ORDER BY completed_at DESC""",
+            (*(val for _, val in selectors), cutoff)).fetchall()
     failed: list[dict[str, Any]] = []
     for delegation_id, state, dispatched_at, completed_at, task_json, result_json in rows:
         task, result = _json_object(task_json), redact_child_result(_json_object(result_json))

@@ -51,22 +51,36 @@ def _calculate_line_positions(content_lines: list[str], start_line: int,
     return start_pos, min(content_length, end_pos)
 
 
+def _pattern_lines(pattern: str) -> tuple[list[str], bool]:
+    """``pattern``'s lines plus whether it ends with a line break. A trailing ``\\n``
+    terminates the last line; splitting would otherwise read it as one more blank line
+    the file must contain (qwen-code#13484)."""
+    if pattern.endswith('\n') and pattern.strip('\n'):
+        return pattern[:-1].split('\n'), True
+    return pattern.split('\n'), False
+
+
 def _window_spans(content: str, content_lines: list[str], n: int,
-                  accept: Callable[[int], bool]) -> list[Span]:
-    """Spans of every ``n``-line window starting at ``i`` for which ``accept(i)``."""
+                  accept: Callable[[int], bool], eol: bool = False) -> list[Span]:
+    """Spans of every ``n``-line window starting at ``i`` for which ``accept(i)``. With ``eol``
+    the span also covers the window's line break; a window ending on an unterminated final
+    line still counts, so every copy is seen when judging ambiguity."""
+    last = len(content_lines) - n - (1 if eol and content.endswith('\n') else 0)
     return [
-        _calculate_line_positions(content_lines, i, i + n, len(content))
-        for i in range(len(content_lines) - n + 1) if accept(i)]
+        (start, min(end + 1, len(content))) if eol else (start, end)
+        for i in range(last + 1) if accept(i)
+        for start, end in [_calculate_line_positions(content_lines, i, i + n, len(content))]]
 
 
 def _match_transformed_lines(content: str, pattern: str,
                              transform: Callable[[list[str]], list[str]]) -> list[Span]:
     """Match ``pattern`` against ``content`` after applying ``transform`` to each line block."""
     content_lines = content.split('\n')
-    pattern_norm = transform(pattern.split('\n'))
+    lines, eol = _pattern_lines(pattern)
+    pattern_norm = transform(lines)
     n = len(pattern_norm)
     return _window_spans(content, content_lines, n,
-                         lambda i: transform(content_lines[i:i + n]) == pattern_norm)
+                         lambda i: transform(content_lines[i:i + n]) == pattern_norm, eol)
 
 
 def _strip_boundary(lines: list[str]) -> list[str]:
@@ -229,7 +243,7 @@ def _strategy_unicode_normalized(content: str, pattern: str) -> list[Span]:
 
 def _strategy_block_anchor(content: str, pattern: str) -> list[Span]:
     """Strategy 8: anchor on first+last lines, similarity-score the middle."""
-    pattern_lines = _unicode_normalize(pattern).split('\n')
+    pattern_lines, eol = _pattern_lines(_unicode_normalize(pattern))
     if len(pattern_lines) < 2:
         return []
     first_line = pattern_lines[0].strip()
@@ -255,13 +269,13 @@ def _strategy_block_anchor(content: str, pattern: str) -> list[Span]:
         content_middle = '\n'.join(norm_content_lines[i + 1:i + n - 1])
         return SequenceMatcher(None, content_middle, pattern_middle).ratio() >= threshold
 
-    return _window_spans(content, content.split('\n'), n, similar)
+    return _window_spans(content, content.split('\n'), n, similar, eol)
 
 
 def _strategy_context_aware(content: str, pattern: str) -> list[Span]:
     """Strategy 9 (last resort): anchored per-line similarity, every non-blank line >= 0.80.
     The anchor pre-filter bounds the scan; the all-lines rule stops coincidental matches."""
-    pattern_lines = pattern.split('\n')
+    pattern_lines, eol = _pattern_lines(pattern)
     content_lines = content.split('\n')
     n = len(pattern_lines)
     if n > len(content_lines):
@@ -282,7 +296,7 @@ def _strategy_context_aware(content: str, pattern: str) -> list[Span]:
             not p_line.strip() or _sim(p_line.strip(), c_line.strip()) >= 0.80
             for p_line, c_line in zip(pattern_lines, block_lines))
 
-    return _window_spans(content, content_lines, n, accept)
+    return _window_spans(content, content_lines, n, accept, eol)
 
 
 # Ordered chain: precise strategies first, similarity-based last.
@@ -653,6 +667,8 @@ def _apply_replacements(content: str, matches: list[Span],
                 region, old_string, adjusted,
                 match_starts_mid_line=_match_starts_mid_line(content, start, end),
             )
+            if old_string.endswith('\n') and not region.endswith('\n') and adjusted.endswith('\n'):
+                adjusted = adjusted[:-1]  # matched an unterminated last line: don't add a break
         result = result[:start] + adjusted + result[end:]
     return result
 

@@ -3116,13 +3116,13 @@ export const frOverrides = {
         help: "Recommandé. IDs d'utilisateurs (un par case) au format @utilisateur:serveur."
       },
       SIGNAL_HTTP_URL: {
-        label: 'URL du pont Signal',
+        label: 'URL HTTP de signal-cli',
         placeholder: 'http://127.0.0.1:8080',
-        help: "URL d'un pont REST signal-cli en cours d'exécution."
+        help: "URL du démon HTTP natif de signal-cli en cours d'exécution."
       },
       SIGNAL_ACCOUNT: {
         label: 'Numéro de téléphone',
-        help: 'Le numéro enregistré avec votre pont signal-cli.'
+        help: 'Le numéro de téléphone lié à votre signal-cli.'
       },
       SIGNAL_ALLOWED_USERS: {
         label: 'Utilisateurs Signal autorisés',

@@ -12,9 +12,9 @@ author: NousResearch
 # platform-plugin env var injector in ``hermes_cli/config.py``.
 requires_env:
   - name: SIGNAL_HTTP_URL
-    description: "signal-cli HTTP daemon URL (e.g. http://127.0.0.1:8080)"
+    description: "Native signal-cli HTTP daemon URL, e.g. http://127.0.0.1:8080"
     prompt: "signal-cli HTTP URL"
-    url: "https://github.com/AsamK/signal-cli"
+    url: "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/signal"
     password: false
   - name: SIGNAL_ACCOUNT
     description: "Signal account phone number in E.164 format (e.g. +15551234567)"

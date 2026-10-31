@@ -330,6 +330,10 @@ _FINISH_REASON_ALIASES = {
     "max_tokens": "length",  # Gemini-native / Anthropic-style cap reason
     "end": "stop",  # some gateways' clean-completion spelling
     "function_call": "tool_calls",  # OpenAI legacy pre-tools spelling
+    # Gemini-native content-policy stops (SAFETY, RECITATION, ...) from the same gateways:
+    # the native adapter maps them to content_filter too, the value the refusal path checks.
+    **dict.fromkeys(
+        ("safety", "recitation", "blocklist", "prohibited_content", "spii", "image_safety"), "content_filter"),
 }
 
 

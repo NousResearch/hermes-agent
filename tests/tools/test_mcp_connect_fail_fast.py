@@ -42,17 +42,19 @@ def test_start_raises_the_construction_error_instead_of_waiting_for_the_timeout(
     assert elapsed < connect_timeout / 2, f"caller waited {elapsed:.1f}s — fail-fast did not fire"
 
 
-def test_start_still_exits_quietly_when_prepare_run_declines(monkeypatch):
+def test_run_exits_quietly_when_prepare_run_declines(monkeypatch):
+    """A ``_prepare_run`` that reports "do not start" leaves the retry loop unentered.
+
+    Pinned on ``run()`` itself, not on ``start()``: every real decline publishes its error
+    through ``_publish_error`` (which fires ``_ready``), so what this guards is that the
+    branch returns instead of falling into the reconnect ladder.
+    """
     task = MCPServerTask("declined")
 
     async def _decline(config):
-        task._error = None
-        task._ready.set()  # what _publish_error does for a reported failure
         return False
 
     monkeypatch.setattr(task, "_prepare_run", _decline)
 
-    async def _drive():
-        return await asyncio.wait_for(task.start({"url": "https://mcp.example.test/mcp"}), timeout=5)
-
-    assert asyncio.run(_drive()) is None
+    asyncio.run(asyncio.wait_for(task.run({"url": "https://mcp.example.test/mcp"}), timeout=5))
+    assert not task._ready.is_set(), "run() must not claim readiness on a decline"

@@ -341,7 +341,7 @@ class MCPServerRunMixin:
             # start() waited on _ready and the caller burned the whole connect_timeout, reporting
             # an ambiguous timeout instead of the real cause (#146924).
             logger.warning("MCP server '%s' failed before connecting: %s: %s",
-                           self.name, type(exc).__name__, exc)
+                           self.name, type(exc).__name__, exc, exc_info=True)
             self._publish_error(exc)  # fires _ready; start() re-raises it
             return
         self._reconnect_retries = 0

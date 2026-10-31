@@ -129,7 +129,7 @@ class GatewayConfigLoadersMixin:
                 # The loader's own two steps: merge every nested platform block, then the overrides of
                 # the block platform_section picks (a top-level ``<platform>:`` block first) win.
                 # ``GatewayConfig.from_dict(raw)`` alone reads only the nested ``platforms`` form.
-                name, gateway_section = source.platform.value, raw.get("gateway")
+                name, gateway_section = str(source.platform.value), raw.get("gateway")
                 overrides = (merge_platform_sections(raw, gateway_section, {}).get(name) or {}).get("channel_overrides")
                 section, _ = platform_section(raw, name, (
                     gateway_section.get("platforms") if isinstance(gateway_section, dict) else None))

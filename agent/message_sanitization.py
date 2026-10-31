@@ -192,6 +192,45 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
 _FULL_ARGS_LOG_BOUND = 100_000
 
 
+def _split_concatenated_json_objects(
+    raw: str,
+) -> tuple[dict, str, list[str]] | None:
+    """Split ``{"a": 1}{"b": 2}`` into the JSON objects that make it up.
+
+    Some providers emit several tool-call argument objects back-to-back inside
+    ONE tool call (observed on Gemini via the native client: three ``read_file``
+    paths concatenated into a single call).  That is not one JSON document, so
+    every other repair pass fails and the call collapses to ``{}`` — which the
+    conversation loop then reports to the user as the misleading
+    "Response truncated due to output length limit" after 4 retries.
+
+    Returns ``(first_object, first_raw, dropped_raws)`` when ``raw`` is two or
+    more adjacent complete JSON objects, and ``None`` for everything else
+    (single object, one object plus trailing garbage, non-object values) so the
+    normal repair pipeline is unchanged.  ``json.JSONDecoder.raw_decode`` is
+    used so a ``}{`` sequence *inside* a string value is never split.
+    """
+    decoder = json.JSONDecoder(strict=False)
+    parts: list[tuple[dict, str]] = []
+    idx, n = 0, len(raw)
+    while idx < n:
+        while idx < n and raw[idx] in " \t\r\n":
+            idx += 1
+        if idx >= n:
+            break
+        try:
+            obj, end = decoder.raw_decode(raw, idx)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(obj, dict):
+            return None
+        parts.append((obj, raw[idx:end]))
+        idx = end
+    if len(parts) < 2:
+        return None
+    return parts[0][0], parts[0][1], [raw_part for _, raw_part in parts[1:]]
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Attempt to repair malformed tool_call argument JSON.
 
@@ -212,6 +251,26 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     if raw_stripped == "None":
         logger.warning("Sanitized Python-None tool_call arguments for %s", tool_name)
         return "{}"
+
+    # Repair pass -1: several complete JSON objects concatenated into one tool
+    # call (Gemini native client). No single-pass repair can fix this — the
+    # next passes all fail and the call is destroyed, so the turn dies with a
+    # bogus "output length limit" error. Keep the FIRST object (the call the
+    # model meant to make) and log what was dropped so the bytes survive in
+    # agent.log (#80498 rule).
+    concatenated = _split_concatenated_json_objects(raw_stripped)
+    if concatenated is not None:
+        first_obj, first_raw, dropped = concatenated
+        logger.warning(
+            "Repaired concatenated tool_call arguments for %s — %d JSON objects "
+            "in one call, executing the first (%s); dropped %d: %s",
+            tool_name,
+            len(dropped) + 1,
+            first_raw[:200],
+            len(dropped),
+            " ".join(part[:200] for part in dropped)[:_FULL_ARGS_LOG_BOUND],
+        )
+        return json.dumps(first_obj, separators=(",", ":"))
 
     # Repair pass 0: llama.cpp backends sometimes emit literal control
     # characters (tabs, newlines) inside JSON string values. json.loads

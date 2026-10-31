@@ -60,4 +60,43 @@ class TestRepairToolCallArguments:
 
     # -- Stage 4: control-char escape fallback --
 
+class TestConcatenatedToolCallArguments:
+    """Several complete JSON objects glued into one tool call (Gemini native).
 
+    Observed payload: three ``read_file`` calls whose arguments arrived as
+    ``{"path": "a"}{"path": "b"}{"path": "c"}``. Every other repair pass fails
+    on it, so the call used to collapse to ``{}`` and the turn died with
+    "Response truncated due to output length limit". The first object is the
+    call the model meant to make; the rest are logged and dropped.
+    """
+
+    def test_three_concatenated_objects_keep_the_first(self, caplog):
+        raw = (
+            '{"limit": 200, "offset": 1, "path": "/a/billing-invoice-email.ts"}'
+            '{"limit": 200, "offset": 1, "path": "/a/billing-mail.ts"}'
+            '{"limit": 200, "offset": 1, "path": "/a/email-copy.ts"}'
+        )
+        result = _repair_tool_call_arguments(raw, "read_file")
+        assert json.loads(result) == {
+            "limit": 200,
+            "offset": 1,
+            "path": "/a/billing-invoice-email.ts",
+        }
+        assert "concatenated tool_call arguments" in caplog.text
+        assert "dropped 2" in caplog.text
+
+    def test_whitespace_and_newline_separated_objects_split(self):
+        raw = '{"path": "/a"}\n\n{"path": "/b"}'
+        assert json.loads(_repair_tool_call_arguments(raw, "read_file")) == {"path": "/a"}
+
+    def test_adjacent_braces_inside_a_string_are_not_split(self):
+        raw = '{"content": "a}{b", "path": "/x"}'
+        assert json.loads(_repair_tool_call_arguments(raw, "write_file")) == {
+            "content": "a}{b",
+            "path": "/x",
+        }
+
+    def test_truncated_second_object_falls_through_to_other_passes(self):
+        raw = '{"path": "/a"}{"path": "/b'
+        # Must not raise; the single-object repairs take over as before.
+        assert isinstance(_repair_tool_call_arguments(raw, "read_file"), str)

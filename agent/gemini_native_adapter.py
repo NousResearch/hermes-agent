@@ -910,6 +910,21 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                 sort_keys=True,
             )
             slot = tool_call_indices.get(call_key)
+            previous_arguments = str(slot.get("last_arguments") or "") if slot else ""
+            # Gemini streams each functionCall in its own event, almost always
+            # as parts[0], so two *different* parallel calls to the same tool
+            # share (part_index, name, thought_signature). Keying on that alone
+            # glues their arguments into a single call — `{"path": "a"}{"path":
+            # "b"}` — which no tool can parse, so the call is destroyed and the
+            # turn dies with a bogus "output length limit". Only a strict
+            # extension of the previous arguments (a genuinely streamed partial
+            # argument) continues the same call; anything else starts a new one.
+            if (
+                slot is not None
+                and args_str != previous_arguments
+                and not args_str.startswith(previous_arguments)
+            ):
+                slot = None
             if slot is None:
                 slot = {
                     "index": len(tool_call_indices),
@@ -920,14 +935,19 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                     ),
                     "last_arguments": "",
                 }
-                tool_call_indices[call_key] = slot
+                slot_key = call_key
+                duplicate = 1
+                while slot_key in tool_call_indices:
+                    slot_key = f"{call_key}#{duplicate}"
+                    duplicate += 1
+                tool_call_indices[slot_key] = slot
+                previous_arguments = ""
             emitted_arguments = args_str
-            last_arguments = str(slot.get("last_arguments") or "")
-            if last_arguments:
-                if args_str == last_arguments:
+            if previous_arguments:
+                if args_str == previous_arguments:
                     emitted_arguments = ""
-                elif args_str.startswith(last_arguments):
-                    emitted_arguments = args_str[len(last_arguments):]
+                elif args_str.startswith(previous_arguments):
+                    emitted_arguments = args_str[len(previous_arguments):]
             slot["last_arguments"] = args_str
             chunks.append(
                 _make_stream_chunk(

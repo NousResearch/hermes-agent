@@ -406,6 +406,7 @@ def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> dict[str,
         "source": entry.source,
         "transport": transport.type,
         "auth_type": getattr(auth, "type", "none"),
+        "trust": getattr(entry, "trust", None) or "full",
         # Env vars the user must supply (names + prompts only, never values).
         "required_env": [
             {"name": e.name, "prompt": e.prompt, "required": e.required}

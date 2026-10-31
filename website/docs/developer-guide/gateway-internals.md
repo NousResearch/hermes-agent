@@ -136,6 +136,33 @@ and a secondary's rows never land in the default's ledger. A served secondary's
 clients discover the multiplexer through the default home's descriptor
 (`served_profiles`) and attach to its control socket with their own `profile_id`.
 
+## Structured resolution failure context
+
+Canonical turns refused during runtime resolution retain a bounded
+`failure_context` beside their existing `failure_reason` and retry verdict. Its
+three fields are `stage: runtime_resolution`, `source: typed_exception_chain`
+and a fixed allowlisted `code`. The capture examines at most eight exception
+links with cycle detection before rendering the exception. For example,
+`codex_auth_missing` comes from the native `AuthError.code`; `codex_rate_limited`
+requires the native typed quota predicate. Unknown codes remain `unclassified`.
+No exception text, arbitrary class name, identity, credential or provider/model
+value enters this context.
+
+The immutable native result retains this context and the existing canonical
+completion `error_surface` projects it after validation. The original reason,
+reply, retry controls and accounting keep their existing semantics. Old terminal
+results are not rewritten to invent metadata they never recorded. Context is
+diagnostic evidence, not permission to retry or renew a budget.
+
+`python scripts/e2e_resolution_failure.py` exercises a real loopback API
+admission in a disposable profile with external-login adoption disabled. It
+checks the failed subscription resolution's durable context, the authenticated
+native client's completion error surface and zero model calls. It refuses a
+checkout dotenv and uses private profile, managed-config and gateway-lock
+namespaces. Cleanup sends native foreground Ctrl+C only to its owned timeout
+handle and reaps it; it never calls the host service manager. This Linux journey
+uses no mocked transport or provider responses; other hosts remain unverified.
+
 ## Shared authority local slash commands
 
 Authenticated local sessions accept `slash.exec({session_id, command})` and

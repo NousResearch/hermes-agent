@@ -496,6 +496,7 @@ def _profile_messages_client(provider: str, **client_kwargs) -> Any:
         from providers import get_provider_profile
         profile = get_provider_profile(provider)
     except Exception:
+        logger.debug("No provider profile for %r; building the standard Messages client", provider, exc_info=True)
         return None
     if profile is None:
         return None

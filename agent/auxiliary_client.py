@@ -1908,15 +1908,13 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
 
 
 def _maybe_wrap_anthropic(
-    client_obj: Any, model: str, api_key: str, base_url: str, api_mode: Optional[str] = None,
-    provider: Optional[str] = None,
+    client_obj: Any, model: str, api_key: str, base_url: str, api_mode: Optional[str] = None, provider: Optional[str] = None,
 ) -> Any:
     """Rewrap a plain OpenAI client in ``AnthropicAuxiliaryClient`` when the endpoint speaks Anthropic Messages.
 
     Single transport-correction chokepoint at the end of every ``resolve_provider_client`` branch; returns
     ``client_obj`` unchanged for probe stubs/specialized adapters, OpenAI-wire, explicit non-Anthropic
-    ``api_mode``, or missing ``anthropic`` SDK. ``provider`` (when known) lets that provider's profile
-    supply the Messages client (``ProviderProfile.create_messages_client``).
+    ``api_mode``, or missing ``anthropic`` SDK. ``provider`` (when known) lets its profile supply the client (``ProviderProfile.create_messages_client``).
     """
     # Anthropic/Bedrock/Codex wrappers, plus any client declaring HERMES_SKIP_TRANSPORT_WRAP
     # (native/ACP shims, in-tree or plugin), must never be re-dispatched through a wire adapter —
@@ -4919,8 +4917,7 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
     # A profile that declares the Messages wire (commandcode-anthropic) is on it whatever the URL
     # looks like; the same declaration gates ``_reasoning_config`` in _build_call_kwargs.
     api_mode = req.api_mode or _profile_declared_messages_wire(req.provider)
-    return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, api_mode,
-                                 provider=req.provider)
+    return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, api_mode, provider=req.provider)
 
 
 def _profile_declared_messages_wire(provider: str) -> Optional[str]:

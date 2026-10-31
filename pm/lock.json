@@ -462,20 +462,20 @@
     "node": {
       "artifacts": {
         "darwin-arm64": {
-          "sha256": "18830bf448fe187c650dc28c98aa8c968ed1d40b6dd032c081e70a384a1bf660",
-          "url": "https://nodejs.org/dist/v26.12.1/node-v26.12.1-darwin-arm64.tar.xz"
+          "sha256": "037650d0839f457747396f052073fb48333d31bf5abd3c98b74da20d89ebb1ad",
+          "url": "https://nodejs.org/dist/v22.23.4/node-v22.23.4-darwin-arm64.tar.xz"
         },
         "darwin-x64": {
-          "sha256": "69316aaafb4dfcb25ac7b9a460f5c60928a37580284fde410144d0e6c8672d0f",
-          "url": "https://nodejs.org/dist/v26.12.1/node-v26.12.1-darwin-x64.tar.xz"
+          "sha256": "f42abca7aaac61efc57d49fb42ea84fc53bbeba9a749cb03a291ce6e4e7a69c1",
+          "url": "https://nodejs.org/dist/v22.23.4/node-v22.23.4-darwin-x64.tar.xz"
         },
         "linux-arm64": {
-          "sha256": "42aa04922591ee5d4dbc7740d452621acf28508239daa512f5ee8c47ee224fdb",
-          "url": "https://nodejs.org/dist/v26.12.1/node-v26.12.1-linux-arm64.tar.xz"
+          "sha256": "6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b",
+          "url": "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-arm64.tar.xz"
         },
         "linux-arm64-bionic": {
-          "sha256": "eaf3ed8a6e4b72ebaa8c2cb3bad778c577cdf9ea87ca91761213d8a3940fc090",
-          "url": "https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_26.4.0-1_aarch64.deb"
+          "sha256": "478b1ed7eb797b1525f6aacfdff6bc998cd4aee234d06d23ed456be2ac730105",
+          "url": "https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_26.12.1_aarch64.deb"
         },
         "linux-arm64-musl": {
           "sha256": "87d822005776f222f2964c93df055f926d80595a63442b891d3aafe1f0a1dc67",
@@ -498,7 +498,7 @@
           "url": "https://nodejs.org/dist/v26.12.1/node-v26.12.1-win-x64.zip"
         }
       },
-      "version": "26.12.1"
+      "version": "22.23.4"
     },
     "npm": {
       "artifacts": {

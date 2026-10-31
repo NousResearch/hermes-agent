@@ -21,7 +21,7 @@ pytest.importorskip("nemo_relay")
 
 import run_agent
 from agent import relay_llm, relay_runtime, relay_tools
-from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
+from agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError, WorkerRPC
 from agent.session_activity import ActivityProvenance
 
 SESSION = "session-1"
@@ -237,3 +237,67 @@ def test_async_delegation_ledger_writes_inside_relay_tool_persist_off_relay_loop
 
     relay_tools.execute("cronjob", {"action": "run"}, tool, session_id=SESSION)
     _assert_persisted_off_loop(store, owner, caplog, "delegation.dispatch", "delegation.unscheduled")
+
+
+# --- the refusal itself must not be sticky (#139029) -------------------------------------------
+# The callers above are the ones that were found and fixed with call_off_event_loop. These pin the
+# consequence for the ones still to come: a write that reaches the guard on a loop loses that write,
+# not the worker.
+
+
+def test_guard_refusal_is_reprobed_by_the_next_off_loop_write(worker_agent, caplog):
+    """The refusal belongs to the calling thread's loop, not to the store.
+
+    Before, the refusal stuck to the store and every later write of the turn failed with the same
+    error. The refused entry stays pending (nothing was sent, so nothing can be reordered) and the
+    next call from a thread that can run the RPC lands it, ahead of its own operation.
+    """
+    _agent, store, owner = worker_agent
+    caplog.set_level(logging.WARNING, logger="agent.runtime_session_store")
+
+    async def on_loop():
+        store.queue_token_counts(SESSION, input_tokens=1)
+
+    with pytest.raises(WorkerPersistenceError, match="synchronous_rpc_on_event_loop"):
+        asyncio.run(on_loop())
+    assert store.failure == "synchronous_rpc_on_event_loop"  # honest about what just happened
+    assert [entry["operation"] for entry in store.journal["pending"]] == ["usage.main"]
+    assert owner.persisted == []  # the refusal happened before the request left
+
+    store.clear_session_activity_labels(SESSION)  # an ordinary off-loop write
+    assert store.failure is None
+    assert owner.persisted == ["usage.main", "session.activity_clear"]
+    assert owner.on_loop == [False, False]
+
+
+def test_turn_lease_renewal_survives_an_on_loop_refusal(worker_agent, caplog):
+    """The reported kill, one step further: heartbeat refused on Relay's loop, then the periodic
+    renewal of the turn lease raised the stored refusal and the turn was interrupted as
+    ``managed_worker_failed``. The renewal now re-probes the heartbeat and lands (#139029)."""
+    _agent, store, owner = worker_agent
+    caplog.set_level(logging.WARNING, logger="agent.runtime_session_store")
+
+    async def heartbeat_on_loop():
+        store.touch_session_activity(SESSION, description="waiting for provider response")
+
+    with pytest.raises(WorkerPersistenceError, match="synchronous_rpc_on_event_loop"):
+        asyncio.run(heartbeat_on_loop())
+    assert store.failure == "synchronous_rpc_on_event_loop"
+
+    store.refresh_session_turn_lease(SESSION, "holder")  # what refresh_tick calls
+    assert store.failure is None
+    assert owner.persisted == ["session.activity", "turn.renew"]
+
+
+def test_close_drains_a_refused_write_instead_of_failing_the_worker(worker_agent, caplog):
+    """Teardown: a worker whose only write was refused on a loop must still close cleanly."""
+    _agent, store, owner = worker_agent
+    caplog.set_level(logging.WARNING, logger="agent.runtime_session_store")
+
+    async def on_loop():
+        store.queue_token_counts(SESSION, input_tokens=1)
+
+    with pytest.raises(WorkerPersistenceError, match="synchronous_rpc_on_event_loop"):
+        asyncio.run(on_loop())
+    store.close()  # flush_token_counts re-probes instead of raising the stored refusal
+    assert owner.persisted == ["usage.main"]

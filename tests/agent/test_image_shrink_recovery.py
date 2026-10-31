@@ -97,6 +97,18 @@ class TestImageTooLargeClassification:
         assert result.reason == FailoverReason.image_too_large
         assert result.retryable is True
 
+    def test_claude_sdk_base64_size_message(self):
+        """Claude SDK wording for the 5 MB cap, with or without a status (#133596)."""
+        message = "Image base64 size (13.3MB) exceeds API limit (5MB). Please resize the image before sending."
+
+        class _StatuslessError(Exception):
+            pass
+
+        for err in (_StatuslessError(message), _FakeApiError(status_code=400, message=message)):
+            result = classify_api_error(err, provider="claude-subscription-directsdk-experimental", model="claude-sonnet-5-5")
+            assert result.reason == FailoverReason.image_too_large, type(err).__name__
+            assert result.retryable is True
+
     def test_unrelated_400_still_not_image_too_large(self):
         """The new "media" patterns must not widen into ordinary 400s."""
         err = _FakeApiError(

@@ -4817,6 +4817,78 @@ def _strip_session_list_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, A
     return sessions
 
 
+import re as _re
+
+_KANBAN_WORKTREE_RE = _re.compile(r"[/\\]\.worktrees[/\\](t_[a-z0-9]+)(?:[/\\]|$)")
+
+
+def _classify_session_kind(session: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a dict of extra classification fields for one session row.
+
+    Added fields (all additive — existing clients ignore unknown keys):
+    - ``kind``: "subagent" | "kanban_worker" | "main"
+    - ``kanban_task_id``: task id string when kind=="kanban_worker", else null
+    - ``child_count``: set to 0 here; caller fills it in from a batch query
+
+    Classification rules:
+    - ``subagent``: source == 'subagent' OR parent_session_id is not null/empty.
+      (Subagents are always spawned with source='subagent' by delegate_tool.py.)
+    - ``kanban_worker``: cwd matches the /.worktrees/t_<hex> pattern used by the
+      kanban dispatcher when it creates a git worktree for a task.
+    - ``main``: everything else.
+    """
+    source = session.get("source") or ""
+    parent = session.get("parent_session_id") or ""
+    cwd = session.get("cwd") or ""
+
+    # Subagent check — must come first so a subagent launched inside a worktree
+    # (rare but possible) is still tagged subagent, not kanban_worker.
+    if source == "subagent" or bool(parent):
+        return {"kind": "subagent", "kanban_task_id": None, "child_count": 0}
+
+    # Kanban worker: dispatcher always creates a .worktrees/<task_id> dir.
+    m = _KANBAN_WORKTREE_RE.search(cwd)
+    if m:
+        return {"kind": "kanban_worker", "kanban_task_id": m.group(1), "child_count": 0}
+
+    return {"kind": "main", "kanban_task_id": None, "child_count": 0}
+
+
+def _enrich_session_list(db, sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Add kind/kanban_task_id/child_count to each session row in-place.
+
+    Uses a single batch SQL query to count subagent children for the surfaced
+    main sessions, so N sessions costs 1 extra query regardless of N.
+    Additive only — existing clients that ignore unknown keys are unaffected.
+    """
+    if not sessions:
+        return sessions
+
+    for s in sessions:
+        s.update(_classify_session_kind(s))
+
+    # Count direct subagent children for main sessions only.
+    main_ids = [s["id"] for s in sessions if s.get("kind") == "main"]
+    if main_ids and db is not None:
+        try:
+            placeholders = ",".join("?" * len(main_ids))
+            rows = db._conn.execute(
+                f"SELECT parent_session_id, COUNT(*) AS cnt "
+                f"FROM sessions "
+                f"WHERE parent_session_id IN ({placeholders}) AND source = 'subagent' "
+                f"GROUP BY parent_session_id",
+                main_ids,
+            ).fetchall()
+            counts: Dict[str, int] = {row[0]: row[1] for row in rows}
+            for s in sessions:
+                if s.get("kind") == "main":
+                    s["child_count"] = counts.get(s["id"], 0)
+        except Exception:
+            pass  # child_count stays 0 — graceful degradation
+
+    return sessions
+
+
 @app.get("/api/sessions")
 def get_sessions(
     limit: int = 20,
@@ -4829,6 +4901,9 @@ def get_sessions(
     cwd_prefix: str = None,
     full: bool = False,
     profile: Optional[str] = None,
+    kind: Optional[str] = None,
+    include_children: bool = False,
+    parent_session_id: Optional[str] = None,
 ):
     """List sessions.
 
@@ -4844,6 +4919,18 @@ def get_sessions(
 
     Rows omit ``system_prompt``/``model_config`` (the payload-dominating
     fields no list UI reads) unless ``full=1`` is passed.
+
+    ``kind`` (optional): filter to ``main``, ``subagent``, or
+    ``kanban_worker`` sessions only. Applied post-enrichment so child_count
+    and classification are still computed correctly.
+
+    ``include_children=true`` (optional): include subagent child sessions in
+    the list (they are hidden by default).
+
+    ``parent_session_id`` (optional): return only sessions whose
+    ``parent_session_id`` matches the given value.  Filters at DB level so
+    callers with large child-session sets are not limited by a client-side
+    100-row cap.
     """
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(
@@ -4885,8 +4972,10 @@ def get_sessions(
                 order_by_last_active=order == "recent",
                 # SQL-level projection: when the caller didn't ask for full
                 # rows, skip the system_prompt blob inside SQLite too (pairs
-                # with the API-level _strip_session_list_rows below).
+                # with the API-level _strip_session_list_rows below).\
                 compact_rows=not full,
+                include_children=include_children,
+                parent_session_id=parent_session_id or None,
             )
             total = db.session_count(
                 source=source or None,
@@ -4895,7 +4984,7 @@ def get_sessions(
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
-                exclude_children=True,
+                exclude_children=not include_children,
             )
             now = time.time()
             for s in sessions:
@@ -4910,6 +4999,12 @@ def get_sessions(
                 s["archived"] = bool(s.get("archived"))
             if not full:
                 _strip_session_list_rows(sessions)
+            _enrich_session_list(db, sessions)
+            # Apply post-enrichment kind filter (additive — existing callers
+            # that don't pass kind= are unaffected).
+            kind_filter = (kind or "").strip().lower()
+            if kind_filter in ("main", "subagent", "kanban_worker"):
+                sessions = [s for s in sessions if s.get("kind") == kind_filter]
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
@@ -5018,6 +5113,8 @@ def get_profiles_sessions(
             )
             total += profile_total
             profile_totals[name] = profile_total
+            # Enrich with kind/kanban_task_id/child_count while db is open.
+            _enrich_session_list(db, rows)
             for s in rows:
                 s["profile"] = name
                 s["is_default_profile"] = name == "default"
@@ -5037,6 +5134,10 @@ def get_profiles_sessions(
     window = merged[offset:offset + limit]
     if not full:
         _strip_session_list_rows(window)
+    # Fallback: add classification for any window row that missed enrichment.
+    for s in window:
+        if "kind" not in s:
+            s.update(_classify_session_kind(s))
     return {
         "sessions": window,
         "total": total,

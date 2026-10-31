@@ -396,3 +396,65 @@ def test_resolve_chat_argv_injects_terminal_cwd_for_project(_isolate_hermes_home
 
     assert env is not None
     assert env.get("TERMINAL_CWD") == project_path
+
+
+# ---------------------------------------------------------------------------
+# parent_session_id server-side filter — regression test (defect 2 fix)
+# ---------------------------------------------------------------------------
+
+
+def test_parent_session_id_filter_returns_all_children(_isolate_hermes_home, tmp_path):
+    """GET /api/sessions?parent_session_id=X returns ALL children at DB level.
+
+    Inserts 105 child sessions under a single parent, then verifies that the
+    endpoint returns all 105 without a client-side cap.  Before the fix,
+    getSessionChildren fetched limit=100 and filtered client-side, silently
+    dropping any children beyond 100.
+    """
+    try:
+        from starlette.testclient import TestClient
+    except ImportError:
+        pytest.skip("fastapi/starlette not installed")
+
+    import hermes_state
+    from hermes_constants import get_hermes_home
+    from unittest.mock import patch
+
+    state_db_path = get_hermes_home() / "state.db"
+    PARENT_ID = "parent-sess-filter-test"
+    CHILD_COUNT = 105
+
+    db = hermes_state.SessionDB(state_db_path)
+    try:
+        db.create_session(PARENT_ID, "cli", cwd="/tmp/parent")
+        for i in range(CHILD_COUNT):
+            child_id = f"child-sess-{i:04d}"
+            db.create_session(
+                child_id,
+                "subagent",
+                cwd="/tmp/parent",
+                parent_session_id=PARENT_ID,
+            )
+    finally:
+        db.close()
+
+    with patch.object(hermes_state, "DEFAULT_DB_PATH", state_db_path):
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        client = TestClient(app)
+        client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+        resp = client.get(
+            f"/api/sessions?include_children=true&kind=subagent"
+            f"&parent_session_id={PARENT_ID}&limit={CHILD_COUNT + 10}"
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    sessions = data["sessions"]
+    assert len(sessions) == CHILD_COUNT, (
+        f"Expected {CHILD_COUNT} children, got {len(sessions)} — "
+        "server-side parent filter may be missing"
+    )
+    for s in sessions:
+        assert s.get("parent_session_id") == PARENT_ID

@@ -213,65 +213,99 @@ def _undo_created(post_dir, files) -> tuple[list[str], list[str]]:
     return problems, kept
 
 
-def _unaccounted_files(snap, displaced, published) -> list[str]:
-    """Relative paths in ``displaced`` (the skill as the batch left it) that neither the snapshot nor the batch
-    accounts for: not byte-identical to the snapshot's file, and not the exact file a batch publish left.
-    Anything that cannot be read is reported too — it is kept rather than assumed to be ours."""
-    unknown = []
-    for dirpath, dirs, names in os.walk(displaced):
-        for linked_dir in dirs:  # os.walk lists a symlink to a directory here and never descends into it
-            if (link := Path(dirpath) / linked_dir).is_symlink():
-                unknown.append(link.relative_to(displaced).as_posix())
+def _accounted_for(snap, displaced, published, path) -> bool:
+    """True when ``path`` (a file in ``displaced``, the skill as the batch left it) is provably nobody else's:
+    byte-identical to the snapshot's file, or exactly the file a batch publish left. A symlink, an unreadable
+    file or anything else is NOT accounted for - it is kept rather than assumed to be ours."""
+    rel = Path(path).relative_to(displaced).as_posix()
+    try:
+        counterpart = snap / rel
+        if (not path.is_symlink() and counterpart.is_file() and not counterpart.is_symlink()
+                and counterpart.read_bytes() == path.read_bytes()):
+            return True
+        identity = published.get(rel)
+        return identity is not None and not path.is_symlink() and file_matches_identity(path, identity)
+    except OSError:
+        return False
+
+
+def _drop_displaced(snap, displaced, published) -> list[str]:
+    """Empty the displaced copy of a restored skill WITHOUT ``rmtree`` -> relative paths still left in it.
+
+    A tree delete would take with it whatever a writer that ignores the skill lock saved into the tree after
+    it was inspected. Instead each file is unlinked only while it is (re-checked right before the unlink)
+    byte-identical to the snapshot or exactly a file the batch published, and each directory is removed with
+    ``rmdir`` - which refuses a directory that is not empty. Anything else, including a file that appeared
+    after the check, is therefore left where it is. Residual, not closed (no POSIX compare-and-delete): a
+    process that already holds one of OUR files open can still write into it between that re-check and its
+    ``unlink``, and those bytes go with the file."""
+    for dirpath, dirs, names in os.walk(displaced, topdown=False):
         for filename in names:
             path = Path(dirpath) / filename
-            rel = path.relative_to(displaced).as_posix()
-            try:
-                counterpart = snap / rel
-                if (not path.is_symlink() and counterpart.is_file() and not counterpart.is_symlink()
-                        and counterpart.read_bytes() == path.read_bytes()):
-                    continue
-                identity = published.get(rel)
-                if identity is not None and file_matches_identity(path, identity):
-                    continue
-            except OSError:
-                pass
-            unknown.append(rel)
-    return sorted(unknown)
+            if _accounted_for(snap, displaced, published, path):
+                with suppress(OSError):
+                    os.unlink(path)
+        for directory in dirs:  # a symlink to a directory is listed here too; rmdir refuses it, so it stays
+            with suppress(OSError):
+                os.rmdir(Path(dirpath) / directory)
+    with suppress(OSError):
+        os.rmdir(displaced)
+    left = []
+    if displaced.exists():
+        for dirpath, dirs, names in os.walk(displaced):
+            linked = [d for d in dirs if (Path(dirpath) / d).is_symlink()]
+            left += [(Path(dirpath) / n).relative_to(displaced).as_posix() for n in (*names, *linked)]
+        left = sorted(left) or ["(empty directories)"]
+    return left
+
+
+class _RestoreFailed(Exception):
+    """The snapshot could not be put back; the message says where the state the batch left is."""
 
 
 def _restore_snapshot(pre_dir, snap, post_dir, published=None) -> list[str]:
     """Put a pre-existing skill back from its snapshot -> notes about data it preserved instead of dropping.
 
-    The state the batch left is moved aside under a UNIQUE name (an existing ``*.rollback-broken`` of
-    someone else is never touched) and dropped only after the snapshot is back — and only if every file in it
-    is either in the snapshot or exactly what a batch publish wrote. Files a non-cooperative writer added or
-    changed in the meantime are moved out to a fresh directory and named in the returned note instead of
-    being deleted. Residual: that check-then-delete of the displaced copy is not atomic either.
+    Nothing here ever deletes a name another writer may own. The state the batch left is renamed aside under
+    a UNIQUE name (an existing ``*.rollback-broken`` of someone else is never touched). The snapshot is copied
+    to a private staging directory and published with ``os.rename``, which cannot replace a directory that
+    holds anything: if a writer that ignores the skill lock created the skill dir meanwhile, the publish fails,
+    that directory is left exactly as it is and the error names where the batch's state was kept. The displaced
+    copy is then dropped with ``_drop_displaced`` (files proven ours, ``rmdir`` only); files nobody in this
+    batch wrote are moved out to a fresh directory and named in the returned note, never deleted.
     """
-    post_exists = post_dir is not None and post_dir.is_dir()
-    if not post_exists:
-        shutil.copytree(snap, pre_dir)
-        return []
-    aside = post_dir.with_name(f"{post_dir.name}.rollback-broken-{os.urandom(4).hex()}")
-    post_dir.rename(aside)
+    aside = None
+    if post_dir is not None and post_dir.is_dir():
+        aside = post_dir.with_name(f"{post_dir.name}.rollback-broken-{os.urandom(4).hex()}")
+        post_dir.rename(aside)
+    staging = pre_dir.with_name(f".{pre_dir.name}.restore-{os.urandom(4).hex()}")
     try:
-        shutil.copytree(snap, pre_dir)
-    except Exception:
-        # Restore failed: put the half-applied state back rather than nothing.
-        shutil.rmtree(pre_dir, ignore_errors=True)
-        aside.rename(pre_dir)
+        shutil.copytree(snap, staging)
+        os.rename(staging, pre_dir)  # replaces at most an EMPTY directory; refuses anything that holds data
+    except Exception as exc:
+        shutil.rmtree(staging, ignore_errors=True)  # our own private copy under a name nobody else knows
+        if aside is not None:
+            try:
+                os.rename(aside, pre_dir)  # put the half-applied state back rather than nothing
+            except OSError as back:
+                raise _RestoreFailed(f"{exc}; the skill name is now in use by something this batch did not write "
+                                     f"({back}), left untouched; batch state preserved at '{aside}'") from exc
         raise
-    unknown = _unaccounted_files(snap, aside, published or {})
-    if not unknown:
-        shutil.rmtree(aside, ignore_errors=True)
+    if aside is None:
         return []
-    keep = Path(tempfile.mkdtemp(prefix="skill_batch_preserved_")) / post_dir.name
+    unknown = _drop_displaced(snap, aside, published or {})
+    if not unknown:
+        return []
+    keep = Path(tempfile.mkdtemp(prefix="skill_batch_preserved_"))
     try:
-        shutil.move(str(aside), str(keep))
-    except Exception:  # could not move it out: leave it where it is, still not deleted
-        keep = aside
+        os.rename(aside, keep / post_dir.name)  # same-filesystem rename: never a copy-then-delete
+        where = keep / post_dir.name
+    except OSError:  # could not move it out: leave it where it is, still not deleted
+        with suppress(OSError):
+            keep.rmdir()
+        where = aside
     return [f"'{post_dir}' was restored from its snapshot, but files nobody in this batch wrote were preserved at "
-            f"'{keep}': {', '.join(unknown)}"]
+            f"'{where}': {', '.join(unknown)}"]
 
 
 def _rollback(snapshots, find_skill, log, create_targets, attempted):

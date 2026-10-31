@@ -1074,3 +1074,39 @@ class TestSearchTruncatedFlag:
         assert len(result.files) == limit
         assert result.total_count == limit + offset
         assert result.truncated is False
+
+    def _count_lines(self, n: int, per_file: int = 3) -> str:
+        return "\n".join(f"src/file_{i:02d}.py:{per_file}" for i in range(n))
+
+    @pytest.mark.parametrize("backend", ["rg", "grep"])
+    def test_count_lookahead_row_is_not_returned(self, backend):
+        """Count mode reports only the requested files; the probe row is not a result."""
+        limit, offset = 1, 0
+        result = self._search(backend, self._count_lines(3), limit, offset, "count")
+
+        assert result.error is None
+        assert result.counts == {"src/file_00.py": 3}
+        assert result.total_count == 3
+        assert result.truncated is True
+
+    @pytest.mark.parametrize("backend", ["rg", "grep"])
+    def test_count_exactly_at_cap_is_not_truncated(self, backend):
+        """Exactly limit counted files is a complete result."""
+        limit, offset = 2, 0
+        result = self._search(backend, self._count_lines(limit), limit, offset, "count")
+
+        assert result.error is None
+        assert result.counts == {"src/file_00.py": 3, "src/file_01.py": 3}
+        assert result.total_count == 6
+        assert result.truncated is False
+
+    @pytest.mark.parametrize("backend", ["rg", "grep"])
+    def test_count_with_offset_returns_the_requested_window(self, backend):
+        """Count pagination skips `offset` files and keeps `limit` of them."""
+        limit, offset = 2, 2
+        result = self._search(backend, self._count_lines(limit + offset + 1), limit, offset, "count")
+
+        assert result.error is None
+        assert result.counts == {"src/file_02.py": 3, "src/file_03.py": 3}
+        assert result.total_count == 6
+        assert result.truncated is True

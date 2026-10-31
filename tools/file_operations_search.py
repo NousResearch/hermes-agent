@@ -463,8 +463,10 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
             files=lines[offset:offset + limit], total_count=len(lines),
             truncated=len(lines) > offset + limit or bool(limit_reason), limit_reason=limit_reason, warning=warning, **skip)
     if output_mode == "count":
+        # The extra fetched row is a lookahead probe, not a result: return only the
+        # requested window so `limit` stays the hard cap on reported files.
         counts = {}
-        for line in lines:
+        for line in lines[offset:offset + limit]:
             if ':' in line:
                 path, n = line.rsplit(':', 1)
                 try:
@@ -473,7 +475,7 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
                     pass
         return SearchResult(
             counts=counts, total_count=sum(counts.values()),
-            truncated=bool(limit_reason), limit_reason=limit_reason, warning=warning, **skip)
+            truncated=len(lines) > offset + limit or bool(limit_reason), limit_reason=limit_reason, warning=warning, **skip)
     matches = []
     for line in lines:
         if line == "--":

@@ -4,6 +4,7 @@ file-serving helpers shared with the local-skill path. Helpers tests patch on th
 
 import json
 import logging
+import re
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List
@@ -18,8 +19,32 @@ _INJECTION_PATTERNS: list = [  # shared by local-skill and plugin-skill paths
     "ignore previous instructions", "ignore all previous", "you are now",
     "disregard your", "forget your instructions", "new instructions:",
     "system prompt:", "<system>", "]]>"]
+# The literals above only match verbatim, so one extra word or space slips past ("ignore ALL prior
+# instructions", "forget your  original  instructions"; CVE-2026-10220). These are the same phrases with
+# up to four filler words and any whitespace between the words.
+_FILLER = r"(?:\w+\s+){0,4}"
+_RULES_NOUN = r"(?:instructions?|rules|guidelines|directions|prompts?)\b"
+_INJECTION_REGEXES = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
+    rf"\bignore\s+{_FILLER}(?:previous|prior|above|earlier|all)\s+{_FILLER}{_RULES_NOUN}",
+    r"\byou\s+are\s+(?:\w+\s+){0,2}now\b",
+    rf"\b(?:disregard|forget)\s+{_FILLER}(?:your|all|any|previous|prior|the)\s+{_FILLER}{_RULES_NOUN}",
+    r"\bnew\s+(?:\w+\s+){0,2}instructions\s*:",
+    r"\bsystem\s+prompt\s*:",
+    r"<\s*system\s*>",
+))
 _SUPPORT_DIRS = ("references", "templates", "assets", "scripts")
 _SKILL_FILE_EXTS = {".md", ".py", ".yaml", ".yml", ".json", ".tex", ".sh"}
+
+
+def _has_injection_pattern(content: str) -> bool:
+    """skill_view's prompt-injection heuristic (local and plugin skills): the literal phrases, their
+    word- and whitespace-tolerant forms, and the install-time Skills Guard's ``injection`` patterns."""
+    lowered = content.lower()
+    if any(p in lowered for p in _INJECTION_PATTERNS) or any(rx.search(content) for rx in _INJECTION_REGEXES):
+        return True
+    from tools.skills_guard import _COMPILED_THREAT_PATTERNS  # lazy: large regex table, off the import path
+    guard = [rx for rx, _pid, _severity, category, _description in _COMPILED_THREAT_PATTERNS if category == "injection"]
+    return any(rx.search(line) for line in content.split("\n") for rx in guard)  # per line, as the guard scans
 
 
 def _json(payload: dict) -> str:
@@ -142,7 +167,7 @@ def _serve_plugin_skill(
                      readiness_status=SkillReadinessStatus.UNSUPPORTED.value)
     if file_path:
         return _serve_skill_file(skill_md.parent, file_path, qualified_name, read_error_prefix=True)
-    if any(p in content.lower() for p in _INJECTION_PATTERNS):
+    if _has_injection_pattern(content):
         logger.warning(
             "Plugin skill '%s:%s' contains patterns that may indicate prompt injection", namespace, bare)
     banner = ""

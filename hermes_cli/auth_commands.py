@@ -716,6 +716,13 @@ def auth_status_command(args) -> None:
         drain()   # a move left retrying gets its next try now
         for line in status_lines(handoff_status()):
             print(f"  {line}")
+    # A device-code grant dies on its own schedule whatever the token says, so an operator has to
+    # be told the date while a re-login is still possible. Without this the first sign of expiry
+    # is the refused refresh that takes the instance down (#135518).
+    if status.get("grant_expiring"):
+        print(f"  grant expires: {status.get('grant_expires_at')} "
+              f"(device-code grant, approved {status.get('grant_obtained_at')}) — "
+              f"re-login soon with `hermes auth add {provider} --type oauth`")
 
 
 def auth_logout_command(args) -> None:

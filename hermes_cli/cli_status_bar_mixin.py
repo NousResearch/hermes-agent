@@ -13,6 +13,7 @@ import threading
 import time
 
 from agent.i18n import t
+from agent import terminal_image
 from agent.pet import render as pet_render
 from hermes_cli.banner import _format_context_length
 from typing import Any, Dict, Optional
@@ -678,7 +679,7 @@ class CLIStatusBarMixin:
             # Placeholders only on kitty/Ghostty: WezTerm speaks kitty APC but not U+10EEEE
             # while detect_terminal_graphics() still says kitty, hence the narrower gate.
             use_kitty = (
-                configured_mode in ("", "auto", "kitty") and pet_render.supports_kitty_placeholders()
+                configured_mode in ("", "auto", "kitty") and terminal_image.supports_kitty_placeholders()
             )
             renderer_mode = "kitty" if use_kitty else "unicode"
 
@@ -847,7 +848,7 @@ class CLIStatusBarMixin:
             payload = self._pet_kitty_payload_for(state)
             if not payload:
                 return []
-            color = pet_render.kitty_color_hex(payload["image_id"])
+            color = terminal_image.kitty_color_hex(payload["image_id"])
             for y, row in enumerate(payload["placeholder"]):
                 if y:
                     frags.append(("", "\n"))

@@ -1518,16 +1518,16 @@ def _(rid, params: dict) -> dict:
 def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | None:
     """kitty payload for a TTY that speaks it (dashboard PTY falls through); only kitty is grid-safe in Ink."""
     from agent.pet import constants, render
-    from agent.pet.render import PetRenderer
+    from agent.terminal_image import detect_terminal_graphics, kitty_color_hex
     configured = str(pet_cfg.get("render_mode", "auto") or "auto").lower()
-    if (render.detect_terminal_graphics() if configured in ("", "auto") else configured) != "kitty":
+    if (detect_terminal_graphics() if configured in ("", "auto") else configured) != "kitty":
         return None
     image_id = render.kitty_image_id(pet.slug)
     # kitty sizes from scaled pixels, so unicode_cols is moot here.
-    payload = PetRenderer(str(pet.spritesheet), mode="kitty", scale=scale).kitty_payload(state, image_id=image_id)
+    payload = render.PetRenderer(str(pet.spritesheet), mode="kitty", scale=scale).kitty_payload(state, image_id=image_id)
     if not payload:
         return None
-    return {"graphics": "kitty", "imageId": image_id, "color": render.kitty_color_hex(image_id),
+    return {"graphics": "kitty", "imageId": image_id, "color": kitty_color_hex(image_id),
             "cols": payload["cols"], "rows": payload["rows"], "placeholder": payload["placeholder"],
             "frames": payload["frames"], "frameMs": constants.LOOP_MS / max(1, len(payload["frames"]) or 1),
             "scale": scale}

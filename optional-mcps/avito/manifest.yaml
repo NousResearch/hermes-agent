@@ -1,0 +1,55 @@
+# Local catalog entry (not Nous-reviewed — added for this installation only).
+# Wraps the open-source `avito-api` PyPI client against Avito's real REST API
+# (https://api.avito.ru) as MCP tools: Messenger, listings (Объявления), and
+# the authenticated user's own profile/wallet. Business-logic guidance for
+# which Avito API covers what lives in the `avito-api-*` Hermes skills.
+manifest_version: 1
+
+name: avito
+description: 'Avito marketplace: Messenger chats, listings, account info.'
+source: https://pypi.org/project/avito-api/
+
+# Local stdio server, source lives in ./server/ (this directory, same repo).
+# It runs in its own venv — see server/README.md to (re)create it; the venv
+# itself is not committed (binary, platform-specific).
+transport:
+  type: stdio
+  command: /home/max/.hermes/mcp-servers/avito/venv/bin/python3
+  args:
+    - /home/max/.hermes/hermes-agent/optional-mcps/avito/server/avito_mcp_server.py
+  env:
+    AVITO_CLIENT_ID: "${env:AVITO_CLIENT_ID}"
+    AVITO_CLIENT_SECRET: "${env:AVITO_CLIENT_SECRET}"
+
+# Not Hermes-managed OAuth: Avito's own OAuth2 is handled by the server's own
+# tools (avito_login_app_auth for client_credentials, avito_login_start /
+# avito_login_finish for the browser authorization_code flow). Declaring the
+# two credentials here just gets them prompted-for and saved to .env at
+# install time, same UX as an API-key entry.
+auth:
+  type: none
+  env:
+    - name: AVITO_CLIENT_ID
+      prompt: "Avito app Client ID (avito.ru/developers -> your app)"
+      secret: false
+    - name: AVITO_CLIENT_SECRET
+      prompt: "Avito app Client secret"
+
+suggest:
+  keywords:
+    - avito
+  hosts:
+    - avito.ru
+
+post_install: |
+  Register an app at avito.ru/developers to get a Client ID / Client secret
+  (the values just prompted for). Two ways to authenticate once installed:
+
+    - App-level (no browser): call the avito_login_app_auth tool.
+    - Personal (user consent, browser): call avito_login_start with the
+      scopes you need, open the returned URL, approve, then call
+      avito_login_finish with the code Avito gives back.
+
+  Check avito_auth_status any time to see whether a token is cached.
+  Business-scope guidance for which Avito API to use is in the `avito-api-*`
+  Hermes skills; call this connector's tools directly once logged in.

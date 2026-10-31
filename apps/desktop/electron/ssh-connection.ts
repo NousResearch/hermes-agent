@@ -496,6 +496,22 @@ function sshErrorMessage(kind, conn, stderr?) {
   }
 }
 
+// Remote-side output is decoded lossily as UTF-8 by default. A Windows remote
+// whose console codepage is a legacy ANSI/OEM set (zh-CN ships GBK/CP936) emits
+// bytes that are not valid UTF-8: cmd.exe's own "command line too long" error
+// reached users as U+FFFD mojibake, hiding the real failure (#127320). Decode
+// strictly first — valid UTF-8 (the normal case, and everything POSIX remotes
+// emit) is byte-identical — and fall back to GBK only when the bytes are not.
+function decodeRemoteOutput(chunks) {
+  const bytes = Buffer.concat(chunks)
+
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    return new TextDecoder('gbk').decode(bytes)
+  }
+}
+
 // Spawn helper — runs an ssh invocation, races it against a hard timeout
 
 // Resolves { code, signal, stdout, stderr }. `signal` is Node's close signal
@@ -527,8 +543,10 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, command = 'ssh', stdin = 'ig
       child.stdin.end(stdinData)
     }
 
-    let stdout = ''
-    let stderr = ''
+    // Accumulate raw bytes and decode once at close: per-chunk decode can cut
+    // a multibyte sequence in half, and remote Windows output may not be UTF-8.
+    const stdoutChunks: Buffer[] = []
+    const stderrChunks: Buffer[] = []
     let settled = false
 
     const timer: any = setTimeout(() => {
@@ -549,7 +567,7 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, command = 'ssh', stdin = 'ig
       // Keep only a safe classification of buffered stderr. Tailscale's
       // browser-check line carries a one-time URL that must not escape through
       // Desktop errors or lifecycle logs.
-      err.stderrKind = classifySshError(stderr)
+      err.stderrKind = classifySshError(decodeRemoteOutput(stderrChunks))
       signal?.removeEventListener('abort', onAbort)
       reject(err)
     }, timeoutMs)
@@ -580,10 +598,10 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, command = 'ssh', stdin = 'ig
     }
 
     child.stdout?.on('data', d => {
-      stdout += d.toString()
+      stdoutChunks.push(Buffer.isBuffer(d) ? d : Buffer.from(String(d)))
     })
     child.stderr?.on('data', d => {
-      stderr += d.toString()
+      stderrChunks.push(Buffer.isBuffer(d) ? d : Buffer.from(String(d)))
     })
     child.on('error', error => {
       if (settled) {
@@ -603,7 +621,12 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, command = 'ssh', stdin = 'ig
       settled = true
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAbort)
-      resolve({ code, signal: closeSignal || null, stdout, stderr })
+      resolve({
+        code,
+        signal: closeSignal || null,
+        stdout: decodeRemoteOutput(stdoutChunks),
+        stderr: decodeRemoteOutput(stderrChunks)
+      })
     })
   })
 }

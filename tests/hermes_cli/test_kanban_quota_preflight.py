@@ -10,6 +10,12 @@
 """
 from __future__ import annotations
 
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
+import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -18,6 +24,7 @@ import pytest
 
 import hermes_cli.kanban_db as kb
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+from tests.hermes_cli._kanban_isolation import _KANBAN_ENV_VARS, pin_kanban_db
 
 
 # ---------------------------------------------------------------------------
@@ -46,10 +53,24 @@ def _healthy_snapshot(provider: str) -> AccountUsageSnapshot:
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
+    """Isolated kanban DB fixture.
+
+    Pins HERMES_KANBAN_DB directly so the fixture is safe even when the
+    test file is executed outside the ``tests/`` tree (no conftest.py
+    autouse guard) or when a dispatcher has injected HERMES_KANBAN_DB
+    into the worker environment.  ``pin_kanban_db()`` strips ALL
+    HERMES_KANBAN_* vars before setting its own pin, which is the
+    highest-priority path in ``kanban_db_path()``.
+    """
+    pin_kanban_db(tmp_path, monkeypatch)
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # HERMES_KANBAN_DB is pinned to tmp_path/kanban.db — verify before init.
+    assert kb.kanban_db_path().resolve() == (tmp_path / "kanban.db").resolve(), (
+        "kanban_db_path() must resolve inside tmp_path after pin_kanban_db()"
+    )
     kb.init_db()
     return home
 
@@ -416,4 +437,219 @@ class TestQuotaPreflightDispatchResult:
         assert tid in result.skipped_quota_preflight, (
             f"quota 고갈 시 task {tid}가 skipped_quota_preflight에 있어야 함, "
             f"실제: {result.skipped_quota_preflight}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Isolation regression tests
+# ---------------------------------------------------------------------------
+# These two tests verify the fix itself so future regressions are caught
+# immediately rather than being discovered by auditing the real kanban.db.
+
+
+class TestKanbanDBIsolation:
+    """DB isolation invariant tests — catch regression before real DB leak."""
+
+    def test_fixture_db_is_inside_tmp_path(self, kanban_home, tmp_path):
+        """After fixture setup, kanban_db_path() must resolve inside tmp_path.
+
+        This is the in-tree sanity check: it would have caught the original
+        accident where HERMES_KANBAN_HOME-only isolation let a dispatcher-
+        injected HERMES_KANBAN_DB override the fixture.
+        """
+        db = kb.kanban_db_path().resolve()
+        assert str(db).startswith(str(tmp_path.resolve())), (
+            f"kanban_db_path() {db} is NOT under tmp_path {tmp_path} — "
+            "the fixture isolation is broken and tests may write to the real DB"
+        )
+        # The DB file must also actually exist under tmp_path (init_db ran).
+        assert db.exists(), "kanban.db was not created inside tmp_path"
+
+    def test_conftest_bypass_does_not_write_to_copy_db(self, tmp_path):
+        """Simulate the dispatcher 'conftest bypass' scenario end-to-end.
+
+        The dispatcher runs the test file from outside tests/ so conftest.py
+        autouse fixtures never fire.  With the old fixture, dispatcher env
+        vars (HERMES_KANBAN_DB) bled into the test process and wrote to the
+        real DB.  This test reproduces that exact path using a subprocess.
+
+        Procedure:
+        1. Create a fresh copy DB (stands in for the real ~/.hermes/kanban.db).
+        2. Copy this test file to a temp directory (so conftest.py is absent).
+        3. Run pytest on the copy with HERMES_KANBAN_DB pointing at the copy DB
+           (simulating dispatcher env injection).
+        4. Assert the copy DB task count is unchanged after the run.
+        """
+        # 1. Copy DB: empty kanban DB acts as stand-in for real DB.
+        copy_db = tmp_path / "copy_kanban.db"
+        import hermes_cli.kanban_db as _kb_fresh  # noqa: PLC0415
+        env_before = dict(os.environ)
+        env_before["HERMES_KANBAN_DB"] = str(copy_db)
+        # init the copy DB so we can count tasks
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+        with _sqlite3.connect(str(copy_db)) as _c:
+            # minimal schema: just enough for SELECT count(*) FROM tasks
+            _c.execute(
+                "CREATE TABLE IF NOT EXISTS tasks ("
+                "id TEXT PRIMARY KEY, title TEXT, status TEXT, assignee TEXT,"
+                " created_at INTEGER, consecutive_failures INTEGER DEFAULT 0)"
+            )
+            _c.commit()
+        count_before = _sqlite3.connect(
+            f"file:{copy_db}?mode=ro", uri=True
+        ).execute("SELECT count(*) FROM tasks").fetchone()[0]
+
+        # 2. Write a minimal self-contained test file to a temp directory that
+        #    contains no conftest.py.  It calls kb.init_db() + kb.connect() so
+        #    it would write to whichever DB kanban_db_path() resolves to.
+        isolated_dir = tmp_path / "isolated_run"
+        isolated_dir.mkdir()
+        test_file = isolated_dir / "test_isolated_quota.py"
+        test_file.write_text(
+            textwrap.dedent("""\
+                \"\"\"Minimal isolation check: runs outside tests/ with no conftest.py.\"\"\"
+                import os, sys
+                from pathlib import Path
+                sys.path.insert(0, os.environ["HERMES_PROJECT_ROOT"])
+
+                import hermes_cli.kanban_db as kb
+
+                def test_db_inside_tmp(tmp_path, monkeypatch):
+                    from tests.hermes_cli._kanban_isolation import pin_kanban_db
+                    pin_kanban_db(tmp_path, monkeypatch)
+                    home = tmp_path / ".hermes"
+                    home.mkdir()
+                    monkeypatch.setenv("HERMES_HOME", str(home))
+                    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+                    kb.init_db()
+                    with kb.connect() as conn:
+                        kb.create_task(conn, title="isolated-test-task", assignee="x")
+                    db = kb.kanban_db_path()
+                    assert str(db.resolve()).startswith(str(tmp_path.resolve())), (
+                        f"DB {db} is outside tmp_path {tmp_path}"
+                    )
+            """)
+        )
+
+        # 3. Run subprocess with dispatcher-style env (HERMES_KANBAN_DB pointing
+        #    at copy_db — this is what a real dispatcher worker would inject).
+        project_root = str(
+            Path(__file__).parent.parent.parent.resolve()
+        )
+        sub_env = {
+            k: v for k, v in os.environ.items()
+            # Strip conftest-stripped vars to simulate a clean worker env,
+            # then inject the dispatcher vars.
+            if not k.startswith("HERMES_KANBAN_")
+        }
+        sub_env["HERMES_KANBAN_DB"] = str(copy_db)  # dispatcher injection
+        sub_env["HERMES_PROJECT_ROOT"] = project_root
+        sub_env["PYTHONPATH"] = project_root
+
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "pytest",
+                str(test_file),
+                "-q",
+                "-p", "no:cacheprovider",
+            ],
+            cwd=str(isolated_dir),
+            env=sub_env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        # 4. Count tasks in the copy DB after the run.
+        count_after = _sqlite3.connect(
+            f"file:{copy_db}?mode=ro", uri=True
+        ).execute("SELECT count(*) FROM tasks").fetchone()[0]
+
+        # The subprocess must have passed (the fix works).
+        assert result.returncode == 0, (
+            f"Isolated pytest returned {result.returncode}.\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+        # The copy DB must be untouched (no tasks leaked into it).
+        assert count_after == count_before, (
+            f"Isolated run wrote to the copy DB! "
+            f"tasks: {count_before} → {count_after}.\n"
+            "This means the DB isolation fix is broken and real DB leaks "
+            "would occur in dispatcher-spawned pytest sessions."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Drift-prevention invariant — _KANBAN_ENV_VARS ⊇ vars used in kanban_db.py
+# ---------------------------------------------------------------------------
+
+
+class TestKanbanIsolationDrift:
+    """Invariant: _KANBAN_ENV_VARS must cover every HERMES_KANBAN_* env var
+    that kanban_db.py reads or injects.
+
+    This is NOT a change-detector snapshot test.  It asserts a *relationship*
+    between two data sets: the isolation allow-list and the source that defines
+    what the dispatcher actually injects.  Any new env var added to
+    kanban_db.py that is missing from _KANBAN_ENV_VARS would allow a
+    dispatcher-injected var to survive into a test process and corrupt the
+    real DB.
+    """
+
+    def test_isolation_list_covers_all_kanban_worker_env_keys(self):
+        """_KANBAN_ENV_VARS ⊇ KANBAN_WORKER_ENV_KEYS (runtime contract).
+
+        KANBAN_WORKER_ENV_KEYS is an explicit frozenset declared in
+        kanban_db.py that enumerates every HERMES_KANBAN_* key
+        _default_spawn() injects into a worker's environment.
+
+        This test asserts the *relationship* (superset) without reading
+        source text: if _default_spawn() gains a new HERMES_KANBAN_* key,
+        the author must add it to KANBAN_WORKER_ENV_KEYS, which will
+        immediately fail this test, prompting them to also add it to
+        _KANBAN_ENV_VARS so isolation fixtures strip it.
+        """
+        from hermes_cli.kanban_db import KANBAN_WORKER_ENV_KEYS
+
+        isolation_set = set(_KANBAN_ENV_VARS)
+        missing = KANBAN_WORKER_ENV_KEYS - isolation_set
+        assert not missing, (
+            f"_KANBAN_ENV_VARS is missing keys listed in KANBAN_WORKER_ENV_KEYS.\n"
+            f"Add these to _KANBAN_ENV_VARS in tests/hermes_cli/_kanban_isolation.py:\n"
+            f"  {sorted(missing)}\n"
+            "Without this, dispatcher-injected vars survive into test processes "
+            "and can corrupt the real ~/.hermes/kanban.db."
+        )
+
+    def test_goal_loop_vars_stripped_by_pin_kanban_db(self, tmp_path, monkeypatch):
+        """Regression: BRANCH/GOAL_MODE/GOAL_MAX_TURNS must be stripped by pin_kanban_db.
+
+        The dispatcher injects these three vars when spawning goal-mode workers
+        (kanban_db.py:9499-9510).  Without stripping them, a worker running
+        pytest would inherit the dispatcher's goal-loop state across test boundaries.
+
+        Sets all three in the environment, calls pin_kanban_db(), then asserts
+        none of them remain in os.environ.
+        """
+        dispatcher_vars = {
+            "HERMES_KANBAN_BRANCH": "hermes-stab/some-task-branch",
+            "HERMES_KANBAN_GOAL_MODE": "1",
+            "HERMES_KANBAN_GOAL_MAX_TURNS": "20",
+        }
+        for key, val in dispatcher_vars.items():
+            monkeypatch.setenv(key, val)
+
+        # Verify the vars are present before pin_kanban_db.
+        for key in dispatcher_vars:
+            assert key in os.environ, f"{key} not set before pin_kanban_db"
+
+        pin_kanban_db(tmp_path, monkeypatch)
+
+        # After pin, none of the three vars should remain.
+        still_present = [k for k in dispatcher_vars if k in os.environ]
+        assert not still_present, (
+            f"pin_kanban_db() did NOT strip dispatcher-injected goal-loop vars:\n"
+            f"  {still_present}\n"
+            "These vars must be listed in _KANBAN_ENV_VARS in "
+            "tests/hermes_cli/_kanban_isolation.py."
         )

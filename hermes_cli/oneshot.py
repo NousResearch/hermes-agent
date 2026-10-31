@@ -127,16 +127,26 @@ def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
     if not parsed_skills:
         return None
 
-    from agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
+    from agent.skill_commands import (
+        build_preloaded_skills_prompt,
+        format_missing_skills,
+        is_advisory_skill,
+    )
 
     skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(parsed_skills)
     if missing_skills:
-        if not loaded_skills:
-            raise ValueError(format_missing_skills(missing_skills))
+        # An ADVISORY name (the kanban dispatcher injected the review skill, or flagged a
+        # card-requested name it could not resolve for this lane) was never requested by a human, so
+        # it may never be the reason a run dies: when such a name is the ONLY name requested, the
+        # empty-loaded raise below killed every review run at INIT. Advisory names warn and continue;
+        # a genuinely requested name keeps the loud failure.
+        fatal_missing = [name for name in missing_skills if not is_advisory_skill(name)]
+        if not loaded_skills and fatal_missing:
+            raise ValueError(format_missing_skills(fatal_missing))
         logging.warning(
             "Skipping %s. Continuing with: %s. List available skills with `hermes skills list`.",
             format_missing_skills(missing_skills),
-            ", ".join(loaded_skills),
+            ", ".join(loaded_skills) or "no preloaded skills",
         )
     return skills_prompt or None
 

@@ -26,6 +26,7 @@ from gateway.session import SessionEntry, SessionSource, SessionStore
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 from gateway.run_notifications_update import GatewayUpdateNotificationsMixin
 from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin
+from gateway import run_notifications_ledger as _ledger
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -1168,9 +1169,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             claim.delegation_id = str(evt.get("delegation_id") or "")
             if claim.delegation_id:
                 try:
-                    from tools.async_delegation import claim_completion_delivery
+                    from tools import async_delegation
                     claim.claim_id = f"gateway:{id(self)}:{__import__('uuid').uuid4().hex}"
-                    if not claim_completion_delivery(claim.delegation_id, claim.claim_id):
+                    claim_id, delegation_id = claim.claim_id, claim.delegation_id
+                    if not await _ledger.claim(
+                        self._settle_durable_claim,
+                        lambda: async_delegation.claim_completion_delivery(delegation_id, claim_id),
+                        delegation_id, claim_id,
+                    ):
                         claim.proceed = False
                         return claim
                 except Exception as exc:
@@ -1197,8 +1203,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     "terminally dropping delivery (result remains in the delegation records).",
                     claim.delegation_id or "<legacy>", parent_session_id,
                 )
-                if claim.claim_id:
-                    self._settle_durable_claim("drop", claim.delegation_id, claim.claim_id)
+                await _ledger.settle_claims(
+                    self._settle_durable_claim, [("drop", claim.delegation_id, claim.claim_id)])
             else:
                 logger.warning(
                     "Background process %s completion targets "
@@ -1319,11 +1325,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 with self._completion_delivery_lock:
                     self._completion_deliveries_inflight.discard(identity)
             operation = "complete" if accepted else "defer" if refused or claim.defer else "release"
-            if claim.claim_id:
-                self._settle_durable_claim(operation, claim.delegation_id, claim.claim_id)
-            for sibling, claim_id in sibling_claims:
-                if claim_id:
-                    self._settle_durable_claim(operation, sibling["delegation_id"], claim_id)
+            await _ledger.settle_claims(self._settle_durable_claim, [
+                (operation, claim.delegation_id, claim.claim_id),
+                *((operation, sibling["delegation_id"], claim_id) for sibling, claim_id in sibling_claims),
+            ])
             if accepted and sibling_claims:
                 self._record_coalesced_completion_siblings([event for event, _claim_id in sibling_claims])
 
@@ -1509,6 +1514,33 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         async with self._completion_event_scope(group[0]):
             return await self._deliver_async_delegation_group_scoped(group)
 
+    async def _claim_async_delegation_siblings(self, deliverable) -> Optional[list[tuple[dict, str, str]]]:
+        """Claim each sibling row this runner can take, as ``(evt, text, claim_id)``. A ledger error
+        (``database is locked``) or a cancel defers the rows already claimed; an error returns None so
+        the group retries, where a raise would strand them until their lease ends."""
+        from tools import async_delegation
+        claimed: list[tuple[dict, str, str]] = []
+        complete = False
+        try:
+            for evt, synth_text in deliverable:
+                claim_id = await _ledger.claim(
+                    self._settle_durable_claim,
+                    lambda evt=evt: async_delegation.claim_event_delivery(evt, f"gateway-batch:{id(self)}"),
+                    str(evt.get("delegation_id") or ""),
+                )
+                # None: another consumer owns this row, so it never enters our text (no double-inject).
+                if claim_id is not None:
+                    claimed.append((evt, synth_text, claim_id))
+            complete = True
+        # health: allow BLE001 -- ledger boundary: defer the claims already taken and retry the group
+        except Exception:
+            logger.warning("Could not claim an async-completion sibling; deferring the group", exc_info=True)
+        finally:
+            if not complete:
+                await _ledger.settle_claims(self._settle_durable_claim, [
+                    ("defer", evt["delegation_id"], claim_id) for evt, _text, claim_id in claimed])
+        return claimed if complete else None
+
     async def _deliver_async_delegation_group_scoped(self, group: list[dict]) -> Optional[bool]:
         from gateway.run import _format_gateway_process_notification
         from gateway.session_local_recovery import restore_completion_route
@@ -1552,17 +1584,12 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         for evt, _text in deliverable:
             if not await self._completion_delivery_ready(evt):
                 return False
-        from tools.async_delegation import claim_event_delivery
         primary_evt, primary_text = deliverable[0]
-        blocks = [primary_text]
-        siblings: list[tuple[dict, str]] = []
-        for evt, synth_text in deliverable[1:]:
-            claim_id = claim_event_delivery(evt, f"gateway-batch:{id(self)}")
-            if claim_id is None:
-                # Another consumer owns this row: keep it out of our text so it is never double-injected.
-                continue
-            siblings.append((evt, claim_id))
-            blocks.append(synth_text)
+        claimed = await self._claim_async_delegation_siblings(deliverable[1:])
+        if claimed is None:
+            return False
+        siblings = [(evt, claim_id) for evt, _text, claim_id in claimed]
+        blocks = [primary_text, *(text for _evt, text, _claim_id in claimed)]
         if not siblings:
             return await self._deliver_completion_notification(primary_text, primary_evt)
         header = (

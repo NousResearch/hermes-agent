@@ -1565,6 +1565,53 @@ class TestInstallPathSafety:
         assert ok is False
         assert (isolated_skills_dir / "bystander" / "SKILL.md").read_text() == "safe"
 
+    def _hub_lock(self, tmp_path, name: str, install_path: str):
+        lock_path = tmp_path / "lock.json"
+        lock_path.write_text(json.dumps({"installed": {name: {
+            "source": "github", "identifier": "x", "trust_level": "trusted",
+            "scan_verdict": "pass", "content_hash": "h",
+            "install_path": install_path, "files": [], "metadata": {},
+            "installed_at": "now", "updated_at": "now"}}}))
+        return lock_path
+
+    def test_uninstall_refuses_pinned_skill(self, tmp_path, isolated_skills_dir, patch_lock_file):
+        """Pin is a delete guard on EVERY path (ORCA-06): hub uninstall must refuse too.
+
+        skill_manage delete refuses pinned skills via _pinned_guard; the CLI hub
+        uninstaller must not become the pin bypass.
+        """
+        from tools.skills_hub_install import uninstall_skill
+
+        install = isolated_skills_dir / "pinned-hub"
+        install.mkdir()
+        (install / "SKILL.md").write_text("name: pinned-hub\n")
+        patch_lock_file(self._hub_lock(tmp_path, "pinned-hub", "pinned-hub"))
+
+        with patch("tools.skill_usage.get_record", return_value={"pinned": True}):
+            ok, msg = uninstall_skill("pinned-hub")
+
+        assert ok is False
+        assert "pinned" in msg.lower()
+        assert "curator unpin" in msg
+        assert (install / "SKILL.md").exists()  # nothing deleted
+
+    def test_uninstall_proceeds_when_not_pinned(self, tmp_path, isolated_skills_dir, patch_lock_file):
+        """Positive control: unpinned hub skills still uninstall (guard is not over-broad)."""
+        from tools.skills_hub_install import uninstall_skill
+
+        install = isolated_skills_dir / "unpinned-hub"
+        install.mkdir()
+        (install / "SKILL.md").write_text("name: unpinned-hub\n")
+        patch_lock_file(self._hub_lock(tmp_path, "unpinned-hub", "unpinned-hub"))
+
+        with patch("tools.skill_usage.get_record", return_value={"pinned": False}), \
+             patch("tools.skills_hub.append_audit_log"), \
+             patch("hermes_cli.observability.shared_metrics_disabled.record_skill_removed"):
+            ok, msg = uninstall_skill("unpinned-hub")
+
+        assert ok is True, msg
+        assert not install.exists()
+
     def test_install_from_quarantine_rejects_symlinks(self, tmp_path):
         """Skill install must not follow symlinks that leak file contents
         from outside the quarantine directory."""

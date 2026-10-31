@@ -209,6 +209,15 @@ def uninstall_skill(skill_name: str) -> tuple[bool, str]:
     entry = lock.get_installed(skill_name)
     if not entry:
         return False, f"'{skill_name}' is not a hub-installed skill (may be a builtin)"
+    # Pin-aware delete guard (ORCA-06 hardening): pin is a protection promise across EVERY
+    # delete path. skill_manage refuses via _pinned_guard (tools/skill_manager_guards.py);
+    # the hub uninstaller must too, or `hermes skills uninstall` becomes the pin bypass.
+    # Mirrors the curator invariant "pinned skills bypass". Unpin first (`hermes curator unpin`).
+    from tools.skill_usage import get_record
+    if get_record(skill_name).get("pinned"):
+        return False, (
+            f"Refusing to uninstall '{skill_name}': the skill is pinned. "
+            f"Run `hermes curator unpin {skill_name}` first.")
     # The destructive boundary: whatever reaches rmtree MUST be inside
     # SKILLS_DIR and MUST NOT be SKILLS_DIR itself (see _resolve_lock_install_path).
     try:

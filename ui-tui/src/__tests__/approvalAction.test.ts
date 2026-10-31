@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { approvalAction, approvalOptions } from '../components/prompts.js'
+import { APPROVAL_KEY_GRACE_MS, approvalAction, approvalOptions } from '../components/prompts.js'
 
 describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
   it('maps Esc to deny — parity with global Ctrl+C cancellation', () => {
@@ -84,5 +84,22 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
     expect(
       approvalOptions({ choices: ['once', 'deny', 'session', 'always'], command: 'rm -rf /', description: 'blocked' })
     ).toEqual(['once', 'session', 'always', 'deny'])
+  })
+
+  it('drops approving keys that land the instant the prompt appears, never deny', () => {
+    const opts = ['once', 'session', 'always', 'deny'] as const
+    const early = APPROVAL_KEY_GRACE_MS - 1
+
+    // A composer Enter or digit arriving with the paint must not approve (or move the highlight).
+    expect(approvalAction('', { return: true }, 0, opts, early)).toEqual({ kind: 'noop' })
+    expect(approvalAction('1', {}, 0, opts, early)).toEqual({ kind: 'noop' })
+    expect(approvalAction('3', {}, 0, opts, early)).toEqual({ kind: 'noop' })
+    // Deny is always live; once the prompt has been seen, the same keys act.
+    expect(approvalAction('4', {}, 0, opts, early)).toEqual({ kind: 'choose', choice: 'deny' })
+    expect(approvalAction('', { escape: true }, 0, opts, 0)).toEqual({ kind: 'choose', choice: 'deny' })
+    expect(approvalAction('', { return: true }, 0, opts, APPROVAL_KEY_GRACE_MS)).toEqual({
+      kind: 'choose',
+      choice: 'once'
+    })
   })
 })

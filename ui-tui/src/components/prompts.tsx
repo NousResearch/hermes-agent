@@ -57,25 +57,34 @@ type ApprovalAction = { kind: 'choose'; choice: ApprovalChoice } | { kind: 'move
  * with the global Ctrl+C handler that already calls cancelOverlayFromCtrlC
  * for approvals).  Numbers 1..opts.length pick the labelled choice.  Enter
  * confirms the current selection.  ↑/↓ moves the selection within bounds.
+ *
+ * `ageMs` is how long the prompt has been on screen: for the first
+ * APPROVAL_KEY_GRACE_MS an Enter or digit that would APPROVE is dropped (a
+ * keystroke meant for the composer landed on a prompt that just appeared);
+ * deny stays live. Inspired by Muse Code 1.4.4.
  */
+export const APPROVAL_KEY_GRACE_MS = 500
+
 export function approvalAction(
   ch: string,
   key: ApprovalKey,
   sel: number,
-  opts: readonly ApprovalChoice[] = APPROVAL_OPTS
+  opts: readonly ApprovalChoice[] = APPROVAL_OPTS,
+  ageMs = Infinity
 ): ApprovalAction {
   if (key.escape) {
     return { kind: 'choose', choice: 'deny' }
   }
 
   const n = parseInt(ch, 10)
+  const early = (choice: ApprovalChoice) => choice !== 'deny' && ageMs < APPROVAL_KEY_GRACE_MS
 
   if (n >= 1 && n <= opts.length) {
-    return { kind: 'choose', choice: opts[n - 1]! }
+    return early(opts[n - 1]!) ? { kind: 'noop' } : { kind: 'choose', choice: opts[n - 1]! }
   }
 
   if (key.return) {
-    return { kind: 'choose', choice: opts[sel]! }
+    return early(opts[sel]!) ? { kind: 'noop' } : { kind: 'choose', choice: opts[sel]! }
   }
 
   if (key.upArrow && sel > 0) {
@@ -93,9 +102,12 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
   const T = useT()
   const [sel, setSel] = useState(0)
   const opts = approvalOptions(req)
+  // Mounted once per request (keyed by requestId in appOverlays), so a queued approval replacing
+  // this one starts its own grace window and its own first-choice selection.
+  const [shownAt] = useState(() => Date.now())
 
   useInput((ch, key) => {
-    const action = approvalAction(ch, key, sel, opts)
+    const action = approvalAction(ch, key, sel, opts, Date.now() - shownAt)
 
     if (action.kind === 'choose') {
       onChoice(action.choice)

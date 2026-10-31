@@ -397,7 +397,7 @@ def test_remote_msys_shaped_executable_is_not_rewritten_as_controller_path():
     result = ShellFileOperations(env).search("*.py", path="/repo", target="files")
 
     assert result.files
-    assert "'/c/remote-tools/rg' --files" in env.rg_commands[0]
+    assert "'/c/remote-tools/rg' --no-config --files" in env.rg_commands[0]
     assert "C:/remote-tools/rg" not in env.rg_commands[0]
 
 

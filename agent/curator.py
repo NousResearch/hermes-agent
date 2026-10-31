@@ -843,11 +843,17 @@ def _render_candidate_list() -> str:
     the same reason on the read side: ``skill_view`` — the pass's only read
     path — refuses them, so the fork retries the same refused read until
     the same-tool-failure halt ends the run with zero findings.
+
+    Pinned skills are excluded too: ``_background_review_delete_guard``
+    refuses autonomous deletes of pinned skills, so offering them to the
+    consolidation pass invites work the guard will always reject.
     """
     disabled = get_disabled_skill_names()
     rows = [
         r for r in skill_usage.curated_report()
-        if not skill_usage.is_bundled(r["name"]) and r["name"] not in disabled
+        if not skill_usage.is_bundled(r["name"])
+        and r["name"] not in disabled
+        and not r.get("pinned")
     ]
     if not rows:
         return "No agent-created skills to review."

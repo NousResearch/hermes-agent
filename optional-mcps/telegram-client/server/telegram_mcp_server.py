@@ -53,6 +53,15 @@ SESSION_PATH = Path(
 )
 SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+# Public API credentials of the official Telegram Desktop client
+# (https://github.com/telegramdesktop/tdesktop, apiId/apiHash in
+# Telegram/build/target.h) -- used as the default so installing this
+# connector doesn't require registering a throwaway app at
+# my.telegram.org/apps first. Override with TELEGRAM_API_ID/TELEGRAM_API_HASH
+# env vars if you'd rather use your own registered app.
+_PUBLIC_API_ID = "2040"
+_PUBLIC_API_HASH = "b18441a1ff607e10a989891a5462e627"
+
 server = MCPServer(name="telegram-client", version="0.1.0")
 
 # One client for the server's lifetime; Telethon's SQLite session persists
@@ -64,24 +73,26 @@ _login_state: dict[str, Any] = {}
 
 
 def _api_credentials() -> tuple[Optional[int], Optional[str]]:
-    api_id = os.environ.get("TELEGRAM_API_ID")
-    api_hash = os.environ.get("TELEGRAM_API_HASH")
-    if not api_id or not api_hash:
-        return None, None
+    api_id = os.environ.get("TELEGRAM_API_ID") or _PUBLIC_API_ID
+    api_hash = os.environ.get("TELEGRAM_API_HASH") or _PUBLIC_API_HASH
     try:
         return int(api_id), api_hash
     except ValueError:
         return None, None
 
 
+def _configured_phone() -> Optional[str]:
+    """The phone number entered at install time (dashboard env var), used as
+    the default for telegram_login_start so the agent can trigger login
+    without the human having to repeat the number in chat."""
+    return os.environ.get("TELEGRAM_PHONE") or None
+
+
 async def _get_client() -> TelegramClient:
     global _client
     api_id, api_hash = _api_credentials()
     if not api_id or not api_hash:
-        raise RuntimeError(
-            "TELEGRAM_API_ID / TELEGRAM_API_HASH not set. Register an app at "
-            "https://my.telegram.org/apps to get these (not a bot token)."
-        )
+        raise RuntimeError("TELEGRAM_API_ID / TELEGRAM_API_HASH could not be parsed as valid credentials.")
     if _client is None:
         _client = TelegramClient(str(SESSION_PATH), api_id, api_hash)
     if not _client.is_connected():
@@ -92,7 +103,16 @@ async def _get_client() -> TelegramClient:
 async def _authed_client() -> TelegramClient:
     client = await _get_client()
     if not await client.is_user_authorized():
-        raise RuntimeError("Not logged in yet. Call telegram_login_start, then telegram_login_code.")
+        phone = _configured_phone()
+        if phone:
+            raise RuntimeError(
+                f"Not logged in yet. Call telegram_login_start() (phone {phone} is already configured "
+                "via TELEGRAM_PHONE), then telegram_login_code with the code Telegram sends."
+            )
+        raise RuntimeError(
+            "Not logged in yet, and no TELEGRAM_PHONE is configured. Call telegram_login_start(phone), "
+            "then telegram_login_code."
+        )
     return client
 
 
@@ -134,16 +154,22 @@ def _serialize_dialog(d: Any) -> dict:
 
 
 @server.tool()
-async def telegram_login_start(phone: str) -> dict:
+async def telegram_login_start(phone: Optional[str] = None) -> dict:
     """Start login for a Telegram user account: sends a login code to that phone's Telegram app.
 
     Args:
-        phone: full international format, e.g. "+15551234567".
+        phone: full international format, e.g. "+155****4567". Optional --
+            defaults to the TELEGRAM_PHONE configured for this connector
+            (set at install time) when omitted.
 
-    Requires TELEGRAM_API_ID / TELEGRAM_API_HASH env vars (from
-    https://my.telegram.org/apps). After this, call telegram_login_code with
-    the code the user receives in their Telegram app (or by SMS).
+    Requires TELEGRAM_API_ID / TELEGRAM_API_HASH env vars (defaults to the
+    public Telegram Desktop app credentials if not overridden). After this,
+    call telegram_login_code with the code the user receives in their
+    Telegram app (or by SMS).
     """
+    phone = phone or _configured_phone()
+    if not phone:
+        return {"error": "no phone given and no TELEGRAM_PHONE configured for this connector"}
     try:
         client = await _get_client()
         if await client.is_user_authorized():
@@ -201,13 +227,10 @@ async def telegram_login_password(password: str) -> dict:
 @server.tool()
 async def telegram_auth_status() -> dict:
     """Check whether this connector currently holds a logged-in Telegram session."""
-    api_id, api_hash = _api_credentials()
-    if not api_id or not api_hash:
-        return {"logged_in": False, "error": "TELEGRAM_API_ID / TELEGRAM_API_HASH not set"}
     client = await _get_client()
     authed = await client.is_user_authorized()
     if not authed:
-        return {"logged_in": False}
+        return {"logged_in": False, "configured_phone": _configured_phone()}
     me = await client.get_me()
     return {"logged_in": True, "user_id": me.id, "username": me.username, "phone": me.phone,
              "first_name": me.first_name, "last_name": me.last_name}

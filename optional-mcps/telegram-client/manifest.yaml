@@ -20,21 +20,20 @@ transport:
   args:
     - /home/max/.hermes/hermes-agent/optional-mcps/telegram-client/server/telegram_mcp_server.py
   env:
-    TELEGRAM_API_ID: "${env:TELEGRAM_API_ID}"
-    TELEGRAM_API_HASH: "${env:TELEGRAM_API_HASH}"
+    TELEGRAM_PHONE: "${env:TELEGRAM_PHONE}"
 
 # Not Hermes-managed OAuth: Telegram's own login (phone -> code -> optional
-# 2FA password) is handled inside the server's own telegram_login_* tools,
-# driven through a chat dialog with the user -- there is no single-call
-# login to automate here. Declaring the API credentials gets them
-# prompted-for and saved to .env at install time.
+# 2FA password) is handled inside the server's own telegram_login_* tools.
+# API credentials default to the public Telegram Desktop app (api_id 2040)
+# baked into the server, so only the phone number is prompted for here --
+# the agent reads it back via TELEGRAM_PHONE and drives the rest of the
+# login (send code, submit code, submit 2FA password if asked) itself once
+# the human relays what Telegram sent them.
 auth:
   type: none
   env:
-    - name: TELEGRAM_API_ID
-      prompt: "Telegram api_id (my.telegram.org/apps -- register an app, not a bot token)"
-    - name: TELEGRAM_API_HASH
-      prompt: "Telegram api_hash (same app registration)"
+    - name: TELEGRAM_PHONE
+      prompt: "Phone number for the dedicated Telegram agent account (e.g. +155****4567, not your personal one)"
 
 suggest:
   keywords:
@@ -48,13 +47,17 @@ post_install: |
   password), not a bot -- use a phone number dedicated to the agent, not
   your personal one, since it gets full read/write access once logged in.
 
-  Register an app at https://my.telegram.org/apps for the api_id/api_hash
-  just prompted for (not a bot token).
+  Uses the public Telegram Desktop app credentials by default (no need to
+  register your own app at my.telegram.org/apps); set TELEGRAM_API_ID /
+  TELEGRAM_API_HASH env vars yourself if you want to use your own app
+  instead.
 
-  Then, in a chat with the agent: call telegram_login_start(phone), then
-  telegram_login_code(code) with the code Telegram sends to that phone's
-  app, then telegram_login_password(password) only if that step asks for
-  it (Two-Step Verification). telegram_auth_status() confirms the result.
+  On first use, ask the agent to call telegram_login_start() -- it already
+  knows the phone from TELEGRAM_PHONE above. Telegram sends a login code to
+  that phone's own Telegram app; relay that code to the agent and it calls
+  telegram_login_code(code). If the account has Two-Step Verification, it
+  then asks for the password and calls telegram_login_password(password).
+  telegram_auth_status() confirms the result.
 
   Business-scope guidance belongs in a dedicated skill if one gets written;
   none exists yet for this connector -- call its tools directly.

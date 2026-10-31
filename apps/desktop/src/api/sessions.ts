@@ -417,7 +417,7 @@ function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: R
       body: { ...payload, ...identity, ...(scope.profile ? { profile: scope.profile } : {}) } })
   }
 
-  return mutateSessionFenced(key, () => hermesApi<SessionMutationSnapshot>({ ...scope, path: `${path}/mutation-snapshot${suffix}` }), send)
+  return mutateSessionFenced(key, () => hermesApi<SessionMutationSnapshot>({ ...scope, path: `${path}/mutation-snapshot${suffix}`, passive: false }), send)
 }
 
 export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {

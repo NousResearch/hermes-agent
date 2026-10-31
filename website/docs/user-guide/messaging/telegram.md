@@ -656,7 +656,7 @@ A bot that reads every group message can answer exactly `[SILENT]` (or another [
 | Any other message without a `?` | Stays silent |
 | Any other message with a `?` (it may be a question for the bot) | Replaced by the notice |
 
-A message still gets the notice while the bot's own identity is unknown, or when it replies to a message whose author is unknown. A forum topic's root message is not a reply to another member.
+A message still gets the notice while the bot's own identity is unknown, or when it replies to a message whose author is unknown. A voice note or audio file without a caption also gets the notice, because its words are not in the message text. A forum topic's root message is not a reply to another member.
 
 ### Multiple Hermes bots in one group
 

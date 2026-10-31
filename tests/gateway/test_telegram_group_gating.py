@@ -1021,6 +1021,11 @@ def _replying_to(message, *, user_id=None, message_id=10):
     return message
 
 
+def _with_media(message, kind):
+    setattr(message, kind, SimpleNamespace(file_id="f"))
+    return message
+
+
 @pytest.mark.parametrize("message, expected", [
     (_group_message("@hermes_bot when is rent due?", entities=[_mention_entity("@hermes_bot when is rent due?")]), True),
     (_group_message("sure, saturday", reply_to_bot=True), True),
@@ -1035,10 +1040,15 @@ def _replying_to(message, *, user_id=None, message_id=10):
     (_group_message("what did @alice say?", entities=[_mention_entity("what did @alice say?", "@alice")]), None),
     (_replying_to(_group_message("anyone up for dinner?", thread_id=5), user_id=222, message_id=5), None),
     (_replying_to(_group_message("agreed?")), None),
+    (_with_media(_group_message(None), "voice"), None),
+    (_with_media(_group_message(None), "audio"), None),
+    (_with_media(_group_message(None, caption="the fridge arrives on saturday"), "voice"), False),
+    (_with_media(_group_message(None), "photo"), False),
 ], ids=[
     "mention", "reply-to-bot", "wake-word", "caption-command", "indented-command", "dm",
     "reply-to-other-member", "opens-with-other-mention", "chatter",
     "question", "mentions-other-mid-question", "forum-topic-root", "reply-to-unknown-author",
+    "voice-note", "audio-file", "captioned-voice-chatter", "photo-without-caption",
 ])
 def test_reply_expected_follows_who_the_group_message_addresses(message, expected):
     adapter = _make_adapter(require_mention=False, mention_patterns=["hermes"])

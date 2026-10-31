@@ -37,6 +37,7 @@ def _patch_daytona_imports(monkeypatch):
 
     daytona_mod = _types.ModuleType("daytona")
     daytona_mod.Daytona = MagicMock
+    daytona_mod.DaytonaConfig = lambda **kw: SimpleNamespace(**kw)
     daytona_mod.CreateSandboxFromImageParams = MagicMock
     daytona_mod.DaytonaError = type("DaytonaError", (Exception,), {})
     daytona_mod.Resources = MagicMock(name="Resources")
@@ -109,6 +110,25 @@ def make_env(daytona_sdk, monkeypatch):
         return env
 
     return _factory
+
+
+# ---------------------------------------------------------------------------
+# Credentials
+# ---------------------------------------------------------------------------
+
+class TestCredentials:
+    def test_api_key_comes_from_the_profile_secret_scope(self, make_env, daytona_sdk, monkeypatch):
+        """A key saved in a served profile's .env reaches the SDK although os.environ lacks it."""
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        monkeypatch.delenv("DAYTONA_API_KEY", raising=False)
+        token = set_secret_scope({"DAYTONA_API_KEY": "dtn-profile-key"})
+        try:
+            make_env()
+        finally:
+            reset_secret_scope(token)
+        (config,), _ = daytona_sdk.Daytona.call_args
+        assert config.api_key == "dtn-profile-key"
 
 
 # ---------------------------------------------------------------------------

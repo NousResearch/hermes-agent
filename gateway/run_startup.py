@@ -1634,8 +1634,21 @@ class GatewayStartupMixin:
         "_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher", "_profile_reconcile_watcher",
     )
 
+    def _start_browser_janitor(self) -> None:
+        """Start the browser cleanup janitor for this gateway process.
+
+        The janitor reaps Chromium trees whose owning Hermes process is gone and times out idle
+        sessions. It used to be started lazily by the first browser request, so a gateway that died
+        uncleanly plus a successor that never served a browser left the orphan tree running until
+        somebody happened to open a page (#145010).
+        """
+        with _log_suppressed(logging.WARNING, "Could not start the browser cleanup janitor: %s"):
+            from tools.browser_session_lifecycle import start_cleanup_thread
+            start_cleanup_thread()
+
     def _start_spawn_background_watchers(self) -> None:
         """Spawn the long-lived supervised background watchers."""
+        self._start_browser_janitor()
         for method in self._PRE_RECONNECT_WATCHERS:
             self._spawn_supervised(getattr(self, method), method[1:])
         if self._failed_platforms:

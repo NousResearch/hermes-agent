@@ -162,6 +162,14 @@ Do not disable Windows security controls to work around that boundary.
 The current installer does not set `HERMES_GIT_BASH_PATH`. MinGit is not a
 replacement for Git for Windows with Bash.
 
+### Search patterns and filesystem paths
+
+`search_files` keeps regex and glob syntax separate from Windows filesystem
+paths. For example, `file_glob="sample\[1\].txt"` selects `sample[1].txt`,
+while `path` can contain a native drive path and spaces. Use `/` between glob
+path components, such as `src/**/*.py`; backslashes in a glob escape pattern
+characters rather than acting as Windows directory separators.
+
 ## UTF-8 console on Windows
 
 Python's default stdio on Windows uses the console's active code page (usually cp1252 or cp437). Hermes's banner, slash-command list, tool feed, Rich panels, and skill descriptions all contain Unicode. Without intervention, any of that crashes with `UnicodeEncodeError: 'charmap' codec can't encode character…`.

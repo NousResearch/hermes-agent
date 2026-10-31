@@ -1040,6 +1040,7 @@ def _with_media(message, kind):
     (_group_message("what did @alice say?", entities=[_mention_entity("what did @alice say?", "@alice")]), None),
     (_replying_to(_group_message("anyone up for dinner?", thread_id=5), user_id=222, message_id=5), None),
     (_replying_to(_group_message("agreed?")), None),
+    (_replying_to(_group_message("agreed")), None),
     (_with_media(_group_message(None), "voice"), None),
     (_with_media(_group_message(None), "audio"), None),
     (_with_media(_group_message(None, caption="the fridge arrives on saturday"), "voice"), False),
@@ -1048,6 +1049,7 @@ def _with_media(message, kind):
     "mention", "reply-to-bot", "wake-word", "caption-command", "indented-command", "dm",
     "reply-to-other-member", "opens-with-other-mention", "chatter",
     "question", "mentions-other-mid-question", "forum-topic-root", "reply-to-unknown-author",
+    "reply-to-unknown-author-statement",
     "voice-note", "audio-file", "captioned-voice-chatter", "photo-without-caption",
 ])
 def test_reply_expected_follows_who_the_group_message_addresses(message, expected):

@@ -44,17 +44,21 @@ def starts_with_other_participant_mention(adapter: "TelegramAdapter", message: "
     )
 
 
-def _replies_to_other_member(adapter: "TelegramAdapter", message: "Message") -> bool:
-    """A reply to another known member's message. In a forum topic Telegram also sets ``reply_to_message``
+def _quoted_reply(message: "Message"):
+    """The message this one replies to, or None. In a forum topic Telegram also sets ``reply_to_message``
     to the topic's root on every plain message; that anchor is not a reply to a person."""
     replied = getattr(message, "reply_to_message", None)
-    if replied is None or getattr(replied, "from_user", None) is None or adapter._is_reply_to_bot(message):
-        return False
-    topic_root = (
-        getattr(message, "is_topic_message", False)
-        and replied.message_id == getattr(message, "message_thread_id", None)
-    )
-    return not topic_root
+    if replied is None or (getattr(message, "is_topic_message", False)
+                           and replied.message_id == getattr(message, "message_thread_id", None)):
+        return None
+    return replied
+
+
+def _replies_to_other_member(adapter: "TelegramAdapter", message: "Message") -> bool:
+    """A reply to another known member's message."""
+    replied = _quoted_reply(message)
+    return (replied is not None and getattr(replied, "from_user", None) is not None
+            and not adapter._is_reply_to_bot(message))
 
 
 def group_reply_expected(adapter: "TelegramAdapter", message: "Message", chat_type: str) -> Optional[bool]:
@@ -72,6 +76,9 @@ def group_reply_expected(adapter: "TelegramAdapter", message: "Message", chat_ty
         return True
     if not adapter._bot or not adapter._current_bot_username():
         return None
+    replied = _quoted_reply(message)
+    if replied is not None and getattr(replied, "from_user", None) is None:
+        return None  # the quoted author is unknown, so the reply may be to the bot
     if _replies_to_other_member(adapter, message) or starts_with_other_participant_mention(adapter, message):
         return False
     # Words in a voice note or audio file are not in the message text, so the "?" rule cannot read them.

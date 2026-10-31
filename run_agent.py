@@ -867,16 +867,8 @@ class AIAgent(
     def shutdown_memory_provider(self, messages: list | None = None) -> None:
         """Shut down the memory provider and context engine at session end (idempotent: gateway cleanup and
         ``close()`` may both call it)."""
-        if getattr(self, "_memory_provider_shutdown", False):
-            return
-        self._memory_provider_shutdown = True
-        if self._memory_manager and self._memory_manager.claim_teardown(session_end=True):
-            try:
-                self._memory_manager.on_session_end(messages or [])
-            except Exception as e:
-                logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
-            _quietly(lambda: self._memory_manager.shutdown_all())
-        _notify_context_engine_session_end(self, messages)
+        from agent.context_engine import shutdown_memory_and_context
+        shutdown_memory_and_context(self, messages)
 
     def commit_memory_session(self, messages: list | None = None) -> None:
         """Flush end-of-session extraction on session_id rotation (/new, compression) without tearing providers
@@ -1029,6 +1021,7 @@ class AIAgent(
             # See #90837.
             from hermes_state_registry import release_or_close
             release_or_close(session_db)
+            self._session_db = None
 
     def _hydrate_todo_store(self, history: list[dict[str, Any]]) -> None:
         """Replay the most recent todo tool response (the gateway builds a fresh AIAgent per message). Only

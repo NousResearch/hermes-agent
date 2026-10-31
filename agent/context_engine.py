@@ -5,11 +5,15 @@ limit, tracks usage, and may expose tools. ContextCompressor is the default;
 ``context.engine`` selects a plugin (``plugins/context_engine/<name>/``); one is active.
 Lifecycle: on_session_start() -> per API response update_from_response() -> per turn
 should_compress() / compress() -> on_session_end() at real session boundaries only
-(CLI exit, /reset, gateway expiry), never per-turn.
+(CLI exit, /reset, gateway expiry), never per-turn -> shutdown() when an agent holding
+the instance is torn down (possibly repeatedly per object; only instance-opened resources,
+never a backend shared with the registered instance or other agents' clones).
 """
 
 import copy
 import json
+import logging
+import threading
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
@@ -17,9 +21,46 @@ from agent.compression_marker import elide_middle
 from agent.redact import redact_sensitive_text
 
 
+logger = logging.getLogger(__name__)
+
 MEMORY_CONTEXT_MAX_CHARS = 6_000
 _MEMORY_CONTEXT_HEAD_CHARS = 4_000
 _MEMORY_CONTEXT_TAIL_CHARS = 1_500
+_CONTEXT_ENGINE_SHUTDOWN_FALLBACK_LOCK = threading.Lock()
+
+
+def shutdown_memory_and_context(agent: Any, messages: list | None = None) -> None:
+    """Preserve provider teardown ownership and always release the agent's engine."""
+    from run_agent import _notify_context_engine_session_end, _quietly, logger
+
+    if getattr(agent, "_memory_provider_shutdown", False):
+        return
+    agent._memory_provider_shutdown = True
+    try:
+        if agent._memory_manager and agent._memory_manager.claim_teardown(session_end=True):
+            try:
+                agent._memory_manager.on_session_end(messages or [])
+            except Exception as e:  # health: allow BLE001 -- moved from AIAgent.shutdown_memory_provider; logged with its traceback
+                logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
+            _quietly(lambda: agent._memory_manager.shutdown_all())
+        _notify_context_engine_session_end(agent, messages)
+    finally:
+        shutdown_context_engine(agent)
+
+
+def shutdown_context_engine(agent: Any) -> None:
+    """Select teardown once under the lock; invoke outside it for re-entrant plugins."""
+    engine = None
+    lock = getattr(agent, "_context_engine_shutdown_lock", _CONTEXT_ENGINE_SHUTDOWN_FALLBACK_LOCK)
+    with lock:
+        if not getattr(agent, "_context_engine_shutdown", False):
+            agent._context_engine_shutdown = True
+            engine = getattr(agent, "context_compressor", None)
+    if engine is not None:
+        try:
+            engine.shutdown()
+        except Exception:
+            logger.debug("Context engine shutdown failed", exc_info=True)
 
 
 def sanitize_memory_context(memory_context: str) -> str:
@@ -183,6 +224,19 @@ class ContextEngine(ABC):
 
     def on_session_end(self, session_id: str, messages: list[dict[str, Any]]) -> None:
         """Real session boundary (CLI exit, /reset, gateway expiry) — never per-turn."""
+
+    def shutdown(self) -> None:
+        """Called when an agent holding this instance is torn down.
+
+        This can happen many times per process, and the same object may receive it more than
+        once if your plugin hands one instance to every agent. Release only resources this
+        instance opened itself (for example a connection your clone_for_agent() reopened);
+        never close a backend shared with the registered instance or other agents' clones.
+        Gateway agent-cache evictions (idle TTL, LRU cap, memory pressure) do not call this yet:
+        they release the agent through release_clients(), so a cache-evicted agent's engine
+        keeps its resources until garbage collection or process exit.
+        Default: no-op.
+        """
 
     def on_session_reset(self) -> None:
         """/new or /reset: reset per-session state (default: counters and token tracking)."""

@@ -255,8 +255,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             # extraction left a streamed reply that showed the tag as text and never sent the image
             # (#141806).
             url_images, _ = adapter.extract_images(cleaned)
-            _thread_meta = (
-                dict(thread_metadata)
+            _thread_meta = _mark_notify_metadata(
+                thread_metadata
                 if thread_metadata is not None
                 else self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
             )

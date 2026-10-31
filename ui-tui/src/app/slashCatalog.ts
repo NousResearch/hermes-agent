@@ -8,13 +8,18 @@ import { rpcErrorMessage } from '../lib/rpc.js'
 import type { SlashCatalog } from '../types.js'
 
 import type { GatewayRpc } from './interfaces.js'
+import { tabCommands } from './slash/commands/tabs.js'
 import { turnController } from './turnController.js'
 import { $uiState } from './uiStore.js'
 
 /** `commands.catalog` bound to `sid` when there is one: project-local skills follow the session's repo,
  *  so the catalog is reloaded whenever the live session changes. A reply for a session that is no longer
  *  the live one is dropped. */
-export const loadSlashCatalog = (rpc: GatewayRpc, sid: null | string, setCatalog: (catalog: null | SlashCatalog) => void) =>
+export const loadSlashCatalog = (
+  rpc: GatewayRpc,
+  sid: null | string,
+  setCatalog: (catalog: null | SlashCatalog) => void
+) =>
   rpc<CommandsCatalogResponse>('commands.catalog', sid ? { session_id: sid } : {})
     .then(r => {
       if (!r?.pairs || $uiState.get().sid !== sid) {
@@ -33,7 +38,9 @@ export const loadSlashCatalog = (rpc: GatewayRpc, sid: null | string, setCatalog
         turnController.pushActivity(r.warning, 'warn')
       }
     })
-    .catch(e => turnController.pushActivity(t('gatewayMsg.startup.commandCatalogUnavailable', rpcErrorMessage(e)), 'info'))
+    .catch(e =>
+      turnController.pushActivity(t('gatewayMsg.startup.commandCatalogUnavailable', rpcErrorMessage(e)), 'info')
+    )
 
 /** `skills.changed`: a skill was installed or removed from another terminal. Refetch the palette
  *  from the gateway, which rescans; this client never reads the skills dir itself. True when handled. */
@@ -54,7 +61,38 @@ export function refreshSlashCatalogOnSkillsChange(
 /** The slash catalog for the live session (or the launch workspace before one exists). */
 export const $slashCatalog = atom<null | SlashCatalog>(null)
 
-export const setSlashCatalog = (next: null | SlashCatalog) => $slashCatalog.set(next)
+export function withSessionTabCommands(next: SlashCatalog): SlashCatalog {
+  const pairs: [string, string][] = tabCommands.flatMap(command =>
+    [command.name, ...(command.aliases ?? [])].map(
+      name => [`/${name}`, command.help || 'Session tab controls'] as [string, string]
+    )
+  )
+
+  const names = new Set(pairs.map(([name]) => name))
+
+  return {
+    ...next,
+    pairs: [...next.pairs.filter(([name]) => !names.has(name)), ...pairs],
+    canon: {
+      ...next.canon,
+      ...Object.fromEntries(
+        tabCommands.flatMap(command =>
+          [command.name, ...(command.aliases ?? [])].map(name => [`/${name}`, `/${command.name}`])
+        )
+      )
+    },
+    categories: [
+      ...next.categories
+        .map(category => ({ ...category, pairs: category.pairs.filter(([name]) => !names.has(name)) }))
+        .filter(category => category.pairs.length),
+      { name: 'Session tabs', pairs }
+    ],
+    sub: { ...next.sub, '/tab': ['list', 'next', 'prev', 'new', 'close'] }
+  }
+}
+
+export const setSlashCatalog = (next: null | SlashCatalog) =>
+  $slashCatalog.set(next ? withSessionTabCommands(next) : null)
 
 /** The slash catalog, reloaded for each live session while connected; the gateway-ready load covers the
  *  pre-session one. */

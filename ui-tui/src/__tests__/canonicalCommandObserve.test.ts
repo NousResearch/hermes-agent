@@ -54,10 +54,18 @@ function harness({
     local: { getHistoryItems: () => [], getLastUserMsg: () => '', maybeWarn: vi.fn() },
     session: { guardBusySessionSwitch: vi.fn(() => busy), newSession: vi.fn(), resumeById: vi.fn() },
     slashFlightRef: { current: 0 },
-    transcript: { page: vi.fn(), panel: vi.fn(), send: vi.fn(), setHistoryItems: vi.fn(), sys, trimLastExchange: (x: unknown[]) => x }
+    transcript: {
+      page: vi.fn(),
+      panel: vi.fn(),
+      send: vi.fn(),
+      setHistoryItems: vi.fn(),
+      sys,
+      trimLastExchange: (x: unknown[]) => x
+    }
   } as any)
 
-  const observed = () => request.mock.calls.filter(([method]) => method === 'command.observe').map(([, params]) => params)
+  const observed = () =>
+    request.mock.calls.filter(([method]) => method === 'command.observe').map(([, params]) => params)
 
   return { gw, observed, request, slash, sys }
 }
@@ -102,19 +110,19 @@ it('reports nothing for /tools enable or disable, which the shared gateway refus
   expect(tools.observed()).toEqual([])
 })
 
-it('reports nothing for a /new the busy guard rejects', async () => {
+it('reports nothing for a /clear the busy guard rejects', async () => {
   const busy = harness({ busy: true })
 
-  busy.slash('/new')
+  busy.slash('/clear')
   await flush()
   expect(busy.observed()).toEqual([])
 
   patchUiState({ destructiveSlashConfirm: false })
   const idle = harness()
 
-  idle.slash('/new')
+  idle.slash('/clear')
   await flush()
-  expect(idle.observed()).toEqual([{ arg: '', name: 'new', session_id: 'owner' }])
+  expect(idle.observed()).toEqual([{ arg: '', name: 'clear', session_id: 'owner' }])
 })
 
 it('reports a gateway-backed /reasoning level only once the gateway accepts it', async () => {

@@ -5,8 +5,7 @@ import {
   useApp,
   useHasSelection,
   useSelection,
-  useStdout,
-  useTerminalTitle
+  useStdout
 } from '@hermes/ink'
 import type { SessionControlSnapshot } from '@hermes/shared/gateway-events'
 import { JSON_RPC_METHOD_NOT_FOUND, type ServerRequest } from '@hermes/shared/json-rpc-channel'
@@ -19,7 +18,7 @@ import { WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { RESIZE_COALESCE_MS } from '../config/timing.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
-import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
+import { fmtProjectCwdBranch } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type { SubagentListResponse } from '../gatewayTypes.js'
 import type {
@@ -56,11 +55,12 @@ import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type SlashHandler, type StateSetter, type TranscriptRow, type UiState } from './interfaces.js'
 import { requestLiveSessions } from './liveSessions.js'
 import { applyControlSnapshot } from './loopStatus.js'
-import { $overlayState, capturePromptResponseGuard, hasSensitivePrompt, patchOverlayState } from './overlayStore.js'
+import { $overlayState, capturePromptResponseGuard, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { respondToServerRequest } from './serverRequestStore.js'
+import { refreshSessionTabs } from './sessionTabsStore.js'
 import { mutateCanonicalSession } from './slash/canonicalSessionControls.js'
 import { setSlashCatalog, useSlashCatalog } from './slashCatalog.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
@@ -70,6 +70,7 @@ import { $uiState, getUiState, patchUiState } from './uiStore.js'
 import { useBatteryPoll } from './useBatteryPoll.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
+import { releaseHerdrReporters } from './useHerdrActivity.js'
 import { shouldDetachEditedHistoryInput, useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
 import {
@@ -82,6 +83,8 @@ import {
   lastStderrLine
 } from './userMessages.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
+import { useSessionTabDrafts, useSessionTabs } from './useSessionTabs.js'
+import { useSessionTabTerminalTitle } from './useSessionTabTerminalTitle.js'
 import { useSubmission } from './useSubmission.js'
 
 const BRACKET_PASTE_ON = '\x1b[?2004h'
@@ -107,9 +110,11 @@ function useDie(gw: GatewayClient, exit: () => void) {
         return
       }
 
-      gw.kill(reason)
-      exit()
-      process.exit(code)
+      void releaseHerdrReporters().finally(() => {
+        gw.kill(reason)
+        exit()
+        process.exit(code)
+      })
     },
     [exit, exitClose, gw]
   )
@@ -127,7 +132,9 @@ function deferExitForClose(gw: GatewayClient, state: ExitClose, again: () => voi
   }
 
   state.flight = true
-  void Promise.race([state.close().catch(() => undefined), new Promise(resolve => setTimeout(resolve, 1500))]).then(again)
+  void Promise.race([state.close().catch(() => undefined), new Promise(resolve => setTimeout(resolve, 1500))]).then(
+    again
+  )
 
   return true
 }
@@ -639,12 +646,15 @@ export function useMainApp(gw: GatewayClient) {
   const catalog = useSlashCatalog(rpc)
 
   const { die, dieWithCode, exitClose } = useDie(gw, exit)
+  const tabDrafts = useSessionTabDrafts(composer)
 
   const session = useSessionLifecycle({
     colsRef,
     composerActions,
     gw,
     onFreshSessionStarted: DASHBOARD_TUI_MODE ? setDashboardFreshSessionId : undefined,
+    onBeforeSessionChange: tabDrafts.capture,
+    onSessionActivated: tabDrafts.activate,
     panel,
     rpc,
     scrollRef,
@@ -658,6 +668,7 @@ export function useMainApp(gw: GatewayClient) {
   })
 
   exitClose.close = session.closeForExit
+  const sessionTabAction = useSessionTabs(session, tabDrafts.capture, sys)
 
   useEffect(() => {
     if (dashboardFreshSessionId) {
@@ -689,7 +700,9 @@ export function useMainApp(gw: GatewayClient) {
 
     // Offline (sid kept across a socket close): each poll would re-dial through
     // ensureAttachedWebSocket and collapse GatewayClient's backoff (B2-20).
-    if (ui.gatewayConnected === false) { return }
+    if (ui.gatewayConnected === false) {
+      return
+    }
 
     let stopped = false
     applyAgentSnapshot(ui.sid)
@@ -733,6 +746,7 @@ export function useMainApp(gw: GatewayClient) {
           const result = asRpcResult<SessionActiveListResponse>(raw)
 
           if (!stopped && result?.sessions) {
+            refreshSessionTabs(result.sessions)
             const liveSessionCount = result.sessions.length
 
             // Surface the current session's (auto-)title for the terminal
@@ -765,22 +779,7 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [gw, ui.sid, ui.gatewayConnected])
 
-  // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
-  // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
-  const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
-
-  const marker = overlay.approval || overlay.clarify || hasSensitivePrompt(overlay) ? '⚠' : ui.busy ? '⏳' : '✓'
-
-  const tabCwd = ui.info?.cwd
-
-  useTerminalTitle(
-    model
-      ? {
-          tab: composeTabTitle(marker, ui.sessionTitle, '', ''),
-          window: composeTabTitle(marker, ui.sessionTitle, model, tabCwd ? shortCwd(tabCwd, 24) : '')
-        }
-      : 'Hermes'
-  )
+  useSessionTabTerminalTitle()
 
   useEffect(() => {
     if (!ui.sid || !stdout) {
@@ -1000,6 +999,7 @@ export function useMainApp(gw: GatewayClient) {
       appendMessage,
       cancelClarify,
       die,
+      sessionTabAction,
       dispatchSubmission,
       guardBusySessionSwitch: session.guardBusySessionSwitch,
       newSession: session.newSession,
@@ -1203,6 +1203,7 @@ export function useMainApp(gw: GatewayClient) {
           dieWithCode,
           guardBusySessionSwitch: session.guardBusySessionSwitch,
           newLiveSession: session.newLiveSession,
+          tabAction: sessionTabAction,
           newSession: session.newSession,
           resetVisibleHistory: session.resetVisibleHistory,
           resumeById: session.resumeById,
@@ -1226,6 +1227,7 @@ export function useMainApp(gw: GatewayClient) {
       selection,
       send,
       session,
+      sessionTabAction,
       setHistoryItems,
       sys
     ]
@@ -1505,6 +1507,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const appActions = useMemo(
     () => ({
+      sessionTabAction,
       activateLiveSession: session.activateLiveSession,
       closeLiveSession,
       answerApproval,
@@ -1545,7 +1548,8 @@ export function useMainApp(gw: GatewayClient) {
       closeLiveSession,
       newPromptSession,
       onModelSelect,
-      session
+      session,
+      sessionTabAction
     ]
   )
 

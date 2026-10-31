@@ -38,7 +38,11 @@ describe('createSlashHandler', () => {
     patchUiState({ sid: 'owner' })
     const ctx = buildCtx()
     let reject!: (error: unknown) => void
-    const slashExec = new Promise((_, fail) => { reject = fail })
+
+    const slashExec = new Promise((_, fail) => {
+      reject = fail
+    })
+
     ctx.gateway.gw.request.mockImplementation((method: string) =>
       method === 'slash.exec' ? slashExec : Promise.resolve({})
     )
@@ -460,7 +464,9 @@ describe('createSlashHandler', () => {
     createSlashHandler(ctx)('/new sprint planning')
     getOverlayState().confirm?.onConfirm()
 
-    expect(ctx.session.newSession).toHaveBeenCalledWith(t('slashCmd.core.clear.newSessionStarted'), 'sprint planning')
+    expect(ctx.session.newLiveSession).toHaveBeenCalledWith(undefined, 'sprint planning')
+    expect(ctx.session.newSession).not.toHaveBeenCalled()
+    expect(getOverlayState().confirm).toBeNull()
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
   })
 
@@ -474,7 +480,13 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)(command)).toBe(true)
 
     expect(getOverlayState().confirm).toBeNull()
-    expect(ctx.session.newSession).toHaveBeenCalledWith(message, title)
+
+    if (command.startsWith('/new')) {
+      expect(ctx.session.newLiveSession).toHaveBeenCalledWith(undefined, title)
+      expect(ctx.session.newSession).not.toHaveBeenCalled()
+    } else {
+      expect(ctx.session.newSession).toHaveBeenCalledWith(message, title)
+    }
   })
 
   it('routes the /reset catalog alias through the local fresh-session lifecycle', () => {
@@ -492,7 +504,8 @@ describe('createSlashHandler', () => {
     createSlashHandler(ctx)('/reset')
     getOverlayState().confirm?.onConfirm()
 
-    expect(ctx.session.newSession).toHaveBeenCalledWith(t('slashCmd.core.clear.newSessionStarted'), undefined)
+    expect(ctx.session.newLiveSession).toHaveBeenCalledWith(undefined, undefined)
+    expect(ctx.session.newSession).not.toHaveBeenCalled()
     expect(gatewayWork(ctx)).toEqual([])
   })
 
@@ -515,8 +528,14 @@ describe('createSlashHandler', () => {
 
   it('only applies compression snapshots while execution authority is fresh', async () => {
     const source = {
-      model: 'test', tools: {}, skills: {}, execution_epoch: 'owner', execution_generation: 2,
-      execution_state: 'idle', running: false, stored_session_id: 'stored-source'
+      model: 'test',
+      tools: {},
+      skills: {},
+      execution_epoch: 'owner',
+      execution_generation: 2,
+      execution_state: 'idle',
+      running: false,
+      stored_session_id: 'stored-source'
     }
 
     const flush = () => new Promise(resolve => setImmediate(resolve))
@@ -529,7 +548,14 @@ describe('createSlashHandler', () => {
     ]) {
       patchUiState({ sid: 'source', info: source, busy: false })
       let resolve!: (value: any) => void
-      const rpc = vi.fn(() => new Promise<any>(done => { resolve = done }))
+
+      const rpc = vi.fn(
+        () =>
+          new Promise<any>(done => {
+            resolve = done
+          })
+      )
+
       const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
       createSlashHandler(ctx)('/compress')
       const current = { ...source, ...change }
@@ -554,15 +580,30 @@ describe('createSlashHandler', () => {
     // Ordinary metadata refresh is not a new execution; fresh partial info merges.
     patchUiState({ sid: 'source', info: source, busy: false })
     let resolve!: (value: any) => void
-    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc: vi.fn(() => new Promise<any>(done => { resolve = done })) } })
+
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(
+          () =>
+            new Promise<any>(done => {
+              resolve = done
+            })
+        )
+      }
+    })
+
     createSlashHandler(ctx)('/compress')
     patchUiState({ info: { ...source, model: 'refreshed' } })
-    resolve({ info: { execution_epoch: 'owner', execution_generation: 2 }, messages: [{ role: 'assistant', text: 'fresh summary' }] })
+    resolve({
+      info: { execution_epoch: 'owner', execution_generation: 2 },
+      messages: [{ role: 'assistant', text: 'fresh summary' }]
+    })
     await flush()
     expect(getUiState().info).toMatchObject({ ...source, model: 'refreshed' })
-    expect(ctx.transcript.setHistoryItems).toHaveBeenCalledWith(expect.arrayContaining([
-      expect.objectContaining({ role: 'assistant', text: 'fresh summary' })
-    ]))
+    expect(ctx.transcript.setHistoryItems).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ role: 'assistant', text: 'fresh summary' })])
+    )
   })
 
   it('reloads skills in the live gateway and refreshes the catalog', async () => {
@@ -982,20 +1023,23 @@ describe('createSlashHandler', () => {
     await vi.waitFor(() => expect(ctx.gateway.gw.request).toHaveBeenCalledWith('command.dispatch', expect.anything()))
   })
 
-  it('pages a long owner read from slash.exec like main\'s sidecar output', async () => {
+  it("pages a long owner read from slash.exec like main's sidecar output", async () => {
     // The shared owner answers a read as `{type: 'exec', output}` (gateway/session_commands.py);
     // main's sidecar sent bare `{output}`, paged when long. /context and /cron must still open
     // the pager, not collapse to a one-line system row.
     patchUiState({ sid: 'sid-abc' })
-    const output = ['Conversation: 4 messages', '  user: 2, assistant: 2, tool: 0, system: 0', 'Model: fake-model'].join('\n')
+
+    const output = [
+      'Conversation: 4 messages',
+      '  user: 2, assistant: 2, tool: 0, system: 0',
+      'Model: fake-model'
+    ].join('\n')
 
     const ctx = buildCtx({
       gateway: {
         gw: {
           getLogTail: vi.fn(() => ''),
-          request: vi.fn((method: string) =>
-            Promise.resolve(method === 'slash.exec' ? { output, type: 'exec' } : {})
-          )
+          request: vi.fn((method: string) => Promise.resolve(method === 'slash.exec' ? { output, type: 'exec' } : {}))
         },
         rpc: vi.fn(() => Promise.resolve({}))
       }

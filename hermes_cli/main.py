@@ -3027,18 +3027,11 @@ def _run_oneshot_from_args(args) -> None:
 
 
 def _light_chat_parser():
-    """Top-level + chat parser only (no subcommand tree); chat dispatches to cmd_chat."""
-    from hermes_cli._parser import build_top_level_parser
-
-    parser, _subparsers, chat_parser = build_top_level_parser()
-    chat_parser.set_defaults(func=cmd_chat)
-    return parser
+    from hermes_cli._parser import light_chat_parser
+    return light_chat_parser(cmd_chat)
 
 
-def _promote_top_level_resume(args) -> None:
-    """Top-level --resume/--continue with no subcommand is a chat shortcut."""
-    if (args.resume or args.continue_last) and args.command is None:
-        args.command = "chat"
+from hermes_cli._parser import promote_top_level_resume as _promote_top_level_resume
 
 
 def _try_fast_serve_launch() -> bool:
@@ -3440,6 +3433,10 @@ def _default_to_chat(args) -> None:
 
 def main():
     """Main entry point for hermes CLI."""
+    from hermes_cli.tui_capabilities import print_requested_capabilities
+
+    if print_requested_capabilities(sys.argv[1:]):
+        return
     _set_process_title()
     _warn_if_unsupervised_pid1()
     _advertise_agent_env()

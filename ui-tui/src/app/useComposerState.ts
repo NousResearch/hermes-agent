@@ -121,11 +121,13 @@ export function looksLikeDroppedPath(text: string): boolean {
 export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions): UseComposerStateResult {
   const [input, setInputState] = useState('')
   const [inputBuf, setInputBufState] = useState<string[]>([])
+  const inputBufRef = useRef<string[]>([])
   const composerRevision = useRef(0)
 
   const setInputBuf = useCallback<StateSetter<string[]>>(next => {
     composerRevision.current++
-    setInputBufState(next)
+    inputBufRef.current = typeof next === 'function' ? next(inputBufRef.current) : next
+    setInputBufState(inputBufRef.current)
   }, [])
 
   const [tokens, setTokens] = useState<ComposerToken[]>([])
@@ -603,6 +605,8 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
   const refs = useMemo(
     () => ({
+      inputRef,
+      inputBufRef,
       historyDraftRef,
       historyRef,
       queueEditRef,

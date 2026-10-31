@@ -26,6 +26,19 @@ _VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({
 _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
 
 
+def light_chat_parser(handler):
+    """Build the lightweight chat parser without loading the full command tree."""
+    parser, _subparsers, chat_parser = build_top_level_parser()
+    chat_parser.set_defaults(func=handler)
+    return parser
+
+
+def promote_top_level_resume(args) -> None:
+    """Top-level resume flags with no subcommand select chat."""
+    if (args.resume or args.continue_last) and args.command is None:
+        args.command = "chat"
+
+
 def _cfg_path() -> str:
     """``~/.hermes/config.yaml`` spelled for the active profile, for help text.
 
@@ -145,6 +158,10 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
     """Top-level (pre-subcommand) flags; ``-m/--provider`` pair with ``-z`` without ``chat``."""
     add, inherited = parser.add_argument, _inherited_flag
     add("--version", "-V", action="store_true", help="Show version and exit")
+    from hermes_cli.tui_capabilities import capabilities_json
+
+    add("--tui-capabilities", action="version", version=capabilities_json(),
+        help="Print read-only TUI feature capabilities as JSON and exit")
     add("-z", "--oneshot", metavar="PROMPT", default=None, help=(
         "One-shot mode: send a single prompt and print ONLY the final "
         "response text to stdout. No banner, no spinner, no tool "

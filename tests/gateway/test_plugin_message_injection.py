@@ -128,6 +128,7 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
             context.inject_message(
                 "/approve always",
                 session_key=entry.session_key,
+                quiet=True,
             )
             is True
         )
@@ -142,6 +143,7 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
         assert pending_user_event.allow_gateway_control is True
         assert queued.text == "/approve always"
         assert queued.allow_gateway_control is False
+        assert queued._quiet_plugin_injection is True
         assert queued.metadata["gateway_session_id"] == entry.session_id
         adapter._message_handler.assert_not_awaited()
 
@@ -181,6 +183,24 @@ async def test_dispatch_uses_stored_origin_and_adapter_message_path():
         "gateway_session_id": entry.session_id,
         "gateway_session_strict": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_quiet_dispatch_marks_the_event_for_quiet_display():
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    entry = _entry()
+    runner = _runner(entry, adapter)
+
+    accepted = await runner._dispatch_plugin_message_injection(
+        session_key=entry.session_key,
+        content="check the deployment",
+        plugin_id="notify-plugin",
+        quiet=True,
+    )
+
+    assert accepted is True
+    event = adapter.handle_message.await_args.args[0]
+    assert event._quiet_plugin_injection is True
 
 
 @pytest.mark.asyncio

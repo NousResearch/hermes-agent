@@ -99,7 +99,7 @@ def resolve(runner, *, plugin_home, calling_session_key: str, plugin_id: str):
     return None
 
 
-async def admit(runner, authority, live, *, content: str, plugin_id: str) -> bool:
+async def admit(runner, authority, live, *, content: str, plugin_id: str, quiet: bool = False) -> bool:
     """Commit the text to *live*'s durable FIFO through the keyed path's producer admission, under the
     plugin's profile (whose authority resolved it)."""
     from gateway.session_authorities import active_authority
@@ -117,4 +117,4 @@ async def admit(runner, authority, live, *, content: str, plugin_id: str) -> boo
             return False
         return bool(await runner._admit_plugin_injection(
             runner._adapter_for_source(live.source), live.source, session_key=live.route,
-            session_id=entry.session_id, content=content, plugin_id=plugin_id))
+            session_id=entry.session_id, content=content, plugin_id=plugin_id, quiet=quiet))

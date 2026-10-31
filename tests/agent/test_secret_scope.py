@@ -186,11 +186,9 @@ class TestRoutedForeignHomeScope:
             # The reader adapters actually call takes the same fail-closed path.
             assert get_scoped_secret("OPENAI_API_KEY") is None
 
-    def test_worker_profile_scope_bind_home_false_e2e(self, monkeypatch, tmp_path):
-        """The kanban spawn-env build binds the assignee's secret scope with
-        ``bind_home=False`` — no home override, because the passthrough POLICY
-        belongs to the dispatcher. The profile_home stamp must still make scoped
-        misses fail closed, or the dispatcher's env leaks into B's worker env."""
+    def test_worker_profile_scope_fails_closed_on_a_scoped_miss_e2e(self, monkeypatch, tmp_path):
+        """The kanban spawn-env build binds the assignee's whole scope. The profile_home stamp
+        must make scoped misses fail closed, or the dispatcher's env leaks into B's worker env."""
         from hermes_cli.kanban_db_dispatch import _worker_profile_scope
 
         foreign = tmp_path / "profiles" / "assignee"
@@ -198,7 +196,7 @@ class TestRoutedForeignHomeScope:
         (foreign / ".env").write_text("ASSIGNEE_KEY=from-assignee\n", encoding="utf-8")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-dispatcher")
 
-        with _worker_profile_scope(str(foreign), bind_home=False):
+        with _worker_profile_scope(str(foreign)):
             assert ss.serves_routed_profile() is True
             assert ss.get_secret("OPENAI_API_KEY") is None
             assert ss.get_secret("ASSIGNEE_KEY") == "from-assignee"
@@ -238,7 +236,7 @@ class TestScopeSetupRecovery:
 
         monkeypatch.setattr("agent.secret_scope.build_profile_secret_scope", boom)
         with pytest.raises(RuntimeError):
-            with _worker_profile_scope(str(foreign), bind_home=True):
+            with _worker_profile_scope(str(foreign)):
                 pass
         assert get_hermes_home_override() is None
         assert ss.current_secret_scope() is None

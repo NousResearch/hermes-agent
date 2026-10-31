@@ -565,6 +565,19 @@ def _profile_skill_command(session: dict, base: str) -> bool | None:
 _SKILL_WORKER_REFUSED = "skill command refused before process: /"
 
 
+def _is_mobile_slash_caller(session: dict | None) -> bool:
+    """True when slash.exec comes from adrianlaborda/hermes-mobile (CF-48)."""
+    if isinstance(session, dict):
+        if str(session.get("source") or "").strip().lower() == "mobile":
+            return True
+        if str(session.get("client_surface") or "").strip().lower() == "mobile":
+            return True
+    ws = getattr(current_transport(), "_ws", None) or getattr(current_transport(), "ws", None)
+    headers = getattr(ws, "headers", None) or {}
+    ua = (headers.get("user-agent") or "").strip().lower()
+    return ua.startswith("okhttp/")
+
+
 def _skill_dispatch_or_refuse(rid, sid, base, arg):
     """Return command.dispatch's directive, or a hard error. Never an ok banner."""
     dispatched = _methods["command.dispatch"](rid, {"name": base, "arg": arg, "session_id": sid})
@@ -1054,6 +1067,9 @@ def _(rid, params: dict) -> dict:
     # (or a hard error) here, or the loading banner swallows the prompt.
     skill_hit = _profile_skill_command(session, base)
     if skill_hit is True:
+        if _is_mobile_slash_caller(session):
+            normalized_cmd = cmd if cmd.startswith("/") else f"/{cmd}"
+            return _ok(rid, {"type": "send", "message": normalized_cmd, "notice": f"⚡ Skill: /{base}"})
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
     if skill_hit is None:
         dispatched = _skill_dispatch_or_refuse(rid, sid, base, arg)

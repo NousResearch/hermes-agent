@@ -871,10 +871,17 @@ def _(rid, params: dict) -> dict:
         voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
     session["voice_turn"] = params.get("voice_turn") is True
     has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
-    if has_truncation and isinstance(text, str):
+    is_mobile_turn = (
+        session.get("client_surface") == "mobile"
+        or str(session.get("source") or "").strip().lower() == "mobile"
+    )
+    if (has_truncation or is_mobile_turn) and isinstance(text, str):
         # A rewind replays what the transcript shows: re-expand a skill invocation or
-        # `/work fix it` sends nine literal chars.
-        text = _expand_skill_invocation_for_replay(text, str(session.get("session_key") or ""))
+        # `/work fix it` sends nine literal chars. Mobile slash.exec also returns `{type:"send",
+        # message:"/<skill> ..."}` so the mobile bubble shows `/<skill>` while the model receives
+        # the expanded skill scaffold (CF-48).
+        with _session_home_scope(session):
+            text = _expand_skill_invocation_for_replay(text, str(session.get("session_key") or ""))
     turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
     if internal_hosted_submit and turn_isolation:
         return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")

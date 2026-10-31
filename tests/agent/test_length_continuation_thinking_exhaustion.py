@@ -320,3 +320,43 @@ class TestReasoningOffReachesTheWire:
         calls = loop_agent.client.chat.completions.create.call_args_list
         first = (calls[0].kwargs.get("extra_body") or {}).get("reasoning")
         assert first == {"enabled": True, "effort": "high"}, first
+
+
+class TestExhaustionNoticeInDeliveredText:
+    """Regression for #122837: when every continuation attempt truncates, the
+    stitched partial alone reads like a finished answer cut mid-sentence, and no
+    delivery surface (gateway, CLI, TUI) inspects ``partial`` for non-empty
+    responses. The truncation notice must ride the delivered final_response
+    itself, like the _WINDOW_FILLED sibling branch."""
+
+    def test_exhausted_continuations_append_notice_to_partial(self, loop_agent):
+        loop_agent.client.chat.completions.create.side_effect = [
+            _truncated_text_response(f"part {i} of the answer. ")
+            for i in range(1, 6)  # initial + 4 continuation attempts, all cut
+        ]
+        result = _run(loop_agent, "write me a very long report")
+
+        assert result["completed"] is False
+        assert result["partial"] is True
+        final = result["final_response"] or ""
+        assert "part 1 of the answer." in final, (
+            "The stitched partial text must still be delivered."
+        )
+        assert "output-token limit" in final, (
+            "A partial that exhausted its continuations must carry a truncation "
+            "notice in the delivered text — users see a mid-sentence stop with no "
+            "indication it was cut off."
+        )
+
+    def test_exhausted_empty_ceiling_keeps_actionable_sentinel(self, loop_agent):
+        """All four attempts thinking-only (no visible text): unchanged — the
+        _CEILING_NO_TEXT actionable message is the whole reply."""
+        loop_agent.client.chat.completions.create.side_effect = [
+            _thinking_only_length_response() for _ in range(4)
+        ]
+        result = _run(loop_agent, "write me a long report")
+
+        assert result["partial"] is True
+        final = result["final_response"] or ""
+        assert final.startswith("⚠️")
+        assert "No visible answer" in final

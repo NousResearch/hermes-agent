@@ -218,11 +218,11 @@ _REGISTRY_ROWS: tuple[Any, ...] = (
     ("nvidia", "NVIDIA NIM", "https://integrate.api.nvidia.com/v1", ("NVIDIA_API_KEY",), "NVIDIA_BASE_URL"),
     ("ai-gateway", "Vercel AI Gateway", "https://ai-gateway.vercel.sh/v1", ("AI_GATEWAY_API_KEY",),
      "AI_GATEWAY_BASE_URL"),
-    ("opencode-zen", "OpenCode Zen", "https://opencode.ai/zen/v1", ("OPENCODE_ZEN_API_KEY",),
+    ("opencode-zen", "OpenCode Zen", "https://opencode.ai/inference/openai/v1", ("OPENCODE_ZEN_API_KEY",),
      "OPENCODE_ZEN_BASE_URL"),
-    # OpenCode Go mixes API surfaces by model (GLM/Kimi: OpenAI chat under /v1; MiniMax and
-    # Qwen 3.7: Anthropic Messages under /v1/messages). Keep the base at /v1; api_mode is per-model.
-    ("opencode-go", "OpenCode Go", "https://opencode.ai/zen/go/v1", ("OPENCODE_GO_API_KEY",),
+    # OpenCode Go mixes API surfaces by model (GLM/Kimi: OpenAI chat; MiniMax and Qwen 3.7: Anthropic
+    # Messages). api_mode is per-model and normalize_opencode_base_url swaps in /inference/go/anthropic.
+    ("opencode-go", "OpenCode Go", "https://opencode.ai/inference/go/openai/v1", ("OPENCODE_GO_API_KEY",),
      "OPENCODE_GO_BASE_URL"),
     ("kilocode", "Kilo Code", "https://api.kilo.ai/api/gateway", ("KILOCODE_API_KEY",), "KILOCODE_BASE_URL"),
     ("huggingface", "Hugging Face", "https://router.huggingface.co/v1", ("HF_TOKEN",), "HF_BASE_URL"),

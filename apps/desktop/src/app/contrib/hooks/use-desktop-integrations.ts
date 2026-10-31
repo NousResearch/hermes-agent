@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react'
 import { resumeAccountConnect } from '@/app/capabilities/connectors/data/deep-link'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
-import { openSession } from '@/app/open-session'
+import { openSession, restoreSelectionInPlace } from '@/app/open-session'
 import { commandFocusedTerminal, wordEraseFocusedTerminal } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { openConnectionDoneLink } from '@/components/assistant-ui/connector-tool'
 import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
@@ -209,6 +209,25 @@ export function useDesktopIntegrations({
           }
         }
 
+        // Bring back the remembered destination. A chat that is already open
+        // as a tab (main sat on a fresh draft at quit) is fronted where it is,
+        // so no tab changes zone; anything else routes main to `path`. The
+        // user may have started typing on the fresh chat while the backend was
+        // still coming up; the composer moves that draft onto the restored
+        // session when its scope swaps (#114122).
+        const restoreRemembered = (id: null | string, path: string) => {
+          if (id && restoreSelectionInPlace(id)) {
+            return
+          }
+
+          if (id) {
+            repairOwnerHintsForRestore(id)
+          }
+
+          announceNewSessionDraftKey(id && resolveComposerSessionKey(id, sessions))
+          navigate(path, { replace: true })
+        }
+
         const restorableRouteSession = routeSession && rowFor(routeSession)?.source !== 'subagent' ? routeSession : null
 
         if (
@@ -217,15 +236,7 @@ export function useDesktopIntegrations({
           !isOverlayView(appViewForPath(route)) &&
           (!routeSession || (restorableRouteSession && sessionBelongsToProfile(sessions, routeSession, activeProfile)))
         ) {
-          // The user may have started typing on the fresh chat while the
-          // backend was still coming up; the composer moves that draft onto
-          // the restored session when its scope swaps (#114122).
-          if (routeSession) {
-            repairOwnerHintsForRestore(routeSession)
-          }
-
-          announceNewSessionDraftKey(routeSession && resolveComposerSessionKey(routeSession, sessions))
-          navigate(route, { replace: true })
+          restoreRemembered(routeSession, route)
 
           return
         }
@@ -240,9 +251,7 @@ export function useDesktopIntegrations({
           // Fast path: a listed, non-delegate row restores directly, exactly
           // as before — no by-id fetch on the common cold start.
           if (rowFor(last)?.source !== 'subagent' && sessionBelongsToProfile(sessions, last, activeProfile)) {
-            repairOwnerHintsForRestore(last)
-            announceNewSessionDraftKey(resolveComposerSessionKey(last, sessions))
-            navigate(sessionRoute(last), { replace: true })
+            restoreRemembered(last, sessionRoute(last))
 
             return
           }
@@ -260,10 +269,8 @@ export function useDesktopIntegrations({
                 return
               }
 
-              repairOwnerHintsForRestore(remembered)
-              announceNewSessionDraftKey(resolveComposerSessionKey(remembered, sessions))
               setRememberedSessionId(remembered, activeProfile)
-              navigate(sessionRoute(remembered), { replace: true })
+              restoreRemembered(remembered, sessionRoute(remembered))
             })
             .catch(() => undefined)
 

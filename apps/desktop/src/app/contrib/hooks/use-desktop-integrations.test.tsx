@@ -2,6 +2,8 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
+import { findGroup } from '@/components/pane-shell/tree/model'
+import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { adoptNewSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
@@ -16,7 +18,7 @@ import {
   getSessionOwnerHint,
   setSessionOwnerHint
 } from '@/store/session'
-import { dropSessionState, publishSessionState } from '@/store/session-states'
+import { $sessionTiles, dropSessionState, publishSessionState } from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -239,6 +241,89 @@ describe('useDesktopIntegrations', () => {
       })
 
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+    })
+  })
+
+  // The last-selected chat can already be an open tab: main was on a fresh
+  // draft at quit (remembered route `/`, remembered id = the chat), and that
+  // chat sat in another zone. Routing it into main made resumeSession close
+  // its tab, so the tab jumped zones on every restart. Restore fronts it where
+  // it is instead, and leaves every other tab alone.
+  describe('remembered chat already open as a tab', () => {
+    const tilePane = (id: string) => `session-tile:${id}`
+
+    beforeEach(() => {
+      $layoutTree.set({
+        type: 'split',
+        id: 'root',
+        orientation: 'row',
+        children: [
+          {
+            type: 'group',
+            id: 'g-main',
+            panes: ['workspace', tilePane('gaia'), tilePane('signal')],
+            active: 'workspace'
+          },
+          {
+            type: 'group',
+            id: 'g-right',
+            panes: [tilePane('alibaba'), tilePane('remembered-session'), tilePane('insta')],
+            active: tilePane('insta')
+          }
+        ],
+        weights: [1, 1]
+      })
+      $sessionTiles.set(
+        ['gaia', 'signal', 'alibaba', 'remembered-session', 'insta'].map(storedSessionId => ({ storedSessionId }))
+      )
+    })
+
+    afterEach(() => {
+      $sessionTiles.set([])
+      $layoutTree.set(null)
+      noteActiveTreeGroup(null)
+    })
+
+    const expectLayoutUnchanged = () => {
+      const tree = $layoutTree.get()!
+      expect(findGroup(tree, 'g-main')?.panes).toEqual(['workspace', tilePane('gaia'), tilePane('signal')])
+      expect(findGroup(tree, 'g-right')?.panes).toEqual([
+        tilePane('alibaba'),
+        tilePane('remembered-session'),
+        tilePane('insta')
+      ])
+      expect($sessionTiles.get().map(tile => tile.storedSessionId)).toContain('remembered-session')
+    }
+
+    it('fronts the tab in its own zone instead of loading it into main (remembered id)', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/')
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+
+      render({ profileReady: true, sessions: [session({ id: 'remembered-session', profile: 'default' })] })
+
+      expect(navigate).not.toHaveBeenCalled()
+      expectLayoutUnchanged()
+      expect(findGroup($layoutTree.get()!, 'g-right')?.active).toBe(tilePane('remembered-session'))
+      expect(findGroup($layoutTree.get()!, 'g-main')?.active).toBe('workspace')
+    })
+
+    it('fronts the tab in its own zone instead of loading it into main (remembered route)', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
+
+      render({ profileReady: true, sessions: [session({ id: 'remembered-session', profile: 'default' })] })
+
+      expect(navigate).not.toHaveBeenCalled()
+      expectLayoutUnchanged()
+      expect(findGroup($layoutTree.get()!, 'g-right')?.active).toBe(tilePane('remembered-session'))
+    })
+
+    it('still loads a remembered chat that is not open anywhere into main', () => {
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'elsewhere')
+
+      render({ profileReady: true, sessions: [session({ id: 'elsewhere', profile: 'default' })] })
+
+      expect(navigate).toHaveBeenCalledWith('/elsewhere', { replace: true })
+      expectLayoutUnchanged()
     })
   })
 

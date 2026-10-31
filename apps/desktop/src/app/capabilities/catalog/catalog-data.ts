@@ -1,12 +1,25 @@
 import { skillCatalogInstallIdentifier } from '@hermes/shared'
+import { useStore } from '@nanostores/react'
 import { queryOptions, useQuery } from '@tanstack/react-query'
 
 import { CATALOG_ORIGIN } from '@/lib/plugin-catalog'
 import { queryClient } from '@/lib/query-client'
 
 import { curatedFeaturedRank, curationOwnsArtwork, officialCatalogArtwork } from './catalog-curation'
+import { $skillsCommunityFeed } from './store'
 
 export type CatalogKind = 'skills' | 'plugins'
+
+/** Published snapshot files under CATALOG_BASE. Skills default to the small
+ * first-party snapshot (`skills-official.json`); the full community feed is a
+ * second, explicit fetch. */
+export type CatalogFeed = 'skills' | 'skills-official' | 'plugins'
+
+/** Snapshot a catalog request targets. `community` asks for the full community
+ * feed; the default skills request never downloads it. */
+export function catalogFeed(kind: CatalogKind, community = false): CatalogFeed {
+  return kind === 'skills' && !community ? 'skills-official' : kind
+}
 
 export interface CatalogEntry {
   id: string
@@ -202,7 +215,7 @@ export function parseCatalog(kind: CatalogKind, data: unknown): CatalogEntry[] {
   return [...entries.values()]
 }
 
-export async function fetchCatalog(kind: CatalogKind): Promise<CatalogEntry[]> {
+export async function fetchCatalog(kind: CatalogKind, community = false): Promise<CatalogEntry[]> {
   // Bound inactivity, not total transfer time: a large skills snapshot can
   // take minutes on a healthy slow connection. Headers and each body chunk
   // get the same deadline; an actually stalled download still terminates.
@@ -218,7 +231,7 @@ export async function fetchCatalog(kind: CatalogKind): Promise<CatalogEntry[]> {
 
   try {
     // Same published snapshots as the docs galleries; no per-entry fan-out.
-    const response = await fetch(`${CATALOG_BASE}/${kind}.json`, {
+    const response = await fetch(`${CATALOG_BASE}/${catalogFeed(kind, community)}.json`, {
       credentials: 'omit',
       signal: controller.signal
     })
@@ -271,13 +284,13 @@ export async function fetchCatalog(kind: CatalogKind): Promise<CatalogEntry[]> {
   }
 }
 
-const catalogQuery = (kind: CatalogKind) =>
+const catalogQuery = (kind: CatalogKind, community = false) =>
   queryOptions({
-    queryKey: ['public-catalog', kind],
-    queryFn: () => fetchCatalog(kind),
+    queryKey: ['public-catalog', catalogFeed(kind, community)],
+    queryFn: () => fetchCatalog(kind, community),
     staleTime: 30 * 60_000,
-    // The skills snapshot parses to ~100k rows; release it once the page has
-    // been left long enough that a revisit is a fresh browse anyway.
+    // The community skills snapshot parses to ~100k rows; release it once the
+    // page has been left long enough that a revisit is a fresh browse anyway.
     gcTime: 30 * 60_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -287,8 +300,13 @@ const catalogQuery = (kind: CatalogKind) =>
   })
 
 export function useCatalog(kind: CatalogKind) {
+  // Skills: the community registries feed loads only after the user opts in
+  // ($skillsCommunityFeed), so the default request stays the small
+  // first-party snapshot. Plugins have a single feed; the flag is irrelevant.
+  const community = useStore($skillsCommunityFeed)
+
   return useQuery({
-    ...catalogQuery(kind),
+    ...catalogQuery(kind, kind === 'skills' && community),
     // A failed catalog stays parked across remounts (tab switches) until the
     // user explicitly chooses Try again.
     enabled: query => query.state.status !== 'error'

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { fetchCatalog, parseCatalog } from './catalog-data'
+import { catalogFeed, fetchCatalog, parseCatalog } from './catalog-data'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -117,11 +117,30 @@ describe('public catalog data', () => {
     const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => rows })
     vi.stubGlobal('fetch', fetch)
 
-    expect(await fetchCatalog(kind)).toEqual(parseCatalog(kind, rows))
+    expect(await fetchCatalog(kind, true)).toEqual(parseCatalog(kind, rows))
     expect(fetch).toHaveBeenCalledExactlyOnceWith(
       `https://nousresearch.github.io/hermes-agent/docs/api/${kind}.json`,
       expect.objectContaining({ credentials: 'omit', signal: expect.any(AbortSignal) })
     )
+  })
+
+  it('targets the first-party snapshot for skills by default — never the community feed', async () => {
+    const rows = [{ name: 'weather', identifier: 'official/weather', source: 'optional' }]
+    const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => rows })
+    vi.stubGlobal('fetch', fetch)
+
+    // The default feed must differ from the community feed, and the request
+    // must name it: the ~60 MB community snapshot is an explicit opt-in.
+    expect(catalogFeed('skills')).not.toBe(catalogFeed('skills', true))
+    await fetchCatalog('skills')
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(
+      `https://nousresearch.github.io/hermes-agent/docs/api/${catalogFeed('skills')}.json`,
+      expect.objectContaining({ credentials: 'omit' })
+    )
+  })
+
+  it('keeps the community flag out of the plugins feed', () => {
+    expect(catalogFeed('plugins')).toBe(catalogFeed('plugins', true))
   })
 
   it('only renders plugin images hosted on GitHub so the browser never fans out to third-party hosts', () => {

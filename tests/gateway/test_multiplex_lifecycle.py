@@ -63,6 +63,59 @@ def test_cron_tick_homes_include_active_named_host(tmp_path, monkeypatch):
     assert cron_by_name["host"] == default_home / "profiles" / "host"
 
 
+def test_cron_tick_homes_for_standalone_gateway_only_include_its_home(tmp_path, monkeypatch):
+    """A standalone gateway must not tick stores owned by the host gateway."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    default_home = tmp_path / ".hermes"
+    for name in ("solo", "worker"):
+        (default_home / "profiles" / name).mkdir(parents=True)
+        (default_home / "profiles" / name / "config.yaml").write_text("{}\n")
+    solo_home = default_home / "profiles" / "solo"
+    (solo_home / "config.yaml").write_text(
+        "gateway:\n  standalone: true\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(solo_home))
+
+    import gateway.run as gateway_run
+
+    homes = gateway_run._cron_tick_profile_homes(GatewayConfig(multiplex_profiles=True))
+
+    assert homes == [("solo", solo_home)]
+
+
+@pytest.mark.parametrize("standalone", [True, False], ids=["standalone", "host"])
+def test_cron_tick_homes_for_outside_root_launch(tmp_path, monkeypatch, standalone):
+    """An outside-root launch and profiles/custom are distinct stores with the same name."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    default_home = tmp_path / ".hermes"
+    for name in ("custom", "worker"):
+        home = default_home / "profiles" / name
+        home.mkdir(parents=True)
+        (home / "config.yaml").write_text("gateway:\n  standalone: false\n", encoding="utf-8")
+    launch_home = default_home / "outside-profiles"
+    launch_home.mkdir()
+    (launch_home / "config.yaml").write_text(
+        f"gateway:\n  standalone: {str(standalone).lower()}\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+
+    import gateway.run as gateway_run
+
+    cfg = GatewayConfig(multiplex_profiles=True)
+    served = gateway_run._multiplex_profile_homes(cfg)
+    assert served == [
+        ("default", default_home),
+        ("custom", default_home / "profiles" / "custom"),
+        ("worker", default_home / "profiles" / "worker"),
+    ]
+    homes = gateway_run._cron_tick_profile_homes(cfg)
+
+    if standalone:
+        assert homes == [("custom", launch_home)]
+    else:
+        assert homes == served + [("custom", launch_home)]
+
+
 class TestNamedProfileMultiplexerGuard:
     """_guard_named_profile_under_multiplexer is inert unless all conditions hold."""
 

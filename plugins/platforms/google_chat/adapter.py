@@ -229,6 +229,26 @@ def _is_google_owned_host(url: str) -> bool:
     return any(host == h or host.endswith("." + h) for h in _TRUSTED_ATTACHMENT_HOSTS)
 
 
+_DRIVE_FILE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
+
+
+def _drive_picker_note(attachment: dict[str, Any]) -> str:
+    """Text stand-in for a Drive-picker share the bot cannot download.
+
+    Such an attachment carries ``driveDataRef.driveFileId`` but no ``attachmentDataRef``; fetching it
+    needs the sender's Drive scope, so ``_download_attachment`` skips it. Dropping it silently left the
+    agent unaware a file was shared at all; the link lets it open the file with whatever Drive access
+    it has, or ask for the file to be shared or uploaded directly. Empty when there is no usable id.
+    """
+    file_id = str((attachment.get("driveDataRef") or {}).get("driveFileId") or "")
+    if not _DRIVE_FILE_ID_RE.match(file_id):
+        return ""
+    # contentName is sender-controlled: keep it on one line and out of the bracketed marker.
+    label = re.sub(r"[\[\]\r\n\t]+", " ", str(attachment.get("contentName") or "")).strip()[:200] or "file"
+    return (f"[Shared from Google Drive (not downloaded): {label} — "
+            f"https://drive.google.com/file/d/{file_id}/view]")
+
+
 def _redact_sensitive(text: str) -> str:
     """Redact Pub/Sub resource paths and SA emails from user-facing error strings."""
     if not text:
@@ -959,6 +979,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 logger.exception("[GoogleChat] attachment download failed")
                 continue
             if not local_path:
+                drive_note = _drive_picker_note(att)
+                if drive_note:
+                    text = f"{text}\n{drive_note}" if text else drive_note
                 continue
             media_urls.append(local_path)
             media_types.append(mime or "application/octet-stream")

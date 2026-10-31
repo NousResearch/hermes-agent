@@ -1,4 +1,5 @@
 """API run controls resolve durable claims, never adapter agent/task ownership."""
+import asyncio
 from dataclasses import asdict
 
 from gateway.session_contract import Principal, SessionRef
@@ -65,11 +66,15 @@ def run_admission(adapter, run_id):
     return (authority, _row(rows[0])) if rows else None
 
 
-def run_projection(adapter, run_id):
-    owned = run_admission(adapter, run_id)
+def run_projection(adapter, run_id, *, owned=None):
+    owned = owned or run_admission(adapter, run_id)
     if owned is None:
         return None
     authority, row = owned
+    from hermes_state_runtime import get_session_admission
+    row = get_session_admission(authority.db, admission_id=row['admission_id'])
+    if row is None:
+        return None
     # ``unknown`` is not terminal: later turns wait for POST /v1/runs/{id}/resolve-unknown, and
     # ``interrupted`` is in TERMINAL_STATUSES, so a poller would stop at a paused head.
     status = {'queued': 'queued', 'started': 'running', 'unknown': 'unknown', 'terminal': row['outcome']}.get(row['status'])
@@ -135,11 +140,17 @@ async def respond_run(adapter, run_id, body, *, kind):
         await authority.detach(actor, snapshot.subscription_id)
 
 
-async def stop_run(adapter, run_id):
-    owned = run_admission(adapter, run_id)
+async def request_stop_run(adapter, run_id, *, owned=None):
+    """Stop one exact canonical admission -> ``(projection, stop_was_requested)``."""
+    owned = owned or run_admission(adapter, run_id)
     if owned is None:
         raise RuntimeStoreError('not_found')
     authority, row = owned
+    from hermes_state_runtime import get_session_admission
+    row = get_session_admission(authority.db, admission_id=row['admission_id'])
+    if row is None:
+        raise RuntimeStoreError('not_found')
+    admission_id = row['admission_id']
     ref = SessionRef(authority.profile_id, row['target_session_id'])
     actor = Principal('api', authority.profile_id,
                       frozenset({'session:submit', 'session:control'}), 'api-run:' + run_id)
@@ -151,20 +162,64 @@ async def stop_run(adapter, run_id):
             # executing now, so Stop that exact claim below instead of refusing a live run.
             if exc.reason != 'stale_generation':
                 raise
-            authority, row = run_admission(adapter, run_id)
+            row = get_session_admission(authority.db, admission_id=admission_id)
+            if row is None:
+                raise RuntimeStoreError('not_found') from exc
         else:
             adapter._stopping_run_ids.add(run_id)
             waiter = authority.waiters.pop(row['admission_id'], None)
             if waiter is not None and not waiter.done():
                 waiter.set_result(None)
-            return run_projection(adapter, run_id)
+            return run_projection(adapter, run_id, owned=(authority, row)), True
     if row['status'] == 'started':
-        await authority.interrupt(actor, ref, row['generation'])
+        try:
+            await authority.interrupt(actor, ref, row['generation'])
+        except RuntimeStoreError as exc:
+            if exc.reason != 'stale_generation':
+                raise
+            return run_projection(adapter, run_id, owned=(authority, row)), False
         adapter._stopping_run_ids.add(run_id)
-        return {'run_id': run_id, 'status': 'stopping', 'admission_id': row['admission_id']}
+        return {'run_id': run_id, 'status': 'stopping', 'admission_id': row['admission_id']}, True
     elif row['status'] == 'unknown':
         raise RuntimeStoreError('unknown_execution')
-    return run_projection(adapter, run_id)
+    return run_projection(adapter, run_id, owned=(authority, row)), False
+
+
+async def abandon_authority_agent_task(
+        adapter, run_id: str, admission_future, agent_ref, agent_task, reason: str) -> bool:
+    """Stop one canonical API admission, then detach its HTTP observer.
+
+    The admission future closes the commit/disconnect race: cancellation cannot turn a committed
+    row into an orphan that ``schedule_orphan`` runs after its client has already gone. Returns
+    whether this call actually requested cancellation or interruption.
+    """
+    from gateway.platforms.api_server import _abandon_agent_task
+    if admission_future is None:
+        interrupted = bool(agent_ref and agent_ref[0] is not None)
+        await _abandon_agent_task(agent_ref, agent_task, reason)
+        return interrupted
+    requested = False
+    try:
+        admitted = await asyncio.shield(admission_future)
+        if admitted is not None:
+            try:
+                _, requested = await request_stop_run(
+                    adapter, run_id, owned=(admitted[0], admitted[2]))
+            except RuntimeStoreError as exc:
+                # Completion/deletion can win after the admission signal. Its exact row is already
+                # terminal or gone; never redirect the stop to a newer session generation.
+                if exc.reason not in ('not_found', 'stale_generation'):
+                    raise
+    finally:
+        # Store failures must not retain the disconnected observer or its task callbacks.
+        await _abandon_agent_task(agent_ref, agent_task, reason)
+        adapter._stopping_run_ids.discard(run_id)
+    return requested
+
+
+async def stop_run(adapter, run_id):
+    projection, _ = await request_stop_run(adapter, run_id)
+    return projection
 
 
 async def resolve_unknown_run(adapter, run_id, body):

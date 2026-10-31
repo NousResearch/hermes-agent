@@ -2,6 +2,9 @@
 /venv/
 /venv.old/
 /venv.stale.runtime-*/
+# Per-connector venvs, created locally by each optional-mcps/*/server/README.md
+# setup step -- binary, platform-specific, never committed.
+optional-mcps/*/server/venv/
 /bin/
 /.hermes-runtime/
 /_pycache/

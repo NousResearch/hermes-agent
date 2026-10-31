@@ -1,0 +1,7 @@
+name: web-yandex
+version: 1.0.0
+description: "Yandex Cloud AI Studio web search. Requires YC_API_KEY and YC_FOLDER_ID — https://yandex.cloud/ru/docs/search-api/."
+author: dappvibe
+kind: backend
+provides_web_providers:
+  - yandex

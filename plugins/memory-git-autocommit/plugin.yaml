@@ -1,0 +1,3 @@
+name: memory-git-autocommit
+version: "1.0"
+description: Auto-commits ~/.hermes/memory (Skills + Context/Obsidian) to git after every write.

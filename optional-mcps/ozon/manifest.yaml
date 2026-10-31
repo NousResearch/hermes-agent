@@ -1,0 +1,70 @@
+# Local catalog entry (not Nous-reviewed — added for this installation only).
+# Wraps the Ozon Seller API (api-seller.ozon.ru) and Performance API
+# (api-performance.ozon.ru) as 10 grouped MCP tools (ozon_fbs, ozon_fbo,
+# ozon_fbp, ozon_carriage, ozon_returns, ozon_delivery, ozon_products,
+# ozon_finance, ozon_reviews, ozon_ads). Each tool takes an `action` string
+# parameter that selects one of 222 documented endpoints total (31 real,
+# 191 explicit not_implemented stubs -- see server/README.md). Grouping
+# keeps the admin's visible tool count low while every endpoint stays
+# reachable and documented in its group tool's docstring.
+# Business-logic guidance for which API/report to use lives separately in
+# the ozon-* Hermes skills (unchanged by this connector).
+manifest_version: 1
+
+name: ozon
+description: 'Ozon marketplace: products, prices, stocks, finance, ads, FBO/FBS.'
+source: https://docs.ozon.ru/api/seller
+
+# Local stdio server, source AND venv live in ./server/ (this repo) so the
+# whole connector travels with the fork -- every profile/client using this
+# same hermes-agent checkout gets it, not just whichever one happened to
+# create a venv in some external directory. The venv itself is not
+# committed (binary, platform-specific) -- see server/README.md to create it.
+transport:
+  type: stdio
+  command: /home/max/.hermes/hermes-agent/optional-mcps/ozon/server/venv/bin/python3
+  args:
+    - /home/max/.hermes/hermes-agent/optional-mcps/ozon/server/ozon_mcp_server.py
+  env:
+    OZON_API_KEY: "${env:OZON_API_KEY}"
+    OZON_CLIENT_ID: "${env:OZON_CLIENT_ID}"
+    OZON_PERFORMANCE_CLIENT_ID: "${env:OZON_PERFORMANCE_CLIENT_ID}"
+    OZON_PERFORMANCE_CLIENT_SECRET: "${env:OZON_PERFORMANCE_CLIENT_SECRET}"
+
+# Not Hermes-managed OAuth: Seller API uses static Client-Id/Api-Key headers,
+# Performance API uses its own OAuth2 client_credentials handled inside the
+# server's tools. Declaring the four credentials here just gets them
+# prompted-for and saved to .env at install time.
+auth:
+  type: none
+  env:
+    - name: OZON_API_KEY
+      prompt: "Ozon Seller API key (Seller account -> Settings -> API keys)"
+    - name: OZON_CLIENT_ID
+      prompt: "Ozon Seller Client-Id (numeric, shown next to the API key)"
+    - name: OZON_PERFORMANCE_CLIENT_ID
+      prompt: "Ozon Performance (Реклама) client_id"
+    - name: OZON_PERFORMANCE_CLIENT_SECRET
+      prompt: "Ozon Performance (Реклама) client_secret"
+
+suggest:
+  keywords:
+    - ozon
+  hosts:
+    - ozon.ru
+
+post_install: |
+  Seller API keys: Seller personal account -> Settings -> API keys.
+  Performance API credentials: Реклама (Performance) cabinet -> API section.
+  All four are prompted above and saved to .env; no separate login step.
+
+  10 grouped tools (ozon_fbs, ozon_fbo, ozon_fbp, ozon_carriage, ozon_returns,
+  ozon_delivery, ozon_products, ozon_finance, ozon_reviews, ozon_ads). Each
+  takes action (str) + optional body/params (dict) -- the action parameter
+  selects the specific endpoint; every tool's docstring lists all its
+  actions. 222 actions total: 31 are real; the other 191 return
+  {"status": "not_implemented"} immediately -- their request schema isn't
+  confirmed yet, see server/README.md before trying to use one.
+
+  Business-scope guidance (which API/report fits a task) is in the ozon-*
+  Hermes skills; call this connector's tools directly once installed.

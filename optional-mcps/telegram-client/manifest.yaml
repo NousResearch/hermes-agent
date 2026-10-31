@@ -1,0 +1,63 @@
+# Local catalog entry (not Nous-reviewed — added for this installation only).
+# Wraps Telethon (a real MTProto client for a Telegram USER account, not the
+# Bot API) as MCP tools: dialogs, message read/search/send/edit/delete/pin,
+# group membership, media send/download. Full read+write access, meant for a
+# dedicated agent phone number, not the owner's personal account.
+manifest_version: 1
+
+name: telegram-client
+description: 'Telegram user account: read/send/edit/delete messages, dialogs.'
+source: https://docs.telethon.dev/
+
+# Local stdio server, source AND venv live in ./server/ (this repo) so the
+# whole connector travels with the fork -- every profile/client using this
+# same hermes-agent checkout gets it, not just whichever one happened to
+# create a venv in some external directory. The venv itself is not
+# committed (binary, platform-specific) -- see server/README.md to create it.
+transport:
+  type: stdio
+  command: /home/max/.hermes/hermes-agent/optional-mcps/telegram-client/server/venv/bin/python3
+  args:
+    - /home/max/.hermes/hermes-agent/optional-mcps/telegram-client/server/telegram_mcp_server.py
+  env:
+    TELEGRAM_PHONE: "${env:TELEGRAM_PHONE}"
+
+# Not Hermes-managed OAuth: Telegram's own login (phone -> code -> optional
+# 2FA password) is handled inside the server's own telegram_login_* tools.
+# API credentials default to the public Telegram Desktop app (api_id 2040)
+# baked into the server, so only the phone number is prompted for here --
+# the agent reads it back via TELEGRAM_PHONE and drives the rest of the
+# login (send code, submit code, submit 2FA password if asked) itself once
+# the human relays what Telegram sent them.
+auth:
+  type: none
+  env:
+    - name: TELEGRAM_PHONE
+      prompt: "Phone number for the dedicated Telegram agent account (e.g. +155****4567, not your personal one)"
+
+suggest:
+  keywords:
+    - telegram
+  hosts:
+    - telegram.org
+    - my.telegram.org
+
+post_install: |
+  This logs in as a real Telegram USER account (phone + code + optional 2FA
+  password), not a bot -- use a phone number dedicated to the agent, not
+  your personal one, since it gets full read/write access once logged in.
+
+  Uses the public Telegram Desktop app credentials by default (no need to
+  register your own app at my.telegram.org/apps); set TELEGRAM_API_ID /
+  TELEGRAM_API_HASH env vars yourself if you want to use your own app
+  instead.
+
+  On first use, ask the agent to call telegram_login_start() -- it already
+  knows the phone from TELEGRAM_PHONE above. Telegram sends a login code to
+  that phone's own Telegram app; relay that code to the agent and it calls
+  telegram_login_code(code). If the account has Two-Step Verification, it
+  then asks for the password and calls telegram_login_password(password).
+  telegram_auth_status() confirms the result.
+
+  Business-scope guidance belongs in a dedicated skill if one gets written;
+  none exists yet for this connector -- call its tools directly.

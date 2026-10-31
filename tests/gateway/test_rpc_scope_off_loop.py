@@ -139,6 +139,24 @@ async def test_ancillary_poll_of_a_session_retired_mid_read_is_not_found(monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind, params", [("subagents", {}), ("processes", {}), ("tail", {"subagent_id": "sa-1"})])
+async def test_real_projection_paused_while_the_session_is_retired_is_not_found(monkeypatch, kind, params):
+    """The real projection (no stubs past the lock) paused on the event lock while delete/prune retires the
+    session: ``retire_live_sessions`` pops ``authority.sessions`` on the loop without that lock, and the
+    projection's own re-index (``_require_current_route``) must answer not_found, not a dispatch crash."""
+    from hermes_state_runtime import RuntimeStoreError
+
+    holder = {}
+    session_ancillary, connection, ref, lock = _ancillary_fixture(
+        monkeypatch, on_enter=lambda: holder["authority"].sessions.pop("s1"))
+    holder["authority"] = connection.authority
+    with pytest.raises(RuntimeStoreError) as exc:
+        await session_ancillary.read(connection, ref, {"session_id": "s1", **params}, kind=kind)
+    assert str(exc.value) == "not_found"
+    assert lock.threads and threading.get_ident() not in lock.threads
+
+
+@pytest.mark.asyncio
 async def test_ancillary_projection_keyerror_of_a_live_session_still_raises(monkeypatch):
     """Only a retired session maps to not_found: a KeyError from a bug in a live session's projection
     still surfaces."""

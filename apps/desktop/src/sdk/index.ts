@@ -121,6 +121,7 @@ import {
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 import { spellcheckHost } from './spellcheck'
+import { togglePluginPane } from './toggle-pane'
 import { $viewport, type ViewportRect } from './viewport'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
@@ -1326,6 +1327,11 @@ export const host = {
 
     revealTreePane(id)
   },
+
+  /** Flip a plugin's own pane from a user action: on screen it minimizes (place
+   *  kept, plugin stays on), otherwise it is revealed. App panes are ignored.
+   *  Feature-detect on older desktops and fall back to `revealPane`. */
+  togglePane: togglePluginPane,
 
   /** HEAR the gateway stream (message deltas, session lifecycle, tool
    *  activity, …) by event type — `'*'` for everything. Returns a disposer.

@@ -873,6 +873,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 "pattern_keys": pattern_keys, "description": display_description,
                 "allow_permanent": not smart_denied,
                 "allow_session": not smart_denied,
+                "transport_eligible": spec.transport,
             }
             if smart_denied:
                 data["smart_denied"] = True

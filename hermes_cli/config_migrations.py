@@ -675,6 +675,33 @@ def _migrate_to_48(results: dict[str, Any], quiet: bool) -> None:
             )(results, quiet)
 
 
+#: The seeded pre-53 tts.gemini.model; Google shuts it down on 2026-11-17.
+LEGACY_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
+
+
+def _migrate_to_53(results: dict[str, Any], quiet: bool) -> None:
+    # 52 → 53: Google shuts down gemini-2.5-flash-preview-tts on 2026-11-17 (Gemini deprecations
+    # page; replacement gemini-3.8-flash-tts). The seeded copy of that old default is dropped so the
+    # file follows the new default. A persona_prompt_file means the user tuned this voice and 3.8
+    # reads that file as style, not as a prompt template, so that config only gets a warning.
+    config = read_raw_config()
+    gemini = _dict_at(_dict_at(config, "tts"), "gemini")
+    if gemini.get("model") != LEGACY_GEMINI_TTS_MODEL:
+        return
+    if str(gemini.get("persona_prompt_file") or "").strip():
+        results["warnings"].append(
+            f"tts.gemini.model {LEGACY_GEMINI_TTS_MODEL} shuts down on 2026-11-17. Your "
+            "persona_prompt_file is kept on it; switch to gemini-3.8-flash-tts after making the "
+            "file style-only (no {transcript} template).")
+        return
+    del gemini["model"]
+    _commit(
+        config, results, quiet,
+        f"tts.gemini.model unset (was {LEGACY_GEMINI_TTS_MODEL}, retired 2026-11-17)",
+        f"  ✓ tts.gemini.model: was the old default {LEGACY_GEMINI_TTS_MODEL}, which Google shuts "
+        "down on 2026-11-17; now follows the default (gemini-3.8-flash-tts)")
+
+
 #: Registry of (target_version, step), strictly ascending; simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
@@ -873,6 +900,8 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     # 51 -> 52: browser.backend + browser.extension_control dropped, AGENT_BROWSER_* .env settings ->
     # browser.* (see config_migrations_browser.migrate_to_52).
     (52, migrate_to_52),
+    # 52 → 53: the seeded Gemini TTS model retires 2026-11-17; follow the 3.8 default (see _migrate_to_53).
+    (53, _migrate_to_53),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

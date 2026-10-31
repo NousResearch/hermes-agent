@@ -1094,13 +1094,12 @@ DEFAULT_CONFIG = {
             "pcm_sample_rate": 24000,
         },
         "gemini": {
-            "model": "gemini-2.5-flash-preview-tts",
+            "model": "gemini-3.8-flash-tts",
             "voice": "Kore",
-            # Gemini 3.1: aux-model rewrite inserts [audio tags] into the TTS script only.
-            "audio_tags": False,
-            # Optional local text file with performance direction; may include a `{transcript}`
-            # placeholder, else the live transcript is appended.
+            "audio_tags": False,  # aux-model inserts audio tags (3.1: [tags], 3.8: <events>)
+            # Local direction file: 3.8 sends it as style; 2.5/3.1 use it as the prompt ({transcript}).
             "persona_prompt_file": "",
+            "style": "",  # Gemini 3.8 speech_metadata.style; overrides persona_prompt_file
         },
         "xai": {
             "voice_id": "eve",  # or a custom voice ID (docs.x.ai custom voices)
@@ -2708,7 +2707,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 52,  # Config schema version - bump this when adding new required fields
+    "_config_version": 53,  # Config schema version - bump this when adding new required fields
 }
 
 

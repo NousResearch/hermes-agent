@@ -1782,6 +1782,7 @@ DEFAULT_CONFIG = {
         "allow_lazy_installs": True,
     },
 
+    "send": {"mirror_delivery": True},  # False: `hermes send` skips the chat's session mirror (cf. cron)
     "cron": {
         "catch_up_missed": True,  # False skips recurring misses beyond the local grace window.
         # Let cron-spawned agents use the cronjob toolset (the "cron-librarian" pattern). Off by
@@ -2721,11 +2722,10 @@ from hermes_cli.config_defaults_env import OptionalEnvVars, _base_url, _env, _ms
 OPTIONAL_ENV_VARS = OptionalEnvVars({
     # ── Provider (handled in provider selection, not shown in checklists) ──
     "NOUS_BASE_URL": _base_url("Nous Portal"),
-    "HERMES_ANON_API_SECRET": _env(
+    "HERMES_ANON_API_SECRET": _prov(
         "Shared secret for the Nous free-tier sign-up endpoints while they are in their gated "
         "integration phase (not needed once the gate is removed)",
-        "Nous free-tier shared secret (leave empty unless given one)", password=True,
-        category="provider", advanced=True),
+        "Nous free-tier shared secret (leave empty unless given one)"),
     "OPENROUTER_API_KEY": _env("OpenRouter API key (for vision, web scraping helpers, and MoA)",
         "OpenRouter API key", url="https://openrouter.ai/keys", password=True, tools=["vision_analyze"],
         category="provider", advanced=True),

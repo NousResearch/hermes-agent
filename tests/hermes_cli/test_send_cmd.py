@@ -171,6 +171,21 @@ def test_whatsapp_mentions_ride_the_first_bridge_payload_only(whatsapp_bridge, t
     assert "does not support native mentions" in capsys.readouterr().err
     assert calls == []
 
+@pytest.mark.parametrize("mirror_delivery", [True, False])
+def test_send_mirror_delivery_controls_the_session_mirror(whatsapp_bridge, monkeypatch, mirror_delivery):
+    """The message reaches the bridge either way; ``send.mirror_delivery: false`` only skips the
+    append to the target chat's session transcript."""
+    mirrored = []
+    monkeypatch.setattr("tools.send_message_tool._mirror_sent_message", lambda *args: mirrored.append(args) or True)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly",
+                        lambda: {"send": {"mirror_delivery": mirror_delivery}})
+
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(_parse(["--to", "whatsapp:15550000001@s.whatsapp.net", "hello"]))
+    assert exc.value.code == 0
+    assert [(path, payload["message"]) for path, payload in whatsapp_bridge.calls] == [("send", "hello")]
+    assert len(mirrored) == (1 if mirror_delivery else 0)
+
 # ---------------------------------------------------------------------------
 # --list
 # ---------------------------------------------------------------------------

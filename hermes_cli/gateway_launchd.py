@@ -309,6 +309,7 @@ def _spawn_detached_gateway() -> bool:
                 _timestamped_stderr_gateway_command(log_dir / "gateway.error.log"),
                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.DEVNULL,
                 env=child_env,
+                # detached-spawn: ok — foreground-less gateway launch, a service meant to outlive the CLI
                 **windows_detach_popen_kwargs(),
             )
     except OSError:

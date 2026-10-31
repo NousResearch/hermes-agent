@@ -140,8 +140,13 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
     """``(chat text, failure_reason, retryable)`` for a model/credential resolution failure before the turn."""
     from agent.error_classifier import FailoverReason
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
     from hermes_state_runtime import RuntimeStoreError
     auth_permanent = FailoverReason.auth_permanent.value
+    if isinstance(exc, LocalRuntimeUnavailableError):
+        # The chosen model is configured; its local server is down. Not a credential verdict, so
+        # the client must not offer "Update API key" or sign-in: the sentence names the fix.
+        return f"⚠️ {exc}", exc.error_code, exc.retryable
     if isinstance(exc, RuntimeStoreError) and exc.reason == 'launch_credentials_unavailable':
         # The session's launch key is gone (a restart revoked a CLI --api-key, a route key changed):
         # the shared refusal copy names /new, never a resend.
@@ -1017,7 +1022,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             before = (getattr(agent, 'session_prompt_tokens', 0) or 0,
                       getattr(agent, 'session_completion_tokens', 0) or 0)
             with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
-                result = agent.run_conversation(api_message, **kwargs)
+                from gateway.response_filters import silence_allowed
+                # Where a bare marker would become the "needed a reply" warning, the agent ends a
+                # marker that follows a written reply on that reply, before transform/persistence.
+                agent._silence_marker_needs_reply = not silence_allowed(
+                    ctx.persist_user_display_kind, ctx.reply_expected)
+                try:
+                    result = agent.run_conversation(api_message, **kwargs)
+                finally:
+                    agent._silence_marker_needs_reply = False
             if captured is not None:
                 incoming = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
                 outgoing = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])

@@ -1081,10 +1081,16 @@ native Desktop; messages the guest posts to `parent` arrive with
 reach the guest, and `onLoad` fires when the guest document has loaded (the
 shell announces that with one `{type: 'hermes-guest-loaded'}` message from the
 same window, so filter guest messages by type). Post
-to `parent`, not `top`: the shell sits between them.
+to `parent`, not `top`: the shell sits between them. Changing `sandbox` after
+mount gives the Webapp a fresh frame (a new `ref.current`, the guest restarts
+with the new tokens, `onLoad` fires again), so read `ref.current` when you need
+the frame rather than keeping the first one. A direct frame on native Desktop
+keeps the element and its current document, and the new tokens apply from its
+next navigation.
 
 *Teardown:* it is a plain React element — unmounting your pane/page removes the
-frame and its realm; nothing is registered app-side.
+frame and its realm; nothing is registered app-side for it (the Webapp routes
+guest shells through one shared listener that holds frames only weakly).
 
 Migration for **rss-reader** (#115972): replace the stubbed `/preview` → 501 →
 `host.openWorkspace('rss-browser')` → empty `RssBrowserFrame` → `ctx.os.openExternal`
@@ -2144,6 +2150,11 @@ pipeline as the standalone disk door (hot reload included):
 
 The `desktop/plugin.js` half is an ordinary disk plugin — same contract, same
 imports, same `ctx.rest('/…')` reaching the `plugin_api.py` sitting beside it.
+A `plugin.js` at the package root works too, as it does for a standalone
+install: the root `plugin.js` wins over `desktop/plugin.js`, and the whole
+package folder is copied as the desktop half (without `.git` and
+`__pycache__`). It must hold no symlinks and stay under 64 MB, or nothing is
+copied.
 Installing, sharing, or removing the feature is one folder: the app-root copy
 is refreshed when the source `plugin.js` changes (`hermes plugins update`, or
 **Rescan**) and removed when the package folder disappears. The copy is what

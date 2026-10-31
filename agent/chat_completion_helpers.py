@@ -739,7 +739,7 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
         recover_from_cache_point_rejection, recover_from_redacted_reasoning_rejection)
     region = api_kwargs.pop("__bedrock_region__", "us-east-1")
     api_kwargs.pop("__bedrock_converse__", None)
-    client = _get_bedrock_runtime_client(region)
+    client = _get_bedrock_runtime_client(region, api_kwargs.get("modelId"))  # the active model's timeout
     method = client.converse_stream if stream else client.converse
     finish = (lambda raw: raw.get("stream", [])) if stream else normalize_converse_response
     try:

@@ -48,7 +48,7 @@ def owner(monkeypatch):
         assert seen_endpoint is endpoint
         calls.append((method, dict(params), home))
         if method == "groups.capabilities":
-            return {"driver": True, "methods": ["groups.list", "groups.create", "groups.attachment.upload"]}
+            return {"driver": True, "methods": ["groups.list", "groups.create", "groups.not-forwarded"]}
         if method == "groups.list":
             return {"rooms": [{"room_id": "room-webapp"}], "next_offset": None}
         return {"room": {"room_id": params.get("room_id")}}

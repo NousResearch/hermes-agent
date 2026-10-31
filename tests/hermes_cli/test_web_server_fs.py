@@ -1056,7 +1056,7 @@ def _session_detail(cwds: dict):
 
 
 def test_fs_download_maps_workspace_container_to_its_sandbox(client, monkeypatch, tmp_path):
-    """A persistent per-workspace container stores ``/workspace/note.txt`` under
+    """A persistent per-workspace container (cwd mount on) stores ``/workspace/note.txt`` under
     ``sandboxes/docker/default_ws_<digest>-<hash>/workspace``, not the shared
     ``default`` sandbox. The download must serve that session's file, and must
     not scan every other workspace for the same relative path."""
@@ -1096,7 +1096,14 @@ def test_fs_download_maps_workspace_container_to_its_sandbox(client, monkeypatch
     assert bare.content == b"shared-file"
     only = client.get("/api/fs/download", params={"path": "/workspace/only.txt"})
     assert only.status_code == 404
+    # Without the cwd mount a session runs in the profile container: its copy is the shared one.
+    unmounted = client.get(
+        "/api/fs/download", params={"path": "/workspace/note.txt", "session_id": "sess-ws"},
+    )
+    assert (unmounted.status_code, unmounted.content) == (200, b"shared-file")
 
+    # Per-workspace containers exist only with the cwd mount on.
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
     response = client.get(
         "/api/fs/download", params={"path": "/workspace/note.txt", "session_id": "sess-ws"},
     )

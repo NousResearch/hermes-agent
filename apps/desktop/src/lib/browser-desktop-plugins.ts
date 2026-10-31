@@ -2,7 +2,12 @@ import type { HermesApiRequest, HermesReadFileTextResult } from '@/global'
 
 type DesktopPluginsBridge = Pick<
   Window['hermesDesktop'],
-  'desktopPluginsRoot' | 'readDir' | 'readFileText' | 'readPluginSource' | 'reconcileDesktopPlugins'
+  | 'desktopPluginsRoot'
+  | 'readDir'
+  | 'readFileText'
+  | 'readPluginSource'
+  | 'reconcileDesktopPlugins'
+  | 'reconcileDesktopPluginsReport'
 >
 
 interface BrowserDesktopPluginsOptions {
@@ -27,6 +32,12 @@ export function createBrowserDesktopPluginsBridge({ api, files }: BrowserDesktop
 
   const readFile = (path: string) => get<HermesReadFileTextResult>('read', path)
 
+  const reconcile = () =>
+    api<{ refused?: { name: string; reason: string }[]; touched: string[] }>({
+      method: 'POST',
+      path: '/api/desktop-plugins/reconcile'
+    })
+
   return {
     desktopPluginsRoot: async () => {
       root = (await api<{ root: string }>({ path: '/api/desktop-plugins/root' })).root
@@ -36,8 +47,13 @@ export function createBrowserDesktopPluginsBridge({ api, files }: BrowserDesktop
     readDir: path => (inside(path) ? get('list', path) : files.readDir(path)),
     readFileText: path => (inside(path) ? readFile(path) : files.readFileText(path)),
     readPluginSource: readFile,
-    // The server copies agent+desktop packages' desktop halves into the folder, as Electron does.
-    reconcileDesktopPlugins: async () =>
-      (await api<{ touched: string[] }>({ method: 'POST', path: '/api/desktop-plugins/reconcile' })).touched
+    // The server copies agent+desktop packages' desktop halves into the folder, as Electron does, and
+    // names the ones it refused, so an install whose half was refused is not reported as installed.
+    reconcileDesktopPlugins: async () => (await reconcile()).touched,
+    reconcileDesktopPluginsReport: async () => {
+      const { refused = [], touched } = await reconcile()
+
+      return { published: touched, refused }
+    }
   }
 }

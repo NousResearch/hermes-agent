@@ -181,6 +181,7 @@ import {
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
 import {
+  hasSessionArea,
   SidebarBlankState,
   SidebarLoadErrorState,
   SidebarPinnedEmptyState,
@@ -1370,7 +1371,7 @@ export function ChatSidebar({
   // Recents and every messaging platform resolve owner groups the same way
   // ([connectionId, profile]), so a platform's groups line up with recents.
   const ownerGrouped = profileScope === ALL_PROFILES && grouping === 'profile'
-  const profileGroups = useGatewaySessionGroups(agentSessions, ownerGrouped)
+  const profileGroups = useGatewaySessionGroups(agentSessions, ownerGrouped, filtersNarrow)
   const connectionsRegistry = useStore($connectionsRegistry)
   const profileColors = useStore($profileColors)
 
@@ -1509,19 +1510,14 @@ export function ChatSidebar({
   // every background refresh instead of the empty state.
   const showSessionSkeletons = sessionsLoading && scopedSessions.length === 0
 
-  // Filtered down to nothing still renders the section: the empty state is what
-  // tells you the filter — not an empty account — is why the list is bare.
-  // Messaging threads and cron jobs live inside this area too: a profile whose
-  // only sessions are messaging threads (or that only has scheduled jobs) must
-  // not collapse the whole sidebar to the blank state (#63593).
-  const showSessionSections =
-    showSessionSkeletons ||
-    sessionsLoadError ||
-    filtersActive ||
-    sortedSessions.length > 0 ||
-    projectModel.length > 0 ||
-    messagingGroups.length > 0 ||
-    (showsAdvancedChrome && cronJobs.length > 0)
+  const showSessionSections = hasSessionArea({
+    cronJobs: showsAdvancedChrome ? cronJobs.length : 0,
+    loading: showSessionSkeletons || Boolean(sessionsLoadError) || filtersActive,
+    messaging: messagingGroups.length,
+    profileGroups: profileGroups?.length ?? 0,
+    projects: projectModel.length,
+    sessions: sortedSessions.length
+  })
 
   // The sidebar's session-area mode — exposed as data-attributes so custom
   // skins can target project mode (overview vs. entered), archived, or search

@@ -20,6 +20,7 @@ from gateway.session_contract import (
 )
 from gateway.session_events import SessionEvents
 from gateway.session_pending_controls import PendingControls
+from gateway.session_producer_lifecycle import drop_producer_turn, mark_producer_admission
 from hermes_state_runtime import (
     STEERING, RuntimeStoreError, admit_session_input, begin_runtime_epoch,
     cancel_session_input, claim_session_input, get_session_admission,
@@ -616,6 +617,7 @@ class SessionAuthority:
             event._gateway_accepted = True
             if row['status'] == 'queued' and (committed := getattr(event, '_on_commit', None)) is not None:
                 committed()  # a queued slash command's ack follows its commit (``_queue_command_turn``)
+            mark_producer_admission(self, event, row)
         self._publish_pending(ref)
         return self._receipt(row)
 
@@ -830,6 +832,7 @@ class SessionAuthority:
         # Published once: a later exact retry re-collects media but never repeats the completion.
         self.cancel_obligations.discard(admission_id)
         self.native_waiters.discard(admission_id)
+        drop_producer_turn(self, admission_id)
         waiter = self.waiters.pop(admission_id, None)
         if waiter is not None and not waiter.done():
             waiter.set_result(None)
@@ -1386,6 +1389,7 @@ class SessionAuthority:
                 if settled is None:
                     # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
                     self.pending_deliveries.pop(admission_id, None)
+                    drop_producer_turn(self, admission_id)
                 from gateway.session_ingress import waiter_replies
                 waiter_replies(self).pop(admission_id, None)
                 # Taken on every exit, so a turn that never settled leaves no reset for a later one.

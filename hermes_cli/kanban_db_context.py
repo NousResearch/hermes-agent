@@ -102,6 +102,8 @@ def _ctx_header(lines: list[str], task: Task) -> None:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
     if task.branch_name:
         lines.append(f"Branch:   {task.branch_name}")
+    if task.worktree_id:
+        lines.append(f"Orca worktree: {task.worktree_id}")
     lines.append("")
     if task.body and task.body.strip():
         lines.append("## Body")

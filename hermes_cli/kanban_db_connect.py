@@ -886,6 +886,9 @@ _LATER_TASK_COLUMNS = (
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
     # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # Orca worktree this task is linked to (ORCA-06 kanban<->orca auto-link);
+    # NULL = not linked. No backfill: existing cards simply carry no link.
+    ("worktree_id", "worktree_id TEXT"),
 )
 
 _NOTIFY_SUB_COLUMNS = (

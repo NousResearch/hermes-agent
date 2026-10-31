@@ -192,6 +192,9 @@ def cmd_skills(args):
         _require_tty("skills config")
         from hermes_cli.skills_config import skills_command as skills_config_command
         skills_config_command(args)
+    elif action == "doctor":
+        from hermes_cli.skills_doctor import skills_doctor_command
+        return skills_doctor_command(args)
     elif action in ("trust", "untrust"):
         _cmd_skills_trust(args)
     else:

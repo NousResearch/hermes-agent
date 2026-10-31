@@ -638,6 +638,9 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # Orca worktree this task is linked to (ORCA-06 kanban<->orca auto-link).
+    # NULL = not linked. Written via create/edit; validated identifier.
+    worktree_id: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Task:
@@ -674,6 +677,7 @@ _TASK_OPTIONAL_COLUMNS = (
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
     "model_override", "provider_override", "reasoning_effort", "goal_max_turns", "block_kind",
+    "worktree_id",
 )
 
 
@@ -874,7 +878,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Orca worktree this task is linked to (ORCA-06 kanban<->orca auto-link).
+    -- NULL = not linked. Legacy boards gain the column via the additive ALTER
+    -- pass in kanban_db_connect._migrate_add_optional_columns; no backfill.
+    worktree_id          TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1154,6 +1162,47 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
     return cleaned
 
 
+# Orca worktree link (ORCA-06 kanban<->orca auto-link): a non-empty string
+# identifier when present. Orca emits slug/uuid-shaped ids (``orca worktree
+# create --name my-task``) and two-part addresses ``<repoId>::<worktreePath>``
+# (the canonical ``id`` field of ``orca worktree create --json``); the charset
+# accepts alphanumerics plus ``. _ - / :`` (``/`` for namespaced ids, ``:`` for
+# the two-part address form) so every id Orca emits today validates.
+_WORKTREE_ID_MAX_LEN = 255
+_WORKTREE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:-]{0,254}$")
+
+
+def validate_worktree_id(worktree_id: Optional[str]) -> Optional[str]:
+    """Normalise a task's Orca worktree link for the ``tasks.worktree_id`` column.
+
+    Orca's canonical worktree id is the two-part address
+    ``<repoId>::<worktreePath>`` (the ``id`` field of ``orca worktree
+    create --json``); ``:`` is part of the accepted charset.
+
+    ``None`` or blank means "no link" (stored NULL). Any other value must be a
+    non-empty string identifier: first character alphanumeric, then letters,
+    digits, ``.``, ``_``, ``-`` or ``/``, at most 255 characters. Invalid links
+    raise at write time so a bad reference never round-trips through the API.
+    """
+    if worktree_id is None:
+        return None
+    if not isinstance(worktree_id, str):
+        raise ValueError(
+            f"worktree_id must be a string identifier, got {type(worktree_id).__name__}")
+    wid = worktree_id.strip()
+    if not wid:
+        return None
+    if len(wid) > _WORKTREE_ID_MAX_LEN:
+        raise ValueError(
+            f"worktree_id must be at most {_WORKTREE_ID_MAX_LEN} characters, got {len(wid)}")
+    if not _WORKTREE_ID_PATTERN.fullmatch(wid):
+        raise ValueError(
+            "worktree_id must be a non-empty string identifier: start with a letter or "
+            "digit, then letters, digits, '.', '_', '-', '/' or ':' (e.g. 'wt_9f2c1a', "
+            "'team/wt-42' or 'repo-42::/Users/me/orca/fix-login')")
+    return wid
+
+
 def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
@@ -1168,6 +1217,7 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    worktree_id: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1183,6 +1233,8 @@ def create_task(
     in the active profile's projects.db — see ``_resolve_project_link``.
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
+    ``worktree_id``: Orca worktree this card is linked to (ORCA-06); validated
+    identifier, blank = no link.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
@@ -1190,6 +1242,7 @@ def create_task(
     completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    worktree_id = validate_worktree_id(worktree_id)
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
@@ -1267,8 +1320,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        worktree_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1278,6 +1332,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        worktree_id,
                     ),
                 )
                 for pid in parents:
@@ -1300,6 +1355,7 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "worktree_id": worktree_id,
                     },
                 )
                 if task_status == "blocked":
@@ -3050,12 +3106,23 @@ def edit_task(
     body: Optional[str] = None, priority: Optional[int] = None,
     result: Optional[str] = None, summary: Optional[str] = None,
     metadata: Optional[dict] = None, board: Optional[str] = None,
+    worktree_id: Optional[str] = None,
 ) -> bool:
-    """Edit task fields, optionally backfilling a completed task's result."""
+    """Edit task fields, optionally backfilling a completed task's result.
+
+    ``worktree_id`` is tri-state: ``None`` (default) leaves the Orca link
+    untouched; a blank/whitespace-only value clears it; any other value must
+    be a valid identifier (see :func:`validate_worktree_id`).
+    """
+    worktree_id_touched = worktree_id is not None
+    if worktree_id_touched:
+        worktree_id = validate_worktree_id(worktree_id)
     changed_fields = [
         field for field, value in (("title", title), ("body", body), ("priority", priority))
         if value is not None
     ]
+    if worktree_id_touched:
+        changed_fields.append("worktree_id")
     with write_txn(conn):
         status = _task_status(conn, task_id)
         if status is None or (result is not None and status != "done"):
@@ -3066,6 +3133,9 @@ def edit_task(
             if value is not None:
                 assignments.append(f"{field} = ?")
                 params.append(value)
+        if worktree_id_touched:
+            assignments.append("worktree_id = ?")
+            params.append(worktree_id)
         if result is not None:
             assignments.append("result = ?")
             params.append(result)

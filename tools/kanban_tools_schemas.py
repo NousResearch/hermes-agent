@@ -443,6 +443,12 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "primary repo with a deterministic branch (project slug + "
                 "task id), instead of a random branch."
         )),
+        "worktree_id": _prop("string", (
+                "Optional Orca worktree id this task is linked to "
+                "(kanban<->orca worktree auto-link). When present it must be "
+                "a non-empty string identifier; omit for no link. "
+                "Round-trips through kanban_show."
+        )),
         "triage": _prop("boolean", (
                 "If true, task lands in 'triage' instead of 'todo' "
                 "— a specifier profile is expected to flesh out "

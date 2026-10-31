@@ -48,6 +48,13 @@ def build_kanban_policy(connection, params, config):
                 skills = list(dict.fromkeys([*skills, 'sdlc-review']))
     except (ValueError, OSError, sqlite3.Error) as exc:
         raise RuntimeStoreError('invalid_kanban_claim') from exc
+    # Refuse a dead skill pin BEFORE admission: admitting it would run a turn that dies
+    # in its first action, and the submitter side historically mislabels that death as
+    # an owner refusal. The refusal names every dead pin and the seat that lacks it.
+    dead_pins = kb.missing_pinned_skills(task.assignee, skills)
+    if dead_pins:
+        raise RuntimeStoreError('kanban_skill_pin_unavailable',
+                                detail=kb.skill_pin_error(task.assignee, dead_pins))
     cwd = task.workspace_path
     params_policy = {'source': 'cli', 'cwd': cwd}
     for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):
@@ -283,6 +290,10 @@ def _run_worker_turns(agent, frame, history):
         return result
     except Exception as exc:
         code = turn_exit_code(None, kanban_worker=True, **credential_failure_flags(exc))
+        # A dead skill pin carries its own explanation; book it as the output so the
+        # submitter and the dead-worker sweep quote WHY instead of a bare exit 1.
+        if 'skill not found:' in str(exc):
+            last_output = str(exc)
         raise
     finally:
         _record_worker_result(context, code, last_output)
@@ -383,9 +394,14 @@ KANBAN_TURN_AUTHOR = {'id': 'kanban:dispatcher', 'name': 'Kanban dispatcher', 'i
 
 def _run_task_turns(agent, frame, history, context):
     from agent.skill_commands import build_preloaded_skills_prompt
+    from hermes_cli import kanban_db as kb
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
     if missing and not loaded:
-        raise ValueError('kanban_skills_unavailable')
+        # Last-line gate: the create/dispatch/admission checks normally prevent this,
+        # but a skill can vanish between claim and turn. Name the dead pins instead of
+        # a bare code the submitter can only echo — the owning seat, too, so a misroute
+        # reads as what it is.
+        raise ValueError(kb.skill_pin_error(context['profile'], missing))
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
     result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR)
 

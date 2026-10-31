@@ -2126,6 +2126,21 @@ def _dispatch_lane_task(
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
     if claimed is None:
         return False
+    # Skill-pin gate, re-checked on EVERY spawn (creation may predate the gate, a peer
+    # may re-pin or reassign the card, the skill may have been uninstalled since): a pin
+    # the assignee's home cannot load used to kill the worker before its first model
+    # call, and the submitter reported that death as a misleading owner refusal. Refuse
+    # the spawn here, naming the dead pins; installing the skill clears the card next
+    # tick, so this spends the usual failure budget instead of tripping sticky.
+    _pinned = [*(claimed.skills or ()), *(("sdlc-review",) if lane == "review" else ())]
+    dead_pins = _kb.missing_pinned_skills(claimed.assignee, _pinned)
+    if dead_pins:
+        if _record_task_failure(
+            conn, claimed.id, _kb.skill_pin_error(claimed.assignee, dead_pins),
+            outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+        ):
+            result.auto_blocked.append(claimed.id)
+        return False
     try:
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":

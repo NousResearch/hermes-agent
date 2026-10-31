@@ -2311,11 +2311,10 @@ def _any_spawnable_review(
 ) -> bool:
     """Mirror review dispatch gates before reserving ready-lane capacity.
 
-    Unavailable profile metadata retains the historic fail-open behavior. A
-    review row that :func:`_dispatch_lane_task` would refuse this tick — its
-    assignee already at the per-profile cap, or respawn-guarded — cannot
-    consume the reservation, so it must not withhold capacity from an
-    otherwise ready task (one such row would pin ``ready_budget`` to 0).
+    Unavailable profile metadata retains the historic fail-open behavior. A review row
+    that :func:`_dispatch_lane_task` would refuse this tick (assignee at the per-profile
+    cap, respawn-guarded, or its workspace held by a live card) cannot consume the
+    reservation, so it must not withhold capacity (pin ``ready_budget`` to 0).
     """
     if not review_rows:
         return False
@@ -2329,7 +2328,8 @@ def _any_spawnable_review(
             continue
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
             continue
-        if check_respawn_guard(conn, row["id"], lane="review") is None:
+        if check_respawn_guard(conn, row["id"], lane="review") is None and (
+                _kbw.workspace_holder(conn, row["id"], int(time.time())) is None):
             return True
     return False
 

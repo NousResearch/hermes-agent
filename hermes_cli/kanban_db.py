@@ -2125,8 +2125,10 @@ def _claim_and_open_run(
     conn: sqlite3.Connection, task_id: str, source_status: str, lock: str, expires: int, now: int,
     *, event_extra: Optional[dict] = None,
 ) -> Optional[int]:
-    """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
-    when the CAS lost. Caller holds the txn."""
+    """CAS ``source_status -> running``, open a run row, emit ``claimed``; None when the
+    CAS lost or another live task writes in this workspace (#128259). Caller holds the txn."""
+    if refuse_busy_workspace_claim(conn, task_id, now):
+        return None
     cur = conn.execute(
         f"""
         UPDATE tasks
@@ -3917,7 +3919,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     _ctx_prior_attempts(lines, conn, task_id, now)
     _ctx_parent_results(lines, conn, task_id, now)
     _ctx_role_history(lines, conn, task, now)
-    _ctx_comments(lines, list_comments(conn, task_id), now)
+    _ctx_comments(lines, conn, task_id, now)
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -4215,10 +4217,8 @@ from hermes_cli.kanban_db_connect import (
     write_txn,
 )
 from hermes_cli.kanban_db_workspace import (
-    _cleanup_workspace,
-    _is_managed_scratch_path,
-    _managed_scratch_path_info,
-    _scratch_workspace,
+    _cleanup_workspace, _is_managed_scratch_path, _managed_scratch_path_info, _scratch_workspace,
+    refuse_busy_workspace_claim,
 )
 from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,

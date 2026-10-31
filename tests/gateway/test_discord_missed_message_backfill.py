@@ -75,6 +75,8 @@ class FakeChannel:
 @pytest.fixture
 def adapter(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("DISCORD_FORCE_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_AUTO_THREAD", raising=False)
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
     bot_user = SimpleNamespace(id=999, bot=True, display_name="Hermes", name="hermes")
@@ -280,6 +282,13 @@ async def test_recovered_mention_reuses_live_auth_and_mention_gates(adapter, mon
         role_authorized=False,
         recovered=True,
     )
+
+
+def test_default_config_includes_discord_force_thread_channels():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert "force_thread_channels" in DEFAULT_CONFIG["discord"]
+    assert DEFAULT_CONFIG["discord"]["force_thread_channels"] == ""
 
 
 def test_missed_message_backfill_config_stays_per_adapter():

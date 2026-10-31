@@ -20,12 +20,15 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffortWire,
+  getComposerModelSelection,
   getComposerSelectionGeneration,
   getCurrentModelSource,
   markComposerSelectionManual,
   setCurrentModel,
   setCurrentModelSource,
+  setCurrentModelTransient,
   setCurrentProvider,
+  setCurrentProviderTransient,
   setCurrentReasoningEffortWire
 } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
@@ -263,12 +266,12 @@ export function useModelControls({
         const tileState = touchesPrimary ? undefined : $sessionStates.get()[liveSessionId!]
 
         return {
+          composerSelection: getComposerModelSelection(),
           model: touchesPrimary ? $currentModel.get() : (tileState?.model ?? ''),
           provider: touchesPrimary ? $currentProvider.get() : (tileState?.provider ?? ''),
           reasoningEffortWire: touchesPrimary
             ? $currentReasoningEffortWire.get()
-            : (tileState?.reasoningEffortWire ?? ''),
-          source: getCurrentModelSource()
+            : (tileState?.reasoningEffortWire ?? '')
         }
       }
 
@@ -298,11 +301,13 @@ export function useModelControls({
 
       const restoreSnapshot = (snapshot: ModelPickSnapshot) => {
         if (touchesPrimary) {
-          setCurrentModel(snapshot.model)
-          setCurrentProvider(snapshot.provider)
-          // The setters withdraw the wire stamp on a change; the old route's stamp is still true.
+          setCurrentModel(snapshot.composerSelection.model)
+          setCurrentProvider(snapshot.composerSelection.provider)
+          setCurrentModelSource(snapshot.composerSelection.source)
+          // Restore runtime paint/stamp separately; neither is sticky launch intent.
+          setCurrentModelTransient(snapshot.model)
+          setCurrentProviderTransient(snapshot.provider)
           setCurrentReasoningEffortWire(snapshot.reasoningEffortWire)
-          setCurrentModelSource(snapshot.source)
         } else if (liveSessionId) {
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,

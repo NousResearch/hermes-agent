@@ -25,6 +25,12 @@ import { clearUnreadOnOpen } from './session-unread-remote'
 type Updater<T> = T | ((current: T) => T)
 export type ComposerModelSource = '' | 'default' | 'manual'
 
+export interface ComposerModelSelection {
+  model: string
+  provider: string
+  source: ComposerModelSource
+}
+
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
 // The composer's model/effort/fast is sticky UI state, NOT the profile default
@@ -1713,7 +1719,7 @@ export const getCurrentModelSource = (): ComposerModelSource => {
 }
 
 /** The owner's sticky choice, not the runtime/fallback currently painted in the pill. */
-export const getComposerModelSelection = () => ({
+export const getComposerModelSelection = (): ComposerModelSelection => ({
   model: storedComposerString(COMPOSER_MODEL_KEY) ?? '',
   provider: storedComposerString(COMPOSER_PROVIDER_KEY) ?? '',
   source: getCurrentModelSource()

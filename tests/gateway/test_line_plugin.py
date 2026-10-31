@@ -11,6 +11,7 @@ Covers LINE adapter behavior from the PR review:
 7. inbound media normalization to gateway message types and MIME metadata
 8. send routing: reply token preferred → push fallback → batched at 5/call
 9. register() metadata + standalone_send shape
+10. group/room @mention gate (``require_mention``) and cutting the bot's own mention
 """
 
 from __future__ import annotations
@@ -101,6 +102,119 @@ class TestAllowlist:
     def test_user_in_allowlist_passes(self):
         src = {"type": "user", "userId": "Uok"}
         assert _allowed_for_source(src, allow_all=False, user_ids={"Uok"}, group_ids=set(), room_ids=set())
+
+
+class TestMentionGate:
+    """``require_mention`` in groups/rooms, driven through ``_dispatch_event`` with a fake client."""
+
+    GROUP = {"type": "group", "groupId": "C1", "userId": "U1"}
+    ROOM = {"type": "room", "roomId": "R1", "userId": "U1"}
+
+    def _adapter(self, require_mention=True):
+        from gateway.config import PlatformConfig
+        return self._wire(LineAdapter(PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok", "channel_secret": "sec", "allow_all_users": True,
+            "require_mention": require_mention})))
+
+    @staticmethod
+    def _wire(ad):
+        ad._bot_user_id = "Ubot"
+        ad._client = MagicMock()
+        ad._client.fetch_content = AsyncMock(return_value=b"bytes")
+        ad._client.loading = AsyncMock()
+        ad.handle_message = AsyncMock()
+        return ad
+
+    @staticmethod
+    def _self(index, length):  # isSelf alone marks the mention; no userId needed
+        return {"mentionees": [{"type": "user", "isSelf": True, "index": index, "length": length}]}
+
+    def _dispatch(self, ad, text, mention=None, source=None, reply_token="rt"):
+        message = {"id": "m1", "type": "text", "text": text}
+        if mention is not None:
+            message["mention"] = mention
+        before = ad.handle_message.await_count
+        asyncio.run(ad._dispatch_event({"type": "message", "replyToken": reply_token, "message": message,
+                                        "source": source or self.GROUP}))
+        return ad.handle_message.await_args.args[0] if ad.handle_message.await_count > before else None
+
+    @pytest.mark.parametrize("source,chat_id", [(GROUP, "C1"), (ROOM, "R1")], ids=["group", "room"])
+    def test_unmentioned_message_leaves_no_trace(self, source, chat_id):
+        ad = self._adapter()
+        assert self._dispatch(ad, "@Hermes hi", self._self(0, 7), source, reply_token="rt-mentioned")
+        assert self._dispatch(ad, "chatter", source=source, reply_token="rt-chatter") is None
+        # The pending answer still owns the mentioned message's reply token.
+        assert ad._reply_tokens[chat_id][0] == "rt-mentioned"
+
+    def test_dm_is_never_gated(self):
+        assert self._dispatch(self._adapter(), "hello", source={"type": "user", "userId": "U1"}).text == "hello"
+
+    @pytest.mark.parametrize("text,index,expected", [
+        ("@Hermes /new", 0, "/new"),
+        ("ask @Hermes about it", 4, "ask about it"),
+        ("😀 @Hermes hi", 3, "😀 hi"),  # LINE offsets are UTF-16 code units: 😀 counts as 2
+        ("@Hermes", 0, "@Hermes"),  # a bare mention keeps its text
+    ])
+    def test_bot_mention_is_cut_from_the_text(self, text, index, expected):
+        event = self._dispatch(self._adapter(), text, self._self(index, 7))
+        assert event.text == expected
+        if expected == "/new":
+            assert event.get_command() == "new"
+
+    @pytest.mark.parametrize("mention", [
+        {"mentionees": [{"type": "user", "userId": "Ualice", "isSelf": False, "index": 0, "length": 6}]},
+        {"mentionees": [{"type": "all", "index": 0, "length": 4}]},
+        {"mentionees": [{"type": "user", "userId": "Ubot", "isSelf": False, "index": 0, "length": 6}]},
+        None, ["x"], {"mentionees": {"a": 1}}, {"mentionees": ["x", None]},
+    ], ids=["other-user", "at-all", "isself-false-wins", "null", "list", "dict-mentionees", "junk-items"])
+    def test_anything_but_a_self_mention_is_dropped(self, mention):
+        assert self._dispatch(self._adapter(), "@Alice hi", mention) is None
+
+    def test_unmentioned_group_media_is_not_downloaded(self):
+        ad = self._adapter()
+        asyncio.run(ad._dispatch_event({"type": "message", "replyToken": "rt", "source": self.GROUP,
+                                        "message": {"id": "img-1", "type": "image"}}))
+        ad.handle_message.assert_not_awaited()
+        ad._client.fetch_content.assert_not_awaited()
+
+    @pytest.mark.parametrize("text,mention", [
+        ("    x = 1\n    y = 2\n", None),  # nothing to cut: whitespace survives
+        ("  hi @Hermes\n", {"mentionees": [{"type": "user", "isSelf": True, "index": 0, "length": 3}]}),
+        ("😀@Hermes hi", {"mentionees": [{"type": "user", "isSelf": True, "index": 1, "length": 7}]}),
+        ("hi @Hermes", {"mentionees": [{"type": "user", "isSelf": True, "index": "3", "length": 7}]}),
+        ("hi \ud83d @Hermes", {"mentionees": [{"type": "user", "isSelf": True, "index": 4, "length": 7}]}),
+    ], ids=["no-mention", "span-not-on-at", "span-splits-surrogate-pair", "non-int-index", "lone-surrogate"])
+    def test_text_is_verbatim_unless_a_mention_is_cut(self, text, mention):
+        assert self._dispatch(self._adapter(require_mention=False), text, mention).text == text
+
+    def test_quoted_false_keeps_the_gate_off(self):
+        assert self._dispatch(self._adapter(require_mention="false"), "hello").text == "hello"
+
+    def test_webhook_destination_identifies_the_bot(self):
+        # Without /v2/bot/info, the signed payload's ``destination`` is the bot userId a mentionee
+        # lacking ``isSelf`` is matched against.
+        ad = self._adapter()
+        ad._bot_user_id = None
+        body = json.dumps({"destination": "Ubot", "events": [{
+            "type": "message", "replyToken": "rt", "source": self.GROUP, "message": {
+                "id": "m1", "type": "text", "text": "@Hermes hi",
+                "mention": {"mentionees": [{"type": "user", "userId": "Ubot", "index": 0, "length": 7}]}}}]}).encode()
+        request = MagicMock()
+        request.read = AsyncMock(return_value=body)
+        request.headers = {"X-Line-Signature": base64.b64encode(
+            hmac.new(b"sec", body, hashlib.sha256).digest()).decode()}
+        assert asyncio.run(ad._handle_webhook(request)).status == 200
+        assert ad.handle_message.await_args.args[0].text == "hi"
+
+    def test_config_yaml_require_mention_gates_the_adapter(self, tmp_path, monkeypatch):
+        from gateway.config import Platform, load_gateway_config
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n  platforms:\n    line:\n      enabled: true\n      require_mention: true\n"
+            "      allowed_groups: [C1]\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        ad = self._wire(LineAdapter(load_gateway_config().platforms[Platform("line")]))
+        assert self._dispatch(ad, "chatter") is None
+        assert self._dispatch(ad, "@Hermes hi", self._self(0, 7)).text == "hi"
 
 
 # ---------------------------------------------------------------------------

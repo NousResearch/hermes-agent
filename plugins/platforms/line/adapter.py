@@ -7,6 +7,10 @@
   progress/status sends (``_interim_send`` metadata / busy-ack prefixes) bypass the cache;
   a stale or vanished mapping falls through to a live wire send (#106446).
 * Three allowlists (users U…, groups C…, rooms R…); ``LINE_ALLOW_ALL_USERS`` is dev-only.
+* ``require_mention`` (config.yaml, opt-in): group/room messages pass only when they @mention this
+  bot (``mention.mentionees[].isSelf``). DMs are never gated.
+* The bot's own @mention is cut from inbound text whenever LINE marks one, gate on or off, so
+  ``@Bot /new`` runs ``/new``.
 * Media via public HTTPS only: local files served under ``/line/media/<token>/<name>``
   (allowed-roots guard); ``LINE_PUBLIC_URL`` overrides host:port behind tunnels/wildcards.
 * ≤5 message objects per call; text chunked at 4500 chars (bubble hard limit 5000).
@@ -47,6 +51,7 @@ from gateway.platforms.base import (
 from gateway.platforms.helpers import MessageDeduplicator, cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -375,6 +380,55 @@ _LIFECYCLE_EVENTS = frozenset({"follow", "unfollow", "join", "leave"})
 _ENV_SEED_KEYS = (("LINE_PORT", "port", int), ("LINE_HOST", "host", None), ("LINE_PUBLIC_URL", "public_url", None))
 
 
+def _bot_mention_spans(message: dict[str, Any], bot_user_id: str | None) -> list[tuple[Any, Any]]:
+    """``(index, length)`` of each @mention addressed to this bot. ``isSelf`` is authoritative; the field
+    is optional, so a mentionee without it falls back to the bot's own userId. ``@All`` (type ``all``)
+    is not an address to the bot. Webhook objects may grow new shapes, so anything else is skipped."""
+    mention = message.get("mention")
+    mentionees = mention.get("mentionees") if isinstance(mention, dict) else None
+    spans = []
+    for mentionee in mentionees if isinstance(mentionees, list) else ():
+        if not isinstance(mentionee, dict) or mentionee.get("type") != "user":
+            continue
+        is_self = mentionee.get("isSelf")
+        if is_self is True or (is_self is None and bot_user_id and mentionee.get("userId") == bot_user_id):
+            spans.append((mentionee.get("index"), mentionee.get("length")))
+    return spans
+
+
+def _strip_bot_mentions(text: str, spans: list[tuple[Any, Any]]) -> str:
+    """Cut the bot's own @mentions out of ``text`` so ``@Bot /new`` reaches the gateway as a command.
+
+    LINE counts ``index``/``length`` in UTF-16 code units (an emoji before the mention shifts Python's
+    code-point offsets), so spans are cut on the UTF-16 encoding, right to left. A span that is
+    malformed, overlaps one already cut, splits a surrogate pair or does not start at ``@`` stays.
+    Text is returned verbatim unless a span was cut; a message that is only the mention keeps its
+    text so the agent still sees it was called.
+    """
+    if not spans:
+        return text
+    try:
+        limit = len(text.encode("utf-16-le")) // 2
+    except UnicodeEncodeError:  # a lone surrogate in the payload: no UTF-16 offsets to cut by
+        return text
+    out, cut = text, False
+    for index, length in sorted({s for s in spans if all(type(v) is int for v in s)}, reverse=True):
+        if index < 0 or length <= 0 or index + length > limit:
+            continue
+        units, start, end = out.encode("utf-16-le"), 2 * index, 2 * (index + length)
+        try:
+            head, mention, tail = (units[:start].decode("utf-16-le"), units[start:end].decode("utf-16-le"),
+                                   units[end:].decode("utf-16-le"))
+        except UnicodeDecodeError:
+            continue
+        if not mention.startswith("@"):
+            continue
+        if head.endswith(" ") and tail.startswith(" "):  # "ask @Bot now" → "ask now", not "ask  now"
+            tail = tail[1:]
+        out, limit, cut = head + tail, index, True
+    return (out.strip() or text) if cut else text
+
+
 class LineAdapter(BasePlatformAdapter):
     """LINE Messaging API gateway adapter (no message editing → REQUIRES_EDIT_FINALIZE stays False)."""
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
@@ -402,6 +456,10 @@ class LineAdapter(BasePlatformAdapter):
         self.allowed_users = allowlist("LINE_ALLOWED_USERS", "allowed_users")
         self.allowed_groups = allowlist("LINE_ALLOWED_GROUPS", "allowed_groups")
         self.allowed_rooms = allowlist("LINE_ALLOWED_ROOMS", "allowed_rooms")
+        # ``require_mention`` is the shared config.yaml platform setting.
+        # LINE applies it only to group and room messages; DMs remain direct.
+        # Not ``bool()``: a quoted YAML "false" must keep the gate off.
+        self.require_group_mention = is_truthy_value(extra.get("require_mention"))
         # Slow-LLM postback button threshold + user-overridable copy
         threshold = env_or("LINE_SLOW_RESPONSE_THRESHOLD", "slow_response_threshold", DEFAULT_SLOW_RESPONSE_THRESHOLD)
         self.slow_response_threshold = _coerce(float, threshold, DEFAULT_SLOW_RESPONSE_THRESHOLD)
@@ -437,7 +495,7 @@ class LineAdapter(BasePlatformAdapter):
         if not self._acquire_platform_lock("line", tok_hash, "LINE channel"):
             return False
         self._client = _LineClient(self.channel_access_token)
-        try:  # best-effort self-userId for self-echo filtering (LINE rarely echoes anyway)
+        try:  # best-effort self-userId: self-echo filter + mention fallback (webhook destination backfills it)
             self._bot_user_id = await self._client.get_bot_user_id()
         except Exception as exc:
             logger.debug("LINE: get_bot_user_id failed: %s", exc)
@@ -511,7 +569,12 @@ class LineAdapter(BasePlatformAdapter):
             payload = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return web.Response(status=400, text="bad json")
-        for event in payload.get("events", []) or []:
+        destination = payload.get("destination", "") or ""
+        if destination and not self._bot_user_id:
+            self._bot_user_id = destination
+
+        events = payload.get("events", []) or []
+        for event in events:
             try:
                 await self._dispatch_event(event)
             except Exception:
@@ -547,12 +610,20 @@ class LineAdapter(BasePlatformAdapter):
         source = event.get("source") or {}
         chat_id, chat_type = _resolve_chat(source)
         user_id = source.get("userId", "") or chat_id
-        if chat_id and reply_token:  # stash the reply token for outbound use
+        mention_spans = _bot_mention_spans(msg, self._bot_user_id)
+        if self.require_group_mention and chat_type in ("group", "room") and not mention_spans:
+            # Before the reply-token stash and media download: unaddressed chatter leaves no trace.
+            # DEBUG, not INFO: in a busy group this fires for nearly every message.
+            logger.debug("LINE: ignoring %s message without bot mention chat=%s", chat_type, chat_id)
+            return
+
+        # Stash the reply token for outbound use.
+        if chat_id and reply_token:
             self._reply_tokens[chat_id] = (reply_token, time.time() + LINE_REPLY_TOKEN_TTL_SECONDS)
         media_urls: list[str] = []
         media_types: list[str] = []
         if msg_type == "text":
-            text = msg.get("text", "") or ""
+            text = _strip_bot_mentions(msg.get("text", "") or "", mention_spans)
         elif msg_type in _INBOUND_MEDIA_EXT:  # fetch, cache, surface a vision-friendly local path
             local_path, media_type = await self._download_media(
                 message_id, msg_type, filename=msg.get("fileName") or msg.get("file_name"))

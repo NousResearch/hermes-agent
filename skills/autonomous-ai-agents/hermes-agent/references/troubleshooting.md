@@ -64,6 +64,8 @@ Common gateway problems:
 - **Gateway dies on WSL2 close**: WSL2 requires `systemd=true` in `/etc/wsl.conf` for systemd services to work. Without it, gateway falls back to `nohup` (dies when session closes).
 - **Gateway crash loop**: Reset the failed state: `systemctl --user reset-failed hermes-gateway`
 
+For full gateway liveness/provider-failure/multiplexer triage and hosted-instance refusals, the `hermes-gateway-ops` optional skill covers the diagnosis ladder end to end (Skills Hub: `hermes skills install hermes-gateway-ops`).
+
 ### Platform-specific issues
 - **Discord bot silent**: Must enable **Message Content Intent** in Bot → Privileged Gateway Intents.
 - **Slack bot only works in DMs**: Must subscribe to `message.channels` event. Without it, the bot ignores public channels.

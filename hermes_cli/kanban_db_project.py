@@ -45,6 +45,30 @@ def worktree_unavailable(project_obj: Any) -> Optional[str]:
     )
 
 
+def worktree_path_unavailable(workspace_path: Optional[str]) -> Optional[str]:
+    """Why an explicit worktree ``workspace_path`` cannot host a worktree; ``None`` when it can.
+
+    Held to the rule dispatch applies (``kanban_db_workspace._resolve_worktree_workspace``):
+    the path must be absolute and must be a git repo root, an existing linked
+    worktree, or inside a repo. A path *inside* a repo is fine even when it does
+    not exist yet — dispatch materializes it there.
+    """
+    if not workspace_path:
+        return None
+    path = Path(str(workspace_path)).expanduser()
+    if not path.is_absolute():
+        return (
+            f"workspace_path {str(workspace_path)!r} is not absolute, so it cannot "
+            "host a worktree (worktree paths must be absolute)"
+        )
+    if worktree_anchor(str(path)) is not None:
+        return None
+    return (
+        f"workspace_path {str(workspace_path)!r} is not inside a git repo and does "
+        "not point at a git repo root, so it cannot host a worktree"
+    )
+
+
 def resolve_project_link(
     conn: sqlite3.Connection, project_id: Optional[str], project_source_task_id: Optional[str],
     workspace_kind: str, workspace_path: Optional[str],
@@ -61,7 +85,9 @@ def resolve_project_link(
     strand a card: when ``primary_path`` cannot host a worktree the task stays on
     a ``scratch`` workspace and ``skipped_reason`` says why, rather than creating
     a card whose worker dies at spawn. An explicit ``workspace_kind="worktree"``
-    on such a project raises here instead — same gap, closed at the same place.
+    on such a project raises here instead — same gap, closed at the same place —
+    and so does an explicit ``workspace_path`` that dispatch could not anchor a
+    worktree on.
     """
     project_id = (str(project_id).strip() or None) if project_id is not None else None
     if not project_id:
@@ -81,6 +107,10 @@ def resolve_project_link(
             conn, _pdb, project_id, str(project_source_task_id),
         )
         if project_obj is not None and workspace_kind == "scratch":
+            # The recovered repo is ``<repo>`` by construction, but the board is
+            # shared across profiles and hosts: the source task's checkout may be
+            # absent here (another machine, or a moved/deleted repo), and then
+            # this anchor is no better than an unavailable ``primary_path``.
             if worktree_unavailable(project_obj):
                 project_repo = None
             else:
@@ -101,8 +131,19 @@ def resolve_project_link(
         raise ValueError(
             f"{unavailable}, so it cannot host a worktree. Create the task with "
             "workspace_kind='scratch', point the project at a folder inside a git repo, "
-            "or pass an explicit workspace_path."
+            "or pass an explicit workspace_path inside a git repo."
         )
+    if workspace_kind == "worktree" and workspace_path is not None:
+        # An explicit path is not a default either: it overrides the project
+        # anchor at dispatch, so a path that cannot host a worktree strands the
+        # card exactly the same way — refuse it now, naming the path.
+        refusal = worktree_path_unavailable(workspace_path)
+        if refusal:
+            raise ValueError(
+                f"{refusal}. Create the task with workspace_kind='scratch', point "
+                "workspace_path at a folder inside a git repo, or omit it and let the "
+                "project anchor the worktree."
+            )
     if workspace_kind == "worktree" and workspace_path is None and project_obj.primary_path:
         # Concrete path is deferred to the insert loop: a fresh
         # ``<repo>/.worktrees/<task-id>`` keyed on the new task id.

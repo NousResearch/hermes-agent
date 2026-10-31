@@ -1,0 +1,28 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "hermes-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "web", "run", "dev"],
+      "port": 5173
+    },
+    {
+      "name": "hermes-website",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "website", "run", "start"],
+      "port": 3000
+    },
+    {
+      "name": "hermes-dashboard",
+      "runtimeExecutable": ".venv/bin/hermes",
+      "runtimeArgs": ["dashboard", "--host", "127.0.0.1", "--no-open"],
+      "port": 9119
+    },
+    {
+      "name": "hermes-ui-tui",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "ui-tui", "run", "dev"]
+    }
+  ]
+}

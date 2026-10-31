@@ -199,7 +199,6 @@ vllm serve mlx-community/Qwen3.5-9B-4bit \
   --host 127.0.0.1 --port 8000 \
   --max-model-len 65536 --max-num-seqs 1 \
   --gpu-memory-utilization 0.3 \
-  --no-enable-prefix-caching \
   --enable-auto-tool-choice \
   --tool-call-parser qwen3_xml \
   --reasoning-parser qwen3
@@ -239,7 +238,7 @@ See the [benchmark details](https://github.com/NousResearch/hermes-agent/pull/14
 |----------|---------------|
 | Lowest time to first token in this benchmark | vllm-metal |
 | 512-token responses in this benchmark | oMLX or vllm-metal |
-| GGUF models with quantized KV cache | llama.cpp |
+| Memory-constrained (8-16 GB) | llama.cpp (quantized KV cache is unmatched) |
 | Serving multiple models simultaneously | omlx (built-in multi-model support) |
 | Maximum compatibility (Linux too) | llama.cpp |
 

@@ -21,11 +21,12 @@ that reaches ``handle_message`` exposes exactly what the session store
 will key on.  Asserting on the event keeps the seam tight against the
 production function's behaviour rather than a re-implementation.
 """
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
 from gateway.config import PlatformConfig
+from plugins.platforms.slack import adapter as slack_adapter_module
 from plugins.platforms.slack.adapter import SlackAdapter
 
 
@@ -162,3 +163,45 @@ class TestThreadReplyAlwaysScopesByThread:
             f"thread reply dropped with reply_in_thread={reply_in_thread}"
         )
         assert captured[0].source.thread_id == "1700000000.000009"
+
+
+class TestSlackCodeChannelSessionScope:
+    """Slack Code channels are channel-level agent sessions, not threads."""
+
+    @pytest.mark.asyncio
+    async def test_agent_enabled_channel_accepts_unmentioned_message_as_shared_session(self, adapter):
+        adapter.config.extra["require_mention"] = True
+        adapter._app.client.conversations_info = AsyncMock(return_value={
+            "channel": {"is_channel_agent_enabled": True},
+        })
+        event = _channel_event("continue with the implementation", ts="1700000000.000020")
+        event["client_msg_id"] = "client-message-id"
+
+        captured = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured.append(e))
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser"),
+        ):
+            with patch.object(
+                adapter, "_resolve_channel_name", new=AsyncMock(return_value="slack-code"),
+            ):
+                await adapter._handle_slack_message(event)
+
+        assert len(captured) == 1
+        assert captured[0].source.thread_id is None
+
+    @pytest.mark.asyncio
+    async def test_status_omits_thread_ts_and_closes_channel_session(self, adapter, monkeypatch):
+        monkeypatch.setattr(slack_adapter_module, "_AGENT_SESSIONS_SUPPORTED", True)
+        adapter._app.client.conversations_info = AsyncMock(return_value={
+            "channel": {"is_channel_agent_enabled": True},
+        })
+        adapter._app.client.agents_sessions_setStatus = AsyncMock()
+
+        await adapter.send_typing("C_CHAN")
+        await adapter.stop_typing("C_CHAN")
+
+        assert adapter._app.client.agents_sessions_setStatus.await_args_list == [
+            call(channel_id="C_CHAN", status="processing"),
+            call(channel_id="C_CHAN", status="closed"),
+        ]

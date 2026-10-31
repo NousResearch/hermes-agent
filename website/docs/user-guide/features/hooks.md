@@ -1910,7 +1910,8 @@ Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cf
 ```yaml
 hooks:
   <event_name>:                  # Must be in VALID_HOOKS
-    - matcher: "<regex>"         # Optional; used for pre/post_tool_call only
+    - matcher: "<regex>"         # Optional; used for pre/post_tool_call only.
+                                 # A list ([terminal, "mcp_.*"]) matches any entry
       command: "<shell command>" # Required; runs via shlex.split, shell=False
       timeout: <seconds>         # Optional; default 60, capped at 300
       fail_closed: <bool>        # Optional; default false. pre_tool_call only.
@@ -1919,7 +1920,7 @@ hooks:
 hooks_auto_accept: false         # See "Consent model" below
 ```
 
-Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning. `fail_closed: true` on an event other than `pre_tool_call` warns and is ignored (only blocking-capable events can fail closed).
+Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning. `fail_closed: true` on an event other than `pre_tool_call` warns and is ignored (only blocking-capable events can fail closed). The `matcher` is a regex that must match the whole tool name; a list form such as `[terminal, write_file]` fires for any entry (one that is not a valid regex matches literally). A matcher of any other shape warns and is ignored, so the hook fires for every tool.
 
 On Windows, a `command` that starts with an existing script file — the `~/.hermes/agent-hooks/x.sh` shape the examples below use — is spawned through that file's own interpreter (Git Bash for `.sh`/`.bash`, the running Hermes Python for `.py`), because `CreateProcess` has no shebang support and rejects a bare script with `WinError 193`. Every other command, and every POSIX platform, passes `argv` straight to `Popen`, where the kernel already honours the shebang.
 
@@ -2180,7 +2181,7 @@ hooks:
     - name: tool-monitor
       url: https://metrics.example.com/hooks/hermes
       events: [post_tool_call]
-      matcher: "terminal|delegate_task"     # regex, tool-scoped events only
+      matcher: "terminal|delegate_task"     # regex or list, tool-scoped events only
 ```
 
 Any event from the plugin-hook set is valid (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`, `subagent_start`, `subagent_stop`, ...). Malformed entries warn and are skipped — a broken webhook never crashes the agent. Changes take effect on the next CLI session / gateway restart.

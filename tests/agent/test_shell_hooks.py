@@ -295,6 +295,18 @@ class TestParseHooksBlock:
         assert shell_hooks._parse_hooks_block("string") == []
         assert shell_hooks._parse_hooks_block([]) == []
 
+    def test_list_matcher_fires_for_any_entry_only(self):
+        """A list matcher is any-of; before it was dropped and the hook fired for EVERY tool."""
+        cfg = {"pre_tool_call": [{"matcher": ["(?i)Terminal", " mcp_.* ", "bad(", "(?P<n>x)", "(?P<n>y)"],
+                                  "command": "/bin/echo"}]}
+        (spec,) = shell_hooks._parse_hooks_block(cfg)
+        tools = ("terminal", "mcp_github_x", "bad(", "x", "y", "read_file", "terminal2")
+        assert [spec.matches_tool(t) for t in tools] == [True, True, True, True, True, False, False]
+        # "a|b" and [a, b] can match different tools, so they must register as different hooks.
+        as_string, as_list = shell_hooks._parse_hooks_block({"pre_tool_call": [
+            {"matcher": "(?i)T|W", "command": "/bin/echo"}, {"matcher": ["(?i)T", "W"], "command": "/bin/echo"}]})
+        assert shell_hooks._key("h", as_string) != shell_hooks._key("h", as_list)
+
     def test_non_tool_event_matcher_warns_and_drops(self):
         """matcher: is only honored for pre/post_tool_call; must drop it
         on other events so the spec reflects runtime."""

@@ -183,6 +183,29 @@ def effort_display_label(
     return requested if not requested or clamped == requested else f"{requested} (sends {clamped} on this route)"
 
 
+#: Levels every route treats as its default. A badge for them states nothing the model name
+#: does not already imply; the Ink status bar hides the same set.
+_DEFAULT_EFFORT_LEVELS: frozenset[str] = frozenset({"medium", "normal", "default"})
+
+
+def effort_compact_label(
+    effort: Optional[str], provider: Optional[str] = None, model: Optional[str] = None,
+    api_mode: Optional[str] = None,
+) -> str:
+    """Status-bar label for one level: ``""`` when unset or a route default, else the level —
+    or ``<level>→<wire>`` when this route's entry clamp sends something else.
+
+    Same shape the Ink status bar renders (``ultra→max``), just without the prose of
+    :func:`effort_display_label`; the two share :func:`clamp_effort`, so a level can never be
+    shown as verbatim in one place and clamped in the other.
+    """
+    requested = str(effort or "").strip().lower()
+    if not requested or requested in _DEFAULT_EFFORT_LEVELS:
+        return ""
+    clamped = str(clamp_effort(requested, route_supported_efforts(provider, model, api_mode)) or "")
+    return requested if not clamped or clamped == requested else f"{requested}→{clamped}"
+
+
 def requested_effort(reasoning_config: Optional[dict]) -> Optional[str]:
     """The user's explicit effort, or None (absent/malformed config, no effort, or reasoning
     disabled) — callers then omit the wire field."""

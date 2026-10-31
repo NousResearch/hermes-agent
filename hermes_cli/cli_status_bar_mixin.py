@@ -189,6 +189,31 @@ class CLIStatusBarMixin:
             return ""
         return f"✓ {format_duration_compact(max(0.0, time.time() - last_finished_at))}"
 
+    def _status_bar_reasoning_label(self, model_name: str) -> str:
+        """Effort badge beside the model; ``""`` when there is nothing worth the space.
+
+        Mirrors the Ink status bar's rules (``appChrome.tsx`` → ``effortLabel``): unset,
+        disabled and the route defaults (medium/normal/default) render as nothing, and a
+        Hermes step the route clamps reads ``ultra→max`` instead of claiming a wire level
+        the provider does not have. MoA resolves per-slot efforts, so its single global
+        level is not a fact about the turn and is omitted rather than shown wrong.
+        """
+        rc = getattr(self, "reasoning_config", None)
+        provider = getattr(self, "provider", None)
+        if not isinstance(rc, dict) or rc.get("enabled") is False:
+            return ""
+        if str(provider or "").strip().lower() == "moa":
+            return ""
+        from agent.reasoning_effort import effort_compact_label
+        api_mode = getattr(getattr(self, "agent", None), "api_mode", None)
+        if not api_mode and str(provider or "").strip().lower() == "openai-codex":
+            # Same fallback ``/reasoning`` uses: the runtime can be configured before the
+            # agent exists, and only the Codex route's clamp depends on it.
+            from cli import CLI_CONFIG
+            from hermes_cli.codex_runtime_switch import get_current_runtime
+            api_mode = get_current_runtime(CLI_CONFIG)
+        return effort_compact_label(rc.get("effort"), provider, model_name, api_mode)
+
     def _get_status_bar_snapshot(self) -> dict[str, Any]:
         from cli import _reverse_alias_for_display, datetime, format_duration_compact
         agent = getattr(self, "agent", None)
@@ -212,6 +237,7 @@ class CLIStatusBarMixin:
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "reasoning_label": self._status_bar_reasoning_label(model_name),
             "duration": format_duration_compact(elapsed_seconds),
             "session_title": self._get_status_bar_session_title(),
             "prompt_elapsed": self._format_prompt_elapsed(
@@ -1040,10 +1066,17 @@ class CLIStatusBarMixin:
                 add(name, style(count) if callable(style) else style, f"{glyph} {count}")
 
         if _ok("model"):
+            reasoning = snapshot.get("reasoning_label") or ""
             if styled:
-                segs.append([(_SB, " ☤ "), (_STRONG, model_short)])
+                frag = [(_SB, " ☤ "), (_STRONG, model_short)]
+                if reasoning:
+                    frag.append((_DIM, f" {reasoning}"))
+                segs.append(frag)
             else:
-                segs.append([("", f"☤ {model_short}")])
+                text = f"☤ {model_short}"
+                if reasoning:
+                    text += f" {reasoning}"
+                segs.append([("", text)])
         narrow, wide = width < 52, width >= 76
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.

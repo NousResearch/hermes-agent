@@ -698,6 +698,13 @@ The review surface works in the interactive CLI and on messaging platforms
 in the pending JSON file). Memory writes have the same gate under
 `memory.write_approval` — see [Controlling memory writes](./memory.md#controlling-memory-writes-write_approval).
 
+To protect one *specific* skill from the autonomous passes without gating every
+write, lock it: `hermes curator lock <skill>`. A locked skill stays readable and
+auto-loadable, but the background review and curator passes can no longer patch,
+edit, add or remove files in it, or delete it; edits you ask for in a normal turn
+still go through. Lock and `write_approval` compose. See
+[Locking a skill's content](./curator.md#locking-a-skills-content).
+
 > The separate `skills.guard_agent_created` setting is a content scanner
 > (dangerous-pattern heuristics), not an approval gate — the two are
 > independent. See [Guard on agent-created skill writes](../configuration.md#guard-on-agent-created-skill-writes).

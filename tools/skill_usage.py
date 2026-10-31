@@ -577,6 +577,31 @@ def set_pinned(skill_name: str, pinned: bool) -> bool:
     return _set_field(skill_name, "pinned", bool(pinned))
 
 
+def set_locked(skill_name: str, locked: bool) -> bool:
+    """User declaration (``hermes curator lock``) that the autonomous passes — background review and
+    curator — must not change this skill's content. NOT curation-gated: hand-written, bundled and
+    hub skills can all be locked; archival eligibility is the separate ``pinned`` axis. True when
+    the write landed."""
+    return bool(_mutate(skill_name, lambda rec: rec.update({"locked": bool(locked)}) or True))
+
+
+def is_locked(skill_name: str) -> bool:
+    """``locked`` flag of *skill_name*. Strict on purpose: a corrupt or unreadable sidecar RAISES
+    instead of reading as "unlocked" (``load_usage`` returns {} there), so the write guard can fail
+    closed rather than silently relax a lock the user set."""
+    path = _usage_file()
+    if not path.exists():
+        return False
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    rec = data.get(skill_name) if isinstance(data, dict) else None
+    return bool(rec.get("locked")) if isinstance(rec, dict) else False
+
+
+def locked_skill_names() -> list[str]:
+    """Names carrying ``locked: true`` (best-effort listing; empty on a corrupt sidecar)."""
+    return sorted(name for name, rec in load_usage().items() if rec.get("locked"))
+
+
 def forget(skill_name: str) -> None:
     if skill_name:
         _locked_update(skill_name, lambda d: (None, d.pop(skill_name, None) is not None), "skill_usage.forget(%s) failed: %s")

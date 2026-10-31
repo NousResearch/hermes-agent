@@ -38,6 +38,7 @@ export interface GatewayClientOptions {
 
 const ANY = '*'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
+const ATTACHMENT_REQUEST_TIMEOUT_MS = 600_000
 // `approval.respond` rides the SAME deadline the backend grants the user to
 // answer: tools/approval_context.py reads `approvals.timeout` (default 300s —
 // gateway push notifications may not be seen for minutes). A shorter client
@@ -137,6 +138,7 @@ const replaySessionGone = (error: unknown): boolean =>
 
 export class JsonRpcGatewayClient {
   private socket: WebSocketLike | null = null
+  private readonly attachmentClients = new Set<JsonRpcGatewayClient>()
   private state: ConnectionState = 'idle'
   private readonly channel: JsonRpcRequestChannel
   private readonly events = new GatewayEventHub()
@@ -432,20 +434,76 @@ export class JsonRpcGatewayClient {
   request<T>(
     method: string,
     params: Record<string, unknown> = {},
-    timeoutMs = this.options.requestTimeoutMs,
+    timeoutMs?: number,
     signal?: AbortSignal
   ): Promise<T> {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error(this.options.notConnectedErrorMessage))
     }
 
+    // A whole base64 attachment blocks later frames on this WebSocket, including
+    // heartbeat replies. Keep the control socket responsive during slow uploads.
+    if (
+      (method === 'file.attach' && typeof params.data_url === 'string' && params.data_url.length > 0) ||
+      (method === 'image.attach_bytes' && typeof params.content_base64 === 'string' && params.content_base64.length > 0)
+    ) {
+      return this.requestAttachment<T>(method, params, timeoutMs ?? ATTACHMENT_REQUEST_TIMEOUT_MS, signal)
+    }
+
     return this.channel.request<T>(
       method,
       params,
-      timeoutMs,
+      timeoutMs ?? this.options.requestTimeoutMs,
       signal,
       () => new Error(this.options.notConnectedErrorMessage)
     )
+  }
+
+  private async requestAttachment<T>(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<T> {
+    const owner = this.socket!
+
+    const upload = new JsonRpcGatewayClient({
+      ...this.options,
+      // This one-shot socket has its own request deadline. Heartbeats queued
+      // behind its payload cannot measure backend liveness; the owner does that.
+      heartbeatIntervalMs: 0,
+      onSocketClose: () => false,
+      replay: false
+    })
+
+    const abort = () => upload.close()
+
+    this.attachmentClients.add(upload)
+    signal?.addEventListener('abort', abort, { once: true })
+
+    try {
+      if (signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError')
+      }
+
+      await upload.connect(owner.url)
+
+      if (signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError')
+      }
+
+      if (this.socket !== owner) {
+        throw new Error(this.options.closedErrorMessage)
+      }
+
+      // Use the channel directly: no recursive upload routing, and never retry
+      // an ambiguous write that might already have staged a file on the server.
+      return await upload.channel.request<T>(method, params, timeoutMs, signal)
+    } finally {
+      signal?.removeEventListener('abort', abort)
+      this.attachmentClients.delete(upload)
+      upload.close()
+    }
   }
 
   private handleEvent(event: GatewayEvent): void {
@@ -836,6 +894,12 @@ export class JsonRpcGatewayClient {
     this.cancelReplay(false)
     this.socket = null
     this.channel.detach(error)
+
+    for (const upload of this.attachmentClients) {
+      upload.invalidate(error.message)
+    }
+
+    this.attachmentClients.clear()
     this.setState('closed')
   }
 

@@ -11,13 +11,14 @@ def _snapshot(conn, task_id):
 
 
 def prepare_acceptance(conn, task_id, expected_run_id, metadata):
+    from hermes_cli.kanban_db import _COMPLETABLE
     snapshot = _snapshot(conn, task_id)
     if snapshot is None:
         return False
     run_id, status, contract = snapshot
     if not contract or contract == "local-only":
         return None
-    if status not in {"running", "ready", "blocked", "review"} or (expected_run_id is not None and run_id != expected_run_id):
+    if status not in set(_COMPLETABLE) or (expected_run_id is not None and run_id != expected_run_id):
         return False
     published_pr = metadata.get("published_pr") if isinstance(metadata, dict) else None
     match = _PR.fullmatch(published_pr) if isinstance(published_pr, str) else None

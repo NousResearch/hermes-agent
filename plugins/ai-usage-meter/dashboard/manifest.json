@@ -1,0 +1,11 @@
+{
+  "name": "ai-usage-meter",
+  "label": "AI Usage Meter",
+  "description": "Live provider quota and tracked-model usage for Hermes.",
+  "icon": "",
+  "version": "0.1.0",
+  "tab": { "path": "/ai-usage-meter", "hidden": true },
+  "slots": [],
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Usage Meter — Top 3 Models, Last 7 Days</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --page: #17191e;
+    --card: linear-gradient(135deg, #25262c 0%, #1c1d22 55%, #18191d 100%);
+    --panel: rgba(255, 255, 255, 0.055);
+    --border: rgba(255, 255, 255, 0.10);
+    --border-soft: rgba(255, 255, 255, 0.065);
+    --text: #f4f4f5;
+    --muted: #a1a1aa;
+    --subtle: #777983;
+    --green: #34d399;
+    --lime-cyan: linear-gradient(90deg, #bef264 0%, #4ade80 52%, #2dd4bf 100%);
+    --rose: linear-gradient(90deg, #fb7185 0%, #f43f5e 52%, #fb923c 100%);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { min-height: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 28px;
+  }
+
+  .board {
+    width: min(1180px, 100%);
+    display: grid;
+    gap: 16px;
+  }
+
+  .title-row {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 20px;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 22px;
+    line-height: 1.15;
+    letter-spacing: -0.03em;
+  }
+
+  .subtitle {
+    margin: 5px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .rule-chip {
+    border: 1px solid rgba(52, 211, 153, 0.26);
+    background: rgba(52, 211, 153, 0.08);
+    color: var(--green);
+    border-radius: 999px;
+    padding: 6px 10px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.035em;
+    white-space: nowrap;
+  }
+
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .provider-card {
+    min-width: 0;
+    min-height: 330px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 15px;
+    border: 1px solid var(--border);
+    border-radius: 19px;
+    background: var(--card);
+    box-shadow: 0 15px 34px rgba(0, 0, 0, 0.22);
+  }
+
+  .provider-header,
+  .quota-label,
+  .quota-meta,
+  .model-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .provider-header h2 {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 17px;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+  }
+
+  .live {
+    flex: none;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: #d4d4d8;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+  }
+
+  .plan {
+    min-height: 18px;
+    margin-top: -5px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .quota-box {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--panel);
+  }
+
+  .quota-label strong { font-size: 13px; }
+  .quota-label span,
+  .quota-meta { color: var(--muted); font-size: 11px; }
+
+  .track {
+    height: 9px;
+    overflow: hidden;
+    border: 1px solid var(--border-soft);
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.40);
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.32);
+  }
+
+  .fill {
+    height: 100%;
+    border-radius: inherit;
+    background: var(--lime-cyan);
+  }
+
+  .fill.critical { background: var(--rose); }
+
+  .models {
+    margin-top: auto;
+    border-top: 1px solid var(--border-soft);
+    padding-top: 10px;
+  }
+
+  .models-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 5px;
+  }
+
+  .models-heading strong {
+    color: var(--muted);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+  }
+
+  .models-heading span {
+    color: var(--subtle);
+    font-size: 9px;
+    white-space: nowrap;
+  }
+
+  .model-row {
+    min-height: 32px;
+    border-bottom: 1px dashed rgba(255, 255, 255, 0.075);
+  }
+
+  .model-row:last-child { border-bottom: 0; }
+
+  .model-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  .model-tokens {
+    flex: none;
+    color: #e4e4e7;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .behavior {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    padding: 13px 15px;
+    border: 1px solid var(--border);
+    border-radius: 15px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .behavior-item {
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .behavior-item strong {
+    display: block;
+    margin-bottom: 2px;
+    color: var(--text);
+    font-size: 11px;
+  }
+
+  @media (max-width: 850px) {
+    body { padding: 18px; }
+    .cards, .behavior { grid-template-columns: 1fr; }
+    .provider-card { min-height: 310px; }
+    .title-row { align-items: flex-start; flex-direction: column; gap: 10px; }
+  }
+</style>
+</head>
+<body>
+<main class="board">
+  <header class="title-row">
+    <div>
+      <h1>Provider model list — revised mockup</h1>
+      <p class="subtitle">Exactly three ranked models. No scrolling and no zero-usage rows.</p>
+    </div>
+    <div class="rule-chip">ROLLING 7 DAYS · TOP 3 ONLY</div>
+  </header>
+
+  <section class="cards" aria-label="Provider model list examples">
+    <article class="provider-card">
+      <div class="provider-header">
+        <h2>Anthropic OAuth</h2>
+        <span class="live">LIVE</span>
+      </div>
+      <div class="plan">Provider plan: Team</div>
+      <div class="quota-box">
+        <div class="quota-label"><strong>Current week</strong><span>71.0% used</span></div>
+        <div class="track"><div class="fill" style="width:71%"></div></div>
+        <div class="quota-meta"><span>29.0% left</span><span>Resets Oct 27</span></div>
+      </div>
+      <div class="models">
+        <div class="models-heading"><strong>MODELS</strong><span>TOP 3 · LAST 7 DAYS</span></div>
+        <div class="model-row"><span class="model-name">Opus 5.5</span><span class="model-tokens">2.4M tokens</span></div>
+        <div class="model-row"><span class="model-name">Sonnet 5.5</span><span class="model-tokens">684K tokens</span></div>
+        <div class="model-row"><span class="model-name">Fable 5.1</span><span class="model-tokens">92.6K tokens</span></div>
+      </div>
+    </article>
+
+    <article class="provider-card">
+      <div class="provider-header">
+        <h2>Codex OAuth</h2>
+        <span class="live">LIVE</span>
+      </div>
+      <div class="plan">Provider plan: Plus</div>
+      <div class="quota-box">
+        <div class="quota-label"><strong>Weekly</strong><span>9.0% used</span></div>
+        <div class="track"><div class="fill" style="width:9%"></div></div>
+        <div class="quota-meta"><span>91.0% left</span><span>Resets Oct 30</span></div>
+      </div>
+      <div class="models">
+        <div class="models-heading"><strong>MODELS</strong><span>TOP 3 · LAST 7 DAYS</span></div>
+        <div class="model-row"><span class="model-name">GPT 5.6 Sol</span><span class="model-tokens">10M tokens</span></div>
+        <div class="model-row"><span class="model-name">GPT 6 Astra</span><span class="model-tokens">1.3M tokens</span></div>
+        <div class="model-row"><span class="model-name">GPT 6.1 Sol</span><span class="model-tokens">620K tokens</span></div>
+      </div>
+    </article>
+
+    <article class="provider-card">
+      <div class="provider-header">
+        <h2>OpenRouter</h2>
+        <span class="live">LIVE</span>
+      </div>
+      <div class="plan">Shared API-key quota</div>
+      <div class="quota-box">
+        <div class="quota-label"><strong>API key quota</strong><span>98.1% used</span></div>
+        <div class="track"><div class="fill critical" style="width:98.1%"></div></div>
+        <div class="quota-meta"><span>1.9% left</span><span>No reset reported</span></div>
+      </div>
+      <div class="models">
+        <div class="models-heading"><strong>MODELS</strong><span>TOP 3 · LAST 7 DAYS</span></div>
+        <div class="model-row"><span class="model-name">Nemotron 3.5 Lightning Free</span><span class="model-tokens">1M tokens</span></div>
+        <div class="model-row"><span class="model-name">Opus 5.5</span><span class="model-tokens">329.2K tokens</span></div>
+        <div class="model-row"><span class="model-name">Sonnet 5.5</span><span class="model-tokens">144K tokens</span></div>
+      </div>
+    </article>
+  </section>
+
+  <section class="behavior" aria-label="Behavior notes">
+    <div class="behavior-item"><strong>Seven-day eligibility</strong>A model disappears when its rolling seven-day token total becomes zero.</div>
+    <div class="behavior-item"><strong>Strict top three</strong>Models are ranked from highest to lowest token usage; only positions 1–3 render.</div>
+    <div class="behavior-item"><strong>No hidden scrolling</strong>A fourth model stays out of the card until its seven-day total overtakes one of the current top three.</div>
+  </section>
+</main>
+</body>
+</html>

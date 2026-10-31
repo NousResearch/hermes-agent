@@ -47,7 +47,7 @@ import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
-import { reasoningEffortLabel } from '@/lib/reasoning-effort'
+import { reasoningEffortLabel, resolveSupportedReasoningEffort } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
@@ -456,7 +456,9 @@ export function ModelCatalogMenu({
 
     controller.applyPreset(
       {
-        effort: (caps?.reasoning ?? true) ? (preset.effort ?? defaultEffort) : undefined,
+        effort: (caps?.reasoning ?? true)
+          ? resolveSupportedReasoningEffort(preset.effort ?? defaultEffort, caps?.reasoning_efforts ?? undefined)
+          : undefined,
         ...(controller.allowSpeed !== false ? { serviceTier: tier, fast: tier !== 'normal' } : {})
       },
       { model: family.id, provider: provider.slug }
@@ -1207,6 +1209,7 @@ function ModelFamilyRow({
         }
         provider={provider.slug}
         reasoning={caps?.reasoning ?? true}
+        reasoningEfforts={caps?.reasoning_efforts ?? undefined}
         serviceTier={effTier}
         ultrafastSupported={controller.allowSpeed !== false && (caps?.ultrafast ?? false)}
       />

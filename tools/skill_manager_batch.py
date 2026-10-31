@@ -231,13 +231,18 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
         return tool_error(f"operations is capped at {_BATCH_MAX_OPS} ops per call.", success=False)
     if any(isinstance(op, dict) and op.get("action") == "delete" for op in operations):
         if len(operations) != 1:
-            return tool_error("delete must be the SOLE op in its call — it doesn't "
-                              "compose with other ops' rollback.", success=False)
+            delete_op = next(op for op in operations
+                             if isinstance(op, dict) and op.get("action") == "delete")
+            name = delete_op.get("name") or default_name
+            if name:
+                _smt._mark_failed_delete_attempt(name, session_id)
+            return tool_error(_smt._delete_validation_refusal(), success=False)
         nm = operations[0].get("name") or default_name
         if not nm:
-            return tool_error("operations[0] (delete) needs a 'name'.", success=False)
+            return tool_error(_smt._delete_validation_refusal(), success=False)
         return _smt.skill_manage(action="delete", name=nm, task_id=task_id, session_id=session_id,
-                                 absorbed_into=operations[0].get("absorbed_into"))
+                                 absorbed_into=operations[0].get("absorbed_into"),
+                                 confirm=operations[0].get("confirm", False))
     names, err = _validate_batch_ops(operations, default_name, tool_error)
     if err is not None:
         return err

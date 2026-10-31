@@ -176,3 +176,97 @@ class TestNonempty400EnvelopeOverflowReply:
         text = "Context compression timed out without reducing this conversation. No messages were dropped."
         result = {**self._failed(text), "compression_exhausted": True}
         assert _normalize_empty_agent_response(result, text, history_len=138) == text
+
+
+class TestSystemInterruptNotice:
+    """A turn the SYSTEM stopped (lease loss, watchdog) with no visible reply must tell the user who
+    stopped it; a human stop and the gateway's own shutdown stay silent here (#84207, #144503)."""
+
+    @staticmethod
+    def _interrupted(reason, response=""):
+        return {"final_response": response, "interrupted": True, "api_calls": 1, "turn_exit_reason": reason}
+
+    def test_lease_lost_with_no_reply_gets_a_notice_naming_the_issuer(self):
+        result = self._interrupted("interrupted_by_system(session_turn_lease_lost)")
+        response = _normalize_empty_agent_response(result, "", history_len=10)
+        assert "session turn lease lost" in response
+        assert "send a message" in response.lower()
+
+    def test_bare_operation_interrupted_placeholder_gets_the_notice(self):
+        result = self._interrupted("interrupted_by_system(turn_liveness_watchdog)", "Operation interrupted.")
+        response = _normalize_empty_agent_response(result, "Operation interrupted.", history_len=10)
+        assert "turn liveness watchdog" in response
+
+    def test_user_stop_stays_silent(self):
+        assert _normalize_empty_agent_response(self._interrupted("interrupted_by_user"), "", history_len=10) == ""
+
+    def test_lease_lost_during_model_call_gets_the_notice(self):
+        # The waiting-for-model sentinel is stripped before send, so without the notice this is silence.
+        sentinel = "Operation interrupted: waiting for model response (12.0s elapsed)."
+        result = self._interrupted("interrupted_during_api_call(session_turn_lease_lost)", sentinel)
+        response = _normalize_empty_agent_response(result, sentinel, history_len=10)
+        assert "session turn lease lost" in response
+
+    def test_user_stop_during_model_call_stays_unchanged(self):
+        sentinel = "Operation interrupted: waiting for model response (3.0s elapsed)."
+        result = self._interrupted("interrupted_during_api_call", sentinel)
+        assert _normalize_empty_agent_response(result, sentinel, history_len=10) == sentinel
+
+    def test_gateway_shutdown_stays_silent(self):
+        result = self._interrupted("interrupted_by_system(gateway_shutdown)")
+        assert _normalize_empty_agent_response(result, "", history_len=10) == ""
+
+    def test_real_reply_under_system_interrupt_is_unchanged(self):
+        text = "Here is what I found before the stop."
+        result = self._interrupted("interrupted_by_system(session_turn_lease_lost)", text)
+        assert _normalize_empty_agent_response(result, text, history_len=10) == text
+
+
+@pytest.mark.asyncio
+async def test_lease_lost_turn_with_no_queued_message_delivers_the_notice(monkeypatch):
+    """End to end through the gateway: the system-interrupted turn's notice reaches ``adapter.send``."""
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.platforms.base import SendResult
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.session_authority import initialize_session_authority
+    from plugins.platforms.discord.adapter import DiscordAdapter
+    from tests.waiting import async_wait_until
+
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")
+    runner = GatewayRunner(GatewayConfig())
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fixture-token", typing_indicator=False))
+    sent = []
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        sent.append(content)
+        return SendResult(success=True, message_id="s1")
+
+    monkeypatch.setattr(adapter, "send", send)
+    adapter.gateway_runner = runner
+    runner.adapters = {Platform.DISCORD: adapter}
+    await initialize_session_authority(runner, profile_id="default", instance_id="owner")
+    runner._wire_adapter_handlers(adapter)
+    source = adapter.build_source(chat_id="42", chat_type="dm", user_id="42")
+
+    def run_sync(self):
+        result = {
+            "final_response": "", "messages": [], "completed": False, "interrupted": True, "api_calls": 1,
+            "turn_exit_reason": "interrupted_by_system(session_turn_lease_lost)",
+            "interrupt_message": "Session turn lease lost; stopping to protect the transcript.",
+        }
+        self._ctx.result_holder[0] = result
+        return result
+
+    monkeypatch.setattr(TurnRunner, "run_sync", run_sync)
+    # run_sync is faked, so the real agent module is never used; importing it runs the interrupted-pull
+    # repair, which reads the checkout's git dir (outside the isolated home in a linked worktree).
+    import sys
+    import types
+    monkeypatch.setitem(sys.modules, "run_agent", sys.modules.get("run_agent") or types.SimpleNamespace(AIAgent=object))
+    await adapter.handle_message(MessageEvent(text="check the CI run", source=source, message_id="A"))
+    key = runner.session_store._generate_session_key(source)
+    await async_wait_until(lambda: not runner._is_session_running(key) and not adapter._background_tasks,
+                           what="the turn to finish")
+    assert any("session turn lease lost" in str(text) for text in sent), sent

@@ -689,6 +689,7 @@ gateway:
     session_storage_unavailable: "⚠️ A munkamenet-tároló átmenetileg nem volt elérhető, ezért ez a kör leállt a beszélgetési előzményeid védelmében. Az üzeneted valószínűleg már mentve van — küldd el újra kis idő múlva."
     generic_failed: "⚠️ Hiba történt, és nem tudtam befejezni ezt a választ. Próbáld újra a /retry paranccsal, vagy kezdj új beszélgetést a /new paranccsal. A technikai részletek az átjáró naplójában vannak (`hermes logs`)."
     interrupted_before_start: "⚠️ Az üzeneted feldolgozása még el sem kezdődött, amikor megszakadt (valószínűleg egy friss /stop miatt). Küldd el újra."
+    interrupted_by_system: "⚠️ Ezt a kört a rendszer állította le ({issuer}), nem te. Ami épp futott, lehet, hogy nem fejeződött be. Küldj egy üzenetet a folytatáshoz."
     processing_incomplete: "a feldolgozás nem fejeződött be"
     stopped_before_finishing: "⚠️ Meg kellett állnom, mielőtt befejeztem volna{reason}. Próbáld újra a /retry paranccsal, vagy használd a /compress parancsot, ha a beszélgetés nagyon hosszúra nyúlt."
     no_response: "⚠️ A feldolgozás befejeződött, de nem született válasz. Ez lehet átmeneti hiba — küldd el újra az üzenetet."

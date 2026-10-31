@@ -19,6 +19,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.turn_context import TurnContext
+from gateway.todo_progress import TodoChecklist, TodoProgress, _dispatch_todo_progress
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
 
@@ -168,13 +169,8 @@ class GatewayTurnProgressMixin:
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
         if not ctx.progress_queue or not ctx._run_still_current():
             return
-        # Todo checklist: on tool.completed, render todo results as a compact
-        # checklist in the progress message bubble. Must run BEFORE the
-        # onboarding early-return below so it isn't blocked by that handler's
-        # blanket return for tool.completed events. Imported lazily to avoid an
-        # import cycle (run_turn_runner imports this module at load time).
-        from gateway.run_turn_runner import _dispatch_todo_progress
-        if _dispatch_todo_progress(ctx.progress_queue, event_type, tool_name, kwargs.get("result", ""), logger):
+        if (ctx.source.platform == Platform.TELEGRAM and ctx.tool_progress_enabled
+                and _dispatch_todo_progress(ctx.progress_queue, event_type, tool_name, kwargs.get("result"), logger)):
             return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
             self._progress_onboarding_hint(kwargs)
@@ -693,11 +689,14 @@ class GatewayTurnProgressMixin:
             with suppress(Exception):
                 await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
 
-    async def _drain_progress_on_cancel(self, st) -> None:
+    async def _drain_progress_on_cancel(self, st, todo=None) -> None:
         ctx = self._ctx
         with suppress(Exception):
             while not ctx.progress_queue.empty():
                 raw = ctx.progress_queue.get_nowait()
+                if isinstance(raw, TodoChecklist) and todo is not None:
+                    todo.absorb(raw)
+                    continue
                 if self._is_reset_marker(raw):
                     # Content-bubble marker during drain: close the current progress bubble
                     # and start a fresh one for tool lines that arrived after.
@@ -711,6 +710,8 @@ class GatewayTurnProgressMixin:
         if st.can_edit and st.progress_lines and st.progress_msg_id:
             await self._roll_progress_overflow_if_needed(st)
         await self._flush_progress_edit(st)
+        if todo is not None:
+            await todo.flush(force=True)
 
     async def _progress_restore_typing(self, st) -> None:
         ctx = self._ctx
@@ -759,45 +760,50 @@ class GatewayTurnProgressMixin:
             self._drain_progress_queue()
             return
         st = self._progress_edit_state(adapter)
+        todo = TodoProgress(self, adapter)
         last_edit_ts = 0.0
         EDIT_INTERVAL = 1.5  # Minimum seconds between edits (Telegram flood control)
-        while True:
-            try:
-                if not ctx._run_still_current():
-                    self._drain_progress_queue()
-                    return
-                raw = ctx.progress_queue.get_nowait()
-                # Drain silently when interrupted: events queued in the window between tool parse
-                # and interrupt processing should not render as bubbles.
-                if self._agent_interrupted():
-                    await asyncio.sleep(0)
-                    continue
-                if self._is_reset_marker(raw):
-                    self._reset_progress_bubble(st)
-                    continue
-                msg = self._progress_absorb(st, raw)
-                if not await self._roll_progress_overflow_if_needed(st):
-                    # Throttle edits: batch rapid tool updates into fewer API calls (grammY pattern:
-                    # proactively rate-limit rather than react to 429s). Loop back to drain further
-                    # queued messages before sending a single batched edit.
-                    remaining = EDIT_INTERVAL - (time.monotonic() - last_edit_ts)
-                    if remaining > 0:
-                        await asyncio.sleep(remaining)
-                        continue
+        try:
+            while True:
+                try:
                     if not ctx._run_still_current():
+                        self._drain_progress_queue()
                         return
-                    if not await self._progress_send_or_edit(st, msg):
+                    await todo.flush()
+                    raw = ctx.progress_queue.get_nowait()
+                    # Drain silently when interrupted: events queued in the window between tool parse
+                    # and interrupt processing should not render as bubbles.
+                    if self._agent_interrupted():
+                        await asyncio.sleep(0)
                         continue
-                last_edit_ts = time.monotonic()
-                await self._progress_restore_typing(st)
-            except queue.Empty:
-                await asyncio.sleep(0.3)
-            except asyncio.CancelledError:
-                await self._drain_progress_on_cancel(st)
-                return
-            except Exception as e:
-                logger.error("Progress message error: %s", e)
-                await asyncio.sleep(1)
+                    if isinstance(raw, TodoChecklist):
+                        todo.absorb(raw)
+                        continue
+                    if self._is_reset_marker(raw):
+                        self._reset_progress_bubble(st)
+                        continue
+                    msg = self._progress_absorb(st, raw)
+                    if not await self._roll_progress_overflow_if_needed(st):
+                        # Throttle edits: batch rapid tool updates into fewer API calls (grammY pattern:
+                        # proactively rate-limit rather than react to 429s). Loop back to drain further
+                        # queued messages before sending a single batched edit.
+                        remaining = EDIT_INTERVAL - (time.monotonic() - last_edit_ts)
+                        if remaining > 0:
+                            await asyncio.sleep(remaining)
+                            continue
+                        if not ctx._run_still_current():
+                            return
+                        if not await self._progress_send_or_edit(st, msg):
+                            continue
+                    last_edit_ts = time.monotonic()
+                    await self._progress_restore_typing(st)
+                except queue.Empty:
+                    await asyncio.sleep(0.3)
+                except Exception as e:
+                    logger.error("Progress message error: %s", e)
+                    await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            await self._drain_progress_on_cancel(st, todo)
 
     # ── ID-bearing lifecycle callbacks (agent thread) ───────────────────────────────────────
 

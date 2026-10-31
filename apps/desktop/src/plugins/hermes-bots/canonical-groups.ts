@@ -37,6 +37,9 @@ export interface CanonicalRoom {
   room_id: string
   name: string
   members: CanonicalRoomMember[]
+  authority_gateway_id?: string
+  authority_epoch?: number
+  revision?: number
   disbanded_at?: number | null
   /** Seconds; the last change to the room (`groups.list` orders by it). */
   updated_at?: number

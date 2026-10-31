@@ -75,8 +75,9 @@ python -m pm.build_env --source . --out .venv --group dev --group test
 如需重新生成，请先停止使用该环境的进程，再明确删除该可丢弃的环境。
 PM 不会自动删除已有目录。不要通过原始 pip 或 uv 命令修改 Hermes 环境。
 
-测试 runner 自动发现仓库的 `.venv`。它会清除 `PYTHONPATH`，因此 pytest 必须安装在解释器自身的环境中。
-也可将 `--out` 指向仓库外的新路径，再将 `HERMES_PYTHON` 设为该环境的解释器。
+运行测试不需要该环境：测试 runner 默认使用激活构建的受管测试环境，从不自动选用这里构建的环境（无论 `--out` 指向仓库内的 `.venv` 还是仓库外的新路径）。
+如需使用它，请在未激活的 shell 中将 `HERMES_PYTHON` 设为该环境的解释器。已激活的 shell 始终使用受管测试环境：请先运行 `deactivate`，或使用并非从已激活 shell 启动的终端（从中启动的子 shell 或编辑器会继承激活状态，但没有 `deactivate`）。
+runner 会清除 `PYTHONPATH`，因此 pytest 必须安装在解释器自身的环境中；不含 pytest 的解释器会被忽略。只有 runner 输出 `▶ not activated — using HERMES_PYTHON: …` 时才表示已生效。
 Windows 上通过 Bash 运行 `scripts/run_tests.sh`，并预先准备本机 C++ 编译环境。
 
 独立测试环境不替代 PM 工具存储或应用的依赖选择。不要修改签名应用的载荷。

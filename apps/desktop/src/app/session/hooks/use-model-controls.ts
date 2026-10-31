@@ -318,8 +318,8 @@ export function useModelControls({
       paintSelection()
       cacheSelection(selection.provider, selection.model)
 
-      // No live session yet: the pick is pure UI state. session.create reads
-      // $currentModel/$currentProvider and applies it as that session's override.
+      // No live session yet: session.create snapshots the persisted composer pick
+      // (not the runtime display) and applies it as that session's override.
       if (!liveSessionId) {
         return true
       }

@@ -805,6 +805,13 @@ compression:
   # summarization on a short idle thread. Example: 1800 = compact after 30 min idle.
   idle_compact_after_seconds: 0
 
+  # Gateway session-hygiene safety net by tokens (default: 0.85). Before the
+  # agent runs, the gateway compresses a transcript that has reached this
+  # fraction of the model's context window. Keep it above `threshold`: at or
+  # below it the gateway compresses before the agent's own compressor runs
+  # (logged as a warning; neither value is changed).
+  hygiene_threshold: 0.85
+
   # Gateway session-hygiene turn-hold budget (default: 10). Max seconds an
   # arriving user turn is held while a still-streaming hygiene summary
   # finishes. Distinct from hygiene_timeout_seconds (compressor inactivity

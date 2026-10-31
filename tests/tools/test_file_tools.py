@@ -543,6 +543,35 @@ class TestSessionCwdSurvivesEnvRecreation:
             tt.clear_session_cwd(task_id)
 
 
+class TestExactCopyFinalNewline:
+    def test_cross_file_copy_restores_one_final_lf(self, tmp_path):
+        import tools.file_tools as ft
+
+        task_id = f"copy-final-lf-{tmp_path.name}"
+        source = tmp_path / "source.txt"
+        target = tmp_path / "target.txt"
+        source.write_bytes(b"payload\n")
+
+        read_result = json.loads(ft.read_file_tool(str(source), task_id=task_id))
+        assert read_result["ends_with_newline"] is True
+
+        write_result = json.loads(ft.write_file_tool(str(target), "payload", task_id=task_id))
+        assert target.read_bytes() == b"payload\n"
+        assert write_result["final_newline_preserved_from"] == str(source.resolve())
+
+    def test_same_file_rewrite_can_remove_final_lf(self, tmp_path):
+        import tools.file_tools as ft
+
+        task_id = f"same-file-final-lf-{tmp_path.name}"
+        source = tmp_path / "source.txt"
+        source.write_bytes(b"payload\n")
+
+        ft.read_file_tool(str(source), task_id=task_id)
+        write_result = json.loads(ft.write_file_tool(str(source), "payload", task_id=task_id))
+        assert source.read_bytes() == b"payload"
+        assert "final_newline_preserved_from" not in write_result
+
+
 class TestSilentFileMisplacementE2E:
     """Real-IO regression for #26211.
 

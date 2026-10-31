@@ -51,32 +51,12 @@ function isBoundary(target: string, index: number): boolean {
   return prev === prev.toLowerCase() && cur !== cur.toLowerCase() && cur === cur.toUpperCase()
 }
 
-/**
- * Score a single query token against a target. Returns null when the token is
- * not a subsequence of the target. An empty query scores 0 with no positions.
- */
-export function fuzzyScore(target: string, query: string): FuzzyMatch | null {
-  if (!query) {
-    return { score: 0, positions: [] }
-  }
-
-  const lowerTarget = searchFold(target)
-  const lowerQuery = searchFold(query)
-
-  const positions: number[] = []
+/** Score one alignment (`positions`, ascending) of the folded query in the folded target. */
+function scorePositions(target: string, lowerTarget: string, lowerQuery: string, positions: readonly number[]): number {
   let score = 0
   let prevIndex = -1
-  let searchFrom = 0
 
-  for (const ch of lowerQuery) {
-    const idx = lowerTarget.indexOf(ch, searchFrom)
-
-    if (idx < 0) {
-      return null
-    }
-
-    positions.push(idx)
-
+  for (const idx of positions) {
     // Base point for the matched character.
     score += 1
 
@@ -99,7 +79,6 @@ export function fuzzyScore(target: string, query: string): FuzzyMatch | null {
     }
 
     prevIndex = idx
-    searchFrom = idx + 1
   }
 
   // Prefix bonus: the query matched a contiguous prefix of the target.
@@ -114,9 +93,59 @@ export function fuzzyScore(target: string, query: string): FuzzyMatch | null {
 
   // Slightly prefer shorter targets when scores are otherwise close, so a
   // query that fully prefixes a short id beats the same prefix on a long one.
-  score -= lowerTarget.length * 0.01
+  return score - lowerTarget.length * 0.01
+}
 
-  return { score, positions }
+/**
+ * Score a single query token against a target. Returns null when the token is
+ * not a subsequence of the target. An empty query scores 0 with no positions.
+ */
+export function fuzzyScore(target: string, query: string): FuzzyMatch | null {
+  if (!query) {
+    return { score: 0, positions: [] }
+  }
+
+  const lowerTarget = searchFold(target)
+  const lowerQuery = searchFold(query)
+  const positions: number[] = []
+  let searchFrom = 0
+
+  for (const ch of lowerQuery) {
+    const idx = lowerTarget.indexOf(ch, searchFrom)
+
+    if (idx < 0) {
+      return null
+    }
+
+    positions.push(idx)
+    searchFrom = idx + 1
+  }
+
+  let best: FuzzyMatch = { score: scorePositions(target, lowerTarget, lowerQuery, positions), positions }
+
+  // The greedy leftmost alignment can scatter the query over an earlier,
+  // unrelated part of the target: `opus` takes o/p from `anthropic` and u from
+  // `claude` in `anthropic/claude-opus-5.5`, ranking the real hit below
+  // `qwen3-coder-plus`. Every contiguous occurrence is another alignment; keep
+  // the best one (earendil-works/pi#11296).
+  for (let start = lowerTarget.indexOf(lowerQuery); start >= 0; start = lowerTarget.indexOf(lowerQuery, start + 1)) {
+    // One position per code point, like the greedy pass (an astral char spans two UTF-16 units).
+    const run: number[] = []
+    let at = start
+
+    for (const ch of lowerQuery) {
+      run.push(at)
+      at += ch.length
+    }
+
+    const score = scorePositions(target, lowerTarget, lowerQuery, run)
+
+    if (score > best.score) {
+      best = { score, positions: run }
+    }
+  }
+
+  return best
 }
 
 /**

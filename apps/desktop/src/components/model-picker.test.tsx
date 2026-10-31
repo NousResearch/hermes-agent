@@ -470,6 +470,25 @@ describe('ModelPickerDialog search ranking', () => {
     })
   })
 
+  // The ranker took each query letter at its first occurrence, so `opus` was
+  // scattered over `anthropic`/`claude` and the Opus row came LAST of four;
+  // a contiguous occurrence must win (earendil-works/pi#11296).
+  it('puts the row containing the query contiguously first', async () => {
+    const catalog = ['qwen/qwen3-coder-plus', 'cohere/command-a-plus', 'anthropic/claude-sonnet-5', 'anthropic/claude-opus-5.5']
+
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      providers: [{ slug: 'openrouter', name: 'OpenRouter', models: catalog, authenticated: true }]
+    })
+    renderPicker({ currentModel: 'qwen/qwen3-coder-plus', currentProvider: 'openrouter' })
+    await screen.findByText('qwen/qwen3-coder-plus')
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'opus' } })
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('option')[0]?.textContent?.trim()).toBe('anthropic/claude-opus-5.5')
+    })
+  })
+
   // Regression guard: main folded `[-_.]` on both sides (foldIncludes); the
   // shared ranker must too, or a query typed with the "wrong" separator
   // drops every row while the highlighter (which still folds) disagrees.

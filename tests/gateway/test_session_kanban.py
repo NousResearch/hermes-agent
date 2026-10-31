@@ -54,7 +54,35 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
         build_policy({'source': 'kanban', 'cwd': str(workspace)}, config)
 
 
-@pytest.mark.parametrize('mode', ['complete', 'timeout', 'rate_limit', 'billing', 'crash'])
+def test_owner_model_fixture_defaults_to_public_output(monkeypatch):
+    from http.client import HTTPConnection
+    from http.server import ThreadingHTTPServer
+    from threading import Thread
+
+    monkeypatch.syspath_prepend(str(Path(__file__).parent / 'fixtures'))
+    from kanban_owner_probe import Model
+
+    with ThreadingHTTPServer(('127.0.0.1', 0), Model) as peer:
+        peer.requests, peer.mode = [], 'complete'
+        peer.timeout = 5
+        assert not hasattr(peer, 'log_secret')
+        thread = Thread(target=peer.handle_request, daemon=True)
+        connection = HTTPConnection('127.0.0.1', peer.server_port, timeout=5)
+        thread.start()
+        try:
+            connection.request('POST', '/v1/chat/completions', body='{"messages": []}',
+                               headers={'Content-Type': 'application/json'})
+            response = connection.getresponse()
+            assert response.status == 200
+            payload = json.loads(response.read())
+        finally:
+            connection.close()
+            thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert payload['choices'][0]['message']['content'].strip() == 'OWNED_COMPLETE'
+
+
+@pytest.mark.parametrize('mode', ['complete', 'redacted_complete', 'timeout', 'rate_limit', 'billing', 'crash'])
 def test_real_dispatcher_lifecycle(tmp_path, mode):
     import os
     import subprocess
@@ -62,19 +90,24 @@ def test_real_dispatcher_lifecycle(tmp_path, mode):
     repo = Path(__file__).resolve().parents[2]
     from tests.gateway.fixtures.local_recovery_probe import child_env
     env = child_env()
-    env.update(HOME=str(tmp_path / 'home'), USERPROFILE=str(tmp_path / 'home'), HERMES_HOME=str(tmp_path / 'state'), PYTHONPATH=str(repo), KANBAN_PROBE_MODE=mode)
+    env.update(HOME=str(tmp_path / 'home'), USERPROFILE=str(tmp_path / 'home'), HERMES_HOME=str(tmp_path / 'state'), PYTHONPATH=str(repo),
+        KANBAN_PROBE_MODE='complete' if mode == 'redacted_complete' else mode,
+        KANBAN_PROBE_LOG_SECRET='1' if mode == 'redacted_complete' else '')
     result = subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures' / 'kanban_owner_probe.py')],
         env=env, cwd=repo, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=150, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     receipt = json.loads((tmp_path / 'state' / 'receipt.json').read_text())
     print(json.dumps(receipt))
-    if mode != 'complete':
+    if mode not in {'complete', 'redacted_complete'}:
         assert receipt['task_status'] == 'ready'
         return
     assert receipt['task_status'] == 'done' and receipt['source'] == 'kanban'
     assert receipt['tools'] and receipt['task_context'] and receipt['skill_context'] and receipt['hook_effect']
     assert receipt['admissions'] == 1 and receipt['retry_same_session']
     assert receipt['goal_continuation'] and receipt['stable_prefix']
+    if mode == 'redacted_complete':
+        assert receipt['owner_log_redacted']
+        assert receipt['owner_nonprefix_log_redacted']
     print(json.dumps(receipt))
 
 

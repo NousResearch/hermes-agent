@@ -36,7 +36,9 @@ class Model(BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
         has_result = any(m['role'] == 'tool' for m in messages)
-        message = {'role': 'assistant', 'content': 'OWNED_COMPLETE'}
+        secrets = 'sk-' + 'R' * 80 + '\npostgres://user:' + 'aB8x' * 75 + '@host/db'
+        content = 'OWNED_COMPLETE ' + (secrets if getattr(self.server, 'log_secret', False) else '')
+        message = {'role': 'assistant', 'content': content}
         finish = 'stop'
         if messages and not body.get('tools'):
             message['content'] = json.dumps({'verdict': 'done', 'reason': 'Owned acceptance satisfied'})
@@ -58,6 +60,21 @@ class Model(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
+def _verify_redacted_owner_log(peer, tid, receipt):
+    if not peer.log_secret:
+        return
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+
+    raw = (kb.worker_logs_dir(board='owned') / f'{tid}.log').read_bytes()
+    assert ('sk-' + 'R' * 80).encode() not in raw, 'owner response reached the log unredacted'
+    assert ('aB8x' * 60).encode() not in raw, 'non-prefix owner credential reached the log unredacted'
+    assert b'OWNED_COMPLETE' in raw, 'owner response was dropped instead of redacted'
+    assert (KANBAN_WORKER_EXIT_TRAILER + '0').encode() in raw, 'worker exit trailer was lost'
+    receipt['owner_log_redacted'] = True
+    receipt['owner_nonprefix_log_redacted'] = True
+
+
 def main():
     root = Path(__file__).resolve().parents[3]
     home = Path(os.environ['HERMES_HOME'])
@@ -67,6 +84,7 @@ def main():
     peer = ThreadingHTTPServer(('127.0.0.1', 0), Model)
     peer.requests = []
     peer.mode = os.environ.get('KANBAN_PROBE_MODE', 'complete')
+    peer.log_secret = os.environ.get('KANBAN_PROBE_LOG_SECRET') == '1'
     peer.blocked, peer.release = threading.Event(), threading.Event()
     threading.Thread(target=peer.serve_forever, daemon=True).start()
     url = f'http://127.0.0.1:{peer.server_port}/v1'
@@ -172,6 +190,7 @@ def main():
             if peer.mode != 'complete':
                 return
             assert receipt['client_exit'] == ('clean_exit', 0), receipt
+            _verify_redacted_owner_log(peer, tid, receipt)
             async def retry():
                 async with websocket(home, desc) as ws:
                     first = await rpc(ws, 'kanban.run', **params)

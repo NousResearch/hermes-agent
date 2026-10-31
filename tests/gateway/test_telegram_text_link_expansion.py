@@ -8,7 +8,7 @@ inlines the real URL right after its anchor for both ``text`` and ``caption``.
 
 import pytest
 
-from plugins.platforms.telegram.telegram_entities import expand_link_entities
+from plugins.platforms.telegram.telegram_entities import expand_link_entities, expand_quote_link_entities
 
 
 class _Entity:
@@ -103,3 +103,26 @@ def test_anchor_that_is_already_the_url_is_not_duplicated():
     url = "https://example.com/self"
     msg = _Message(text=f"see {url} now", entities=[_Entity("text_link", 4, len(url), url)])
     assert expand_link_entities(msg) == f"see {url} now"
+
+
+class _Quote:
+    def __init__(self, text, position):
+        self.text = text
+        self.position = position
+
+
+def test_quote_link_offsets_are_utf16_after_emoji():
+    # The emoji is two UTF-16 units: the quote starts at position 3, the link at offset 7.
+    replied = _Message(text="🔥 see docs here", entities=[_Entity("text_link", 7, 4, "https://example.com/d")])
+    assert expand_quote_link_entities(_Quote("docs here", 7), replied) == "docs (https://example.com/d) here"
+    assert expand_quote_link_entities(_Quote("see docs", 3), replied) == "see docs (https://example.com/d)"
+
+
+def test_quote_of_a_caption_uses_caption_links():
+    replied = _Message(caption="Chart: weekly", caption_entities=[_Entity("text_link", 7, 6, "https://example.com/w")])
+    assert expand_quote_link_entities(_Quote("weekly", 7), replied) == "weekly (https://example.com/w)"
+
+
+def test_quote_cutting_through_a_link_leaves_it_out():
+    replied = _Message(text="read the full report", entities=[_Entity("text_link", 9, 11, "https://example.com/r")])
+    assert expand_quote_link_entities(_Quote("read the full", 0), replied) == "read the full"

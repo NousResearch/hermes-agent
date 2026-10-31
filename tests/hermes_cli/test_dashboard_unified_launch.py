@@ -30,7 +30,8 @@ def _args(**kw):
 class TestUnifiedDashboardRouting:
 
 
-    def test_profile_launch_reexecs_machine_dashboard(self, main_mod, monkeypatch):
+    @pytest.mark.parametrize("external_supervisor", [False, True])
+    def test_profile_launch_reexecs_machine_dashboard(self, main_mod, monkeypatch, external_supervisor):
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
@@ -54,7 +55,7 @@ class TestUnifiedDashboardRouting:
                 lambda argv, env=None, **kw: spawns.append((argv, env)) or _Done(),
             )
             with pytest.raises(SystemExit):
-                main_mod.cmd_dashboard(_args())
+                main_mod.cmd_dashboard(_args(external_supervisor=external_supervisor))
             assert len(spawns) == 1
             argv, env = spawns[0]
         else:
@@ -67,12 +68,13 @@ class TestUnifiedDashboardRouting:
             monkeypatch.setattr(main_mod.os, "execvpe", fake_exec)
 
             with pytest.raises(SystemExit):
-                main_mod.cmd_dashboard(_args())
+                main_mod.cmd_dashboard(_args(external_supervisor=external_supervisor))
 
             assert len(execs) == 1
             exe, argv, env = execs[0]
             assert exe == sys.executable
 
+        assert ("--external-supervisor" in argv) is external_supervisor
         # Pinned to the default profile + launching profile preselected.
         assert "-p" in argv and argv[argv.index("-p") + 1] == "default"
         assert "--open-profile" in argv

@@ -1130,6 +1130,13 @@ def _handle_create(args: dict, **kw) -> str:
         if project_id is None and workspace_kind is None and workspace_path is None:
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
+            else:
+                # Only a real default_workdir upgrades the omitted kind. scratch / a
+                # project-scoped board stays omitted so create_task can inherit the
+                # project worktree (#106342) instead of pinning the repo root.
+                rec_kind, rec_path = kb.inherit_workspace_for_create(args.get("board"))
+                if rec_kind is not None:
+                    workspace_kind, workspace_path = rec_kind, rec_path
         new_tid = kb.create_task(
             conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
             parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),

@@ -346,7 +346,11 @@ def _cmd_create(args: argparse.Namespace) -> int:
             return _err(f"kanban: --body-file: {exc}", 2)
 
     try:
-        ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+        if getattr(args, "workspace", None) is None:
+            # Non-scratch board default_workdir; (None, None) keeps project-board inheritance.
+            ws_kind, ws_path = kb.inherit_workspace_for_create()
+        else:
+            ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
     except argparse.ArgumentTypeError as exc:
         return _err(f"kanban: {exc}", 2)

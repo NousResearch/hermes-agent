@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_MIN_INTERVAL_SECONDS = 30
 # Backstop tick budget so an unattended loop can't run forever. 0 = unlimited; config loops.max_ticks.
 DEFAULT_MAX_TICKS = 100
+# Consecutive slash ticks that show the user nothing (unknown command, dispatch error) before
+# the loop self-pauses instead of burning the whole tick budget silently.
+SLASH_NOOP_PAUSE_AFTER = 3
 # Self-paced mode: start at the floor, double while replies are unchanged, cap at the
 # ceiling, snap back to the floor on any change.
 DEFAULT_SELF_PACED_FLOOR_SECONDS = 60
@@ -192,6 +195,9 @@ class LoopState:
     # double-firing mid-turn and tells the post-turn hook the turn that just ended was ours.
     awaiting_response: bool = False
     last_response_digest: str = ""    # self-paced change detection
+    # Consecutive slash ticks with no output and no send-turn; persisted so a restart can't
+    # reset the pause countdown. Old state_meta rows without the key deserialize to 0.
+    slash_noop_streak: int = 0
     paused_reason: Optional[str] = None
     last_stop_reason: Optional[str] = None
     # Gateway routing (platform / chat_id / chat_type / thread_id) captured at creation so the
@@ -481,6 +487,7 @@ class LoopManager:
         if not s or s.status == "cleared":
             return None
         s.status, s.paused_reason, s.awaiting_response = "active", None, False
+        s.slash_noop_streak = 0  # fresh chance: one more invisible tick must not re-pause instantly
         # Re-arm relative to now so a long pause doesn't fire instantly N times.
         delay = s.current_delay or s.interval_seconds or self_paced_floor_seconds()
         s.next_due_at = time.time() + min(delay, 5.0)
@@ -534,6 +541,23 @@ class LoopManager:
         s.awaiting_response = False
         s.ticks_fired = max(0, s.ticks_fired - 1)
         self._save()
+
+    def record_slash_noop(self, progressed: bool) -> dict[str, Any]:
+        """Track one slash-prefixed tick's outcome; pause the loop after a streak of no-output ticks.
+
+        A slash tick whose command shows nothing and never starts a send-turn is a no-op (unknown
+        command, dispatch failure); without this the loop burns its whole tick budget silently."""
+        s = self._state
+        if s is None:
+            return {"status": None, "stopped": False, "reason": "no loop", "message": ""}
+        s.slash_noop_streak = 0 if progressed else s.slash_noop_streak + 1
+        if s.slash_noop_streak >= SLASH_NOOP_PAUSE_AFTER:
+            s.awaiting_response = False  # this tick is over; a paused loop must not look mid-turn
+            why = f"slash command produced no output {s.slash_noop_streak} ticks in a row"
+            return self._stop("paused", why,
+                              f"⏸ Loop paused — {why}. /loop resume to keep going, /loop stop to end it.")
+        self._save()
+        return {"status": s.status, "stopped": False, "reason": "loop continues", "message": ""}
 
     def _stop(self, status: str, reason: str, message: str) -> dict[str, Any]:
         """Persist a terminal (``done``) or recoverable (``paused``) stop and build the result."""

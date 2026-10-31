@@ -594,6 +594,76 @@ async def test_mattermost_top_level_channel_post_is_thread_root():
     assert msg_event.message_id == "top_post_123"
 
 
+@pytest.mark.asyncio
+async def test_mattermost_dm_root_post_seeds_thread_id_for_session_continuity():
+    """DM root posts must seed thread_id=post_id so that threaded DM replies
+    land in the same session key (session-continuity split fix).
+
+    Before this fix the `and not is_dm` guard left a root DM post with
+    thread_id=None (session key "<chat>") while its threaded replies carried
+    root_id (session key "<chat>:<root_id>"), so the agent lost all context on
+    the first threaded reply.
+    """
+    adapter = _make_adapter()
+    adapter._reply_mode = "thread"
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter.handle_message = AsyncMock()
+    post_data = {
+        "id": "dm_post_123",
+        "user_id": "user_123",
+        "channel_id": "dm_chan",
+        "message": "hi",
+        "root_id": "",
+    }
+    event = {
+        "event": "posted",
+        "data": {
+            "post": json.dumps(post_data),
+            "channel_type": "D",
+            "sender_name": "@alice",
+        },
+    }
+
+    await adapter._handle_ws_event(event)
+
+    msg_event = adapter.handle_message.call_args[0][0]
+    assert msg_event.source.thread_id == "dm_post_123"
+    assert msg_event.source.message_id == "dm_post_123"
+
+
+@pytest.mark.asyncio
+async def test_mattermost_dm_reply_uses_root_id_as_thread_id():
+    """DM thread replies carry root_id; the session key must match the root
+    post's thread_id so the reply continues the root DM's session."""
+    adapter = _make_adapter()
+    adapter._reply_mode = "thread"
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter.handle_message = AsyncMock()
+    post_data = {
+        "id": "dm_reply_456",
+        "user_id": "user_123",
+        "channel_id": "dm_chan",
+        "message": "follow-up",
+        "root_id": "dm_post_123",  # threaded reply
+    }
+    event = {
+        "event": "posted",
+        "data": {
+            "post": json.dumps(post_data),
+            "channel_type": "D",
+            "sender_name": "@alice",
+        },
+    }
+
+    await adapter._handle_ws_event(event)
+
+    msg_event = adapter.handle_message.call_args[0][0]
+    assert msg_event.source.thread_id == "dm_post_123"
+    assert msg_event.source.message_id == "dm_reply_456"
+
+
 # ---------------------------------------------------------------------------
 # Multiplex secondary-profile scope
 # ---------------------------------------------------------------------------

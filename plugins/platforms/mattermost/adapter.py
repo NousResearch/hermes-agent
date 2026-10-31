@@ -566,9 +566,14 @@ class MattermostAdapter(BasePlatformAdapter):
             message_text = self._apply_channel_gating(channel_id, message_text)
             if message_text is None:
                 return
-        # Thread support: replies use root_id; in thread mode a top-level channel post is itself a valid root.
+        # Thread support: replies use root_id; in thread mode a top-level post
+        # is itself a valid root. DMs included — a DM root post seeds
+        # thread_id=post_id so that threaded DM replies (which carry
+        # root_id=<root>) resolve to the same session key. Without this, the
+        # root lands in "<chat>" and every reply in "<chat>:<root_id>", and the
+        # agent loses all context on the first threaded reply.
         thread_id = post.get("root_id") or None
-        if not thread_id and self._reply_mode == "thread" and not is_dm and post_id:
+        if not thread_id and self._reply_mode == "thread" and post_id:
             thread_id = post_id
         if message_text[:1].isspace() and message_text.lstrip().startswith("/"):
             message_text = message_text.lstrip()

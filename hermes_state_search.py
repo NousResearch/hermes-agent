@@ -130,7 +130,7 @@ def _search_slow_ms() -> float:
 # Characters FTS5's query grammar rejects outside a quoted phrase (anything missing
 # reaches MATCH raw and raises -> zero results). ``%`` is deliberately excluded: the
 # CJK LIKE fallback needs it literal (that path escapes wildcards itself).
-_FTS5_SPECIAL_CHARS = '+{}():"^@/#&|~[]<>,;!?$=\\\''
+_FTS5_SPECIAL_CHARS = '+{}():"^@/#&|~[]<>,;!?$=`\\\''
 _FTS5_SPECIAL_RE = re.compile(f"[{re.escape(_FTS5_SPECIAL_CHARS)}]")
 
 _FTS_OPERATORS = frozenset({"AND", "OR", "NOT"})
@@ -1031,15 +1031,17 @@ class SessionSearchMixin:
         sanitized = _FTS5_SPECIAL_RE.sub(" ", sanitized)
         if "%" in sanitized and not SessionSearchMixin._contains_cjk(sanitized):
             sanitized = sanitized.replace("%", " ")
-        # 3. Collapse repeated * and drop leading * (prefix needs a char).
+        # 3. Quote dotted/hyphenated/underscored terms in ONE pass (sequential passes
+        # double-quote ``my-app.config``), then blank any ``.``/``-`` left outside a
+        # quote: a sentence's full stop or a lone dash is an FTS5 syntax error.
+        sanitized = re.sub(r"\b(\w+(?:[._-]\w+)+)\b", r'"\1"', sanitized)
+        sanitized = re.sub(r'("[^"]*")|[.-]', lambda m: m.group(1) or " ", sanitized)
+        # 4. Collapse repeated * and drop leading * (prefix needs a char).
         sanitized = re.sub(r"\*+", "*", sanitized)
         sanitized = re.sub(r"(^|\s)\*", r"\1", sanitized)
-        # 4. Drop dangling boolean operators at start/end (syntax errors).
+        # 5. Drop dangling boolean operators at start/end (syntax errors).
         sanitized = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
         sanitized = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", sanitized.strip())
-        # 5. Quote dotted/hyphenated/underscored terms in ONE pass (sequential passes
-        # double-quote ``my-app.config``).
-        sanitized = re.sub(r"\b(\w+(?:[._-]\w+)+)\b", r'"\1"', sanitized)
         # 6. Restore preserved quoted phrases.
         for i, quoted in enumerate(_quoted_parts):
             sanitized = sanitized.replace(f"\x00Q{i}\x00", quoted)

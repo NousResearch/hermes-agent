@@ -33,7 +33,15 @@ const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
 // transport and askpass helpers `git push` authenticates with, and
 // GIT_TERMINAL_PROMPT, which stops a credential prompt from blocking a git
 // process that has no terminal.
-export const SIMPLE_GIT_ALLOWED_ENV = ['GIT_SSH_COMMAND', 'GIT_SSH', 'GIT_ASKPASS', 'SSH_ASKPASS', 'GIT_TERMINAL_PROMPT']
+// GIT_OPTIONAL_LOCKS is set by `gitFor` itself (see `withoutOptionalLocks`).
+export const SIMPLE_GIT_ALLOWED_ENV = [
+  'GIT_SSH_COMMAND',
+  'GIT_SSH',
+  'GIT_ASKPASS',
+  'SSH_ASKPASS',
+  'GIT_TERMINAL_PROMPT',
+  'GIT_OPTIONAL_LOCKS'
+]
 
 // simple-git's vulnerability check additionally rejects GIT_SSH/GIT_SSH_COMMAND
 // and GIT_ASKPASS/SSH_ASKPASS in an explicit `.env()` (the Windows host path
@@ -56,8 +64,10 @@ function isGuardedGitEnvKey(key: string): boolean {
 // `.env()` receives, so the rest of the environment is forwarded minus the
 // guarded keys that are not allow-listed.
 export function simpleGitHostEnv(base: NodeJS.ProcessEnv | undefined, gitBin: string): NodeJS.ProcessEnv {
-  const env = noConsoleGitEnv(base, gitBin)
+  return dropGuardedEnv(noConsoleGitEnv(base, gitBin))
+}
 
+function dropGuardedEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   for (const key of Object.keys(env)) {
     if (isGuardedGitEnvKey(key) && !ALLOWED_ENV_KEYS.has(key.toLowerCase().trim())) {
       delete env[key]
@@ -65,6 +75,18 @@ export function simpleGitHostEnv(base: NodeJS.ProcessEnv | undefined, gitBin: st
   }
 
   return env
+}
+
+// The coding rail and Review pane poll `git status` in the user's repo while the
+// agent may be running `git add`/`git commit` there. A status over stale stat
+// data takes .git/index.lock to write the refreshed index, so the agent's
+// command fails with "Unable to create '.git/index.lock': File exists" (and a
+// status killed mid-refresh orphans the lock). With optional locks off, reads
+// never take the lock; add/commit/checkout still take the locks they need.
+// Same rule as `noninteractive_git_env` on the Python side; inspired by Claude
+// Code 2.1.314 ("background diff refreshes briefly taking the index lock").
+function withoutOptionalLocks(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...env, GIT_OPTIONAL_LOCKS: '0' }
 }
 
 // GUI-launched Electron apps on macOS inherit only a minimal PATH (no
@@ -122,7 +144,11 @@ function gitFor(cwd, gitBin) {
     unsafe: { ...SIMPLE_GIT_ALLOWED_ENV_UNSAFE, ...(unsafeBinary ? { allowUnsafeCustomBinary: true } : {}) }
   })
 
-  return Array.isArray(binary) ? git.env(simpleGitHostEnv(process.env, gitBin || 'git')) : git
+  const env = Array.isArray(binary)
+    ? simpleGitHostEnv(process.env, gitBin || 'git')
+    : dropGuardedEnv({ ...process.env })
+
+  return git.env(withoutOptionalLocks(env))
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve

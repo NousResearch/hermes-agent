@@ -130,6 +130,25 @@ test('simpleGitHostEnv forwards the allow-listed git variables and drops the oth
   })
 })
 
+// A status over stale stat data rewrites .git/index under index.lock; the
+// coding rail polls status while the agent may be committing in the same repo.
+test('gitFor status never rewrites the index (no optional index.lock)', async () => {
+  const dir = makeRepo()
+  const tracked = path.join(dir, 'tracked.txt')
+  const index = path.join(dir, '.git', 'index')
+  const stale = () => fs.utimesSync(tracked, new Date(Date.now() + 5_000), new Date(Date.now() + 5_000))
+
+  stale()
+  const before = fs.readFileSync(index)
+
+  await gitFor(dir, '').status()
+  assert.deepEqual(fs.readFileSync(index), before)
+
+  // Control: the same stale tree makes a plain `git status` rewrite the index.
+  execFileSync('git', ['status', '--porcelain'], { cwd: dir, env: { ...process.env, GIT_OPTIONAL_LOCKS: '1' } })
+  assert.notDeepEqual(fs.readFileSync(index), before)
+})
+
 test('simpleGitHostEnv still defaults GIT_TERMINAL_PROMPT off for the host tuple', () => {
   assert.equal(simpleGitHostEnv({ PATH: '/bin' }, 'git').GIT_TERMINAL_PROMPT, '0')
 })

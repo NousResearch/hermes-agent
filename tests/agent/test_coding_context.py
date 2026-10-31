@@ -114,6 +114,51 @@ class TestWorkspaceBlock:
         assert "clean" not in block.split("Status:")[1].splitlines()[0]
 
 
+class TestStatusProbeTakesNoOptionalIndexLock:
+    """A bounded status probe killed at its timeout must not orphan ``.git/index.lock``.
+
+    git writes the index only through ``index.lock``, so a byte-identical index after a probe
+    over stale stat data means the lock was never taken. The plain ``git status`` control in the
+    same fixture proves the stat data was stale enough to make git refresh (and lock) the index.
+    """
+
+    @staticmethod
+    def _stale_repo(tmp_path):
+        _git_init(tmp_path)
+        stamp = os.stat(tmp_path / "main.py").st_mtime - 3600
+        os.utime(tmp_path / "main.py", (stamp, stamp))
+        return tmp_path / ".git" / "index"
+
+    @staticmethod
+    def _status_argv(repo):
+        return ["git", "-C", str(repo), "status", "--porcelain=2", "--branch"]
+
+    @pytest.mark.parametrize("probe", ["default_env", "repo_env", "workspace_block"])
+    def test_status_probe_leaves_index_byte_identical(self, tmp_path, monkeypatch, probe):
+        from hermes_cli._subprocess_compat import bounded_git_probe, noninteractive_repo_git_env
+
+        monkeypatch.delenv("GIT_OPTIONAL_LOCKS", raising=False)
+        index = self._stale_repo(tmp_path)
+        before = index.read_bytes()
+
+        if probe == "default_env":
+            assert bounded_git_probe(self._status_argv(tmp_path), timeout=30)
+        elif probe == "repo_env":
+            env = noninteractive_repo_git_env(tmp_path)
+            assert env is not None
+            assert bounded_git_probe(self._status_argv(tmp_path), timeout=30, env=env)
+        else:
+            assert "Branch: main" in cc.build_coding_workspace_block(tmp_path)
+
+        assert index.read_bytes() == before
+        assert not (tmp_path / ".git" / "index.lock").exists()
+
+        # Control: plain git status on the same stale fixture refreshes (rewrites) the index.
+        subprocess.run([shutil.which("git"), *self._status_argv(tmp_path)[1:]], check=True,
+                       capture_output=True)
+        assert index.read_bytes() != before
+
+
 # ── project facts (verify-loop detection) ───────────────────────────────────
 
 class TestProjectFacts:

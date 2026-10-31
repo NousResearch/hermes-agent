@@ -256,6 +256,14 @@ def _start_agent_build(sid: str, session: dict) -> None:
             scopes = _bind_build_profile_scopes(profile_home)
             if profile_home:
                 session_db = _open_profile_session_db(profile_home)
+            prefetch = None
+            if not current.get("resume_session_id"):
+                try:
+                    from agent.workspace_prefetch import start_workspace_snapshot_prefetch
+                    prefetch = start_workspace_snapshot_prefetch(
+                        platform=_resolve_agent_platform(_session_source(current)))
+                except Exception:  # health: allow BLE001 -- speculative prefetch must never fail the agent build
+                    logger.debug("Workspace snapshot prefetch startup failed", exc_info=True)
             try:
                 from tui_gateway.entry import ensure_mcp_discovery_started
                 ensure_mcp_discovery_started()
@@ -265,6 +273,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 agent = _make_agent(sid, key, **_deferred_build_agent_kwargs(current, session_db))
             finally:
                 _clear_session_context(tokens)
+            if prefetch is not None:
+                from agent.workspace_prefetch import attach_workspace_snapshot_prefetch
+                attach_workspace_snapshot_prefetch(agent, prefetch)
             # Attach atomically against session teardown: ``session.close`` may have popped this
             # session while the expensive build was in flight, in which case teardown could not close
             # an agent that did not exist yet. Release the orphan immediately and do not keep wiring

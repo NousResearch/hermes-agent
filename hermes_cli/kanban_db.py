@@ -9809,6 +9809,15 @@ def _read_assignee_credentials(
         set_hermes_home_override = None  # type: ignore[assignment]
         reset_hermes_home_override = None  # type: ignore[assignment]
 
+    # Pool seeding also consults the active secret scope.  Scope secrets to the
+    # assignee too; the dispatcher may already have another profile's scope.
+    try:
+        from agent.secret_scope import load_env_file, reset_secret_scope, set_secret_scope
+        secret_scope_token = set_secret_scope(load_env_file(hermes_home / ".env"))
+    except Exception:
+        reset_secret_scope = None  # type: ignore[assignment]
+        secret_scope_token = None
+
     override_token = None
     if set_hermes_home_override is not None:
         try:
@@ -9974,6 +9983,11 @@ def _read_assignee_credentials(
         if override_token is not None and reset_hermes_home_override is not None:
             try:
                 reset_hermes_home_override(override_token)
+            except Exception:
+                pass
+        if secret_scope_token is not None and reset_secret_scope is not None:
+            try:
+                reset_secret_scope(secret_scope_token)
             except Exception:
                 pass
 

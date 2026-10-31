@@ -323,6 +323,81 @@ async def test_discord_reply_message_skips_auto_thread(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_discord_reply_with_explicit_mention_auto_threads(adapter, monkeypatch):
+    """A quote-reply that explicitly @mentions Hermes threads like any mention (#123853)."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+
+    created_thread = FakeThread(channel_id=456, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=created_thread)
+    captured_media = {}
+
+    async def _capture_media(all_attachments):
+        captured_media["attachments"] = list(all_attachments)
+        return [], [], [], None
+
+    adapter._collect_attachment_media = _capture_media
+
+    bot_user = adapter._client.user
+    referenced_attachment = SimpleNamespace(content_type="image/png", filename="quote.png")
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content=f"<@{bot_user.id}> what about this quote",
+        mentions=[bot_user],
+        msg_type=discord_platform.discord.MessageType.reply,
+    )
+    message.reference = SimpleNamespace(
+        message_id=42,
+        resolved=SimpleNamespace(id=42, content="the quoted message", attachments=[referenced_attachment]),
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once_with(message)
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.source.chat_id == "456"
+    assert event.source.parent_chat_id == "321"
+    # Quote context still reaches the event when threaded.
+    assert event.reply_to_message_id == "42"
+    assert event.reply_to_text == "the quoted message"
+    assert referenced_attachment in captured_media["attachments"]
+
+
+@pytest.mark.asyncio
+async def test_discord_reply_with_only_reply_ping_stays_inline(adapter, monkeypatch):
+    """Discord's implicit reply-ping alone must not thread the reply (#9399).
+
+    Replying to the bot puts it in ``message.mentions`` with no typed token;
+    that implicit ping is not an explicit mention for auto-threading.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+
+    adapter._auto_create_thread = AsyncMock()
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="reply relying on the implicit reply-ping",
+        mentions=[bot_user],
+        msg_type=discord_platform.discord.MessageType.reply,
+    )
+    message.reference = SimpleNamespace(message_id=42, resolved=None)
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+    assert event.source.chat_id == "321"
+
+
+@pytest.mark.asyncio
 async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_thread(adapter, monkeypatch):
     """Active voice-linked text channels should behave like free-response channels."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")

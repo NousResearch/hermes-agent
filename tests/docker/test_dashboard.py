@@ -113,7 +113,7 @@ except urllib.error.HTTPError as h:
                 last_err = f"parse: {exc!r} / stdout={r.stdout!r}"
         else:
             last_err = f"rc={r.returncode} stderr={r.stderr!r}"
-        time.sleep(0.5)
+        time.sleep(min(0.5, max(0.0, end - time.monotonic())))
     raise AssertionError(
         f"Probe of {path} never returned HTTP within {deadline_s}s; "
         f"last error: {last_err}"

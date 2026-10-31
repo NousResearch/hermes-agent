@@ -20,7 +20,10 @@ class CanonicalSessionParams(ProfileParams):
 
 class CanonicalCreateParams(ProfileParams):
     request_id: str | None = None
-    source: Literal['cli', 'tui', 'gui', 'acp', 'tool', 'oneshot'] = 'cli'
+    # ``desktop`` is the label the gateway STORES for ``gui``, so a client copying a stored row's
+    # label back creates with it. ``''``/null: a client that leaves the label blank means the surface
+    # it is running on (``gui``); the policy normalizes both (``gateway.session_policy.build_policy``).
+    source: Literal['cli', 'tui', 'gui', 'desktop', 'acp', 'tool', 'oneshot', ''] | None = 'cli'
     cwd: str | None = None
     # The sessions-row ``cwd`` when it differs from the execution ``cwd`` (the classic CLI records
     # main's stamp: the launch dir, ``""`` = none); ``cwd`` stays where the tools run.

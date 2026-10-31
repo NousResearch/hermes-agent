@@ -8394,17 +8394,26 @@
             "title": "Request Id"
           },
           "source": {
-            "default": "cli",
-            "enum": [
-              "cli",
-              "tui",
-              "gui",
-              "acp",
-              "tool",
-              "oneshot"
+            "anyOf": [
+              {
+                "enum": [
+                  "cli",
+                  "tui",
+                  "gui",
+                  "desktop",
+                  "acp",
+                  "tool",
+                  "oneshot",
+                  ""
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Source",
-            "type": "string"
+            "default": "cli",
+            "title": "Source"
           },
           "cwd": {
             "anyOf": [

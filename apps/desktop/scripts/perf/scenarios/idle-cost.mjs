@@ -20,7 +20,7 @@ import { sleep } from '../lib/cdp.mjs'
 
 /** Seed `tiles` busy session tiles. Same publish path as `multitab` /
  *  `render-churn`, but the driver never runs — the turn just stays open. */
-const setup = (tiles, seedTurns) => `
+export const seedBusyTiles = (tiles, seedTurns) => `
   (() => {
     const hook = window.__HERMES_SESSION_TILES__
     if (!hook) return 'no-hook'
@@ -58,7 +58,7 @@ const setup = (tiles, seedTurns) => `
   })()
 `
 
-const reveal = sid => `window.__HERMES_LAYOUT_TREE__.reveal(${JSON.stringify(`session-tile:${sid}`)})`
+export const reveal = sid => `window.__HERMES_LAYOUT_TREE__.reveal(${JSON.stringify(`session-tile:${sid}`)})`
 
 /** Measure the app's self-inflicted commit rate with nothing happening. */
 const idleCost = seconds => `
@@ -183,7 +183,7 @@ const TYPE = withFrames(`
   }
 `)
 
-const CLEANUP = `
+export const BUSY_TILES_CLEANUP = `
   (() => {
     if (window.__IDLE__) {
       for (const { sid, rid } of window.__IDLE__.ids) {
@@ -217,7 +217,7 @@ export default {
 
     await cdp.send('Runtime.enable')
 
-    const ok = await cdp.eval(setup(tiles, seedTurns))
+    const ok = await cdp.eval(seedBusyTiles(tiles, seedTurns))
 
     if (ok !== 'ok') {
       throw new Error(`idle-cost setup failed (${ok}) — needs a dev renderer with src/debug installed.`)
@@ -237,7 +237,7 @@ export default {
     const type = JSON.parse(await cdp.eval(TYPE))
     const typeTarget = await cdp.eval('window.__TYPE_TARGET__ || "unknown"')
 
-    await cdp.eval(CLEANUP)
+    await cdp.eval(BUSY_TILES_CLEANUP)
 
     if (dragTarget === 'none') {
       throw new Error('idle-cost: no [role="separator"] sash found — the drag measured nothing.')

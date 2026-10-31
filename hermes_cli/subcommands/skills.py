@@ -86,6 +86,15 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     skills_audit.add_argument("name", nargs="?", help="Specific skill to audit (default: all)")
     _flag(skills_audit, "--deep", help="Run AST-level analysis on Python files (opt-in diagnostic)")
 
+    skills_doctor = skills_subparsers.add_parser(
+        "doctor", help="Reconcile the skills usage registry against on-disk skill dirs",
+        description="Name-based reconciliation of skills/.usage.json against the skills/ tree. "
+            "Exits non-zero when an active/stale registry entry that is pinned or was used/viewed "
+            "within the last 14 days resolves to no on-disk skill dir and no .archive copy — the "
+            "ORCA-06 registry/disk desync signature. Hub-viewed-only and archived entries are "
+            "excluded; pinned entries are always checked.")
+    add_json_flag(skills_doctor, "Output the full report as JSON")
+
     skills_uninstall = skills_subparsers.add_parser(
         "uninstall", help="Remove a hub-installed skill")
     skills_uninstall.add_argument("name", help="Skill name to remove")

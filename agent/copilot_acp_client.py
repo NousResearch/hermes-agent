@@ -409,8 +409,20 @@ class CopilotACPClient:
         def _request(method: str, params: dict[str, Any], *, text_parts: list[str] | None = None,
                      reasoning_parts: list[str] | None = None) -> Any:
             request_id = next(request_ids)
-            proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}) + "\n")
-            proc.stdin.flush()
+            try:
+                proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}) + "\n")
+                proc.stdin.flush()
+            except OSError as exc:
+                if proc.poll() is None:
+                    try:
+                        proc.wait(timeout=0.2)
+                    except Exception:
+                        pass
+                stderr_pump.join(timeout=1.0)
+                stderr_text = "\n".join(stderr_tail).strip()
+                if _is_gh_copilot_deprecation_message(stderr_text):
+                    raise RuntimeError(_DEPRECATED_CLI_ERROR + stderr_text) from exc
+                raise RuntimeError(f"Copilot ACP process exited early: {stderr_text or f'exit code {proc.returncode}'}") from exc
             deadline = session_deadline
             while time.monotonic() < deadline and proc.poll() is None:
                 try:

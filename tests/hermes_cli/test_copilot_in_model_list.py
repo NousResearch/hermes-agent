@@ -142,3 +142,21 @@ def test_copilot_acp_session_probe_is_memoized_across_model_switch_validation(_f
         for _ in range(3):
             provider_model_ids("copilot-acp")
     assert list_models.call_count == 1
+
+
+def test_copilot_acp_fetch_models_returns_none_when_disabled_in_config():
+    """Setting providers.copilot-acp.enabled: false silences model discovery."""
+    from providers import get_provider_profile
+
+    profile = get_provider_profile("copilot-acp")
+    assert profile is not None
+
+    with patch("hermes_cli.config.load_config", return_value={"providers": {"copilot-acp": {"enabled": False}}}), \
+         patch("hermes_cli.auth.resolve_external_process_provider_credentials") as mock_resolve:
+        assert profile.fetch_models() is None
+        mock_resolve.assert_not_called()
+
+    with patch("hermes_cli.config.load_config", return_value={"providers": {"copilot_acp": {"enabled": False}}}), \
+         patch("hermes_cli.auth.resolve_external_process_provider_credentials") as mock_resolve:
+        assert profile.fetch_models() is None
+        mock_resolve.assert_not_called()

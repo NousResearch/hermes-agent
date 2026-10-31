@@ -588,3 +588,18 @@ def test_cli_death_is_reported_as_a_crash_not_a_timeout(tmp_path):
         assert "exited early: fatal: agent segfaulted" in str(exc)
     else:
         raise AssertionError("session on a dead CLI must raise")
+
+
+def test_stdin_broken_pipe_is_reported_as_a_clean_crash(tmp_path):
+    """When a subprocess exits immediately, writing to stdin raises BrokenPipeError.
+    This must be reported as a clean RuntimeError, not an unhandled BrokenPipeError."""
+    server = tmp_path / "immediate_exit.py"
+    server.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
+    client = CopilotACPClient(command=sys.executable, args=[str(server)], acp_cwd=str(tmp_path))
+    try:
+        with client._session(5):
+            pass
+    except RuntimeError as exc:
+        assert "exited early" in str(exc)
+    else:
+        raise AssertionError("session on an immediately exiting CLI must raise RuntimeError")

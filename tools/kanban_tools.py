@@ -646,7 +646,11 @@ def inject_new_comments_from_env(agent: Any) -> bool:
     fresh = [c for c in rows if (c.author or "").strip() != own and (c.body or "").strip()]
     if not fresh:
         return False
-    lines = [f"- {c.author or 'operator'}: {c.body.strip()}" for c in fresh]
+    from hermes_cli.kanban_db_context import comment_image_lines
+    lines = []
+    for c in fresh:
+        lines.append(f"- {c.author or 'operator'}: {c.body.strip()}")
+        lines.extend(f"  {line}" for line in comment_image_lines(c.body))
     note = ("New note" + ("s" if len(fresh) > 1 else "")
             + " on your kanban task from the operator (delivered mid-run). "
             + "Take it into account for the work you're doing right now:\n" + "\n".join(lines))

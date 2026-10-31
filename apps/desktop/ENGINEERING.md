@@ -191,6 +191,27 @@ reopens the gesture-less forced-navigation class the advisory closed.
   from the retention budget.
 - Root geometry variables are not theme changes. Authored custom CSS can depend
   on those variables, so it must retain full repaint notifications.
+- Streaming keeps visible native windows painting even while blurred or occluded.
+  Hidden/minimized windows retain default throttling; show/restore reapplies the
+  current stream policy. Do not use focus as visibility or stop background data
+  delivery. Native activity leases can wake a hidden owner without restoring it.
+  Voice-enabled owners conservatively retain their existing streaming cadence:
+  speech output still consumes frame-published text, even though microphone
+  detection itself follows the audio clock.
+- Functional stream deadlines are not display loops. Delta coalescing and the
+  400 ms post-commit journal debounce use `src/lib/stream-work-clock.ts`, racing
+  the ordinary renderer timer with one pending native wake per owning renderer.
+  Incoming events can also drain overdue work; they cannot finish a quiet tail.
+  Do not replace the native fallback with rAF or re-enable hidden painting.
+- `electron/stream-work-clock.ts` accepts only bounded relative delays from the
+  owning window's main frame. Cancellation/generation tokens fence late wakes;
+  navigation, renderer loss and destruction clear native work. No pending work
+  means no wake timer. This preserves coalescing, not a real-time crash-loss bound
+  through blocked event loops, storage failures or OS sleep.
+- Stop commits already-received queued deltas before marking the turn interrupted.
+  Journal snapshots must continue advancing while display callbacks are parked.
+  Verify the quiet tail with the provider paused, not only a continuously arriving
+  stream that can hide a throttled-timer bug.
 - Idle preview guests use Chromium's background throttling. Owned activity
   leases wake the guest and its embedding window; the window controller still
   arbitrates streaming and Wayland fullscreen policy. One operation finishing
@@ -202,6 +223,10 @@ reopens the gesture-less forced-navigation class the advisory closed.
   old document must release its lease. Reapply the guest wake after loading:
   Electron's stored throttling flag does not prove a replacement widget is awake.
   Preserve the existing script completion-value contract and plugin consent.
+  Registered preview reads must use the same owned script lease; a direct
+  `webview.executeJavaScript` call bypasses hidden-window readiness guarantees.
+  First-party page reads have an eight-second deadline and abort when their
+  reader registration is removed, so a stalled page cannot retain a wake hold.
 - Capture leases cover paint waits and image capture, not waiting for a user's
   next annotation. Keep action acquisition cancellable and bounded without
   imposing an arbitrary deadline on approved plugin scripts or long typing.

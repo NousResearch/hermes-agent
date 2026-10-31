@@ -398,6 +398,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   watchDirectory: dir => ipcRenderer.invoke('hermes:watchDirectory', dir),
   stopPreviewFileWatch: id => ipcRenderer.invoke('hermes:stopPreviewFileWatch', id),
   setActiveWork: payload => ipcRenderer.send('hermes:active-work', payload),
+  scheduleStreamWorkWake: (token, delayMs) => ipcRenderer.send('hermes:stream-work-wake', { token, delayMs }),
+  onStreamWorkWake: callback => {
+    const listener = (_event, token) => callback(token)
+    ipcRenderer.on('hermes:stream-work-ready', listener)
+
+    return () => ipcRenderer.removeListener('hermes:stream-work-ready', listener)
+  },
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),

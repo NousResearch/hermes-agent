@@ -36,6 +36,8 @@ function makeWindow() {
   const calls: boolean[] = []
   const listeners = new Map<string, () => void>()
   let destroyed = false
+  let visible = true
+  let minimized = false
 
   const win = {
     calls,
@@ -44,6 +46,13 @@ function makeWindow() {
       listeners.get('closed')?.()
     },
     isDestroyed: () => destroyed,
+    isVisible: () => visible,
+    isMinimized: () => minimized,
+    setVisibility(event: 'show' | 'hide' | 'minimize' | 'restore') {
+      visible = event === 'show' || event === 'restore'
+      minimized = event === 'minimize'
+      listeners.get(event)?.()
+    },
     listeners,
     on(event: string, fn: () => void) {
       listeners.set(event, fn)
@@ -58,6 +67,35 @@ function makeWindow() {
 
   return win
 }
+
+test('voice preserves only its hidden owner while streaming, not idle or sibling windows', () => {
+  const timers = makeTimers()
+  const throttle = createStreamThrottle(timers)
+  const voice = makeWindow()
+  const mirror = makeWindow()
+  for (const win of [voice, mirror]) {
+    throttle.register(win)
+    win.setVisibility('minimize')
+  }
+
+  throttle.setVoiceActive(voice, true)
+  assert.equal(voice.calls.at(-1), true)
+  throttle.update(true)
+  assert.equal(voice.calls.at(-1), false)
+  assert.equal(mirror.calls.at(-1), true)
+
+  const releasePreview = throttle.holdWindow(voice)
+  throttle.setVoiceActive(voice, false)
+  assert.equal(voice.calls.at(-1), false)
+  releasePreview()
+  assert.equal(voice.calls.at(-1), true)
+
+  throttle.setVoiceActive(voice, true)
+  throttle.update(false)
+  timers.fire()
+  assert.equal(voice.calls.at(-1), true)
+  assert.equal(mirror.calls.at(-1), true)
+})
 
 test('registering a window applies the current throttle state immediately', () => {
   const timers = makeTimers()
@@ -142,6 +180,8 @@ test('closed and destroyed windows drop out without throwing', () => {
 
   const gone: ThrottleWindowLike & { on?: never } = {
     isDestroyed: () => true,
+    isVisible: () => false,
+    isMinimized: () => false,
     webContents: null
   }
 
@@ -313,4 +353,54 @@ test('closing a held window retires its holds and rejects further work', () => {
   assert.equal(peer.calls.at(-1), true)
   assert.throws(() => throttle.holdWindow(owner), /live registered/)
   assert.throws(() => throttle.holdWindow(makeWindow()), /live registered/)
+})
+
+test('streaming follows native visibility without suspending visible peers', () => {
+  const timers = makeTimers()
+  const throttle = createStreamThrottle(timers)
+  const owner = makeWindow()
+  const peer = makeWindow()
+  throttle.register(owner)
+  throttle.register(peer)
+  throttle.update(true)
+  assert.equal(owner.calls.at(-1), false)
+  owner.setVisibility('minimize')
+  assert.equal(owner.calls.at(-1), true)
+  assert.equal(peer.calls.at(-1), false)
+  owner.setVisibility('restore')
+  assert.equal(owner.calls.at(-1), false)
+  owner.setVisibility('hide')
+  assert.equal(owner.calls.at(-1), true)
+  owner.setVisibility('show')
+  assert.equal(owner.calls.at(-1), false)
+  owner.setVisibility('hide')
+  throttle.update(false)
+  timers.fire()
+  owner.setVisibility('show')
+  assert.equal(owner.calls.at(-1), true)
+  assert.equal(peer.calls.at(-1), true)
+})
+
+test('hidden native activity overrides streaming visibility only until its last release', () => {
+  const timers = makeTimers()
+  const throttle = createStreamThrottle(timers)
+  const owner = makeWindow()
+  owner.setVisibility('minimize')
+  throttle.register(owner)
+  throttle.update(true)
+  assert.equal(owner.calls.at(-1), true)
+  const first = throttle.holdWindow(owner)
+  const second = throttle.holdWindow(owner)
+  assert.equal(owner.calls.at(-1), false)
+  first()
+  first()
+  assert.equal(owner.calls.at(-1), false)
+  second()
+  assert.equal(owner.calls.at(-1), true)
+  const release = throttle.holdWindow(owner)
+  throttle.update(false)
+  timers.fire()
+  assert.equal(owner.calls.at(-1), false)
+  release()
+  assert.equal(owner.calls.at(-1), true)
 })

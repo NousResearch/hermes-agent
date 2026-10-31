@@ -71,7 +71,7 @@ import {
 } from './preview-console'
 import { type ConsoleEntry } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
-import { usePreviewDriveChannels } from './preview-drive-channels'
+import { runPreviewGuestScript, usePreviewDriveChannels, withPreviewDeadline } from './preview-drive-channels'
 import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
 import { usePreviewGuestOffscreen } from './preview-guest-offscreen'
 import { type PreviewInputEvent } from './preview-input'
@@ -852,20 +852,29 @@ export function PreviewPane({
       return
     }
 
-    return registerPreviewPageReader(tabId, async () => {
+    const lifetime = new AbortController()
+    const unregister = registerPreviewPageReader(tabId, async () => {
       const webview = webviewRef.current
 
       if (!webview?.executeJavaScript) {
         throw new Error('preview webview is not ready')
       }
 
-      const text = await webview.executeJavaScript('document.body ? document.body.innerText : ""')
+      const text = await withPreviewDeadline(
+        signal => runPreviewGuestScript(webview, 'document.body ? document.body.innerText : ""', signal),
+        lifetime.signal
+      )
 
       return {
         text: typeof text === 'string' ? text : '',
         ...guestPage(webview)
       }
     })
+
+    return () => {
+      lifetime.abort()
+      unregister()
+    }
   }, [tabId, usesWebview])
 
   usePreviewDriveChannels(webviewRef, tabId, usesWebview)

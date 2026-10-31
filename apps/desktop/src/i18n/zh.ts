@@ -816,6 +816,8 @@ export const zhOverrides = {
       themeTitle: '主题',
       themeDesc: '仅桌面端调色板。所选模式叠加其上。',
       themeSearchPlaceholder: '搜索本地主题或 VS Code 市场…',
+      marketplaceHeading: '来自 VS Code 市场',
+      noThemesMatch: query => `没有已安装主题匹配“${query}”。`,
       themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`,
       installTitle: '从 VS Code 安装',
       installDesc: '粘贴 Marketplace 扩展 ID（例如 dracula-theme.theme-dracula），将其配色主题转换为桌面调色板。',

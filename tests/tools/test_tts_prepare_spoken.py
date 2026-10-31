@@ -9,6 +9,8 @@ path and the voice-mode paths.
 
 import json
 
+import pytest
+
 from tools.tts_text_normalize import (
     flatten_newlines_for_payload,
     prepare_spoken_text,
@@ -86,6 +88,46 @@ class TestNewlineFlattening:
         out = flatten_newlines_for_payload("Alpha.\nBeta!")
         assert ".." not in out
         assert "Alpha." in out and "Beta!" in out
+
+
+class TestTableDelimiterRows:
+    """Pipe-table delimiter rows (|---|---|) must never reach a provider.
+
+    The pipes became "; " pauses but the dashes survived as a literal "---"; after newline
+    flattening no downstream rule could catch them, and a local TTS model degenerated into
+    babble mid-message.
+    """
+
+    @pytest.mark.parametrize("delimiter", [
+        "|---|---|", "|:---|---:|", "| :--- | :---: |", "--- | ---", "|---", "---|",
+    ])
+    def test_delimiter_row_is_dropped_and_cells_are_kept(self, delimiter):
+        spoken = prepare_spoken_text(f"| Check | Result |\n{delimiter}\n| runner | active |")
+        assert "-" not in spoken
+        assert all(cell in spoken for cell in ("Check", "Result", "runner", "active"))
+
+    def test_crlf_line_endings(self):
+        spoken = prepare_spoken_text("| A | B |\r\n|---|---|\r\n| 1 | 2 |")
+        assert "-" not in spoken
+        assert "1" in spoken and "2" in spoken
+
+    def test_header_only_table(self):
+        assert "-" not in prepare_spoken_text("| only | header |\n|---|---|")
+
+    def test_surrounding_text_is_kept(self):
+        raw = "**State:**\n\n| Check | Result |\n|---|---|\n| shadow | active, v1.3 |\n\nAll fine."
+        spoken = prepare_spoken_text(raw)
+        assert "---" not in spoken
+        assert "State" in spoken and "shadow" in spoken and "All fine" in spoken
+
+    def test_prose_with_a_dash_and_a_pipe_is_not_a_delimiter_row(self):
+        spoken = prepare_spoken_text("Compare a - b | c and keep going")
+        assert "a - b" in spoken and "keep going" in spoken
+
+    def test_second_pass_changes_nothing(self):
+        # Auto-TTS cleans the text in the gateway and again inside text_to_speech_tool.
+        once = prepare_spoken_text("| Check | Result |\n|---|---|\n| runner | active |")
+        assert prepare_spoken_text(once) == once
 
 
 class TestSharedCleanerWiring:

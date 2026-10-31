@@ -587,6 +587,31 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+_SELF_MENTION_LEAD_RE = re.compile(r"\s*<@!?(\d+)>")
+
+
+def _strip_leading_self_mentions(content: str, user_id: Any) -> str:
+    """Drop leading ``<@self>`` token(s) from an inbound body — the mention is routing, not content.
+
+    Only the run of self-mentions at the very start is removed, so a command stays detectable and a
+    bare ping stays empty. A self-mention further inside the text is kept: deleting it there silently
+    truncates what the model reads — a message naming eight people arrives with seven names and the
+    bot's own missing, which reads as a false statement about the channel.
+    """
+    if not content:
+        return content
+    uid = str(user_id)
+    remaining = content
+    stripped = False
+    while True:
+        match = _SELF_MENTION_LEAD_RE.match(remaining)
+        if not match or match.group(1) != uid:
+            break
+        remaining = remaining[match.end():]
+        stripped = True
+    return remaining.lstrip() if stripped else content
+
+
 # Under gateway.multiplex_profiles os.environ is process-global and first-writer-wins, so raw
 # os.getenv() can return ANOTHER profile's value; _scoped_gate_env reads the active profile's
 # secret scope (contextvar propagates into connect()) and falls back to os.getenv outside multiplex.
@@ -6150,8 +6175,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         if self._self_is_explicitly_mentioned(message):
             mention_prefix = True
             if self._client.user:
-                normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-                normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+                normalized_content = _strip_leading_self_mentions(
+                    normalized_content, self._client.user.id)
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}

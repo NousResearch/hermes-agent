@@ -460,6 +460,102 @@ def test_binary_reference_block_keeps_host_path_on_local_backend(tmp_path: Path,
     assert "/root/.hermes/attachments/" not in result.message
 
 
+# ── Container backend: unmapped host path staged into the bind mount (#103147) ──
+# `to_agent_visible_cache_path` maps only paths already under a mounted cache root;
+# a binary @file: ref pointing OUTSIDE them (a raw typed path, a producer the
+# gateway stager never saw) used to reach the prompt verbatim — a host path that
+# does not exist inside the sandbox, right beside "use your tools to work with it".
+
+
+def test_unmapped_host_path_is_staged_and_translated_under_docker(tmp_path: Path, monkeypatch):
+    """Docker backend: a binary ref outside the mounts is copied into the
+    bind-mounted attachments dir and the prompt carries the container path."""
+    from agent.context_references import preprocess_context_references
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+    dropped = tmp_path / "Downloads" / "report.pdf"
+    dropped.parent.mkdir()
+    dropped.write_bytes(b"%PDF-1.4 not-under-any-mount")
+
+    result = preprocess_context_references(
+        f"Read @file:{dropped}", cwd=tmp_path, context_length=100_000,
+    )
+
+    assert result.expanded
+    assert "/root/.hermes/attachments/report-" in result.message
+    assert "binary file, not inlined" in result.message
+    # The raw host path must not be offered as the on-disk location.
+    assert f"at `{dropped}`" not in result.message
+    staged = next((hermes_home / "attachments").glob("report-*"))
+    assert staged.read_bytes() == b"%PDF-1.4 not-under-any-mount"
+
+
+def test_unmapped_host_path_staging_is_idempotent_and_content_addressed(
+    tmp_path: Path, monkeypatch,
+):
+    """Re-referencing the same file reuses the staged copy; same name with
+    different bytes gets a sibling, not an overwrite."""
+    from agent.context_references import _agent_visible_path
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+    dropped = tmp_path / "data.bin"
+    dropped.write_bytes(b"version-one")
+    first = _agent_visible_path(dropped)
+    second = _agent_visible_path(dropped)
+    assert first == second
+    staged = [p for p in (hermes_home / "attachments").glob("data-*")]
+    assert len(staged) == 1
+
+    dropped.write_bytes(b"version-two")
+    third = _agent_visible_path(dropped)
+    assert third != first
+    staged = sorted((hermes_home / "attachments").glob("data-*"))
+    assert len(staged) == 2
+
+
+def test_unmapped_host_path_over_staging_cap_keeps_the_host_path(tmp_path: Path, monkeypatch):
+    """An oversized file is never copied through the bind mount; the prompt keeps
+    the (honest) host path instead of burning gateway disk per turn."""
+    from agent.context_references import _STAGING_MAX_BYTES, _agent_visible_path
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+    monkeypatch.setattr("agent.context_references._STAGING_MAX_BYTES", 8)
+    big = tmp_path / "huge.bin"
+    big.write_bytes(b"0123456789")  # over the patched cap
+
+    assert _agent_visible_path(big) == str(big)
+    # The mount enumeration may scaffold an empty attachments/ dir; nothing is staged.
+    assert not any((hermes_home / "attachments").glob("*"))
+    assert _STAGING_MAX_BYTES  # import proves the knob exists
+
+
+def test_unmapped_host_path_local_backend_is_never_staged(tmp_path: Path, monkeypatch):
+    """Local backend: the tools run where the file already is — no copy."""
+    from agent.context_references import _agent_visible_path
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+
+    dropped = tmp_path / "report.pdf"
+    dropped.write_bytes(b"%PDF-1.4")
+    assert _agent_visible_path(dropped) == str(dropped)
+    assert not (hermes_home / "attachments").exists()
+
+
 # ── Gateway container + Remote SSH execution backend (#110174) ───────────────
 # ``file.attach`` stages pastes/drops into the session home — the GATEWAY's own
 # filesystem — while the workspace root (TERMINAL_CWD) is a path on the SSH host.

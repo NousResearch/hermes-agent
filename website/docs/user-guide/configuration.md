@@ -2176,6 +2176,22 @@ A single `delegate_task` batch counts each task toward `max_subagents` (a batch 
 
 This mirrors Claude Code's per-session WebSearch and subagent caps (v2.1.212), which also default to 200 and reset on `/clear`.
 
+### Usage limits
+
+`usage_limits` caps how much work the agent does before it stops and asks you. Every field is off (`0`) by default:
+
+```yaml
+usage_limits:
+  session_cost_usd: 5          # estimated spend for this session, in USD
+  session_total_tokens: 0      # tokens for this session
+  turn_total_tokens: 0         # tokens for one turn
+  turn_wall_clock_seconds: 0   # elapsed time for one turn
+```
+
+The limits are checked before each model call, so they are soft: a call already in flight finishes first, and the spend can land a little past the number you set. When a limit is reached the turn stops without another provider call, the work so far stays in the conversation, and the reply names the limit and how to raise it. Limits are re-read at the start of every turn, so `hermes config set usage_limits.session_cost_usd 10` followed by "continue" picks up where the agent stopped. While a session is over a limit, each new message stops the same way until you raise or clear it.
+
+Session counters belong to the running session: `/new` resets them, and resuming a session in a fresh process starts them from zero. `session_cost_usd` uses the same estimate as `/usage` and includes finished subagents; a model with no price data never reaches it, so pair it with `session_total_tokens` for local or unpriced models.
+
 ### Runtime anti-stall guards
 
 Complementing the failure-based guardrails above, `agent.stall_guards` (default `true`) enables two conservative runtime guards against wasted turns. First, an **identical-call loop breaker**: when the same tool is called 3+ consecutive times with identical arguments *and* returns an identical result, a short one-line notice is appended to that tool result telling the model not to repeat the call — in warning-only sessions it never blocks the call, and legitimately-repeatable pollers (`process_manage`, `*_get_result`, `*_poll`) are exempt. When hard stops are active (explicit `hard_stop_enabled`, or an unattended gateway/cron platform), the same streak also becomes a hard stop once it reaches `hard_stop_after.idempotent_no_progress` consecutive identical calls — for **any** tool, not just the read-only ones the `idempotent_no_progress` guardrail tracks — so a model replaying the same successful `terminal` or `skill_view` call is halted instead of running out the iteration budget (`identical_call_streak_halt`). Second, a **continue-intent recovery**: when the model ends a turn with no tool calls but its short reply trails off announcing an action ("Let me now update the file…"), Hermes re-prompts it to act via the same bounded continuation mechanism used for intent-ack recovery (max 2 re-prompts per turn). Both are cache-safe (notices are added at result construction, never retroactively) and can be disabled together:

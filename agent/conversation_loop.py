@@ -40,6 +40,7 @@ from hermes_cli.observability.shared_metrics_efficiency import record_cache_brea
 from hermes_cli.plugins_dispatch import held_stream_transforms
 from agent.turn_retry_state import TurnRetryState
 from agent.turn_scripted_prelude import Prelude, play_prelude
+from agent.usage_limits import TurnUsageTracker, current_usage_limits
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
 from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
@@ -1481,6 +1482,7 @@ class _LoopState:
     # a consecutive-ineffective-attempt backstop, rearmed only after a provider response
     # reports a prompt below threshold.
     max_compression_attempts: Any
+    _usage_tracker: Any = None
     api_call_count: int = 0
     final_response: Any = None
     interrupted: bool = False
@@ -1714,6 +1716,8 @@ def _run_conversation_turn(
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,
+        # Re-read per turn: raising a limit in config.yaml then sending "continue" resumes.
+        _usage_tracker=TurnUsageTracker(current_usage_limits(), getattr(agent, "session_total_tokens", 0)),
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )

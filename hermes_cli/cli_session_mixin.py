@@ -400,6 +400,7 @@ class CLISessionMixin:
         if not sessions:
             return False
 
+        from hermes_cli.textwidth import clip_to_width, pad_to_width
         from hermes_cli.timefmt import relative_time as _relative_time
 
         _cli_visible_print()
@@ -408,15 +409,21 @@ class CLISessionMixin:
         else:
             _cli_visible_print(f"  {t('cli.session.recent_header')}")
         _cli_visible_print()
+        # Pad/clip by display columns, not characters: CJK titles, previews and translated headers
+        # are double-width and would shift every column to their right (#44199). Titles are padded
+        # but never clipped — they render in full by design (#14082).
         _cli_visible_print(
-            f"  {'#':<3} {t('cli.session.column_title'):<32} {t('cli.session.column_preview'):<40} "
-            f"{t('cli.session.column_last_active'):<13} {t('cli.session.column_id')}")
+            f"  {'#':<3} {pad_to_width(t('cli.session.column_title'), 32)} "
+            f"{pad_to_width(t('cli.session.column_preview'), 40)} "
+            f"{pad_to_width(t('cli.session.column_last_active'), 13)} {t('cli.session.column_id')}")
         _cli_visible_print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
         for idx, session in enumerate(sessions, start=1):
             title = session.get("title") or "—"
-            preview = (session.get("preview") or "")[:38]
+            preview = clip_to_width(session.get("preview") or "", 38)
             last_active = _relative_time(session.get("last_active"), session_id=session.get("id"))
-            _cli_visible_print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+            _cli_visible_print(
+                f"  {idx:<3} {pad_to_width(title, 32)} {pad_to_width(preview, 40)} "
+                f"{last_active:<13} {session['id']}")
         _cli_visible_print()
         _cli_visible_print(f"  {t('cli.session.resume_usage')}")
         _cli_visible_print(f"  {t('cli.session.resume_example')}")

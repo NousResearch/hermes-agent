@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 
 from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
@@ -35,3 +37,15 @@ def test_mcp_and_acp_accept_hooks_flag():
     # acp takes --accept-hooks at top level
     ns = parser.parse_args(["acp", "--accept-hooks"])
     assert ns.accept_hooks is True
+
+
+@pytest.mark.parametrize("flag", ["-y", "--yes"])
+def test_mcp_add_accepts_yes_flag(flag):
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_mcp_parser(sub, cmd_mcp=_h("mcp"))
+    ns = parser.parse_args(["mcp", "add", "srv", flag, "--command", "npx", "--args", "-y", "pkg"])
+    assert ns.yes is True
+    assert ns.args == ["-y", "pkg"]
+    ns = parser.parse_args(["mcp", "add", "srv", "--url", "https://x/mcp"])
+    assert ns.yes is False

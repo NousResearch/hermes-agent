@@ -5,6 +5,7 @@ desktop UI wiring, HUD surface note. Bodies are rebound onto server.py's globals
 from __future__ import annotations
 
 import contextlib
+from queue import Empty
 
 from .method_ctx import bind_module
 
@@ -608,7 +609,7 @@ def _notif_reserve_event(sid: str, session: dict, registry, *, shutdown: bool = 
     if event is None:
         try:
             evt = queue.get_nowait()
-        except Exception:
+        except Empty:
             return None, "empty"
     else:
         evt = event
@@ -778,21 +779,19 @@ def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, 
     _notif_dispatch_completions(sid, session, completions, registry, deferred)
 
 
-def _notif_drain_ready(sid, session, registry, *, shutdown=False):
+def _notif_drain_ready(sid, session, registry, *, shutdown=False, snapshot=None):
     """Reserve one queue snapshot without leaving a ready result temporarily invisible."""
     ready, actions = [], []
     with registry.completion_routing_lock:
         queue = registry.completion_queue
-        try:
-            count = queue.qsize()
-        except Exception:
-            count = 0
-        snapshot = []
-        for _ in range(max(0, count)):
-            try:
-                snapshot.append(queue.get_nowait())
-            except Exception:
-                break
+        count = queue.qsize()
+        if snapshot is None:
+            snapshot = []
+            for _ in range(max(0, count)):
+                try:
+                    snapshot.append(queue.get_nowait())
+                except Empty:
+                    break
         for event in snapshot:
             event, action = _notif_reserve_event(
                 sid, session, registry, shutdown=shutdown, event=event)
@@ -823,8 +822,6 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     process_registry.restore_completions()  # first consumer in a TUI process (#123265)
     queue = process_registry.completion_queue
     emitted = session.setdefault("_notification_emitted", set())
-    handle = lambda events, deferred: _notif_handle_ready(
-        sid, session, events, emitted, process_registry, format_process_notification, deferred)
     last_kanban_poll = last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
@@ -842,19 +839,28 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
         if now - last_kanban_poll >= _KANBAN_POLL_SECONDS:
             last_kanban_poll = now
             _notif_poll_kanban(sid, session)
-        ready, actions = [], []
+        ready, actions, snapshot = [], [], []
         try:
-            ready, actions = _notif_drain_ready(sid, session, process_registry)
+            # Reaper coverage and carrier visibility are separate handoffs: hold every
+            # dequeued owner, and return busy/foreign events before releasing routing.
+            with process_registry.completion_routing_lock:
+                snapshot = take_ready(queue, 0)
+                ready, actions = _notif_drain_ready(sid, session, process_registry, snapshot=snapshot)
             _notif_handle_ready(sid, session, ready, emitted, process_registry,
                                 format_process_notification, None, reservations=actions)
         except Exception as exc:
             # Keep the session's bot mailbox and tickers alive after a bad event.
             _notif_log_failure("notification dispatch failed", exc)
+        finally:
+            release_in_flight(snapshot)
         if not ready or "busy" in actions:
             time.sleep(0.25 if ready else 0.5)
     # A bounded shutdown pass. Unowned delegations remain queued for their owner.
+    snapshot = []
     try:
-        ready, actions = _notif_drain_ready(sid, session, process_registry, shutdown=True)
+        with process_registry.completion_routing_lock:
+            snapshot = take_ready(queue, 0)
+            ready, actions = _notif_drain_ready(sid, session, process_registry, shutdown=True, snapshot=snapshot)
         deferred = []
         _notif_handle_ready(sid, session, ready, emitted, process_registry,
                             format_process_notification, deferred, reservations=actions)
@@ -863,6 +869,9 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
                 queue.put(evt)
     except Exception as exc:
         _notif_log_failure("notification shutdown drain failed", exc)
+        logger.exception("Notification shutdown drain traceback")
+    finally:
+        release_in_flight(snapshot)
 
 
 def _async_delegation_display_metadata(evt: dict) -> dict:

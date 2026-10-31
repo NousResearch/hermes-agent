@@ -13,6 +13,7 @@ import contextvars
 import dataclasses
 import json
 import logging
+import queue
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
@@ -1617,14 +1618,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         idle_events: list[dict] = []
         requeue: list[dict] = []
         with registry.completion_routing_lock:
-            try:
-                scan_count = registry.completion_queue.qsize()
-            except Exception:
-                scan_count = 0
+            scan_count = registry.completion_queue.qsize()
             for _ in range(max(0, scan_count)):
                 try:
                     evt = registry.completion_queue.get_nowait()
-                except Exception:
+                except queue.Empty:
                     break
                 if evt.get("type") != "async_delegation":
                     requeue.append(evt)
@@ -1717,22 +1715,24 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     groups.setdefault(self._event_route_key(evt, self._ASYNC_GROUP_KEY_FIELDS), []).append(evt)
                 for group in groups.values():
                     if any(evt.get("_watch_next_retry_at", 0) > time.monotonic() for evt in group):
-                        for evt in group:
-                            _pr.completion_queue.put(evt)
+                        self._requeue_completion_group(_pr, group)
                         continue
                     try:
                         delivered = await self._deliver_async_delegation_group(group)
                         if delivered is False:
                             self._back_off_refused_completions(group)
-                            with _pr.completion_routing_lock:
-                                for evt in group:
-                                    _pr.completion_queue.put(evt)
+                            self._requeue_completion_group(_pr, group)
                     except Exception as e:
-                        with _pr.completion_routing_lock:
-                            for evt in group:
-                                _pr.completion_queue.put(evt)
+                        self._requeue_completion_group(_pr, group)
                         logger.error("Async delegation injection error: %s", e)
             await asyncio.sleep(interval)
+
+    @staticmethod
+    def _requeue_completion_group(registry, group) -> None:
+        """Return a bounded group before another routing consumer can scan."""
+        with registry.completion_routing_lock:
+            for event in group:
+                registry.completion_queue.put(event)
 
     @staticmethod
     def _back_off_refused_completions(group: list[dict]) -> None:

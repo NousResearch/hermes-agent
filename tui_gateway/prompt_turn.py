@@ -465,22 +465,33 @@ def _run_post_turn_followups(
         from tools.process_registry import process_registry
         # _release_turn_scopes / _post_turn_housekeeping have released the worker's runtime scopes. Queue ownership,
         # notification policy and nested dispatch still belong to this session.
-        from tools.process_registry_awaiting import drained_for
+        from tools.process_registry_awaiting import release as release_in_flight, take_ready
         from tools.process_registry_notifications import format_process_notification, should_surface_notification
         key = session.get("session_key", "")
         owns = lambda e: process_registry._owns_event(
             e, key, lambda evt: _session_owns_notification_event(sid, session, evt), e.get("type") == "async_delegation")
         # Every dequeued event's owner — this session's and any other session's — stays held until the foreign events
         # are requeued and ours are routed, so the reapers never see an owner whose notice is in nobody's hands.
-        with _session_profile_runtime_scope(session), drained_for(process_registry, owns) as mine:
-            deferred = []
-            _notif_handle_ready(
-                sid, session, [evt for evt in mine if should_surface_notification(evt)],
-                session.setdefault("_notification_emitted", set()), process_registry,
-                format_process_notification, deferred, owned=True)
-            with process_registry.completion_routing_lock:
-                for event in deferred:
-                    process_registry.completion_queue.put(event)
+        snapshot = []
+        with _session_profile_runtime_scope(session):
+            process_registry.restore_completions()
+            try:
+                with process_registry.completion_routing_lock:
+                    snapshot = take_ready(process_registry.completion_queue, 0)
+                    mine = [evt for evt in snapshot if owns(evt)]
+                    for evt in snapshot:
+                        if not any(evt is accepted for accepted in mine):
+                            process_registry.completion_queue.put(evt)
+                deferred = []
+                _notif_handle_ready(
+                    sid, session, [evt for evt in mine if should_surface_notification(evt)],
+                    session.setdefault("_notification_emitted", set()), process_registry,
+                    format_process_notification, deferred, owned=True)
+                with process_registry.completion_routing_lock:
+                    for event in deferred:
+                        process_registry.completion_queue.put(event)
+            finally:
+                release_in_flight(snapshot)
     except Exception as _drain_exc:
         _hook_failure("completion queue drain", _drain_exc)
 

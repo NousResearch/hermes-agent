@@ -718,6 +718,31 @@ class CLIStreamMixin:
             return
         _cprint(f"  ┊ {t('cli.stream.tool_preparing', emoji=get_tool_emoji(tool_name, default='⚡'), what=what)}")
 
+    def _show_delegation_injected(self, task_count) -> None:
+        """Display an already-acknowledged carrier without adding a conversation turn."""
+        from cli import _DIM, _RST, _cprint
+        try:
+            count = max(1, int(task_count or 1))
+        except (TypeError, ValueError):
+            count = 1
+        if count == 1:
+            text = "↪ Background agent finished — result injected into current turn."
+        else:
+            text = f"↪ {count} background agents finished — results injected into current turn."
+        _cprint(f"  {_DIM}{text}{_RST}")
+        self._invalidate()
+
+    def _record_tool_progress_pet_state(self, event_type, *, is_error) -> None:
+        # Feed the pet: tools mean "running"; a failed tool latches the turn to end on a sulk.
+        if event_type == "tool.started":
+            self._pet_reasoning = False
+            self.__dict__.pop("_tool_gen_announced", None)
+        elif event_type == "tool.completed" and is_error:
+            self._pet_turn_error = True
+        elif event_type and event_type.startswith("reasoning"):
+            self._pet_reasoning = True
+
+
     def _on_tool_progress(self, event_type: str, function_name: str | None = None, preview: str | None = None, function_args: dict | None = None, **kwargs):
         """Tool lifecycle events (tool.started / tool.completed / reasoning.* / moa.*).
 
@@ -726,16 +751,7 @@ class CLIStreamMixin:
         """
         from cli import CLI_CONFIG, _DIM, _RST, _cprint, _hermes_home
         if event_type == "delegation.injected":
-            try:
-                count = max(1, int(kwargs.get("task_count") or 1))
-            except (TypeError, ValueError):
-                count = 1
-            if count == 1:
-                text = "↪ Background agent finished — result injected into current turn."
-            else:
-                text = f"↪ {count} background agents finished — results injected into current turn."
-            _cprint(f"  {_DIM}{text}{_RST}")
-            self._invalidate()
+            self._show_delegation_injected(kwargs.get("task_count"))
             return
         # MoA reference outputs (display-only events from the MoA facade): render each answer
         # as a labelled thinking-style block BEFORE the aggregator acts.
@@ -764,14 +780,7 @@ class CLIStreamMixin:
             self._invalidate()
             return
 
-        # Feed the pet: tools mean "running"; a failed tool latches the turn to end on a sulk.
-        if event_type == "tool.started":
-            self._pet_reasoning = False
-            self.__dict__.pop("_tool_gen_announced", None)
-        elif event_type == "tool.completed" and kwargs.get("is_error"):
-            self._pet_turn_error = True
-        elif event_type and event_type.startswith("reasoning"):
-            self._pet_reasoning = True
+        self._record_tool_progress_pet_state(event_type, is_error=kwargs.get("is_error"))
 
         if event_type == "tool.completed":
             self._tool_start_time = 0.0

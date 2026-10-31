@@ -260,7 +260,7 @@ def test_tool_carrier_preserves_provider_roles_and_existing_prefix_items():
 
 
 def test_tool_boundary_opens_only_after_the_complete_result_batch():
-    from agent.tool_executor import _completed_tool_batch_size
+    from agent.delegation_inject import _completed_tool_batch_size
 
     messages = [
         {
@@ -427,7 +427,7 @@ def test_uncertain_previous_turn_claim_does_not_block_current_turn(monkeypatch):
 
 def test_run_conversation_inject_transport_normalize_and_ack(monkeypatch, tmp_path):
     agent = _make_loop_agent(tmp_path)
-    cached_system_prompt = deepcopy(getattr(agent, "_cached_system_prompt"))
+    cached_system_prompt = deepcopy(agent._cached_system_prompt)
     requests = []
     display_events = []
     agent.tool_progress_callback = lambda *args, **kwargs: display_events.append((args, kwargs))
@@ -476,7 +476,7 @@ def test_run_conversation_inject_transport_normalize_and_ack(monkeypatch, tmp_pa
     assert requests[1][-1]["role"] == "tool"
     assert "display_metadata" not in requests[1][-1]
     assert not any(key.startswith("_") for key in requests[1][-1])
-    assert getattr(agent, "_cached_system_prompt") == cached_system_prompt
+    assert agent._cached_system_prompt == cached_system_prompt
     assert "LIVE_LOOP_INJECT" in str(requests[1])
     assert "not a new user request" in requests[1][-1]["content"]
     assert _event_state(delegation_id) == ("delivered", 1)
@@ -618,7 +618,7 @@ def test_formatter_failure_does_not_consume_delivery_attempts(monkeypatch):
 
 
 def test_persisted_or_invalid_tool_tail_is_never_a_carrier():
-    from agent.tool_executor import _completed_tool_batch_size
+    from agent.delegation_inject import _completed_tool_batch_size
 
     delegation_id = _record()
     assert _complete_unit(delegation_id, _child(0, "new evidence"))
@@ -685,6 +685,7 @@ def test_reconciled_carrier_claim_rejection_leaves_tui_runnable(
         "_finalized": False,
     }
     server._sessions[sid] = session
+    monkeypatch.setattr(server, "_session_has_live_transport", lambda candidate: candidate is session)
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(

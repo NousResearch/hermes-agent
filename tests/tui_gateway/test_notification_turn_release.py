@@ -106,11 +106,12 @@ def test_the_poller_thread_survives_a_dispatch_that_raises(monkeypatch):
     """The poller is the session's only path to notifications, /loop, /heartbeat and its bot
     mailbox; an exception out of one event's dispatch used to end the thread for good."""
     events: queue.Queue = queue.Queue()
-    events.put({"type": "completion", "session_id": "proc_a"})
+    events.put({"type": "completion", "session_id": "proc_a", "owner_task_id": "owner"})
     monkeypatch.setattr("tools.process_registry.process_registry", SimpleNamespace(
         completion_queue=events, restore_completions=lambda: 0,
         completion_routing_lock=threading.RLock(),
-        is_completion_consumed=lambda sid: False))
+        is_completion_consumed=lambda sid: False,
+        _any_running=lambda predicate: False, _lock=threading.RLock(), _running={}, _finished={}))
     for name in ("_maybe_fire_tui_loop_tick", "_maybe_fire_tui_heartbeat_tick", "_notif_poll_kanban"):
         monkeypatch.setattr(server, name, lambda *a, **k: None)
     stop = threading.Event()
@@ -119,9 +120,11 @@ def test_the_poller_thread_survives_a_dispatch_that_raises(monkeypatch):
     def _handle_ready(sid, session, ready, emitted, registry, fmt, deferred, **kwargs):
         if deferred is not None:  # the post-stop drain
             return
+        from tools.process_registry_awaiting import awaits_notification
+        assert awaits_notification(registry, ["owner"]), "dequeued owner must stay held until routing returns"
         handled.append(len(ready))
         if len(handled) == 1:
-            events.put({"type": "completion", "session_id": "proc_b"})
+            events.put({"type": "completion", "session_id": "proc_b", "owner_task_id": "owner"})
             raise RuntimeError("one bad event")
         stop.set()
 

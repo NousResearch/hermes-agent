@@ -567,7 +567,7 @@ def _reconcile_tool_carrier(conn, delegation_id: str, payload: str | None) -> bo
     return False
 
 
-def get_event_delivery_state(evt: Dict[str, Any]) -> Optional[str]:
+def get_event_delivery_state(evt: dict[str, Any]) -> Optional[str]:
     if evt.get("type") != "async_delegation":
         return None
     if remote := worker_ledger():
@@ -579,7 +579,7 @@ def get_event_delivery_state(evt: Dict[str, Any]) -> Optional[str]:
 
 
 def get_event_delivery_claim_status(
-    evt: Dict[str, Any], claim_id: str,
+    evt: dict[str, Any], claim_id: str,
 ) -> tuple[Optional[str], bool]:
     """Return durable state and ownership of one exact delivery token.
 
@@ -610,7 +610,7 @@ def get_event_delivery_claim_status(
     )
 
 
-def renew_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
+def renew_event_delivery(evt: dict[str, Any], claim_id: str) -> bool:
     """Keep the existing single-row lease live until the transcript flush settles."""
     if not claim_id or evt.get("type") != "async_delegation":
         return False

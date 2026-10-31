@@ -367,7 +367,7 @@ def _db_flush_collect(agent, messages: list[dict], conversation_history: Optiona
     return batch_rows, batch_msgs
 
 
-def _db_flush_write(agent, batch_rows: list[dict[str, Any]], batch_msgs: list[Dict], messages: list[Dict]) -> None:
+def _db_flush_write(agent, batch_rows: list[dict[str, Any]], batch_msgs: list[dict], messages: list[dict]) -> None:
     """Write the turn atomically, falling back to ordinary tool text if a carrier lost its claim."""
     if not batch_rows:
         return

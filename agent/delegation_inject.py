@@ -30,6 +30,93 @@ _CARRIER_MARKER = (
 )
 
 
+def _completed_tool_batch_size(messages: list) -> int:
+    """Return the size of a complete, not-yet-checked tool-result tail."""
+
+    if not messages or not isinstance(messages[-1], dict):
+        return 0
+    tail = messages[-1]
+    if (tail.get("role") != "tool" or tail.get("_external_input_boundary_checked")
+            or tail.get("_db_persisted") is True):
+        return 0
+
+    start = len(messages) - 1
+    while start >= 0 and isinstance(messages[start], dict) and messages[start].get("role") == "tool":
+        start -= 1
+    if start < 0:
+        return 0
+    assistant = messages[start]
+    if assistant.get("role") != "assistant" or not assistant.get("tool_calls"):
+        return 0
+
+    expected_ids: list[str] = []
+    for call in assistant.get("tool_calls") or []:
+        call_id = call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+        if call_id:
+            expected_ids.append(str(call_id))
+    actual_ids = [
+        str(message.get("tool_call_id") or "")
+        for message in messages[start + 1 :]
+        if isinstance(message, dict) and message.get("role") == "tool"
+    ]
+    if not expected_ids or len(actual_ids) != len(expected_ids):
+        return 0
+    if len(set(expected_ids)) != len(expected_ids) or set(actual_ids) != set(expected_ids):
+        return 0
+    return len(actual_ids)
+
+
+def prepare_tool_boundary_inject(agent, messages: list, *, storage_env=None, budget_config=None) -> int:
+    """Attach only to a fresh complete batch whose persistence path can accept a receipt."""
+    # A known no-op persistence path cannot accept a durable carrier. Do not
+    # acquire/release its claim at every tool batch: that would exhaust the
+    # delivery-attempt cap without ever offering the after-turn fallback.
+    persistence_unavailable = (
+        getattr(agent, "_persist_disabled", False) is True
+        or getattr(agent, "_session_db", True) is None
+    )
+    completed_batch_size = 0 if persistence_unavailable else _completed_tool_batch_size(messages)
+    if completed_batch_size:
+        messages[-1]["_external_input_boundary_checked"] = True
+        try:
+            attach_ready_injects_to_tool_results(
+                agent,
+                messages,
+                num_tool_msgs=completed_batch_size,
+                turn_id=str(getattr(agent, "_active_turn_id", "") or ""),
+                storage_env=storage_env,
+                budget_config=budget_config,
+            )
+        except Exception as exc:
+            logger.warning("Delegation tool-boundary preparation failed: %s", exc, exc_info=True)
+    return completed_batch_size
+
+
+def release_tool_boundary_inject(agent, messages: list, completed_batch_size: int) -> None:
+    if completed_batch_size:
+        release_pending_injects_safely(
+            agent, messages, turn_id=str(getattr(agent, "_active_turn_id", "") or ""))
+
+
+def settle_tool_boundary_inject(agent, messages: list, *, completed_batch_size: int, flush_result) -> None:
+    """Acknowledge only an affirmative flush of the persisted carrier; otherwise roll it back."""
+    if not completed_batch_size:
+        return
+    turn_id = str(getattr(agent, "_active_turn_id", "") or "")
+    if flush_result is not True or messages[-1].get("_db_persisted") is not True:
+        release_pending_injects_safely(agent, messages, turn_id=turn_id)
+    else:
+        acknowledge_pending_injects(agent, turn_id=turn_id)
+
+
+def release_pending_injects_safely(agent, messages: list, *, turn_id: str) -> None:
+    """Best-effort finalization boundary; an uncertain release keeps its explicit owner."""
+    try:
+        release_pending_injects(agent, messages, turn_id=turn_id)
+    except Exception:
+        logger.exception("Could not settle remaining delegation carriers")
+
+
 def _event_identity(event: dict[str, Any]) -> str:
     return str(event.get("delegation_id") or "")
 
@@ -70,6 +157,7 @@ def _append_carrier_text(message: dict[str, Any], text: str) -> None:
         blocks.append({"type": "text", "text": marker.lstrip()})
         message["content"] = blocks
     except Exception:
+        logger.debug("Non-list carrier content; using its text representation", exc_info=True)
         message["content"] = f"{content}{marker}"
 
 
@@ -483,6 +571,85 @@ def _inject_parent_sessions(agent: Any) -> set[str]:
     return {current}
 
 
+def _eligible_inject_event(event: dict, turn_id: str) -> bool:
+    """Only final opted-in units from this exact turn can become carriers."""
+    return (
+        event.get("type") == "async_delegation"
+        and not event.get("task_failure_notice")
+        and str(event.get("result_delivery") or "after_turn").strip().lower() == "inject"
+        and str(event.get("parent_turn_id") or "") == turn_id
+        and bool(event.get("parent_session_id"))
+    )
+
+
+def _requeue_inject_event(event, registry, pending, unowned, turn_id) -> None:
+    try:
+        with registry.completion_routing_lock:
+            registry.completion_queue.put(event)
+    except Exception:
+        # Queue failure must not leave the durable row as the only owner until restart.
+        pending.append({"event": event, "event_id": _event_identity(event), "claim_id": "",
+                        "message": None, "turn_id": turn_id, "queue_retry": True})
+        logger.exception("Could not requeue delegation; retained explicit retry owner")
+    unowned.pop(id(event), None)
+
+
+def _take_inject_candidates(registry, turn_id, unowned, requeue) -> list:
+    """Return ineligible events before releasing the bounded queue reservation."""
+    candidates = []
+    with registry.completion_routing_lock:
+        for _ in range(registry.completion_queue.qsize()):
+            try:
+                event = registry.completion_queue.get_nowait()
+            except queue.Empty:
+                break
+            unowned[id(event)] = event
+            if not _eligible_inject_event(event, turn_id):
+                requeue(event)
+            else:
+                candidates.append(event)
+    return candidates
+
+
+def _has_current_inject_claims(agent, active_turn_id: str) -> bool:
+    # The single-flight latch is scoped to the carrier's originating turn. A
+    # cached agent may retain an older entry after an uncertain DB failure, but
+    # that obsolete local bookkeeping must never disable injection forever.
+    pending = list(getattr(agent, _PENDING_CLAIMS_ATTR, []) or [])
+    for entry in pending:
+        _entry_is_renewable(agent, entry)  # marks prior-turn entries abandoned
+    _stop_claim_heartbeat_if_idle(agent)
+    if any(
+        str(entry.get("turn_id") or "") in {"", active_turn_id}
+        for entry in pending
+    ):
+        return True
+
+    return False
+
+
+def _remaining_carrier_capacity(messages, num_tool_msgs, budget_config) -> int | None:
+    target = messages[-1]
+    tail_start = max(0, len(messages) - num_tool_msgs)
+
+    carrier_capacity: int | None = None
+    if budget_config is not None:
+        target_size = _content_text_size(target.get("content", ""))
+        batch_size = sum(
+            _content_text_size(message.get("content", ""))
+            for message in messages[tail_start:] if isinstance(message, dict)
+        )
+        # The executor enforces the aggregate budget after per-result flushes.
+        # Reserve space for ALL siblings so it cannot later truncate a carrier
+        # whose durable event has already been acknowledged.
+        carrier_capacity = min(
+            int(budget_config.default_result_size) - target_size,
+            int(budget_config.turn_budget) - batch_size,
+        ) - len(_CARRIER_MARKER)
+
+    return carrier_capacity
+
+
 def attach_ready_injects_to_tool_results(
     agent: Any,
     messages: list[dict[str, Any]],
@@ -509,17 +676,7 @@ def attach_ready_injects_to_tool_results(
     if not _normal_budget_available(agent):
         return 0
 
-    # The single-flight latch is scoped to the carrier's originating turn. A
-    # cached agent may retain an older entry after an uncertain DB failure, but
-    # that obsolete local bookkeeping must never disable injection forever.
-    pending = list(getattr(agent, _PENDING_CLAIMS_ATTR, []) or [])
-    for entry in pending:
-        _entry_is_renewable(agent, entry)  # marks prior-turn entries abandoned
-    _stop_claim_heartbeat_if_idle(agent)
-    if any(
-        str(entry.get("turn_id") or "") in {"", active_turn_id}
-        for entry in pending
-    ):
+    if _has_current_inject_claims(agent, active_turn_id):
         return 0
 
     # Only the newest result is eligible. Never search backwards past an already
@@ -528,24 +685,9 @@ def attach_ready_injects_to_tool_results(
     if (not isinstance(target, dict) or target.get("role") != "tool"
             or target.get("_db_persisted") is True):
         return 0
-    tail_start = max(0, len(messages) - num_tool_msgs)
-
-    carrier_capacity: int | None = None
-    if budget_config is not None:
-        target_size = _content_text_size(target.get("content", ""))
-        batch_size = sum(
-            _content_text_size(message.get("content", ""))
-            for message in messages[tail_start:] if isinstance(message, dict)
-        )
-        # The executor enforces the aggregate budget after per-result flushes.
-        # Reserve space for ALL siblings so it cannot later truncate a carrier
-        # whose durable event has already been acknowledged.
-        carrier_capacity = min(
-            int(budget_config.default_result_size) - target_size,
-            int(budget_config.turn_budget) - batch_size,
-        ) - len(_CARRIER_MARKER)
-        if carrier_capacity <= 0:
-            return 0
+    carrier_capacity = _remaining_carrier_capacity(messages, num_tool_msgs, budget_config)
+    if carrier_capacity is not None and carrier_capacity <= 0:
+        return 0
 
     from tools.async_delegation import (
         claim_event_delivery,
@@ -561,36 +703,11 @@ def attach_ready_injects_to_tool_results(
     original_target = None
     handed_off = False
 
-    def requeue(event):
-        try:
-            with process_registry.completion_routing_lock:
-                process_registry.completion_queue.put(event)
-        except Exception:
-            # Queue failure must not leave the durable row as the only owner until restart.
-            pending.append({"event": event, "event_id": _event_identity(event), "claim_id": "",
-                            "message": None, "turn_id": active_turn_id, "queue_retry": True})
-            logger.exception("Could not requeue delegation; retained explicit retry owner")
-        unowned.pop(id(event), None)
+    requeue = lambda event: _requeue_inject_event(
+        event, process_registry, pending, unowned, active_turn_id)
 
     try:
-        candidates = []
-        with process_registry.completion_routing_lock:
-            for _ in range(process_registry.completion_queue.qsize()):
-                try:
-                    event = process_registry.completion_queue.get_nowait()
-                except queue.Empty:
-                    break
-                unowned[id(event)] = event
-                if (
-                    event.get("type") != "async_delegation"
-                    or event.get("task_failure_notice")  # interim notices are not final unit receipts
-                    or str(event.get("result_delivery") or "after_turn").strip().lower() != "inject"
-                    or str(event.get("parent_turn_id") or "") != active_turn_id
-                    or not event.get("parent_session_id")
-                ):
-                    requeue(event)
-                else:
-                    candidates.append(event)
+        candidates = _take_inject_candidates(process_registry, active_turn_id, unowned, requeue)
 
         # Resolve compression ancestry only for candidates from an earlier physical
         # parent, outside the reservation. The usual empty/current-parent path does

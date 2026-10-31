@@ -598,11 +598,8 @@ def finalize_turn(
     from agent.conversation_loop import logger
 
     # Release only carriers not committed to the transcript; durable evidence stays put.
-    try:
-        from agent.delegation_inject import release_pending_injects
-        release_pending_injects(agent, messages, turn_id=turn_id)
-    except Exception:
-        logger.warning("Could not settle remaining delegation carriers", exc_info=True)
+    from agent.delegation_inject import release_pending_injects_safely
+    release_pending_injects_safely(agent, messages, turn_id=turn_id)
 
     final_response, _turn_exit_reason, preserved_verification_fallback, interrupted = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,

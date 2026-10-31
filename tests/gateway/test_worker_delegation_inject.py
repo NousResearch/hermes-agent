@@ -5,7 +5,7 @@ import json
 import os
 import time
 
-import psutil
+from hermes_cli import process_identity
 import pytest
 
 from agent.runtime_session_store import RuntimeSessionStore
@@ -49,7 +49,7 @@ def _worker(tmp_path, monkeypatch, *, delivery="inject", complete=True):
     # These tests own transaction/receipt semantics; process authentication is
     # covered by the existing worker bridge suite, not an OS subprocess here.
     with monkeypatch.context() as identity:
-        identity.setattr(psutil, 'Process', lambda _pid=None: SimpleNamespace(create_time=lambda: 1.0))
+        identity.setattr(process_identity, 'worker_birth', lambda _proc: 1.0)
         remote.dispatch(record)
     event = dict(record, type='async_delegation', status='completed', completed_at=time.time(), summary='EVIDENCE')
     if complete:

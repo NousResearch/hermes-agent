@@ -1,4 +1,4 @@
-import { gatewayActivationEpoch, host, useValue } from '@hermes/plugin-sdk'
+import { gatewayActivationEpoch, host, useGatewayActivationEpoch, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 
 import { canonicalGroupRequest } from './canonical-groups'
@@ -73,7 +73,7 @@ export function useGroupCapability(active: boolean) {
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
   const gateway = useValue(host.state.gateway)
-  const activationEpoch = gatewayActivationEpoch()
+  const activationEpoch = useGatewayActivationEpoch()
   const source = JSON.stringify([connectionId, profile, gateway, activationEpoch])
   const [capability, setCapability] = useState<GroupCapabilityState | null>(null)
 

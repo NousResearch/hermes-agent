@@ -57,12 +57,17 @@ def _authorize_control(authority, actor, ref, params, owner=None):
                 require_history_claim(authority, conn, actor, ref.session_id)
                 cold_history = authorize_history(conn, actor, ref.session_id)
         if not cold_history:
-            if params.get('operation') == 'delete':
-                # The read gate mounts a cold row first, so the check below sees what it is.
+            operation = params.get('operation')
+            if operation in {'delete', 'archive', 'sidebar'}:
+                # The read gate mounts a cold row first, so the checks below see what it is.
                 authority.authorize(actor, ref, 'session:read')
-            if not (params.get('operation') == 'delete' and authority.sessions[ref.session_id].superseded):
-                # An old conversation its chat moved past is read-only, but deleting it retires its
-                # own lineage only (retirement never evicts a read-only mount's route).
+            from gateway.session_history_mount import is_history_mount
+            if operation == 'delete':
+                from gateway.session_history_mount import require_history_leaf
+                require_history_leaf(authority, ref.session_id)
+            if not (operation in {'delete', 'archive', 'sidebar'} and is_history_mount(authority.sessions[ref.session_id])):
+                # Stored history is read-only, but deleting it retires its own lineage only, and
+                # archiving or pinning it flags that lineage's rows only.
                 authority.authorize(actor, ref, 'session:control')
     return cold_history
 
@@ -129,7 +134,8 @@ async def _owned_mutation(authority, actor, ref, params):
                 result = await _mutate_session(authority, actor, ref, params, owner=owner)
             except (RuntimeStoreError, *MUTATION_GUARD_REFUSALS) as exc:
                 # A pick on a running session is for the next turn (the running turn keeps its route).
-                if params.get('operation') != 'model' or getattr(exc, 'reason', 'session_busy') != 'session_busy':
+                if (params.get('operation') not in {'model', 'reasoning'}
+                        or getattr(exc, 'reason', 'session_busy') != 'session_busy'):
                     raise
                 from gateway.session_deferred_pick import defer_pick
                 # Its own BEGIN IMMEDIATE: off the loop, like the receipt commit.
@@ -247,6 +253,7 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
                 # no eviction.
                 return {'session_id': ref.session_id, 'operation': operation, **prepared}
     applied = False
+    result = None
     async with commit_lock or nullcontext():
         if prepared is not None and 'snapshot' not in prepared:
             # Exact retry: the durable receipt is the result. Never re-prepare (compress
@@ -261,7 +268,14 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
             if operation == 'delete':
                 from gateway.session_onboarding import ending_run_on_delete
                 commit = partial(ending_run_on_delete, authority.db, ref.session_id, commit)
-            result = await asyncio.to_thread(commit)
+            try:
+                result = await asyncio.to_thread(commit)
+            finally:
+                if operation == 'compress':
+                    # Before the projection's boundary eviction ends the resident agent's engine
+                    # session; a refused commit only releases a one-off engine.
+                    from gateway.session_mutation_compress import finish_compress_engine
+                    await finish_compress_engine(authority, prepared, result if applied else None)
         try:
             await _project_result(authority, ref, live, params, result, editor_servers, applied=applied)
         finally:
@@ -417,10 +431,13 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
         # So do the password managers it unlocked: this path never reaches the viewer-close settle.
         release_unlocks(sid)
         candidate = authority.sessions.pop(sid, None)
-        if candidate is not None and not candidate.superseded:  # its route is the newer session's
+        if candidate is not None:  # a detached conversation's route is its own key
             evict = getattr(authority.runner, '_evict_cached_agent', None)
             if callable(evict):
                 evict(candidate.route)
+            if candidate.detached:  # the ids its key owned in the store (session_detached.detached_entry)
+                from gateway.session_detached import drop_owner_hints
+                drop_owner_hints(authority.runner.session_store, candidate.route)
     from gateway.session_local_mcp import release_editor_mcp
     release_editor_mcp(authority, session_ids)
     from gateway.session_worker_construct import release_session_prefill

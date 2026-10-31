@@ -19,6 +19,7 @@ export const zhNotices = {
   },
   promptNotices: {
     legacySendUnconfirmed: '此服务器无法确认这条消息之前的发送，它可能已经运行过。再次发送前请先查看对话。',
+    restoredDraftAttachmentsDropped: '未发送消息中的附件没有恢复。发送前请重新添加。',
     mcpReloadDeferred: '此对话正忙：MCP 更改将在当前轮次结束并再次重新加载 MCP 后生效，或在重新打开对话时生效',
     mcpReloadUnavailable: servers => `未能连接：${servers}`,
     compactedTurnUnavailable: '这条消息在压缩对话时已被概括，无法再恢复或编辑。',

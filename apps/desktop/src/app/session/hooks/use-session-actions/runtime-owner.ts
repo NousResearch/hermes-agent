@@ -60,3 +60,9 @@ export function runtimeOwner(
 ): SessionOwnerScope {
   return route ?? profile
 }
+
+/** The profile a create's runtime lives in: the dialled route's backend
+ *  profile, else the requested one. */
+export function runtimeOwnerProfile(route: null | SessionOwnerRoute | undefined, profile: string): string {
+  return route ? route.targetProfile || route.profile : profile
+}

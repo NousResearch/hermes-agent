@@ -35,7 +35,7 @@ _KNOWN_MANIFEST_FIELDS: set[str] = {
     "pip_dependencies", "provides_browser_providers", "provides_web_providers",
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
-    "requires_hermes", "python_runtime", "provides_locales", "requires_auth", "oauth",
+    "requires_hermes", "python_runtime", "provides_locales", "requires_auth", "oauth", "config_keys",
 }
 
 # Highest manifest schema version this Hermes understands.
@@ -56,8 +56,8 @@ def _plugins_debug() -> bool:
     return _origin._PLUGINS_DEBUG
 
 
-def _portable_skill_namespace(key: str) -> str:
-    """Return a readable, collision-resistant namespace for a portable plugin."""
+def _portable_data_namespace(key: str) -> str:
+    """Return a readable, collision-resistant ``plugin-data`` directory name for a portable plugin."""
     slug = _portable_slug(key)
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
     return f"agent-plugin-{slug}-{digest}"
@@ -70,8 +70,8 @@ def _portable_slug(key: str) -> str:
 
 def portable_mcp_server_name(key: str, server: str) -> str:
     """Internal name of a portable plugin's MCP server: exactly the name its ``mcp.json`` gives it, the same
-    rule a user's own ``mcp_servers`` block in config.yaml follows. The plugin's skill namespace
-    (``agent-plugin-<slug>-<digest>``) is NOT prepended: it keeps plugin-data and skill names collision-free
+    rule a user's own ``mcp_servers`` block in config.yaml follows. The plugin's data namespace
+    (``agent-plugin-<slug>-<digest>``) is NOT prepended: it keeps plugin-data dirs collision-free
     without coordination, but here it cost ~40 chars of every ``mcp__<server>__<tool>`` name, which providers
     cap at 64, so the tool verb was hash-clamped away. A duplicate is refused at load (native config first,
     then first-loaded plugin) with a warning naming both owners; that beats hiding it behind a digest."""
@@ -105,6 +105,19 @@ def _manifest_list(data: Mapping, key: str, field_name: str, what: str, coerce: 
         else:
             out.append(coerced)
     return out
+
+
+def _config_key_path(item: object) -> Optional[str]:
+    """A ``config_keys`` entry: a dotted path at least two segments deep (``memory.retaindb``), else None.
+    A bare section (``agent``) would silence typo notices for the whole section."""
+    parts = item.strip().split(".") if isinstance(item, str) else []
+    return ".".join(parts) if len(parts) >= 2 and all(parts) else None
+
+
+def manifest_config_keys(data: Mapping, key: str) -> list[str]:
+    """Validated ``config_keys`` of a manifest mapping (malformed entries warn and are skipped)."""
+    return _manifest_list(data, key, "config_keys", "a list of dotted config paths", _config_key_path,
+                          "Plugin %s: config_keys entry %r must be a dotted path at least two levels deep; skipping")
 
 
 def _dependency_entry(item: object) -> Optional[dict[str, Any]]:
@@ -175,6 +188,7 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
     )
     schema = _config_schema_entries(key, _manifest_field_of_type(data, key, "config_schema", Mapping, "a mapping"))
     tags = [str(t) for t in (_manifest_field_of_type(data, key, "tags", list, "a list") or [])]
+    config_keys = manifest_config_keys(data, key)
     # Forward compat: unknown fields warn (never fail); v1 manifests only at debug.
     unknown = sorted(set(data.keys()) - _KNOWN_MANIFEST_FIELDS)
     if unknown:
@@ -185,7 +199,7 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
     return {
         "manifest_version": mv, "api_version": api, "requires_plugins": deps, "python_dependencies": pydeps,
         "config_schema": schema, "license": str(data.get("license") or ""),
-        "homepage": str(data.get("homepage") or ""), "tags": tags,
+        "homepage": str(data.get("homepage") or ""), "tags": tags, "config_keys": config_keys,
     }
 
 
@@ -368,7 +382,9 @@ class PluginManifest:
     # recorded with an error and skipped before import — see ``requires_hermes_error``.
     requires_hermes: str = ""
     portable: bool = False
-    skill_namespace: str = ""
+    # ``plugin-data/<data_namespace>`` for a portable plugin; its skills are named after the plugin
+    # itself (``<name>:<skill>``), like every native plugin's.
+    data_namespace: str = ""
     # Declared capability ids, normalized to KNOWN ids. Declaration is consent metadata, NOT a grant: live
     # only via plugins.entries.<id>.granted_capabilities or the legacy allow_* key.
     # See #64228.
@@ -398,6 +414,9 @@ class PluginManifest:
     # ``{endonym, rtl}`` from the mapping form of a ``provides_locales`` entry.
     provides_locales: list[str] = field(default_factory=list)
     locale_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Dotted paths in Hermes' own config sections the plugin reads (``memory.retaindb``), so
+    # ``hermes config get/set`` recognizes them while the plugin is active (hermes_cli/config_runtime_keys.py).
+    config_keys: list[str] = field(default_factory=list)
 
 
 def parse_provides_locales(raw: Any, key: str = "") -> tuple[list[str], dict[str, dict[str, Any]]]:
@@ -493,7 +512,7 @@ def requires_hermes_error(manifest: PluginManifest | Mapping[str, Any]) -> Optio
 
 def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginManifest:
     """Build the manifest for a portable Agent Plugin directory (``plugin.json``); diagnostics warn."""
-    from hermes_cli.agent_plugins import manifest_config_schema, read_agent_plugin_manifest
+    from hermes_cli.agent_plugins import manifest_config_schema, manifest_hermes_extension, read_agent_plugin_manifest
     data, diagnostics = read_agent_plugin_manifest(child)
     for diagnostic in diagnostics:
         logger.warning("Agent Plugin '%s': %s", child, diagnostic.message)
@@ -501,8 +520,9 @@ def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginMan
     return PluginManifest(
         name=data["name"], version=data.get("version", ""), description=data.get("description", ""),
         author=_display_author(data.get("author", "")), source=source, path=str(child), key=key,
-        portable=True, skill_namespace=_portable_skill_namespace(key),
+        portable=True, data_namespace=_portable_data_namespace(key),
         config_schema=_config_schema_entries(key, manifest_config_schema(data)),
+        config_keys=manifest_config_keys(manifest_hermes_extension(data), key),
     )
 
 

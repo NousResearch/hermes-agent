@@ -43,7 +43,8 @@ vi.mock('./i18n', () => ({
       handBackForceHint: 'Force',
       takeOver: 'Take over',
       reconnect: 'Reconnect',
-      streamLost: 'Stream lost'
+      streamLost: 'Stream lost',
+      needsHttps: 'Needs HTTPS'
     }
   })
 }))
@@ -174,4 +175,19 @@ it('does not offer Take over while no server-minted viewer id exists, even once 
   })
   await waitFor(() => expect(view.getByText('Take over').closest('button')?.disabled).toBe(false))
   view.unmount()
+})
+
+it('says the screen needs HTTPS where an insecure origin has no crypto.subtle, before asking for a viewer', async () => {
+  Object.defineProperty(globalThis.crypto, 'subtle', { configurable: true, value: undefined })
+
+  try {
+    const view = render(<BotScreenPane bot={bot} />)
+    await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.status'))
+    await act(async () => {})
+    expect(view.getByText('Needs HTTPS')).toBeTruthy()
+    expect(vi.mocked(displayRequest)).not.toHaveBeenCalledWith(bot, 'display.observe', expect.anything())
+    view.unmount()
+  } finally {
+    Reflect.deleteProperty(globalThis.crypto, 'subtle')
+  }
 })

@@ -27,8 +27,8 @@ CANARY_TAG = "canary.20260818T101010Z-v0.28.0"
 PLATFORMS = ("darwin", "win32")
 ARCHES = ("arm64", "x64")
 NATIVE_TARGETS = tuple(f"{platform}-{arch}" for platform in PLATFORMS for arch in ARCHES)
-# The release branch may write the shared dependency cache; commit and channel
-# builds run unreviewed inputs and may only read it.
+# These names identify the shared claim legs and retained legacy dispatch legs,
+# not claim policy: commit/channel claims use write-mode legs with saves skipped.
 _MODE_BY_CACHE = {"write": "release", "read": "commit"}
 
 
@@ -183,7 +183,7 @@ def admitted(names, *, channel=False):
 
 
 def evaluate(expression, inputs, needs, *, cancelled=False, failed=False, job_if=True, github=None, env=None,
-             steps=None):
+             steps=None, matrix=None, hash_files=None):
     """Evaluate the workflow expression subset, including Actions' implicit success.
 
     This is not a scheduler simulation; native Actions still owns cancellation
@@ -201,12 +201,13 @@ def evaluate(expression, inputs, needs, *, cancelled=False, failed=False, job_if
 
     def value(match):
         bits = match[0].split('.')
-        result = {'inputs': inputs, 'needs': needs, 'github': github or {}, 'env': env or {}, 'steps': steps or {}}
+        result = {'inputs': inputs, 'needs': needs, 'github': github or {}, 'env': env or {},
+                  'steps': steps or {}, 'matrix': matrix or {}}
         for bit in bits:
             result = result.get(bit, '') if isinstance(result, dict) else ''
         return repr(result)
 
-    expression = re.sub(r'\b(?:inputs|needs|github|env|steps)(?:\.[\w-]+)+', value, expression)
+    expression = re.sub(r'\b(?:inputs|needs|github|env|steps|matrix)(?:\.[\w-]+)+', value, expression)
     expression = expression.replace('&&', ' and ').replace('||', ' or ')
     expression = re.sub(r'!(?!=)', ' not ', expression)
     expression = re.sub(r'\btrue\b', 'True', expression)
@@ -216,6 +217,9 @@ def evaluate(expression, inputs, needs, *, cancelled=False, failed=False, job_if
         'success': lambda: not (cancelled or failed), 'failure': lambda: failed,
         'contains': lambda value, needle: needle in value,
         'startsWith': lambda value, prefix: str(value).startswith(prefix),
+        'format': lambda template, *args: template.format(*args),
+        # Hashing belongs to the runner. Require explicit results for every pattern.
+        'hashFiles': lambda pattern: hash_files[pattern],
         # Expression strings reach eval already rewritten (true -> True), so read them as literals.
         'fromJSON': ast.literal_eval,
     })

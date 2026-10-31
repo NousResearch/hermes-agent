@@ -62,7 +62,7 @@ def run(argv, *args, **kwargs):
         return subprocess.CompletedProcess(argv, 0, stdout=value, stderr='')
     assert argv and argv[0] == 'git', f'unexpected external command: {argv}'
     assert pathlib.Path(kwargs.get('cwd') or pathlib.Path.cwd()).resolve() == root.resolve()
-    if argv[1] in ('fetch', 'ls-remote'):
+    if argv[1] in ('fetch', 'ls-remote', 'push'):
         # Only the transport points at a local fixture. Identity reads stay real.
         rewrites = ['-c', 'url.' + os.environ['PROBE_REMOTE'] + '.insteadOf=https://github.com/fixture-owner/fixture-repo.git']
         if os.environ.get('PROBE_UPSTREAM_URL'):
@@ -93,7 +93,21 @@ else:
     return repo, upstream, invoke
 
 
-def test_commit_build_cli_dispatches_only_the_resolved_remote_commit(fixture_repo):
+def claims(upstream):
+    """The remote's commit claims in UTC claim-stamp order, newest last.
+
+    Tagger dates can tie, leaving the user's tag.sort as a secondary key.
+    These fixed-width claim names order by their timestamp without that tie.
+    """
+    listed = git(upstream, 'tag', '--list', 'commit.*', '--sort=refname')
+    return listed.split() if listed else []
+
+
+def claim_message(upstream, tag):
+    return json.loads(git(upstream, 'tag', '--list', tag, '--format=%(contents)'))
+
+
+def test_commit_build_cli_claims_only_the_resolved_remote_commit(fixture_repo):
     repo, upstream, invoke = fixture_repo
     tip = git(repo, 'rev-parse', 'HEAD')
     before = git(repo, 'show-ref', '--heads', '--tags')
@@ -101,42 +115,44 @@ def test_commit_build_cli_dispatches_only_the_resolved_remote_commit(fixture_rep
         result, calls = invoke('--build-commit', revision)
         assert result.returncode == 0, result.stderr
         assert tip in result.stdout
-        assert f'https://hermes-assets.nousresearch.com/releases/commit/{tip}/index.html' in result.stdout
+        assert 'https://hermes-assets.nousresearch.com/releases/tag/commit.' in result.stdout
+        assert 'Dry run: no tag was created' in result.stdout
         assert not any(call[1:3] == ['workflow', 'run'] for call in calls)
+    assert git(repo, 'show-ref', '--heads', '--tags') == before and claims(upstream) == []
     result, calls = invoke('--build-commit', tip, '--publish')
     assert result.returncode == 0, result.stderr
-    # Repository identity no longer selects the dispatch: every commit build
-    # is the same direct dispatch (disposable mode is an explicit opt-in).
+    # One annotated claim on exactly the resolved commit, pushed before the dispatch.
+    (tag,) = claims(upstream)
+    assert tag.startswith('commit.') and tag.endswith('-v1.2.3')
+    assert git(upstream, 'cat-file', '-t', tag) == 'tag'
+    assert git(upstream, 'rev-parse', f'{tag}^{{commit}}') == tip
+    assert claim_message(upstream, tag)['commit'] == tip
     dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
-    assert len(dispatches) == 1
-    assert f'build_commit={tip}' in dispatches[0]
-    assert not any(field.startswith('disposable_channel=') for field in dispatches[0])
-    assert git(repo, 'show-ref', '--heads', '--tags') == before
+    assert dispatches == [['gh', 'workflow', 'run', 'stable-release.yml', '--ref', 'main',
+                           '--repo', 'fixture-owner/fixture-repo', '-f', f'tag={tag}']]
+    assert f'https://hermes-assets.nousresearch.com/releases/tag/{tag}/index.html' in result.stdout
     assert git(upstream, 'rev-parse', 'refs/heads/main') == tip
 
 
 def test_commit_build_dispatch_is_repository_independent(fixture_repo):
-    repo, _, invoke = fixture_repo
+    repo, upstream, invoke = fixture_repo
     tip = git(repo, 'rev-parse', 'HEAD')
-    expected = ['gh', 'workflow', 'run', 'desktop-bundled-release.yml',
-                '--ref', 'main', '--repo', 'fixture-owner/fixture-repo',
-                '-f', f'build_commit={tip}', '-f', 'tag=', '-f', 'upload_release=false',
-                '-f', 'termux_upgrade_from_tag=']
     result, calls = invoke('--build-commit', tip, '--publish')
     assert result.returncode == 0, result.stderr
+    tag = claims(upstream)[-1]
     dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
-    assert dispatches == [expected]
+    assert dispatches == [['gh', 'workflow', 'run', 'stable-release.yml', '--ref', 'main',
+                           '--repo', 'fixture-owner/fixture-repo', '-f', f'tag={tag}']]
     assert 'disposable' not in result.stdout.lower()
-    # The upstream URL used to select a different command shape; it no longer does.
+    # The upstream URL selects only the repository the claim and dispatch go to.
     git(repo, 'remote', 'set-url', 'origin', 'https://github.com/NousResearch/hermes-agent.git')
     result, calls = invoke('--build-commit', tip, '--publish',
                            extra={'PROBE_UPSTREAM_URL': 'https://github.com/NousResearch/hermes-agent.git'})
     assert result.returncode == 0, result.stderr
+    tag = claims(upstream)[-1]
     dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
-    assert dispatches == [['gh', 'workflow', 'run', 'desktop-bundled-release.yml',
-                           '--ref', 'main', '--repo', 'NousResearch/hermes-agent',
-                           '-f', f'build_commit={tip}', '-f', 'tag=', '-f', 'upload_release=false',
-                           '-f', 'termux_upgrade_from_tag=']]
+    assert dispatches == [['gh', 'workflow', 'run', 'stable-release.yml', '--ref', 'main',
+                           '--repo', 'NousResearch/hermes-agent', '-f', f'tag={tag}']]
 
 
 # (Fork-conditional removal) The disposable routing test retired with it: a
@@ -145,15 +161,17 @@ def test_commit_build_dispatch_is_repository_independent(fixture_repo):
 
 
 def test_commit_bundle_environment_is_literal_and_validated(fixture_repo):
-    repo, _, invoke = fixture_repo
+    repo, upstream, invoke = fixture_repo
     tip = git(repo, 'rev-parse', 'HEAD')
     values = {'HERMES_PREVIEW_FULL_CONNECTORS': '1', 'HERMES_DATA_DIR_SUFFIX': 'magic-test',
               'HERMES_DESKTOP_USER_DATA_DIR': '', 'HERMES_SHARED_AUTH_DIR': 'a=b "quote"\n$(not-a-command)'}
     flags = [part for key, value in values.items() for part in ('--bundle-env', f'{key}={value}')]
     result, calls = invoke('--build-commit', tip, '--publish', *flags)
     assert result.returncode == 0, result.stderr
+    # The defaults travel only in the claim; the dispatch names nothing but the tag.
     dispatch = next(call for call in calls if call[1:3] == ['workflow', 'run'])
-    assert json.loads(next(field.split('=', 1)[1] for field in dispatch if field.startswith('bundle_env='))) == values
+    assert not any(field.startswith('bundle_env=') for field in dispatch)
+    assert claim_message(upstream, claims(upstream)[-1])['bundleEnv'] == values
     for invalid in (['--bundle-env', 'MISSING'], ['--bundle-env', 'BAD-NAME=x'],
                     ['--bundle-env', 'NODE_OPTIONS=--require=evil'], ['--bundle-env', 'HERMES_SKIP_INTRO=1'],
                     ['--bundle-env', 'HERMES_GUEST_ONBOARDING=1'], ['--bundle-unset', 'PATH'],
@@ -166,9 +184,7 @@ def test_commit_bundle_environment_is_literal_and_validated(fixture_repo):
     result, calls = invoke('--build-commit', tip, '--publish', *flags,
                            '--bundle-unset', 'HERMES_HOME')
     assert result.returncode == 0, result.stderr
-    dispatch = next(call for call in calls if call[1:3] == ['workflow', 'run'])
-    assert json.loads(next(field.split('=', 1)[1] for field in dispatch if field.startswith('bundle_env='))) == {
-        **values, 'HERMES_HOME': None}
+    assert claim_message(upstream, claims(upstream)[-1])['bundleEnv'] == {**values, 'HERMES_HOME': None}
     for invalid in (['--bundle-unset', 'BAD-NAME'],
                     ['--bundle-env', 'HERMES_HOME=x', '--bundle-unset', 'HERMES_HOME'],
                     ['--bundle-unset', 'HERMES_HOME', '--bundle-unset', 'HERMES_HOME']):

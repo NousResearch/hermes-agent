@@ -226,14 +226,15 @@ def existing_published(out_dir: Path, suite: str) -> set:
 def pool_subdir_suite(pool_subdir: str) -> str | None:
     """The APT suite a pool prefix may stage into, or None if it is not a claim tag.
 
-    A stable attempt ref (rc.<N>-vX.Y.Z) stages hermes-stable; a canary claim
-    (canary.<stamp>-vX.Y.Z, which is its own release tag) stages hermes-canary.
+    A stable attempt ref (rc.<N>-vX.Y.Z) stages hermes-stable; a canary or commit
+    claim (canary|commit.<stamp>-vX.Y.Z, each its own release tag) stages
+    hermes-canary or hermes-commit (a commit build's suite is only archived).
     """
     if parse_attempt_ref(pool_subdir) is not None:
         return "hermes-stable"
     match = RELEASE_TAG_RE.fullmatch(pool_subdir) if isinstance(pool_subdir, str) else None
-    if match is not None and match.group("ts") and "\n" not in pool_subdir:
-        return "hermes-canary"
+    if match is not None and match.group("kind") and "\n" not in pool_subdir:
+        return f"hermes-{match.group('kind')}"
     return None
 
 
@@ -541,10 +542,11 @@ def main(argv: list | None = None) -> int:
     # hermes-nightly is the suite actually published today
     # (https://hermes-assets.nousresearch.com/releases/termux/nightly/,
     # verified 2026-09-06); hermes-stable/hermes-canary are what CI stages
-    # for the stable/canary channels.
+    # for the stable/canary channels; hermes-commit is a commit build's suite,
+    # staged only in its claim archive and never published to a feed.
     ap.add_argument(
         "--suite", required=True,
-        choices=["hermes-stable", "hermes-canary", "hermes-nightly"],
+        choices=["hermes-stable", "hermes-canary", "hermes-commit", "hermes-nightly"],
     )
     ap.add_argument("--gpg-key-file", type=Path, default=None)
     ap.add_argument("--pool-subdir", default="")

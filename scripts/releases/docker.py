@@ -45,9 +45,20 @@ def require_release_image_tag(tag: str) -> str:
     return require_stable_tag(tag)
 
 
+def require_tested_image_tag(tag: str) -> str:
+    """A claim whose image the release pipeline may build and test: a release image tag, or a
+    commit build's claim (commit.<stamp>-vX.Y.Z). A commit image is tested but never pushed:
+    publication re-checks require_release_image_tag."""
+    from hermes_cli.update_channel import is_commit_tag
+
+    if is_commit_tag(tag):
+        return tag
+    return require_release_image_tag(tag)
+
+
 def build_manifest(tag: str, commit: str, digests: dict[str, str], archive_sha256: dict[str, str] | None = None) -> dict:
     """Digest manifest emitted by the test phase (artifact ``docker-test-manifest``)."""
-    require_release_image_tag(tag)
+    require_tested_image_tag(tag)
     if not isinstance(commit, str) or not GIT_SHA.fullmatch(commit):
         raise DockerReleaseError(f"Invalid release commit: {commit!r}")
     if sorted(digests) != sorted(ARCHES):

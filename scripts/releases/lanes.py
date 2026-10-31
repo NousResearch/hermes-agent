@@ -55,6 +55,12 @@ DEFAULT = frozenset(lane.name for lane in LANES if lane.default)
 # base a canary claim starts from; --only/--with/--without narrow or widen it exactly as they do
 # DEFAULT for a stable claim.
 CANARY = frozenset(NAMES) - {"upgrade"}
+# A commit build is the stable default minus what it can never run. Commit builds don't support
+# updating (canon), so no upgrade test of any kind: neither the signed-package arms (`upgrade`) nor
+# install-e2e, every leg of which installs an old release and updates it. Fresh installs stay
+# covered by `smoke` and `bootstrap-version`. The Store is stable's and canary's only.
+COMMIT_REFUSED = frozenset({"upgrade", "install-e2e", "windows-store"})
+COMMIT = DEFAULT - COMMIT_REFUSED
 
 DESKTOP = ("windows", "macos-arm64", "macos-intel")
 WINDOWS = ("windows", "windows-store")
@@ -90,6 +96,8 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
     "publish-bundles": ("bundles",),
     # A canary only advances channels, so it publishes only the full desktop set they serve.
     "publish-canary": ("desktop-channel",),
+    # A commit build publishes nowhere: it renders the builds page of whatever it built.
+    "publish-commit": ("bundles",),
     "transitions-darwin-arm64": ("macos-arm64", "upgrade"),
     "transitions-darwin-x64": ("macos-intel", "upgrade"),
     "transitions-win32": ("windows", "upgrade"),
@@ -101,15 +109,22 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
 CANDIDATE_CALLS = tuple(job for job in JOB_LANES if job.startswith("candidates-"))
 
 # The release policies stable-release.yml runs. Every build and test job is shared; only these
-# publication jobs belong to one policy, and each runs only under its own. A stable release
+# publication jobs belong to some policies, and each runs only under those. A stable release
 # publishes its bundles to the stable channels and the Store; a canary publishes the same accepted
-# candidate to the canary channels and never touches a stable head or the Store.
-POLICIES = ("stable", "canary")
-POLICY_JOBS = {"publish-bundles": "stable", "publish-canary": "canary"}
+# candidate to the canary channels and never touches a stable head or the Store; a commit build
+# publishes nowhere (its builds page lives in its own claim archive) and pushes no Docker tag.
+POLICIES = ("stable", "canary", "commit")
+POLICY_JOBS: dict[str, frozenset[str]] = {
+    "publish-bundles": frozenset({"stable"}),
+    "publish-canary": frozenset({"canary"}),
+    "publish-commit": frozenset({"commit"}),
+    "publish-docker": frozenset({"stable", "canary"}),
+}
 # The lane set a claim of each policy starts from, and the lanes it can never run: a canary is its
-# own app identity, so no signed package of it can upgrade anything (see CANARY).
-POLICY_BASE = {"stable": DEFAULT, "canary": CANARY}
-POLICY_REFUSED = {"stable": frozenset(), "canary": frozenset({"upgrade"})}
+# own app identity, so no signed package of it can upgrade anything (see CANARY); a commit build
+# runs no upgrade test and builds no Store package (see COMMIT).
+POLICY_BASE = {"stable": DEFAULT, "canary": CANARY, "commit": COMMIT}
+POLICY_REFUSED = {"stable": frozenset(), "canary": frozenset({"upgrade"}), "commit": COMMIT_REFUSED}
 
 # Candidate handoff group and manifest target, each with the lane that builds it.
 HANDOFF_LANE = {"win32-x64": "windows-build", "win32-arm64": "windows-build", "windows-universal": "windows-build",
@@ -186,13 +201,12 @@ def from_flags(raw: object) -> frozenset[str]:
 def jobs_to_run(lanes: Iterable[str], policy: str = "stable") -> dict[str, bool]:
     """Whether each lane-controlled job runs. Every ``if`` in the workflow reads this.
 
-    ``policy`` only removes the other policy's publication job (POLICY_JOBS); it never adds or
-    removes a build or test job, so a canary and a stable release with the same lanes run the
-    same graph."""
+    ``policy`` only removes the publication jobs of other policies (POLICY_JOBS); it never adds or
+    removes a build or test job, so every policy with the same lanes runs the same graph."""
     if policy not in POLICIES:
         raise ValueError(f"unknown release policy {policy!r}")
     on = effective(lanes)
-    return {job: needs <= on and POLICY_JOBS.get(job, policy) == policy
+    return {job: needs <= on and policy in POLICY_JOBS.get(job, frozenset({policy}))
             for job, needs in JOB_LANES.items()}
 
 

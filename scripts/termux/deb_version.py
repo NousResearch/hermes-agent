@@ -23,7 +23,7 @@ import re
 import sys
 
 _TAG_RE = re.compile(
-    r"^(?:canary\.(?P<ts>20\d{6}T\d{6}Z)-)?"
+    r"^(?:(?P<kind>canary|commit)\.(?P<ts>20\d{6}T\d{6}Z)-)?"
     r"v(?P<major>0|[1-9]\d{0,2})\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$"
 )
 
@@ -33,7 +33,7 @@ def _match_tag(tag: str) -> re.Match[str]:
     if m is None:
         raise ValueError(
             f"malformed release tag {tag!r}: expected v<MAJOR>.<MINOR>.<PATCH> "
-            "or canary.<UTC timestamp>-v<MAJOR>.<MINOR>.<PATCH>"
+            "or canary|commit.<UTC timestamp>-v<MAJOR>.<MINOR>.<PATCH>"
         )
     return m
 
@@ -45,29 +45,30 @@ def deb_version_for_tag(tag: str) -> str:
     ts = m.group("ts")
     if ts is None:
         return f"{base}-1"
-    return f"{base}~canary.{ts}-1"
+    return f"{base}~{m.group('kind')}.{ts}-1"
 
 
 def release_version_for_tag(tag: str) -> str:
-    """The version a release tag publishes: ``X.Y.Z`` or ``X.Y.Z+canary.<stamp>``.
+    """The version a release tag carries: ``X.Y.Z``, ``X.Y.Z+canary.<stamp>`` or ``X.Y.Z+commit.<stamp>``.
 
     The same value as hermes_cli.update_channel.release_version; build_deb.sh stamps it as the
     package's base version and cannot import the application package.
     """
     m = _match_tag(tag)
     base = f"{m.group('major')}.{m.group('minor')}.{m.group('patch')}"
-    return f"{base}+canary.{m.group('ts')}" if m.group("ts") else base
+    return f"{base}+{m.group('kind')}.{m.group('ts')}" if m.group("ts") else base
 
 
 def channel_for_tag(tag: str) -> str:
-    """Map a release tag to its channel: 'canary' or 'stable'.
+    """Map a release tag to its channel: 'stable', 'canary' or 'commit'.
 
     Derived from the same _TAG_RE as deb_version_for_tag, so the two can never
     drift: a tag that yields a '~canary' deb version is canary, and the
-    malformed-tag rejection is identical.
+    malformed-tag rejection is identical. A commit build's 'commit' channel names
+    only its archived APT suite; it is never published to a feed.
     """
     m = _match_tag(tag)
-    return "canary" if m.group("ts") else "stable"
+    return m.group("kind") or "stable"
 
 
 def main(argv: list[str]) -> int:

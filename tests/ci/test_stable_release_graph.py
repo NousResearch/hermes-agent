@@ -157,10 +157,15 @@ def test_a_canary_runs_every_stable_job_with_every_lane_and_differs_only_in_publ
     assert upgrade == {"transitions-darwin-arm64", "transitions-darwin-x64", "transitions-win32",
                        "macos-packaged-arm64", "macos-packaged-x64", "windows-packaged"}
     stable_all = lane_set.jobs_to_run(lane_set.NAMES, "stable")
-    assert {job for job in canary if canary[job] != stable_all[job]} == set(lane_set.POLICY_JOBS) | upgrade
+    # The publication jobs that run under exactly one of the two policies.
+    either = {job for job, policies in lane_set.POLICY_JOBS.items() if ("stable" in policies) != ("canary" in policies)}
+    assert either == {"publish-bundles", "publish-canary"}
+    assert {job for job in canary if canary[job] != stable_all[job]} == either | upgrade
     # Every other build and test job runs: macOS Intel and Termux included, which a default claim
     # leaves out, and install-e2e, which updates released stable tags to the canary commit.
-    assert {job for job, runs in canary.items() if not runs} == {"publish-bundles"} | upgrade
+    not_canary = {job for job, policies in lane_set.POLICY_JOBS.items() if "canary" not in policies}
+    assert not_canary == {"publish-bundles", "publish-commit"}
+    assert {job for job, runs in canary.items() if not runs} == not_canary | upgrade
     for opted_out in ("candidates-darwin-x64", "candidates-termux", "termux-checks"):
         assert canary[opted_out] and not lane_set.jobs_to_run(lane_set.DEFAULT)[opted_out], opted_out
     with pytest.raises(ValueError, match="policy"):
@@ -173,6 +178,87 @@ def test_a_canary_runs_every_stable_job_with_every_lane_and_differs_only_in_publ
     assert evaluate(prefix, {"tag": "rc.1-v1.2.3"}, {}) == "Stable"
     assert evaluate(prefix, {"tag": "canary.20261021T064100Z-v1.2.3"}, {}) == "Canary"
     assert claim_run_title("rc.1-v1.2.3") == "Stable release rc.1-v1.2.3"
+
+
+def test_a_commit_build_runs_the_default_jobs_but_upgrade_tests_and_publishes_nowhere():
+    """release.py --build-commit dispatches this same workflow on commit.<stamp>-vX.Y.Z. A commit
+    build runs the stable default lanes minus what it can never run (no upgrade test of any kind;
+    commit builds don't support updating), and its only publication job renders its builds page."""
+    jobs = workflow("stable-release.yml")["jobs"]
+    assert lane_set.COMMIT == lane_set.DEFAULT - lane_set.COMMIT_REFUSED
+    assert lane_set.COMMIT_REFUSED == {"upgrade", "install-e2e", "windows-store"}
+    commit = lane_set.jobs_to_run(lane_set.COMMIT, "commit")
+    assert set(commit) <= set(jobs)
+    stable = lane_set.jobs_to_run(lane_set.DEFAULT, "stable")
+    # Relational: every job that is neither a publication job nor needs a refused lane runs exactly
+    # as it does in a default stable release, so a lane added later runs in commit builds too.
+    refused = {job for job, needs in lane_set.JOB_LANES.items() if needs & lane_set.COMMIT_REFUSED}
+    for job in set(commit) - set(lane_set.POLICY_JOBS) - refused:
+        assert commit[job] == stable[job], job
+    assert not any(commit[job] for job in refused)
+    assert {job for job, runs in commit.items() if runs and job in lane_set.POLICY_JOBS} == {"publish-commit"}
+    assert {job for job in commit if commit[job] != stable[job]} == {
+        "publish-bundles", "publish-docker", "publish-commit", "install-e2e",
+        "transitions-darwin-arm64", "transitions-win32", "macos-packaged-arm64", "windows-packaged"}
+    # Every refused lane is refused outright, not just off by default.
+    for lane in lane_set.COMMIT_REFUSED:
+        with pytest.raises(ValueError, match="commit claim cannot run"):
+            lane_set.select(with_=[lane], policy="commit")
+    # Neither a stable release nor a canary runs it.
+    for policy, lanes in (("stable", lane_set.NAMES), ("canary", lane_set.CANARY)):
+        assert not lane_set.jobs_to_run(lanes, policy)["publish-commit"], policy
+
+    publish = jobs["publish-commit"]
+    assert publish["needs"] == ["admit", "candidate-manifest", "acceptance"]
+    manifest = {"result": "success"}
+
+    def admit_with(green: str, runs: dict = commit) -> dict:
+        return {"result": "success", "outputs": {"jobs": json.dumps(runs), "policy": "commit",
+                                                 "require-green": green}}
+
+    for green, red_suite_renders in (("false", True), ("true", False)):
+        needs = {"admit": admit_with(green), "candidate-manifest": manifest}
+        assert gate(publish["if"], {}, {**needs, "acceptance": {"result": "failure"}}) is red_suite_renders
+        assert gate(publish["if"], {}, {**needs, "acceptance": {"result": "success"}})
+        for result in ("failure", "skipped", "cancelled"):
+            assert not gate(publish["if"], {}, {**needs, "candidate-manifest": {"result": result},
+                                                "acceptance": {"result": "success"}}), result
+    # A commit build never reaches stable or canary publication, the Docker push or the Store.
+    accepted = {"admit": admit_with("false"), "acceptance": {"result": "success"}, "candidate-manifest": manifest,
+                "docker": {"result": "success"}}
+    for name in ("publish-bundles", "publish-canary", "publish-docker"):
+        assert not gate(jobs[name]["if"], {}, accepted), name
+    store = workflow("desktop-bundled-release.yml")["jobs"]["stable-store"]["if"]
+    assert not gate(store, {"release-phase": "publish", "skip-store": False,
+                            "tag": "commit.20261026T180000Z-v1.2.3"}, {"validate": {"result": "success"}})
+    # Its page is rendered from the pinned accepted candidate into its own claim archive only.
+    render = next(step for step in publish["steps"] if "render-builds-table.py" in step.get("run", ""))
+    for flag in ('--archive "$RELEASE_CLAIM_TAG"', '--candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256"',
+                 '--candidate-commit "$RELEASE_COMMIT"', '--bundle-env-json "$CLAIM_BUNDLE_ENV"',
+                 '--summary-out "$GITHUB_STEP_SUMMARY"'):
+        assert flag in render["run"], flag
+    assert publish["env"]["CLAIM_BUNDLE_ENV"] == "${{ needs.admit.outputs.bundle-env }}"
+    complete_render = next(step for step in jobs["complete"]["steps"]
+                           if step.get("name") == "Render the admitted candidate smoke results")
+    assert not gate(complete_render["if"], {}, {"admit": {"result": "success", "outputs": {
+        "lanes": json.dumps(lane_set.flags(lane_set.COMMIT)), "policy": "commit"}}}, job_if=False)
+    # Publication judges it like every other publication job.
+    assert "publish-commit" in jobs["publication"]["needs"]
+    gate_step = next(step for step in jobs["publication"]["steps"] if "stable gate" in step.get("run", ""))
+    assert "publish-commit" in gate_step["run"].split()
+    # Its bundle defaults reach every candidate call from the admitted claim only.
+    assert jobs["admit"]["outputs"]["bundle-env"] == "${{ steps.admit.outputs.bundle-env }}"
+    for name in lane_set.CANDIDATE_CALLS:
+        assert jobs[name]["with"]["bundle_env"] == "${{ needs.admit.outputs.bundle-env }}", name
+    # Titled Commit, and each commit build runs on its own (never queued behind a release).
+    title = workflow("stable-release.yml")["run-name"]
+    prefix = title.split(" release ", 1)[0]
+    assert evaluate(prefix, {"tag": "commit.20261026T180000Z-v1.2.3"}, {}) == "Commit"
+    group = workflow("stable-release.yml")["concurrency"]["group"]
+    assert evaluate(group, {"tag": "commit.20261026T180000Z-v1.2.3"}, {}) == \
+        "commit.20261026T180000Z-v1.2.3"
+    assert evaluate(group, {"tag": "canary.20261026T180000Z-v1.2.3"}, {}) == "canary-release-pipeline"
+    assert evaluate(group, {"tag": "rc.1-v1.2.3"}, {}) == "stable-release"
 
 
 def test_canary_publication_follows_its_claims_green_policy_and_never_touches_stable():
@@ -489,7 +575,9 @@ def test_publication_reconciler_has_every_recovery_trigger_and_shared_lock():
     assert gate(reconcile["if"], {}, {}, github={"event_name": "workflow_dispatch"})
     for refused in ({"conclusion": "success"}, {"event": "push"}, {"head_repository": {"full_name": "fork/r"}},
                     # A red canary is a Stable Release run too; it must never be reconciled or rerun.
-                    {"display_title": "Canary release canary.20261021T064100Z-v1.2.3"}):
+                    {"display_title": "Canary release canary.20261021T064100Z-v1.2.3"},
+                    # So is a commit build: it has no stable draft or head either.
+                    {"display_title": "Commit release commit.20261026T180000Z-v1.2.3"}):
         assert not gate(reconcile["if"], {}, {}, github=run_of(**refused)), refused
     assert gate(reconcile["if"], {}, {}, github=run_of(display_title="Stable release rc.1-v1.2.3"))
     checkout = reconcile["steps"][0]

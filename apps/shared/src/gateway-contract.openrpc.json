@@ -187,6 +187,24 @@
       }
     },
     {
+      "name": "bot_delivery.list",
+      "summary": "Read-only: this bot's unsettled message_agent deliveries to local teammates, newest first.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/BotDeliveryListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/BotDeliveryListResult"
+        }
+      }
+    },
+    {
       "name": "bot_relay.deliver",
       "summary": "Deliver a relayed DM into a Bot Chat on this gateway and return the one-turn reply (blocking).",
       "params": [
@@ -7269,6 +7287,134 @@
         ],
         "title": "BillingStepUpVerificationPayload",
         "type": "object"
+      },
+      "BotDeliveryListParams": {
+        "additionalProperties": false,
+        "description": "``profile`` is the SENDER bot; it routes the call to that profile's connection.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "BotDeliveryListParams",
+        "type": "object"
+      },
+      "BotDeliveryListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "sender": {
+            "title": "Sender",
+            "type": "string"
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/BotDeliveryRow"
+            },
+            "title": "Deliveries",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sender",
+          "deliveries"
+        ],
+        "title": "BotDeliveryListResult",
+        "type": "object"
+      },
+      "BotDeliveryRow": {
+        "additionalProperties": false,
+        "description": "``tools/bot_delivery_status.py::list_sender_deliveries``. ``since`` is the receipt's last\nwrite (epoch seconds); ``waiting_on`` is set for ``waiting_on_you``, ``reason`` (+ ``error``)\nfor ``failed`` \u2014 ``unknown_outcome`` means the target may have acted: never resend it.",
+        "properties": {
+          "delivery_id": {
+            "title": "Delivery Id",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "target_handle": {
+            "title": "Target Handle",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/BotDeliveryState"
+          },
+          "since": {
+            "title": "Since",
+            "type": "number"
+          },
+          "preview": {
+            "title": "Preview",
+            "type": "string"
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Waiting On"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          }
+        },
+        "required": [
+          "delivery_id",
+          "target",
+          "target_handle",
+          "state",
+          "since",
+          "preview"
+        ],
+        "title": "BotDeliveryRow",
+        "type": "object"
+      },
+      "BotDeliveryState": {
+        "enum": [
+          "queued",
+          "claimed",
+          "working",
+          "waiting_on_you",
+          "failed"
+        ],
+        "title": "BotDeliveryState",
+        "type": "string"
       },
       "BotRelayDeliverParams": {
         "additionalProperties": false,

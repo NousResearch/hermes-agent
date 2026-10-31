@@ -62,3 +62,20 @@ const ComposerSurfaceContext = createContext<string | null>(null)
 export const ComposerSurfaceProvider = ComposerSurfaceContext.Provider
 
 export const useComposerSurfaceId = (): string | null => useContext(ComposerSurfaceContext)
+
+/** The session a composer belongs to, as its `composer.top` contributions see it. */
+export interface ComposerSessionInfo {
+  /** The session id the composer was mounted for (`null` on a fresh draft). */
+  sessionId: null | string
+  /** The durable id it is filed under — the runtime id mapped through the session store. */
+  storedSessionId: null | string
+}
+
+const ComposerSessionContext = createContext<ComposerSessionInfo>({ sessionId: null, storedSessionId: null })
+
+export const ComposerSessionProvider = ComposerSessionContext.Provider
+
+/** Which session this composer is for, read from inside a `composer.top` contribution. A tile's
+ *  composer and the main one answer for their OWN session, so a plugin banner never shows one
+ *  chat's state above another chat's input. */
+export const useComposerSession = (): ComposerSessionInfo => useContext(ComposerSessionContext)

@@ -1,16 +1,16 @@
 name: redline
 repo: https://github.com/silentpr0/hermes-redline
-sha: 3fffa9b5af77c31119fb6cf138279cdc5349540c
+sha: ba52c4e5174710a90ef37fcb1263f9b0798727a7
 subdir: ""
-description: "Guided Markdown and source-code review in Hermes Desktop — annotate passages or line-numbered code in a docked pane and send comment/question/change-request batches back to the agent; cards are offered automatically on delivered Markdown. Disclosure — reads any user-selected local .md/.markdown or source-code path (.py .sh .js .ts .tsx .c .h .cpp .go .rs .rb .yaml .yml .json .toml .sql, so config files such as config.yaml or auth.json are shown if you open them) up to 1 MB (symlink-resolved), writes only a <file>.redline.json sidecar beside it, and in Hermes Desktop chats the transform_llm_output hook appends a ::redline directive line to qualifying final agent responses; syntax highlighting uses Pygments in the local gateway host with plain-text fallback; no network beyond the local gateway, no credentials, no telemetry, no subprocesses; the pane polls the local backend every 3 s while open."
+description: "Guided Markdown and source-code review in Hermes Desktop — annotate passages or line-numbered code in a docked pane and send comment/question/change-request batches back to the opening chat session; cards are offered automatically for qualifying delivered Markdown or source files. Disclosure — reads any user-selected local .md/.markdown or source-code path (.py .sh .js .ts .tsx .c .h .cpp .go .rs .rb .yaml .yml .json .toml .sql, so config files such as config.yaml or auth.json are shown if you open them) up to 1 MB (symlink-resolved), writes only a <file><ext>.redline.json sidecar beside it, and reviewed paths and sidecars are on the gateway host; in Hermes Desktop chats the transform_llm_output hook appends a ::redline directive line to qualifying final agent responses; source selections carry L<n> anchors, annotations re-anchor by saved offsets or quote with a margin fallback, and code highlighting uses Pygments in the local gateway host with plain-text fallback; no network beyond the local gateway, no credentials, no telemetry, no subprocesses; the pane polls the local backend every 3 s while open."
 maintainer: silentpr0
 tier: community
 category: desktop
 requires_hermes: ">=0.21.5"
-version: "0.2.0"
-image: "https://raw.githubusercontent.com/silentpr0/hermes-redline/3fffa9b5af77c31119fb6cf138279cdc5349540c/docs/banner.png"
+version: "0.3.0"
+image: "https://raw.githubusercontent.com/silentpr0/hermes-redline/ba52c4e5174710a90ef37fcb1263f9b0798727a7/docs/banner.png"
 screenshots:
-  - "https://raw.githubusercontent.com/silentpr0/hermes-redline/3fffa9b5af77c31119fb6cf138279cdc5349540c/docs/screenshot.png"
+  - "https://raw.githubusercontent.com/silentpr0/hermes-redline/ba52c4e5174710a90ef37fcb1263f9b0798727a7/docs/screenshot.png"
 readme: true
 capabilities:
   provides_tools: []

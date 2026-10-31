@@ -192,6 +192,9 @@ class SessionResumeParams(SessionParams):
     # False: render image parts as "[image]" instead of their data URIs — a remote client reads a
     # transcript in kilobytes instead of re-transmitting every stored attachment (#116511).
     inline_images: bool = True
+    # The attaching shell's allowlisted environment: a resume from a new local shell rebinds the
+    # session to the client attached now (#144587). Absent: the frozen map is kept.
+    client_env: dict[str, str] | None = None
 
 
 class SessionResumeResult(LiveSessionSnapshot):

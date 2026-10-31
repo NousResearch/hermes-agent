@@ -6,7 +6,7 @@ import { evictInkCaches } from '@hermes/ink'
 import type { InflightTurn, SessionResumeResult, Usage } from '@hermes/shared/gateway-events'
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
-import { localCreationOptions } from '../canonicalGateway.js'
+import { localCreationOptions, localResumeOptions } from '../canonicalGateway.js'
 import { STARTUP_WORKSPACE_CWD } from '../config/env.js'
 import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
@@ -676,13 +676,17 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           const pendingDetach = canonicalDetachFlights.current.get(id)
           const hold = gw.holdAttach?.(id) ?? null
 
+          // The attaching shell's environment: a resume from a new local shell rebinds the
+          // session to the client attached now (#144587); `canonicalRequest` strips it for an
+          // older gateway, so the resume works there as before.
+          const resumeOptions = { cols: colsRef.current, session_id: id, ...localResumeOptions() }
           const request = pendingDetach
             ? pendingDetach.then(() =>
                 flight === attachmentFlight.current
-                  ? gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
+                  ? gw.request<SessionResumeResult>('session.resume', resumeOptions)
                   : null
               )
-            : gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
+            : gw.request<SessionResumeResult>('session.resume', resumeOptions)
 
           return request
             .then(raw => {

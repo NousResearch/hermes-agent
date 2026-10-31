@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 
-import { canonicalRequest, canonicalResult, localCreationOptions, sharedControlParams } from '../canonicalGateway.js'
+import { canonicalRequest, canonicalResult, localCreationOptions, localResumeOptions, sharedControlParams } from '../canonicalGateway.js'
 
 it.each(['HERMES_SAFE_MODE', 'HERMES_IGNORE_USER_CONFIG'])('carries %s on the launching session policy', flag => {
   const field = flag === 'HERMES_SAFE_MODE' ? 'safe_mode' : 'ignore_user_config'
@@ -65,4 +65,15 @@ it('sends the launcher\'s client environment (LC-8, T3) only to a gateway that t
   for (const raw of ['not json', '[]', '{"PATH": 1}']) {
     expect(localCreationOptions({ HERMES_TUI_CLIENT_ENV: raw } as NodeJS.ProcessEnv)).not.toHaveProperty('client_env')
   }
+})
+
+it('sends the attaching shell\'s client environment on session.resume only to a gateway that takes it', () => {
+  const options = localResumeOptions({ HERMES_TUI_CLIENT_ENV: JSON.stringify({ PATH: '/client/bin' }) } as NodeJS.ProcessEnv)
+  expect(options.client_env).toEqual({ PATH: '/client/bin' })
+  expect(localResumeOptions({} as NodeJS.ProcessEnv)).not.toHaveProperty('client_env')
+  const takes = { sources: ['tui'], parameters: ['request_id', 'source', 'client_env'] }
+  expect(canonicalRequest('session.resume', { session_id: 's', ...options }, takes).params.client_env).toEqual({ PATH: '/client/bin' })
+  // An older gateway refuses unknown resume params: the resume goes ahead without it rather than failing.
+  const older = { sources: ['tui'], parameters: ['request_id', 'source'] }
+  expect(canonicalRequest('session.resume', { session_id: 's', ...options }, older).params).not.toHaveProperty('client_env')
 })

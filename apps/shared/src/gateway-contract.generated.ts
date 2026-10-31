@@ -3165,6 +3165,7 @@ export interface SessionResumeParams {
   eager_build?: boolean
   close_on_disconnect?: boolean
   inline_images?: boolean
+  client_env?: Record<string, string> | null
 }
 export interface SessionResumeResult {
   session_id: string
@@ -5086,6 +5087,7 @@ export interface CanonicalResumeParams {
   omit_messages?: boolean
   cols?: number | null
   display_projection?: boolean
+  client_env?: Record<string, string> | null
 }
 export interface CanonicalListParams {
   profile?: string | null

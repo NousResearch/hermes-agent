@@ -353,6 +353,14 @@ export function BoardSwitcher() {
               <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="project" size="0.8125rem" />
               <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{k.board}</span>
               <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{label}</span>
+              {current?.pause && (
+                <Codicon
+                  className="shrink-0 text-red-500"
+                  data-testid="kanban-switcher-paused"
+                  name="debug-pause"
+                  size="0.75rem"
+                />
+              )}
               {typeof current?.total === 'number' && (
                 <span className="text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)">{current.total}</span>
               )}
@@ -369,6 +377,16 @@ export function BoardSwitcher() {
               {meta.name || meta.slug}
               {typeof meta.total === 'number' && (
                 <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{meta.total}</span>
+              )}
+              {meta.pause && (
+                <span
+                  className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-red-500 px-1.5 py-px text-[0.5625rem] font-semibold tracking-wide text-white"
+                  data-testid={`kanban-board-paused-${meta.slug}`}
+                  title={meta.pause.reason || k.pauseBannerTitle}
+                >
+                  <Codicon name="debug-pause" size="0.55rem" />
+                  {k.pausedBadge}
+                </span>
               )}
               {meta.slug === currentSlug && <Codicon className="ml-auto" name="check" size="0.8rem" />}
             </DropdownMenuItem>

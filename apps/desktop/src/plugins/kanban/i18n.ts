@@ -25,6 +25,19 @@ type KanbanMessages = {
   title: string
   orchestrationSettings: string
   newTask: string
+  /** Board pause (#141451) — the control, the badge and the banner. */
+  pauseBoard: string
+  pauseTip: string
+  resumeBoard: string
+  resumeTip: string
+  pausedBadge: string
+  /** Several boards held at once — the nav chip must not read as one board. */
+  pausedBadgeCount: (count: number) => string
+  /** A held board that is NOT the one on screen — name it in the chip. */
+  pausedOtherBoard: (badge: string, board: string) => string
+  pausedListTip: (boards: string) => string
+  pauseBannerTitle: string
+  pauseBannerBody: string
   filterCards: string
   noMatch: string
   noTasks: string
@@ -250,6 +263,16 @@ export const en: KanbanMessages = {
   title: 'Kanban',
   orchestrationSettings: 'Orchestration settings',
   newTask: 'New task',
+  pauseBoard: 'Pause board',
+  pauseTip: 'Stop dispatching new tasks — running workers finish (resume any time).',
+  resumeBoard: 'Resume board',
+  resumeTip: 'Resume dispatch — queued tasks start on the next tick.',
+  pausedBadge: 'PAUSED',
+  pausedBadgeCount: n => `${n} PAUSED`,
+  pausedOtherBoard: (badge, board) => `${badge} · ${board}`,
+  pausedListTip: boards => `Boards on pause: ${boards}`,
+  pauseBannerTitle: 'Board paused',
+  pauseBannerBody: 'No new task will start. Running workers finish normally; queued work waits until you resume.',
   filterCards: 'Filter cards…',
   noMatch: 'No tasks match the filters',
   noTasks: 'No tasks on this board',
@@ -478,6 +501,16 @@ const ja: KanbanMessages = {
   title: 'カンバン',
   orchestrationSettings: 'オーケストレーション設定',
   newTask: '新しいタスク',
+  pauseBoard: 'ボードを一時停止',
+  pauseTip: '新規タスクのディスパッチを停止します。実行中のワーカーは完了します（いつでも再開できます）。',
+  resumeBoard: 'ボードを再開',
+  resumeTip: 'ディスパッチを再開します。待機中のタスクは次のティックで開始します。',
+  pausedBadge: '一時停止中',
+  pausedBadgeCount: n => `${n} 件一時停止中`,
+  pausedOtherBoard: (badge, board) => `${badge} · ${board}`,
+  pausedListTip: boards => `一時停止中のボード: ${boards}`,
+  pauseBannerTitle: 'ボードは一時停止中',
+  pauseBannerBody: '新しいタスクは開始されません。実行中のワーカーは通常どおり完了し、待機中の作業は再開まで待機します。',
   filterCards: 'カードを絞り込み…',
   noMatch: 'フィルタに一致するタスクはありません',
   noTasks: 'このボードにタスクはありません',
@@ -705,6 +738,16 @@ const zh: KanbanMessages = {
   title: '看板',
   orchestrationSettings: '编排设置',
   newTask: '新建任务',
+  pauseBoard: '暂停看板',
+  pauseTip: '停止派发新任务——运行中的工作线程会正常完成（可随时恢复）。',
+  resumeBoard: '恢复看板',
+  resumeTip: '恢复派发——排队任务将在下一个周期开始。',
+  pausedBadge: '已暂停',
+  pausedBadgeCount: n => `${n} 个已暂停`,
+  pausedOtherBoard: (badge, board) => `${badge} · ${board}`,
+  pausedListTip: boards => `暂停的看板: ${boards}`,
+  pauseBannerTitle: '看板已暂停',
+  pauseBannerBody: '不会启动新任务。运行中的工作线程会正常完成；排队的工作将等待你恢复。',
   filterCards: '筛选卡片…',
   noMatch: '没有符合筛选条件的任务',
   noTasks: '此面板暂无任务',
@@ -929,6 +972,16 @@ const zhHant: KanbanMessages = {
   title: '看板',
   orchestrationSettings: '編排設定',
   newTask: '新增任務',
+  pauseBoard: '暫停看板',
+  pauseTip: '停止派發新任務——執行中的工作執行緒會正常完成（可隨時恢復）。',
+  resumeBoard: '恢復看板',
+  resumeTip: '恢復派發——排隊任務將在下一個週期開始。',
+  pausedBadge: '已暫停',
+  pausedBadgeCount: n => `${n} 個已暫停`,
+  pausedOtherBoard: (badge, board) => `${badge} · ${board}`,
+  pausedListTip: boards => `暫停的看板: ${boards}`,
+  pauseBannerTitle: '看板已暫停',
+  pauseBannerBody: '不會啟動新任務。執行中的工作執行緒會正常完成；排隊的工作將等待你恢復。',
   filterCards: '篩選卡片…',
   noMatch: '沒有符合篩選條件的任務',
   noTasks: '此面板尚無任務',

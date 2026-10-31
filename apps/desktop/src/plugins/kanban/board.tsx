@@ -86,6 +86,7 @@ import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
+import { PauseBanner, PauseButton } from './pause'
 import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   $newTaskLane,
@@ -1099,6 +1100,20 @@ function SelectionBar({
 
 // ── page ─────────────────────────────────────────────────────────────────────
 
+/** The pause strip, rendered above the header while the board is paused.
+ *
+ * Extracted from the page so the two guards (`board?.` and the `&&`) stay out of
+ * `KanbanBoardPage`'s complexity budget — the page is already at its cap, and this is
+ * presentation, not a branch the page has to make. */
+function PauseBannerSlot({ pause }: { pause?: KanbanBoard['pause'] }) {
+  return pause ? <PauseBanner pause={pause} /> : null
+}
+
+/** The header control: hidden until the board payload says it can be paused. */
+function PauseButtonSlot({ board }: { board?: KanbanBoard }) {
+  return board ? <PauseButton paused={Boolean(board.pause)} /> : null
+}
+
 export function KanbanBoardPage() {
   const k = useKanban()
   const qc = useQueryClient()
@@ -1343,6 +1358,9 @@ export function KanbanBoardPage() {
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-(--ui-surface-background)">
+      {/* Pause is the one state that changes what the board DOES, so it leads:
+          a full-width warning strip above the header, not a corner badge. */}
+      <PauseBannerSlot pause={board?.pause} />
       <header className="flex shrink-0 flex-wrap items-center gap-2 px-4 py-2">
         <h1 className="text-sm font-semibold text-foreground">{k.title}</h1>
         <span className="rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
@@ -1377,6 +1395,9 @@ export function KanbanBoardPage() {
               <Codicon name="organization" size="0.85rem" />
             </Button>
           </Tip>
+          {/* Directly before "New task": pausing is the operator's stop/go for
+              everything this button starts. */}
+          <PauseButtonSlot board={board} />
           <Button onClick={() => setAddStatus('triage')} size="sm">
             <Codicon name="add" size="0.8rem" />
             {k.newTask}

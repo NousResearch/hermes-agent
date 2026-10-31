@@ -25,6 +25,10 @@ def compact_result(result, *, user_message=None):
     # The tool schema list rides every turn result for in-process transcript logging; it is the
     # same session-wide copy each turn (tens of KB, more with MCP) and no stored-result reader uses it.
     value.pop('tools', None)
+    # Footer usage metadata rides the live result for the final-message renderer
+    # (gateway/run_turn_persistence.py), but its AccountUsageSnapshot objects are not
+    # JSON-serializable and no stored-result reader consumes them: drop with tools.
+    value.pop('account_usage', None)
     messages = value.get('messages')
     if isinstance(messages, list):
         # Agent results include all previous turns. APIs only project this turn's

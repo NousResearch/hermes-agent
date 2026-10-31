@@ -202,6 +202,39 @@ async def test_cancelled_drain_keeps_delivery_and_collection_owned(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_cancelled_drain_stays_cancelled_when_its_delivery_fails(tmp_path, monkeypatch):
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    monkeypatch.setattr(recovery, '_release_media', lambda owner, row: None)
+    delivering, fail = asyncio.Event(), asyncio.Event()
+
+    async def execute(owner, ref, row):
+        return 'reply'
+
+    async def deliver(owner, admission_id):
+        delivering.set()
+        await fail.wait()
+        raise RuntimeError('delivery failed')
+
+    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr(session_ingress, 'deliver_settled', deliver)
+    with db:
+        await _submit(authority, 'photo')
+        drain = asyncio.create_task(authority._drain(REF))
+        try:
+            await asyncio.wait_for(delivering.wait(), 5)
+            drain.cancel()
+            await asyncio.sleep(0)
+            fail.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(drain, 5)
+        finally:
+            fail.set()
+            await asyncio.gather(drain, return_exceptions=True)
+            await async_wait_until(lambda: not mutation_tasks(authority), timeout=5, what='delivery task')
+
+
+@pytest.mark.asyncio
 async def test_media_turns_settling_together_collect_one_at_a_time(tmp_path, monkeypatch):
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)

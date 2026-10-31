@@ -27,7 +27,7 @@ files on `main`.
    packaging clock for every matrix leg and retry. One outstanding attempt, of
    any version, blocks a new `release`.
 3. Admit the exact remote annotated tag-object SHA, its peeled commit, and that
-   commit's ancestry on `origin/main`. The run itself must be the default-branch
+   commit's ancestry on `origin/main` or a `release/*` branch. The run itself must be the default-branch
    dispatch of `Stable Release`. Its workflows and release scripts come from
    `main`, so its Actions caches share one scope across attempts. `GITHUB_SHA` is
    `main`'s tip, never the commit under test. Every lane that tests or builds the
@@ -70,7 +70,7 @@ receipt-backed objects; an older run cannot regress a protected channel.
 
 ## Run, publish, or abandon a stable release
 
-Start from an exact commit already on remote `main`:
+Start from an exact commit already on remote `main` (or a `release/*` branch):
 
 ```sh
 python scripts/release.py release --commit "$(git rev-parse origin/main)" --bump patch --remote origin
@@ -78,8 +78,8 @@ python scripts/release.py release --commit "$(git rev-parse origin/main)" --bump
 
 `--bump` defaults to `patch`; pass `minor` or `major` only when that change is
 intentional. The selected commit must descend from the newest published
-`vX.Y.Z`. With no published tag, any commit already on remote `main` is
-accepted. An abandoned attempt puts no constraint on the next cut; it was often
+`vX.Y.Z`. With no published tag, any commit already on remote `main` or a
+`release/*` branch is accepted. An abandoned attempt puts no constraint on the next cut; it was often
 abandoned because its commit is bad. `release` also refuses while any attempt,
 of any version, is outstanding. The refusal prints the attempt's workflow run
 URL, the `abandon` command, and the rerun command before it raises. In an
@@ -215,7 +215,7 @@ version is not spent, so the next cut is `rc.<N+1>-vX.Y.Z`.
 
 Do not manually dispatch `Stable Release` with a final tag. Recovery keeps the
 original claim ref, object SHA, commit, draft database ID, autopublish policy,
-and skip flags.
+and lanes.
 
 ## Failure and recovery
 
@@ -348,13 +348,22 @@ A canary runs the Stable Release pipeline itself. Its tag message is its claim:
 the lanes it runs (`release.py --canary` takes `--only`, `--with` and
 `--without`, starting from the stable default lanes) and whether a red suite
 holds its publication (`--require-green`, the default, or `--no-require-green`).
+Starting from the stable default means a canary builds no macOS Intel or
+Termux package unless its claim adds `--with macos-intel` or `--with termux`.
+The daily canary adds neither, so the canary APT channel (`hermes-canary`) and
+Intel Macs on the canary feed move only when a canary that builds them
+publishes. Like a channel build, a canary publishes only if it builds both
+`windows` and `macos-arm64`, the desktop set its channels serve: with either
+removed it still builds, stages and tests, but `publish-canary` is skipped, so
+its prerelease stays a draft and no feed, head or Docker alias moves.
 Its signed-package upgrade arms upgrade the last published canary (the
 `releases/canary/release-candidates.json` pointer, a published prerelease) to
 this one; with no published canary they are skipped. `Canary Release`
 runs once a day at 06:41 UTC from the default branch with `--no-require-green`.
 Publication still waits for the selected suites to finish. The candidate must
-build and pass its smoke tests, and every upgrade arm that ran must pass, but
-unrelated suite failures do not block it.
+build and pass its smoke tests, and every upgrade arm that ran must pass (one
+`upgrade-arms` gate job judges them), but unrelated suite failures do not
+block it.
 A manual dispatch starts one at any time and requires every selected suite to
 pass unless its `require_green` input is off. Runs queue with
 `cancel-in-progress: false`. If `main` has no new commits, the run resumes an
@@ -371,9 +380,9 @@ Only Stable Release's `publish-canary` job publishes a canary;
 `desktop-bundled-release.yml` cannot be dispatched directly, and the controller
 refuses any other workflow as a canary publisher. The canary Docker aliases (`:canary`,
 `:canary-desktop`) move only after `publish-canary` succeeds, so they follow the
-claim's green policy and lanes like every other canary channel. The canary's
-Termux packages go to `hermes-canary` under a pool prefix named by its tag, just
-as a stable attempt's go to `hermes-stable` under its attempt ref.
+claim's green policy and lanes like every other canary channel. A canary that
+builds Termux puts its packages in `hermes-canary` under a pool prefix named by
+its tag, just as a stable attempt's go to `hermes-stable` under its attempt ref.
 
 ## Canary and one-off desktop identities
 
@@ -439,10 +448,10 @@ Commit builds keep 90 days: the daily canary workflow's prune deletes claim
 archives and claim tags older than that (and lets legacy
 `releases/commit/<sha>/` pages from tagless builds age out on the same window).
 
-Tagged builds also publish a per-tag diagnostic page at
-`releases/tag/<tag>/index.html` after build or feed failures, including when no
-artifacts were uploaded. An incomplete build does not advance the channel page
-or pass the release-success gate.
+Only a successful publication renders a build's page
+(`releases/tag/<tag>/index.html`); a build that fails before publication leaves
+no page and its run summary is the record. An incomplete build does not advance
+the channel page or pass the release-success gate.
 
 Store submission retains its fixed official stable identity. Nonstable
 packages must not be submitted under that identity.
@@ -485,7 +494,8 @@ signed-package upgrade arms upgrade the channel's head (the build its
 subscribers run, whose claim archive holds the matching candidate manifest) to
 this one; a new channel has no head, so they are skipped. Once the candidate is
 accepted and every upgrade arm that ran passed (with `--require-green`, once
-every suite is green), `publish-channel` writes the build's feeds and manifest under
+every suite is green), `publish-channel` (which, like `publish-canary`, runs
+only for a claim that builds both `windows` and `macos-arm64`) writes the build's feeds and manifest under
 `releases/channel-builds/BUILD_ID/` from the accepted candidate's receipts.
 It then advances `releases/channels/NAME.json`, and never a stable or canary
 head, feed, Docker tag, GitHub release or Store listing. The claim archive's

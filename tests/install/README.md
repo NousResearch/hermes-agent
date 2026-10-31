@@ -106,10 +106,11 @@ bytes through the public archive and installs the actual artifact before chat:
 | Windows arm64 and x64 | MSIX, universal MSIXBUNDLE |
 
 The universal envelope runs on both Windows architectures, verifying native
-slice selection. Windows assembly/staging is separate from feed publication;
-both Windows smoke matrices must pass before publishing its canary feed.
-macOS publication and stable candidate acceptance also require their smoke
-results. Failed checks retain the downloadable build and diagnostic artifacts.
+slice selection. Windows assembly/staging is separate from publication: every
+claim's candidate manifest records these smoke results, and every publication
+job (stable, canary, commit or channel) requires that manifest, so no feed,
+channel head or builds page moves before the Windows and macOS smokes pass.
+Failed checks retain the downloadable build and diagnostic artifacts.
 
 Stable candidate schema 2 binds these successful smoke groups into the pinned
 candidate manifest. Promotion renders that evidence, not the skipped smoke
@@ -117,9 +118,8 @@ jobs from its own phase. Schema-1 candidates lack this admission and cannot be
 promoted by the new workflow; create a new candidate tag. They remain valid as
 previous-version upgrade baselines.
 
-This covers signed downloadable commit builds, canaries with upload enabled,
-and stable candidates. No-upload tag builds have no cross-job download handoff.
-Linux bundle jobs remain disabled, but Linux source-install desktop checks run.
+This covers the candidates of every claim kind: stable, canary, commit and
+channel builds. Linux bundle jobs remain disabled, but Linux source-install desktop checks run.
 Unsigned Store submissions are not sideloaded or re-signed for this smoke;
 their Store acceptance remains separate. Passing helper tests does not establish
 native installation or chat acceptance: those require the corresponding runner.

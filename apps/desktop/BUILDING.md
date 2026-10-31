@@ -115,8 +115,9 @@ From a clean checkout whose `HEAD` equals the release tag, run:
 python scripts/bundles/desktop.py --tag=vX.Y.Z
 ```
 
-Replace `vX.Y.Z` with an actual immutable tag. Stable tags must match the
-version in `pyproject.toml`. Canary tags use the release script's tag grammar.
+Replace `vX.Y.Z` with an actual immutable tag. The version comes from the tag;
+the committed `pyproject.toml` version stays `0.0.0`. Canary tags use the release
+script's tag grammar.
 Start with host Python 3.11+ and Git. Use `python3` if that is your host's command.
 Preparation asks PM for the pinned Python, Node, npm and private installer;
 preinstalling a separate Node/npm/uv toolchain is not required. Native dependency
@@ -146,7 +147,7 @@ are supplied explicitly. Both generate launchers; neither creates an Electron in
 The launcher stage checks the payload and records its relative launch paths.
 The Electron build bakes these paths into its stamp. Desktop startup does not
 inspect, create, or repair a PM payload. Non-bundled builds carry no placeholder payload.
-See [shared bundle builds](../../docs/shared-bundle-builds.md) for Termux reuse.
+See [shared bundle builds](../../website/docs/developer-guide/shared-bundle-builds.md) for Termux reuse.
 
 ### Prepare once, then build
 
@@ -363,7 +364,7 @@ Unsigned local builds do not satisfy these gates.
 
 Both DMG and ZIP artifacts are required by the release pipeline. The ZIP is
 the update artifact, not an optional duplicate of the download DMG.
-See [macOS bundle updates](../../docs/macos-bundle-updates.md) for feed validation
+See [macOS bundle updates](../../website/docs/developer-guide/macos-bundle-updates.md) for feed validation
 and native-event ordering.
 
 ### DMG detach diagnostics
@@ -404,9 +405,9 @@ Icons are generated from `assets/nous-girl-*.svg` and `assets/backgrounds/`.
 (`HERMES_PYTHON`, else `python` on PATH); Pillow and resvg-py are core
 dependencies. Generated PNG/ICO/ICNS files are not source assets.
 
-[Stable release admission](../../docs/stable-releases.md) requires the full
+[Stable release admission](../../website/docs/developer-guide/stable-releases.md) requires the full
 pipeline, not just successful packaging. Native signed-package update tests
 live in the [existing install/update family](../../tests/install/BUNDLED_UPDATES.md).
 A helper test or unpacked-app smoke is not proof of native install, update,
 or automatic relaunch. Historical receipts and current unresolved gates are
-separate in [PM audit status](../../docs/pm-audit-status.md).
+separate in [PM audit status](../../website/docs/developer-guide/pm-audit-status.md).

@@ -86,7 +86,7 @@ on:
         type: string
         default: 'darwin-arm64,darwin-x64,win32-arm64,win32-x64,win32-bundle,linux-x64,linux-arm64,termux'
       skip-tests:
-        description: 'Stable candidates only: build and stage without native smokes or in-build test suites (the claim has no smoke lane).'
+        description: 'Candidate phase, any claim: build and stage without native smokes or in-build test suites (the claim has no smoke lane).'
         type: boolean
         default: false
       bundle_env:
@@ -102,11 +102,11 @@ on:
         type: string
         default: ''
       skip-signed:
-        description: 'Stable candidates only: build no signed Windows package (the claim has no windows lane). Needs no Azure signing.'
+        description: 'Candidate phase, any claim: build no signed Windows package (the claim has no windows lane). Needs no Azure signing.'
         type: boolean
         default: false
       skip-store:
-        description: 'Stable only: build no Microsoft Store bundle and submit none (the claim has no windows-store lane).'
+        description: 'Any claim: build no Microsoft Store bundle (the claim has no windows-store lane); in the stable publish phase, submit none.'
         type: boolean
         default: false
       windows-smokes-with-bundle:
@@ -1512,8 +1512,10 @@ jobs:
     # publication pass switches it to Immediate, so a run whose stable-publish fails
     # leaves a held submission no customer sees, never a live build.
     needs: [validate]
-    # Never a canary: a canary builds and stages its Store bundle but only stable submits one.
-    if: inputs.release-phase == 'publish' && inputs.skip-store != true && !startsWith(inputs.tag, 'canary.') && !startsWith(inputs.tag, 'commit.')
+    # Stable claims (rc.N-vX.Y.Z) only: every other kind may build and stage a Store bundle, but only
+    # stable submits one. Only publish-bundles (stable policy) calls the publish phase; this holds
+    # even if another caller did.
+    if: inputs.release-phase == 'publish' && inputs.skip-store != true && startsWith(inputs.claim-tag, 'rc.')
     # The Store is not a release gate: a failed submission leaves the release publishable
     # and the summary names the Store package for a manual Partner Center upload.
     continue-on-error: true

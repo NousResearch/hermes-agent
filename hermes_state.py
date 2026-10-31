@@ -3707,6 +3707,7 @@ class SessionDB:
         cwd: str = None,
         profile_name: str = None,
         git_repo_root: str = None,
+        origin_json: str = None,
     ) -> None:
         """Insert a session row, enriching NULL metadata on conflict.
 
@@ -3748,9 +3749,9 @@ class SessionDB:
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
                    model, model_config, system_prompt, parent_session_id, cwd,
-                   profile_name, git_repo_root, started_at
+                   profile_name, git_repo_root, origin_json, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = COALESCE(sessions.model_config, excluded.model_config),
@@ -3762,7 +3763,8 @@ class SessionDB:
                        parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
                        cwd = COALESCE(sessions.cwd, excluded.cwd),
                        profile_name = COALESCE(sessions.profile_name, excluded.profile_name),
-                       git_repo_root = COALESCE(sessions.git_repo_root, excluded.git_repo_root)""",
+                       git_repo_root = COALESCE(sessions.git_repo_root, excluded.git_repo_root),
+                       origin_json = COALESCE(sessions.origin_json, excluded.origin_json)""",
                 (
                     session_id,
                     source,
@@ -3778,6 +3780,7 @@ class SessionDB:
                     cwd,
                     profile_name,
                     git_repo_root,
+                    origin_json,
                     time.time(),
                 ),
             )

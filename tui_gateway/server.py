@@ -7015,6 +7015,11 @@ def _(rid, params: dict) -> dict:
             # short; the compression-tip projection in ``list_sessions_rich``
             # can also merge rows.
             fetch_limit = max(limit * 2, 200)
+
+            # Optional filters forwarded from the TUI session picker.
+            kind_param = params.get("kind") or ""
+            include_children_param = params.get("include_children", True)
+
             rows = [
                 s
                 for s in db.list_sessions_rich(
@@ -7022,24 +7027,82 @@ def _(rid, params: dict) -> dict:
                     limit=fetch_limit,
                     order_by_last_active=True,
                     compact_rows=True,
+                    include_children=bool(include_children_param),
                 )
                 if (s.get("source") or "").strip().lower() not in deny
             ][:limit]
+
+            # Classify each row for the tree view.
+            import json as _json
+            import re as _re
+
+            _wt_re = _re.compile(r"[/\\]\.worktrees[/\\](t_[a-z0-9]+)(?:[/\\]|$)")
+
+            def _classify(session: dict) -> dict:
+                """Minimal inline classifier (mirrors web_server._classify_session_kind)."""
+                source = session.get("source") or ""
+                parent = session.get("parent_session_id") or ""
+                cwd = session.get("cwd") or ""
+                origin_raw = session.get("origin_json") or ""
+                if source == "subagent" or bool(parent):
+                    return {
+                        "kind": "subagent",
+                        "parent_session_id": session.get("parent_session_id"),
+                        "kanban_task_id": None,
+                    }
+                if origin_raw:
+                    try:
+                        origin = _json.loads(origin_raw)
+                        task_id = origin.get("kanban_task_id") or ""
+                        if task_id:
+                            return {
+                                "kind": "kanban_worker",
+                                "parent_session_id": session.get("parent_session_id"),
+                                "kanban_task_id": task_id,
+                            }
+                    except Exception:
+                        pass
+                m = _wt_re.search(cwd)
+                if m:
+                    return {
+                        "kind": "kanban_worker",
+                        "parent_session_id": session.get("parent_session_id"),
+                        "kanban_task_id": m.group(1),
+                    }
+                return {
+                    "kind": "main",
+                    "parent_session_id": session.get("parent_session_id"),
+                    "kanban_task_id": None,
+                }
+
+            # Apply optional kind filter (comma-separated).
+            _valid_kinds = frozenset({"main", "subagent", "kanban_worker"})
+            kind_filters = {
+                k.strip().lower()
+                for k in kind_param.split(",")
+                if k.strip().lower() in _valid_kinds
+            }
+
+            result_sessions = []
+            for s in rows:
+                cls = _classify(s)
+                if kind_filters and cls["kind"] not in kind_filters:
+                    continue
+                result_sessions.append({
+                    "id": s["id"],
+                    "title": s.get("title") or "",
+                    "preview": s.get("preview") or "",
+                    "started_at": s.get("started_at") or 0,
+                    "message_count": s.get("message_count") or 0,
+                    "source": s.get("source") or "",
+                    # Classification fields (additive — old clients ignore unknown keys)
+                    "kind": cls["kind"],
+                    "parent_session_id": cls["parent_session_id"],
+                    "kanban_task_id": cls["kanban_task_id"],
+                })
             return _ok(
                 rid,
-                {
-                    "sessions": [
-                        {
-                            "id": s["id"],
-                            "title": s.get("title") or "",
-                            "preview": s.get("preview") or "",
-                            "started_at": s.get("started_at") or 0,
-                            "message_count": s.get("message_count") or 0,
-                            "source": s.get("source") or "",
-                        }
-                        for s in rows
-                    ]
-                },
+                {"sessions": result_sessions},
             )
         except Exception as e:
             return _err(rid, 5006, str(e))

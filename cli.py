@@ -7918,6 +7918,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if self._session_db:
                 try:
                     self.agent._session_db_created = False
+                    # When running as a kanban worker, record the task id in
+                    # origin_json so the session list classifier can tag this
+                    # session as kanban_worker via origin_json (priority a),
+                    # without relying solely on the cwd .worktrees fallback.
+                    _kb_task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+                    _origin_json = None
+                    if _kb_task_id:
+                        import json as _json_mod
+                        _origin_json = _json_mod.dumps({"kanban_task_id": _kb_task_id})
                     self._session_db.create_session(
                         session_id=self.session_id,
                         source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
@@ -7926,6 +7935,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             "max_iterations": self.max_turns,
                             "reasoning_config": self.reasoning_config,
                         },
+                        origin_json=_origin_json,
                     )
                     self.agent._session_db_created = True
                 except Exception:

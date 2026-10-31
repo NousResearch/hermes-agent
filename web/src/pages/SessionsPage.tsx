@@ -4,11 +4,13 @@ import {
   useState,
   useCallback,
   useRef,
+  useMemo,
 } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
   CheckCircle2,
+  Users,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -45,6 +47,7 @@ import type {
 } from "@/lib/api";
 import { mapProjectSessionToSessionInfo } from "@/lib/projects";
 import { timeAgo } from "@/lib/utils";
+import { buildSessionTree } from "@/lib/sessionTree";
 import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
 import { Toast } from "@nous-research/ui/ui/components/toast";
@@ -1279,6 +1282,31 @@ export default function SessionsPage() {
     ? sessions.filter((s) => snippetMap.has(s.id))
     : sessions;
 
+  // Build session tree from the filtered list.
+  // roots = main sessions (kind === "main" | undefined)
+  // workers = kanban_worker sessions (shown in a separate collapsible section)
+  // orphans = subagent whose parent was filtered out (shown as roots with marker)
+  const { roots: treeRoots, workers: treeWorkers, orphans: treeOrphans } = useMemo(
+    () => buildSessionTree(filtered),
+    [filtered],
+  );
+  // Map session id → index in `filtered` for handleSelectClick
+  const filteredIndexMap = useMemo(
+    () => new Map(filtered.map((s, i) => [s.id, i])),
+    [filtered],
+  );
+  // Per-root expand state (whether to show subagent children)
+  const [treeExpanded, setTreeExpanded] = useState<Set<string>>(new Set);
+  const [workersExpanded, setWorkersExpanded] = useState(false);
+  const toggleTree = useCallback((id: string) => {
+    setTreeExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
   const platformEntries = status
     ? Object.entries(status.gateway_platforms ?? {})
     : [];
@@ -1736,26 +1764,74 @@ export default function SessionsPage() {
         ) : (
           <>
             <div className="flex min-w-0 flex-col gap-1.5">
-              {filtered.map((s, index) => (
-                <SessionRow
-                  key={s.id}
-                  session={s}
-                  snippet={snippetMap.get(s.id)}
-                  searchQuery={search || undefined}
-                  isExpanded={expandedId === s.id}
-                  isSelected={selectedIds.has(s.id)}
-                  onToggle={() =>
-                    setExpandedId((prev) => (prev === s.id ? null : s.id))
-                  }
-                  onSelectClick={(event) =>
-                    handleSelectClick(event, index, filtered)
-                  }
-                  onDelete={() => sessionDelete.requestDelete(s.id)}
-                  onRename={handleRename}
-                  onExport={handleExport}
-                  resumeInChatEnabled={resumeInChatEnabled}
-                />
-              ))}
+              {/* Helper: render one session row with its tree children */}
+              {(() => {
+                function renderRow(s: SessionInfo, index: number, depth = 0) {
+                  const hasChildren = treeRoots.find(n => n.session.id === s.id)?.children ?? [];
+                  const isTreeOpen = treeExpanded.has(s.id);
+                  return (
+                    <div key={s.id} style={depth > 0 ? { paddingLeft: `${depth * 20}px` } : undefined}>
+                      {depth > 0 && (
+                        <div className="h-px bg-midground/10 mb-0.5" />
+                      )}
+                      <SessionRow
+                        session={s}
+                        snippet={snippetMap.get(s.id)}
+                        searchQuery={search || undefined}
+                        isExpanded={expandedId === s.id}
+                        isSelected={selectedIds.has(s.id)}
+                        onToggle={() =>
+                          setExpandedId((prev) => (prev === s.id ? null : s.id))
+                        }
+                        onSelectClick={(event) =>
+                          handleSelectClick(event, filteredIndexMap.get(s.id) ?? index, filtered)
+                        }
+                        onDelete={() => sessionDelete.requestDelete(s.id)}
+                        onRename={handleRename}
+                        onExport={handleExport}
+                        resumeInChatEnabled={resumeInChatEnabled}
+                      />
+                      {hasChildren.length > 0 && (
+                        <button
+                          className="flex items-center gap-1 px-3 py-0.5 text-[10.5px] font-mono text-midground/40 hover:text-midground/70 transition-colors focus:outline-none"
+                          onClick={() => toggleTree(s.id)}
+                        >
+                          {isTreeOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+                          {hasChildren.length} subagent{hasChildren.length !== 1 ? "s" : ""}
+                        </button>
+                      )}
+                      {isTreeOpen && hasChildren.map((child) => renderRow(child.session, filteredIndexMap.get(child.session.id) ?? 0, depth + 1))}
+                    </div>
+                  );
+                }
+
+                return (
+                  <>
+                    {treeRoots.map((node) => renderRow(node.session, filteredIndexMap.get(node.session.id) ?? 0))}
+                    {treeOrphans.map((s) => (
+                      <div key={s.id}>
+                        <div className="px-2 py-0.5 font-mono text-[10px] text-warning/60">↑ orphan subagent</div>
+                        {renderRow(s, filteredIndexMap.get(s.id) ?? 0)}
+                      </div>
+                    ))}
+                    {treeWorkers.length > 0 && (
+                      <div className="border border-midground/10 mt-1">
+                        <button
+                          className="flex w-full items-center gap-1.5 px-3 py-2 hover:bg-midground/5 transition-colors focus:outline-none"
+                          onClick={() => setWorkersExpanded((o) => !o)}
+                        >
+                          {workersExpanded ? <ChevronDown className="size-3.5 text-midground/40" /> : <ChevronRight className="size-3.5 text-midground/40" />}
+                          <Users className="size-3.5 text-midground/40" />
+                          <span className="font-mono text-[10.5px] uppercase tracking-wider text-midground/50">
+                            Kanban workers ({treeWorkers.length})
+                          </span>
+                        </button>
+                        {workersExpanded && treeWorkers.map((s) => renderRow(s, filteredIndexMap.get(s.id) ?? 0))}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
 
             {showPagination && (

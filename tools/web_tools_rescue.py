@@ -49,7 +49,9 @@ def _ring_vendor_keyless(name: str) -> bool:
 
 def _managed_search_fallback(provider, original_error: str, query: str, limit: int):
     """Try managed Firecrawl for this call only; None leaves the original error for keyless rescue.
-    Managed Firecrawl is billed, so a caller on free fast search alone never reaches it."""
+    Managed Firecrawl is billed, so a caller on free fast search alone never reaches it.
+    Like the keyless rescue, the fallback-served response carries a top-level ``degraded`` signal
+    so a ``success``-checking caller cannot mistake it for a healthy primary call (#133473)."""
     from agent.web_search_provider import get_provider_env
     from tools import web_tools as _wt
     if (getattr(provider, "name", "") != "perplexity"
@@ -64,10 +66,16 @@ def _managed_search_fallback(provider, original_error: str, query: str, limit: i
     if not resp.get("success"):
         logger.warning("managed Firecrawl fallback failed too: %s", str(resp.get("error", ""))[:200])
         return None
+    backend_error = (
+        f"Primary managed search failed this call ({(original_error or 'unknown error')[:300]}); "
+        "result served by the managed fallback. The next call will use the primary again."
+    )
+    resp["degraded"] = True
+    resp["fallback_from"] = "managed_primary"
+    resp["backend_error"] = backend_error
     resp.setdefault("data", {}).update(
         fallback_from="managed_primary",
-        backend_error=f"Primary managed search failed this call ({(original_error or 'unknown error')[:300]}); "
-                      "result served by the managed fallback. The next call will use the primary again.",
+        backend_error=backend_error,
     )
     return resp
 
@@ -91,7 +99,11 @@ def _rescue_eligible(provider) -> bool:
 
 
 def _rescue_search(provider_name: str, original_error: str, query: str, limit: int) -> dict:
-    """Rescue a failed search via the ring; annotate the result with the original failure."""
+    """Rescue a failed search via the ring; annotate the result with the original failure.
+
+    The annotation is mirrored at the TOP level (``degraded``/``rescued_from``/``backend_error``)
+    because callers gate on ``success`` and never read nested ``data`` keys — without the top-level
+    signal a rescued call is indistinguishable from a healthy one (#133473)."""
     from plugins.web.keyless_mcp import search_with_failover
     logger.warning(
         "web_search backend '%s' failed (%s); one-shot keyless rescue",
@@ -99,13 +111,17 @@ def _rescue_search(provider_name: str, original_error: str, query: str, limit: i
     )
     rescued = search_with_failover(provider_name, query, limit)
     if rescued.get("success"):
+        backend_error = (
+            f"Configured backend '{provider_name}' failed this call "
+            f"({(original_error or 'unknown error')[:300]}); result served by the keyless free tier. "
+            f"The next call will use '{provider_name}' again."
+        )
+        rescued["degraded"] = True
+        rescued["rescued_from"] = provider_name
+        rescued["backend_error"] = backend_error
         rescued.setdefault("data", {}).update(
             rescued_from=provider_name,
-            backend_error=(
-                f"Configured backend '{provider_name}' failed this call "
-                f"({(original_error or 'unknown error')[:300]}); result served by the keyless free tier. "
-                f"The next call will use '{provider_name}' again."
-            ),
+            backend_error=backend_error,
         )
         return rescued
     # Ring also failed: the ORIGINAL error names the user's setup, so lead with it.

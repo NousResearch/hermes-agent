@@ -154,7 +154,10 @@ def _pid_alive(pid: int) -> bool:
 # --- process creation time ---------------------------------------------------------------
 
 
+@cache
 def _windows_kernel32():
+    """kernel32 with OpenProcess/GetProcessTimes/CloseHandle typed, built once: update-fence polls
+    reach it whenever psutil cannot read a marker pid's creation time."""
     import ctypes
     from ctypes import wintypes
 
@@ -364,11 +367,13 @@ def _handoff_pid() -> int | None:
     return pid if pid > 0 else None
 
 
-def _windows_parent_pid(pid: int) -> int | None:
-    """The parent of ``pid`` from a Toolhelp32 process snapshot (stdlib ctypes).
+@cache
+def _windows_toolhelp_api():
+    """kernel32 with the Toolhelp32 process walk typed, plus PROCESSENTRY32W, built once.
 
-    Windows keeps a dead parent's pid in the snapshot and reuses pids, so, like
-    psutil, a "parent" created after the child is a recycled pid, not our parent.
+    Like :func:`_windows_lockfile_api`: a struct built per call leaves its ``ctypes.POINTER`` in
+    ctypes' pointer-type cache forever before Python 3.14. A private DLL instance, so the walk's
+    prototypes always name the struct class returned with them.
     """
     import ctypes
     from ctypes import wintypes
@@ -382,13 +387,26 @@ def _windows_parent_pid(pid: int) -> int | None:
             ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260),
         ]
 
-    kernel32 = _windows_kernel32()
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
     kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     for walk in (kernel32.Process32FirstW, kernel32.Process32NextW):
         walk.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
         walk.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    return kernel32, PROCESSENTRY32W
 
+
+def _windows_parent_pid(pid: int) -> int | None:
+    """The parent of ``pid`` from a Toolhelp32 process snapshot (stdlib ctypes).
+
+    Windows keeps a dead parent's pid in the snapshot and reuses pids, so, like
+    psutil, a "parent" created after the child is a recycled pid, not our parent.
+    """
+    import ctypes
+
+    kernel32, PROCESSENTRY32W = _windows_toolhelp_api()
     snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
     if not snapshot or snapshot == ctypes.c_void_p(-1).value:
         return None

@@ -1024,3 +1024,24 @@ def test_whole_second_creation_time_in_our_own_second_is_us(marker):
     assert update_lock.judge_marker(marker.read_bytes())[0] == "ours"
     # A whole second from an EARLIER second is a killed update's pid reused: still not us.
     assert update_lock.incarnation_live(os.getpid(), float(math.floor(own)) - 1) is False
+
+
+@pytest.mark.platforms("windows")
+def test_repeated_windows_process_probes_build_no_new_ctypes_objects(monkeypatch):
+    """Fence polls read a marker pid's creation time through GetProcessTimes whenever psutil
+    cannot, and the psutil-free takeover child walks Toolhelp32 for its parent. Once warm, neither
+    builds a DLL wrapper or a pointer type again (before Python 3.14 a pointer type to a fresh
+    struct stays in ctypes' cache forever)."""
+    import ctypes
+
+    created = update_lock._windows_create_filetime(os.getpid())
+    parent = update_lock._windows_parent_pid(os.getpid())
+    assert created and parent
+    built = []
+    real_pointer, real_dll = ctypes.POINTER, ctypes.WinDLL
+    monkeypatch.setattr(ctypes, "POINTER", lambda cls: built.append(cls) or real_pointer(cls))
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: built.append(a) or real_dll(*a, **k))
+    for _ in range(20):
+        assert update_lock._windows_create_filetime(os.getpid()) == created
+        assert update_lock._windows_parent_pid(os.getpid()) == parent
+    assert built == []

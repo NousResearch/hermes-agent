@@ -11,6 +11,10 @@ export interface AppVersionInfo {
   distance?: number
   commit?: string | null
   branch?: string | null
+  /** When the install stamp was written (ISO). Rendered as a build age next
+   *  to the commit: version strings can label different builds, and the hash
+   *  alone says nothing about staleness. */
+  builtAt?: string | null
   source?: InstallStamp['source']
   distribution?: string
   updateMechanism?: InstallStamp['updateMechanism']
@@ -101,6 +105,7 @@ export function appVersionInfo(
     distance: stamp.distance ?? undefined,
     commit: stamp.commit,
     branch: stamp.branch,
+    builtAt: stamp.builtAt ?? null,
     source: stamp.source ?? undefined,
     distribution: stamp.distribution ?? undefined,
     updateMechanism: stamp.updateMechanism,

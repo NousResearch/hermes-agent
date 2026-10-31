@@ -1637,3 +1637,67 @@ def _release_marker(path: Path) -> None:
                 path.unlink()
         elif action == "rewrite":
             _compare_and_swap(path, raw, new)
+
+
+#: A dead marker older than this is quarantine-eligible: twice the liveness
+#: ceiling, so a merely slow updater (long tail, throttled network) is never
+#: touched — only a marker whose owner is provably gone AND long past the age
+#: where any live updater would have refreshed it.
+STALE_MARKER_QUARANTINE_AGE_SECONDS = 2 * UPDATE_MARKER_MAX_AGE_SECONDS
+
+
+def quarantine_stale_marker(
+    *,
+    install_root: Path | str | None = None,
+    dry_run: bool = False,
+) -> Path | None:
+    """Archive a provably-dead update marker instead of deferring to it forever.
+
+    Returns the quarantine path when a marker was (or, with ``dry_run``, would
+    be) archived, else None. ALL of these must hold before anything moves:
+
+    1. the marker exists and judges ``dead`` (owner and delegate both gone —
+       a live marker, ours, or a young malformed one is never touched);
+    2. it is older than :data:`STALE_MARKER_QUARANTINE_AGE_SECONDS` (a slow but
+       live updater never trips this — judge "dead" alone is not enough, since
+       pid + ctime can theoretically be recycled within the ceiling);
+    3. the checkout kernel lock is free (some child of the dead owner may still
+       hold the checkout, e.g. a build finishing its last command).
+
+    The marker is renamed (never deleted) next to the original with a
+    ``.quarantined-<utc-timestamp>`` suffix, so the evidence survives for
+    ``hermes update --status`` and post-mortems. Never raises.
+    """
+    try:
+        path = update_marker_path()
+    except OSError:
+        return None
+    try:
+        raw = _read_bytes(path)
+    except OSError:
+        return None
+    if not raw:
+        return None
+    verdict, _owner, _run = judge_marker(raw)
+    if verdict != "dead":
+        return None
+    marker = _parse_marker(raw)
+    started = marker.started_at if marker else None
+    if not started or (time.time() - started) <= STALE_MARKER_QUARANTINE_AGE_SECONDS:
+        return None
+    try:
+        if checkout_lock_held(install_root):
+            return None
+    except OSError:
+        return None
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    target = path.with_name(f"{path.name}.quarantined-{stamp}")
+    if dry_run:
+        return target
+    try:
+        os.replace(path, target)
+    except OSError as exc:
+        logger.debug("Could not quarantine stale update marker %s: %s", path, exc)
+        return None
+    logger.warning("Quarantined stale update marker %s -> %s", path, target)
+    return target

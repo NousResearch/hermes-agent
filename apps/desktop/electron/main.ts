@@ -17270,6 +17270,35 @@ function readLatestSyncReceipt(): Record<string, unknown> | null {
 
 ipcMain.handle('hermes:sync-status', () => readLatestSyncReceipt())
 
+/** The CLI tail's live progress (`<HERMES_HOME>/logs/update_stage.json`) —
+ *  published phase-by-phase by the source-completion tail with an `at`
+ *  heartbeat. null when no tail has published (or a finished run cleared
+ *  it). The overlay shows the message while a `running` receipt is open and
+ *  derives wedged-vs-working from the heartbeat age itself. */
+function readTailStage(): { message: string; at?: string | null; status?: string } | null {
+  const stagePath = path.join(HERMES_HOME, 'logs', 'update_stage.json')
+
+  try {
+    const text = fs.readFileSync(stagePath, 'utf8')
+    const stripped = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+    const data = JSON.parse(stripped) as { message?: unknown; at?: unknown; status?: unknown }
+
+    if (typeof data !== 'object' || data === null || typeof data.message !== 'string') {
+      return null
+    }
+
+    return {
+      message: data.message,
+      at: typeof data.at === 'string' ? data.at : null,
+      status: typeof data.status === 'string' ? data.status : undefined
+    }
+  } catch {
+    return null
+  }
+}
+
+ipcMain.handle('hermes:update-stage', () => readTailStage())
+
 // Python's Path.resolve() equivalent for install-id derivation: realpath when
 // the path exists, plain resolve otherwise. Must stay byte-compatible with
 // boot_bootstrap._install_key or the CLI and the app would compute two

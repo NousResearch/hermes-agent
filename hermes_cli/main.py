@@ -2282,7 +2282,7 @@ def _update_preflight_handled(args) -> bool:
         sys.exit(0)
     if is_managed():
         managed_error("update Hermes Agent")
-        if not any(getattr(args, flag, False) for flag in ("plan", "check", "list_venv_holders")):
+        if not any(getattr(args, flag, False) for flag in ("plan", "check", "status", "list_venv_holders")):
             _record_stop("managed_install", without_receipt="refused")  # an update attempt: a metrics row only
         return True
 
@@ -2299,6 +2299,15 @@ def _update_preflight_handled(args) -> bool:
 
         print_update_plan(collect_runtime_inventory())
         return True
+
+    if getattr(args, "status", False):
+        # Read-only health report: never claims the marker or checkout lock, so it
+        # diagnoses a stuck update instead of joining it. Runs before the
+        # deployment-kind gates like --plan (a non-updatable install still gets
+        # its marker/receipt/tail report).
+        from hermes_cli.update_cmd_status import _cmd_update_status
+
+        sys.exit(_cmd_update_status())
 
     if getattr(args, "list_venv_holders", False):
         # Read-only twin of the Windows venv-holder refusal (#117246): same scan and classifiers,
@@ -2367,7 +2376,17 @@ def cmd_update(args):
         UPDATE_EXIT_CONCURRENT,
         UpdateLock,
         describe_holder,
+        quarantine_stale_marker,
     )
+
+    # Watchdog (item 7): a dead marker older than 2x the liveness ceiling with a
+    # free checkout lock is archived before acquire, so a killed update from
+    # last month can never park this one behind "an update is finishing".
+    # Live/young/held markers are never touched (quarantine_stale_marker
+    # guarantees that); acquire below still owns the live-marker decision.
+    _quarantined = quarantine_stale_marker(install_root=PROJECT_ROOT)
+    if _quarantined is not None:
+        print(f"ℹ Archived a stale update marker left by a dead updater ({_quarantined.name}); continuing.")
 
     _update_lock = UpdateLock(install_root=PROJECT_ROOT)
     if not _update_lock.acquire():
@@ -2376,6 +2395,14 @@ def cmd_update(args):
         from hermes_cli.update_cmd_common import _record_stop
         _record_stop("lock_held", without_receipt="refused")  # no receipt: latest.json is the holder's
         sys.exit(UPDATE_EXIT_CONCURRENT)
+
+    if getattr(args, "rollback", False):
+        # One-command rollback under the update lock: mutual exclusion (and the
+        # "no live update" guarantee) comes from the acquire above, so the
+        # rollback module only refuses dirty trees and missing targets.
+        from hermes_cli.update_cmd_rollback import _cmd_update_rollback
+
+        sys.exit(_cmd_update_rollback(PROJECT_ROOT))
 
     from hermes_cli.update_cmd import _cmd_update_impl
     from pm import InstallError

@@ -96,6 +96,7 @@ def _complete_locked(
     """The completion body; callers hold the update lock already."""
     from hermes_cli.source_build import build_update_products
     from hermes_cli.update_cmd_maint import _run_post_update_maintenance
+    from hermes_cli.update_stage import clear_tail_stage, publish_tail_stage
     from hermes_cli.venv_sync import publish_launchers
 
     try:
@@ -108,9 +109,14 @@ def _complete_locked(
         print(f"⚠ Could not provide git for the source completion: {exc}", file=sys.stderr)
     owed: list[tuple[str, str]] = []
 
-    def step(name: str, run) -> None:
+    def step(name: str, run, stage: str | None = None) -> None:
         # Each step is independent: a failed launcher publish or web build must not skip the
         # config migration, the maintenance, or (in an update) the gateway restart after it.
+        # The stage message is the tail's heartbeat: polling clients (Desktop overlay,
+        # `hermes update --status`) show the last one, and its timestamp tells
+        # "working" from "wedged".
+        if stage:
+            publish_tail_stage(stage)
         try:
             run()
         except (Exception, SystemExit) as exc:  # health: allow BLE001 -- reported as an owed follow-up
@@ -120,9 +126,10 @@ def _complete_locked(
             record_followup(name, reason)
             owed.append((name, reason))
 
-    step("launchers", lambda: publish_launchers(root))
+    step("launchers", lambda: publish_launchers(root), stage="Publishing launchers")
     if before_build is not None:
         before_build()  # never raises: a failed restart stays owed and is retried after the build
+    publish_tail_stage("Building update products")
     step("build", lambda: build_update_products(root, desktop=desktop))
     if announce:
         print(announce)
@@ -135,8 +142,15 @@ def _complete_locked(
         pre_update_version=pre_update_version,
         completion_message=completion_message,
         followups=owed,
-    )))
+    )), stage="Running post-update maintenance")
     tail_done = not owed
+    if tail_done:
+        clear_tail_stage()
+    else:
+        publish_tail_stage(
+            f"Tail finished with {len(owed)} follow-up(s) owed — see the update receipt",
+            status="done",
+        )
     if tail_done:
         from hermes_cli.source_stamp import write_source_stamp
 

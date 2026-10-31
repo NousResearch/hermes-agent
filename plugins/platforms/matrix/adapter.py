@@ -2984,14 +2984,13 @@ class MatrixAdapter(BasePlatformAdapter):
         words, or "Hermes Agent" would become "Agent"."""
         if not body:
             return ""
-        if self._user_id:
-            body = body.replace(self._user_id, "")
-        localpart = self._user_localpart()
-        if localpart:
-            body = re.sub(r'(?<![\w])@' + re.escape(localpart) + r'\b', '', body, flags=re.IGNORECASE)
-        # Normalize spacing after mention removal.
-        body = re.sub(r'[ \t]{2,}', ' ', body)
-        body = re.sub(r'\s+([,.;:!?])', r'\1', body)
+        tokens = [re.escape(self._user_id)] if self._user_id else []
+        if localpart := self._user_localpart():
+            tokens.append(r'(?<![\w])@' + re.escape(localpart) + r'\b')
+        for token in tokens:
+            # Only the mention's own spacing goes ("hi @bot, x" -> "hi, x"); indentation stays.
+            body = re.sub(r'[ \t]*' + token + r'(?=[,.;:!?])', '', body, flags=re.IGNORECASE)
+            body = re.sub(token + r'[ \t]*', '', body, flags=re.IGNORECASE)
         return body.strip()
 
     async def _get_display_name(self, room_id: str, user_id: str) -> str:

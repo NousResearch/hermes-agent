@@ -94,6 +94,7 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
+from plugins.platforms.feishu.feishu_text import normalize_feishu_text
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
 
@@ -127,7 +128,6 @@ _MARKDOWN_HINT_RE = re.compile(
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
-_MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # --- Media type sets and upload constants ---
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
@@ -220,10 +220,8 @@ FALLBACK_ATTACHMENT_TEXT = "[Attachment]"
 # --- Post/card parsing helpers ---
 _PREFERRED_LOCALES = ("zh_cn", "en_us")
 _MARKDOWN_SPECIAL_CHARS_RE = re.compile(r"([\\`*_{}\[\]()#+\-!|>~])")
-_MENTION_PLACEHOLDER_RE = re.compile(r"@_user_\d+")
 _MENTION_BOUNDARY_CHARS = frozenset(" \t\n\r.,;:!?、，。；：！？()[]{}<>\"'`")
 _TRAILING_TERMINAL_PUNCT = frozenset(" \t\n\r.!?。！？")
-_WHITESPACE_RE = re.compile(r"\s+")
 _SUPPORTED_CARD_TEXT_KEYS = (
     "title", "text", "content", "label", "value", "name", "summary", "subtitle", "description", "placeholder", "hint",
 )
@@ -492,14 +490,15 @@ def parse_feishu_post_payload(
     image_keys: list[str] = []
     media_refs: list[FeishuPostMediaRef] = []
     parts: list[str] = []
-    title = _normalize_feishu_text(str(resolved.get("title", "")).strip())
+    title = normalize_feishu_text(str(resolved.get("title", "")).strip())
     if title:
         parts.append(title)
     for row in resolved.get("content", []) or []:
         if not isinstance(row, list):
             continue
-        row_text = _normalize_feishu_text(
-            "".join(_render_post_element(item, image_keys, media_refs, mentions_map) for item in row)
+        row_text = normalize_feishu_text(
+            "".join(_render_post_element(item, image_keys, media_refs, mentions_map) for item in row),
+            keep_layout=any(isinstance(item, dict) and item.get("tag") in {"code_block", "pre"} for item in row),
         )
         if row_text:
             parts.append(row_text)
@@ -661,7 +660,7 @@ def normalize_feishu_message(
         if "@_all" in text and "@_all" not in mentions_map:
             mentions_map["@_all"] = FeishuMentionRef(is_all=True)
         return FeishuNormalizedMessage(
-            raw_type=normalized_type, text_content=_normalize_feishu_text(text, mentions_map),
+            raw_type=normalized_type, text_content=normalize_feishu_text(text, mentions_map, keep_layout=True),
             mentions=list(mentions_map.values()),
         )
     if normalized_type == "post":
@@ -676,7 +675,7 @@ def normalize_feishu_message(
     mention_refs = list(mentions_map.values())
     if normalized_type == "image":
         image_key = str(payload.get("image_key", "") or "").strip()
-        alt_text = _normalize_feishu_text(
+        alt_text = normalize_feishu_text(
             str(payload.get("text", "") or "")
             or str(payload.get("alt", "") or "")
             or FALLBACK_IMAGE_TEXT,
@@ -764,7 +763,7 @@ def _collect_forward_entries(payload: dict[str, Any]) -> list[str]:
     entries: list[str] = []
     for item in candidates:
         if not isinstance(item, dict):
-            text = _normalize_feishu_text(str(item or ""))
+            text = normalize_feishu_text(str(item or ""))
             if text:
                 entries.append(f"- {text}")
             continue
@@ -776,7 +775,7 @@ def _collect_forward_entries(payload: dict[str, Any]) -> list[str]:
             body = _first_text_field(
                 item, "text", "summary", "preview", "content", deep=("text", "content", "summary", "preview", "title"),
             )
-        body = _normalize_feishu_text(body)
+        body = normalize_feishu_text(body)
         if sender and body:
             entries.append(f"- {sender}: {body}")
         elif body:
@@ -786,7 +785,7 @@ def _collect_forward_entries(payload: dict[str, Any]) -> list[str]:
 
 def _collect_card_lines(payload: Any) -> list[str]:
     lines = _collect_text_segments(payload, in_rich_block=False)
-    normalized = [_normalize_feishu_text(line) for line in lines]
+    normalized = [normalize_feishu_text(line) for line in lines]
     return _unique_lines([line for line in normalized if line])
 
 
@@ -806,7 +805,7 @@ def _collect_action_labels(payload: Any) -> list[str]:
 
 def _collect_text_segments(value: Any, *, in_rich_block: bool) -> list[str]:
     if isinstance(value, str):
-        return [_normalize_feishu_text(value)] if in_rich_block else []
+        return [normalize_feishu_text(value)] if in_rich_block else []
     if isinstance(value, list):
         return [seg for item in value for seg in _collect_text_segments(item, in_rich_block=in_rich_block)]
     if not isinstance(value, dict):
@@ -817,8 +816,8 @@ def _collect_text_segments(value: Any, *, in_rich_block: bool) -> list[str]:
     if next_in_rich_block:
         for key in _SUPPORTED_CARD_TEXT_KEYS:
             item = value.get(key)
-            if isinstance(item, str) and _normalize_feishu_text(item):
-                segments.append(_normalize_feishu_text(item))
+            if isinstance(item, str) and normalize_feishu_text(item):
+                segments.append(normalize_feishu_text(item))
     for key, item in value.items():
         if key not in _SKIP_TEXT_KEYS:
             segments.extend(_collect_text_segments(item, in_rich_block=next_in_rich_block))
@@ -833,7 +832,7 @@ def _build_media_ref_from_payload(payload: dict[str, Any], *, resource_type: str
 
 
 def _attachment_placeholder(file_name: str) -> str:
-    normalized_name = _normalize_feishu_text(file_name)
+    normalized_name = normalize_feishu_text(file_name)
     return f"[Attachment: {normalized_name}]" if normalized_name else FALLBACK_ATTACHMENT_TEXT
 
 
@@ -846,7 +845,7 @@ def _find_header_title(payload: Any) -> str:
     title = header.get("title")
     if isinstance(title, dict):
         return _first_non_empty_text(title.get("content"), title.get("text"), title.get("name"))
-    return _normalize_feishu_text(str(title or ""))
+    return normalize_feishu_text(str(title or ""))
 
 
 def _find_first_text(payload: Any, *, keys: tuple[str, ...]) -> str:
@@ -856,7 +855,7 @@ def _find_first_text(payload: Any, *, keys: tuple[str, ...]) -> str:
         for key in keys:
             value = node.get(key)
             if isinstance(value, str):
-                normalized = _normalize_feishu_text(value)
+                normalized = normalize_feishu_text(value)
                 if normalized:
                     return normalized
     return ""
@@ -877,7 +876,7 @@ def _first_non_empty_text(*values: Any) -> str:
     for value in values:
         if value is None or isinstance(value, (dict, list)):
             continue
-        normalized = _normalize_feishu_text(value if isinstance(value, str) else str(value))
+        normalized = normalize_feishu_text(value if isinstance(value, str) else str(value))
         if normalized:
             return normalized
     return ""
@@ -892,20 +891,6 @@ def _first_text_field(payload: dict[str, Any], *keys: str, deep: tuple[str, ...]
 
 
 # --- General text utilities ---
-
-def _normalize_feishu_text(text: str, mentions_map: Optional[dict[str, FeishuMentionRef]] = None) -> str:
-    def _sub(match: re.Match[str]) -> str:
-        ref = (mentions_map or {}).get(match.group(0))
-        return " " if ref is None else f"@{ref.name or ref.open_id or 'user'}"
-
-    cleaned = _MENTION_PLACEHOLDER_RE.sub(_sub, text or "")
-    cleaned = cleaned.replace("@_all", "@all")
-    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
-    cleaned = "\n".join(_WHITESPACE_RE.sub(" ", line).strip() for line in cleaned.split("\n"))
-    cleaned = "\n".join(line for line in cleaned.split("\n") if line)
-    cleaned = _MULTISPACE_RE.sub(" ", cleaned)
-    return cleaned.strip()
-
 
 def _unique_lines(lines: list[str]) -> list[str]:
     seen: set[str] = set()

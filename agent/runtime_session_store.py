@@ -370,9 +370,24 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         apply_row_annotations(messages, result['annotations'])
         return result['count']
 
-    def try_acquire_session_turn_lease(self, session_id, holder, *, ttl_seconds=300.0, patience_s=None):
+    def try_acquire_session_turn_lease(self, session_id, holder, *, ttl_seconds=300.0, patience_s=None,
+            waiter_enqueued_at=None):
+        # ``waiter_enqueued_at`` orders the owner's FIFO queue; this store has no local queue, and
+        # the owner refuses any payload but ``{holder, ttl_seconds}`` (``_worker_turn``).
         self._session(session_id)
         return self._apply('turn.acquire', {'holder': holder, 'ttl_seconds': ttl_seconds})['value']
+
+    def register_session_turn_waiter(self, session_id, holder, *, enqueued_at=None):
+        """No local wait row: the owner claims this holder's lease straight from ``turn.acquire``.
+
+        ``acquire_session_turn_lease`` below reuses the SQLite mixin's polling orchestrator, so the
+        orchestrator's wait-queue hooks have to resolve here too — but a worker's acquisition is an
+        RPC whose payload is fixed at ``{holder, ttl_seconds}``, so there is no queue to publish to.
+        """
+        return False
+
+    def clear_session_turn_waiter(self, session_id, holder):
+        """The pair of ``register_session_turn_waiter``: this store published nothing to withdraw."""
 
     def acquire_session_turn_lease(self, session_id, holder, *, ttl_seconds=300.0,
             wait_seconds=1800.0, poll_interval_seconds=1.0, on_wait=None,

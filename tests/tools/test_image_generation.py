@@ -1,7 +1,7 @@
 """Tests for tools/image_generation_tool.py — FAL multi-model support.
 
-Covers the pure logic of the new wrapper: catalog integrity, the three size
-families (image_size_preset / aspect_ratio / gpt_literal), the supports
+Covers the pure logic of the new wrapper: catalog integrity, the two size
+families (image_size_preset / aspect_ratio), the supports
 whitelist, default merging, GPT quality override, and model resolution
 fallback. Does NOT exercise fal_client submission — that's covered by
 tests/tools/test_managed_media_gateways.py.
@@ -118,12 +118,21 @@ class TestAspectRatioFamily:
 
 
 
-class TestGptLiteralFamily:
-    """GPT-Image 1.5 uses literal size strings."""
+class TestRetiredModels:
+    """A stored id whose upstream model was shut down resolves to its successor on every route."""
 
-    def test_gpt_landscape_is_literal(self, image_tool):
-        p = image_tool._build_fal_payload("fal-ai/gpt-image-1.5", "hello", "landscape")
-        assert p["image_size"] == "1536x1024"
+    def test_retired_id_resolves_to_successor(self, image_tool, monkeypatch):
+        from tools.image_generation_catalog import RETIRED_FAL_MODELS
+        from tools.image_generation_managed import FAL, managed_route
+
+        for retired, successor in RETIRED_FAL_MODELS.items():
+            assert retired not in image_tool.FAL_MODELS and successor in image_tool.FAL_MODELS
+            monkeypatch.setattr(image_tool, "_read_image_gen_key", lambda key, r=retired: r)
+            assert image_tool._resolve_fal_model()[0] == successor
+            monkeypatch.setattr(image_tool, "_read_image_gen_key", lambda key: None)
+            monkeypatch.setenv("FAL_IMAGE_MODEL", retired)
+            assert image_tool._resolve_fal_model()[0] == successor
+            assert managed_route("nous", retired) == FAL  # never the Portal with a dead id
 
 
 

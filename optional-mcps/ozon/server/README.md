@@ -8,16 +8,22 @@ Business-logic guidance for which Ozon API/report covers what stays in the
 existing `ozon-*` Hermes skills (category `ozon`) — **unchanged by this
 connector**. This server is pure transport: auth + HTTP calls.
 
-## Design: one tool per documented endpoint (222 tools)
+## Design: 10 grouped tools, action parameter selects the endpoint (222 actions total)
 
-Matches the industry pattern for large API surfaces instead of a few wide
-generic "call" tools — e.g. Cloudflare's official MCP catalog entry ships
-~3,300 one-tool-per-OpenAPI-operation tools. Named, individually typed tools
-beat a generic `call(endpoint, body)` wrapper because the model's tool-call
-validation happens per-function (real parameter names/types in the schema)
-instead of on a free-form dict it has to assemble correctly by hand.
+Instead of one `@server.tool()` per documented endpoint, endpoints are
+grouped by API area into exactly 10 tools: `ozon_fbs`, `ozon_fbo`,
+`ozon_fbp`, `ozon_carriage`, `ozon_returns`, `ozon_delivery`,
+`ozon_products`, `ozon_finance`, `ozon_reviews`, `ozon_ads`. Each takes
+`action: str` (+ optional `body: dict`, `params: dict`) and dispatches to
+the matching endpoint internally. This keeps the admin-visible tool count
+at 10 (down from 222) while every endpoint stays reachable and
+individually documented — each tool's docstring enumerates every `action`
+it accepts, one line per action, replacing what a JSON-schema enum
+description would otherwise do. No HTTP method/path/business-logic
+changed in this regrouping — only how the 222 functions are packaged into
+callable tools.
 
-Of the 222 endpoints:
+Of the 222 actions:
 
 - **31 are REAL implementations** with typed, named parameters, built from a
   confirmed request schema: `ozon-seller-skill/references/{products,finance,
@@ -38,11 +44,14 @@ Of the 222 endpoints:
 
 Confirm the exact request schema against Ozon's official docs
 (`docs.ozon.ru/api/seller`) or a newly-tested script, then replace that one
-function body in `ozon_mcp_server.py` — never guess a field name into an
-existing stub. The function name already matches the endpoint
-(`method`+`path` → `ozon_<version>_<path_segments>`, with a `_get`/`_put`
-suffix only where two methods share one path, e.g.
-`ozon_api_client_campaign_id_get` / `_put`).
+action's handler inside the relevant group tool in `ozon_mcp_server.py` --
+never guess a field name into an existing stub. Each group tool has a
+`handlers = {...}` dict mapping `action` string -> a lambda/helper function;
+find the action by its name (it matches the endpoint's old function name
+with the `ozon_<version>_` prefix stripped, e.g. the old
+`ozon_v4_posting_fbs_unfulfilled_list` is now action
+`'unfulfilled_list_v4'` inside the `ozon_fbs` tool) and replace just that
+entry.
 
 ## Setup
 
@@ -80,13 +89,14 @@ checkout's own location. If this fork is ever cloned somewhere other than
 The catalog install flow prompts for all four values and saves them to
 `~/.hermes/.env`.
 
-## Write tools
+## Write actions
 
-A handful of real (non-stub) tools change live data — `ozon_v3_product_import`,
-`ozon_v2_review_change_status`, `ozon_api_client_campaign_id_put` — and are
-marked **WRITE** in their docstring. Per the shop's standing rule (see
-`ozon-api-overview`): show the current/proposed value and wait for explicit
-confirmation before calling one — this connector does not enforce that
-itself, it's the calling agent's responsibility. A number of the 191 stubs
-are also destructive writes (cancel, delete, create) once implemented — the
-same rule will apply to them.
+A handful of real (non-stub) actions change live data — `product_import`
+and `product_import_info` lookup in `ozon_products`, `review_change_status`
+in `ozon_reviews`, `api_client_campaign_id_put` in `ozon_ads` — and are
+marked **[WRITE]** in their tool's docstring action list. Per the shop's
+standing rule (see `ozon-api-overview`): show the current/proposed value
+and wait for explicit confirmation before calling one — this connector
+does not enforce that itself, it's the calling agent's responsibility. A
+number of the 191 stub actions are also destructive writes (cancel,
+delete, create) once implemented — the same rule will apply to them.

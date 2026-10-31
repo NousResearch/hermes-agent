@@ -1,7 +1,12 @@
 # Local catalog entry (not Nous-reviewed — added for this installation only).
 # Wraps the Ozon Seller API (api-seller.ozon.ru) and Performance API
-# (api-performance.ozon.ru) as 222 MCP tools, one per documented endpoint
-# (31 real, 191 explicit not_implemented stubs -- see server/README.md).
+# (api-performance.ozon.ru) as 10 grouped MCP tools (ozon_fbs, ozon_fbo,
+# ozon_fbp, ozon_carriage, ozon_returns, ozon_delivery, ozon_products,
+# ozon_finance, ozon_reviews, ozon_ads). Each tool takes an `action` string
+# parameter that selects one of 222 documented endpoints total (31 real,
+# 191 explicit not_implemented stubs -- see server/README.md). Grouping
+# keeps the admin's visible tool count low while every endpoint stays
+# reachable and documented in its group tool's docstring.
 # Business-logic guidance for which API/report to use lives separately in
 # the ozon-* Hermes skills (unchanged by this connector).
 manifest_version: 1
@@ -53,8 +58,11 @@ post_install: |
   Performance API credentials: Реклама (Performance) cabinet -> API section.
   All four are prompted above and saved to .env; no separate login step.
 
-  222 tools, one per endpoint, prefixed "ozon_<version>_<path>" (e.g.
-  ozon_v3_product_list). 31 are real; the other 191 return
+  10 grouped tools (ozon_fbs, ozon_fbo, ozon_fbp, ozon_carriage, ozon_returns,
+  ozon_delivery, ozon_products, ozon_finance, ozon_reviews, ozon_ads). Each
+  takes action (str) + optional body/params (dict) -- the action parameter
+  selects the specific endpoint; every tool's docstring lists all its
+  actions. 222 actions total: 31 are real; the other 191 return
   {"status": "not_implemented"} immediately -- their request schema isn't
   confirmed yet, see server/README.md before trying to use one.
 

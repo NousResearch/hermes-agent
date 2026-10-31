@@ -3234,6 +3234,8 @@ export interface Translations extends NoticeTranslations {
     everythingSkipped: string
     everythingRowFailed: string
     everythingFanoutFailedTitle: string
+    updateEverything: string
+    updatingEverything: string
     changeLogNew: string
     changeLogFixed: string
     changeLogFaster: string

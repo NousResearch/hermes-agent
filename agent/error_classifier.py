@@ -974,6 +974,9 @@ def _by_transport(c: _Ctx) -> Optional[Verdict]:
     ssl = _first_match(msg, ((_SSL_CERT_VERIFY_PATTERNS, _V_SSL_CERT), (_SSL_TRANSIENT_PATTERNS, _V_TIMEOUT)))
     if ssl is not None:
         return ssl
+    # The openai/anthropic SDKs raise the cert failure as the CAUSE of a bare "Connection error.".
+    if _from_cause_chain(c.error, _cert_verify_failure, False):
+        return _V_SSL_CERT
     # Disconnect + large session → probable overflow rejection, not a hiccup.
     if any(p in msg for p in _SERVER_DISCONNECT_PATTERNS) and not c.status_code:
         # Reasoning models: far more likely the gateway idle-killed a long
@@ -1458,6 +1461,10 @@ def _body_message_candidates(body: dict) -> Iterator[Any]:
     # validation shape, read by _oversized_message_content_rejection.
     detail = body.get("detail")
     yield detail.get("message") if isinstance(detail, dict) else detail if isinstance(detail, str) else None
+
+
+def _cert_verify_failure(exc: Any) -> Optional[bool]:
+    return True if any(p in str(exc).lower() for p in _SSL_CERT_VERIFY_PATTERNS) else None
 
 
 def _from_cause_chain(error: Exception, pick: Callable[[Any], Any], default: Any) -> Any:

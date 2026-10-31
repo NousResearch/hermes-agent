@@ -612,6 +612,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/software-development/software-development-ast-grep',
                     'user-guide/skills/optional/software-development/software-development-code-wiki',
+                    'user-guide/skills/optional/software-development/software-development-elephant-goldfish',
                     'user-guide/skills/optional/software-development/software-development-grill-me',
                     'user-guide/skills/optional/software-development/software-development-hermes-agent-skill-authoring',
                     'user-guide/skills/optional/software-development/software-development-inspecting-hermes-desktop-dom',

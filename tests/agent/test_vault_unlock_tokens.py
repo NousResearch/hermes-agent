@@ -119,6 +119,8 @@ if argv[:2] == ["unlock", "--raw"]:
     print("dummy-bw-session-7f3a"); sys.exit(0)
 if argv[:2] == ["list", "items"]:
     print("[]"); sys.exit(0)
+if argv[:1] == ["sync"]:
+    print("Syncing complete."); sys.exit(0)
 sys.exit(2)
 '''
 
@@ -138,9 +140,11 @@ def test_session_token_reaches_only_the_manager_call_that_uses_it(tmp_path):
 
     token = "dummy-bw-session-7f3a"
     calls = [json.loads(line) for line in (tmp_path / "bw.log").read_text(encoding="utf-8").splitlines()]
-    unlock_call, list_call = calls
+    unlock_call, *session_calls = calls
     assert "BW_SESSION" not in unlock_call["env"], "the unlock call has no session yet"
-    assert list_call["env"]["BW_SESSION"] == token
+    # unlock refreshes the cache once (`bw sync`); the listing inside the sync interval reuses it
+    assert [c["argv"][:2] for c in session_calls] == [["sync", "--nointeraction"], ["list", "items"]]
+    assert all(c["env"]["BW_SESSION"] == token for c in session_calls)
     assert token not in os.environ.values(), "the token never enters Hermes' own environment"
     # Every other child (terminal tool, MCP servers, hooks) starts from that environment; even the
     # unscrubbed factory variant must not carry it.

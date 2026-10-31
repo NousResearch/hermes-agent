@@ -11,7 +11,7 @@ from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OkResult, OpenModel, ProfileParams
-from .registry import method
+from .registry import canonical_method, method
 from .server_requests import ApprovalChoice
 
 # ── shared room shapes ────────────────────────────────────────────────────────────────────────
@@ -94,6 +94,31 @@ class RoomParams(ProfileParams):
     """Any method addressed at one hosted room."""
 
     room_id: str
+
+
+class GroupsPreviewParams(RoomParams):
+    text: str
+
+
+class PreviewMember(Result):
+    member_id: str
+    handle: str
+    display_name: str | None = None
+
+
+class GroupsPreviewResult(Result):
+    room_id: str
+    authority_gateway_id: str
+    authority_epoch: int
+    revision: int
+    members: list[PreviewMember]
+
+
+method("groups.preview", params=GroupsPreviewParams, result=GroupsPreviewResult,
+       doc="Preview first-round selection without admitting a message.")
+# Canonical dispatch must reject unknown keys before session recovery can write.
+canonical_method("groups.preview", params=GroupsPreviewParams, result=GroupsPreviewResult,
+                 doc="Preview first-round selection without admitting a message.")
 
 
 # ── RoomLink catalog ──────────────────────────────────────────────────────────────────────────

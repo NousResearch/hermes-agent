@@ -15,6 +15,7 @@ GROUP_METHODS = {
     'groups.list': 'session:read',
     'groups.state': 'session:read',
     'groups.log': 'session:read',
+    'groups.preview': 'session:read',
     'groups.create': 'session:control',
     'groups.rename': 'session:control',
     'groups.disband': 'session:control',
@@ -31,6 +32,7 @@ _FIELDS = {
     'groups.list': {'limit', 'offset', 'include_disbanded'},
     'groups.state': {'room_id', 'include_disbanded'},
     'groups.log': {'room_id', 'since_seq', 'limit', 'include_disbanded'},
+    'groups.preview': {'room_id', 'text'},
     'groups.create': {'room_id', 'name', 'members'},
     'groups.rename': {'room_id', 'event_id', 'name'},
     'groups.disband': {'room_id', 'cancel_id'},
@@ -88,6 +90,9 @@ async def dispatch_group_control(connection, method, params):
 def _group(authority, actor, method, params, *, host_scope=False):
     from gateway import hosted_rooms as rooms
     db_path = authority.db.db_path
+    if method == 'groups.preview':
+        from gateway.session_group_preview import preview
+        return preview(authority, actor, params)
     gateway_id = rooms.local_authority_gateway_id()
     service = getattr(authority, 'hosted_room_service', None)
     room_authorizer = getattr(service, 'authorize_room', None)

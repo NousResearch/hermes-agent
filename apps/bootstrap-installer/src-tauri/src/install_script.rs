@@ -69,6 +69,54 @@ fn is_valid_commit(s: &str) -> bool {
     (7..=40).contains(&len) && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// One try plus two retries. First-run installs have no stale cache, so a
+/// single GitHub raw 503 used to abort the whole beta-to-stable setup (#88475).
+const MAX_DOWNLOAD_ATTEMPTS: u32 = 3;
+
+/// GitHub raw / CDN blips we should swallow. 404/401/403 stay fatal.
+pub(crate) fn is_transient_script_http_status(code: u16) -> bool {
+    matches!(code, 408 | 429 | 500 | 502 | 503 | 504)
+}
+
+pub(crate) fn should_retry_script_download(
+    http_status: Option<u16>,
+    transport_error: bool,
+    attempt: u32,
+) -> bool {
+    should_retry_script_download_for_ref(http_status, transport_error, attempt, /*immutable=*/ true)
+}
+
+/// Retry decision for one download attempt of the install script.
+///
+/// `immutable` is true for a commit-pinned fetch, false for a mutable branch
+/// ref (`main`). On the mutable path a 404 is retried once: a raw-CDN cache
+/// purge right after a push can briefly 404 a file that exists (#121615), and
+/// a first-run install has no stale cache to fall back to. A bad immutable
+/// pin must still look fatal immediately — a 404 there never burns retries.
+pub(crate) fn should_retry_script_download_for_ref(
+    http_status: Option<u16>,
+    transport_error: bool,
+    attempt: u32,
+    immutable: bool,
+) -> bool {
+    if attempt >= MAX_DOWNLOAD_ATTEMPTS {
+        return false;
+    }
+    if transport_error {
+        return true;
+    }
+    match http_status {
+        Some(404) if !immutable => true,
+        Some(status) => is_transient_script_http_status(status),
+        None => false,
+    }
+}
+
+fn download_backoff(attempt: u32) -> std::time::Duration {
+    let shift = attempt.saturating_sub(1).min(3);
+    std::time::Duration::from_millis(200 * (1u64 << shift))
+}
+
 /// Resolves the install script to use for this run.
 ///
 /// `pin` is the commit-or-branch from either Hermes-Setup's build-time
@@ -80,7 +128,9 @@ pub async fn resolve(
 ) -> Result<ResolvedScript> {
     // 1. Dev shortcut.
     if let Ok(repo_root) = std::env::var("HERMES_SETUP_DEV_REPO_ROOT") {
-        let candidate = PathBuf::from(repo_root).join("scripts").join(kind.filename());
+        let candidate = PathBuf::from(repo_root)
+            .join("scripts")
+            .join(kind.filename());
         if candidate.exists() {
             emit_log(&format!(
                 "[bootstrap] dev mode — using local {} at {}",
@@ -124,7 +174,11 @@ pub async fn resolve(
         kind.filename(),
         truncate_ref(&commit_or_ref)
     ));
-    download(kind, &commit_or_ref, &dest).await?;
+    // A 404 is retried on the mutable-ref path only (#121615): a raw-CDN cache
+    // purge right after a push can briefly 404 an existing file. Commit pins
+    // stay fatal on 404 — a bad pin must not look like a blip.
+    let immutable = is_valid_commit(&commit_or_ref);
+    download(kind, &commit_or_ref, &dest, immutable).await?;
     emit_log(&format!("[bootstrap] downloaded to {}", dest.display()));
     Ok(ResolvedScript {
         path: dest,
@@ -204,7 +258,12 @@ pub(crate) fn prepare_cached_script_bytes(kind: ScriptKind, bytes: &[u8]) -> Vec
 /// Explicit timeouts: this runs on every bootstrap, and a black-holed
 /// connection (captive portal, hung proxy) would otherwise hang forever
 /// instead of failing so the user can Retry.
-async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Result<()> {
+async fn download(
+    kind: ScriptKind,
+    commit_or_ref: &str,
+    dest_path: &Path,
+    immutable: bool,
+) -> Result<()> {
     let url = format!(
         "https://raw.githubusercontent.com/NousResearch/hermes-agent/{}/scripts/{}",
         commit_or_ref,
@@ -212,9 +271,8 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
     );
 
     if let Some(parent) = dest_path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!("creating bootstrap-cache parent dir {}", parent.display())
-        })?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating bootstrap-cache parent dir {}", parent.display()))?;
     }
 
     let tmp_path = dest_path.with_extension({
@@ -225,49 +283,118 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
         format!("{ext}.tmp")
     });
 
-    let response = reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(60))
         .build()
-        .context("building download client")?
-        .get(&url)
+        .context("building download client")?;
+
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 1..=MAX_DOWNLOAD_ATTEMPTS {
+        match download_once(&client, kind, &url, &tmp_path, dest_path).await {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                let retry = should_retry_script_download_for_ref(
+                    err.http_status,
+                    err.transport,
+                    attempt,
+                    immutable,
+                );
+                last_err = Some(err.err);
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                if !retry {
+                    break;
+                }
+                tokio::time::sleep(download_backoff(attempt)).await;
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| anyhow!("download failed")))
+}
+
+struct DownloadAttemptErr {
+    err: anyhow::Error,
+    http_status: Option<u16>,
+    transport: bool,
+}
+
+async fn download_once(
+    client: &reqwest::Client,
+    kind: ScriptKind,
+    url: &str,
+    tmp_path: &Path,
+    dest_path: &Path,
+) -> Result<(), DownloadAttemptErr> {
+    let response = match client
+        .get(url)
         .header("User-Agent", "hermes-setup/0.0.1")
         .send()
         .await
-        .with_context(|| format!("GET {url}"))?;
+    {
+        Ok(response) => response,
+        Err(err) => {
+            let transport = err.is_timeout() || err.is_connect() || err.is_request();
+            return Err(DownloadAttemptErr {
+                err: anyhow!(err).context(format!("GET {url}")),
+                http_status: None,
+                transport,
+            });
+        }
+    };
 
     if !response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download {}: HTTP {} from {}",
-            kind.filename(),
-            response.status(),
-            url
-        ));
+        let http_status = response.status().as_u16();
+        return Err(DownloadAttemptErr {
+            err: anyhow!(
+                "Failed to download {}: HTTP {} from {}",
+                kind.filename(),
+                response.status(),
+                url
+            ),
+            http_status: Some(http_status),
+            transport: false,
+        });
     }
 
-    let bytes = response
-        .bytes()
-        .await
-        .with_context(|| format!("reading body of {url}"))?;
+    let bytes = response.bytes().await.map_err(|err| DownloadAttemptErr {
+        transport: err.is_timeout() || err.is_connect() || err.is_request(),
+        err: anyhow!(err).context(format!("reading body of {url}")),
+        http_status: None,
+    })?;
     let bytes = prepare_cached_script_bytes(kind, &bytes);
 
-    let mut file = tokio::fs::File::create(&tmp_path)
+    let mut file = tokio::fs::File::create(tmp_path)
         .await
-        .with_context(|| format!("creating temp file {}", tmp_path.display()))?;
+        .map_err(|err| DownloadAttemptErr {
+            err: anyhow!(err).context(format!("creating temp file {}", tmp_path.display())),
+            http_status: None,
+            transport: false,
+        })?;
     file.write_all(&bytes)
         .await
-        .with_context(|| format!("writing temp file {}", tmp_path.display()))?;
-    file.flush().await.context("flushing temp file")?;
+        .map_err(|err| DownloadAttemptErr {
+            err: anyhow!(err).context(format!("writing temp file {}", tmp_path.display())),
+            http_status: None,
+            transport: false,
+        })?;
+    file.flush().await.map_err(|err| DownloadAttemptErr {
+        err: anyhow!(err).context("flushing temp file"),
+        http_status: None,
+        transport: false,
+    })?;
     drop(file);
 
-    tokio::fs::rename(&tmp_path, dest_path)
+    tokio::fs::rename(tmp_path, dest_path)
         .await
-        .with_context(|| {
-            format!(
+        .map_err(|err| DownloadAttemptErr {
+            err: anyhow!(err).context(format!(
                 "renaming {} → {}",
                 tmp_path.display(),
                 dest_path.display()
-            )
+            )),
+            http_status: None,
+            transport: false,
         })?;
 
     Ok(())
@@ -296,7 +423,10 @@ mod tests {
     #[test]
     fn prepare_cached_ps1_prefixes_utf8_bom() {
         let out = prepare_cached_script_bytes(ScriptKind::Ps1, b"Write-Host hi\n");
-        assert!(out.starts_with(UTF8_BOM), "cached .ps1 must start with UTF-8 BOM");
+        assert!(
+            out.starts_with(UTF8_BOM),
+            "cached .ps1 must start with UTF-8 BOM"
+        );
         assert_eq!(&out[UTF8_BOM.len()..], b"Write-Host hi\n");
     }
 
@@ -321,5 +451,65 @@ mod tests {
         assert!(is_valid_commit("02d26981d3d4ad50e142399b8476f59ad5953ff0"));
         assert!(!is_valid_commit("main"));
         assert!(!is_valid_commit("release/1.2.3"));
+    }
+
+    #[test]
+    fn transient_script_http_statuses_are_the_cdn_blips() {
+        for code in [408, 429, 500, 502, 503, 504] {
+            assert!(is_transient_script_http_status(code), "{code} should retry");
+        }
+        for code in [200, 301, 400, 401, 403, 404, 410] {
+            assert!(
+                !is_transient_script_http_status(code),
+                "{code} must stay fatal"
+            );
+        }
+    }
+
+    #[test]
+    fn script_download_retries_are_bounded_and_skip_404() {
+        assert!(should_retry_script_download(Some(503), false, 1));
+        assert!(should_retry_script_download(Some(502), false, 2));
+        assert!(
+            !should_retry_script_download(Some(503), false, MAX_DOWNLOAD_ATTEMPTS),
+            "third failure is terminal"
+        );
+        assert!(
+            !should_retry_script_download(Some(404), false, 1),
+            "a bad immutable pin must not burn retries"
+        );
+        assert!(!should_retry_script_download(Some(401), false, 1));
+        assert!(should_retry_script_download(None, true, 1));
+        assert!(!should_retry_script_download(
+            None,
+            true,
+            MAX_DOWNLOAD_ATTEMPTS
+        ));
+        assert!(!should_retry_script_download(None, false, 1));
+    }
+
+    #[test]
+    fn mutable_ref_404_is_retried_but_stays_bounded() {
+        // #121615: raw-CDN cache purges can briefly 404 an existing file on a
+        // moving branch. The mutable-ref path gets one bounded retry; the
+        // third attempt stays terminal either way.
+        assert!(should_retry_script_download_for_ref(
+            Some(404),
+            false,
+            1,
+            /*immutable=*/ false
+        ));
+        assert!(!should_retry_script_download_for_ref(
+            Some(404),
+            false,
+            1,
+            /*immutable=*/ true
+        ));
+        assert!(!should_retry_script_download_for_ref(
+            Some(404),
+            false,
+            MAX_DOWNLOAD_ATTEMPTS,
+            /*immutable=*/ false
+        ));
     }
 }

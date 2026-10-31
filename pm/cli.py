@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -474,7 +475,7 @@ def cmd_doctor(args) -> int:
     return 1 if bad else 0
 
 
-def _gc_store(store, facts) -> tuple[int, int]:
+def _gc_store(store, facts, *, verbose: bool = True) -> tuple[int, int]:
     """The sweep core shared by `pm gc` and `pm bundle`.
 
     Removes every store entry nothing references: fetch-<sha> download-cache
@@ -482,7 +483,8 @@ def _gc_store(store, facts) -> tuple[int, int]:
     staged payload or a CI cache), orphaned package versions from an older
     lock, and expired partials. Keeps live package entries (recorded in
     facts) and partials an in-flight download still owns. Returns
-    (removed, kept).
+    (removed, kept). With ``verbose`` False (`pm gc --json`) the per-entry
+    progress lines are suppressed so the receipt stays machine-readable.
     """
     from pm.download_state import collect_partials
     from pm import paths
@@ -510,10 +512,114 @@ def _gc_store(store, facts) -> tuple[int, int]:
                 continue
             if item.name in keep:
                 continue
-            print(f"removing {item.name}")
+            if verbose:
+                print(f"removing {item.name}")
             shutil.rmtree(item, ignore_errors=True)
             removed += 1
     return (removed, len(keep))
+
+
+def _gc_store_candidates(store, facts) -> tuple[dict[str, list[dict]], int]:
+    """The read-only half of `_gc_store`: (candidates, kept). The caller holds the store lock."""
+    from hermes_constants import scratch_dir_usage_bytes
+    from pm.defaults import RETIRED_DEFAULTS
+
+    keep = facts.entries_in_use()
+    for name in RETIRED_DEFAULTS:
+        fact = facts.get(name)
+        if fact and "entry" in fact:
+            keep.discard(fact["entry"])
+    candidates: dict[str, list[dict]] = {"store_entries": [], "staging": [], "set_aside": [], "partials": []}
+    for item in sorted(store.root.iterdir()):
+        if not item.is_dir():
+            continue
+        # The same classes the real sweep removes. Dot-dirs other than these stay:
+        # .previous-* is the restore point the next install of that entry consumes.
+        if item.name.startswith(".staging-"):
+            kind = "staging"
+        elif item.name.startswith(".reclaim-"):
+            kind = "set_aside"
+        elif item.name.startswith(".") or item.name in keep:
+            continue
+        else:
+            kind = "store_entries"
+        candidates[kind].append({"name": item.name, "bytes": scratch_dir_usage_bytes(item)})
+    from pm import paths
+    from pm.download_state import collect_partials
+
+    for path in collect_partials(paths.partials_root(), dry_run=True):
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        candidates["partials"].append({"name": path.name, "bytes": size})
+    return candidates, len(keep)
+
+
+def _gc_store_plan(store, facts, *, lock_wait: bool = True) -> tuple[dict[str, list[dict]], int] | None:
+    """Read-only projection of `_gc_store`: (candidates, kept), or None when the store lock is
+    held and *lock_wait* is False.
+
+    Mirrors the sweep's candidate logic with none of its side effects — facts.json is never
+    rewritten (retired-default entries are projected as reclaimable instead of forgotten) and
+    nothing is deleted — so `pm gc --dry-run` and `hermes doctor` can report before acting.
+    Set-aside (.reclaim-*) trees a Windows hold still pins are reported as reclaimable; the
+    real sweep skips those until the hold clears."""
+    from pm.filesystem import lock_path
+
+    if not store.root.is_dir():
+        return {"store_entries": [], "staging": [], "set_aside": [], "partials": []}, 0
+    if lock_wait:
+        with store.install_lock():
+            return _gc_store_candidates(store, facts)
+    fd = lock_path(store.root / ".install.lock", timeout=0)
+    if fd is None:
+        return None
+    try:
+        return _gc_store_candidates(store, facts)
+    finally:
+        os.close(fd)
+
+
+def _gc_dry_run_report(candidates: dict[str, list[dict]], kept: int, generations: list[Path],
+                       runtimes: list[Path], orphans: list[Path]) -> dict:
+    """Machine-readable dry-run receipt: every class `pm gc` would reclaim, with byte sizes."""
+    reclaimable = [item for kind in ("store_entries", "staging", "set_aside", "partials")
+                   for item in candidates[kind]]
+    return {
+        "mode": "dry-run",
+        "store": {**candidates, "kept": kept},
+        "dependency_generations": [str(p) for p in generations],
+        "pm_runtime_generations": [str(p) for p in runtimes],
+        "orphan_install_states": [str(p) for p in orphans],
+        "totals": {"count": len(reclaimable) + len(generations) + len(runtimes) + len(orphans),
+                   "bytes": sum(item["bytes"] for item in reclaimable)},
+    }
+
+
+def _gc_summary_text(report: dict) -> str:
+    """Human summary for a gc report; 'would remove' phrasing in dry-run mode."""
+    from hermes_cli.sizefmt import format_bytes
+
+    store = report["store"]
+    generations = len(report["dependency_generations"])
+    runtimes = len(report["pm_runtime_generations"])
+    orphans = len(report["orphan_install_states"])
+    if report["mode"] != "dry-run":
+        return (f"gc: removed {store['removed']}, kept {store['kept']}; removed {generations} dependency generations, "
+                f"{runtimes} PM runtime generations, {orphans} install state dir(s) of deleted checkouts")
+    parts = []
+    for kind, label in (("store_entries", "store entry(s)"), ("staging", "staging dir(s)"),
+                        ("set_aside", "set-aside dir(s)"), ("partials", "expired partial(s)")):
+        items = store[kind]
+        if items:
+            parts.append(f"{len(items)} {label} ({format_bytes(sum(item['bytes'] for item in items))})")
+    detail = ", ".join(parts) if parts else "nothing"
+    tail = " — run `hermes pm gc` to reclaim" if parts or generations or runtimes or orphans else ""
+    return (f"gc dry-run: would remove {detail}, keeping {store['kept']} referenced store "
+            f"entr{'y' if store['kept'] == 1 else 'ies'}; "
+            f"{generations} dependency generation(s), {runtimes} PM runtime generation(s), "
+            f"{orphans} install state dir(s) of deleted checkouts{tail}")
 
 
 def cmd_gc(args) -> int:
@@ -522,18 +628,34 @@ def cmd_gc(args) -> int:
     from pm.store import Store
     store = Store(writable_store_root())
     facts = _facts() if store.root == _store().root else Facts(store.root / "facts.json")
-    removed, kept = _gc_store(store, facts)
+    project = repo_root()
     from hermes_cli.runtime_state import collect_generations
-    from pm.environments import install_state_dir
-    from pm.paths import repo_root
-    from pm.runtime import collect_runtime_generations
-    generations = collect_generations(repo_root())
-    runtimes = collect_runtime_generations(install_state_dir(repo_root()) / "pm-runtime")
-    from pm.environments import installs_root
+    from pm.environments import install_state_dir, installs_root
     from pm.install_states import collect_orphan_install_states
-    orphans = collect_orphan_install_states(installs_root())
-    print(f"gc: removed {removed}, kept {kept}; removed {len(generations)} dependency generations, "
-          f"{len(runtimes)} PM runtime generations, {len(orphans)} install state dir(s) of deleted checkouts")
+    from pm.runtime import collect_runtime_generations
+    if args.dry_run:
+        candidates, kept = _gc_store_plan(store, facts)
+        report = _gc_dry_run_report(
+            candidates, kept,
+            collect_generations(project, dry_run=True),
+            collect_runtime_generations(install_state_dir(project) / "pm-runtime", dry_run=True),
+            collect_orphan_install_states(installs_root(), dry_run=True))
+    else:
+        removed, kept = _gc_store(store, facts, verbose=not args.json)
+        generations = collect_generations(project)
+        runtimes = collect_runtime_generations(install_state_dir(project) / "pm-runtime")
+        orphans = collect_orphan_install_states(installs_root())
+        report = {
+            "mode": "collect",
+            "store": {"removed": removed, "kept": kept},
+            "dependency_generations": [str(p) for p in generations],
+            "pm_runtime_generations": [str(p) for p in runtimes],
+            "orphan_install_states": [str(p) for p in orphans],
+        }
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        print(_gc_summary_text(report))
     return 0
 
 
@@ -959,6 +1081,10 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_environment)
 
     p = sub.add_parser("gc", help="remove store entries nothing references")
+    p.add_argument("--dry-run", action="store_true",
+                   help="report what would be reclaimed without deleting anything")
+    p.add_argument("--json", action="store_true",
+                   help="print a machine-readable report instead of the summary line")
     p.set_defaults(func=cmd_gc)
 
     p = sub.add_parser("bundle", help="stage a payload (repo+store+facts+relocatable venv) into --out")

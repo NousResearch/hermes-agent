@@ -33,12 +33,18 @@ def partial_lock(root: Path, key: str, *, cancelled=None, wait: bool = True):
 GC_GRACE_SECONDS = 6 * 60 * 60
 
 
-def collect_partials(root: Path, *, grace_seconds: float = GC_GRACE_SECONDS) -> None:
-    """Do not let a GC snapshot race a downloader acquiring ownership."""
+def collect_partials(root: Path, *, grace_seconds: float = GC_GRACE_SECONDS,
+                     dry_run: bool = False) -> list[Path]:
+    """Reclaim partials no downloader owns any more (past the grace period).
+
+    Returns the expired partial files removed — or, with ``dry_run``, the ones that would be.
+    A per-key lock is taken either way: do not let a GC snapshot race a downloader acquiring
+    ownership."""
     if not root.is_dir():
-        return
+        return []
     keys = {path.stem for path in root.iterdir() if path.suffix in {".part", ".ranges"}}
     now = time.time()
+    expired: list[Path] = []
     for key in sorted(keys):
         with partial_lock(root, key, wait=False) as acquired:
             if not acquired:
@@ -47,7 +53,10 @@ def collect_partials(root: Path, *, grace_seconds: float = GC_GRACE_SECONDS) -> 
             try:
                 if any(path.exists() and grace_seconds > 0 and now - path.stat().st_mtime < grace_seconds for path in pair):
                     continue
-                for path in pair:
-                    path.unlink(missing_ok=True)
+                expired.extend(path for path in pair if path.exists())
+                if not dry_run:
+                    for path in pair:
+                        path.unlink(missing_ok=True)
             except OSError:
                 continue  # An inaccessible partial is not evidence it is unused.
+    return expired

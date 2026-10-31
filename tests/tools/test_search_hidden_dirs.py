@@ -14,6 +14,8 @@ directories, matching ripgrep's default behavior.
 """
 
 
+from unittest.mock import patch
+
 import pytest
 
 from tools.file_operations import ShellFileOperations
@@ -114,6 +116,63 @@ class TestGrepExcludesHiddenDirs:
         assert result.error is None
         assert result.total_count == 0
         assert not result.matches
+
+    def test_grep_busybox_prunes_hidden_dirs_but_keeps_dotfiles(
+        self, tmp_path, monkeypatch
+    ):
+        """BusyBox path must match GNU's --exclude-dir scope, through a shell.
+
+        The BusyBox fallback routes through ``_search_with_grep_pruned``
+        (find + grep), whose pruning is directory-scoped only — a dotfile in
+        a visible directory (``src/.env``) must survive, matching what GNU
+        grep's ``--exclude-dir='.*'`` (directories only) already returns.
+        """
+        (tmp_path / ".cache").mkdir()
+        (tmp_path / ".cache" / "noise.py").write_text("needle\n")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / ".env").write_text("needle in a dotfile\n")
+        (tmp_path / "src" / "app.py").write_text("needle in a visible file\n")
+
+        ops = self._grep_ops(tmp_path, monkeypatch)
+        with patch.object(ops, "_grep_supports_exclude_dir", return_value=False):
+            result = ops._search_with_grep(
+                "needle", path=str(tmp_path), file_glob=None,
+                limit=50, offset=0, output_mode="content", context=0,
+            )
+
+        assert result.error is None
+        names = sorted(p.replace(str(tmp_path) + "/", "")
+                       for p in (m.path for m in result.matches or []))
+        assert names == ["src/.env", "src/app.py"]
+
+    def test_grep_busybox_finds_match_behind_more_hidden_rows_than_the_cap(
+        self, tmp_path, monkeypatch
+    ):
+        """Ineligible rows must not consume the output cap.
+
+        The BusyBox path routes through find, which supplies the eligible
+        file set before grep runs and before the output is capped, so a
+        hidden directory with more matches than the cap cannot starve a
+        later eligible match — unlike a naive ``grep -r`` capped and
+        post-filtered in Python.
+        """
+        # Named so the hidden tree tends to be walked before the target,
+        # which is what would expose starvation from a naive implementation.
+        hidden_dir = tmp_path / ".aaa-cache"
+        hidden_dir.mkdir()
+        (hidden_dir / "noise.py").write_text("needle\n" * 1000)
+        (tmp_path / "zzz.py").write_text("needle in a visible file\n")
+
+        ops = self._grep_ops(tmp_path, monkeypatch)
+        with patch.object(ops, "_grep_supports_exclude_dir", return_value=False):
+            result = ops._search_with_grep(
+                "needle", path=str(tmp_path), file_glob=None,
+                limit=50, offset=0, output_mode="content", context=0,
+            )
+
+        assert result.error is None
+        paths = [m.path for m in (result.matches or [])]
+        assert [p.replace(str(tmp_path) + "/", "") for p in paths] == ["zzz.py"]
 
 
 class TestGrepSearchesRootsUnderHiddenDirs:

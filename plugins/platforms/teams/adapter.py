@@ -650,7 +650,8 @@ class TeamsAdapter(BasePlatformAdapter):
         if not choice:
             return self._invoke_message(t("platform.teams.approval.unknown_action"))
         if not has_blocking_approval(session_key):
-            return self._invoke_card([TextBlock(text=t("platform.shared.approval_expired"), wrap=True)])
+            body = _approval_body(data.get("cmd", ""), data.get("desc", ""))
+            return self._invoke_card([*body, TextBlock(text=t("platform.shared.approval_expired"), wrap=True)])
         resolve_gateway_approval(session_key, choice)
         body = _approval_body(data.get("cmd", ""), data.get("desc", ""))
         body.append(TextBlock(text=t(_APPROVAL_LABEL_KEYS[choice]), wrap=True, weight="Bolder"))

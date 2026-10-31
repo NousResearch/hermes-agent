@@ -1808,6 +1808,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "session_key": session_key,
                 "message_id": result.message_id or "",
                 "chat_id": chat_id,
+                "body": card["elements"][0]["content"],  # the resolved card keeps what was asked
             }
         return result
 
@@ -1841,13 +1842,12 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     @staticmethod
-    def _build_resolved_approval_card(*, choice: str, user_name: str) -> dict[str, Any]:
-        """Raw card JSON shown in place of the buttons once an approval is resolved."""
+    def _build_resolved_approval_card(*, choice: str, user_name: str, body: str | None = None) -> dict[str, Any]:
+        """Raw card JSON shown in place of the buttons once an approval is resolved; the request (*body*) stays."""
         icon = "❌" if choice == "deny" else "✅"
-        key = _APPROVAL_LABEL_KEYS.get(choice, "platform.feishu.approval.resolved_fallback")
-        label = t(key)
-        return _card(f"{icon} {label}", "red" if choice == "deny" else "green",
-                     t("platform.feishu.approval.resolved_by_user", icon=icon, label=label, user=user_name))
+        label = t(_APPROVAL_LABEL_KEYS.get(choice, "platform.feishu.approval.resolved_fallback"))
+        decided = t("platform.feishu.approval.resolved_by_user", icon=icon, label=label, user=user_name)
+        return _card(f"{icon} {label}", "red" if choice == "deny" else "green", f"{body}\n\n{decided}" if body else decided)
 
     @staticmethod
     def _build_resolved_update_prompt_card(*, answer: str, user_name: str) -> dict[str, Any]:
@@ -2317,7 +2317,7 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         if not self._submit_on_loop(loop, coro):
             return self._card_response()
-        return self._card_response(self._build_resolved_approval_card(choice=choice, user_name=user_name))
+        return self._card_response(self._build_resolved_approval_card(choice=choice, user_name=user_name, body=state.get("body")))
 
     def _handle_update_prompt_card_action(self, *, event: Any, action_value: dict[str, Any], loop: Any) -> Any:
         """Schedule update prompt resolution and build the synchronous callback response."""

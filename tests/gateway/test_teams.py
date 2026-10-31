@@ -1140,3 +1140,18 @@ class TestTeamsRequireMention:
         adapter = self._make_adapter(**extra)
         assert adapter._require_mention is expected
         assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance
+
+
+@pytest.mark.anyio
+async def test_expired_approval_click_keeps_the_request():
+    """A click after the approval ended replaces the card; the replacement still shows command and reason."""
+    adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+    adapter._card_action_denied = lambda _from: None
+    adapter._invoke_card = lambda body: body
+    ctx = MagicMock()
+    ctx.activity.value.action.data = {"hermes_action": "approve_once", "session_key": "s1",
+                                      "cmd": "rm -rf ./build", "desc": "dangerous deletion"}
+    with patch("tools.approval.has_blocking_approval", return_value=False):
+        body = await adapter._on_card_action(ctx)
+    texts = " ".join(str(block.text) for block in body)
+    assert "rm -rf ./build" in texts and "dangerous deletion" in texts

@@ -105,3 +105,51 @@ class TestTypeErrorPropagation:
         items = asyncio.run(_paginate_full_list(legacy_list, "tools", "srv"))
         assert [t.name for t in items] == ["first", "second"]
         assert calls["n"] == 2
+
+
+class TestCacheMetaExtraction:
+    """SEP-2549 hints reach the schema cache only when the server sent them.
+
+    mcp SDK 2.x result models synthesize ``ttl_ms=0`` / ``cache_scope="private"``
+    on a hint-less ``tools/list``; recording that 0 expired every cache entry at
+    the instant it was written, so ``lazy: true`` never engaged."""
+
+    @staticmethod
+    def _run(result):
+        meta: dict = {}
+
+        async def single_page():
+            return result
+
+        asyncio.run(_paginate_full_list(single_page, "tools", "srv", cache_meta_out=meta))
+        return meta
+
+    def test_sdk_result_without_wire_hint_records_nothing(self):
+        from mcp import types
+
+        result = types.ListToolsResult.model_validate({"tools": []})
+        assert result.ttl_ms == 0  # the synthesized default this guards against
+        assert self._run(result) == {}
+
+    def test_sdk_result_with_explicit_zero_ttl_records_it(self):
+        """A wire ``ttlMs: 0`` is a real "immediately stale" hint."""
+        from mcp import types
+
+        result = types.ListToolsResult.model_validate({"tools": [], "ttlMs": 0})
+        assert self._run(result) == {"ttl_ms": 0}
+
+    def test_sdk_result_with_wire_hints_records_them(self):
+        from mcp import types
+
+        result = types.ListToolsResult.model_validate(
+            {"tools": [], "ttlMs": 5_000, "cacheScope": "public"})
+        assert self._run(result) == {"ttl_ms": 5_000, "cache_scope": "public"}
+
+    def test_untracked_result_zero_ttl_reads_as_absent(self):
+        """Without field tracking a 0 cannot be told from the synthesized default."""
+        result = SimpleNamespace(tools=[_tool("a")], ttl_ms=0, cache_scope="private")
+        assert self._run(result) == {"cache_scope": "private"}
+
+    def test_untracked_result_positive_ttl_is_recorded(self):
+        result = SimpleNamespace(tools=[_tool("a")], ttl_ms=2_500)
+        assert self._run(result) == {"ttl_ms": 2_500}

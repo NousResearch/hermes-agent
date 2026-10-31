@@ -49,3 +49,17 @@ def test_cache_scope_round_trips():
         "srv", "fp", tools=[{"name": "t"}], ttl_ms=60_000, cache_scope="private"
     )
     assert sc.get_cached_entry("srv", "fp")["cache_scope"] == "private"
+
+
+def test_explicit_zero_ttl_is_an_immediate_miss():
+    """A recorded ttl of 0 (wire ``ttlMs: 0``) anchors expiry at write time."""
+    sc.write_cache_entry("srv", "fp", tools=[{"name": "t"}], ttl_ms=0)
+    assert sc.get_cached_entry("srv", "fp") is None
+
+
+def test_entry_without_ttl_keys_on_disk_is_a_hit():
+    import json
+
+    sc._cache_path().write_text(
+        json.dumps({"srv": {"fingerprint": "fp", "tools": [{"name": "t"}]}}), encoding="utf-8")
+    assert sc.get_cached_entry("srv", "fp") is not None

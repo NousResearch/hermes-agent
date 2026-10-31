@@ -1319,7 +1319,7 @@ class TestInteractiveReplyEndToEnd:
         adapter._clarify_state["q1"] = "sess-1"
         monkeypatch.setattr(
             "tools.clarify_gateway.resolve_gateway_clarify",
-            lambda cid, r: True,
+            lambda cid, r, *, session_key: session_key == "sess-1",
         )
 
         raw = {

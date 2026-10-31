@@ -58,6 +58,31 @@ def test_voice_turn_routes_then_restores(tmp_path, monkeypatch, voice_window_ok)
         assert agent._fallback_activated is False
 
 
+def test_voice_turn_route_drops_a_fast_param_the_voice_model_cannot_take(tmp_path, monkeypatch):
+    """#122010: ``speed`` pinned by static /fast for the main route must not reach a local voice
+    model, and the turn's end puts the main route's overrides back."""
+    from agent.voice_turn_route import begin_voice_turn_route, end_voice_turn_route
+
+    with FakeLLMServer([]) as main, FakeLLMServer([]) as voice:
+        home = write_hermes_home(tmp_path / ".hermes", main.base_url, extra_config=(
+            "auxiliary:\n  voice_chat:\n    provider: custom\n"
+            f"    base_url: {voice.base_url}\n    model: voice-model\n    api_key: sk-fake-voice\n"
+        ))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        agent = _agent(home, main.base_url)
+        agent.service_tier = "priority"
+        agent.request_overrides = {"speed": "fast", "temperature": 0.2}
+        agent._voice_turn_pending = True
+        begin_voice_turn_route(agent, [{"role": "user", "content": "hi"}], "system")
+        try:
+            assert agent.model == "voice-model"
+            assert agent.request_overrides == {"temperature": 0.2}
+        finally:
+            end_voice_turn_route(agent)
+        assert agent.model == "fake-model"
+        assert agent.request_overrides == {"speed": "fast", "temperature": 0.2}
+
+
 @pytest.mark.parametrize("model,api_mode,expected", [
     ("gpt-6-astra", "codex_responses", "low"),        # Responses ladder has no "none"
     ("claude-opus-5-5", "anthropic_messages", "low"),  # mandatory thinking

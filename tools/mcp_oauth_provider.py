@@ -13,6 +13,8 @@ import re
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+from tools.mcp_oauth_endpoints import check_oauth_endpoint_async, guard_oauth_request
+
 if TYPE_CHECKING:
     from tools.mcp_oauth import HermesTokenStorage
 logger = logging.getLogger(__name__)
@@ -93,6 +95,14 @@ class HermesProviderMixin:
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
         # reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
+        open_authorization_url = self.context.redirect_handler
+        if open_authorization_url is not None:  # the authorization endpoint passes the same rules first
+            server_url = self.context.server_url
+
+            async def _checked_redirect_handler(authorization_url: str) -> None:
+                await check_oauth_endpoint_async(authorization_url, server_url)
+                await open_authorization_url(authorization_url)
+            self.context.redirect_handler = _checked_redirect_handler
 
     async def _perform_authorization(self):
         info = self.context.client_info
@@ -263,6 +273,9 @@ class HermesProviderMixin:
                         raise
                     if out is not request:
                         stamp_default_user_agent(out)
+                        # Every OAuth request the SDK makes; the MCP transport checks the redirect
+                        # hops httpx follows on its own and caps every OAuth response body.
+                        await guard_oauth_request(out, self.context.server_url)
                     # Full bidirectional delegation: the SDK drives this flow with
                     # asend(response), so `async for` would swallow the response and
                     # feed the inner generator None. Async generators have no
@@ -281,6 +294,7 @@ class HermesProviderMixin:
                         elif getattr(sent, "status_code", None) == 200:
                             sent = await self._hermes_accept_origin_issued_metadata(sent)
             finally:
+                await inner.aclose()  # a refusal raised here must release the SDK's flow lock now, not at GC
                 await self._hermes_release_refresh_fence()
 
     async def _refresh_token(self):

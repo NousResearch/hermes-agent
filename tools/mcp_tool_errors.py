@@ -11,6 +11,7 @@ import os
 import re
 from typing import Any, List, Optional
 from urllib.parse import urlparse
+from tools.mcp_oauth_endpoints import cap_oauth_response, guard_oauth_hop
 from tools.mcp_tool_common import _exc_str, _sanitize_error, _core
 from tools.mcp_tool_node_abi import NodeAbiMismatchError
 
@@ -383,7 +384,13 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
             self._inner = inner
 
         async def handle_async_request(self, request):
+            # OAuth traffic the auth flow marked, redirect hops included: endpoint rules before the
+            # dial, and the tighter OAuth body bound before any reader (the SDK's or Hermes').
+            oauth = await guard_oauth_hop(request)
             response = await self._inner.handle_async_request(request)
+            if oauth:
+                cap_oauth_response(httpx_mod, response, str(request.url))
+                return response
             declared = response.headers.get("content-length")
             with contextlib.suppress(ValueError):  # malformed header: the streamed cap still applies
                 if declared is not None and int(declared) > limit:
@@ -496,7 +503,9 @@ def _get_auth_error_types() -> tuple:
             ([sdk_mod.HTTPStatusError] if sdk_mod is not None else []) + _optional_types("httpx", "HTTPStatusError")))
         auth_types = (*_optional_types("mcp.client.auth", "OAuthFlowError", "OAuthTokenError"),
                       *_optional_types("mcp.client.auth", "UnauthorizedError"),  # older SDKs
-                      *_optional_types("tools.mcp_oauth", "OAuthNonInteractiveError"), *http_types)
+                      *_optional_types("tools.mcp_oauth", "OAuthNonInteractiveError"),
+                      # An unsafe advertised endpoint is a config fact, not a transient: retrying re-runs the browser flow.
+                      *_optional_types("tools.mcp_oauth_endpoints", "OAuthEndpointRefused"), *http_types)
         _AUTH_ERROR_TYPES = (auth_types, http_types)
     return _AUTH_ERROR_TYPES
 

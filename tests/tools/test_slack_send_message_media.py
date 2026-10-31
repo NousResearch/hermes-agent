@@ -10,6 +10,7 @@ text+file, media-only, caption-on-upload, missing-file warnings.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import os
 import sys
@@ -131,6 +132,32 @@ def test_media_only_skips_text_post():
         client.files_upload_v2.assert_awaited_once()
     finally:
         os.unlink(pdf)
+
+
+def test_base64_png_text_is_uploaded_as_binary_image_content():
+    """A malformed .png path containing iVBOR... must not become text/plain in Slack."""
+    png = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    raw = b"\x89PNG\r\n\x1a\nhermes-test"
+    png.write(base64.b64encode(raw))
+    png.close()
+    client = _mock_client()
+    try:
+        with _fake_slack_sdk(client):
+            result = asyncio.run(
+                _standalone_send(
+                    _pconfig(),
+                    "C012AB3CD",
+                    "Live snapshot",
+                    media_files=[(png.name, False)],
+                )
+            )
+        assert result["success"] is True
+        upload_kwargs = client.files_upload_v2.await_args.kwargs
+        assert upload_kwargs["content"] == raw
+        assert "file" not in upload_kwargs
+        assert upload_kwargs["filename"] == os.path.basename(png.name)
+    finally:
+        os.unlink(png.name)
 
 
 def test_send_to_platform_routes_slack_media():

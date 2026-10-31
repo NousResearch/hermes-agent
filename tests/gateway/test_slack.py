@@ -9,6 +9,7 @@ We mock the slack modules at import time to avoid collection errors.
 """
 
 import asyncio
+import base64
 import contextlib
 import importlib
 from importlib.machinery import PathFinder
@@ -3428,6 +3429,22 @@ class TestFallbackPreservesThreadContext:
 
         call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert call_kwargs.get("thread_ts") == "parent_ts_123"
+
+    @pytest.mark.asyncio
+    async def test_base64_png_text_is_uploaded_as_binary_content(self, adapter, tmp_path):
+        """Slack must receive decoded PNG bytes even when a tool wrote base64 into .png."""
+        test_file = tmp_path / "snapshot.png"
+        raw = b"\x89PNG\r\n\x1a\nhermes-test"
+        test_file.write_bytes(base64.b64encode(raw))
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+
+        result = await adapter.send_image_file(chat_id="C123", image_path=str(test_file))
+
+        assert result.success is True
+        kwargs = adapter._app.client.files_upload_v2.await_args.kwargs
+        assert kwargs["content"] == raw
+        assert "file" not in kwargs
+        assert kwargs["filename"] == "snapshot.png"
 
 
 # ---------------------------------------------------------------------------

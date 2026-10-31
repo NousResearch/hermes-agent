@@ -2,6 +2,8 @@
 """Slack platform adapter: slack-bolt Socket Mode (messages, slash commands, threads)."""
 
 import asyncio
+import base64
+import binascii
 import contextvars
 import functools
 import inspect
@@ -71,6 +73,52 @@ from hermes_cli.version_info import hermes_user_agent
 
 _SLACK_ERROR_BODY_LIMIT_BYTES = 8 * 1024
 _BOOL_WORDS = frozenset({"1", "0", "true", "false", "yes", "no", "on", "off"})
+
+# A model can accidentally save the base64 payload returned by an image tool into a
+# ``.png`` path instead of decoding it. Slack then classifies the upload as
+# ``text/plain`` and renders the ``iVBOR...`` payload as a code block. Keep this
+# boundary defensive: decode only an image-suffixed file whose bytes are valid
+# base64 and whose decoded bytes have a recognised raster-image signature. Binary
+# images continue through the normal path unchanged.
+_IMAGE_UPLOAD_EXTENSIONS = frozenset(
+    {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+)
+_IMAGE_MAGIC_PREFIXES = (
+    b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a", b"BM",
+    b"II*\x00", b"MM\x00*",
+)
+
+
+def _decode_base64_image_upload(path: str) -> bytes | None:
+    """Return decoded image bytes when *path* contains an accidental base64 image.
+
+    ``None`` means the file is already binary (or is not a recognised image payload),
+    so callers can keep using Slack's path upload. The helper deliberately avoids
+    rewriting files on disk; uploads use the SDK's in-memory ``content`` field.
+    """
+    if os.path.splitext(path)[1].lower() not in _IMAGE_UPLOAD_EXTENSIONS:
+        return None
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return None
+    if any(raw.startswith(prefix) for prefix in _IMAGE_MAGIC_PREFIXES):
+        return None
+    compact = re.sub(rb"\s+", b"", raw)
+    if len(compact) < 16:
+        return None
+    try:
+        decoded = base64.b64decode(compact, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if any(decoded.startswith(prefix) for prefix in _IMAGE_MAGIC_PREFIXES):
+        logger.warning(
+            "[Slack] Decoded accidental base64 image payload before upload: %s",
+            os.path.basename(path),
+        )
+        return decoded
+    return None
 
 # Model picker Block Kit action IDs. The picker is a two-step drill-down:
 # provider static_select → model static_select, plus Back/Cancel buttons.
@@ -2948,8 +2996,10 @@ class SlackAdapter(BasePlatformAdapter):
             raise FileNotFoundError(f"File not found: {file_path}")
         chat_id = await self._dm_target(chat_id, metadata)
         thread_ts = self._resolve_thread_ts(reply_to, metadata)
+        decoded = _decode_base64_image_upload(file_path)
         return await self._upload_with_retry(
-            chat_id, file_path, os.path.basename(file_path), caption, thread_ts, metadata)
+            chat_id, None if decoded is not None else file_path, os.path.basename(file_path), caption,
+            thread_ts, metadata, content=decoded)
 
     async def _send_local_file(
         self, chat_id: str, file_path: str, caption: Optional[str], reply_to: Optional[str],
@@ -3038,8 +3088,11 @@ class SlackAdapter(BasePlatformAdapter):
                     if not os.path.exists(local_path):
                         logger.warning("[Slack] Skipping missing image: %s", local_path)
                         continue
+                    decoded = _decode_base64_image_upload(local_path)
                     file_uploads.append(
-                        {"file": local_path, "filename": os.path.basename(local_path)})
+                        ({"content": decoded, "filename": os.path.basename(local_path)}
+                         if decoded is not None else
+                         {"file": local_path, "filename": os.path.basename(local_path)}))
                     continue
                 if not is_safe_url_fn(image_url):
                     logger.warning("[Slack] Blocked unsafe image URL in batch")
@@ -6619,8 +6672,10 @@ async def _standalone_upload_file(
     thread_id: Optional[str] = None) -> dict[str, Any]:
     """Upload one local file via ``files_upload_v2`` (same API as the live adapter)."""
     kwargs: dict[str, Any] = {
-        "channel": chat_id, "file": media_path, "filename": os.path.basename(media_path),
+        "channel": chat_id, "filename": os.path.basename(media_path),
         "initial_comment": initial_comment or ""}
+    decoded = _decode_base64_image_upload(media_path)
+    kwargs["content" if decoded is not None else "file"] = decoded if decoded is not None else media_path
     if thread_id:
         kwargs["thread_ts"] = thread_id
     result = await client.files_upload_v2(**kwargs)

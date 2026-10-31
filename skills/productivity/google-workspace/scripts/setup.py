@@ -11,6 +11,10 @@ Commands:
   setup.py --auth-code CODE                 # Exchange auth code for token
   setup.py --revoke                         # Revoke and delete stored token
   setup.py --install-deps                   # Install Python dependencies only
+  setup.py --list-accounts                  # List named accounts with their own token
+
+Add --account EMAIL to --check, --check-live, --auth-url, --auth-code and
+--revoke to work with a named account's token instead of the profile default.
 
 Agent workflow:
   1. Run --check. If exit 0, auth is good — skip setup.
@@ -41,11 +45,14 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import display_hermes_home, get_hermes_home
+import _google_account
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
 CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
 PENDING_AUTH_PATH = HERMES_HOME / "google_oauth_pending.json"
+# Named account selected with --account; None means the profile default token.
+ACCOUNT: str | None = None
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -306,9 +313,11 @@ def get_auth_url():
         redirect_uri=REDIRECT_URI,
         autogenerate_code_verifier=True,
     )
+    extra = {"login_hint": ACCOUNT} if ACCOUNT else {}
     auth_url, state = flow.authorization_url(
         access_type="offline",
         prompt="consent",
+        **extra,
     )
     _save_pending_auth(state=state, code_verifier=flow.code_verifier)
     # Print just the URL so the agent can extract it cleanly
@@ -375,10 +384,68 @@ def exchange_auth_code(code: str):
         print(f"WARNING: Token missing some Google Workspace scopes: {', '.join(missing_scopes)}")
         print("Some services may not be available.")
 
+    if ACCOUNT:
+        _verify_account_identity(creds, token_payload.get("scopes") or granted_scopes)
+
     TOKEN_PATH.write_text(json.dumps(token_payload, indent=2), encoding="utf-8")
     PENDING_AUTH_PATH.unlink(missing_ok=True)
     print(f"OK: Authenticated. Token saved to {TOKEN_PATH}")
-    print(f"Profile-scoped token location: {display_hermes_home()}/google_token.json")
+    if ACCOUNT:
+        print(f"Account token location: {display_hermes_home()}/{_google_account.ACCOUNTS_DIR_NAME}/{ACCOUNT}.json")
+    else:
+        print(f"Profile-scoped token location: {display_hermes_home()}/google_token.json")
+
+
+_GMAIL_PROFILE_SCOPES = {
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.metadata",
+}
+_CALENDAR_SCOPES = {
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.readonly",
+}
+
+
+def _authorized_email(creds, scopes) -> str | None:
+    """Email of the Google account that granted ``creds``, read from an API the grant covers."""
+    from googleapiclient.discovery import build
+
+    granted = set(scopes)
+    if granted & _GMAIL_PROFILE_SCOPES:
+        service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+        return service.users().getProfile(userId="me").execute()["emailAddress"]
+    if granted & _CALENDAR_SCOPES:
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        return service.calendars().get(calendarId="primary").execute()["id"]
+    return None
+
+
+def _verify_account_identity(creds, scopes) -> None:
+    """Refuse to file a token under --account when Google says it belongs to someone else.
+
+    The consent screen lets the user pick any signed-in Google account, so the
+    login hint alone cannot stop a work token landing under a personal name.
+    """
+    from google.auth.exceptions import GoogleAuthError
+    from googleapiclient.errors import HttpError
+
+    try:
+        email = _authorized_email(creds, scopes)
+    except (HttpError, GoogleAuthError, OSError, KeyError) as e:
+        print(f"WARNING: Could not confirm which Google account authorized this token: {e}")
+        return
+    if email is None:
+        print("WARNING: The granted scopes cannot reveal the account; token saved unverified.")
+        return
+    if email.lower() != ACCOUNT:
+        PENDING_AUTH_PATH.unlink(missing_ok=True)
+        print(f"ERROR: You authorized {email}, but --account is {ACCOUNT}. Token not saved.")
+        print(f"Run --account {ACCOUNT} --auth-url again and choose {ACCOUNT} on Google's screen,")
+        print(f"or use --account {email.lower()} to add that account instead.")
+        sys.exit(1)
 
 
 def revoke():
@@ -414,6 +481,27 @@ def revoke():
     print(f"Deleted {TOKEN_PATH}")
 
 
+def _select_account(account: str) -> None:
+    """Point the token and pending-session paths at a named account."""
+    global ACCOUNT, TOKEN_PATH, PENDING_AUTH_PATH
+    ACCOUNT = account
+    _google_account.ensure_accounts_dir()
+    TOKEN_PATH = _google_account.token_path(account)
+    PENDING_AUTH_PATH = _google_account.pending_auth_path(account)
+
+
+def list_accounts():
+    """Print the profile default token, then each named account, one per line."""
+    default_token = HERMES_HOME / "google_token.json"
+    if default_token.exists():
+        print(f"(default) {default_token}")
+    accounts = _google_account.list_accounts()
+    for account in accounts:
+        print(account)
+    if not accounts:
+        print("No named accounts. Add one with --account EMAIL --auth-url.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Google Workspace OAuth setup for Hermes")
     group = parser.add_mutually_exclusive_group(required=True)
@@ -424,7 +512,12 @@ def main():
     group.add_argument("--auth-code", metavar="CODE", help="Exchange auth code for token")
     group.add_argument("--revoke", action="store_true", help="Revoke and delete stored token")
     group.add_argument("--install-deps", action="store_true", help="Install Python dependencies")
+    group.add_argument("--list-accounts", action="store_true", help="List named accounts that have a token")
+    _google_account.add_account_argument(parser)
     args = parser.parse_args()
+
+    if args.account:
+        _select_account(args.account)
 
     if args.check:
         sys.exit(0 if check_auth() else 1)
@@ -440,6 +533,8 @@ def main():
         revoke()
     elif args.install_deps:
         sys.exit(0 if install_deps() else 1)
+    elif args.list_accounts:
+        list_accounts()
 
 
 if __name__ == "__main__":

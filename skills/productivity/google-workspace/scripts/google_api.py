@@ -18,6 +18,7 @@ Usage:
   python google_api.py sheets update SHEET_ID RANGE --values '[[...]]'
   python google_api.py sheets append SHEET_ID RANGE --values '[[...]]'
   python google_api.py docs get DOC_ID
+  python google_api.py --account work@example.com gmail search "is:unread"
 """
 
 import argparse
@@ -37,10 +38,13 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import get_hermes_home
+import _google_account
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
 CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
+# Named account selected with --account; None means the profile default token.
+ACCOUNT: str | None = None
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -63,8 +67,9 @@ def _normalize_authorized_user_payload(payload: dict) -> dict:
 
 def _ensure_authenticated():
     if not TOKEN_PATH.exists():
+        account_arg = f" --account {ACCOUNT}" if ACCOUNT else ""
         print("Not authenticated. Run the setup script first:", file=sys.stderr)
-        print(f"  python {Path(__file__).parent / 'setup.py'}", file=sys.stderr)
+        print(f"  python {Path(__file__).parent / 'setup.py'}{account_arg}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -89,6 +94,10 @@ def _gws_binary() -> str | None:
 def _gws_env() -> dict[str, str]:
     env = os.environ.copy()
     env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(TOKEN_PATH)
+    if ACCOUNT and "GOOGLE_WORKSPACE_CLI_CONFIG_DIR" not in os.environ:
+        config_dir = _google_account.gws_config_dir(ACCOUNT)
+        config_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        env["GOOGLE_WORKSPACE_CLI_CONFIG_DIR"] = str(config_dir)
     return env
 
 
@@ -1145,8 +1154,16 @@ def _docs_insert_text(doc_id: str, text: str, index: int, tab_id: str | None = N
 # =========================================================================
 
 
+def _select_account(account: str) -> None:
+    """Read and refresh the named account's token instead of the profile default."""
+    global ACCOUNT, TOKEN_PATH
+    ACCOUNT = account
+    TOKEN_PATH = _google_account.token_path(account)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Google Workspace API for Hermes Agent")
+    _google_account.add_account_argument(parser)
     sub = parser.add_subparsers(dest="service", required=True)
 
     # --- Gmail ---
@@ -1314,6 +1331,8 @@ def main():
     p.set_defaults(func=docs_append)
 
     args = parser.parse_args()
+    if args.account:
+        _select_account(args.account)
     args.func(args)
 
 

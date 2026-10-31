@@ -713,7 +713,14 @@ class TeamsAdapter(BasePlatformAdapter):
         last_message_id = None
         for chunk in self.truncate_message(self.format_message(content)):
             try:
-                if reply_to and reply_to.isdigit() and reply_to != "0":
+                # Teams personal-chat conversation IDs start with ``a:``. The Bot Framework accepts
+                # flat sends to those conversations but rejects SDK ``reply()`` calls as 403 on the
+                # ``<conversation>;messageid=<activity>/activities`` endpoint. Skip that known-dead
+                # path so successful DM replies do not log a false delivery failure first.
+                use_threaded_reply = (
+                    reply_to and reply_to.isdigit() and reply_to != "0" and not str(chat_id).startswith("a:")
+                )
+                if use_threaded_reply:
                     try:
                         result = await self._app.reply(chat_id, reply_to, chunk)
                     except Exception as reply_err:

@@ -4388,8 +4388,8 @@ class BasePlatformAdapter(ABC):
         # The handler's routed profile scope is gone by now; Docker MEDIA translation and the
         # bare-path validator infer the sandbox from the ACTIVE profile (#109024).
         with self._media_delivery_scope(event.source):
-            media_files, response = self.extract_media(response)
-            media_files = self.filter_media_delivery_paths(media_files, session_key=session_key)
+            from gateway.media_delivery_feedback import extract_media_with_feedback
+            media_files, response = await extract_media_with_feedback(self.gateway_runner, self, response, event.source, session_key)
             images, text_content = self.extract_images(response)
             # Strip any remaining internal directives from message body (fixes #1561). _strip_media_directives
             # shares MEDIA_TAG_CLEANUP_RE, so a MEDIA: tag with an unknown extension is intentionally left in

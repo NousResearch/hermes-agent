@@ -62,6 +62,57 @@ class TestRegisterAndDispatch:
         assert json.loads(reg.dispatch("wide", {}, **injected)) == {"ok": True}
         assert seen["wide"] == injected
 
+    def test_dispatch_kwargs_only_handler_merges_args_into_kwargs(self):
+        """``def handle(**kwargs)`` is the canonical plugin handler shape. Python's ``**kwargs``
+        rejects positional arguments, so the dispatcher's ``handler(args, **kwargs)`` would raise
+        ``TypeError`` for every kwargs-only handler. The dispatcher must instead merge the request
+        body directly into the kwarg dict so named tool parameters flow through, while keeping the
+        injected context fields (task_id, session_id, user_task, ...) intact.
+
+        Regression for the rag_anything plugin (handler signatures ``(**kwargs)``) which broke under
+        the deferred ``tool_call`` MCP bridge; reproduced 2026-09-28.
+        """
+        reg = ToolRegistry()
+        seen = {}
+
+        def kwargs_only(**kwargs):
+            seen.update(kwargs)
+            return json.dumps({"ok": True})
+
+        reg.register(
+            name="rag_style", toolset="core", schema=_make_schema("rag_style"), handler=kwargs_only
+        )
+        result = reg.dispatch(
+            "rag_style",
+            {"query": "What is the Operating Flow?", "top_k": 5},
+            task_id="t1",
+            session_id="s1",
+            user_task="do it",
+        )
+        assert json.loads(result) == {"ok": True}
+        # Body fields merged in.
+        assert seen["query"] == "What is the Operating Flow?"
+        assert seen["top_k"] == 5
+        # Context fields still flow through.
+        assert seen["task_id"] == "t1"
+        assert seen["session_id"] == "s1"
+        assert seen["user_task"] == "do it"
+        # Body keys must not collide into the ``args`` pseudo-key.
+        assert "args" not in seen
+
+    def test_dispatch_kwargs_only_handler_works_with_no_body(self):
+        """A ``**kwargs`` handler called with an empty body still works — no body keys to merge."""
+        reg = ToolRegistry()
+        seen = {}
+
+        def kwargs_only(**kwargs):
+            seen.update(kwargs)
+            return json.dumps({"ok": True})
+
+        reg.register(name="empty", toolset="core", schema=_make_schema("empty"), handler=kwargs_only)
+        assert json.loads(reg.dispatch("empty", {}, task_id="t1")) == {"ok": True}
+        assert seen == {"task_id": "t1"}
+
     def test_register_rejects_non_dict_parameters(self):
         """A list/str ``parameters`` fails at registration, not in a provider request (pi acaa253cc)."""
         reg = ToolRegistry()

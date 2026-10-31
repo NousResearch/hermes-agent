@@ -11,6 +11,7 @@ import { $apiRequestScope, connectionScoped, profileScoped } from '@/api/client'
 import type {
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
+  DesktopUpdateBusyReason,
   DesktopUpdateProgress,
   DesktopUpdateStage,
   DesktopUpdateStatus,
@@ -40,6 +41,10 @@ export interface UpdateApplyState {
   /** When the stage is 'manual': the exact command the user should run
    *  (CLI install with no staged updater). */
   command: string | null
+  /** Stages 'busy' / 'waiting': the agent work the update would interrupt. */
+  waitingFor?: readonly DesktopUpdateBusyReason[]
+  /** Stage 'waiting': when "update when idle" gives up (epoch ms). */
+  deadlineAt?: number | null
 
   log: readonly { stage: DesktopUpdateStage; message: string; at: number }[]
 }
@@ -51,6 +56,8 @@ const IDLE: UpdateApplyState = {
   percent: null,
   error: null,
   command: null,
+  waitingFor: [],
+  deadlineAt: null,
   log: []
 }
 
@@ -721,6 +728,43 @@ export async function setUpdateChannel(channel: SourceUpdateChannel): Promise<De
   }
 }
 
+const WORK_GATE_OUTCOMES: Record<string, (result: DesktopUpdateApplyResult) => void> = {
+  'active-work': result =>
+    $updateApply.set({ ...IDLE, stage: 'busy', message: result.message ?? '', waitingFor: result.waitingFor ?? [] }),
+  // The Cancel action already reset the overlay; a late answer must not clobber newer intent.
+  cancelled: () => undefined,
+  'idle-timeout': result =>
+    $updateApply.set({
+      ...IDLE,
+      stage: 'error',
+      error: 'idle-timeout',
+      message: translateNow('updates.whenIdle.timedOut'),
+      waitingFor: result.waitingFor ?? []
+    })
+}
+
+function applyStartState(opts: DesktopUpdateApplyOptions): UpdateApplyState {
+  return opts.mode === 'when-idle'
+    ? { ...IDLE, stage: 'waiting', waitingFor: $updateApply.get().waitingFor }
+    : { ...IDLE, applying: true, stage: 'prepare', message: 'Starting update…' }
+}
+
+// Agent work is running (or "when idle" ran out its bound / was cancelled):
+// nothing was touched. True when the overlay now shows that outcome.
+function handledByWorkGate(result: DesktopUpdateApplyResult | undefined): boolean {
+  const outcome =
+    result?.error && Object.hasOwn(WORK_GATE_OUTCOMES, result.error) ? WORK_GATE_OUTCOMES[result.error] : undefined
+  outcome?.(result!)
+
+  return Boolean(outcome)
+}
+
+/** Stop a pending "update when idle" and return the overlay to its idle view. */
+export async function cancelUpdateWhenIdle(): Promise<void> {
+  $updateApply.set(IDLE)
+  await window.hermesDesktop?.updates?.cancelWhenIdle?.()
+}
+
 export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promise<DesktopUpdateApplyResult> {
   if ($updateStatus.get()?.retirement) {
     openUpdateOverlayFor('client')
@@ -735,10 +779,14 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
   }
 
   dismissNotification(UPDATE_TOAST_ID)
-  $updateApply.set({ ...IDLE, applying: true, stage: 'prepare', message: 'Starting update…' })
+  $updateApply.set(applyStartState(opts))
 
   try {
     const result = await bridge.apply(opts)
+
+    if (handledByWorkGate(result)) {
+      return result
+    }
 
     // CLI install with no staged updater: not an error — the user just runs
     // `hermes update` themselves. Land on a dedicated manual state so the
@@ -1294,7 +1342,38 @@ async function runEverythingUpdate(): Promise<void> {
   }
 }
 
+// How an "update when idle" wait ended, broadcast to every window (not only the one that started it).
+function ingestWaitEnding(payload: DesktopUpdateProgress): boolean {
+  const { applying, stage } = $updateApply.get()
+
+  // The window that pressed Cancel already reset itself, so its own `idle` broadcast lands on a
+  // window that is no longer waiting; it must never start a spinner there.
+  if (payload.stage === 'idle' && !applying) {
+    if (stage === 'waiting') {
+      $updateApply.set(IDLE)
+    }
+
+    return true
+  }
+
+  if (stage !== 'waiting') {
+    return false
+  }
+
+  if (payload.stage === 'error' && payload.error === 'idle-timeout') {
+    WORK_GATE_OUTCOMES['idle-timeout']({ ok: false, error: 'idle-timeout', waitingFor: payload.waitingFor })
+
+    return true
+  }
+
+  return false
+}
+
 function ingestProgress(payload: DesktopUpdateProgress): void {
+  if (ingestWaitEnding(payload)) {
+    return
+  }
+
   const current = $updateApply.get()
   const log = [...current.log, { stage: payload.stage, message: payload.message, at: payload.at }].slice(-50)
 
@@ -1302,7 +1381,8 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
     payload.stage === 'error' ||
     payload.stage === 'restart' ||
     payload.stage === 'manual' ||
-    payload.stage === 'guiSkew'
+    payload.stage === 'guiSkew' ||
+    payload.stage === 'waiting'
 
   $updateApply.set({
     applying: !terminal,
@@ -1314,6 +1394,8 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
     error: payload.error,
     // 'manual' carries the command to run in its message field.
     command: payload.stage === 'manual' ? payload.message : current.command,
+    waitingFor: payload.stage === 'waiting' ? (payload.waitingFor ?? []) : current.waitingFor,
+    deadlineAt: payload.stage === 'waiting' ? (payload.deadlineAt ?? null) : current.deadlineAt,
     log
   })
 }

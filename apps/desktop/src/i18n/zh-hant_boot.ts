@@ -1,6 +1,7 @@
 import type { TranslationOverrides } from './define-locale'
 import { zhHantDesktopCommands } from './zh-hant_desktop_commands'
 import { zhHantSessionCommands } from './zh-hant_session_commands'
+import { zhHantUpdateWhenIdle } from './zh-hant_update_when_idle'
 
 export const zhHantBoot = {
   boot: {
@@ -90,6 +91,7 @@ export const zhHantBoot = {
   },
 
   updates: {
+    whenIdle: zhHantUpdateWhenIdle,
     discontinuedTitle: '此版本的 Hermes 已停止支援',
     discontinuedBody: '此版本的 Hermes 已停止支援，可能無法正常運作——請解除安裝。您的資料仍保留在磁碟上。',
     channels: { stable: '穩定版', canary: '預覽版' },

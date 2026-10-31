@@ -25,6 +25,7 @@ import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { frThemePicker } from './fr_theme_picker'
 import { frUpdateChannel } from './fr_update_channel'
+import { frUpdateWhenIdle } from './fr_update_when_idle'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
@@ -4117,6 +4118,7 @@ export const frOverrides = {
     }
   },
   updates: {
+    whenIdle: frUpdateWhenIdle,
     discontinuedTitle: "Cette version de Hermes n'est plus prise en charge",
     discontinuedBody:
       "Cette version de Hermes n'est plus prise en charge et risque de ne plus fonctionner — désinstallez-la. Vos données restent sur le disque.",

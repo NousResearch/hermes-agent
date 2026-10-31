@@ -545,3 +545,136 @@ def test_default_fetch_follows_https_redirect(feed_redirect_server):
     base, visited = feed_redirect_server
     assert default_fetch(base + "/secure") == "version: 1.2.0\n"
     assert visited == ["/secure", "/feed"]
+
+
+# ── artifact-pinned: the update answer comes from the catalog ──
+# (UPD-5, est-qrazy: archive installs are class=proven, outdatedness is
+# the live catalog pin, and the remedy is never a git-clone downgrade.)
+
+
+def _artifact_prov(**kw):
+    row = kw.pop("row", {"revision": "9a6f8ac", "source": "https://github.com/jacobhausler/hermes-workflows"})
+    marker = kw.pop("marker", {"version": "1.4.3", "source_commit": "9a6f8ac",
+                              "source_repo": "https://github.com/jacobhausler/hermes-workflows"})
+    return Provenance(name="plug", klass=ProvenanceClass.ARTIFACT, path=Path("/x/plug"),
+                      row=row, install_json=marker, **kw)
+
+
+def _entry(**kw):
+    from hermes_cli.plugin_catalog import PluginCatalogEntry
+
+    kw.setdefault("name", "hermes-workflows")
+    kw.setdefault("repo", "https://github.com/jacobhausler/hermes-workflows")
+    kw.setdefault("sha", "f" * 40)
+    kw.setdefault("description", "")
+    kw.setdefault("maintainer", "nous")
+    kw.setdefault("version", "1.4.4")
+    return PluginCatalogEntry(**kw)
+
+
+def _stub_catalog(monkeypatch, entry, removed=None):
+    import hermes_cli.plugin_catalog as pc
+
+    monkeypatch.setattr(pc, "get_live_catalog_entry", lambda name: entry)
+    monkeypatch.setattr(pc, "find_removed", lambda cand, **kw: removed)
+    monkeypatch.setattr(pc, "load_catalog_live", lambda: [entry] if entry else [])
+
+
+def test_artifact_version_marker_behind_catalog_pin(monkeypatch):
+    """The epic's own case: sidecar 9a6f8ac, marker 1.4.3, catalog 1.4.4 →
+    update available, computed like-for-like on versions, remedy is the
+    archive — the text must not send the user to git clone."""
+    from hermes_cli.plugins_updates import check_provenanced
+
+    _stub_catalog(monkeypatch, _entry())
+    result = check_provenanced(_artifact_prov(), fetch=lambda u: "{}", ls_remote=lambda s: "")
+    assert result.klass == "artifact-pinned"
+    assert result.current == "1.4.3"
+    assert result.latest == "1.4.4"
+    assert result.update_available is True
+    assert "git clone" not in result.reason.lower()
+    assert "install the updated archive" in result.reason
+
+
+def test_artifact_full_sha_marker_matches_catalog_pin(monkeypatch):
+    from hermes_cli.plugins_updates import check_provenanced
+
+    _stub_catalog(monkeypatch, _entry(sha="a" * 40))
+    prov = _artifact_prov(marker={"version": "1.4.4", "source_commit": "a" * 40,
+                                  "source_repo": "https://github.com/jacobhausler/hermes-workflows"})
+    result = check_provenanced(prov, fetch=lambda u: "{}", ls_remote=lambda s: "")
+    assert result.update_available is False
+
+
+def test_artifact_full_sha_marker_moved_pin_reports_update_on_shas(monkeypatch):
+    from hermes_cli.plugins_updates import check_provenanced
+
+    _stub_catalog(monkeypatch, _entry(sha="f" * 40, version=""))
+    prov = _artifact_prov(marker={"version": "1.4.3", "source_commit": "a" * 40})
+    result = check_provenanced(prov, fetch=lambda u: "{}", ls_remote=lambda s: "")
+    assert result.update_available is True
+    assert result.current == "a" * 40 and result.latest == "f" * 40  # shas — no human label to move to
+
+
+def test_artifact_uncomparable_marker_is_unknown_not_an_update(monkeypatch):
+    """A short-sha marker with no version to fall back on: like-for-like
+    discipline — unknown, not evidence of an update."""
+    from hermes_cli.plugins_updates import check_provenanced
+
+    _stub_catalog(monkeypatch, _entry(version=""))
+    prov = _artifact_prov(marker={"source_commit": "9a6f8ac"})
+    result = check_provenanced(prov, fetch=lambda u: "{}", ls_remote=lambda s: "")
+    assert result.update_available is None
+    assert "cannot be compared" in result.reason
+
+
+def test_artifact_missing_catalog_entry_retains_the_pin(monkeypatch):
+    from hermes_cli.plugins_updates import check_provenanced
+
+    _stub_catalog(monkeypatch, None)
+    result = check_provenanced(_artifact_prov(), fetch=lambda u: "{}", ls_remote=lambda s: "")
+    assert result.update_available is None
+    assert "catalog entry unavailable" in result.reason
+
+
+def test_artifact_removed_entry_blocks(monkeypatch):
+    from hermes_cli.plugin_catalog import RemovedEntry
+    from hermes_cli.plugins_updates import check_provenanced
+
+    _stub_catalog(monkeypatch, _entry(), removed=RemovedEntry(name="plug", reason="sunset"))
+    result = check_provenanced(_artifact_prov(), fetch=lambda u: "{}", ls_remote=lambda s: "")
+    assert result.update_available is None
+    assert "removed from catalog" in result.reason
+
+
+def test_artifact_catalog_name_from_the_row_wins(monkeypatch):
+    """A row that records its catalog key needs no reverse lookup."""
+    from hermes_cli.plugins_updates import check_provenanced
+
+    seen = []
+    import hermes_cli.plugin_catalog as pc
+
+    def fake_entry(name):
+        seen.append(name)
+        return _entry(name="wf", sha="a" * 40)
+
+    monkeypatch.setattr(pc, "get_live_catalog_entry", fake_entry)
+    monkeypatch.setattr(pc, "find_removed", lambda cand, **kw: None)
+    prov = _artifact_prov(row={"catalog": {"name": "wf"}, "source": "https://example/o/r"},
+                          marker={"version": "1.0.0", "source_commit": "a" * 40})
+    result = check_provenanced(prov, fetch=lambda u: "{}", ls_remote=lambda s: "")
+    assert seen == ["wf"]
+    assert result.update_available is False
+
+
+def test_local_provenance_artifact_is_proven_not_drift():
+    """check_local_provenance (the offline surface the doctor rides) reads
+    the artifact cell as proven with its recorded identity — no drift
+    warning, no reinstall remedy."""
+    from hermes_cli.plugins_updates import check_local_provenance
+
+    result = check_local_provenance(_artifact_prov())
+    assert result.klass == "artifact-pinned"
+    assert result.current == "9a6f8ac"  # marker commit over the (possible stale) row revision
+    assert result.needs_fixing is None
+    assert "reinstall" not in result.reason and "drift" not in result.reason

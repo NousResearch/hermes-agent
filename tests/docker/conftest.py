@@ -45,8 +45,7 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "tests/docker/" not in str(item.fspath).replace(os.sep, "/"):
             continue
-        # Modules that set DOCKER_DAEMON_REQUIRED = False drive the helpers with stand-ins.
-        if not docker_ok and getattr(getattr(item, "module", None), "DOCKER_DAEMON_REQUIRED", True):
+        if not docker_ok:
             item.add_marker(skip_docker)
 
 

@@ -1,7 +1,9 @@
 """A stalled ``docker exec`` is one failed poll attempt, never the poll's verdict.
 
 Driven without Docker: ``docker_exec_sh`` is replaced by a scripted stand-in and the poll's clock
-is fake, so the timeout branches run on every host (DOCKER_DAEMON_REQUIRED opts out of the skip).
+is fake, so the timeout branches run on every host. The module lives outside ``tests/docker/`` on
+purpose: default discovery skips that directory (it needs a daemon and an image), and these
+stand-in tests need neither.
 """
 
 from __future__ import annotations
@@ -13,8 +15,6 @@ import pytest
 
 from tests.docker import conftest as docker_conftest
 from tests.docker import test_dashboard
-
-DOCKER_DAEMON_REQUIRED = False
 
 
 class _Clock:

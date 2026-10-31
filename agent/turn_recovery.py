@@ -21,6 +21,7 @@ from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STA
 from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
+from agent.api_error_summary import request_id_suffix
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
@@ -1044,7 +1045,7 @@ def nonretryable_client_error_result(
     _nonretryable_summary = agent._summarize_api_error(api_error)
     _plabel = provider_label_for(provider)
     _label = _NONRETRYABLE_LABELS.get(classified.reason, f"{_plabel} rejected the request and retrying won't help")
-    agent._emit_diagnostic_status(f"❌ {_label}: {_nonretryable_summary}")
+    agent._emit_diagnostic_status(f"❌ {_label}: {_nonretryable_summary}{request_id_suffix(api_error)}")
     # The endpoint/status trace is developer detail: verbose only (the log has it always).
     if getattr(agent, "verbose_logging", False):
         _vlines(
@@ -1180,6 +1181,7 @@ def max_retries_exhausted_result(
 
     agent._flush_status_buffer()
     _final_summary = agent._summarize_api_error(api_error)
+    _request_id = request_id_suffix(api_error)
     _billing_guidance = ""
     _is_billing = classified.reason == FailoverReason.billing
     if _is_billing:
@@ -1187,10 +1189,10 @@ def max_retries_exhausted_result(
             # Ambiguous body — hedge the terminal line.
             agent._emit_diagnostic_status(
                 "❌ Provider reported usage/credit exhaustion "
-                f"(unverified — may be a content-filter rejection) — {_final_summary}"
+                f"(unverified — may be a content-filter rejection) — {_final_summary}{_request_id}"
             )
         else:
-            agent._emit_diagnostic_status(f"❌ Billing or credits exhausted — {_final_summary}")
+            agent._emit_diagnostic_status(f"❌ Billing or credits exhausted — {_final_summary}{_request_id}")
         _billing_kw = dict(
             capability="model access", provider=provider, base_url=str(base_url), model=model,
             unverified=classified.billing_unverified,
@@ -1202,11 +1204,11 @@ def max_retries_exhausted_result(
     elif is_rate_limited:
         _reset = reset_hint(api_error)
         agent._emit_diagnostic_status(
-            f"❌ Rate limited after {attempts} {'attempt' if attempts == 1 else 'retries'} — {_final_summary}"
+            f"❌ Rate limited after {attempts} {'attempt' if attempts == 1 else 'retries'} — {_final_summary}{_request_id}"
             f"{f' (resets in {_reset})' if _reset else ''}"
         )
     else:
-        agent._emit_diagnostic_status(f"❌ API failed after {attempts} retries — {_final_summary}")
+        agent._emit_diagnostic_status(f"❌ API failed after {attempts} retries — {_final_summary}{_request_id}")
     _vlines(agent, f"   💀 Final error: {_final_summary}")
     _welcome_hint = _welcome_tier_guidance(classified, model=model, in_chat=False)
     if _welcome_hint:
@@ -1234,8 +1236,8 @@ def max_retries_exhausted_result(
         _vlines(agent, f"   💡 {build_thinking_timeout_guidance(provider=provider, model=model).strip()}")
 
     logger.error(
-        "%sAPI call failed after %s retries. %s | provider=%s model=%s msgs=%s tokens=~%s",
-        agent.log_prefix, attempts, _final_summary,
+        "%sAPI call failed after %s retries. %s%s | provider=%s model=%s msgs=%s tokens=~%s",
+        agent.log_prefix, attempts, _final_summary, _request_id,
         provider, model, len(api_messages), f"{approx_tokens:,}",
     )
     if api_kwargs is not None:
@@ -1322,8 +1324,8 @@ def log_api_error_attempt(
     _error_summary = agent._summarize_api_error(api_error)
     _attempt = f"attempt {retry_count}/{max_retries}" + ("" if retryable else ", not retryable")
     logger.warning(
-        "API call failed (%s) error_type=%s %s summary=%s",
-        _attempt, error_type, agent._client_log_context(), _error_summary,
+        "API call failed (%s) error_type=%s %s summary=%s%s",
+        _attempt, error_type, agent._client_log_context(), _error_summary, request_id_suffix(api_error),
     )
 
     _provider = getattr(agent, "provider", "unknown")

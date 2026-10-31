@@ -79,6 +79,7 @@ from gateway.platforms.base import (
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
+from plugins.platforms.matrix.catch_up import MatrixCatchUpMixin, resolve_catch_up_window
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -791,7 +792,7 @@ def ensure_matrix_deps() -> bool:
     return True
 
 
-class MatrixAdapter(BasePlatformAdapter):
+class MatrixAdapter(MatrixCatchUpMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
     serial_receive_loop = True  # _sync_loop reads the next sync only after this sync's handlers return
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -840,6 +841,8 @@ class MatrixAdapter(BasePlatformAdapter):
         self._sync_task: Optional[asyncio.Task] = None
         self._invite_join_tasks: dict[str, asyncio.Task] = {}
         self._closing = False
+        self._catch_up_window = resolve_catch_up_window(config.extra)
+        self._catch_up_ids: set[str] = set()
         self._startup_ts: float = 0.0
         self._reset_clock_skew_detector()
         self._last_sync_ts: float = 0.0
@@ -1297,9 +1300,11 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _connect_initial_sync(self, client: Any) -> None:
         """Full initial sync: seed joined rooms, DM cache, and dispatch queued to-device events."""
         try:
-            sync_data = await client.sync(timeout=10000, full_state=True)
+            sync_data = (await self._catch_up_initial_sync(client) if self._catch_up_window
+                         else await client.sync(timeout=10000, full_state=True))
             if isinstance(sync_data, dict):
-                self._joined_rooms.clear()
+                if not self._catch_up_window:
+                    self._joined_rooms.clear()
                 await self._absorb_sync(client, sync_data, initial=True)
             else:
                 logger.warning("Matrix: initial sync returned unexpected type %s", type(sync_data).__name__)
@@ -1308,6 +1313,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._device_id_unverified = False
+        self._catch_up_ids.clear()
         if self._client is not None:
             try:
                 await self.disconnect()
@@ -1331,6 +1337,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._client = client
         if not await self._connect_authenticate(client, api):
             return False
+        self._prepare_catch_up_store(client)
         if self._encryption and not await self._connect_setup_e2ee(client, api, state_store):
             return False
         from mautrix.client import InternalEventType as IntEvt
@@ -1982,40 +1989,6 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.debug("Matrix: could not resolve room identity for allowlist check in %s: %s", room_id, exc)
             return False
 
-    def _reset_clock_skew_detector(self) -> None:
-        """State for _note_late_grace_drop: consecutive-drop count, their skew, and the once-only warning."""
-        # Clock-skew detection: count grace-check drops that happen well after startup (i.e. not
-        # initial-sync backfill). If the host's system clock is set ahead of real time, the startup grace
-        # check `event_ts < startup_ts - 5` silently drops every live message. See #12614 — the symptom is
-        # "bot joins rooms but never replies". Drops only count when their skew matches the first sampled
-        # drop (within 60s), so varied-age backfill from freshly-invited rooms doesn't trip the heuristic.
-        self._late_grace_drops: int = 0
-        self._late_grace_skew: float = 0.0
-        self._clock_skew_warned: bool = False
-
-    def _note_late_grace_drop(self, event_ts: float) -> None:
-        """Clock-skew heuristic for grace-check drops well after startup. A host clock set ahead of
-        real time makes every live event look "older than startup" and the bot silently never
-        replies. Warn once when drops keep happening >30s after startup with a *consistent* skew —
-        unlike backfill from a freshly invited room, whose event ages vary widely and reset the counter."""
-        if self._clock_skew_warned or time.time() - self._startup_ts <= 30:
-            return
-        skew = self._startup_ts - event_ts
-        if not (5 < skew < 86400):  # ignore malformed/absurd timestamps
-            return
-        if self._late_grace_drops and abs(skew - self._late_grace_skew) < 60:
-            self._late_grace_drops += 1
-        else:
-            self._late_grace_skew = skew
-            self._late_grace_drops = 1
-        if self._late_grace_drops >= 3:
-            logger.warning(
-                "Matrix: dropped %d consecutive live events as 'too old' more than 30s after startup "
-                "(skew ≈ %.0fs). The host system clock is likely set ahead of real time, which causes "
-                "the startup grace filter to silently discard every incoming message. Run "
-                "`timedatectl set-ntp true` (or sync NTP) and restart the bot.", self._late_grace_drops, skew)
-            self._clock_skew_warned = True
-
     async def _on_room_message(self, event: Any) -> None:
         room_id = str(getattr(event, "room_id", ""))
         sender = str(getattr(event, "sender", ""))
@@ -2043,7 +2016,9 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         # Startup grace: ignore old messages replayed by the initial sync.
         event_ts = _matrix_event_timestamp_seconds(event)
-        if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
+        catch_up = event_id in self._catch_up_ids
+        self._catch_up_ids.discard(event_id)
+        if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS and not catch_up:
             self._note_late_grace_drop(event_ts)
             return
         content = getattr(event, "content", None)

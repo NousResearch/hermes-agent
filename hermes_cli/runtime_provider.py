@@ -271,16 +271,32 @@ def _per_model_profile(provider: str) -> Any:
     return profile
 
 
+def persisted_api_mode_applies(model_cfg: dict[str, Any], model: Optional[str]) -> bool:
+    """Whether a persisted ``model.api_mode`` applies to *model* on a provider that routes the wire per
+    model (``ProviderProfile.api_mode_for_model``): only for the saved ``model.default`` (or when no model
+    is named), because the value was saved for that model's wire (#96066). Any other model of the
+    provider gets the profile's own per-model answer. Ids are compared exactly after ``strip()``, and with
+    no saved ``model.default`` the saved mode applies to no named model: the profile decides every one
+    (failing toward the profile's answer is the safe side). Provider plugins may feature-detect this helper."""
+    name = str(model or "").strip()
+    return not name or name == str(model_cfg.get("default") or "").strip()
+
+
 def _profile_runtime_api_mode(provider: str, model_cfg: dict[str, Any], api_key: str, *,
                               target_model: Optional[str] = None) -> str:
-    """api_mode for a provider that routes per model: its hard per-model wire wins over a stale persisted
-    ``codex_responses`` (pure check, no network); otherwise the profile decides with the live key."""
+    """api_mode for a provider that routes per model. A persisted ``model.api_mode`` describes the saved
+    ``model.default`` only (``persisted_api_mode_applies``): it is honored for that model (except that the
+    profile's hard per-model wire wins over a stale ``codex_responses``, pure check, no network), and any
+    other target model gets the profile's own per-model answer with the live key, so a wire saved for a
+    Claude default never pins a GPT target (or the reverse)."""
     from agent.provider_route_hooks import model_api_mode
     profile = _per_model_profile(provider)
     configured_mode = _configured_api_mode(provider, model_cfg)
     # Use the model being resolved, not the persisted default: a Claude MoA slot inheriting
     # codex_responses from a GPT-5 default fails with "model ... does not support Responses API".
     model_name = str(_effective_model(model_cfg, target_model)).strip()
+    if configured_mode and profile is not None and not persisted_api_mode_applies(model_cfg, model_name):
+        configured_mode = None  # saved for another model: the profile decides this one
     if configured_mode:
         # A stale explicit ``codex_responses`` (written by setup for the model first picked, kept after a
         # switch to a chat-only model) must not override the provider's per-model requirement: the

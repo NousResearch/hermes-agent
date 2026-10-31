@@ -52,12 +52,12 @@ test('Store manifest and envelope agree while executable app semver and sideload
 
 })
 
-test.each(['v0.27.1', 'v0.27.1+canary.20260907T001800Z'])(
+test.each(['v0.27.1', 'canary.20260907T001800Z-v0.27.1'])(
   'ordinary release manifest %s carries the admitted native quad',
   tag => {
     const { app } = fixture()
     const identity = appIdentity(app, tag)
-    if (tag.includes('+canary.')) {
+    if (tag.startsWith('canary.')) {
       fs.mkdirSync(path.join(app, 'build'), { recursive: true })
       fs.copyFileSync(path.join(app, 'assets/msix-manifest.xml'), path.join(app, 'build/msix-manifest.xml'))
     }
@@ -83,7 +83,7 @@ test('Store calendar ordering survives minute, hour, day and year boundaries and
   expect(() => storeManifestTemplate('${version}', '0.27.1.32863')).toThrow()
   expect(() => storeManifestTemplate('${version}', '0.27.1.0')).toThrow()
   expect(() => storePackageVersionAt(NaN)).toThrow()
-  expect(() => storePackageVersion('v0.27.1+canary.20260231T000000Z', '.')).toThrow('Invalid canary')
+  expect(() => storePackageVersion('canary.20260231T000000Z-v0.27.1', '.')).toThrow('Invalid canary')
 })
 
 test('stable candidate identity uses the admitted claim epoch before the final tag exists', () => {

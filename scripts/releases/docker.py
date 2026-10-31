@@ -29,9 +29,25 @@ def require_stable_tag(tag: str) -> str:
     return tag
 
 
+def is_canary_image_tag(tag: object) -> bool:
+    """A canary's versioned image tag: its git tag, ``canary.<stamp>-vX.Y.Z``, unchanged
+    (scripts/releases/stable.py docker_tag)."""
+    from hermes_cli.update_channel import is_canary_tag
+
+    return is_canary_tag(tag)
+
+
+def require_release_image_tag(tag: str) -> str:
+    """A versioned image tag the release pipeline may build and push: a stable attempt or a canary.
+    Only stable tags move the stable/latest aliases (promote_stable)."""
+    if is_canary_image_tag(tag):
+        return tag
+    return require_stable_tag(tag)
+
+
 def build_manifest(tag: str, commit: str, digests: dict[str, str], archive_sha256: dict[str, str] | None = None) -> dict:
     """Digest manifest emitted by the test phase (artifact ``docker-test-manifest``)."""
-    require_stable_tag(tag)
+    require_release_image_tag(tag)
     if not isinstance(commit, str) or not GIT_SHA.fullmatch(commit):
         raise DockerReleaseError(f"Invalid release commit: {commit!r}")
     if sorted(digests) != sorted(ARCHES):
@@ -59,7 +75,7 @@ def parse_manifest(raw: bytes) -> dict:
         raise DockerReleaseError(f"Manifest is not valid JSON: {exc}") from exc
     if not isinstance(manifest, dict) or manifest.get("schema") != MANIFEST_SCHEMA:
         raise DockerReleaseError("Manifest schema mismatch")
-    require_stable_tag(manifest.get("tag", ""))
+    require_release_image_tag(manifest.get("tag", ""))
     if not isinstance(manifest.get("commit"), str) or not GIT_SHA.fullmatch(manifest["commit"]):
         raise DockerReleaseError("Manifest commit is not a full git SHA")
     digests = manifest.get("digests")
@@ -115,6 +131,30 @@ def _version_digest(tag: str, suffix: str, run) -> str:
     return digest
 
 
+def _publish_aliases(digest: str, aliases: tuple[str, ...], *, run, sleep) -> None:
+    """Publish one already-validated image digest and verify every destination alias."""
+    command = ["docker", "buildx", "imagetools", "create"]
+    for alias in aliases:
+        command.extend(["-t", f"{IMAGE}:{alias}"])
+    command.append(f"{IMAGE}@{digest}")
+    for attempt in range(3):
+        try:
+            run(command)
+            break
+        except subprocess.CalledProcessError:
+            if attempt == 2:
+                raise
+            sleep(20)
+    for alias in aliases:
+        for attempt in range(3):
+            if _inspect(f"{IMAGE}:{alias}", run) == digest:
+                break
+            if attempt < 2:
+                sleep(20)
+        else:
+            raise DockerReleaseError(f"Docker {alias} alias read-back mismatch")
+
+
 def promote_stable(tag: str, digest: str, release_tag: str, *, run=output, sleep=time.sleep) -> None:
     """Point the final ``vX.Y.Z``, stable and latest tags at the attempt's registry images.
 
@@ -131,27 +171,20 @@ def promote_stable(tag: str, digest: str, release_tag: str, *, run=output, sleep
     # Inspect both before moving either alias; desktop has its own registry digest.
     variants = (("", digest), ("-desktop", _version_digest(tag, "-desktop", run)))
     for suffix, version_digest in variants:
-        command = [
-            "docker", "buildx", "imagetools", "create", "-t", f"{IMAGE}:{release_tag}{suffix}",
-            "-t", f"{IMAGE}:stable{suffix}", "-t", f"{IMAGE}:latest{suffix}",
-            f"{IMAGE}@{version_digest}",
-        ]
-        for attempt in range(3):
-            try:
-                run(command)
-                break
-            except subprocess.CalledProcessError:
-                if attempt == 2:
-                    raise
-                sleep(20)
-        for alias in (release_tag, "stable", "latest"):
-            for attempt in range(3):
-                if _inspect(f"{IMAGE}:{alias}{suffix}", run) == version_digest:
-                    break
-                if attempt < 2:
-                    sleep(20)
-            else:
-                raise DockerReleaseError(f"Docker {alias}{suffix} alias read-back mismatch")
+        aliases = tuple(f"{alias}{suffix}" for alias in (release_tag, "stable", "latest"))
+        _publish_aliases(version_digest, aliases, run=run, sleep=sleep)
+
+
+def promote_canary(tag: str, *, run=output, sleep=time.sleep) -> None:
+    """Point the moving ``canary`` and ``canary-desktop`` aliases at a canary's pushed images.
+
+    The canary's own versioned tag stays immutable; stable and latest are never touched here."""
+    if not is_canary_image_tag(tag):
+        raise DockerReleaseError(f"Not a canary image tag: {tag!r}")
+    # Inspect both before moving either alias; desktop has its own registry digest.
+    variants = [(suffix, _version_digest(tag, suffix, run)) for suffix in ("", "-desktop")]
+    for suffix, version_digest in variants:
+        _publish_aliases(version_digest, (f"canary{suffix}",), run=run, sleep=sleep)
 
 
 def stable_alias_digest(run=output) -> str | None:
@@ -194,9 +227,14 @@ def main(argv: list[str] | None = None) -> int:
     p_verify.add_argument("--commit", required=True)
     p_verify.add_argument("manifest", help="Path to the downloaded manifest JSON")
 
+    p_canary = sub.add_parser("promote-canary", help="Move the canary aliases to a canary's pushed images")
+    p_canary.add_argument("--tag", required=True)
+
     args = parser.parse_args(argv)
     try:
-        if args.command == "manifest":
+        if args.command == "promote-canary":
+            promote_canary(args.tag)
+        elif args.command == "manifest":
             archive_hashes = {}
             for arch, path in (("amd64", args.archive_amd64), ("arm64", args.archive_arm64)):
                 if path:

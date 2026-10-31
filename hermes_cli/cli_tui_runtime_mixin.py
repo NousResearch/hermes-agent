@@ -325,10 +325,12 @@ class CLITuiRuntimeMixin:
             _welcome_color = _welcome_skin.get_color("banner_text", _welcome_color)
         except Exception:
             pass
-        self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
+        if self.show_intro:
+            self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
 
         self._tui_startup_prewarm_and_warnings(_welcome_skin)
-        self._print_random_tip()
+        if self.show_intro:
+            self._print_random_tip()
 
         self._tui_startup_background_maintenance()
         # Before the background preload is folded in (at agent init), show the REQUESTED names.

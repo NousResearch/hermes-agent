@@ -129,7 +129,9 @@ class CLILoopsMixin:
         # process's registry.
         from hermes_cli.cli_info_mixin import banner_plan
         plan = banner_plan(self, cc)
-        if plan.banner_kw is None:
+        if not self.show_intro:
+            pass  # display.banner: false
+        elif plan.banner_kw is None:
             cc.print(_build_compact_banner())
         elif plan.inventory is not None:
             self._show_gateway_banner(build_welcome_banner, plan.inventory, plan.banner_kw)
@@ -138,7 +140,8 @@ class CLILoopsMixin:
                                          disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
             build_welcome_banner(tools=tools, **plan.banner_kw)
         _cprint(_fresh_start())
-        self._print_random_tip()
+        if self.show_intro:
+            self._print_random_tip()
 
     def _cmd_title(self, cmd_original: str):
         from cli import _cprint

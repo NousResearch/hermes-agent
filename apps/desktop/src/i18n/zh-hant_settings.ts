@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { TranslationOverrides } from './define-locale'
 import { zhHantDelegationRouting } from './zh-hant_delegation_routing'
+import { zhHantGatewayRelay } from './zh-hant_gateway_relay'
 import { zhHantMemoryLayers } from './zh-hant_memory_layers'
 import { zhHantUpdateChannel } from './zh-hant_update_channel'
 
@@ -888,6 +889,7 @@ export const zhHantSettings = {
     },
     gateway: {
       loading: '正在載入閘道設定...',
+      relay: zhHantGatewayRelay,
       unavailableTitle: '閘道設定不可用',
       unavailableDesc: '桌面 IPC 橋接器未公開閘道設定。',
       webappHostTitle: 'Hermes 主機',

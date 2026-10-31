@@ -3,19 +3,16 @@
  * the embedded TUI on the dashboard Chat tab.
  *
  * Features:
- * - Lists main sessions; subagent children appear as an indented tree under
- *   their parent when the user expands a row.
- * - Optional "group by project" mode that buckets sessions by their workspace
- *   path matched against projects.  State persisted to localStorage.
- * - Kanban worker sessions (no parent, worktree cwd) are labelled with a
- *   small badge so they're visually distinct from interactive chat sessions.
+ * - "All" mode: sessions rendered as a tree (main + subagent children + kanban workers).
+ * - "By project" mode: sessions bucketed by project using cwd prefix-matching;
+ *   each bucket rendered with SessionTree.  Groups are collapsible.
+ * - View mode persisted to localStorage under `sidebar.sessionGroupMode`.
+ * - Group collapse state persisted to `sidebar.projectGroups.collapsed`.
  *
  * Navigation surface only — delete/rename/export lives on the Sessions page.
  */
 
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import {
   AlertCircle,
@@ -25,6 +22,7 @@ import {
   MessageSquarePlus,
   RefreshCw,
   Layers,
+  List,
 } from "lucide-react";
 import {
   useCallback,
@@ -37,43 +35,57 @@ import { useSearchParams } from "react-router-dom";
 
 import { useI18n } from "@/i18n";
 import { api, type SessionInfo, type ProjectSummary } from "@/lib/api";
-import { cn, timeAgo } from "@/lib/utils";
+import { cn } from "@/lib/utils";
+import { SessionTree, type SessionRowCallbacks } from "@/components/sessions/SessionTree";
 
-const SESSION_LIMIT = 30;
-const LS_GROUP_BY_PROJECT = "chatSessionList.groupByProject";
+// ── Constants ──────────────────────────────────────────────────────────────────
 
-interface ChatSessionListProps {
-  /** Active resume target (the session currently shown in the terminal). */
-  activeSessionId: string | null;
-  /** Management profile from the dashboard switcher — scopes the listing. */
-  profile?: string;
-  className?: string;
-  /** Optional callback fired after a row is picked (e.g. close mobile sheet). */
-  onPicked?: () => void;
-  /**
-   * Starts a fresh chat. ChatPage supplies its `startFreshDashboardChat`,
-   * which clears `?resume` AND bumps the reconnect nonce so a brand-new PTY
-   * spawns even when the user is already on an unsaved fresh session. When
-   * omitted, we fall back to clearing the resume param ourselves.
-   */
-  onNewChat?: () => void;
+const SESSION_LIMIT = 50; // fetching more since we include subagents now
+const LS_GROUP_MODE = "sidebar.sessionGroupMode";
+const LS_COLLAPSED_GROUPS = "sidebar.projectGroups.collapsed";
+
+type GroupMode = "all" | "by-project";
+
+// ── localStorage helpers ───────────────────────────────────────────────────────
+
+function readGroupMode(): GroupMode {
+  try {
+    const v = localStorage.getItem(LS_GROUP_MODE);
+    if (v === "by-project") return "by-project";
+  } catch { /* ignore */ }
+  return "all";
 }
 
-function rowLabel(session: SessionInfo, untitled: string): string {
-  const title = session.title?.trim();
-  if (title && title !== "Untitled") return title;
-  const preview = session.preview?.trim();
-  if (preview) return preview;
-  return untitled;
+function writeGroupMode(mode: GroupMode): void {
+  try { localStorage.setItem(LS_GROUP_MODE, mode); } catch { /* ignore */ }
 }
 
-/** Return the primary path for a project (longest match wins for nesting). */
+function readCollapsedGroups(): Set<string> {
+  try {
+    const raw = localStorage.getItem(LS_COLLAPSED_GROUPS);
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) return new Set(parsed as string[]);
+    }
+  } catch { /* ignore */ }
+  return new Set();
+}
+
+function writeCollapsedGroups(set: Set<string>): void {
+  try {
+    localStorage.setItem(LS_COLLAPSED_GROUPS, JSON.stringify([...set]));
+  } catch { /* ignore */ }
+}
+
+// ── Project matching ───────────────────────────────────────────────────────────
+
+/** Return the primary path for a project (longest match wins). */
 function primaryPath(p: ProjectSummary): string | null {
   const f = p.folders?.find((f) => f.is_primary);
   return f?.path ?? p.primary ?? null;
 }
 
-/** Match a session's cwd to a project (prefix matching). */
+/** Match a session's cwd to a project by prefix. */
 function matchProject(
   cwd: string | null | undefined,
   projects: ProjectSummary[],
@@ -98,102 +110,25 @@ function matchProject(
   return best;
 }
 
-// ─── Single session row ───────────────────────────────────────────────────────
+// ── Props ──────────────────────────────────────────────────────────────────────
 
-interface SessionRowProps {
-  session: SessionInfo;
-  isActive: boolean;
-  depth?: number;
-  expanded?: boolean;
-  onToggleExpand?: () => void;
-  onPick: (id: string) => void;
-  untitled: string;
+interface ChatSessionListProps {
+  /** Active resume target (the session currently shown in the terminal). */
+  activeSessionId: string | null;
+  /** Management profile from the dashboard switcher — scopes the listing. */
+  profile?: string;
+  className?: string;
+  /** Optional callback fired after a row is picked (e.g. close mobile sheet). */
+  onPicked?: () => void;
+  /**
+   * Starts a fresh chat. ChatPage supplies its `startFreshDashboardChat`,
+   * which clears `?resume` AND bumps the reconnect nonce so a brand-new PTY
+   * spawns even when the user is already on an unsaved fresh session.
+   */
+  onNewChat?: () => void;
 }
 
-function SessionRow({
-  session,
-  isActive,
-  depth = 0,
-  expanded,
-  onToggleExpand,
-  onPick,
-  untitled,
-}: SessionRowProps) {
-  const hasChildren = (session.child_count ?? 0) > 0;
-  const isWorker = session.kind === "kanban_worker";
-
-  return (
-    <ListItem
-      onClick={() => onPick(session.id)}
-      aria-current={isActive ? "true" : undefined}
-      className={cn(
-        "flex-col items-start gap-0.5 rounded px-2 py-1.5",
-        "normal-case tracking-normal",
-        depth > 0 && "ml-3 border-l border-border/40 pl-2",
-        isActive
-          ? "bg-primary/10 text-foreground border-l-2 border-primary"
-          : "text-text-secondary hover:bg-midground/5 hover:text-foreground",
-      )}
-    >
-      <div className="flex w-full items-center gap-1">
-        {hasChildren && onToggleExpand && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleExpand();
-            }}
-            className="shrink-0 text-text-tertiary hover:text-foreground"
-            aria-label={expanded ? "Collapse sub-sessions" : "Expand sub-sessions"}
-          >
-            {expanded ? (
-              <ChevronDown className="h-3 w-3" />
-            ) : (
-              <ChevronRight className="h-3 w-3" />
-            )}
-          </button>
-        )}
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">
-          {rowLabel(session, untitled)}
-        </span>
-        {isWorker && (
-          <Badge tone="secondary" className="shrink-0 px-1 py-0 text-[0.6rem]">
-            worker
-          </Badge>
-        )}
-        {hasChildren && (
-          <Badge tone="secondary" className="shrink-0 px-1 py-0 text-[0.6rem]">
-            {session.child_count}
-          </Badge>
-        )}
-      </div>
-      <span className="flex w-full items-center gap-1.5 pl-4 text-[0.6875rem] text-text-tertiary">
-        <span>{timeAgo(session.last_active)}</span>
-        {session.message_count > 0 && (
-          <>
-            <span aria-hidden>·</span>
-            <span>{session.message_count} msgs</span>
-          </>
-        )}
-        {session.source && session.source !== "cli" && (
-          <>
-            <span aria-hidden>·</span>
-            <span className="truncate">{session.source}</span>
-          </>
-        )}
-        {isWorker && session.kanban_task_id && (
-          <>
-            <span aria-hidden>·</span>
-            <span className="truncate font-mono text-[0.6rem]">
-              {session.kanban_task_id.slice(0, 12)}
-            </span>
-          </>
-        )}
-      </span>
-    </ListItem>
-  );
-}
-
-// ─── Main component ───────────────────────────────────────────────────────────
+// ── Main component ─────────────────────────────────────────────────────────────
 
 export function ChatSessionList({
   activeSessionId,
@@ -209,21 +144,22 @@ export function ChatSessionList({
   const [error, setError] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
 
-  // Expanded session IDs → their fetched children.
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
-  const [childrenMap, setChildrenMap] = useState<
-    Map<string, SessionInfo[] | "loading">
-  >(new Map());
+  // View mode: "all" (flat tree) or "by-project" (grouped by project)
+  const [groupMode, setGroupMode] = useState<GroupMode>(readGroupMode);
 
-  // Project grouping mode.
-  const [groupByProject, setGroupByProject] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(LS_GROUP_BY_PROJECT) === "true";
-    } catch {
-      return false;
-    }
-  });
+  // Projects for by-project mode
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
+
+  // Collapsible project groups
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
+    readCollapsedGroups,
+  );
+  // Sync collapsed groups to localStorage
+  const collapsedRef = useRef(collapsedGroups);
+  collapsedRef.current = collapsedGroups;
+  useEffect(() => {
+    writeCollapsedGroups(collapsedGroups);
+  }, [collapsedGroups]);
 
   const scopeKey = profile ?? "";
   const reqRef = useRef(0);
@@ -232,8 +168,9 @@ export function ChatSessionList({
     const myReq = ++reqRef.current;
     setLoading(true);
     setError(null);
+    // include_children=true so SessionTree can build the full hierarchy
     api
-      .getSessions(SESSION_LIMIT, 0, scopeKey, "recent")
+      .getSessions(SESSION_LIMIT, 0, scopeKey, "recent", undefined, true)
       .then((res) => {
         if (reqRef.current !== myReq) return;
         setSessions(res.sessions);
@@ -252,9 +189,9 @@ export function ChatSessionList({
     load();
   }, [load, reloadNonce]);
 
-  // Fetch projects when group mode is enabled.
+  // Fetch projects when by-project mode is active
   useEffect(() => {
-    if (!groupByProject) return;
+    if (groupMode !== "by-project") return;
     let cancelled = false;
     api
       .getProjects(scopeKey)
@@ -264,21 +201,14 @@ export function ChatSessionList({
       .catch(() => {
         if (!cancelled) setProjects([]);
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [groupByProject, scopeKey]);
+    return () => { cancelled = true; };
+  }, [groupMode, scopeKey]);
 
   const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
 
-  const toggleGroupByProject = useCallback(() => {
-    setGroupByProject((v) => {
-      const next = !v;
-      try {
-        localStorage.setItem(LS_GROUP_BY_PROJECT, next ? "true" : "false");
-      } catch { /* ignore */ }
-      return next;
-    });
+  const switchMode = useCallback((mode: GroupMode) => {
+    setGroupMode(mode);
+    writeGroupMode(mode);
   }, []);
 
   const pick = useCallback(
@@ -313,103 +243,43 @@ export function ChatSessionList({
     );
   }, [onNewChat, onPicked, setSearchParams]);
 
-  /** Toggle expand/collapse for a session. Fetches children on first expand. */
-  const toggleExpand = useCallback(
-    (id: string) => {
-      setExpandedIds((prev) => {
-        const next = new Set(prev);
-        if (next.has(id)) {
-          next.delete(id);
-          return next;
-        }
-        next.add(id);
-        return next;
-      });
-      // Fetch children if not already loaded.
-      setChildrenMap((prev) => {
-        if (prev.has(id)) return prev;
-        const next = new Map(prev);
-        next.set(id, "loading");
-        // Kick off the fetch (side-effectful but inside a functional update — safe here).
-        api
-          .getSessionChildren(id, scopeKey)
-          .then((res) => {
-            setChildrenMap((cm) => {
-              const m = new Map(cm);
-              m.set(id, res.sessions);
-              return m;
-            });
-          })
-          .catch(() => {
-            setChildrenMap((cm) => {
-              const m = new Map(cm);
-              m.set(id, []);
-              return m;
-            });
-          });
-        return next;
-      });
-    },
-    [scopeKey],
+  const toggleGroup = useCallback((key: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  // SessionTree callbacks — no multi-select in the chat sidebar, so
+  // onSelectClick is a no-op; onOpen does the navigation.
+  const treeCallbacks: SessionRowCallbacks = useMemo(
+    () => ({
+      onSelectClick: () => {},
+      onOpen: pick,
+      isSelected: (id) => id === activeSessionId,
+    }),
+    [pick, activeSessionId],
   );
 
-  // ── Render helpers ──────────────────────────────────────────────────────────
+  // ── "All" mode — single SessionTree ───────────────────────────────────────
 
-  const renderSession = useCallback(
-    (s: SessionInfo, depth = 0) => {
-      const isActive = s.id === activeSessionId;
-      const isExpanded = expandedIds.has(s.id);
-      const hasChildren = (s.child_count ?? 0) > 0;
-
-      return (
-        <div key={s.id}>
-          <SessionRow
-            session={s}
-            isActive={isActive}
-            depth={depth}
-            expanded={isExpanded}
-            onToggleExpand={hasChildren ? () => toggleExpand(s.id) : undefined}
-            onPick={pick}
-            untitled={t.sessions.untitledSession}
-          />
-          {isExpanded && (
-            <div className="mt-0.5">
-              {childrenMap.get(s.id) === "loading" ? (
-                <div className="ml-5 flex items-center gap-1 py-1 text-xs text-text-tertiary">
-                  <Spinner className="h-3 w-3" /> loading…
-                </div>
-              ) : (
-                (childrenMap.get(s.id) as SessionInfo[] | undefined)?.map((c) => (
-                  <SessionRow
-                    key={c.id}
-                    session={c}
-                    isActive={c.id === activeSessionId}
-                    depth={depth + 1}
-                    onPick={pick}
-                    untitled={t.sessions.untitledSession}
-                  />
-                ))
-              )}
-            </div>
-          )}
-        </div>
-      );
-    },
-    [activeSessionId, childrenMap, expandedIds, pick, t, toggleExpand],
-  );
-
-  // Flat list (no grouping).
-  const flatList = useMemo(() => {
+  const allModeContent = useMemo(() => {
     if (!sessions?.length) return null;
     return (
-      <div className="flex flex-col gap-0.5">
-        {sessions.map((s) => renderSession(s))}
-      </div>
+      <SessionTree
+        sessions={sessions}
+        selectedSessionId={activeSessionId ?? undefined}
+        callbacks={treeCallbacks}
+        showWorkers
+      />
     );
-  }, [sessions, renderSession]);
+  }, [sessions, activeSessionId, treeCallbacks]);
 
-  // Project-grouped list.
-  const groupedList = useMemo(() => {
+  // ── "By project" mode — one SessionTree per project group ──────────────────
+
+  const byProjectContent = useMemo(() => {
     if (!sessions?.length) return null;
     if (!projects) {
       return (
@@ -441,30 +311,58 @@ export function ChatSessionList({
       }
     }
 
+    const visibleGroups = groups.filter((g) => g.sessions.length > 0);
+    if (!visibleGroups.length) return null;
+
     return (
-      <div className="flex flex-col gap-2">
-        {groups
-          .filter((g) => g.sessions.length > 0)
-          .map((g) => {
-            const key = g.project?.id ?? "__none__";
-            const label = g.project?.name ?? "No project";
-            return (
-              <div key={key}>
-                <div className="flex items-center gap-1 px-2 pb-0.5 pt-1">
-                  <FolderOpen className="h-3 w-3 text-text-tertiary" />
-                  <span className="text-display truncate text-[0.625rem] tracking-wider text-text-tertiary">
-                    {label}
-                  </span>
-                </div>
-                <div className="flex flex-col gap-0.5">
-                  {g.sessions.map((s) => renderSession(s))}
-                </div>
-              </div>
-            );
-          })}
+      <div className="flex flex-col gap-1">
+        {visibleGroups.map((g) => {
+          const key = g.project?.id ?? "__none__";
+          const label = g.project?.name ?? "No project";
+          const count = g.sessions.length;
+          const isCollapsed = collapsedGroups.has(key);
+          // Auto-expand the group containing the active session
+          const containsActive = activeSessionId
+            ? g.sessions.some((s) => s.id === activeSessionId)
+            : false;
+          const effectivelyCollapsed = isCollapsed && !containsActive;
+
+          return (
+            <div key={key}>
+              {/* Group header */}
+              <button
+                className="flex w-full items-center gap-1 px-2 py-1 text-left hover:bg-midground/5 transition-colors focus:outline-none"
+                onClick={() => toggleGroup(key)}
+              >
+                {effectivelyCollapsed ? (
+                  <ChevronRight className="h-3 w-3 shrink-0 text-text-tertiary" />
+                ) : (
+                  <ChevronDown className="h-3 w-3 shrink-0 text-text-tertiary" />
+                )}
+                <FolderOpen className="h-3 w-3 shrink-0 text-text-tertiary" />
+                <span className="text-display min-w-0 flex-1 truncate text-[0.625rem] tracking-wider text-text-tertiary">
+                  {label}
+                </span>
+                <span className="shrink-0 font-mono text-[0.6rem] text-text-tertiary/60">
+                  {count}
+                </span>
+              </button>
+
+              {/* Group body: SessionTree */}
+              {!effectivelyCollapsed && (
+                <SessionTree
+                  sessions={g.sessions}
+                  selectedSessionId={activeSessionId ?? undefined}
+                  callbacks={treeCallbacks}
+                  showWorkers
+                />
+              )}
+            </div>
+          );
+        })}
       </div>
     );
-  }, [sessions, projects, renderSession, t]);
+  }, [sessions, projects, activeSessionId, collapsedGroups, toggleGroup, treeCallbacks]);
 
   // ── Content ─────────────────────────────────────────────────────────────────
 
@@ -496,16 +394,16 @@ export function ChatSessionList({
         </div>
       );
     }
-    return groupByProject ? groupedList : flatList;
+    return groupMode === "by-project" ? byProjectContent : allModeContent;
   }, [
     loading,
     sessions,
     error,
     reload,
     t,
-    groupByProject,
-    groupedList,
-    flatList,
+    groupMode,
+    byProjectContent,
+    allModeContent,
   ]);
 
   return (
@@ -515,20 +413,36 @@ export function ChatSessionList({
         className,
       )}
     >
+      {/* Header: title + mode toggle + refresh */}
       <div className="flex items-center justify-between gap-1 px-2 pb-2">
         <span className="text-display text-xs tracking-wider text-text-tertiary">
           {t.sessions.title}
         </span>
         <div className="flex items-center gap-0.5">
+          {/* All mode button */}
           <Button
             ghost
             size="icon"
-            onClick={toggleGroupByProject}
+            onClick={() => switchMode("all")}
+            aria-label="All sessions"
+            title="All sessions"
+            className={cn(
+              "text-text-secondary hover:text-foreground",
+              groupMode === "all" && "text-primary",
+            )}
+          >
+            <List />
+          </Button>
+          {/* By-project mode button */}
+          <Button
+            ghost
+            size="icon"
+            onClick={() => switchMode("by-project")}
             aria-label="Group by project"
             title="Group by project"
             className={cn(
               "text-text-secondary hover:text-foreground",
-              groupByProject && "text-primary",
+              groupMode === "by-project" && "text-primary",
             )}
           >
             <Layers />
@@ -546,6 +460,7 @@ export function ChatSessionList({
         </div>
       </div>
 
+      {/* New chat button */}
       <Button
         outlined
         size="sm"
@@ -556,6 +471,7 @@ export function ChatSessionList({
         {t.sessions.newChat}
       </Button>
 
+      {/* Session list */}
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 pb-1">
         {content}
       </div>

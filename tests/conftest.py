@@ -1588,3 +1588,24 @@ def real_bash() -> str:
             if candidate.exists():
                 return str(candidate)
     return found or "bash"
+
+
+@pytest.fixture
+def flat_skills_index(monkeypatch):
+    """Pin the RETIRED flat skills index back ON for one test module.
+
+    The index is dark by default (``agent/prompt_builder.skills_index_dark``); a profile opts back
+    in the way every other behavioural setting works — ``skills.index: flat`` in its config.yaml —
+    so tests that cover the legacy renderer re-enable it through the same config read, and the DARK
+    default stays guarded by ``tests/agent/test_skills_index_deprecated.py``.
+    """
+    from agent import prompt_builder as pb
+
+    read_config = pb._config_readonly
+
+    def _with_flat_index(what: str = ""):
+        config = dict(read_config(what) or {})
+        config["skills"] = {**(config.get("skills") or {}), "index": "flat"}
+        return config
+
+    monkeypatch.setattr(pb, "_config_readonly", _with_flat_index)

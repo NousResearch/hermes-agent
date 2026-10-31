@@ -8,6 +8,8 @@ import random
 import re
 from typing import Any, Optional
 
+from agent.ssl_verify import resolve_httpx_verify
+
 logger = logging.getLogger("tools.mcp_tool")
 
 
@@ -161,3 +163,21 @@ def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:
         logger.warning("MCP config %s must be positive; ignoring %r", key, raw)
         return None
     return seconds or None
+
+
+def _resolved_httpx_verify(config: dict, url: str):
+    """httpx ``verify`` for an HTTP MCP server, resolved through the repo's TLS authority (#146924).
+
+    The raw config value must never reach httpx: a runtime that outlived a pm install rotation
+    holds a certifi path that no longer exists, and ``verify=True`` builds its TLS context from
+    it. MCP's ``ssl_verify`` doubles as a custom CA bundle when set to a path (provider config
+    splits the same two roles into ``ssl_verify`` / ``ssl_ca_cert``), so the value is offered to
+    ``resolve_httpx_verify`` in both positions: False-ish stays off, a live path replaces the
+    trust store, True falls back to the platform context when certifi is unrecoverable.
+    """
+    raw_verify = config.get("ssl_verify", True)
+    return resolve_httpx_verify(
+        ca_bundle=raw_verify if isinstance(raw_verify, str) else None,
+        ssl_verify=raw_verify,
+        base_url=url,
+    )

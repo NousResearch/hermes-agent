@@ -1369,12 +1369,18 @@ def _cmd_adopt(args):
     return cmd_adopt(args)
 
 
+def _cmd_show(args):
+    from hermes_cli.sessions_cmd_show import cmd_show
+    return cmd_show(args)
+
+
 _PRE_DB_HANDLERS = {
     "repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import,
     "repair-profiles": _cmd_repair_profiles,  # opens every profile's store itself
     "set-journal-mode": _cmd_set_journal_mode,  # offline: must not open the store it converts
     "discard": _cmd_discard,  # a gateway control (prompt.resolve_unknown), never a direct store write
     "adopt": _cmd_adopt,  # native resumes on the owner; reads its own store read-only
+    "show": _cmd_show,  # hermes_cli.session_reader opens the store mode=ro itself
 }
 _OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {

@@ -28,6 +28,8 @@ def _add_rename_and_discard(sessions_subparsers) -> None:
     add_discard_parser(sessions_subparsers)
     from hermes_cli.sessions_adopt import add_adopt_parser
     add_adopt_parser(sessions_subparsers)
+    from hermes_cli.sessions_cmd_show import add_show_parser
+    add_show_parser(sessions_subparsers)
 
 
 def _add_refresh_prompts(sessions_subparsers) -> None:

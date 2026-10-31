@@ -1172,6 +1172,45 @@ One directory per plugin means every plugin's data is inspectable in one
 predictable place. Secrets don't belong here — credential reads go through
 the standard `.env` / secret-scope path like everywhere else.
 
+### Read session history
+
+`ctx.sessions` is a read-only view of the session store of the profile your
+plugin was loaded for. Use it instead of opening `state.db` with SQL: the
+table layout changes between releases, the projection below does not. Every
+call opens the store read-only and returns plain dicts (JSON-safe, safe to
+cache); a profile that never created a store answers `None` / `[]`.
+
+```python
+def summarize(ctx, session_id):
+    s = ctx.sessions.get(session_id)  # id or unique prefix, else None
+    if s is None:
+        return "no such session"
+    tree = ctx.sessions.usage(s["id"], include_subagents=True)  # the other calls take a full id
+    kids = ctx.sessions.subagents(s["id"])  # every delegate under it, recursively
+    return f"{s['title']}: {tree['input_tokens']} in / {tree['output_tokens']} out over {len(kids)} subagents"
+```
+
+| Method | Returns |
+|---|---|
+| `get(session_id)` | one session (projection below), or `None` |
+| `recent(source=None, limit=20, include_archived=False)` | top-level sessions, newest first; each also carries `preview` and `last_active` |
+| `lineage(session_id)` | compression lineage ids, root first through the live tip |
+| `subagents(session_id)` | delegate-subagent sessions under its conversation (every compression segment), recursively, with their own continuations; oldest first |
+| `usage(session_id, include_subagents=False)` | token/cost totals over the lineage (plus subagents), with the summed `session_ids` |
+| `messages(session_id, limit=50, latest=True, include_ancestors=False)` | active transcript rows: `id`, `role`, `content`, `tool_name`, `tool_call_id`, `tool_calls`, `timestamp`, `finish_reason` |
+| `latest_todo(session_id)` | the newest `todo` list, or `None` |
+
+A session is `id`, `title`, `source`, `created_source`, `model`,
+`billing_provider`, `parent_session_id`, `delegate_from` (the session that
+spawned this subagent, else `None`), `started_at`, `ended_at`, `end_reason`,
+`message_count`, `tool_call_count`, `api_call_count`, the five token counters
+(`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`,
+`reasoning_tokens`), `estimated_cost_usd`, `actual_cost_usd`, `cost_status`,
+`cwd`, `git_branch`, `git_repo_root`, `profile_name`, `pinned`, `archived`.
+System prompts, model config, billing endpoints and chat/user identifiers are
+not exposed. Out of process, `hermes sessions show <id> --json` prints the same
+projection (with lineage, subagents and tree usage).
+
 ### Bundle skills
 
 Plugins can ship skill files that the agent loads via `skill_view("plugin:skill")`. Register them in your `__init__.py`:

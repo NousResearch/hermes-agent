@@ -238,3 +238,33 @@ def test_cmd_setup_audit_log_failure_is_warning_not_abort(hermes_home, monkeypat
 
     rc = proxy_cli.cmd_setup(_args())
     assert rc == 0
+
+
+def test_cmd_setup_skips_unmatchable_extra_allowed_hosts_with_warning(hermes_home, monkeypatch, capsys):
+    """A ``proxy.extra_allowed_hosts`` entry iron-proxy could never match (``host:port``) must not
+    reach ``proxy.yaml`` silently: setup names it and the fix, keeps the valid entries, and still
+    completes (dropping only narrows egress)."""
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    cfg.setdefault("proxy", {})["extra_allowed_hosts"] = ["host.docker.internal:11434", "Ollama.Example.test"]
+    save_config(cfg)
+    monkeypatch.setattr(ip, "find_iron_proxy", lambda **kw: hermes_home / "iron-proxy")
+    monkeypatch.setattr(ip, "discover_provider_mappings", lambda **kw: [
+        ip.TokenMapping(
+            proxy_token="hermes-proxy-deadbeef",
+            real_env_name="OPENROUTER_API_KEY",
+            upstream_hosts=("openrouter.ai",),
+        ),
+    ])
+    monkeypatch.setattr(ip, "discover_uncovered_providers", lambda **kw: [])
+
+    rc = proxy_cli.cmd_setup(_args())
+
+    assert rc == 0
+    out = " ".join(capsys.readouterr().out.split())  # Rich wraps long lines at console width
+    assert "host.docker.internal:11434" in out
+    assert 'use the bare host name "host.docker.internal"' in out
+    proxy_yaml = (hermes_home / "proxy" / "proxy.yaml").read_text()
+    assert "ollama.example.test" in proxy_yaml
+    assert "host.docker.internal:11434" not in proxy_yaml

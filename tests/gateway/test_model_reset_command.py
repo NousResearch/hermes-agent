@@ -1,4 +1,5 @@
-"""Gateway ``/model reset``: a persisted session override is cleared without losing the chat."""
+"""``/model reset``: a messaging chat's persisted override is cleared, and a local (TUI/Desktop/CLI) session's
+owner pin returns to the profile's configured default, without losing the conversation."""
 
 import json
 from types import SimpleNamespace
@@ -54,3 +55,49 @@ async def test_reset_clears_a_persisted_override_after_restart(tmp_path, monkeyp
     again = await runner._handle_model_command(_event("/model reset", source))
     assert again != reply and "cfg-model" in again  # nothing left to clear: the "none active" copy
     assert evicted == [key]
+
+
+@pytest.mark.asyncio
+async def test_owner_reset_returns_a_local_session_to_the_configured_default_read_fresh(monkeypatch):
+    """The TUI, Desktop and the attached CLI send ``session.mutate model {model: 'reset'}`` to the owner."""
+    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from gateway.session_policy import policy_for_source
+    from hermes_constants import get_hermes_home
+    from tests.gateway.test_follow_profile_followups import _profile
+    from tests.gateway.test_session_follow_profile_config import _owner
+    import gateway.run as gateway_run
+
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", home)
+    _profile(home, "cfg-a", 1, "k")
+    store, runner, authority, owner = _owner(home)
+    runner._peek_session_state = lambda key: None
+    runner._resolve_session_agent_runtime = (
+        lambda **kw: GatewayTurnPrepareMixin._resolve_session_agent_runtime(runner, **kw))
+    try:
+        created = await owner.dispatch({"id": "c", "method": "session.create", "params": dict(
+            request_id="c", source="tui", cwd=str(home), toolsets=[])})
+        sid = created["result"]["session_id"]
+        live = authority.sessions[sid]
+
+        async def pick(model):
+            snap = authority.db.get_session(sid)
+            response = await owner.dispatch({"id": model, "method": "session.mutate", "params": dict(
+                session_id=sid, request_id=f"{model}-{snap['runtime_revision']}", operation="model",
+                payload={"model": model}, expected_revision=snap["runtime_revision"],
+                expected_generation=snap["runtime_generation"])})
+            return response["result"]
+
+        await pick("other-model")
+        assert policy_for_source(runner, live.source).model == "other-model"
+        _profile(home, "cfg-b", 1, "k")  # edited after launch: reset reads config.yaml now
+        await pick("reset")
+        assert policy_for_source(runner, live.source).model == "cfg-b"
+        revision = authority.db.get_session(sid)["runtime_revision"]
+        again = await pick("reset")
+        assert again["status"] == "noop" and "cfg-b" in again["note"]  # nothing to reset, nothing written
+        assert authority.db.get_session(sid)["runtime_revision"] == revision
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

@@ -36,7 +36,7 @@ To upgrade: `pnpm add --global @shopify/shop-cli@latest` (or `npm install --glob
 ## IMPORTANT: Shopping flow
 Every shopping conversation follows this order. Each step links to its rules below; each rule lives in exactly one place.
 
-1. **Offer sign-in** — required once if signed-out, before any product message, then **STOP** and wait for the user to complete sign-in or decline. → *Sign in*
+1. **Offer sign-in** — mention it once if signed-out, but never hold a catalog search on it: search and show results in the same turn, with the offer alongside. → *Sign in*
 2. **Search** the catalog with `shop search`. → *Searching*
 3. **Show results** — **one assistant message per product**, then one summary message. → *Showing products*
 4. **Offer visualization** when the item is visual. → *Visualization*
@@ -106,14 +106,14 @@ shop auth logout
 ## Sign in
 Signing in is **optional for the user**, but **offering it is mandatory for you**. Search works signed-out. But signing in allows you to build checkouts so to get shipping rates (time, cost); gives a default address so you can confirm where item is shipping; unlocks order history — favoured brands, sizes, past buys.
 
-**Offer once, before showing results.** Run `shop auth status` to check; if signed-out, your **first** product-related message MUST be the sign-in offer.
+**Offer once, without blocking.** Run `shop auth status` to check; if signed-out, carry the sign-in offer in your **first** product-related message — alongside the results when the request is a public catalog lookup, which works signed-out. Only account-dependent operations (orders, saved addresses and shipping rates) wait for sign-in; a signed-out catalog search never does.
 
 Sign-in is two non-blocking steps:
 1. `shop auth device-code` — prints the sign-in URL (`verification_uri_complete`); share it.
-2. **STOP.** When the user is done, `shop auth poll` stores the tokens; re-run while it reports `pending`, then confirm with `shop auth status`.
+2. **Wait on the account, not on the search.** When the user is done, `shop auth poll` stores the tokens; re-run while it reports `pending`, then confirm with `shop auth status`.
 
 Example:
-> Of course! If you sign in to Shop, I can get shipping rates to your home and past order details. [Sign in here](https://accounts.shop.app/oauth/agents/device?user_code=OIJAOSIJ) and tell me when you're done. Or just say 'continue' and I'll search without sign in.
+> Of course — here are the matches. If you sign in to Shop, I can also get shipping rates to your home and past order details: [Sign in here](https://accounts.shop.app/oauth/agents/device?user_code=OIJAOSIJ), and tell me when you're done.
 
 Manual token exchange, only when the CLI cannot be installed: [catalog-mcp.md](references/catalog-mcp.md).
 
@@ -132,7 +132,7 @@ Manual token exchange, only when the CLI cannot be installed: [catalog-mcp.md](r
 
 ## Showing products
 > **The most important rule: one product = one assistant message.**
-> For N products, send N separate messages (one per product), then **one** final summary message — never combined, no preamble. Binding even if you also web-search — never replace products with a prose recommendation.
+> For N products, send N separate messages (one per product), then **one** final summary message — never combined, no preamble. Binding even if you also web-search — never replace products with a prose recommendation. A user's explicit request for a compact comparison or a table wins over this default.
 
 Each product message uses the template below.
 - The final message contains only your perspective, a recommendation, and any caveats — nothing else.

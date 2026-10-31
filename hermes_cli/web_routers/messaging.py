@@ -16,6 +16,7 @@ import threading
 import time
 import urllib.parse
 from datetime import datetime, timezone, UTC
+from functools import cache
 from pathlib import Path
 from collections.abc import Collection
 from typing import Any, Optional
@@ -162,7 +163,7 @@ def _require_platform(platform_id: str) -> dict[str, Any]:
 
 def _platform_enablement(
     platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool,
-    source_keys: Collection[str] = (),
+    source_keys: Collection[str] = (), *, config_loader,
 ) -> tuple[bool, bool, dict | None]:
     """(enabled, configured, home_channel). Profile-scoped: the profile's config.yaml, .env and
     enabled secret sources only, never ``load_gateway_config()`` (see ``builtin_platform_status``)."""
@@ -171,7 +172,7 @@ def _platform_enablement(
         # ``source_keys``: names the profile's enabled secret sources resolved (1Password, Bitwarden, a plugin).
         configured = bool(required) and all(env_on_disk.get(key) or key in source_keys for key in required)
         try:
-            config = load_config()
+            config = config_loader()
             plat_cfg = (config.get("platforms") or {}).get(platform_id)
             plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
             hc = plat_cfg.get("home_channel")
@@ -188,9 +189,9 @@ def _platform_enablement(
             enabled, home_channel = False, None
         return enabled, configured, home_channel
     try:
-        from gateway.config import Platform, load_gateway_config
+        from gateway.config import Platform
 
-        gateway_config = load_gateway_config()
+        gateway_config = config_loader()
         platform = Platform(platform_id)
         platform_config = gateway_config.platforms.get(platform)
         enabled = bool(platform_config and platform_config.enabled)
@@ -205,6 +206,7 @@ def _platform_enablement(
 def _messaging_platform_payload(
     entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None,
     scoped: bool = False, profile_home: Optional[Path] = None, source_keys: Collection[str] = (),
+    *, config_loader,
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     rt = runtime if isinstance(runtime, dict) else {}
@@ -244,7 +246,8 @@ def _messaging_platform_payload(
             "value": value if info["is_list"] else None, **info,
         })
 
-    enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped, source_keys)
+    enabled, configured, home_channel = _platform_enablement(
+        platform_id, entry, env_on_disk, scoped, source_keys, config_loader=config_loader)
     if gateway_running and runtime_platform.get("mirrored_from"):
         # Served secondary: the default's shared listener already answers this platform at
         # /p/<profile>/... (enabling it locally 409s), so the secondary's own empty config
@@ -305,8 +308,22 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     # sources resolved (into its secret scope, by ``_profile_scope``) count, and an empty one is unset.
     source_values = get_secret_source_values(scoped_dir) if scoped_dir is not None else {}
     source_keys = frozenset(key for key, value in source_values.items() if str(value).strip())
+
+    @cache
+    def request_config():
+        # One load per request (failures too), never shared across requests or profiles.
+        try:
+            if scoped_dir is not None:
+                return load_config()
+            from gateway.config import load_gateway_config
+
+            return load_gateway_config()
+        except Exception:  # health: allow BLE001 -- an unreadable config must not break the list; rows fall back to env state
+            return None  # retried next request
+
     return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None,
-                                        profile_home=scoped_dir, source_keys=source_keys)
+                                        profile_home=scoped_dir, source_keys=source_keys,
+                                        config_loader=request_config)
             for entry in entries]
 
 

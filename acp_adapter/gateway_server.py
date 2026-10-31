@@ -299,12 +299,12 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def _session_fields(self, session_id, info, editor_id):
         """Main's new/load/resume/fork reply fields (model picker, modes, provenance ``_meta``); the
         command list and context indicator follow once the reply is queued, as main scheduled them."""
-        from acp_adapter.gateway_session_meta import config_options, model_state, provenance_meta, session_modes
-        from acp_adapter.modes import MODE_TO_EDIT_APPROVAL_POLICY
+        from acp_adapter.gateway_session_meta import session_config_options, provenance_meta, session_modes
+        from acp_adapter.modes import EDIT_APPROVAL_POLICY_CONFIG_ID, MODE_TO_EDIT_APPROVAL_POLICY
         title = info.get("title")
         if isinstance(title, str) and title.strip():
             self._titles[session_id] = title
-        models = await asyncio.to_thread(model_state, info)
+        options = await asyncio.to_thread(session_config_options, info)
         meta = await asyncio.to_thread(provenance_meta, self._home / "state.db", editor_id, session_id)
         if self._conn:
             task = asyncio.get_running_loop().create_task(self._after_attach(session_id, editor_id))
@@ -313,8 +313,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         # ``_adopt`` seeded the mode from the snapshot: a change the pump projected since is what the reply shows.
         modes = session_modes({"edit_approval_policy": MODE_TO_EDIT_APPROVAL_POLICY[self._modes.setdefault(
             session_id, session_modes(info).current_mode_id)]})
-        return {"models": models, "modes": modes, "field_meta": meta,
-                "config_options": config_options(models, info, modes.current_mode_id)}
+        for option in options:
+            if option.id == EDIT_APPROVAL_POLICY_CONFIG_ID:
+                option.current_value = MODE_TO_EDIT_APPROVAL_POLICY[modes.current_mode_id]
+        return {"config_options": options, "modes": modes, "field_meta": meta}
 
     async def _after_attach(self, session_id, editor_id):
         from acp_adapter.gateway_session_meta import available_commands_update
@@ -472,9 +474,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         await self._request_live_reasoning(client, child)
         return ForkSessionResponse(session_id=child, **await self._session_fields(child, info, child))
 
-    async def set_session_model(self, model_id, session_id, **kwargs):
-        from acp.schema import SetSessionModelResponse
-        session_id = self._aliases.get(session_id, session_id)
+    async def _set_model_config(self, model_id, session_id):
+        """Apply the owner's existing model mutation, including confirmation and deferred picks."""
         client = await self._client()
         from hermes_cli.models import parse_model_input
         # Picker IDs include the provider, as on the in-process ACP switch path.
@@ -493,7 +494,6 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             from acp_adapter.gateway_commands import deferred_pick_text
             await self._conn.session_update(session_id=self._editor_id(session_id),
                                             update=acp.update_agent_message_text(deferred_pick_text(result) + "\n"))
-        return SetSessionModelResponse()
 
     async def _confirm_deferred_pick(self, session_id, editor_id, ask):
         """The owner's boundary ask for a guarded deferred pick (``confirmation_required``; nothing
@@ -575,24 +575,22 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         return SetSessionModeResponse()
 
     async def set_config_option(self, config_id, session_id, value=None, **kwargs):
-        """The pickers ``config_options`` advertises: the edit mode is the modes select's owner setting,
-        the model ``set_session_model``'s pick, the effort the owner's ``reasoning`` mutation (``default``
-        = ``/reasoning reset``). Another id is accepted so editors do not fail on their own config writes,
-        as main did. The reply is the full list, read back from the owner."""
+        """Apply a selector through the owner and return the complete committed selector list."""
         from acp.schema import SetSessionConfigOptionResponse
         from acp_adapter.gateway_session_meta import (
             REASONING_CONFIG_ID, config_options, current_mode, model_state, reasoning_choices,
         )
         from acp_adapter.modes import EDIT_APPROVAL_POLICY_CONFIG_ID, EDIT_APPROVAL_POLICY_TO_MODE
-        editor_id, session_id = session_id, self._held_session(session_id)
+        from acp_adapter.model_catalog import MODEL_CONFIG_ID
+        session_id = self._held_session(session_id)
+        if config_id in (EDIT_APPROVAL_POLICY_CONFIG_ID, MODEL_CONFIG_ID) and not isinstance(value, str):
+            raise acp.RequestError.invalid_params({"details": f"{config_id} requires a select value"})
         if config_id == EDIT_APPROVAL_POLICY_CONFIG_ID:
             if value not in EDIT_APPROVAL_POLICY_TO_MODE:
                 raise GatewayClientError("invalid_params")
             await self._set_edit_policy(session_id, value)
-        elif config_id == "model":
-            if not isinstance(value, str):
-                raise GatewayClientError("invalid_params")
-            await self.set_session_model(model_id=value, session_id=editor_id)
+        elif config_id == MODEL_CONFIG_ID:
+            await self._set_model_config(value, session_id)
         elif config_id == REASONING_CONFIG_ID:
             if value not in reasoning_choices():
                 raise GatewayClientError("invalid_params")

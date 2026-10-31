@@ -27,7 +27,6 @@ import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { migrateSessionDraft } from '@/store/composer'
 import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
-import { $introSplash } from '@/store/intro-splash'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $introView } from '@/store/onboarding-intro'
 import { $petActive } from '@/store/pet'
@@ -37,7 +36,6 @@ import {
   $connection,
   $contextSuggestions,
   $freshDraftKey,
-  $freshDraftReady,
   $gatewayState,
   $introPersonality,
   $introSeed,
@@ -70,10 +68,10 @@ import {
   useComposerScope,
   useComposerSurfaceId
 } from './composer/scope'
+import { useShowIntro } from './draft-session'
 import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
-import { shouldShowIntro } from './intro-visibility'
 import { ProfileTag } from './profile-tag'
 import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
 import { isRouteSessionMismatch } from './route-session-state'
@@ -556,7 +554,6 @@ const ChatViewContent = memo(function ChatViewContent({
   const petActive = useStore($petActive)
   const petOverlayActive = useStore($petOverlayActive)
   const petPresent = petActive || petOverlayActive
-  const freshDraftReady = useStore($freshDraftReady)
   const freshDraftKey = useStore($freshDraftKey)
   const gatewayState = useStore($gatewayState)
   const gatewaySwapTarget = useStore($gatewaySwapTarget)
@@ -564,7 +561,6 @@ const ChatViewContent = memo(function ChatViewContent({
   const gatewayOpen = gatewayState === 'open'
   const introPersonality = useStore($introPersonality)
   const introSeed = useStore($introSeed)
-  const introSplash = useStore($introSplash)
   // PERF: ChatView must not subscribe to the view's $messages — the atom is
   // replaced on every streaming delta flush (~30×/s) and a subscription here
   // re-renders the entire chat shell (header, chat bar, thread wrapper) per
@@ -636,17 +632,16 @@ const ChatViewContent = memo(function ChatViewContent({
     : false
 
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
-  // scratch window, not the full-height empty state. The Appearance toggle
-  // turns it off everywhere else.
-  const showIntro = shouldShowIntro({
+  // scratch window, not the full-height empty state. Draft-session and toggle
+  // state resolve in the hook (see draft-session.ts — this component sits on
+  // the FUNC_LINES ratchet and may only go down).
+  const showIntro = useShowIntro({
     activeSessionId,
-    auxiliaryWindow: isAuxiliaryWindow(),
-    enabled: introSplash,
-    freshDraftReady,
+    isPrimary,
     messagesEmpty,
-    primary: isPrimary,
     routedSessionView: isRoutedSessionView,
-    selectedSessionId
+    selectedSessionId,
+    storedId
   })
 
   // Session is still loading if the route references a session we haven't

@@ -32,7 +32,6 @@ async function mountKeybinds(inTerminal = false) {
     archiveSelectedSession: vi.fn(),
     openNewSessionTab: vi.fn(),
     requestGateway: vi.fn(),
-    startFreshSession: vi.fn(),
     toggleCommandCenter: vi.fn(),
     toggleSelectedPin: vi.fn()
   }
@@ -88,7 +87,6 @@ it('dispatches the Alt defaults and remaps from text fields, leaving browser key
     }
   }
 
-  expect(deps.startFreshSession).not.toHaveBeenCalled()
   expect(deps.openNewSessionTab).not.toHaveBeenCalled()
   expect(closeTab).not.toHaveBeenCalled()
 
@@ -96,14 +94,15 @@ it('dispatches the Alt defaults and remaps from text fields, leaving browser key
     expect(press({ key, code: `Key${key.toUpperCase()}`, altKey: true, ctrlKey: false }).defaultPrevented).toBe(true)
   }
 
-  expect(deps.startFreshSession).toHaveBeenCalledOnce()
-  expect(deps.openNewSessionTab).toHaveBeenCalledOnce()
+  // alt+N (session.new) and alt+T (session.newTab) share one action now
+  // (openNewSessionTab), so both presses land on it.
+  expect(deps.openNewSessionTab).toHaveBeenCalledTimes(2)
   expect(closeTab).toHaveBeenCalledOnce()
 
   act(() => setBinding('session.new', ['mod+shift+f6']))
   expect(press({ key: 'n', code: 'KeyN', altKey: true, ctrlKey: false }).defaultPrevented).toBe(false)
   expect(press({ key: 'F6', code: 'F6', shiftKey: true }).defaultPrevented).toBe(true)
-  expect(deps.startFreshSession).toHaveBeenCalledTimes(2)
+  expect(deps.openNewSessionTab).toHaveBeenCalledTimes(3)
 })
 
 it('dispatches the macOS ⌃⌘ browser defaults, including ⌃⌘W over an interactive terminal', async () => {
@@ -118,8 +117,7 @@ it('dispatches the macOS ⌃⌘ browser defaults, including ⌃⌘W over an inte
     expect(press({ key, code: `Key${key.toUpperCase()}`, metaKey: true }).defaultPrevented).toBe(true)
   }
 
-  expect(deps.startFreshSession).toHaveBeenCalledOnce()
-  expect(deps.openNewSessionTab).toHaveBeenCalledOnce()
+  expect(deps.openNewSessionTab).toHaveBeenCalledTimes(2)
   expect(closeTab).toHaveBeenCalledOnce()
 })
 

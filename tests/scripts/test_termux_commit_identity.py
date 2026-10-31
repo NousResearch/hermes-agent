@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_deb_identity_refusal_leaves_payload_and_output_untouched(tmp_path):
     _, repo = _seed_repo(tmp_path)
     commit = _git('rev-parse', 'HEAD', cwd=repo)
+    _git('tag', 'v0.1.2', cwd=repo)  # a commit build is versioned after the stable release behind it
     payload = tmp_path / 'payload'
     (payload / 'app').mkdir(parents=True)
     (payload / 'app/pyproject.toml').write_bytes((repo / 'pyproject.toml').read_bytes())

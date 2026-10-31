@@ -23,6 +23,7 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
 
     _, repo = _seed_repo(tmp_path)
     sha = _git("rev-parse", "HEAD", cwd=repo)
+    _git("tag", "v0.1.2", cwd=repo)  # a commit build is versioned after the stable release behind it
     monkeypatch.setenv("HERMES_PAYLOAD_TAG", "v9.9.9")
     monkeypatch.setenv("GITHUB_SHA", "b" * 40)
     monkeypatch.setenv("BUILD_NUMBER", "123")

@@ -311,6 +311,7 @@ def commit_repo(tmp_path, monkeypatch, request):
                                              encoding="utf-8")
     git("add", "pyproject.toml")
     git("commit", "-qm", "version")
+    git("tag", "v1.2.3")  # the newest stable release behind HEAD names the claim
     remote = tmp_path.parent / f"{tmp_path.name}-remote.git"
     git("init", "--bare", "-q", str(remote))
     git("remote", "add", "origin", "https://github.com/fixture/release")

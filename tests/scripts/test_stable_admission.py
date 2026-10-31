@@ -55,8 +55,8 @@ def test_a_signed_claim_tag_is_read_through_the_jobs_own_git_read(tmp_path, monk
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "absent-config"))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     record = {"schema": 1, "version": "0.21.5", "attempt": 19, "commit": "3" * 40,
-              "autopublish": False, "skipBundles": False, "skipTests": True,
-              "claimEpoch": 1790701941}
+              "autopublish": False, "lanes": ["docker", "macos-arm64", "windows", "windows-store"],
+              "lanesRevision": 2, "claimEpoch": 1790701941}
     repo = tmp_path / "repo"
     repo.mkdir()
 
@@ -75,6 +75,5 @@ def test_a_signed_claim_tag_is_read_through_the_jobs_own_git_read(tmp_path, monk
     assert "-----BEGIN SSH SIGNATURE-----" in raw
     with pytest.raises(json.JSONDecodeError):  # the shape that failed admission
         json.loads(raw)
-    # The record predates lanes: skipTests=true reads as the build lanes alone.
     assert _claim_metadata(raw, version="0.21.5", attempt=19, commit="3" * 40) == {
         **record, "lanes": frozenset({"docker", "windows", "windows-store", "macos-arm64"})}

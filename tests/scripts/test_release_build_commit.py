@@ -27,7 +27,9 @@ def fixture_repo(tmp_path):
     (repo / 'pyproject.toml').write_text('[project]\nname="fixture"\nversion="1.2.3"\n', encoding='utf-8')
     git(repo, 'add', 'pyproject.toml')
     git(repo, 'commit', '-qm', 'fixture')
-    git(repo, 'push', '-q', 'origin', 'main')
+    # A commit build is versioned after the newest stable release behind it.
+    git(repo, 'tag', 'v1.2.3')
+    git(repo, 'push', '-q', 'origin', 'main', 'v1.2.3')
     git(repo, 'remote', 'set-url', 'origin', 'https://github.com/fixture-owner/fixture-repo.git')
     shutil.copytree(ROOT / 'scripts/releases', repo / 'scripts/releases')
     for relative in ('scripts/release.py', 'scripts/release-content-types.json',
@@ -128,6 +130,17 @@ def test_commit_build_cli_claims_only_the_resolved_remote_commit(fixture_repo):
                            '--repo', 'fixture-owner/fixture-repo', '--raw-field', f'tag={tag}']]
     assert f'https://hermes-assets.nousresearch.com/releases/tag/{tag}/index.html' in result.stdout
     assert git(upstream, 'rev-parse', 'refs/heads/main') == tip
+
+
+def test_commit_build_fetches_the_stable_tags_it_is_versioned_after(fixture_repo):
+    """The claim's version is the newest stable tag behind REV, so a checkout without the remote's
+    tags fetches them first rather than refusing or naming an older release."""
+    repo, _upstream, invoke = fixture_repo
+    git(repo, 'tag', '-d', 'v1.2.3')
+    result, _calls = invoke('--build-commit', 'main')
+    assert result.returncode == 0, result.stderr
+    assert '-v1.2.3 of ' in result.stdout
+    assert git(repo, 'tag', '--list', 'v*') == 'v1.2.3'
 
 
 def test_commit_build_dispatch_is_repository_independent(fixture_repo):

@@ -369,8 +369,7 @@ DEFAULT_CONFIG = {
         # Snap-packaged Docker under AppArmor (Ubuntu cloud images; LP#1908448) refuses to exec
         # anything under `--init` or `--security-opt no-new-privileges` ("operation not
         # permitted"). True drops those two flags; every other hardening stays. See #9730.
-        "docker_snap_compat": False,
-        "docker_zero_cap": False,  # Drop ALL capabilities, including init privilege-drop caps.
+        "docker_snap_compat": False, "docker_zero_cap": False,  # Zero-cap also drops init privilege-drop caps.
         # Trusted profiles sharing one Docker container identity; empty = per-profile boundary.
         "docker_shared_container_key": "",
         # SSH: carry exported env vars between commands (cwd always carries). false = every command

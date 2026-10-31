@@ -461,3 +461,24 @@ describe('SidebarSessionRow continuation badge', () => {
     expect(continuationGlyph(branch.container)).toBeNull()
   })
 })
+
+// The non-virtualized list (< VIRTUALIZE_THRESHOLD rows) is a height-capped
+// flex column. A row's explicit min-height replaces its content-based flex
+// minimum, so a shrinkable Inbox card collapsed to its 54px floor while its
+// ~94px content painted over the rows and dividers below it. jsdom has no
+// layout, so pin the contract on the row shell itself.
+describe('SidebarSessionRow flex sizing', () => {
+  const shell = (container: HTMLElement) => container.querySelector('.row-hover')
+
+  it('never lets the flex column shrink an Inbox card below its content', () => {
+    const { container } = renderRow(makeSession({ title: 'Card' }), { card: true })
+
+    expect(shell(container)?.className).toMatch(/\bshrink-0\b/)
+  })
+
+  it('keeps the inline row unshrinkable too', () => {
+    const { container } = renderRow(makeSession({ title: 'Inline' }))
+
+    expect(shell(container)?.className).toMatch(/\bshrink-0\b/)
+  })
+})

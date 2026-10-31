@@ -186,7 +186,11 @@ export function SidebarRowShell({
       className={cn(
         SIDEBAR_ROW_MIN_H,
         SIDEBAR_ROW_PAD_TRAIL,
-        'grid grid-cols-[minmax(0,1fr)_auto] items-stretch rounded-md',
+        // shrink-0: rows sit in a height-capped flex-col scroller. An explicit
+        // min-height replaces the flex item's content-based minimum, so a
+        // shrinkable row collapses to its min-h while taller content (the
+        // Inbox card: 54px min vs ~94px content) paints over the next row.
+        'grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-stretch rounded-md',
         className
       )}
       {...props}

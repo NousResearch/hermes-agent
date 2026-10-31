@@ -222,24 +222,6 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
         </Tip>
       )}
       <div className="ml-auto flex min-w-0 shrink items-center gap-2">
-        {task.estimate?.ok && (
-          <Tip label={task.estimate.rationale || k.roughEstimate}>
-            <Meta icon="dashboard">
-              {task.estimate.complexity && (
-                <span
-                  aria-label={k.complexity[task.estimate.complexity]}
-                  className="shrink-0 rounded border border-(--ui-border) px-1 font-semibold"
-                  title={k.complexity[task.estimate.complexity]}
-                >
-                  {task.estimate.complexity}
-                </span>
-              )}
-              <span className="shrink-0">
-                ~{compactNumber(task.estimate.est_tokens)} {k.tokUnit}
-              </span>
-            </Meta>
-          </Tip>
-        )}
         {typeof task.priority === 'number' && task.priority > 0 && <PriorityGlyph priority={task.priority} />}
         {task.progress && task.progress.total > 0 && (
           <Meta icon="checklist">
@@ -286,6 +268,7 @@ function Card({
   const summary = task.latest_summary || task.body
   const fallback = useDefaultAssignee()
   const arc = arcState(task, fallback)
+  const estimate = task.estimate?.ok ? task.estimate : null
 
   return (
     <ContextMenu>
@@ -320,7 +303,19 @@ function Card({
           {(arc === 'running' || arc === 'stale') && !dragging && !selected && (
             <span aria-hidden className={cn('kanban-arc', arc === 'stale' && 'kanban-arc--stale')} />
           )}
-          <span className="line-clamp-2 text-[0.8125rem] font-medium leading-snug text-foreground">
+          {estimate?.complexity && (
+            <Tip
+              label={`~${compactNumber(estimate.est_tokens)} ${k.tokUnit} · ${estimate.rationale || k.roughEstimate}`}
+            >
+              <span
+                aria-label={k.complexity[estimate.complexity]}
+                className="absolute top-2 right-2 rounded border border-(--ui-border) bg-(--ui-bg-elevated) px-1.5 py-0.5 text-[0.6875rem] font-semibold text-(--ui-text-tertiary)"
+              >
+                {estimate.complexity}
+              </span>
+            </Tip>
+          )}
+          <span className="line-clamp-2 pr-8 text-[0.8125rem] font-medium leading-snug text-foreground">
             {task.title || task.id}
           </span>
           {summary && (

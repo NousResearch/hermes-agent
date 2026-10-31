@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import functools
 import itertools
+import json
 import os
 import re
 import shutil
@@ -135,6 +136,111 @@ def _luminance_from_hex(hex_str: str) -> float | None:
 
 _DA1_REPLY_RE = re.compile(rb"\x1b\[\?[0-9;]*c")
 
+# A terminal that answers neither OSC 11 nor the DA1 fence pays the full probe budget on EVERY launch
+# (Apple Terminal replies with zero bytes). Require two consecutive silent launches before skipping
+# probes for a day, so one missed window does not hide a light terminal. Any received byte, including
+# a late reply in the drain, resets the count: theme switches are picked up on the next start.
+_OSC11_SILENT_TTL_SECONDS = 24 * 60 * 60
+
+# Env vars that identify the terminal the verdict belongs to — a different terminal gets its own probe.
+_OSC11_SILENT_ENV_KEYS = ("TERM", "TERM_PROGRAM", "COLORTERM")
+
+
+def _osc11_silent_cache_path():
+    """File holding consecutive silent-probe counts, or None when no home resolves."""
+    try:
+        from hermes_constants import get_hermes_dir
+
+        return get_hermes_dir("cache/terminal", "terminal_cache") / "osc11_silent.json"
+    except (ImportError, OSError):
+        return None  # no resolvable home: probe without a cache rather than fail startup
+
+
+def _osc11_terminal_fingerprint() -> str:
+    """Identity of the terminal a cached verdict is about."""
+    return "|".join((os.environ.get(key) or "").strip().lower() for key in _OSC11_SILENT_ENV_KEYS)
+
+
+def _osc11_terminal_silent_record() -> dict:
+    """Read this terminal's record, including an expired one, without creating it."""
+    path = _osc11_silent_cache_path()
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}  # missing / unreadable / not JSON — probe as usual
+    if not isinstance(data, dict) or data.get("terminal") != _osc11_terminal_fingerprint():
+        return {}
+    return data
+
+
+def _osc11_terminal_silent_misses() -> int:
+    """Consecutive silent launches for this terminal within the one-day TTL."""
+    data = _osc11_terminal_silent_record()
+    try:
+        recorded = float(data.get("at") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    misses = data.get("misses")
+    if type(misses) is not int or misses < 0:
+        return 0
+    return misses if 0 <= time.time() - recorded < _OSC11_SILENT_TTL_SECONDS else 0
+
+
+def _osc11_terminal_known_silent() -> bool:
+    """True after two consecutive fully silent OSC 11/DA1 probes within the TTL (#144550)."""
+    return _osc11_terminal_silent_misses() >= 2
+
+
+def _remember_osc11_terminal_silent() -> None:
+    """Increment the silent-launch count; only the second miss allows skipping."""
+    path = _osc11_silent_cache_path()
+    if path is None:
+        return
+    with suppress(Exception):
+        misses = _osc11_terminal_silent_misses() + 1
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"terminal": _osc11_terminal_fingerprint(), "at": time.time(), "misses": misses}),
+            encoding="utf-8",
+        )
+
+
+def _reset_osc11_terminal_silent() -> None:
+    """Any received byte breaks the streak; write only an existing matching record."""
+    data = _osc11_terminal_silent_record()
+    if not data:
+        return
+    path = _osc11_silent_cache_path()
+    if path is not None:
+        with suppress(Exception):
+            data["misses"] = 0
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _drain_late_osc11_reply(fd: int) -> bool:
+    """Drain stragglers for 50 ms, reporting whether any bytes arrived."""
+    import select
+
+    answered = False
+    with suppress(Exception):
+        deadline = time.monotonic() + 0.05
+        while time.monotonic() < deadline:
+            r, _, _ = select.select([fd], [], [], deadline - time.monotonic())
+            if not r or not os.read(fd, 64):
+                break
+            answered = True
+    return answered
+
+
+def _record_osc11_probe(silent: bool, answered: bool) -> None:
+    """Only a fully silent probe and drain count toward skipping future probes."""
+    if answered:
+        _reset_osc11_terminal_silent()
+    elif silent:
+        _remember_osc11_terminal_silent()
+
 
 def _query_osc11_background() -> str | None:
     """Terminal background via OSC 11 as "#RRGGBB", or None.
@@ -143,6 +249,8 @@ def _query_osc11_background() -> str | None:
     answer DA1, so its reply proves our OSC 11 was processed — otherwise a late reply
     leaks into prompt_toolkit's stdin as typed text. Skipped over SSH (round-trip too
     slow; a late BEL reads as Ctrl+G). A 50 ms drain after TCSAFLUSH catches stragglers.
+    Two consecutive fully silent launches suppress probes for one day; any received byte, including
+    a late reply in the drain, resets an existing miss count so one missed window cannot disable detection.
 
     After the main read + TCSAFLUSH, a short drain window (50 ms) catches late-arriving bytes that slipped
     past the flush — a race observed on VPS and container terminals under load (#40250).
@@ -152,6 +260,8 @@ def _query_osc11_background() -> str | None:
         return None
     if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
         return None
+    if _osc11_terminal_known_silent():
+        return None  # two consecutive fully silent launches within the last day
     try:
         import select
         import termios
@@ -160,6 +270,9 @@ def _query_osc11_background() -> str | None:
         old = termios.tcgetattr(fd)
     except Exception:
         return None
+    silent = False
+    buf = b""
+    probed = False
     try:
         try:
             tty.setcbreak(fd)
@@ -173,7 +286,7 @@ def _query_osc11_background() -> str | None:
             return None
         # Read until the DA1 fence closes; the 1s deadline only covers terminals ignoring DA1.
         deadline = time.monotonic() + 1.0
-        buf = b""
+        silent = True  # any byte (or a broken read) clears it; a full timeout leaves it set
         while time.monotonic() < deadline:
             r, _, _ = select.select([fd], [], [], deadline - time.monotonic())
             if not r:
@@ -181,12 +294,16 @@ def _query_osc11_background() -> str | None:
             try:
                 chunk = os.read(fd, 64)
             except OSError:
+                silent = False
                 break
             if not chunk:
+                silent = False
                 break
+            silent = False
             buf += chunk
             if _DA1_REPLY_RE.search(buf):
                 break
+        probed = True
         # Reply: \x1b]11;rgb:RRRR/GGGG/BBBB\x1b\\ — components are 1-4 hex digits.
         m = re.search(rb"rgb:([0-9a-fA-F]+)/([0-9a-fA-F]+)/([0-9a-fA-F]+)", buf)
         if not m:
@@ -202,14 +319,9 @@ def _query_osc11_background() -> str | None:
         # TCSAFLUSH discards unread input, scrubbing a partial reply before prompt_toolkit reads it.
         with suppress(Exception):
             termios.tcsetattr(fd, termios.TCSAFLUSH, old)
-        try:
-            drain_deadline = time.monotonic() + 0.05
-            while time.monotonic() < drain_deadline:
-                r, _, _ = select.select([fd], [], [], drain_deadline - time.monotonic())
-                if not r or not os.read(fd, 64):
-                    break
-        except Exception:
-            pass
+        answered = _drain_late_osc11_reply(fd)
+        if probed:
+            _record_osc11_probe(silent, bool(buf) or answered)
 
 
 def _heal_cooked_mode_drift(fd: int) -> bool:

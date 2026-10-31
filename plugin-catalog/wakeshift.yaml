@@ -1,0 +1,16 @@
+name: wakeshift
+title: Wakeshift
+repo: https://github.com/wakeshift/hermes-plugin
+sha: 9fe862a1655da4a0ff40a359d6878a81c84a965a
+description: "Wakes your Hermes chats when Wakeshift-enabled MCP servers you've added have news for them: a price drop, a finished build or a reply starts a new turn in the chat that asked for it, even while it's idle, framed as outside information rather than as you. Works for API server (gateway) and CLI chats. Disclosure — contacts only the Wakeshift servers it trusts (https://app.wakeshift.ai unless you set plugins.entries.wakeshift.settings.issuers): fetches their signing keys, exchanges signed beacons from MCP tool results for each chat's stream link, holds those streams open in background threads while Hermes runs, and acknowledges delivered messages; no telemetry. Starts runs on Hermes's own API server at 127.0.0.1 with the API server's key (read through agent.secret_scope). Removes Wakeshift beacons from MCP tool results and adds a one-line note. Stores each connected chat's stream links, one per server (which include access tokens), cached signing keys and delivery state under $HERMES_HOME/wakeshift (files 0600). Never answers approvals and runs no shell commands. Wakeshift's Connector Terms (https://wakeshift.ai/connector-terms) and Privacy Policy (https://wakeshift.ai/privacy) apply."
+maintainer: wakeshift
+tier: community
+category: automation
+version: "2026.10.31.2047+1ccdd3f"
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/wakeshift/hermes-plugin#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: [transform_tool_result, pre_llm_call, on_session_end]
+  provides_middleware: []
+  requires_env: []

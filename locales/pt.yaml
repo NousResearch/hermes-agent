@@ -206,6 +206,7 @@ gateway:
     paused: "⏸ Objetivo pausado: {goal}"
     no_resume: "Nenhum objetivo para retomar."
     resumed: "▶ Objetivo retomado: {goal}\nContinuando agora — darei o próximo passo imediatamente."
+    resumed_budget: "▶ Objetivo retomado com um orçamento de {budget} turnos: {goal}\nContinuando agora — darei o próximo passo imediatamente."
     invalid: "Objetivo inválido: {error}"
     set: "⊙ Objetivo definido (orçamento de {budget} turnos): {goal}\nVou continuar a trabalhar até o objetivo estar concluído, pausares/limpares ou o orçamento esgotar.\nControlos: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add exige um administrador do gateway configurado explicitamente (allow_admin_from para DMs, group_allow_admin_from para grupos)."

@@ -206,6 +206,7 @@ gateway:
     paused: "⏸ 目标已暂停：{goal}"
     no_resume: "没有可恢复的目标。"
     resumed: "▶ 目标已恢复：{goal}\n立即继续 — 我马上进行下一步。"
+    resumed_budget: "▶ 已恢复目标，回合预算为 {budget}：{goal}\n立即继续 — 我马上进行下一步。"
     invalid: "无效目标：{error}"
     set: "⊙ 目标已设置（{budget} 轮预算）：{goal}\n我将持续工作直到目标完成、你暂停/清除它，或预算耗尽。\n控制命令：/goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add 需要显式配置的网关管理员（私聊用 allow_admin_from，群组用 group_allow_admin_from）。"

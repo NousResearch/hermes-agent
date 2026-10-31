@@ -206,6 +206,7 @@ gateway:
     paused: "⏸ Doelwit gepouse: {goal}"
     no_resume: "Geen doelwit om voort te sit nie."
     resumed: "▶ Doelwit hervat: {goal}\nGaan nou voort — ek neem dadelik die volgende stap."
+    resumed_budget: "▶ Doelwit hervat met 'n begroting van {budget} beurte: {goal}\nGaan nou voort — ek neem dadelik die volgende stap."
     invalid: "Ongeldige doelwit: {error}"
     set: "⊙ Doelwit gestel ({budget}-beurt-begroting): {goal}\nEk sal aanhou werk totdat die doelwit klaar is, jy dit pouseer/verwyder, of die begroting opgebruik is.\nBeheer: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add vereis 'n uitdruklik opgestelde gateway-administrateur (allow_admin_from vir privaatgesprekke, group_allow_admin_from vir groepe)."

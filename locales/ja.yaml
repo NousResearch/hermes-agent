@@ -206,6 +206,7 @@ gateway:
     paused: "⏸ 目標を一時停止しました: {goal}"
     no_resume: "再開する目標がありません。"
     resumed: "▶ 目標を再開しました: {goal}\nすぐに続行します — 直ちに次のステップに進みます。"
+    resumed_budget: "▶ {budget}ターンの予算で目標を再開しました: {goal}\nすぐに続行します — 直ちに次のステップに進みます。"
     invalid: "無効な目標: {error}"
     set: "⊙ 目標を設定しました ({budget} ターンの予算): {goal}\n目標が完了するか、一時停止/解除されるか、予算が尽きるまで作業を続けます。\nコントロール: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add には、明示的に設定されたゲートウェイ管理者が必要です (DM は allow_admin_from、グループは group_allow_admin_from)。"

@@ -206,6 +206,7 @@ gateway:
     paused: "⏸ Sprioc curtha ar sos: {goal}"
     no_resume: "Níl aon sprioc le hatosú."
     resumed: "▶ Sprioc atosaithe: {goal}\nAg leanúint ar aghaidh anois — déanfaidh mé an chéad chéim eile láithreach."
+    resumed_budget: "▶ Sprioc atosaithe le buiséad {budget} seal: {goal}\nAg leanúint ar aghaidh anois — déanfaidh mé an chéad chéim eile láithreach."
     invalid: "Sprioc neamhbhailí: {error}"
     set: "⊙ Sprioc socraithe (buiséad {budget} seal): {goal}\nLeanfaidh mé ag obair go dtí go bhfuil an sprioc críochnaithe, go gcuirfidh tú ar sos / go nglanfaidh tú í, nó go n-úsáidfear an buiséad.\nSmacht: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ Teastaíonn riarthóir gateway atá cumraithe go sainráite le /goal gate add (allow_admin_from do DMs, group_allow_admin_from do ghrúpaí)."

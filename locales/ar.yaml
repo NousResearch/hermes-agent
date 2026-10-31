@@ -206,6 +206,7 @@ gateway:
     paused: "⏸ أُوقف الهدف مؤقتًا: {goal}"
     no_resume: "لا يوجد هدف لاستئنافه."
     resumed: "▶ استُؤنف الهدف: {goal}\nسأتابع الآن — سأتخذ الخطوة التالية فورًا."
+    resumed_budget: "▶ تم استئناف الهدف بميزانية {budget} دورًا: {goal}\nسأتابع الآن — سأتخذ الخطوة التالية فورًا."
     invalid: "هدف غير صالح: {error}"
     set: "⊙ حُدِّد الهدف (ميزانية {budget} دور): {goal}\nسأواصل العمل حتى يكتمل الهدف، أو توقفه/تمسحه، أو تنفد الميزانية.\nالتحكم: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ يتطلّب /goal gate add مشرف بوّابة مضبوطًا صراحةً (allow_admin_from للرسائل الخاصة، group_allow_admin_from للمجموعات)."

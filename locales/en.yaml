@@ -209,6 +209,7 @@ gateway:
     paused: "⏸ Goal paused: {goal}"
     no_resume: "No goal to resume."
     resumed: "▶ Goal resumed: {goal}\nContinuing now — I'll take the next step right away."
+    resumed_budget: "▶ Goal resumed with a {budget}-turn budget: {goal}\nContinuing now — I'll take the next step right away."
     invalid: "Invalid goal: {error}"
     set: "⊙ Goal set ({budget}-turn budget): {goal}\nI'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add requires an explicitly configured gateway admin (allow_admin_from for DMs, group_allow_admin_from for groups)."

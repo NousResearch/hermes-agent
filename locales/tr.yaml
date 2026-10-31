@@ -206,6 +206,7 @@ gateway:
     paused: "⏸ Hedef duraklatıldı: {goal}"
     no_resume: "Devam ettirilecek hedef yok."
     resumed: "▶ Hedef devam ettirildi: {goal}\nHemen devam ediyorum — bir sonraki adımı derhal atacağım."
+    resumed_budget: "▶ Hedef {budget} turluk bütçeyle sürdürüldü: {goal}\nHemen devam ediyorum — bir sonraki adımı derhal atacağım."
     invalid: "Geçersiz hedef: {error}"
     set: "⊙ Hedef ayarlandı ({budget} turluk bütçe): {goal}\nHedef tamamlanana, siz duraklatana/temizleyene veya bütçe tükenene kadar çalışmaya devam edeceğim.\nKontroller: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add, açıkça yapılandırılmış bir gateway yöneticisi gerektirir (DM'ler için allow_admin_from, gruplar için group_allow_admin_from)."

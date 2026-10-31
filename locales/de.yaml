@@ -206,6 +206,7 @@ gateway:
     paused: "⏸ Ziel pausiert: {goal}"
     no_resume: "Kein Ziel zum Fortsetzen."
     resumed: "▶ Ziel fortgesetzt: {goal}\nEs geht sofort weiter — ich übernehme jetzt den nächsten Schritt."
+    resumed_budget: "▶ Ziel mit einem Budget von {budget} Runden fortgesetzt: {goal}\nEs geht sofort weiter — ich übernehme jetzt den nächsten Schritt."
     invalid: "Ungültiges Ziel: {error}"
     set: "⊙ Ziel gesetzt ({budget}-Zug-Budget): {goal}\nIch arbeite weiter, bis das Ziel erreicht ist, Sie es pausieren/löschen oder das Budget aufgebraucht ist.\nSteuerung: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add erfordert einen explizit konfigurierten Gateway-Admin (allow_admin_from für Direktnachrichten, group_allow_admin_from für Gruppen)."

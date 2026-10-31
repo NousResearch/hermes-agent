@@ -206,6 +206,7 @@ gateway:
     paused: "⏸ 목표 일시정지: {goal}"
     no_resume: "재개할 목표가 없습니다."
     resumed: "▶ 목표 재개: {goal}\n바로 계속합니다 — 즉시 다음 단계를 진행하겠습니다."
+    resumed_budget: "▶ {budget}턴 예산으로 목표를 재개했습니다: {goal}\n바로 계속합니다 — 즉시 다음 단계를 진행하겠습니다."
     invalid: "잘못된 목표: {error}"
     set: "⊙ 목표 설정됨 ({budget}회 예산): {goal}\n목표가 완료되거나, 일시정지/삭제하거나, 예산이 소진될 때까지 계속 작업하겠습니다.\n제어: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add는 명시적으로 설정된 게이트웨이 관리자가 필요해요(DM은 allow_admin_from, 그룹은 group_allow_admin_from)."

@@ -206,6 +206,7 @@ gateway:
     paused: "⏸ 目標已暫停：{goal}"
     no_resume: "沒有可恢復的目標。"
     resumed: "▶ 目標已恢復：{goal}\n立即繼續 — 我馬上進行下一步。"
+    resumed_budget: "▶ 已恢復目標，回合預算為 {budget}：{goal}\n立即繼續 — 我馬上進行下一步。"
     invalid: "無效目標：{error}"
     set: "⊙ 目標已設定（{budget} 輪預算）：{goal}\n我會持續工作直到目標完成、你暫停／清除目標，或預算耗盡。\n控制指令：/goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add 需要明確設定的閘道管理員（私訊用 allow_admin_from，群組用 group_allow_admin_from）。"

@@ -1195,7 +1195,7 @@ class GoalManager:
         self._state.clear_wait()   # a wait barrier is meaningless once paused
         return self._save()
 
-    def resume(self, *, reset_budget: bool = True) -> Optional[GoalState]:
+    def resume(self, *, reset_budget: bool = True, max_turns: Optional[int] = None) -> Optional[GoalState]:
         if not self._state:
             return None
         self._state.status = "active"
@@ -1203,6 +1203,8 @@ class GoalManager:
         self._state.clear_wait()   # resuming starts fresh
         if reset_budget:
             self._state.turns_used = 0
+        if max_turns is not None:
+            self._state.max_turns = int(max_turns)
         return self._save()
 
     def clear(self) -> None:
@@ -1478,7 +1480,7 @@ class GoalManager:
         return self._pause_decision(
             f"turn budget exhausted ({state.turns_used}/{state.max_turns})", verdict, reason,
             f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used{note}. "
-            "Use /goal resume to keep going, or /goal clear to stop.",
+            "Use /goal resume to keep going (or /goal resume <turns> for a longer window), or /goal clear to stop.",
         )
 
     def evaluate_after_turn(

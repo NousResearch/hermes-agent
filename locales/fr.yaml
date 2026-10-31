@@ -232,6 +232,7 @@ gateway:
     paused: "⏸ Objectif en pause : {goal}"
     no_resume: "Aucun objectif à reprendre."
     resumed: "▶ Objectif repris : {goal}\nReprise immédiate — je passe tout de suite à l'étape suivante."
+    resumed_budget: "▶ Objectif repris avec un budget de {budget} tours : {goal}\nReprise immédiate — je passe tout de suite à l'étape suivante."
     invalid: "Objectif invalide : {error}"
     set: "⊙ Objectif défini (budget de {budget} tours) : {goal}\nJe continuerai jusqu'à ce que l'objectif soit terminé, que vous le mettiez en pause/effaciez, ou que le budget soit épuisé.\nContrôles : /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add nécessite un admin du gateway explicitement configuré (allow_admin_from pour les messages privés, group_allow_admin_from pour les groupes)."

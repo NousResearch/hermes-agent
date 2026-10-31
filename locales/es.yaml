@@ -206,6 +206,7 @@ gateway:
     paused: "⏸ Objetivo pausado: {goal}"
     no_resume: "No hay objetivo para reanudar."
     resumed: "▶ Objetivo reanudado: {goal}\nContinuando ahora — daré el siguiente paso de inmediato."
+    resumed_budget: "▶ Objetivo reanudado con un presupuesto de {budget} turnos: {goal}\nContinuando ahora — daré el siguiente paso de inmediato."
     invalid: "Objetivo no válido: {error}"
     set: "⊙ Objetivo establecido (presupuesto de {budget} turnos): {goal}\nSeguiré trabajando hasta que el objetivo se complete, lo pauses/elimines o se agote el presupuesto.\nControles: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add requiere un administrador del gateway configurado explícitamente (allow_admin_from para MD, group_allow_admin_from para grupos)."

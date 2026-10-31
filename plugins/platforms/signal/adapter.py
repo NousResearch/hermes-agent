@@ -222,6 +222,14 @@ class SignalAdapter(BasePlatformAdapter):
         self._recipient_uuid_by_number: dict[str, str] = {}
         self._recipient_number_by_uuid: dict[str, str] = {}
         self._recipient_cache_lock = asyncio.Lock()
+        # Approval prompts we sent: wire timestamp (ms) → (chat_id, stored_at). A 👍/👎 (or ✅/❌)
+        # reaction on one of these messages is routed as the approval reply for that chat — the
+        # Signal equivalent of the gateway's plaintext "👍" approve / "👎" deny words. Entries are
+        # consumed on first reaction and TTL-bounded just past the approvals.timeout window.
+        self._approval_prompt_chats: OrderedDict[int, tuple] = OrderedDict()
+        self._max_approval_prompts = 128
+        from tools.approval_context import _get_approval_timeout
+        self._approval_prompt_ttl = float(_get_approval_timeout()) + 60.0
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s", self.http_url,
                     redact_phone(self.account), "enabled" if self.group_allow_from else "disabled")
 
@@ -437,6 +445,12 @@ class SignalAdapter(BasePlatformAdapter):
         data_message = (envelope_data.get("dataMessage")
                         or (envelope_data.get("editMessage") or {}).get("dataMessage"))
         if not data_message:
+            return
+        # signal-cli delivers a reaction as dataMessage.reaction with no message text, so it would be
+        # dropped as contentless below (and by group mention gating): route a 👍/👎 (✅/❌) on an
+        # approval prompt we sent as the approval reply instead.
+        if reaction_data := data_message.get("reaction"):
+            await self._handle_reaction_envelope(envelope_data, reaction_data)
             return
         group_info = data_message.get("groupInfo")
         group_id = group_info.get("groupId") if group_info else None
@@ -712,6 +726,7 @@ class SignalAdapter(BasePlatformAdapter):
         base_params = await self._with_target({"account": self.account}, chat_id)
         chunks = self._split_signal_formatted_message(*markdown_to_signal(content), self.MAX_MESSAGE_LENGTH)
         last_result = None
+        sent_results: list[Any] = []
         for idx, (plain_text, text_styles) in enumerate(chunks, start=1):
             params: dict[str, Any] = dict(base_params, message=plain_text)
             if len(text_styles) == 1:
@@ -723,8 +738,36 @@ class SignalAdapter(BasePlatformAdapter):
             last_result, err = await self._rpc_send(params, "RPC send failed")
             if err:
                 return err
+            sent_results.append(last_result)
+        # Approval prompts are reaction-addressable: the runner marks the send with
+        # ``is_approval_prompt`` — record each chunk's wire timestamp so a 👍/👎 reaction on the
+        # prompt (whichever chunk of a split message) resolves the pending approval for this chat.
+        if isinstance(metadata, dict) and metadata.get("is_approval_prompt"):
+            for _res in sent_results:
+                ts = _res.get("timestamp") if isinstance(_res, dict) else None
+                if ts is None:
+                    continue
+                try:
+                    self._remember_approval_prompt(int(ts), chat_id)  # int() guards non-numeric ts
+                except (TypeError, ValueError):
+                    continue
         # No editable message identifier; message_id=None keeps the stream consumer on the non-edit path.
         return SendResult(success=True, message_id=None, raw_response=last_result)
+
+    def _remember_approval_prompt(self, ts_ms: int, chat_id: str) -> None:
+        """Record that the message with wire timestamp *ts_ms* is an approval prompt for *chat_id*."""
+        self._approval_prompt_chats.pop(ts_ms, None)
+        self._approval_prompt_chats[ts_ms] = (chat_id, time.monotonic())
+        self._drop_stale_approval_prompts()
+        while len(self._approval_prompt_chats) > self._max_approval_prompts:
+            self._approval_prompt_chats.popitem(last=False)
+
+    def _drop_stale_approval_prompts(self) -> None:
+        """Drop prompt records past their TTL (approvals.timeout + margin): after that window the
+        approval has timed out, and a late reaction must not spawn a stray '👍' agent turn."""
+        cutoff = time.monotonic() - self._approval_prompt_ttl
+        for ts in [ts for ts, (_chat, stored) in self._approval_prompt_chats.items() if stored < cutoff]:
+            self._approval_prompt_chats.pop(ts, None)
 
     def _track_sent_timestamp(self, rpc_result) -> None:
         """Record outbound message timestamp for echo-back filtering."""
@@ -951,6 +994,66 @@ class SignalAdapter(BasePlatformAdapter):
         raw = event.raw_message
         ok = isinstance(raw, dict) and raw.get("sender") and raw.get("timestamp_ms")
         return (raw["sender"], raw["timestamp_ms"]) if ok else None
+
+    # Emoji → approval-word map for reactions on OUR approval prompts. Mirrors the gateway's
+    # plaintext approval words (run_busy: "👍"→approve, "👎"→deny), with ✅/❌ added since they
+    # sit right next to 👍/👎 on many keyboards. The synthesized word event takes the exact same
+    # gateway path as a typed "👍"/"👎" reply.
+    _APPROVAL_REACTION_WORDS = {"👍": "👍", "✅": "👍", "👎": "👎", "❌": "👎"}
+
+    async def _handle_reaction_envelope(self, envelope_data: dict, reaction: dict) -> None:
+        """Route a 👍/👎 (✅/❌) reaction on an approval prompt we sent as the approval reply.
+
+        The synthesized word event flows through handle_message() → the gateway's busy-path
+        plaintext-approval routing (run_busy), which only resolves while an approval is actually
+        pending for that chat. Everything else — other emoji, reaction removals, reactions on
+        non-prompt messages — is observed and dropped: no agent turn is ever spawned from a
+        reaction.
+        """
+        try:
+            if reaction.get("isRemove"):
+                logger.debug("Signal: reaction removal ignored (emoji=%r)", reaction.get("emoji"))
+                return
+            word = self._APPROVAL_REACTION_WORDS.get((reaction.get("emoji") or "").strip())
+            if word is None:
+                logger.debug("Signal: non-approval reaction ignored (emoji=%r)", reaction.get("emoji"))
+                return
+            raw_ts = reaction.get("targetSentTimestamp")
+            target_ts = None
+            if raw_ts is not None:
+                try:
+                    target_ts = int(raw_ts)  # int() guards non-numeric ts
+                except (TypeError, ValueError):
+                    target_ts = None
+            entry = self._approval_prompt_chats.pop(target_ts, None) if target_ts else None
+            if entry is None:
+                logger.debug("Signal: approval-emoji reaction on a non-prompt message dropped (ts=%s)",
+                             reaction.get("targetSentTimestamp"))
+                return
+            chat_id, stored_at = entry
+            if time.monotonic() - stored_at > self._approval_prompt_ttl:
+                logger.debug("Signal: approval reaction on an expired prompt dropped")
+                return
+            sender = (envelope_data.get("sourceNumber") or envelope_data.get("sourceUuid")
+                      or envelope_data.get("source"))
+            if not sender:
+                logger.debug("Signal: approval reaction with unusable reactor dropped")
+                return
+            sender_uuid = envelope_data.get("sourceUuid") or ""
+            source = self.build_source(
+                chat_id=str(chat_id), chat_type="group" if str(chat_id).startswith("group:") else "dm",
+                user_id=str(sender), user_name=str(sender),
+                user_id_alt=str(sender_uuid) if sender_uuid else None)
+            event = MessageEvent(
+                source=source, text=word, message_type=MessageType.TEXT,
+                raw_message={"reaction": True, "emoji": reaction.get("emoji"),
+                             "target_author": reaction.get("targetAuthor"),
+                             "target_timestamp": target_ts})
+            logger.info("Signal: approval reaction %s → %s (chat=%s, reactor=%s)",
+                        reaction.get("emoji"), word, chat_id[:20], redact_phone(str(sender)))
+            await self.handle_message(event)
+        except Exception:
+            logger.exception("Signal: failed to route approval reaction; typed /approve still works")
 
     def _reactions_enabled(self, event: MessageEvent = None) -> bool:
         """SIGNAL_REACTIONS env gate, then the DM allowlist: reactions fire before run.py's auth gate,

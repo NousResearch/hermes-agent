@@ -317,6 +317,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_auth_park",
         "_auth_type",
         "_config",
+        "_dropped_tools",
         "_elicitation",
         "_error",
         "_ever_connected",
@@ -368,6 +369,9 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._reconnect_event = asyncio.Event()
         self._tools: list = []
         self._registered_tool_names: list[str] = []
+        # Tools the server offered but the tool-listing guard discarded because their definition
+        # fails the SDK's wire schema: ``{tool_name: reason}``. Reset on every (re)discovery.
+        self._dropped_tools: dict[str, str] = {}
         self._config: dict = {}
         self._error: Optional[Exception] = None
         self._sampling: Optional[SamplingHandler] = None

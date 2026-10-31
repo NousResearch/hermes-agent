@@ -58,10 +58,12 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
     from .adapter_slash_lane import SlashHandoffLanes
     from .adapter_slash_payload import slash_command_text, slash_thread_id
+    from .adapter_reactions_context import slack_reactions_marker
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
+    from adapter_reactions_context import slack_reactions_marker  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -5914,6 +5916,10 @@ class SlackAdapter(BasePlatformAdapter):
                 parent_text = msg_text
                 if skip_for_delta:
                     continue
+            # Reactions are context-only: parent_text drives mention wake checks.
+            reactions = slack_reactions_marker(msg)
+            if reactions:
+                msg_text = f"{msg_text} {reactions}"
             context_parts.append(
                 await self._thread_context_line(msg, msg_text, is_parent, team_id, channel_id))
         content = ""

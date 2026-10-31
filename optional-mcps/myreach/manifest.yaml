@@ -1,0 +1,23 @@
+# MyReach hosted page publishing connector.
+manifest_version: 1
+name: myreach
+connector_slug: myreach
+description: Inspect public websites; draft profiles, links, design and languages; preview and request owner approval.
+source: https://myreach.top/ai-agents/mcp
+transport:
+  type: http
+  url: https://myreach.top/mcp
+auth:
+  type: oauth
+suggest:
+  keywords:
+    - myreach
+    - creator page
+    - business profile
+    - agent profile
+  hosts:
+    - myreach.top
+post_install: |
+  Connect your MyReach account when prompted and select the pages to authorize.
+  New pages remain private for 24 hours until their verified owner claims and publishes them.
+  Existing page changes require browser approval. No commerce or domain purchases.

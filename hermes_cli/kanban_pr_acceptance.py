@@ -141,9 +141,6 @@ def collect_acceptance(contract: str, published_pr: str | None,
                     required.update((r["context"], r.get("integration_id"))
                                     for r in rule["parameters"]["required_status_checks"])
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
-        if not required:
-            receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
-            return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
                      paginate=True, profile_home=profile_home)
         runs = [run for page in pages for run in page["check_runs"]]
@@ -152,24 +149,41 @@ def collect_acceptance(contract: str, published_pr: str | None,
         statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
                                                        paginate=True, profile_home=profile_home) for s in page]
         outcomes = []
-        for context, app_id in sorted(required, key=str):
-            matching = [r for r in runs if r["name"] == context and
-                        (app_id in (None, -1) or r["app"]["id"] == app_id)]
-            # A legacy status can satisfy an unpinned context, but never a check pinned to an app.
-            legacy = [s for s in statuses if s["context"] == context] if app_id in (None, -1) else []
-            selected = matching + ([max(legacy, key=lambda s: s["id"])] if legacy else [])
-            if not selected:
-                outcomes.append("missing")
-                receipt["checks"].append({"name": context, "classification": "missing", "head_sha": sha})
-            for check in selected:
-                is_run = "conclusion" in check
-                outcome = check.get("conclusion") if is_run else check["state"]
+        if not required:
+            # Without repository policy, exact-head hosted CI is still the acceptance
+            # evidence. An empty discovery is missing evidence, not a local-only task.
+            discovered = [(check, True) for check in runs] + [(status, False) for status in statuses]
+            if not discovered:
+                receipt["detail"] = "No applicable hosted CI checks were discovered for the exact PR head."
+                return receipt
+            for check, is_run in discovered:
+                outcome = check.get("conclusion") if is_run else check.get("state")
                 classification = _classify(check, sha, outcome, is_run)
                 outcomes.append(classification)
-                receipt["checks"].append({"name": context, "id": check["id"],
+                receipt["checks"].append({"name": check.get("name", check.get("context")),
+                    "id": check.get("id"),
                     "url": check.get("html_url") or check.get("target_url"),
                     "head_sha": check.get("head_sha", check.get("sha")),
                     "classification": classification, "conclusion": outcome})
+        else:
+            for context, app_id in sorted(required, key=str):
+                matching = [r for r in runs if r["name"] == context and
+                            (app_id in (None, -1) or r["app"]["id"] == app_id)]
+                # A legacy status can satisfy an unpinned context, but never a check pinned to an app.
+                legacy = [s for s in statuses if s["context"] == context] if app_id in (None, -1) else []
+                selected = matching + ([max(legacy, key=lambda s: s["id"])] if legacy else [])
+                if not selected:
+                    outcomes.append("missing")
+                    receipt["checks"].append({"name": context, "classification": "missing", "head_sha": sha})
+                for check in selected:
+                    is_run = "conclusion" in check
+                    outcome = check.get("conclusion") if is_run else check["state"]
+                    classification = _classify(check, sha, outcome, is_run)
+                    outcomes.append(classification)
+                    receipt["checks"].append({"name": context, "id": check["id"],
+                        "url": check.get("html_url") or check.get("target_url"),
+                        "head_sha": check.get("head_sha", check.get("sha")),
+                        "classification": classification, "conclusion": outcome})
         # Re-read after all pages: old-head successes are never transferable.
         current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
         if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):

@@ -739,6 +739,8 @@ terminal:
 
 Hermes rejects `docker_extra_args` that add capabilities, enable privileged mode, or disable `no-new-privileges`. Strict and default runs use separate container identities, and Hermes only reuses a strict container after `docker inspect` confirms the zero-capability posture.
 
+In both default and zero-cap mode, Hermes logs a warning when `docker_extra_args` may weaken sandbox hardening: added capabilities or privileged mode, security-option overrides, host/container namespace sharing, or additional mount/device flags. Mount flags are flagged conservatively because they can expose host files or replace sandbox mounts. The warning names only the options, not their values, and explains how to restore the hardened defaults. It does not remove or reject operator break-glass arguments; the existing zero-cap restrictions and egress enforcement remain unchanged. This diagnostic also runs when egress is disabled and is not a complete Docker option validator.
+
 This also removes the `SETUID` and `SETGID` capabilities normally supplied to root-started images so their init process can drop privileges. Use an image that already runs as its intended user, or enable `docker_run_as_host_user`, if that init flow cannot start without them. The setting is off by default, so existing Docker terminal behavior is unchanged.
 
 ### Snap-packaged Docker (AppArmor)

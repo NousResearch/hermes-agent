@@ -420,6 +420,46 @@ def _build_security_args(run_as_host_user: bool, run_exec: bool = False, snap_co
     return args if run_as_host_user else args + list(_PRIVDROP_CAP_ARGS)
 
 
+_HARDENING_NAMESPACE_FLAGS = {"--pid", "--ipc", "--uts", "--userns", "--cgroupns", "--network", "--net"}
+_HARDENING_MOUNT_FLAGS = {"--volume", "--mount", "--volumes-from", "--device"}
+
+
+def _extra_arg_may_weaken_hardening(flag: str, value: str) -> bool:
+    """Conservative diagnostic only, not a second Docker option validator."""
+    if flag == "--privileged":
+        return value.lower() not in {"false", "0", "f"}
+    if flag == "--security-opt":
+        return value.lower().replace(":", "=", 1) not in {
+            "no-new-privileges", "no-new-privileges=true", "no-new-privileges=1", "no-new-privileges=t"}
+    if flag in _HARDENING_NAMESPACE_FLAGS:
+        return value == "host" or value.startswith("container:")
+    return flag == "--cap-add" or flag in _HARDENING_MOUNT_FLAGS
+
+
+def _warn_hardening_extra_args(extra_args: list[str]) -> None:
+    """Make operator break-glass visible without changing argv or existing enforcement.
+
+    Mount/device flags are flagged conservatively: their source and target can expose host
+    state or replace sandbox mounts. Log option names only, never operator-supplied values.
+    """
+    overrides = set()
+    for i, arg in enumerate(extra_args):
+        flag, sep, value = arg.partition("=")
+        if not sep and flag != "--privileged" and i + 1 < len(extra_args):
+            value = extra_args[i + 1]
+        if re.match(r"^-[dit]*v", arg):
+            flag = "--volume"  # -v PATH, -vPATH and combined forms such as -itvPATH
+        if _extra_arg_may_weaken_hardening(flag, value):
+            overrides.add(flag)
+    if overrides:
+        logger.warning(
+            "docker_extra_args may bypass Docker sandbox hardening (%s): capabilities, "
+            "namespaces or mounts may weaken isolation. Remove these args to retain the "
+            "hardened defaults; keep them only for intentional operator break-glass. "
+            "Args are unchanged; existing zero-cap and egress restrictions still apply.",
+            ", ".join(sorted(overrides)))
+
+
 def _validate_zero_cap_extra_args(extra_args):
     for i, arg in enumerate(extra_args or []):
         if not isinstance(arg, str):
@@ -841,6 +881,7 @@ class DockerEnvironment(BaseEnvironment):
                 logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
                 continue
             validated_extra.append(arg)
+        _warn_hardening_extra_args(validated_extra)
         if egress_env_overrides:
             check_extra_args_collisions(validated_extra, critical_egress_names, enforce_egress)
         return egress_label, egress_volume_args, egress_host_args, _name_only_env_args(merged_env), validated_extra

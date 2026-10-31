@@ -1,15 +1,15 @@
 name: agentplaybooks-memory
 repo: https://github.com/matebenyovszky/agentplaybooks
-sha: 1060d810769c3108a2fd4b4301de7fda5d0730de
+sha: b0b9bcc242a5b68ca2f1a6e13a4b22ca035e6264
 subdir: packages/hermes-memory/agentplaybooks
-description: "Private AgentPlaybooks memory for Hermes: bounded keyword recall with acknowledgement filtering, brief repeated-query suppression and per-source failure cooldown across personal and team sources, exact native memory-write mirroring, archive and history. Disclosure — keywords derived from eligible user queries are sent to the configured AgentPlaybooks service for recall from your personal and configured team playbooks; explicit native memory writes are mirrored there. Defaults to agentplaybooks.ai over HTTPS; localhost HTTP is supported, and remote intranet HTTP requires an explicit opt-in that sends the API key unencrypted. Team and shared playbooks are configured explicitly: the agent can write, archive and permanently delete entries in configured team playbooks (shared playbooks are read-only), and teammates' entries are recalled into context."
+description: "Private AgentPlaybooks memory for Hermes: explicit recall by default, optional bounded automatic recall, native memory-write mirroring, archive and history. Registration, initialization, unused prefetch and profile switching make no network requests. Disclosure — explicit searches and opted-in automatic recall send query keywords to the configured AgentPlaybooks service for your personal and configured team sources; explicit native memory writes are mirrored there. Automatic recall has acknowledgement filtering, brief repeated-query suppression, a request/time budget and per-source failure cooldown. Defaults to agentplaybooks.ai over HTTPS; localhost HTTP is supported, and remote intranet HTTP requires an explicit opt-in that sends the API key unencrypted. Team and shared playbooks are configured explicitly: the agent can write, archive and permanently delete entries in configured team playbooks (shared playbooks are read-only), and teammates' entries are recalled into context."
 maintainer: matebenyovszky
 tier: community
 category: memory
 requires_hermes: ">=0.22.4"
-version: "0.3.2"
-docs_url: https://github.com/matebenyovszky/agentplaybooks/tree/1060d810769c3108a2fd4b4301de7fda5d0730de/packages/hermes-memory/agentplaybooks
-image: https://raw.githubusercontent.com/matebenyovszky/agentplaybooks/1060d810769c3108a2fd4b4301de7fda5d0730de/public/plugin-catalog/hermes-memory.png
+version: "0.4.0"
+docs_url: https://github.com/matebenyovszky/agentplaybooks/tree/b0b9bcc242a5b68ca2f1a6e13a4b22ca035e6264/packages/hermes-memory/agentplaybooks
+image: https://raw.githubusercontent.com/matebenyovszky/agentplaybooks/b0b9bcc242a5b68ca2f1a6e13a4b22ca035e6264/public/plugin-catalog/hermes-memory.png
 readme: true
 platforms: [linux, macos, windows]
 capabilities:

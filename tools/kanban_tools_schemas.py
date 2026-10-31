@@ -65,7 +65,7 @@ KANBAN_LIST_SCHEMA = _schema(
     "kanban_list",
     (
         "List Kanban task summaries so an orchestrator can discover work to route. Supports the same core filters as the CLI: assignee, "
-        "status, tenant, include_archived, and limit. Returns compact rows "
+        "status, exclude_status, tenant, include_archived, and limit. Returns compact rows "
         "with ids, title, status, assignee, priority, parent/child ids, and "
         "counts. Bounded to 50 rows by default, 200 max, with truncation "
         "metadata. Also recomputes ready tasks before listing, matching the "
@@ -77,7 +77,16 @@ KANBAN_LIST_SCHEMA = _schema(
         "status": {
             "type": "string",
             "enum": [*DEFAULT_WORKFLOW.keys(), ARCHIVED],
-            "description": "Optional task status filter.",
+            "description": "Optional task status filter (exact match).",
+        },
+        "exclude_status": {
+            "type": "array",
+            "items": {"type": "string", "enum": [*DEFAULT_WORKFLOW.keys(), ARCHIVED]},
+            "description": (
+                "Statuses to EXCLUDE (status NOT IN …). Use [\"done\", \"archived\"] to list only "
+                "work still in flight; combines with the other filters as AND, so a status in "
+                "both 'status' and 'exclude_status' is excluded."
+            ),
         },
         "tenant": _prop("string", "Optional tenant/project namespace filter."),
         "include_archived": _prop("boolean", "Include archived tasks. Defaults to false."),

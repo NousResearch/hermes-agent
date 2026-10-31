@@ -704,6 +704,9 @@ def _handle_list(args: dict, **kw) -> str:
         return tool_error("limit must be an integer")
     _check(limit >= 1, "limit must be >= 1")
     _check(limit <= KANBAN_LIST_MAX_LIMIT, f"limit must be <= {KANBAN_LIST_MAX_LIMIT}")
+    exclude_status = args.get("exclude_status")
+    if exclude_status is not None and not isinstance(exclude_status, (list, tuple)):
+        exclude_status = [exclude_status]
     with _board(args.get("board")) as (kb, conn):
         # Match CLI list: dependencies cleared since the last dispatcher tick
         # should be visible to orchestrators immediately.
@@ -711,7 +714,8 @@ def _handle_list(args: dict, **kw) -> str:
         # One extra row lets the output report truncation without dumping the board.
         rows = kb.list_tasks(
             conn, assignee=args.get("assignee"), status=args.get("status"),
-            tenant=args.get("tenant"), include_archived=include_archived, limit=limit + 1)
+            tenant=args.get("tenant"), include_archived=include_archived, limit=limit + 1,
+            exclude_status=exclude_status)
         truncated = len(rows) > limit
         tasks = rows[:limit]
         return json.dumps({

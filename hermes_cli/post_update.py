@@ -123,11 +123,17 @@ def step_sync_skills() -> dict:
     from tools.skills_sync import sync_skills
 
     result = sync_skills(quiet=True) or {}
-    return {
+    step = {
         "ok": True,
         "copied": len(result.get("copied") or []),
         "updated": len(result.get("updated") or []),
     }
+    # #143470: quiet sync cannot print a rename blocked behind a category symlink, so the
+    # warning rides the result and main() renders it. A deferred relocation is a warning,
+    # not a step failure — the step stays ok.
+    if result.get("relocation_warnings"):
+        step["warnings"] = list(result["relocation_warnings"])
+    return step
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +369,8 @@ def main(argv: list | None = None) -> int:
         state = "ok" if res.get("ok") else f"FAILED ({res.get('error')})"
         skipped = res.get("skipped")
         print(f"  post-update {name}: {f'skipped ({skipped})' if skipped else state}")
+        for warning in res.get("warnings") or ():
+            print(f"    ⚠ {warning}")
     return 1 if failed else 0
 
 

@@ -522,7 +522,12 @@ def _print_bundled_skills_sync_report() -> None:
         print(f"  − {len(result['cleaned'])} removed from manifest")
     if result.get("relocated"):
         print(f"  → {len(result['relocated'])} moved to new upstream paths: {', '.join(result['relocated'])}")
-    if not result["copied"] and not result.get("updated"):
+    # #143470: a rename blocked behind a category symlink is a deferred action, not silence —
+    # quiet sync cannot print it, so it travels in the result and is rendered here. While any
+    # relocation is blocked the report must NOT claim the skills are up to date.
+    for warning in result.get("relocation_warnings") or ():
+        print(f"  ⚠ {warning}")
+    if not result["copied"] and not result.get("updated") and not result.get("relocation_warnings"):
         print("  ✓ Skills are up to date")
 
 

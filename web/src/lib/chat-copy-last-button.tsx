@@ -22,7 +22,7 @@ export function CopyLastButton({
       title="Copy last assistant response as raw markdown"
       aria-label="Copy last assistant response"
       className={cn(
-        "absolute z-10",
+        "absolute z-30",
         "normal-case tracking-normal font-normal",
         "rounded border border-current/30",
         "bg-black/20",

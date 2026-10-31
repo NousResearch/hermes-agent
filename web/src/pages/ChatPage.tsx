@@ -25,8 +25,8 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
-import { PanelRight, RotateCcw, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Copy, Keyboard, PanelRight, RotateCcw, TextSelect, X } from "lucide-react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useSearchParams } from "react-router";
 
@@ -69,6 +69,13 @@ import {
 } from "@/lib/pty-mobile-input";
 import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
 import {
+  applyStickyModifiers,
+  bufferToPlainText,
+  EXTRA_KEY_SEQUENCES,
+  type ExtraKey,
+  type StickyModifiers,
+} from "@/lib/pty-extra-keys";
+import {
   resolvePtyKeyboardShortcut,
   sendPtyShortcutSequence,
 } from "@/lib/pty-keyboard-shortcuts";
@@ -77,6 +84,7 @@ import {
   parseResumeControlMessage,
   shouldFollowPtyOutput,
 } from "@/lib/pty-scroll";
+import { installTerminalLongPress } from "@/lib/terminal-long-press";
 import { installTerminalTouchScroll } from "@/lib/terminal-touch-scroll";
 import { uploadChatImage } from "@/lib/chatImagePaste";
 import { attachChatImageDropListeners } from "@/lib/chat-image-drop";
@@ -187,6 +195,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [endedReason, setEndedReason] = useState<"exited" | "start-failed">("exited");
   const navigate = useNavigate();
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const [pendingCopy, setPendingCopy] = useState<string | null>(null);
+  // Paste sheet: a real <textarea> the native iOS/Android long-press "Paste"
+  // menu works on, used when navigator.clipboard.readText is unavailable
+  // (plain HTTP) or denied.
+  const [pasteSheetOpen, setPasteSheetOpen] = useState(false);
+  const pasteSheetRef = useRef<HTMLTextAreaElement | null>(null);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
@@ -200,6 +214,43 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const connectingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ptyInputLineRef = useRef("");
   const mobileReplacementInputUntilRef = useRef(0);
+  // Mobile extra-keys bar: sticky Ctrl/Alt latch applied to the next input.
+  const [stickyMods, setStickyMods] = useState<StickyModifiers>({ ctrl: false, alt: false });
+  const stickyModsRef = useRef<StickyModifiers>({ ctrl: false, alt: false });
+  const updateStickyMods = useCallback((next: StickyModifiers) => {
+    stickyModsRef.current = next;
+    setStickyMods(next);
+  }, []);
+  // Mobile text selection: xterm paints to a canvas, so touch long-press
+  // can't select. "Select" mode overlays a plain-text snapshot of the buffer
+  // that native mobile selection handles work on.
+  const [selectText, setSelectText] = useState<string | null>(null);
+  const [selectFontSize, setSelectFontSize] = useState(13);
+  const selectOverlayRef = useRef<HTMLPreElement | null>(null);
+  // Fraction of the buffer the viewport was at when select mode opened, so
+  // the overlay lands on the same text the user was looking at.
+  const selectScrollFracRef = useRef(1);
+  const openSelectModeRef = useRef<(() => void) | null>(null);
+  const [coarsePointer, setCoarsePointer] = useState(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia("(pointer: coarse)").matches
+      : false,
+  );
+  const [keyBarOpen, setKeyBarOpen] = useState(() => {
+    try {
+      return localStorage.getItem("hermes.chat.keyBarOpen") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const setKeyBarOpenPersist = useCallback((open: boolean) => {
+    setKeyBarOpen(open);
+    try {
+      localStorage.setItem("hermes.chat.keyBarOpen", open ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, []);
   const [ptyState, setPtyState] = useState<PtyConnectionState>("connecting");
   const ptyStateRef = useRef<PtyConnectionState>("connecting");
   // True until the first real PTY payload arrives for a resumed session.
@@ -482,6 +533,80 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => setEnd(null);
   }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
 
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mql = window.matchMedia("(pointer: coarse)");
+    const sync = () => setCoarsePointer(mql.matches);
+    mql.addEventListener?.("change", sync);
+    return () => mql.removeEventListener?.("change", sync);
+  }, []);
+
+  // Extra-keys bar → PTY. Sticky Ctrl/Alt also apply to these keys (e.g.
+  // Ctrl+← for word motion, Alt+Enter for newline).
+  const sendExtraKey = useCallback(
+    (key: ExtraKey) => {
+      let seq = EXTRA_KEY_SEQUENCES[key];
+      const mods = stickyModsRef.current;
+      if (mods.ctrl || mods.alt) {
+        seq = applyStickyModifiers(seq, mods).data;
+        updateStickyMods({ ctrl: false, alt: false });
+      }
+      ptyInputLineRef.current = "";
+      sendPtyShortcutSequence(wsRef.current, ptyStateRef.current, seq);
+    },
+    [updateStickyMods],
+  );
+
+  const pasteIntoTerminal = useCallback((text: string) => {
+    const term = termRef.current;
+    if (!term || !text) return;
+    term.paste(text);
+    term.focus();
+  }, []);
+
+  const handlePasteKey = useCallback(() => {
+    const clip = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
+    if (typeof window !== "undefined" && window.isSecureContext && clip?.readText) {
+      // iOS shows its own small "Paste" confirmation bubble here.
+      clip.readText().then(
+        (text) => (text ? pasteIntoTerminal(text) : setPasteSheetOpen(true)),
+        () => setPasteSheetOpen(true),
+      );
+      return;
+    }
+    setPasteSheetOpen(true);
+  }, [pasteIntoTerminal]);
+
+  useEffect(() => {
+    if (pasteSheetOpen) pasteSheetRef.current?.focus();
+  }, [pasteSheetOpen]);
+
+  const openSelectMode = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const buf = term.buffer.active;
+    const maxY = Math.max(1, buf.length - term.rows);
+    selectScrollFracRef.current = Math.min(1, buf.viewportY / maxY);
+    setSelectFontSize(term.options.fontSize ?? 13);
+    setSelectText(bufferToPlainText(buf));
+  }, []);
+  useEffect(() => {
+    openSelectModeRef.current = openSelectMode;
+  }, [openSelectMode]);
+
+  // Land the selection overlay at the bottom (latest output), like the terminal.
+  useLayoutEffect(() => {
+    const el = selectOverlayRef.current;
+    if (selectText !== null && el) {
+      el.scrollTop = (el.scrollHeight - el.clientHeight) * selectScrollFracRef.current;
+    }
+  }, [selectText]);
+
+  const copySelectionOrAll = useCallback(() => {
+    const sel = typeof window !== "undefined" ? window.getSelection()?.toString() : "";
+    void copyTextToClipboard(sel || selectText || "");
+  }, [selectText]);
+
   const handleCopyLast = () => {
     sendCopyLastCommand({
       wsRef,
@@ -588,8 +713,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // write is rejected — e.g. the OSC 52 response arriving outside the
         // original keydown event's activation ("user gesture" requirement).
         void copyTextToClipboard(text).then((copied) => {
-          if (!copied) {
-            console.warn("[dashboard clipboard] OSC 52 write failed");
+          if (copied) {
+            setPendingCopy(null);
+            setCopyState("copied");
+            if (copyResetRef.current) clearTimeout(copyResetRef.current);
+            copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
+          } else {
+            // Typically the write landed outside the tap's user-activation
+            // window (strict on iOS / plain-HTTP). A new tap is a fresh
+            // gesture, so offer one.
+            console.warn("[dashboard clipboard] OSC 52 write failed; prompting");
+            setPendingCopy(text);
           }
         });
       } catch {
@@ -780,7 +914,26 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ev.stopPropagation();
       return false;
     });
-    const cleanupTouchScroll = installTerminalTouchScroll(host, term);
+    // Touch gesture surface: the whole terminal card (host + its padding), so
+    // a drag that starts a few px off the canvas still scrolls the transcript
+    // instead of panning the page. Controls layered on the card (key bar,
+    // overlays, buttons) are excluded and keep their own touch behaviour.
+    const gestureSurface = termWrap ?? host;
+    const isTerminalTouch = (target: EventTarget | null) => {
+      if (!(target instanceof Element)) return true;
+      if (target.closest("button, a, input, textarea, select, [role=toolbar], [data-chat-overlay]")) {
+        return false;
+      }
+      return true;
+    };
+    // The chat owns the whole drag (no page pan / rubber-band / pull-to-
+    // refresh underneath) and tracks the finger 1:1 at the rendered row height.
+    const touchScroll = installTerminalTouchScroll(gestureSurface, term, {
+      containGesture: true,
+      acceptTarget: isTerminalTouch,
+      pxPerLine: () => Math.max(10, host.clientHeight / Math.max(1, term.rows)),
+    });
+    const cleanupTouchScroll = () => touchScroll();
 
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
@@ -796,6 +949,23 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       sendComposedText(data);
     });
     term.open(host);
+
+    // Mobile long-press → native-selectable text overlay (xterm's canvas can't
+    // do touch selection). Watches the same surface as touch scrolling and is
+    // vetoed when the hold is part of a scroll.
+    gestureSurface.style.setProperty("-webkit-touch-callout", "none");
+    gestureSurface.style.overscrollBehavior = "contain";
+    host.style.touchAction = "none";
+    const cleanupLongPress = installTerminalLongPress(
+      gestureSurface,
+      () => {
+        openSelectModeRef.current?.();
+      },
+      {
+        acceptTarget: isTerminalTouch,
+        shouldTrigger: () => !touchScroll.isScrolling(),
+      },
+    );
 
     // IME composition guard (fixes #52111).
     //
@@ -1500,6 +1670,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           return;
         }
 
+        const mods = stickyModsRef.current;
+        if (mods.ctrl || mods.alt) {
+          const applied = applyStickyModifiers(data, mods);
+          if (applied.consumed) {
+            updateStickyMods({ ctrl: false, alt: false });
+            ptyInputLineRef.current = "";
+            ws.send(applied.data);
+            return;
+          }
+        }
+
         const normalized = normalizePtyMobileInput(
           data,
           ptyInputLineRef.current,
@@ -1554,6 +1735,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onResizeDisposable?.dispose();
       onScrollDisposable?.dispose();
       mobileInputCleanup?.();
+      cleanupLongPress();
       compositionForwarder.dispose();
       cleanupTouchScroll();
       handleBrowserDropCleanup();
@@ -1607,6 +1789,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     resumeParam,
     scopedProfile,
     reconnectNonce,
+    updateStickyMods,
   ]);
 
   // NS-434 follow-up: attach the visualViewport keyboard-inset listeners
@@ -1905,8 +2088,186 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
 
+          {pasteSheetOpen && (
+            <div data-chat-overlay className="absolute inset-0 z-50 flex flex-col gap-2 p-3" style={{ backgroundColor: terminalBg, color: terminalFg }}>
+              <div className="text-xs opacity-70">Long-press the box and choose Paste, then Send.</div>
+              <textarea
+                ref={pasteSheetRef}
+                className="min-h-0 flex-1 resize-none rounded border border-current/30 bg-black/30 p-2 font-mono text-sm"
+                style={{ color: terminalFg, userSelect: "text", WebkitUserSelect: "text" }}
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+              />
+              <div className="flex justify-end gap-2">
+                <Button size="sm" ghost onClick={() => setPasteSheetOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    const text = pasteSheetRef.current?.value ?? "";
+                    setPasteSheetOpen(false);
+                    pasteIntoTerminal(text);
+                  }}
+                >
+                  Send to chat
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {pendingCopy !== null && (
+            <div data-chat-overlay className="absolute inset-x-2 top-2 z-40 flex justify-center">
+              <div
+                className="flex max-w-full items-center gap-2 rounded border border-current/40 bg-black/85 px-3 py-2 text-xs shadow-lg"
+                style={{ color: terminalFg }}
+              >
+                <span className="min-w-0 truncate opacity-80">Ready to copy</span>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    const text = pendingCopy;
+                    void copyTextToClipboard(text).then((ok) => {
+                      if (ok) {
+                        setPendingCopy(null);
+                        setCopyState("copied");
+                        if (copyResetRef.current) clearTimeout(copyResetRef.current);
+                        copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
+                      } else {
+                        // Last resort: show it selectable so the user can copy by hand.
+                        setPendingCopy(null);
+                        selectScrollFracRef.current = 0;
+                        setSelectFontSize(termRef.current?.options.fontSize ?? 13);
+                        setSelectText(text);
+                      }
+                    });
+                  }}
+                >
+                  Tap to copy
+                </Button>
+                <Button size="sm" ghost onClick={() => setPendingCopy(null)} aria-label="Dismiss">
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {selectText !== null && (
+            <div data-chat-overlay className="absolute inset-0 z-40 flex flex-col" style={{ backgroundColor: terminalBg }}>
+              <div className="flex shrink-0 items-center gap-2 border-b border-current/20 px-3 py-2 text-xs" style={{ color: terminalFg }}>
+                <span className="min-w-0 flex-1 truncate opacity-70">Long-press to select text</span>
+                <Button size="sm" outlined onClick={copySelectionOrAll}>
+                  Copy
+                </Button>
+                <Button
+                  size="sm"
+                  outlined
+                  onClick={() => {
+                    setSelectText(null);
+                    handlePasteKey();
+                  }}
+                >
+                  Paste
+                </Button>
+                <Button size="sm" onClick={() => setSelectText(null)}>
+                  Done
+                </Button>
+              </div>
+              <pre
+                ref={selectOverlayRef}
+                className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-2 sm:p-3"
+                style={{
+                  color: terminalFg,
+                  fontFamily: TERMINAL_FONT_FAMILY,
+                  fontSize: `${selectFontSize}px`,
+                  lineHeight: 1.35,
+                  userSelect: "text",
+                  WebkitUserSelect: "text",
+                  WebkitTouchCallout: "default",
+                  touchAction: "auto",
+                  overscrollBehavior: "contain",
+                }}
+              >
+                {selectText}
+              </pre>
+            </div>
+          )}
+
+          {coarsePointer && keyBarOpen && selectText === null && (
+            <div
+              role="toolbar"
+              aria-label="Terminal keys"
+              className="flex shrink-0 gap-1 overflow-x-auto pt-2 text-xs [scrollbar-width:none]"
+              style={{ color: terminalFg }}
+            >
+              {(
+                [
+                  ["esc", "Esc"],
+                  ["tab", "Tab"],
+                  ["shift-tab", "⇧Tab"],
+                ] as const
+              ).map(([k, label]) => (
+                <ExtraKeyButton key={k} label={label} onPress={() => sendExtraKey(k)} />
+              ))}
+              <ExtraKeyButton
+                label="Ctrl"
+                active={stickyMods.ctrl}
+                onPress={() => updateStickyMods({ ...stickyModsRef.current, ctrl: !stickyModsRef.current.ctrl })}
+              />
+              <ExtraKeyButton
+                label="Alt"
+                active={stickyMods.alt}
+                onPress={() => updateStickyMods({ ...stickyModsRef.current, alt: !stickyModsRef.current.alt })}
+              />
+              {(
+                [
+                  ["left", "←"],
+                  ["down", "↓"],
+                  ["up", "↑"],
+                  ["right", "→"],
+                  ["home", "Home"],
+                  ["end", "End"],
+                  ["pgup", "PgUp"],
+                  ["pgdn", "PgDn"],
+                  ["ctrl-c", "^C"],
+                  ["ctrl-d", "^D"],
+                ] as const
+              ).map(([k, label]) => (
+                <ExtraKeyButton key={k} label={label} onPress={() => sendExtraKey(k)} />
+              ))}
+              <ExtraKeyButton
+                label={
+                  <span className="inline-flex items-center gap-1">
+                    <Copy className="h-3.5 w-3.5" />
+                    {copyState === "copied" ? "copied" : "last"}
+                  </span>
+                }
+                ariaLabel="Copy last assistant response"
+                onPress={handleCopyLast}
+              />
+              <ExtraKeyButton label="Paste" onPress={handlePasteKey} />
+              <ExtraKeyButton label={<TextSelect className="h-3.5 w-3.5" />} ariaLabel="Select text" onPress={openSelectMode} />
+              <ExtraKeyButton label={<X className="h-3.5 w-3.5" />} ariaLabel="Hide key bar" onPress={() => setKeyBarOpenPersist(false)} />
+            </div>
+          )}
+
+          {coarsePointer && !keyBarOpen && selectText === null && (
+            <div className="flex shrink-0 justify-start pt-2 text-xs" style={{ color: terminalFg }}>
+              <ExtraKeyButton
+                label={
+                  <span className="inline-flex items-center gap-1.5">
+                    <Keyboard className="h-3.5 w-3.5" /> keys
+                  </span>
+                }
+                ariaLabel="Show terminal keys"
+                onPress={() => setKeyBarOpenPersist(true)}
+              />
+            </div>
+          )}
+
           {showReconnectOverlay && (
-            <div className="absolute inset-x-3 top-3 z-20 flex justify-center sm:inset-x-auto sm:right-3 sm:justify-end">
+            <div data-chat-overlay className="absolute inset-x-3 top-3 z-20 flex justify-center sm:inset-x-auto sm:right-3 sm:justify-end">
               <div className="flex max-w-[min(28rem,calc(100vw-3rem))] flex-col items-start gap-2 border border-warning/60 bg-black/80 px-3 py-2 text-xs text-warning shadow-lg">
                 <div className="tracking-wide">
                   {ptyState === "reconnecting"
@@ -1957,7 +2318,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               Offer an in-place restart so the user never has to refresh the
               whole page to get a working chat back. */}
           {ptyState === "ended" && (
-            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/60">
+            <div data-chat-overlay className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/60">
               <div className="max-w-[min(32rem,calc(100vw-3rem))] text-center text-sm tracking-wide text-white/80">
                 {endedReason === "start-failed"
                   ? PTY_START_FAILED_MESSAGE
@@ -1984,11 +2345,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             </div>
           )}
 
-          <CopyLastButton
-            onClick={handleCopyLast}
-            copied={copyState === "copied"}
-            color={terminalFg}
-          />
+          {!coarsePointer && (
+            <CopyLastButton
+              onClick={handleCopyLast}
+              copied={copyState === "copied"}
+              color={terminalFg}
+            />
+          )}
 
           {chatPanelCollapsed && (
             <Button
@@ -2062,6 +2425,39 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       </div>
       <PluginSlot name="chat:bottom" />
     </div>
+  );
+}
+
+// Key-bar button. pointerdown preventDefault keeps focus on xterm's hidden
+// textarea so the soft keyboard stays open while tapping keys.
+function ExtraKeyButton({
+  label,
+  ariaLabel,
+  active = false,
+  onPress,
+}: {
+  label: ReactNode;
+  ariaLabel?: string;
+  active?: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={ariaLabel ?? (typeof label === "string" ? label : undefined)}
+      aria-pressed={active || undefined}
+      onPointerDown={(e) => e.preventDefault()}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onPress}
+      className={cn(
+        "flex h-8 min-w-[2.25rem] shrink-0 select-none items-center justify-center rounded border px-2 font-mono",
+        active
+          ? "border-current bg-current/25"
+          : "border-current/30 bg-black/20 active:bg-current/20",
+      )}
+    >
+      {label}
+    </button>
   );
 }
 

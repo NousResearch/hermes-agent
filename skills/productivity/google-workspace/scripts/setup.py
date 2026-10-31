@@ -429,12 +429,18 @@ def _verify_account_identity(creds, scopes) -> None:
     The consent screen lets the user pick any signed-in Google account, so the
     login hint alone cannot stop a work token landing under a personal name.
     """
-    from google.auth.exceptions import GoogleAuthError
-    from googleapiclient.errors import HttpError
+    lookup_errors: tuple[type[BaseException], ...] = (OSError, KeyError)
+    try:
+        from google.auth.exceptions import GoogleAuthError
+        from googleapiclient.errors import HttpError
+
+        lookup_errors += (HttpError, GoogleAuthError)
+    except ImportError:
+        pass
 
     try:
         email = _authorized_email(creds, scopes)
-    except (HttpError, GoogleAuthError, OSError, KeyError) as e:
+    except lookup_errors as e:
         print(f"WARNING: Could not confirm which Google account authorized this token: {e}")
         return
     if email is None:

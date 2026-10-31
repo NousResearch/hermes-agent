@@ -96,6 +96,13 @@ def turn_author_env(author: dict[str, Any]) -> dict[str, str]:
     return {TURN_AUTHOR_ENV: json.dumps(author, separators=(",", ":"))}
 
 
+def turn_author_payload(agent: Any) -> Optional[dict[str, Any]]:
+    """The current turn's author for a plugin hook payload, or None (CLI, cron). A copy, so a hook
+    cannot rewrite the author that memory providers receive for the same turn."""
+    author = getattr(agent, "_turn_author", None)
+    return dict(author) if isinstance(author, dict) else None
+
+
 def a2a_key(author: Optional[dict[str, Any]]) -> Optional[str]:
     """``a2a:<bot id>``, the shared name for a bot author's turns. None for a human or an id-less bot."""
     if not isinstance(author, dict) or not author.get("is_bot") or not author.get("id"):

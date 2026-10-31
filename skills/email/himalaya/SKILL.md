@@ -38,7 +38,7 @@ requires the external `himalaya` CLI.
 ```bash
 # Pre-built binary into ~/.local/bin (Linux/macOS — recommended).
 # Download the installer to a file, then run it; don't pipe remote content into a shell.
-curl -sSL --create-dirs -o ~/.local/share/himalaya/install.sh https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh
+curl -fsSL --create-dirs -o ~/.local/share/himalaya/install.sh https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh &&
 PREFIX=~/.local sh ~/.local/share/himalaya/install.sh
 
 # macOS via Homebrew

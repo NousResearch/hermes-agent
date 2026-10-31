@@ -18,6 +18,8 @@ from typing import Any, Dict, List, Optional, Union
 from hermes_state_common import _BOUNDARY_END_REASONS
 from hermes_time import safe_strftime
 
+from tools.session_search_tool_archived import attach_archived_hits
+
 # Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
 # subagent runs, kanban workers are not the user's history.
 _HIDDEN_SESSION_SOURCES = ("kanban", "subagent", "tool")
@@ -41,6 +43,10 @@ _READ_MAX_CONTENT = 2000
 # FTS rows scanned before dedup-by-lineage — well above the distinct sessions a query
 # returns, so interactive matches buried under cron hits survive the demotion pass.
 _DISCOVER_SCAN_LIMIT = 300
+# include_inactive=true only: how far into the hit list to probe for archived rows, and
+# how many archived ids to hand back per session (each costs the caller a scroll call).
+_ARCHIVED_HIT_SCAN_LIMIT = 300
+_ARCHIVED_HIT_LIMIT = 10
 # exclude_session_ids: ids already inspected this task; capped so a runaway list can't fan out lineage walks.
 _EXCLUDE_SESSION_IDS_CAP = 20
 # Relative time bounds: "7d" / "24h" / "2w" = now minus N hours/days/weeks.
@@ -354,7 +360,8 @@ def _hydrate_hit(db, lineage_root: str, match_info: dict[str, Any], result_detai
 def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort: Optional[str],
               detail: str, current_session_id: str | None = None, link_profile: str | None = None,
               after_ts: Optional[int] = None, before_ts: Optional[int] = None,
-              exclude_session_ids: Optional[list[str]] = None) -> str:
+              exclude_session_ids: Optional[list[str]] = None,
+              include_inactive: bool = False) -> str:
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     excluded_roots = _excluded_lineage_roots(db, exclude_session_ids or [])
@@ -369,7 +376,8 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
     raw_results, err = _loud(lambda: db.search_messages(
         query=query, role_filter=role_filter or ["user", "assistant"],
         exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
-        fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts), "FTS5 search failed: %s", "Search failed")
+        fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts,
+        include_inactive=include_inactive), "FTS5 search failed: %s", "Search failed")
     if err:
         return err
     # Demote cron rows below interactive ones BEFORE dedup so a high-volume cron corpus
@@ -407,11 +415,18 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         # compaction: the FTS hit lives on the SAME session_id as the current session, but the matched
         # message row is an archived (active=0, compacted=1) row. The live-context load filters active=1, so
         # that content is no longer in context — let it through.
-        is_compacted_hit = _is_compacted_message(db, r.get("id"))
+        storage_state = _get_message_storage_state(db, r.get("id"))
+        is_compacted_hit = _is_compacted_state(storage_state)
+        # ``include_inactive=true`` additionally asks for the rewind-class archive
+        # (active=0, compacted=0): the turns a manual /compress or a prompt edit left
+        # behind. They sit on the CURRENT session, where the in-context filter below
+        # would otherwise drop them as "already visible".
+        is_out_of_context_hit = is_compacted_hit or bool(
+            include_inactive and storage_state is not None and not storage_state["active"])
         if current_lineage_root and resolved_sid == current_lineage_root and not (
-                _session_left_live_context(db, raw_sid) or is_compacted_hit):
+                _session_left_live_context(db, raw_sid) or is_out_of_context_hit):
             continue
-        if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
+        if current_session_id and raw_sid == current_session_id and not is_out_of_context_hit:
             continue
         seen_sessions.setdefault(resolved_sid, {**r, "_lineage_root": resolved_sid})
     for lineage_root, match_info in seen_sessions.items():
@@ -421,6 +436,14 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         entry = _hydrate_hit(db, lineage_root, match_info, "full" if detail == "full" or not results else "compact")
         if entry is not None:
             results.append(entry)
+    if include_inactive and results:
+        # Rows behind `archived_hits` matched only because the caller asked for them
+        # (active=0: compacted away, or truncated/rewound). Per-lineage dedupe almost
+        # never ranks one into the displayed anchor, so report their ids explicitly —
+        # the scroll shape reads archived rows. Lives in a sibling module to keep
+        # _discover inside its complexity target.
+        attach_archived_hits(db, results, raw_results,
+                             scan_limit=_ARCHIVED_HIT_SCAN_LIMIT, id_limit=_ARCHIVED_HIT_LIMIT)
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
     return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), link_hint=(
@@ -576,7 +599,7 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
 
 def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
               around_message_id, window, sort, profile, detail,
-              after=None, before=None, exclude_session_ids=None) -> str:
+              after=None, before=None, exclude_session_ids=None, include_inactive=False) -> str:
     """Mode dispatch (see module docstring); scroll wins when an anchor is set."""
     if isinstance(session_id, str) and session_id.strip():
         if around_message_id is not None:
@@ -595,13 +618,15 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         role_filter=([r.strip() for r in role_filter.split(",") if r.strip()] or None) if isinstance(role_filter, str) else None,
         detail="full" if isinstance(detail, str) and detail.strip().lower() == "full" else "adaptive",
         current_session_id=current_session_id, link_profile=profile, after_ts=after_ts, before_ts=before_ts,
-        exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids))
+        exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids),
+        include_inactive=bool(include_inactive))
 
 
 def session_search(query: str = "", role_filter: str | None = None, limit: int = 3, db=None,
                    current_session_id: str | None = None, session_id: str | None = None, around_message_id: int | None = None,
                    window: int = 5, sort: str | None = None, profile: str | None = None, detail: str = "adaptive",
-                   after: str | None = None, before: str | None = None, exclude_session_ids: Optional[list[str]] = None) -> str:
+                   after: str | None = None, before: str | None = None, exclude_session_ids: Optional[list[str]] = None,
+                   include_inactive: bool = False) -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers;
     new parameters are appended after ``detail``."""
     from hermes_constants import get_hermes_home
@@ -644,7 +669,8 @@ def session_search(query: str = "", role_filter: str | None = None, limit: int =
     try:
         return _dispatch(query, role_filter, limit, db, current_session_id, session_id,
                          around_message_id, window, sort, profile, detail,
-                         after=after, before=before, exclude_session_ids=exclude_session_ids)
+                         after=after, before=before, exclude_session_ids=exclude_session_ids,
+                         include_inactive=include_inactive)
     finally:
         for owned_db in reversed(owned_dbs):
             _quiet(lambda: release_or_close(owned_db), None, "Failed to close session_search SessionDB")
@@ -743,6 +769,21 @@ SESSION_SEARCH_SCHEMA = {
                     "explores instead of repeating the same hit. Cap 20."
                 ),
             },
+            "include_inactive": {
+                "type": "boolean",
+                "description": (
+                    "Discovery shape only. Default false. Set true when the fact you "
+                    "need was compacted or truncated OUT of a session's live context: "
+                    "the search then also covers soft-archived rows (active=0), which "
+                    "is where pre-compaction turns and undone/regenerated turns live. "
+                    "Results then carry `archived_hits` (message ids, plus a note) and "
+                    "an archived row can itself become the anchor; expand any of them "
+                    "with session_id + around_message_id. Retry with this when a "
+                    "normal search only returns the compaction summary. Beware: FTS5 "
+                    "ANDs terms, so a word absent from the archived turn hides it — "
+                    "query the topic term alone, or use OR."
+                ),
+            },
             "session_id": {
                 "type": "string",
                 "description": (
@@ -801,6 +842,6 @@ registry.register(
         query=args.get("query") or "", limit=args.get("limit", 3), window=args.get("window", 5),
         detail=args.get("detail", "adaptive"), db=kw.get("db"), current_session_id=kw.get("current_session_id"),
         **{k: args.get(k) for k in ("role_filter", "session_id", "around_message_id", "sort", "profile",
-                                    "after", "before", "exclude_session_ids")}),
+                                    "after", "before", "exclude_session_ids", "include_inactive")}),
     check_fn=check_session_search_requirements,
     emoji="🔍")

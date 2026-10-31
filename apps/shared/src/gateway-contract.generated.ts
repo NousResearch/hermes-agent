@@ -4527,7 +4527,7 @@ export interface PluginScanFinding {
   line: number
   description: string
 }
-/** A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs. ``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what is missing (empty when present or unknown). */
+/** A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs. ``app_state`` keeps the old card vocabulary; ``reason`` and version fields describe the pinned ``plugin.json`` requirement on the backend host, not on the Desktop user's machine. */
 export interface OnboardingCatalogPlugin {
   name: string
   title: string
@@ -4536,14 +4536,25 @@ export interface OnboardingCatalogPlugin {
   platforms: string[]
   app_state: CatalogAppState
   sentence: string
+  reason: PluginAppReason
+  app_title: string
+  required_version: string | null
+  found_version: string | null
+  download_url: string | null
 }
-/** A named catalog plugin this OS runs. ``state`` is the pinned ``plugin.json`` app declaration judged on this host; ``sentence`` names what is missing (empty when present or unknown); ``disclosure`` is the catalog description's ``Disclosure:`` sentence (empty when it has none). */
+export type PluginAppReason = 'available' | 'app_not_running' | 'missing_app' | 'version_too_old' | 'unsupported_os' | 'unsupported_gpu' | 'uncertain' | 'no_requirements'
+/** A named catalog plugin, including unsupported OS entries. ``state`` is the legacy card vocabulary; ``reason`` and version fields are the pinned declaration on the backend host. ``disclosure`` is the catalog description's ``Disclosure:`` sentence (empty when it has none). */
 export interface CatalogPluginPresence {
   name: string
   title: string
   state: CatalogAppState
   sentence: string
   disclosure: string
+  reason: PluginAppReason
+  app_title: string
+  required_version: string | null
+  found_version: string | null
+  download_url: string | null
 }
 export interface PluginCatalogLookupParams {
   profile?: string | null

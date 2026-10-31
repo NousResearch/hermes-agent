@@ -774,10 +774,21 @@ class PluginActivation(Result):
     missing_in: list[PluginRestartTarget] = Field(default_factory=list)
 
 
+class PluginAppReason(WireEnum):
+    available = "available"
+    app_not_running = "app_not_running"
+    missing_app = "missing_app"
+    version_too_old = "version_too_old"
+    unsupported_os = "unsupported_os"
+    unsupported_gpu = "unsupported_gpu"
+    uncertain = "uncertain"
+    no_requirements = "no_requirements"
+
+
 class OnboardingCatalogPlugin(Result):
     """A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs.
-    ``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what
-    is missing (empty when present or unknown)."""
+    ``app_state`` keeps the old card vocabulary; ``reason`` and version fields describe the pinned
+    ``plugin.json`` requirement on the backend host, not on the Desktop user's machine."""
 
     name: str
     title: str
@@ -786,18 +797,28 @@ class OnboardingCatalogPlugin(Result):
     platforms: list[str]
     app_state: CatalogAppState
     sentence: str
+    reason: PluginAppReason
+    app_title: str
+    required_version: str | None
+    found_version: str | None
+    download_url: str | None
 
 
 class CatalogPluginPresence(Result):
-    """A named catalog plugin this OS runs. ``state`` is the pinned ``plugin.json`` app declaration judged
-    on this host; ``sentence`` names what is missing (empty when present or unknown); ``disclosure`` is the
-    catalog description's ``Disclosure:`` sentence (empty when it has none)."""
+    """A named catalog plugin, including unsupported OS entries. ``state`` is the legacy card vocabulary;
+    ``reason`` and version fields are the pinned declaration on the backend host. ``disclosure`` is
+    the catalog description's ``Disclosure:`` sentence (empty when it has none)."""
 
     name: str
     title: str
     state: CatalogAppState
     sentence: str
     disclosure: str
+    reason: PluginAppReason
+    app_title: str
+    required_version: str | None
+    found_version: str | None
+    download_url: str | None
 
 
 class PluginScanFinding(Result):

@@ -11339,7 +11339,7 @@
       },
       "CatalogPluginPresence": {
         "additionalProperties": false,
-        "description": "A named catalog plugin this OS runs. ``state`` is the pinned ``plugin.json`` app declaration judged\non this host; ``sentence`` names what is missing (empty when present or unknown); ``disclosure`` is the\ncatalog description's ``Disclosure:`` sentence (empty when it has none).",
+        "description": "A named catalog plugin, including unsupported OS entries. ``state`` is the legacy card vocabulary;\n``reason`` and version fields are the pinned declaration on the backend host. ``disclosure`` is\nthe catalog description's ``Disclosure:`` sentence (empty when it has none).",
         "properties": {
           "name": {
             "title": "Name",
@@ -11359,6 +11359,46 @@
           "disclosure": {
             "title": "Disclosure",
             "type": "string"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/PluginAppReason"
+          },
+          "app_title": {
+            "title": "App Title",
+            "type": "string"
+          },
+          "required_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Version"
+          },
+          "found_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Found Version"
+          },
+          "download_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Url"
           }
         },
         "required": [
@@ -11366,7 +11406,12 @@
           "title",
           "state",
           "sentence",
-          "disclosure"
+          "disclosure",
+          "reason",
+          "app_title",
+          "required_version",
+          "found_version",
+          "download_url"
         ],
         "title": "CatalogPluginPresence",
         "type": "object"
@@ -24707,7 +24752,7 @@
       },
       "OnboardingCatalogPlugin": {
         "additionalProperties": false,
-        "description": "A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs.\n``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what\nis missing (empty when present or unknown).",
+        "description": "A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs.\n``app_state`` keeps the old card vocabulary; ``reason`` and version fields describe the pinned\n``plugin.json`` requirement on the backend host, not on the Desktop user's machine.",
         "properties": {
           "name": {
             "title": "Name",
@@ -24737,6 +24782,46 @@
           "sentence": {
             "title": "Sentence",
             "type": "string"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/PluginAppReason"
+          },
+          "app_title": {
+            "title": "App Title",
+            "type": "string"
+          },
+          "required_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Version"
+          },
+          "found_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Found Version"
+          },
+          "download_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Url"
           }
         },
         "required": [
@@ -24746,7 +24831,12 @@
           "tier",
           "platforms",
           "app_state",
-          "sentence"
+          "sentence",
+          "reason",
+          "app_title",
+          "required_version",
+          "found_version",
+          "download_url"
         ],
         "title": "OnboardingCatalogPlugin",
         "type": "object"
@@ -27316,6 +27406,20 @@
         ],
         "title": "PluginActivation",
         "type": "object"
+      },
+      "PluginAppReason": {
+        "enum": [
+          "available",
+          "app_not_running",
+          "missing_app",
+          "version_too_old",
+          "unsupported_os",
+          "unsupported_gpu",
+          "uncertain",
+          "no_requirements"
+        ],
+        "title": "PluginAppReason",
+        "type": "string"
       },
       "PluginCatalogLookupEntry": {
         "additionalProperties": false,

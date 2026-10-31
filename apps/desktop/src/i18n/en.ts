@@ -782,6 +782,26 @@ export const en: Translations = {
       failed: 'failed',
       kinds: { bundled: 'bundled', disk: 'on disk', runtime: 'runtime' },
       installModal: {
+        appGuidance: {
+          missing: (name: string) =>
+            `${name} is not installed. Install it on the backend computer before installing this plugin.`,
+          oldVersion: (name: string, required: string, found: string) =>
+            `${name} ${required} or newer is needed (found ${found || 'an older version'}). Update it on the backend computer.`,
+          unreadableVersion: (name: string, required: string) =>
+            `Could not determine ${name}'s installed version. Version ${required} or newer is required; check its version on the backend computer before retrying.`,
+          unsupportedOs: (name: string) => `${name} is not supported on the backend operating system.`,
+          unsupportedGpu: (name: string) => `The backend GPU is not supported for ${name}.`,
+          uncertain: (name: string) =>
+            `Could not confirm whether ${name} is available. You can try installing the plugin.`,
+          notRunning: (name: string) => `${name} is installed but is not running in an interactive desktop session.`,
+          backendHost: 'This checks the connected backend, not this Desktop app.',
+          download: (name: string) => `Download ${name} from the official vendor`,
+          recheck: 'Check again',
+          checking: "Checking the plugin's requirements on the backend…",
+          askHermes: 'Ask Hermes for help',
+          helpDraft: (name: string, profile: string) =>
+            `Help me install or update ${name} on the backend computer for the ${profile} profile. First check its OS and requirements. Explain the steps and ask before changing anything or downloading software. Until the installer is running, tell me what you are waiting for at every step: run downloads in the background and report their progress, and tell me when an approval in Hermes or an administrator prompt on that computer needs me.`
+        },
         installFromGit: 'Install from Git',
         reviewRepository: 'Review repository',
         repoPlaceholder: 'https://github.com/owner/repo',

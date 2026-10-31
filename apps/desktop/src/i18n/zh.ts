@@ -622,6 +622,24 @@ export const zhOverrides = {
       failed: '失败',
       kinds: { bundled: '内置', disk: '磁盘', runtime: '运行时' },
       installModal: {
+        appGuidance: {
+          missing: name => `${name} 尚未安装。请先在后端计算机上安装，再安装此插件。`,
+          oldVersion: (name, required, found) =>
+            `需要 ${name} ${required} 或更高版本（当前：${found || '旧版本'}）。请在后端计算机上更新。`,
+          unreadableVersion: (name, required) =>
+            `无法读取 ${name} 的已安装版本。需要 ${required} 或更高版本；请先在后端计算机确认版本，再重试。`,
+          unsupportedOs: name => `后端操作系统不支持 ${name}。`,
+          unsupportedGpu: name => `后端 GPU 不支持 ${name}。`,
+          uncertain: name => `无法确认 ${name} 是否可用。你可以尝试安装插件。`,
+          notRunning: name => `${name} 已安装，但未在交互式桌面会话中运行。`,
+          backendHost: '检查的是已连接的后端，而不是此桌面应用。',
+          download: name => `从官方网站下载 ${name}`,
+          recheck: '重新检查',
+          checking: '正在后端检查插件的要求…',
+          askHermes: '向 Hermes 寻求帮助',
+          helpDraft: (name, profile) =>
+            `请帮我在后端计算机为 ${profile} 配置文件安装或更新 ${name}。先检查操作系统和要求，说明步骤，并在修改或下载任何内容之前征求我的同意。在安装程序启动之前，每一步都告诉我你在等待什么：在后台运行下载并报告进度；需要我在 Hermes 中批准，或在那台计算机上确认管理员提示时，请告诉我。`
+        },
         installFromGit: '从 Git 安装',
         reviewRepository: '检查仓库',
         repoPlaceholder: 'https://github.com/owner/repo',

@@ -11,7 +11,9 @@ import {
   loadAgentPlugins
 } from '@/store/agent-plugins'
 import { notify } from '@/store/notifications'
+import type { AppGuidance } from '@/store/plugin-app-guidance'
 import type { PluginInstallRequest } from '@/store/plugin-install-request'
+import { scopeConnectionId } from '@/store/plugin-owner-request'
 
 export type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
 
@@ -83,11 +85,14 @@ export interface InstallDeps {
  *  that commit and fail forever, so the dialog reads the source again and shows the new commit first.
  *  `partial`: the agent half installed at the reviewed commit, then the desktop half was refused because the
  *  source left it; only a replacement of both halves may follow. `needsConfirm`: the backend cannot hold the
- *  install to the reviewed commit and installed nothing; the user decides whether to install anyway. */
+ *  install to the reviewed commit and installed nothing; the user decides whether to install anyway.
+ *  `app_blocked`: the backend refused the agent half because a companion app the plugin needs is missing
+ *  or unusable on its host; the dialog shows that guidance and installs nothing. */
 export type InstallOutcome =
   | { error: string; status: 'failed' }
   | { error: string; status: 'partial' }
   | { error: string; status: 'stale' }
+  | { guidance: AppGuidance; status: 'app_blocked' }
   | { status: 'done' }
   | { status: 'needsConfirm' }
   | { status: 'uncertain' }
@@ -281,18 +286,23 @@ async function installDesktopHalf(
   }
 }
 
-/** An agent-half answer after which nothing else may install. A client timeout is `uncertain`: the backend
- *  may still be installing. A refusal because the source moved means nothing from that review installs, not
- *  the other half either. An older backend refusing the reviewed commit at admission installed nothing:
- *  the user decides. */
+/** An agent-half answer after which nothing else may install. A typed app-prerequisite refusal is
+ *  `app_blocked`: the backend host lacks the companion app, so the dialog shows the guidance instead of
+ *  an error. A client timeout is `uncertain`: the backend may still be installing. A refusal because the
+ *  source moved means nothing from that review installs, not the other half either. An older backend
+ *  refusing the reviewed commit at admission installed nothing: the user decides. */
 function agentStopsInstall(
   result: AgentPluginInstallResult,
   plan: InstallPlan,
   deps: InstallDeps,
   report: Report
 ): InstallOutcome | null {
+  if (result.appGuidance) {
+    return { status: 'app_blocked', guidance: result.appGuidance }
+  }
+
   if (result.timedOut) {
-    void loadAgentPlugins(deps.requestGateway, plan.profile)
+    void loadAgentPlugins(deps.requestGateway, plan.profile, scopeConnectionId(plan.request.profile), { force: true })
 
     return { status: 'uncertain' }
   }
@@ -338,7 +348,7 @@ export async function runPluginInstall(plan: InstallPlan, deps: InstallDeps): Pr
     await installDesktopHalf(plan, components, deps, report, agentResult)
   }
 
-  await loadAgentPlugins(deps.requestGateway, plan.profile)
+  await loadAgentPlugins(deps.requestGateway, plan.profile, scopeConnectionId(plan.request.profile), { force: true })
 
   for (const message of report.successes) {
     notify({ kind: 'success', message })

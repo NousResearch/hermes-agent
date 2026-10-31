@@ -77,6 +77,17 @@ def test_valid_entry_without_optional_fields_passes(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_official_app_download_url_requires_title_and_safe_https(tmp_path):
+    valid = {**VALID_ENTRY, "title": "Paint Studio", "app_download_url": "https://paint.example/download"}
+    assert run_validator(str(write_entry(tmp_path, valid))).returncode == 0
+    for bad in ("http://paint.example/download", "https://paint.example@evil.test/download",
+                "https://127.0.0.1/download", "https://paint.example/has space"):
+        result = run_validator(str(write_entry(tmp_path, {**valid, "app_download_url": bad})))
+        assert result.returncode == 1 and "app_download_url" in result.stdout + result.stderr
+    result = run_validator(str(write_entry(tmp_path, {**valid, "title": ""})))
+    assert result.returncode == 1 and "title" in result.stdout + result.stderr
+
+
 # ── each malformed field fails with a pointed error ────────────────────
 
 

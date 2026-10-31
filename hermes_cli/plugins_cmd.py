@@ -88,6 +88,10 @@ class PluginOperationError(Exception):
     """
 
     failure_class = "other"
+    # Set by the install gate's app refusal: the typed guidance, and the checked clone's requirement it
+    # was judged on (a reviewed vendor link must match that declaration).
+    app_guidance: Optional[dict] = None
+    app_declaration: Any = None
 
     def __init__(self, *args, failure_class: Optional[str] = None):
         super().__init__(*args)

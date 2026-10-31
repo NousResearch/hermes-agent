@@ -788,6 +788,25 @@ export const esOverrides = {
         runtime: 'en ejecución'
       },
       installModal: {
+        appGuidance: {
+          missing: name =>
+            `${name} no está instalado. Instálalo en el equipo del backend antes de instalar este plugin.`,
+          oldVersion: (name, required, found) =>
+            `Se necesita ${name} ${required} o posterior (detectado: ${found || 'versión anterior'}). Actualízalo en el backend.`,
+          unreadableVersion: (name, required) =>
+            `No se pudo determinar la versión instalada de ${name}. Se necesita la versión ${required} o posterior; compruébala en el backend antes de reintentarlo.`,
+          unsupportedOs: name => `${name} no es compatible con el sistema operativo del backend.`,
+          unsupportedGpu: name => `La GPU del backend no es compatible con ${name}.`,
+          uncertain: name => `No se pudo confirmar si ${name} está disponible. Puedes intentar instalar el plugin.`,
+          notRunning: name => `${name} está instalado, pero no se ejecuta en una sesión de escritorio interactiva.`,
+          backendHost: 'Se comprueba el backend conectado, no esta aplicación de escritorio.',
+          download: name => `Descargar ${name} del proveedor oficial`,
+          recheck: 'Comprobar de nuevo',
+          checking: 'Comprobando los requisitos del plugin en el backend…',
+          askHermes: 'Pedir ayuda a Hermes',
+          helpDraft: (name, profile) =>
+            `Ayúdame a instalar o actualizar ${name} en el equipo del backend para el perfil ${profile}. Primero comprueba su sistema operativo y requisitos. Explica los pasos y pide permiso antes de cambiar algo o descargar software. Hasta que el instalador esté en marcha, dime en cada paso qué estás esperando: ejecuta las descargas en segundo plano e informa de su progreso, y avísame cuando una aprobación en Hermes o una solicitud de administrador en ese equipo me necesite.`
+        },
         installFromGit: 'Instalar desde Git',
         reviewRepository: 'Revisar repositorio',
         repoPlaceholder: 'https://github.com/propietario/repo',

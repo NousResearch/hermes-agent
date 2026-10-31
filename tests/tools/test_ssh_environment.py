@@ -4,10 +4,12 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 from unittest.mock import MagicMock
 
 import pytest
 
+from tools.browser_harness_dirs import claim_private_dir as _REAL_CLAIM  # conftest stubs it per test
 from tools.environments.ssh import SSHEnvironment
 from tools.environments import ssh as ssh_env
 
@@ -194,6 +196,55 @@ class TestControlSocketPath:
         assert SSHEnvironment(host="h", user="u", port=23).control_socket != base
         assert SSHEnvironment(host="h", user="v", port=22).control_socket != base
         assert SSHEnvironment(host="g", user="u", port=22).control_socket != base
+
+    def test_control_dir_budget_matches_sun_path(self):
+        """A control dir of exactly ``_CONTROL_DIR_MAX`` bytes leaves the socket SSH binds at the
+        platform's usable sun_path length."""
+        usable = 103 if sys.platform == "darwin" else 107
+        socket = "/" + "x" * (ssh_env._CONTROL_DIR_MAX - 1) + "/" + "0" * 16 + ".sock"
+        assert len(socket) + self._SSH_CONTROLMASTER_SUFFIX == usable
+
+
+@pytest.mark.skipif(not ssh_env._SSH_MULTIPLEX, reason="no ControlMaster sockets on Windows")
+class TestControlDir:
+    """A deep $TMPDIR (a profile's scratch dir under a long HERMES_HOME) pushed the ControlMaster
+    socket past Linux's 108-byte sun_path, so every command failed to open its master."""
+
+    def _roots(self, monkeypatch, tmp_path, tmpdir):
+        run, alt = tmp_path / "run", tmp_path / "alt"
+        for root in (run, alt):
+            root.mkdir(mode=0o700)
+        monkeypatch.setattr(ssh_env.tempfile, "gettempdir", lambda: str(tmpdir))
+        monkeypatch.setattr("tools.browser_harness_dirs.claim_private_dir", _REAL_CLAIM)
+        monkeypatch.setattr("tools.browser_harness_dirs.private_user_runtime_dir", lambda: str(run))
+        monkeypatch.setattr("hermes_constants.socket_safe_tmpdir", lambda: str(alt))
+        name = f"hermes-ssh-{os.getuid()}"
+        return run / name, alt / name
+
+    def test_temp_root_that_fits_is_kept(self, monkeypatch, tmp_path):
+        tmpdir = tmp_path / ("t" * 20)
+        run_dir, _ = self._roots(monkeypatch, tmp_path, tmpdir)
+        # Exactly at the limit, with a shorter private dir available: the temp root still wins.
+        monkeypatch.setattr(ssh_env, "_CONTROL_DIR_MAX", len(str(tmpdir / "hermes-ssh")))
+        assert len(str(run_dir)) < ssh_env._CONTROL_DIR_MAX
+        assert ssh_env._control_dir() == tmpdir / "hermes-ssh"
+        assert (tmpdir / "hermes-ssh").is_dir()
+        assert not run_dir.exists()
+
+    def test_deep_temp_root_moves_to_private_short_dir(self, monkeypatch, tmp_path):
+        deep = tmp_path / ("d" * 40)
+        run_dir, _ = self._roots(monkeypatch, tmp_path, deep)
+        monkeypatch.setattr(ssh_env, "_CONTROL_DIR_MAX", len(str(run_dir)))
+        assert ssh_env._control_dir() == run_dir
+        assert run_dir.stat().st_mode & 0o777 == 0o700
+        assert not (deep / "hermes-ssh").exists()
+
+    def test_planted_short_dir_is_skipped(self, monkeypatch, tmp_path):
+        deep = tmp_path / ("d" * 40)
+        run_dir, alt_dir = self._roots(monkeypatch, tmp_path, deep)
+        run_dir.symlink_to(tmp_path)
+        monkeypatch.setattr(ssh_env, "_CONTROL_DIR_MAX", len(str(run_dir)))
+        assert ssh_env._control_dir() == alt_dir
 
 
 class TestTerminalToolConfig:

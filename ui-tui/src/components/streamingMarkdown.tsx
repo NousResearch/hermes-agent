@@ -22,8 +22,8 @@
 //     block is frozen and can't be un-decided once the closer streams in.
 //   · State only advances (idempotent under StrictMode). The component
 //     unmounts between turns; if `text` stops extending `scanned` (turn reuse,
-//     or boundedLiveRenderText front-trimming a huge reply) the scanner resets
-//     and <Md>'s LRU absorbs the re-parse.
+//     or toggling between a bounded and full live reply) the scanner resets and
+//     <Md>'s LRU absorbs the re-parse.
 //
 // Layout: the <Md> subtrees MUST stack in a column — the messageLine.tsx
 // parent is a default row Box, so bare siblings render side-by-side.

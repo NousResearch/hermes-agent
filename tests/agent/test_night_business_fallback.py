@@ -167,6 +167,32 @@ def test_seoul_tz_is_fixed_regardless_of_system_tz():
     assert decision.timezone == "Asia/Seoul"
 
 
+def test_before_window_end_exhausted_personal_routes_to_business():
+    """Item 5: 05:59 KST, 야간 창 끝 경계 직전, 개인 소진 + 비즈니스 가용 → 라우팅 허용.
+
+    창 안쪽(05:59)에서 personal_has_credentials=True, personal_has_available=False,
+    business_has_available=True 이면 두 provider 모두 business profile로 라우팅되어야 한다.
+    """
+    for provider, expected_profile in [
+        ("anthropic", "night-business-claude"),
+        ("openai-codex", "night-business-codex"),
+    ]:
+        decision = decide_night_business_route(
+            _config(),
+            provider=provider,
+            personal_has_credentials=True,
+            personal_has_available=False,
+            business_has_available=True,
+            now=_at(5, 59),
+        )
+        assert decision.profile == expected_profile, (
+            f"05:59 KST 야간 창 내 {provider} 개인 소진 → business 라우팅 허용이어야 함"
+        )
+        assert decision.reason == "personal_exhausted", (
+            f"{provider}: expected reason='personal_exhausted', got '{decision.reason}'"
+        )
+
+
 def test_personal_unknown_blocks_business_routing_fail_closed():
     """fail-closed: 미터 판정불가(personal_has_credentials=False) → business 라우팅 금지.
 

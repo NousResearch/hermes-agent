@@ -82,3 +82,32 @@ def test_rejects_ambiguous_lookalike_or_malformed_credentials(tmp_path, credenti
     assert result.returncode == 1
     assert result.stdout == ""
     assert result.stderr == ""
+
+
+GH_ENV = REPO_ROOT / "skills/software-development/github/scripts/gh-env.sh"
+
+
+@pytest.mark.platforms("posix")
+def test_gh_env_finds_the_credential_helper_next_to_itself(tmp_path):
+    """The .git-credentials fallback must resolve git-credential-token.py next to
+    gh-env.sh; it used to point at a non-existent skills/github/github-auth path."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".git-credentials").write_text(
+        "https://octocat:tok-from-creds@github.com\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    uv = bin_dir / "uv"
+    # Stub `uv run python3 <helper>`: drop `run python3`, run the helper with this interpreter.
+    uv.write_text(f'#!/bin/sh\nshift 2\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+    uv.chmod(0o755)
+
+    proc = subprocess.run(
+        ["bash", "-c",
+         f'source "{GH_ENV}" >/dev/null 2>&1; echo "M=$GH_AUTH_METHOD"; echo "T=$GITHUB_TOKEN"'],
+        capture_output=True, text=True, check=False,
+        env={"HOME": str(home), "HERMES_HOME": str(home),
+             "PATH": f"{bin_dir}:/usr/bin:/bin", "GITHUB_TOKEN": ""})
+
+    assert "M=curl" in proc.stdout, proc.stdout + proc.stderr
+    assert "T=tok-from-creds" in proc.stdout, proc.stdout + proc.stderr

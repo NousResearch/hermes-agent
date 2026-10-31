@@ -430,3 +430,82 @@ class TestBoardResurrection:
         assert meta["name"] == "My Board"
         assert "keepname" in [b["slug"] for b in kb.list_boards(include_archived=True)]
         assert "keepname" not in [b["slug"] for b in kb.list_boards(include_archived=False)]
+
+
+# ---------------------------------------------------------------------------
+# Per-board COUNTS inside a worker-fenced session (t_5dedbbe8)
+# ---------------------------------------------------------------------------
+#
+# A dispatcher-spawned worker runs with ``HERMES_KANBAN_DB`` pinning its own
+# board (plus worker identity), and ``kanban_db_path(board=slug)`` correctly
+# resolves every slug THROUGH that pin there — that pin is the workers-cannot-
+# see-other-boards isolation. ``hermes kanban boards list`` asks a different
+# question ("what is board <slug>'s own DB / counts"), so it must resolve each
+# board physically. Before the fix a worker saw the pinned board's counts on
+# every row.
+
+class TestBoardsCountsIgnoreWorkerPin:
+    @pytest.fixture
+    def two_boards(self, fresh_home, monkeypatch):
+        """Boards ``alpha`` (1 task) and ``beta`` (3 tasks) + a worker-shaped env.
+
+        Returns the pinned (``alpha``) DB path — the path every slug resolved to
+        before the fix.
+        """
+        kb.create_board("alpha")
+        kb.create_board("beta")
+        with kbc.connect(board="alpha") as conn:
+            kb.create_task(conn, title="a1", assignee="dev")
+        for title in ("b1", "b2", "b3"):
+            with kbc.connect(board="beta") as conn:
+                kb.create_task(conn, title=title, assignee="dev")
+        pinned = kb.board_dir("alpha") / "kanban.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "alpha")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+        return pinned
+
+    def test_board_db_path_ignores_pins(self, two_boards, fresh_home):
+        assert kb.board_db_path("beta") == fresh_home / "kanban" / "boards" / "beta" / "kanban.db"
+        assert kb.board_db_path("default") == fresh_home / "kanban.db"
+        # Task-routing resolution is untouched: the pin still wins for board=
+        # in a fenced session (the isolation this fix must not weaken).
+        assert kb.kanban_db_path(board="beta") == two_boards
+
+    def test_board_task_counts_are_per_board(self, two_boards):
+        from hermes_cli.kanban_boards import _board_task_counts
+
+        assert sum(_board_task_counts("alpha").values()) == 1
+        assert sum(_board_task_counts("beta").values()) == 3
+
+    def _run_cli(self, argv: list[str]):
+        import argparse
+
+        from hermes_cli import kanban as kc
+
+        parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+        sub = parser.add_subparsers(dest="command")
+        kc.build_parser(sub)
+        return kc.kanban_command(parser.parse_args(["kanban", *argv]))
+
+    def test_cli_boards_list_counts_per_board(self, two_boards, capsys, fresh_home):
+        assert self._run_cli(["boards", "list", "--json"]) == 0
+        rows = {b["slug"]: b for b in json.loads(capsys.readouterr().out)}
+        assert sum(rows["alpha"]["counts"].values()) == 1
+        assert sum(rows["beta"]["counts"].values()) == 3
+        # The reported DB path belongs to the board on that row, too.
+        assert rows["beta"]["db_path"] == str(fresh_home / "kanban" / "boards" / "beta" / "kanban.db")
+
+    def test_cli_boards_show_accepts_a_slug(self, two_boards, capsys, fresh_home):
+        assert self._run_cli(["boards", "show", "beta"]) == 0
+        out = capsys.readouterr().out
+        assert "beta" in out
+        assert str(fresh_home / "kanban" / "boards" / "beta" / "kanban.db") in out
+        assert "3 total" in out
+        # Bare `boards show` still describes the active board (back-compat).
+        assert self._run_cli(["boards", "show"]) == 0
+        assert "Current board: alpha" in capsys.readouterr().out
+
+    def test_cli_boards_show_rejects_unknown_slug(self, two_boards, capsys):
+        assert self._run_cli(["boards", "show", "nope"]) != 0
+        assert "does not exist" in capsys.readouterr().err

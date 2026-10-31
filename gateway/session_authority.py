@@ -1352,7 +1352,12 @@ class SessionAuthority:
             except asyncio.CancelledError:
                 # Keep this FIFO's drain live until the committed reply has been handed off.
                 # Cleanup itself is separately tracked and must not delay the next turn.
-                await asyncio.shield(delivery)
+                try:
+                    await asyncio.shield(delivery)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        'Delivery of admission %s failed after its drain was cancelled', row['admission_id'])
                 raise
             if not advance:
                 return

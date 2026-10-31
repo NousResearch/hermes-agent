@@ -769,6 +769,45 @@ CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
 """
 
+# The sessions columns a session list renders: the change watcher's ``sessions.changed`` moves only when one of
+# them does. last_activity_at / _description are left out on purpose: the session activity heartbeat restamps
+# them mid-turn and on idle ticks, so watching them re-fired sessions.changed every heartbeat window (#98005).
+# Liveness comes from session.active_list, and a real turn still moves message_count.
+SESSION_LIST_FIELDS = (
+    "id", "source", "session_key", "display_name", "model", "parent_session_id",
+    "started_at", "ended_at", "end_reason", "message_count", "tool_call_count",
+    "cwd", "git_branch", "git_repo_root", "title", "title_source", "profile_name",
+    "archived", "pinned", "hidden", "last_read_at", "handoff_state",
+)
+# Bumped in the writer's own transaction whenever a sessions row is inserted, deleted, or changes a
+# SESSION_LIST_FIELDS column, whoever wrote it (old builds included), so a change watcher reads one row
+# instead of hashing every session on each state.db write (#146643).
+SESSIONS_LIST_REVISION_KEY = "sessions_list_revision"
+SESSIONS_LIST_REVISION_TRIGGERS = (
+    "sessions_list_revision_insert", "sessions_list_revision_delete", "sessions_list_revision_update")
+_SESSIONS_LIST_REVISION_BUMP = (
+    f"    INSERT INTO state_meta(key, value) VALUES ('{SESSIONS_LIST_REVISION_KEY}', 1)\n"
+    "    ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1;\n")
+_SESSIONS_LIST_FIELD_CHANGED = "\n   OR ".join(f"old.{field} IS NOT new.{field}" for field in SESSION_LIST_FIELDS)
+SESSIONS_LIST_REVISION_SQL = f"""
+DROP TRIGGER IF EXISTS sessions_list_revision_insert;
+CREATE TRIGGER IF NOT EXISTS sessions_list_revision_insert
+AFTER INSERT ON sessions
+BEGIN
+{_SESSIONS_LIST_REVISION_BUMP}END;
+DROP TRIGGER IF EXISTS sessions_list_revision_delete;
+CREATE TRIGGER IF NOT EXISTS sessions_list_revision_delete
+AFTER DELETE ON sessions
+BEGIN
+{_SESSIONS_LIST_REVISION_BUMP}END;
+DROP TRIGGER IF EXISTS sessions_list_revision_update;
+CREATE TRIGGER IF NOT EXISTS sessions_list_revision_update
+AFTER UPDATE OF {", ".join(SESSION_LIST_FIELDS)} ON sessions
+WHEN {_SESSIONS_LIST_FIELD_CHANGED}
+BEGIN
+{_SESSIONS_LIST_REVISION_BUMP}END;
+"""
+
 # Indexes on later-added columns must run AFTER _reconcile_columns(), or executescript fails on legacy DBs.
 # sessions_runtime_ledger_delete_guard: every delete path in this release retires a session's ledger rows
 # (session_admissions / worker_executions, ON DELETE RESTRICT) first, so only a release that predates the
@@ -907,7 +946,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
 CREATE INDEX IF NOT EXISTS idx_sessions_local_created_started
     ON sessions(created_source, started_at DESC)
     WHERE source = 'local';
-"""
+""" + SESSIONS_LIST_REVISION_SQL
 
 
 # ── Deferred FTS rebuild bookkeeping (schema v23) ──

@@ -221,6 +221,11 @@ class GitHubSource(SkillSource):
         {"repo": "qdrant/skills", "path": "skills/"},
         {"repo": "pinecone-io/skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
+        # Author-published collection of agent-workflow skills (dev-pair, verify-results,
+        # quality-guard, senior-dev-prompt, llm-council). Flat repo root layout, MIT.
+        # Community trust on purpose (NOT in TRUSTED_REPOS): the guard scans every install.
+        # Repo root is the tap path (empty = same pattern as garrytan/gstack above).
+        {"repo": "justinjohnson25600/hermes_skills", "path": ""},
         # --- Science bucket ---
         # Two scientific-skill repos share one hub category via the tap-level "bucket" key so
         # their skills surface together. Both stay `community` trust on purpose (NOT in

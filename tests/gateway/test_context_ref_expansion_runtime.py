@@ -215,3 +215,50 @@ async def test_oversized_file_reference_reaches_gateway_as_tool_readable_path(
     assert "too large to inline safely" in result
     assert "FULL-CONTENT-MARKER" not in result
     assert "context injection refused" not in result
+
+
+@pytest.mark.asyncio
+async def test_vision_enrichment_tokens_do_not_trigger_context_reference_expansion(
+    tmp_path, monkeypatch
+):
+    """When a screenshot shows an @-autocomplete menu, vision_analyze's description
+    contains literal `@diff`, `@staged`, `@file:`, `@folder:`, `@url:`, `@git:` tokens.
+    Those generated tokens must NOT be expanded as user-typed @-references."""
+    runner = _make_runner()
+    source = _source()
+    _patch_runtime_resolution(monkeypatch)
+
+    secret = tmp_path / "secret.txt"
+    secret.write_text("SECRET-FILE-CONTENT\n", encoding="utf-8")
+    img = tmp_path / "screenshot.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    monkeypatch.setattr(runner, "_resolve_image_input_mode_for_source", lambda *a, **kw: "text")
+
+    async def _fake_enrich(user_text: str, image_paths: list[str]) -> str:
+        note = (
+            "[The user sent an image~ Here's what I can see:\n"
+            f"The dropdown lists `@diff`, `@staged`, `@file:{secret.name}`, `@folder:`, `@url:`, and `@git:`.]\n"
+            f"[If you need a closer look, use vision_analyze with image_url: {image_paths[0]} ~]"
+        )
+        return f"{note}\n\n{user_text}" if user_text else note
+
+    monkeypatch.setattr(runner, "_enrich_message_with_vision", _fake_enrich)
+
+    event = MessageEvent(
+        text="没看到 `@session:` 引用",
+        source=source,
+        media_urls=[str(img)],
+        media_types=["image/png"],
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert "SECRET-FILE-CONTENT" not in result
+    assert "--- Context Warnings ---" not in result
+    assert "没看到 `@session:` 引用" in result

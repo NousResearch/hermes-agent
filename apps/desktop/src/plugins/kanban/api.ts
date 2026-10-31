@@ -454,7 +454,10 @@ export const estimateNew = (title: string, body: string) =>
 /** Edit a board's display metadata + default project directory. Pass
  *  `default_workdir: ''` to clear it. Slug is immutable. */
 export const updateBoard = (slug: string, patch: Record<string, unknown>) =>
-  call<{ board: BoardMeta }>(`/boards/${encodeURIComponent(slug)}`, { method: 'PATCH', body: patch })
+  call<{ board: BoardMeta; auto_estimate_queued?: number; auto_estimate_queue_error?: string }>(
+    `/boards/${encodeURIComponent(slug)}`,
+    { method: 'PATCH', body: patch }
+  )
 
 /** Archive a board to `boards/_archived/` — recoverable, and the backend
  *  refuses to touch `default`. (`?delete=true` hard-deletes; no caller yet.) */

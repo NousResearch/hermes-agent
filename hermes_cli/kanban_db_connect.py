@@ -867,6 +867,7 @@ _LATER_TASK_COLUMNS = (
     ("scope_manifest", "scope_manifest TEXT"),
     ("obligations", "obligations TEXT"),
     ("feedback_schema", "feedback_schema TEXT"),
+    ("estimate", "estimate TEXT"),
 )
 
 _NOTIFY_SUB_COLUMNS = (

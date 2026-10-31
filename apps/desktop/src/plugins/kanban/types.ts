@@ -26,6 +26,7 @@ export interface KanbanTask {
   current_run_started_at?: null | number
   worker_pid?: null | number
   last_heartbeat_at?: null | number
+  estimate?: null | TaskEstimate
 }
 
 export interface KanbanColumn {
@@ -158,6 +159,7 @@ export interface BoardMeta {
   dispatch_enabled?: boolean
   auto_decompose_enabled?: boolean
   review_dispatch_enabled?: boolean
+  auto_estimate_enabled?: boolean
 }
 
 /** POST /boards/{slug}/export — the archive the backend wrote. */

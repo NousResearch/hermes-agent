@@ -86,7 +86,14 @@ import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
-import { type BoardMeta, type BoardsResponse, columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
+import {
+  type BoardMeta,
+  type BoardsResponse,
+  columnMeta,
+  type KanbanBoard,
+  type KanbanTask,
+  type TaskEstimate
+} from './types'
 import {
   $newTaskLane,
   ago,
@@ -228,6 +235,24 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
             <Codicon name="warning" size="0.7rem" />
             {task.warnings.count}
           </span>
+        )}
+        {task.estimate?.ok && (
+          <Tip label={task.estimate.rationale || k.roughEstimate}>
+            <Meta icon="dashboard">
+              {task.estimate.complexity && (
+                <span
+                  aria-label={k.complexity[task.estimate.complexity]}
+                  className="rounded border border-(--ui-border) px-1 font-semibold"
+                  title={k.complexity[task.estimate.complexity]}
+                >
+                  {task.estimate.complexity}
+                </span>
+              )}
+              <span>
+                ~{compactNumber(task.estimate.est_tokens)} {k.tokUnit}
+              </span>
+            </Meta>
+          </Tip>
         )}
         {created && !task.assignee && !unassignedReady ? (
           <span className="text-(--ui-text-quaternary)">{created}</span>
@@ -959,15 +984,20 @@ export function BoardHeaderToggles({ board }: { board: BoardMeta }) {
   const qc = useQueryClient()
   const scope = useKanbanScope()
 
-  const useToggle = (field: 'auto_decompose_enabled' | 'dispatch_enabled' | 'review_dispatch_enabled') =>
+  const useToggle = (
+    field: 'auto_decompose_enabled' | 'auto_estimate_enabled' | 'dispatch_enabled' | 'review_dispatch_enabled'
+  ) =>
     useMutation({
       mutationFn: (checked: boolean) => updateBoard(board.slug, { [field]: checked }),
       onError: err => host.notify({ kind: 'error', message: errText(err) }),
       onSuccess: result => {
+        if (result.auto_estimate_queue_error) {
+          host.notify({ kind: 'warning', message: `${k.headerEstimate}: ${result.auto_estimate_queue_error}` })
+        } else if ((result.auto_estimate_queued ?? 0) > 0) {
+          host.notify({ kind: 'info', message: `${k.headerEstimate}: ${result.auto_estimate_queued} queued` })
+        }
         qc.setQueryData<BoardsResponse>(boardsKey(scope), prev =>
-          prev
-            ? { ...prev, boards: prev.boards.map(b => (b.slug === board.slug ? result.board : b)) }
-            : prev
+          prev ? { ...prev, boards: prev.boards.map(b => (b.slug === board.slug ? result.board : b)) } : prev
         )
         void qc.invalidateQueries({ queryKey: boardsKey(scope) })
       }
@@ -976,19 +1006,22 @@ export function BoardHeaderToggles({ board }: { board: BoardMeta }) {
   const dispatchMut = useToggle('dispatch_enabled')
   const decomposeMut = useToggle('auto_decompose_enabled')
   const reviewMut = useToggle('review_dispatch_enabled')
+  const estimateMut = useToggle('auto_estimate_enabled')
 
   const Row = ({
     checked,
+    hint,
     label,
     mut
   }: {
     checked: boolean
+    hint?: string
     label: string
     mut: ReturnType<typeof useToggle>
   }) => (
     <label
       className="flex cursor-pointer items-center gap-1.5 text-[0.75rem] text-(--ui-text-secondary)"
-      title={k.headerEnforcementPendingHint}
+      title={hint || k.headerEnforcementPendingHint}
     >
       <Switch
         aria-label={label}
@@ -1006,6 +1039,12 @@ export function BoardHeaderToggles({ board }: { board: BoardMeta }) {
       <Row checked={board.dispatch_enabled ?? true} label={k.headerDispatch} mut={dispatchMut} />
       <Row checked={board.auto_decompose_enabled ?? true} label={k.headerDecompose} mut={decomposeMut} />
       <Row checked={board.review_dispatch_enabled ?? true} label={k.headerReview} mut={reviewMut} />
+      <Row
+        checked={board.auto_estimate_enabled ?? false}
+        hint={k.estimateTipLong}
+        label={k.headerEstimate}
+        mut={estimateMut}
+      />
     </div>
   )
 }

@@ -102,6 +102,7 @@ def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
 # --- Constants ---
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+AUTO_ESTIMATE_STATUSES = frozenset({"triage", "todo", "scheduled", "ready", "running"})
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
@@ -673,6 +674,7 @@ _BOARD_SAFETY_TOGGLE_FIELDS = (
     "dispatch_enabled",
     "auto_decompose_enabled",
     "review_dispatch_enabled",
+    "auto_estimate_enabled",
 )
 
 
@@ -706,6 +708,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "dispatch_enabled": True,
         "auto_decompose_enabled": True,
         "review_dispatch_enabled": True,
+        "auto_estimate_enabled": False,
     }
     p = board_metadata_path(slug)
     try:
@@ -745,7 +748,7 @@ def write_board_metadata(
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
     dispatch_enabled: Optional[bool] = None, auto_decompose_enabled: Optional[bool] = None,
-    review_dispatch_enabled: Optional[bool] = None,
+    review_dispatch_enabled: Optional[bool] = None, auto_estimate_enabled: Optional[bool] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
@@ -781,6 +784,8 @@ def write_board_metadata(
             meta["auto_decompose_enabled"] = bool(auto_decompose_enabled)
         if review_dispatch_enabled is not None:
             meta["review_dispatch_enabled"] = bool(review_dispatch_enabled)
+        if auto_estimate_enabled is not None:
+            meta["auto_estimate_enabled"] = bool(auto_estimate_enabled)
         for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
             if value is not None:
                 meta[key] = str(value) if value else None
@@ -796,7 +801,7 @@ def write_board_metadata(
 def create_board(
     slug: str, *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, default_workdir: Optional[str] = None,
-    project_id: Optional[str] = None,
+    project_id: Optional[str] = None, auto_estimate_enabled: Optional[bool] = None,
 ) -> dict:
     """Create board dir + DB + metadata (``mkdir -p`` semantics: existing board returns its metadata).
 
@@ -818,6 +823,7 @@ def create_board(
     meta = write_board_metadata(
         normed, name=name, description=description, icon=icon, color=color,
         default_workdir=default_workdir, project_id=project_id,
+        auto_estimate_enabled=auto_estimate_enabled,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -970,6 +976,7 @@ class Task:
     scope_manifest: Optional[dict] = None
     obligations: Optional[list] = None
     feedback_schema: Optional[str] = None
+    estimate: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -991,6 +998,7 @@ class Task:
             skills=skills_value,
             scope_paths=scope_paths_value,
             scope_manifest=scope_manifest_value,
+            estimate=_json_dict(g("estimate")) or None,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
         )
@@ -1250,7 +1258,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     card_class           TEXT,
     scope_manifest       TEXT,
     obligations          TEXT,
-    feedback_schema      TEXT
+    feedback_schema      TEXT,
+    estimate             TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1786,6 +1795,12 @@ def create_task(
                 _defer_lifecycle_hook(conn, "on_kanban_task_created", task_id, **hook_fields)
             else:
                 _fire_kanban_lifecycle_hook("on_kanban_task_created", task_id, **hook_fields)
+            if _board_meta_for(board).get("auto_estimate_enabled", False) and task_status in AUTO_ESTIMATE_STATUSES:
+                try:
+                    from hermes_cli.kanban_estimate import schedule_task_estimate
+                    schedule_task_estimate(task_id, board=board or get_current_board())
+                except Exception as exc:
+                    _log.debug("kanban auto-estimate scheduling failed for %s: %s", task_id, exc)
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

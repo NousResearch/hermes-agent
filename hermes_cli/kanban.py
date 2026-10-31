@@ -206,7 +206,7 @@ def _profile_author() -> str:
 
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
-    "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
+    "init", "create", "swarm", "assign", "unguard", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
@@ -576,6 +576,13 @@ def _cmd_assign(args: argparse.Namespace) -> int:
         ok = kb.assign_task(conn, args.task_id, profile)
     return _ok_or_err(ok, f"no such task: {args.task_id}",
                       f"Assigned {args.task_id} to {profile or '(unassigned)'}")
+
+
+def _cmd_unguard(args: argparse.Namespace) -> int:
+    with kbc.connect_closing() as conn:
+        ok = kb.unguard_task(conn, args.task_id, actor=_profile_author())
+    return _ok_or_err(ok, f"no such task: {args.task_id}",
+                      f"Lifted the respawn guard on {args.task_id}")
 
 
 def _cmd_set_model(args: argparse.Namespace) -> int:
@@ -1320,7 +1327,7 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
 _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
-    "assign": _cmd_assign, "set-model": _cmd_set_model,
+    "assign": _cmd_assign, "unguard": _cmd_unguard, "set-model": _cmd_set_model,
     "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
     "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
@@ -1356,6 +1363,7 @@ Common subcommands:
   `request-review <id>` Enter first-class review; `request-changes <id> <reason>` returns an active review to its implementer
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
   `assign <id> <profile>`  Reassign
+  `unguard <id>`        Lift the active_pr respawn guard (PR merged/closed)
   `boards list`         Show all boards
   `assignees`           Known profiles + counts
   `context <id>`        Full worker-context dump

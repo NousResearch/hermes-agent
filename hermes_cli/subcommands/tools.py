@@ -47,4 +47,7 @@ def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
     tools_postsetup_p.add_argument(
         "post_setup_key", metavar="KEY",
         help="Post-setup hook key (e.g. chromium, cua_driver, kittentts)")
+    tools_analytics = tools_sub.add_parser("analytics", help="Show read-only tool usage analytics")
+    tools_analytics.add_argument("--verbose", action="store_true")
+    tools_sub.add_parser("prune", help="Suggest cold enabled toolsets; does not change config")
     tools_parser.set_defaults(func=cmd_tools)

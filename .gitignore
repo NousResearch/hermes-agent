@@ -30,6 +30,8 @@ act/
 .uv-cache/
 compose.hermes.local.yml
 export*
+# logo-design ships a vendored export_variants.py; the blanket export* rule above would drop it
+!optional-skills/creative/logo-design/scripts/export_variants.py
 __pycache__/model_tools.cpython-310.pyc
 __pycache__/web_tools.cpython-310.pyc
 logs/

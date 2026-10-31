@@ -51,7 +51,8 @@ def _build_full_manifest(
         bot_scopes.append("assistant:write")
         # Slack includes current viewing context in Agent DM events only after this subscription
         # is enabled; the adapter uses it to preserve the referred channel across the agent turn.
-        bot_events.extend(["app_context_changed", "app_home_opened"])
+        # agent_session_stopped turns on Slack's native Stop button (mapped onto /stop).
+        bot_events.extend(["agent_session_stopped", "app_context_changed", "app_home_opened"])
 
     bot_scopes.sort()
     bot_events.sort()

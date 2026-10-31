@@ -265,3 +265,14 @@ def test_failed_room_lookup_keeps_the_reply_rule(monkeypatch, tmp_path):
 
     assert runner._room_allow_silence(source) is None
     assert runner._silence_allowed_for_source(source, None, True, {"final_response": "NO_REPLY"}) is False
+
+
+@pytest.mark.asyncio
+async def test_unrecordable_silence_receipt_does_not_raise_into_delivery(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    runner.session_store.lookup_by_session_key.side_effect = OSError("disk full")
+
+    await runner._record_room_silence_decision(
+        "lane", {"final_response": "NO_REPLY"}, True, display_kind=None, reply_expected=True)
+
+    runner.session_store.lookup_by_session_key.assert_called_once_with("lane")

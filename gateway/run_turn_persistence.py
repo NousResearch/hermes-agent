@@ -78,20 +78,25 @@ class GatewayTurnPersistenceMixin:
                 or not is_intentional_silence_response(agent_result.get("final_response"))):
             return
         store = self.async_session_store
-        entry = await store.lookup_by_session_key(session_key)
-        token = entry.active_turn_token if entry is not None else None
-        if not isinstance(token, str):
-            return
-        history = await store.load_transcript(entry.session_id)
-        # The agent may have saved its final before gateway session metadata was appended.
-        # Match recovery's visible tail rather than the literal last bookkeeping row.
-        last = next((m for m in reversed(history) if m.get("role") not in ("session_meta", "system")), {})
-        if (last.get("role") != "assistant" or last.get("timestamp") is None
-                or last.get("content") != agent_result.get("final_response")):
-            return
-        await store.set_session_metadata(session_key, "room_silence_decision", {
-            "token": token, "timestamp": last.get("timestamp"), "silent": bool(silent),
-        })
+        try:
+            entry = await store.lookup_by_session_key(session_key)
+            token = entry.active_turn_token if entry is not None else None
+            if not isinstance(token, str):
+                return
+            history = await store.load_transcript(entry.session_id)
+            # The agent may have saved its final before gateway session metadata was appended.
+            # Match recovery's visible tail rather than the literal last bookkeeping row.
+            last = next((m for m in reversed(history) if m.get("role") not in ("session_meta", "system")), {})
+            if (last.get("role") != "assistant" or last.get("timestamp") is None
+                    or last.get("content") != agent_result.get("final_response")):
+                return
+            await store.set_session_metadata(session_key, "room_silence_decision", {
+                "token": token, "timestamp": last.get("timestamp"), "silent": bool(silent),
+            })
+        except Exception:
+            # The receipt only lets crash recovery honour this silence; without it recovery keeps
+            # the human-turn notice. Live delivery must stay silent rather than become an error.
+            logger.warning("Could not record the room silence decision for %s", session_key, exc_info=True)
 
     async def _hmwa_shape_agent_response(
         self, agent_result, source, history, session_entry, session_key,

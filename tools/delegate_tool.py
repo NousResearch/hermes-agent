@@ -152,13 +152,20 @@ def _open_child_session_db(parent_agent) -> Any:
         return acquire(_parent_db_path) if _parent_db_path is not None else acquire()
     return None
 
-def _apply_child_cache_ttl(child) -> None:
-    """A delegated child never uses the 1h cache tier. The tier is priced for a person who steps
-    away between turns (2x write vs 1.25x for 5m, #14971); a subagent calls every few seconds for
-    minutes and is gone, so it pays the 2x on every tool result and never collects the retention.
-    Caching itself stays exactly as configured (disabled stays disabled)."""
-    if getattr(child, "_cache_ttl", None) == "1h":
-        child._cache_ttl = "5m"
+def _apply_child_cache_ttl(child, delegation_cfg: dict) -> None:
+    """A delegated child runs on ``delegation.cache_ttl`` (default ``5m``), never on the tier its own
+    ``prompt_caching.cache_ttl`` resolution picked (``1h``, or ``auto`` reading an inherited source).
+    The 1h tier writes at 2x vs 1.25x for 5m (#14971); a subagent that calls every few seconds pays
+    the 2x on every tool result and never collects the retention (#104168). ``1h`` is the opt-in for
+    slow children: the TTL counts from request start, so a 5m entry expires at most a minute after a
+    4+ minute generation ends, and a next call that starts later re-writes the whole prefix. Disabled
+    caching stays disabled, and ``effective_cache_ttl`` still clamps per route."""
+    if getattr(child, "_cache_ttl", None) is None:
+        return
+    ttl = (delegation_cfg or {}).get("cache_ttl")
+    if ttl not in (None, "5m", "1h"):  # a tuple: an unhashable YAML value (a list) must not raise
+        logger.warning('delegation.cache_ttl=%r is not "5m" or "1h"; children use 5m.', ttl)
+    child._cache_ttl = "1h" if ttl == "1h" else "5m"
 
 _CHILD_CAP_MIN = 16_000  # below this a child compresses on every call; treat as a config error
 
@@ -321,7 +328,7 @@ def _build_child_agent(
             effective_requested_provider=rt.get("requested_provider"),
         )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
-    _apply_child_cache_ttl(child)
+    _apply_child_cache_ttl(child, delegation_cfg)
     if child_session_db is not None:
         child._owns_session_db = True  # released by the child's close(), never by the parent
     # Ownership transfer for the dedicated handle: the child's close() must release it (nothing else holds a

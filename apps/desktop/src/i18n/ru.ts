@@ -21,6 +21,7 @@ import { ruPluginSettings, ruPluginsTab } from './ru_plugins'
 import { RU_NOUN, RU_PLURAL } from './ru_plural'
 import { ruPreviewWeb } from './ru_preview_web'
 import { ruProjects } from './ru_projects'
+import { ruQueueFair } from './ru_queue_fair'
 import { ruSharedMetrics } from './ru_shared_metrics'
 import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
@@ -2511,6 +2512,7 @@ export const ruOverrides = {
     markAllRead: 'Отметить все как прочитанные'
   },
   composer: {
+    queueFair: ruQueueFair,
     message: 'Сообщение',
     wakingProfile: profile => `Пробуждаем ${profile}…`,
     placeholderStarting: 'Запуск Hermes...',

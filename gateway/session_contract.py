@@ -69,6 +69,11 @@ class PendingAdmission(AdmissionReceipt):
     # A queued admission in transfer to the running turn (``prompt.steer_queued``): it reads ``started``
     # but goes back to its queue place if its text never reached that turn.
     steering: bool = False
+    # Why a queued row is not running yet (gateway/session_queue_holds.py): ``session_busy``, ``slot``
+    # (the session cap is full), ``editing``, ``restarting``, ``paused``, or another gate's reason.
+    hold_reason: str | None = None
+    # ``prompt.reorder_queued`` serves this row (an interactive text row, as ``replace``).
+    reorderable: bool = False
 
 
 @dataclass(frozen=True)

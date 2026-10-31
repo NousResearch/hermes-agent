@@ -51,7 +51,9 @@ const ATTACH_REQUIRED = new Set([
   'prompt.cancel',
   'session.rewind',
   'prompt.steer_queued',
-  'prompt.replace_queued'
+  'prompt.replace_queued',
+  'prompt.hold_queued',
+  'prompt.reorder_queued'
 ])
 
 // A branch is a CAS mutation on the PARENT: an un-attached parent (right-click on a sidebar row

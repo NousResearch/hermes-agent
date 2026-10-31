@@ -29,6 +29,8 @@ from hermes_state_runtime import (
 
 # Capped backoff for a claim refused by transient storage (writer lock, full disk).
 _CLAIM_RETRY_MIN_S, _CLAIM_RETRY_MAX_S = 0.25, 5.0
+# ``_claim_next`` answers that park the drain on a still-queued head -> the hold reason viewers see.
+_HEAD_HOLDS = {'classic_busy': 'session_busy', 'slot': 'slot', 'editing': 'editing'}
 # Longest a settled turn's adapter may hold its adopted crash marker before the follower is claimed.
 _MARKER_RELEASE_WAIT_S = 60.0
 # True in the admitting task once ``admit_native``'s shielded ledger write began: a caller cancelled
@@ -149,6 +151,10 @@ class SessionAuthority:
         # to that running claim (gateway/session_queued_controls.py); its settlement decides each one.
         self.steer_transfers = {}
         self.launch_sources = {}  # session -> its frozen launch source (session_queued_controls)
+        # Queue holds (gateway/session_queue_holds.py): admission id -> edit-hold expiry (monotonic),
+        # and session -> the reason its drain is parked on the queued head.
+        self.edit_holds = {}
+        self.hold_reasons = {}
         # session -> generation of the last Stop delivered to a live agent. A repeated
         # Stop can land on the session's reusable cached agent after that turn's finalizer
         # cleared it; the next generation's adopt_agent drops it instead of starting interrupted.
@@ -435,8 +441,11 @@ class SessionAuthority:
         if text is None:
             text = payload.get('native_text_v1', {}).get('event', {}).get('text', '')
         from gateway.session_queued_controls import queued_controls
+        from gateway.session_queue_holds import hold_reason
+        controls = queued_controls(self, row)
         return PendingAdmission(**vars(self._receipt(row)), input_id=row['request_id'], text=text,
-                                controls=queued_controls(self, row), steering=row['outcome'] == STEERING)
+                                controls=controls, steering=row['outcome'] == STEERING,
+                                hold_reason=hold_reason(self, row), reorderable='replace' in controls)
 
     def _publish_pending(self, ref):
         live = self.sessions[ref.session_id]
@@ -465,6 +474,8 @@ class SessionAuthority:
             live.task.add_done_callback(_log_drain_failure)
             from gateway.session_runtime_workers import persist_work_count
             live.task.add_done_callback(lambda task: persist_work_count(self, task))
+            from gateway.session_queue_holds import release_slot
+            live.task.add_done_callback(lambda task: release_slot(self, ref))
 
     def wake_after_worker(self, session_id):
         """A worker execution on ``session_id`` (a logical owner or its compression continuation)
@@ -481,6 +492,8 @@ class SessionAuthority:
         ``session_busy`` is transient (a registered worker finishes and wakes the FIFO), so only
         the messaging delivery waiters are released for it; an API/webhook/Bot observer keeps
         waiting for the answer instead of reporting accepted work as a conflict."""
+        from gateway.session_queue_holds import note_hold
+        note_hold(self, ref, reason)
         for row in list_session_admissions(self.db, session_id=ref.session_id):
             admission_id = row['admission_id']
             if reason == 'session_busy' and admission_id not in self.native_waiters:
@@ -667,7 +680,7 @@ class SessionAuthority:
         return results
 
     async def submit(self, actor: Principal, request: Submission, *, _authorize_write=None, queue_while_restarting=False,
-                     _replay_guard=None, _kanban_card=None):
+                     _replay_guard=None, _kanban_card=None, _after_insert=None):
         """``queue_while_restarting``: the caller is an interactive client attached to a restart's
         after-turn wait, which commits the input queued for the next owner. Machine callers (a2a,
         kanban, hosted rooms) keep the plain ``runtime_draining`` refusal and retry against the next
@@ -684,10 +697,10 @@ class SessionAuthority:
             with capture_lease():  # captured bytes are held from capture until commit or refusal
                 return await self._submit(actor, request, _authorize_write=_authorize_write,
                                           queue_only=queue_while_restarting is True, _replay_guard=_replay_guard,
-                                          _kanban_card=_kanban_card)
+                                          _kanban_card=_kanban_card, _after_insert=_after_insert)
 
     async def _submit(self, actor, request, *, _authorize_write=None, queue_only=False, _replay_guard=None,
-                      _kanban_card=None):
+                      _kanban_card=None, _after_insert=None):
         self._require_admission_open(queue_only=queue_only)
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
                 'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted',
@@ -726,7 +739,7 @@ class SessionAuthority:
                 return admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
                                            session_id=request.ref.session_id, request_id=request.request_id,
                                            payload=payload, intent=request.intent, _replay_guard=_replay_guard,
-                                           _authorize_write=self._admission_gate(_authorize_write, queue_only=queue_only))
+                                           _after_insert=_after_insert, _authorize_write=self._admission_gate(_authorize_write, queue_only=queue_only))
             except Exception:
                 self._release_refused_capture(request, payload)
                 raise
@@ -1046,6 +1059,9 @@ class SessionAuthority:
             if any(row['status'] == 'unknown' for row in pending):
                 raise RuntimeStoreError('unknown_execution')
             first = next((row for row in pending if row['status'] == 'queued'), None)
+            from gateway.session_queue_holds import head_hold
+            if first is not None and (held := head_hold(self, ref, live, first)) is not None:
+                return held, first  # the head waits queued (a full session cap, an open edit)
             from gateway.config import Platform
             if live.source.platform == Platform.LOCAL:
                 # A reasoning command or a model pick made while the previous turn ran lands here, at the
@@ -1229,10 +1245,13 @@ class SessionAuthority:
                 await asyncio.sleep(backoff)
                 continue
             backoff = 0.0
-            if row != 'classic_busy':
+            held = _HEAD_HOLDS.get(row) if isinstance(row, str) else None
+            if held is None:
                 return row, first
             if self._drain_stopping(ref, live):
                 return None
+            from gateway.session_queue_holds import note_hold
+            note_hold(self, ref, held)
             await asyncio.sleep(_CLAIM_RETRY_MIN_S)
 
     async def _execute_claimed(self, ref, live, row):
@@ -1253,6 +1272,8 @@ class SessionAuthority:
             finally:
                 with live.event_stream.lock:
                     self.executing.pop(ref.session_id, None)
+                from gateway.session_queue_holds import release_slot
+                release_slot(self, ref)
         except ManagedExecutionUnknown:
             with live.event_stream.lock:
                 live.event_stream.execution = {}
@@ -1289,6 +1310,8 @@ class SessionAuthority:
                 return
             # The FIFO is moving again (or empty): the next pause is a new episode.
             live.pause_notified = False
+            from gateway.session_queue_holds import note_hold
+            note_hold(self, ref, None)
             if row is None:
                 from gateway.session_acp_lifecycle import end_idle_acp_session
                 # A write (idle check + stamp in one txn): off-loop. Input scheduled meanwhile set

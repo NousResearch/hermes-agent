@@ -19,6 +19,8 @@ interface QueuePanelProps {
    *  the queued turns behind it flow again. Absent on non-canonical hosts. */
   onDiscardLost?: (id: string) => void
   onEdit: (entry: QueuedPromptEntry) => void
+  /** Move a server row one place up (-1) or down (1) in its owner's FIFO. Absent: no reordering. */
+  onMove?: (id: string, delta: -1 | 1) => void
   /** Lift a park (explicit Stop/Esc halt) and let the queue flow again. */
   onResume: () => void
   onSendNow: (id: string) => void
@@ -45,6 +47,7 @@ export function QueuePanel({
   onDelete,
   onDiscardLost,
   onEdit,
+  onMove,
   onResume,
   onSendNow,
   onSteerNow,
@@ -72,6 +75,8 @@ export function QueuePanel({
     return null
   }
 
+  const movableIds = entries.flatMap(entry => (entry.serverControls?.includes('reorder') ? [entry.id] : []))
+
   const renderRow = (entry: QueuedPromptEntry) => {
     const isEditing = editingId === entry.id
     const attachmentsCount = entry.attachments.length
@@ -90,6 +95,7 @@ export function QueuePanel({
     const preview = entryPreview(entry, c)
     const canExpand = shouldOfferExpandedPreview(preview)
     const isExpanded = expandedIds.has(entry.id)
+    const holdNote = holdNoteFor(entry, c)
 
     return (
       <StatusRow
@@ -134,6 +140,9 @@ export function QueuePanel({
               onSteerNow,
               canSteer
             })}
+            {onMove && (
+              <QueueMoveButtons c={c} disabled={isEditing} id={entry.id} movableIds={movableIds} onMove={onMove} />
+            )}
           </>
         }
         trailingVisible={isEditing || lost}
@@ -147,17 +156,7 @@ export function QueuePanel({
           >
             {preview}
           </p>
-          {(attachmentsCount > 0 || isEditing || lost) && (
-            <div className="mt-0.5 flex items-center gap-1.5 text-[0.64rem] text-muted-foreground/75">
-              {lost && <span data-slot="queue-lost-note">{c.queueLostNote}</span>}
-              {attachmentsCount > 0 && <span>{c.attachments(attachmentsCount)}</span>}
-              {isEditing && (
-                <span className="text-[color-mix(in_srgb,var(--dt-composer-ring)_78%,var(--muted-foreground))]">
-                  {c.editingInComposer}
-                </span>
-              )}
-            </div>
-          )}
+          <QueueRowMeta attachmentsCount={attachmentsCount} c={c} holdNote={holdNote} isEditing={isEditing} lost={lost} />
         </div>
       </StatusRow>
     )
@@ -194,6 +193,92 @@ export function QueuePanel({
   )
 }
 
+interface QueueRowMetaProps {
+  attachmentsCount: number
+  c: Translations['composer']
+  holdNote?: string
+  isEditing: boolean
+  lost: boolean
+}
+
+/** The small line under a queued row: lost / why it waits / attachments / editing. */
+function QueueRowMeta({ attachmentsCount, c, holdNote, isEditing, lost }: QueueRowMetaProps) {
+  const waiting = isEditing ? undefined : holdNote
+
+  if (!(attachmentsCount > 0 || isEditing || lost || waiting)) {
+    return null
+  }
+
+  return (
+    <div className="mt-0.5 flex items-center gap-1.5 text-[0.64rem] text-muted-foreground/75">
+      {lost && <span data-slot="queue-lost-note">{c.queueLostNote}</span>}
+      {waiting && <span data-slot="queue-hold-note">{waiting}</span>}
+      {attachmentsCount > 0 && <span>{c.attachments(attachmentsCount)}</span>}
+      {isEditing && (
+        <span className="text-[color-mix(in_srgb,var(--dt-composer-ring)_78%,var(--muted-foreground))]">
+          {c.editingInComposer}
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** Why the owner has not started a server row yet, in words; none for a local or running row. */
+function holdNoteFor(entry: QueuedPromptEntry, c: Translations['composer']): string | undefined {
+  const reason = entry.serverStatus === 'queued' ? entry.serverHoldReason : undefined
+
+  return reason ? (c.queueFair.hold[reason] ?? c.queueFair.holdUnknown(reason)) : undefined
+}
+
+interface QueueMoveButtonsProps {
+  c: Translations['composer']
+  disabled: boolean
+  id: string
+  movableIds: string[]
+  onMove: (id: string, delta: -1 | 1) => void
+}
+
+/** Up/down for a server row its owner lets move; nothing when it is the only movable row. */
+function QueueMoveButtons({ c, disabled, id, movableIds, onMove }: QueueMoveButtonsProps) {
+  const index = movableIds.indexOf(id)
+
+  if (index < 0 || movableIds.length < 2) {
+    return null
+  }
+
+  const moves = [
+    { delta: -1 as const, edge: index === 0, icon: 'arrow-up', label: c.queueFair.moveUp, slot: 'queue-move-up' },
+    {
+      delta: 1 as const,
+      edge: index === movableIds.length - 1,
+      icon: 'arrow-down',
+      label: c.queueFair.moveDown,
+      slot: 'queue-move-down'
+    }
+  ]
+
+  return (
+    <>
+      {moves.map(move => (
+        <Tip key={move.slot} label={move.label}>
+          <Button
+            aria-label={move.label}
+            className="size-5 rounded-md"
+            data-slot={move.slot}
+            disabled={move.edge || disabled}
+            onClick={() => onMove(id, move.delta)}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <Codicon name={move.icon} size={iconSize.xs} />
+          </Button>
+        </Tip>
+      ))}
+    </>
+  )
+}
+
 interface EntryActionsArgs {
   busy: boolean
   c: Translations['composer']
@@ -209,8 +294,8 @@ interface EntryActionsArgs {
 }
 
 /** Per-row trailing actions: discard for a lost row, else edit/steer/send for a local one. A
- *  server row gets only the edit/steer its owner serves, never send-next: reordering it would
- *  break the owner's one FIFO. */
+ *  server row gets only the edit/steer its owner serves, never send-next (its owner reorders it:
+ *  the move buttons). */
 function renderEntryActions({
   busy,
   c,

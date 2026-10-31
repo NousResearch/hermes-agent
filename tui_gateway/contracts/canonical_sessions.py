@@ -87,12 +87,20 @@ class CanonicalPendingAdmission(AdmissionStatus):
     input_id: str
     text: str
     # The queued-row verbs the owner serves for this row: ``steer`` (``prompt.steer_queued``) and
-    # ``replace`` (``prompt.replace_queued``). Absent from an owner that predates them.
+    # ``replace`` (``prompt.replace_queued``, with ``prompt.hold_queued`` while editing). Absent from an
+    # owner that predates them.
     controls: list[Literal['steer', 'replace']] | None = None
     # A queued admission in transfer to the running turn (``prompt.steer_queued``): listed ``started``
     # until that turn settles it, but it returns to ``queued`` if its text never reached the turn, so a
     # client keeps it at its queued rank. Absent from an owner that predates it.
     steering: bool | None = None
+    # Why a queued row is not running yet: ``session_busy`` (a turn or worker runs on this session),
+    # ``slot`` (max_concurrent_sessions is full), ``editing`` (a client holds it for an edit),
+    # ``restarting``, ``paused`` (a lost turn waits to be resolved), or another admission gate's
+    # reason (a provider limit, host memory). Absent when nothing holds it or from an older owner.
+    hold_reason: str | None = None
+    # The owner serves ``prompt.reorder_queued`` for this row. Absent from an owner that predates it.
+    reorderable: bool | None = None
 
 
 class CanonicalPendingPrompt(Result):
@@ -252,7 +260,8 @@ class CanonicalSteerQueuedParams(CanonicalSessionParams):
 
 
 class CanonicalReplaceQueuedParams(CanonicalSessionParams):
-    """The edited prompt: admitted as a NEW admission (``submission_id``) at the FIFO tail."""
+    """The edited prompt: admitted as a NEW admission (``submission_id``) at the FIFO tail, or in the
+    replaced admission's place when the profile sets ``display.queue_edit_keeps_place``."""
 
     admission_id: str
     submission_id: str
@@ -260,6 +269,25 @@ class CanonicalReplaceQueuedParams(CanonicalSessionParams):
     attachments: list[CanonicalAttachment] | None = None
     display_kind: Literal['hidden'] | None = None
     title_preview: str | None = None
+
+
+class CanonicalHoldQueuedParams(CanonicalSessionParams):
+    admission_id: str
+    held: bool
+    # The editor's own token: a hold is per signed-in subject and token (per connection without one),
+    # so one editor's release never ends another's, and a reconnected editor still releases its own.
+    holder: str | None = None
+
+
+class CanonicalReorderQueuedParams(CanonicalSessionParams):
+    admission_id: str
+    # 0-based target place among the session's reorderable queued rows (past the end: last).
+    position: int
+
+
+class CanonicalReorderQueuedResult(Result):
+    # The session's queued admission ids in their new run order.
+    order: list[str]
 
 
 class CanonicalControlParams(CanonicalSessionParams):
@@ -345,6 +373,19 @@ canonical_method('prompt.steer_queued', params=CanonicalSteerQueuedParams, resul
                      "it: the admission stays queued), unsupported_control, not_found.")
 canonical_method('prompt.replace_queued', params=CanonicalReplaceQueuedParams, result=AdmissionStatus,
                  doc="Cancel a still-queued admission and admit the edited prompt as a new admission "
-                     "at the back of the FIFO, in one write bound to the replaced admission. "
+                     "at the back of the FIFO (in the replaced admission's place when the profile sets "
+                     "display.queue_edit_keeps_place), in one write bound to the replaced "
+                     "admission; any edit hold on it ends. "
                      "Refusals: admission_started, admission_conflict (the submission_id replaced "
                      "another admission), queue_full, unsupported_control, not_found.")
+canonical_method('prompt.hold_queued', params=CanonicalHoldQueuedParams, result=AdmissionStatus,
+                 doc="Hold (held=true) or release a still-queued admission while a client edits it: "
+                     "the drain does not start a held admission (pending snapshots say "
+                     "hold_reason 'editing'). Each editor (holder token, else connection) holds separately; a hold "
+                     "lapses after 120 s unless renewed; "
+                     "prompt.replace_queued and prompt.cancel end it. "
+                     "Refusals: admission_started, unsupported_control, not_found.")
+canonical_method('prompt.reorder_queued', params=CanonicalReorderQueuedParams, result=CanonicalReorderQueuedResult,
+                 doc="Move a still-queued admission to `position` among the session's reorderable "
+                     "queued rows (rows listed reorderable); other rows keep their "
+                     "places. Refusals: admission_started, unsupported_control, invalid_params, not_found.")

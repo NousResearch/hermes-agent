@@ -41,6 +41,9 @@ export interface QueuedPromptEntry {
   /** The queued-row verbs the owner serves for a server row (`steer`, `replace`); none from an
    *  owner that predates them. Projected from the pending snapshot, never set locally. */
   serverControls?: string[]
+  /** Why the owner has not started this server row yet (`session_busy`, `slot`, `editing`, ...).
+   *  Projected from the pending snapshot, never set locally. */
+  serverHoldReason?: string
   text: string
   /** What the queue panel and the sent bubble show, when it differs from the
    *  text the agent receives. A queued `/skill` invocation carries the whole

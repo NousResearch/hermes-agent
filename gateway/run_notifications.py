@@ -405,7 +405,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
             thread_id = data.get("thread_id")
-            if not platform_str or not chat_id:
+            chat_type = data.get("chat_type")
+            user_id = data.get("user_id")
+            if not platform_str or not chat_id or not chat_type:
                 return None
             platform = Platform(platform_str)
             # Relay-aware transport over the REQUESTER'S profile adapter map; ``self.adapters`` is the
@@ -420,6 +422,16 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 logger.info(
                     "Restart notification suppressed: %s has gateway_restart_notification=false", platform_str
                 )
+                return None
+            source = SessionSource(
+                platform=platform, chat_id=str(chat_id), chat_type=str(chat_type),
+                user_id=str(user_id) if user_id else None,
+                thread_id=str(thread_id) if thread_id else None, profile=self._marker_profile(data),
+                delivered_via_upstream_relay=data.get("delivered_via_upstream_relay") is True,
+                scope_id=str(data["scope_id"]) if data.get("scope_id") else None,
+            )
+            if not self._is_user_authorized(source):
+                logger.info("Restart notification skipped: %s:%s is not authorized", platform_str, chat_id)
                 return None
             metadata = self._pending_marker_metadata(platform, chat_id, data, transport.adapter)
             if data.get("delivered_via_upstream_relay") is True:

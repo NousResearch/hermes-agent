@@ -14,7 +14,7 @@ import re
 # Non-shell interpreters whose quoted heredoc bodies are data for THAT interpreter; optional
 # VAR=... assignments, ``env`` and a path prefix allowed. Narrow on purpose: unmatched = visible.
 _INERT_HEREDOC_CONSUMER_RE = re.compile(
-    r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_./-]+/)?"
+    r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_.~+-]+/|/)*"
     r"(?:python(?:3(?:\.\d+)*)?|osascript|cat)(?=\s|$)",
     re.IGNORECASE)
 

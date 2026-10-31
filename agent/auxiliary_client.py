@@ -33,6 +33,9 @@ from agent.error_classifier import (
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
+from agent.auxiliary_error_shapes import (
+    _botocore_error, _exc_http_status, _is_invalid_aux_response_error, _is_statusless_structured_provider_error,
+)
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
@@ -3292,9 +3295,9 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     billing keywords counts as a rate limit.
     """
     # (PR #8023 pattern)
-    if type(exc).__name__ == "RateLimitError":
+    if type(exc).__name__ == "RateLimitError" or _botocore_error(exc)[1] == "ThrottlingException":
         return True
-    if getattr(exc, "status_code", None) != 429:
+    if _exc_http_status(exc) != 429:
         return False
     err_lower = str(exc).lower()
     return _contains_any(err_lower, _RATE_LIMIT_KEYWORDS) or not _contains_any(err_lower, _RATE_LIMIT_BILLING_KEYWORDS)
@@ -3328,11 +3331,6 @@ def _is_connection_error(exc: Exception) -> bool:
         "incomplete chunked read", "peer closed connection", "response ended prematurely",
         "unexpected eof", "remoteprotocolerror", "localprotocolerror",
     ))
-
-
-def _exc_http_status(exc: Exception) -> Any:
-    """HTTP status on the exception itself or on its ``response`` (None when neither carries one)."""
-    return getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
 
 
 def _is_transient_transport_error(exc: Exception) -> bool:
@@ -3498,33 +3496,6 @@ def _is_model_incompatible_error(exc: Exception) -> bool:
         "model is not supported", "not supported with this", "not supported for this account",
         "model_not_supported", "does not support this model", "unsupported model",
     ))
-
-
-def _is_invalid_aux_response_error(exc: Exception) -> bool:
-    """HTTP-200 empty/malformed ChatCompletions — a capability failure routed like model incompatibility."""
-    if not isinstance(exc, RuntimeError):
-        return False
-    msg = str(exc).lower()
-    return "auxiliary " in msg and "llm returned invalid response" in msg and "choices[0].message" in msg
-
-
-def _is_statusless_structured_provider_error(exc: Exception) -> bool:
-    """Detect a structured provider failure that has no HTTP status.
-
-    OpenAI-compatible relays may commit SSE with status 200, then send an
-    OpenAI-style ``error`` event. The SDK raises a status-less ``APIError`` with
-    ``body=data["error"]`` — the INNER error object or a bare string (an
-    ``{"error": ...}`` wrapper is accepted too). Any non-empty structured error in
-    that status-less shape is a route failure; ordinary HTTP errors keep their
-    existing status-based classifiers, and message text alone is insufficient.
-    """
-    if _exc_http_status(exc) is not None:
-        return False
-    body = getattr(exc, "body", None)
-    err = body.get("error") if isinstance(body, dict) and "error" in body else body
-    if isinstance(err, str):
-        return bool(err.strip())
-    return isinstance(err, dict) and any(err.get(k) for k in ("type", "code", "message"))
 
 
 # Tasks on a user-visible critical path (compression blocks resuming an oversized session; vision
@@ -7761,11 +7732,10 @@ def _ladder_credential_rungs(
     # is skipped and ``first_err`` is handed to the provider-fallback chain as-is.
     if pool_provider and _credential_rung_accepts(first_err):
         recovery_err = first_err
-        # Skip the extra retry for clear payment/quota errors — the endpoint won't accept
-        # another request with the same exhausted key.
+        # No backoff retry for a payment/quota error: the same exhausted key stays refused.
         if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
-            resp, recovery_err = yield from _rung(
-                _LadderStep("call", (client, kwargs)), _credential_rung_accepts)
+            from agent.auxiliary_rate_limit_backoff import rate_limit_retry_rungs
+            resp, recovery_err = yield from rate_limit_retry_rungs(first_err, client, kwargs, f"{task or 'call'}{tag}")
             if recovery_err is None:
                 return resp, None
         if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
@@ -7955,12 +7925,12 @@ def _aux_recovery_ladder(
 
 
 def _drive_ladder(ladder, perform: Callable[[_LadderStep], Any]) -> Any:
-    """Run a ladder generator, feeding each step's result (or exception) back in."""
+    """Run a ladder generator, feeding each step's result (or exception) back in; a ``wait`` step sleeps."""
     try:
         step = next(ladder)
         while True:
             try:
-                result = perform(step)
+                result = time.sleep(step.args[0]) if step.kind == "wait" else perform(step)
             except Exception as exc:
                 step = ladder.throw(exc)
             else:
@@ -7971,11 +7941,12 @@ def _drive_ladder(ladder, perform: Callable[[_LadderStep], Any]) -> Any:
 
 async def _drive_ladder_async(ladder, perform: Callable[[_LadderStep], Any]) -> Any:
     """Async twin of :func:`_drive_ladder` (``perform`` is awaited)."""
+    import asyncio
     try:
         step = next(ladder)
         while True:
             try:
-                result = await perform(step)
+                result = await (asyncio.sleep(step.args[0]) if step.kind == "wait" else perform(step))
             except Exception as exc:
                 step = ladder.throw(exc)
             else:

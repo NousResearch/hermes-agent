@@ -34,7 +34,7 @@ _WHATSAPP_METADATA = frozenset({'whatsapp_native_type', 'whatsapp_native', 'what
 _WHATSAPP_NATIVE_KEYS = frozenset({'video', 'audio', 'sticker', 'location', 'contact', 'contacts',
                                    'reaction', 'poll', 'pollUpdate'})
 _WHATSAPP_NATIVE_MAX_BYTES = 16 * 1024
-_MEDIA_FIELDS = ('media_urls', 'media_types', 'media_text_inlined')
+_MEDIA_FIELDS = ('media_urls', 'media_types', 'media_text_inlined', 'media_filenames')
 
 
 def _native_metadata(event):
@@ -83,7 +83,8 @@ def _drop_remote_media(event):
     def keep(values):
         return [values[index] for index in kept] if values else values
     return replace(event, text='\n'.join(filter(None, [event.text, *notes])), media_urls=keep(urls),
-                   media_types=keep(types), media_text_inlined=keep(event.media_text_inlined))
+                   media_types=keep(types), media_text_inlined=keep(event.media_text_inlined),
+                   media_filenames=keep(event.media_filenames))
 
 
 def _refuse(event, reason, clause):
@@ -107,6 +108,11 @@ def _media_clause(event):
         return 'media_types_length'
     if len(inlined) not in (0, len(urls)):
         return 'media_text_inlined_length'
+    names = event.media_filenames
+    if not isinstance(names, list) or not all(isinstance(item, str) for item in names):
+        return 'media_filenames'
+    if len(names) not in (0, len(urls)):
+        return 'media_filenames_length'
     return None
 
 
@@ -259,6 +265,8 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
         envelope['media'] = media if media is not None else capture_native_media(event.media_urls)
         envelope['event'].update(media_types=list(event.media_types),
                                  media_text_inlined=list(event.media_text_inlined))
+        if any(event.media_filenames):  # absent when unnamed: older admissions keep their fingerprint
+            envelope['event']['media_filenames'] = list(event.media_filenames)
     # Keep the private dispatch key so previously committed text-only rows recover
     # under the same authority; optional media/context fields extend that envelope.
     payload = {'text': event.text, 'native_text_v1': envelope}

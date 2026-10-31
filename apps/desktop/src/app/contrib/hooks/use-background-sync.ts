@@ -6,6 +6,10 @@ import {
   graftRefreshedTailOntoBackfill,
   olderPageReader
 } from '@/app/chat/transcript-backfill'
+import {
+  isSessionRecentlyInterrupted,
+  recentInterruptRemainingMs
+} from '@/app/session/hooks/use-prompt-actions/utils'
 import { sessionCreatedThisRun } from '@/app/session/hooks/use-session-actions/created-this-run'
 import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
@@ -135,10 +139,36 @@ export interface ActiveTranscriptRefreshDeps {
   ) => ClientSessionState
 }
 
+/**
+ * Stop idles the view at the click, but the stopped turn's rows stay unstored
+ * until its interrupted `message.complete` binds the receipt. A page read in
+ * that gap already holds the stored turn, so the merge drew it twice until the
+ * completion landed (#144899 N2). The hold ends with the binding, or with the
+ * Stop cooldown when no receipt ever comes.
+ */
+export function stopAwaitsItsReceipt(state: ClientSessionState, runtimeId: string): boolean {
+  if (!state.interrupted || !isSessionRecentlyInterrupted(runtimeId)) {
+    return false
+  }
+
+  const messages = state.messages
+  const lastUser = messages.findLastIndex(message => message.role === 'user')
+  const lastReply = messages.findLastIndex(message => message.role === 'assistant' && !message.hidden)
+
+  if (lastReply > lastUser) {
+    return !messages[lastReply].persistedTurn
+  }
+
+  return lastUser >= 0 && messages[lastUser].rowId === undefined
+}
+
 function tileRuntimeOwnsLiveState(runtimeId: string): boolean {
   const state = $sessionStates.get()[runtimeId]
 
-  return Boolean(state && (state.busy || state.awaitingResponse || state.needsInput || state.turnLive))
+  return Boolean(
+    state &&
+      (state.busy || state.awaitingResponse || state.needsInput || state.turnLive || stopAwaitsItsReceipt(state, runtimeId))
+  )
 }
 
 /** Backfill/retention may prepend or release a prefix without changing the tail. */
@@ -1097,6 +1127,20 @@ export function useBackgroundSync({
       $activeSessionId.get() === activeSessionId && $selectedStoredSessionId.get() === activeStoredSessionId
 
     const isLive = () => $busy.get() || tileRuntimeOwnsLiveState(activeSessionId)
+    let stopHoldTimer: null | ReturnType<typeof setTimeout> = null
+
+    // A Stop hold whose receipt never comes ends on the clock, not on a store
+    // write, so wake the observer once the cooldown runs out.
+    const observeWhenStopHoldExpires = () => {
+      const state = $sessionStates.get()[activeSessionId]
+
+      if (stopHoldTimer === null && state && stopAwaitsItsReceipt(state, activeSessionId)) {
+        stopHoldTimer = setTimeout(() => {
+          stopHoldTimer = null
+          observe()
+        }, recentInterruptRemainingMs(activeSessionId) + 1)
+      }
+    }
 
     const observe = () => {
       if (!isCurrent()) {
@@ -1104,6 +1148,8 @@ export function useBackgroundSync({
       }
 
       if (isLive()) {
+        observeWhenStopHoldExpires()
+
         const read = activeTranscriptReadRef.current
 
         if (read?.sessionKey === sessionKey) {
@@ -1142,6 +1188,11 @@ export function useBackgroundSync({
       disposed = true
       unsubscribeState()
       unsubscribeBusy()
+
+      if (stopHoldTimer !== null) {
+        clearTimeout(stopHoldTimer)
+      }
+
       activeTranscriptReadRef.current = null
       activeTranscriptRefreshPendingRef.current = null
     }

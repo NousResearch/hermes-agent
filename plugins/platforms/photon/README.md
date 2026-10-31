@@ -206,7 +206,7 @@ grant; a successful check in a terminal does not prove service access.
 - **Cron/standalone sends require a running gateway.** Processes outside
   the gateway (cron subprocesses, `hermes send`) cannot spawn the sidecar;
   they authenticate to the gateway's live sidecar via the runtime record at
-  `<hermes-home>/runtime/photon-sidecar.json` (written after the sidecar's
+  `<hermes-home>/photon-sidecar.json` (written after the sidecar's
   `/healthz` readiness check, `0600`, removed on stop/failed start). Also
   note that shared/free-tier Photon lines cannot INITIATE conversations
   with numbers that never texted the line — that's Photon-side policy, not

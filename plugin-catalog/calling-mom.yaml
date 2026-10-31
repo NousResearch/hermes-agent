@@ -1,0 +1,23 @@
+name: calling-mom
+repo: https://github.com/SlyBase/calling-mom
+sha: "99d91799b70afc0ae036e756d341591ce5be42d4"
+version: "1.3.1"
+title: Calling mom
+description: "Lets a cheap model run your Kanban board and calls a stronger model only where the board or the tool results show it is needed. Mom (a good, affordable model) answers stuck signals, risky commands and completion checks; olymp (the expensive heavyweight) is asked only when mom escalates a rare high-stakes case, with hard limits per card and per day. Disclosure — once enabled, the plugin observes every kanban worker tool result (hashes and counts only, logged to logs/calling-mom.jsonl). With the advisor enabled AND a board or card opted in, redacted run excerpts go through Hermes's ctx.llm to the mom and olymp models you choose; the answer is appended to the tool result and written to the card with the public kanban_comment tool. A card line verify: <command> runs an allowlisted command (no shell, scrubbed environment) for cards created by trusted creators. hermes calling-mom setup writes the plugin's own config (calling_mom.* and its plugins.entries allowlist) with the values you pick, reads delegation.backends.model_map (read-only, to offer your Advanced Delegation routes) and creates one cron job, 'calling-mom: sweep', unless you pass --no-cron; the sweep reads the kanban databases and may push metrics to Pushgateway URLs you configure (off by default). No telemetry, no credentials stored."
+maintainer: SlyBase
+tier: community
+category: automation
+requires_hermes: ">=0.22"
+docs_url: https://github.com/SlyBase/calling-mom/blob/99d91799b70afc0ae036e756d341591ce5be42d4/README.md
+image: https://raw.githubusercontent.com/SlyBase/calling-mom/99d91799b70afc0ae036e756d341591ce5be42d4/assets/calling-mom-banner.jpg
+readme: true
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [second_opinion]
+  provides_hooks: [kanban_task_claimed, kanban_task_blocked, on_kanban_worker_exited, transform_tool_result, on_kanban_dispatch_tick, pre_tool_call, post_api_request]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Hermes has no public Kanban API for plugins yet: pinning a card to a model, unblocking it and reading boards go through hermes_cli.kanban_db. All private imports live in one file, _core.py; if a Hermes update removes one, the plugin stays loaded, registers no hooks and 'hermes calling-mom doctor' names the cause."
+  - "Advice arrives after the tool ran (transform_tool_result): it warns, it cannot prevent a command."
+  - "The risk list is pattern based; an unusual command or secret format can pass."

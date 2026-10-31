@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isMessagingSource, sessionSourceSearchTerms } from './session-source'
+import { isMessagingSource, LOCAL_SESSION_SOURCE_IDS, sessionSourceSearchTerms } from './session-source'
 
 // Regression guard for #46761 / PR #47395: Photon (iMessage) must keep its own
 // sidebar section. refreshMessagingSessions() filters rows through
@@ -27,5 +27,21 @@ describe('photon messaging source registration', () => {
     expect(isMessagingSource('cli')).toBe(false)
     expect(isMessagingSource(null)).toBe(false)
     expect(isMessagingSource(undefined)).toBe(false)
+  })
+})
+
+// Regression guard for #146814: the dashboard's web chat self-reports
+// source='mobile' when the client claims a phone viewport. There is no platform
+// adapter behind it, so those rows must page through recents (where resume and
+// delete live) and must never be offered to a per-platform section that cannot
+// open them.
+describe('mobile (dashboard web chat on a phone viewport) is a local source', () => {
+  it('registers mobile as local, so the messaging fetch excludes it', () => {
+    expect(LOCAL_SESSION_SOURCE_IDS).toContain('mobile')
+  })
+
+  it('is not a messaging source, so no platform section claims it', () => {
+    expect(isMessagingSource('mobile')).toBe(false)
+    expect(isMessagingSource(' MOBILE ')).toBe(false)
   })
 })

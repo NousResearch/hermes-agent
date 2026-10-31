@@ -667,6 +667,10 @@ _LOCAL_CARRIERS = frozenset({RC, R})  # llama.cpp/SGLang read reasoning_content,
 
 _REASONING_CARRIER_ROUTES: tuple = (
     # (carriers, providers (lowered), hosts) — evidence per row in the PR body / FINDINGS.
+    # SenseNova Token Plan (token.sensenova.cn) rejects unknown assistant message keys
+    # with a generic 400 "inference request is invalid" (names no field), so the runtime
+    # rejection learner cannot recognize it; strip all reasoning carriers for this host.
+    (frozenset(), frozenset(), ("token.sensenova.cn",)),
     (frozenset(), frozenset({"mistral", "groq", "cerebras", "sambanova"}),
      ("mistral.ai", "groq.com", "cerebras.ai", "sambanova.ai", "hunyuan.cloud.tencent.com")),
     # Fireworks' ChatMessage schema is additionalProperties:false with reasoning_content only.

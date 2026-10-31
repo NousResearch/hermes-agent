@@ -1,7 +1,26 @@
-"""Notes `hermes gateway status` prints beside the running/not-running verdict."""
+"""Gateway diagnostic labels and notes beside the running/not-running verdict."""
+
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from hermes_cli.config import get_hermes_home
+
+if TYPE_CHECKING:
+    from hermes_cli.gateway import GatewayRuntimeSnapshot
+
+
+def gateway_manager_label(snapshot: GatewayRuntimeSnapshot) -> str:
+    """A host's available service manager does not prove it supervises a visible process."""
+    if snapshot.has_process_service_mismatch or (
+        snapshot.gateway_pids
+        and not snapshot.service_installed
+        and not snapshot.service_running
+        and snapshot.service_scope is not None
+    ):
+        return "manual"
+    # Unmanaged Docker/Termux labels still describe the process's execution environment.
+    return snapshot.manager
 
 
 def _incompatible_owner_verdict() -> str | None:

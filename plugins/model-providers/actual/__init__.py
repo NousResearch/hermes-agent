@@ -40,7 +40,9 @@ class ActualProfile(ProviderProfile):
         bundle = certifi_bundle_path()
         return {"ssl_ca_cert": bundle} if bundle else {}
 
-    def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...] | None:
+    def supported_reasoning_efforts(
+        self, model: str | None, base_url: str | None = None
+    ) -> tuple[str, ...] | None:
         from agent.reasoning_effort import ACTUAL_RELAY_EFFORTS
 
         return ACTUAL_RELAY_EFFORTS

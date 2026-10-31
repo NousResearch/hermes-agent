@@ -3948,6 +3948,7 @@ export const esOverrides = {
     goalActive: 'Objetivo activo',
     goalBlocked: 'Objetivo bloqueado',
     goalDone: 'Objetivo completado',
+    goalInterrupted: 'Interrumpido',
     goalPaused: 'Objetivo en pausa',
     goalWaiting: 'Objetivo esperando',
     subagents: count => `${count} subagente${count === 1 ? '' : 's'}`,

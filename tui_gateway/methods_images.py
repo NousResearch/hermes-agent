@@ -93,5 +93,27 @@ def _(rid, params: dict) -> dict:
                      **({"image_data": data_url} if data_url else {})})
 
 
+@method("image.render")
+def _(rid, params: dict) -> dict:
+    """Params: ``path``, ``cols``/``rows`` (cell budget), ``graphics`` (client owns a real
+    terminal). Result: ``{mode, cols, rows, ...}`` — see ``ImageRenderResult``."""
+    from agent.terminal_image import local_image_path, render_inline_image, resolve_inline_mode
+    mode = resolve_inline_mode(_display_cfg().get("inline_images", "auto"),
+                               graphics=is_truthy_value(params.get("graphics", False)))
+    path = local_image_path(params.get("path"))
+    try:
+        cols, rows = int(params.get("cols") or 0), int(params.get("rows") or 0)
+    except (TypeError, ValueError):
+        return _err(rid, 4072, "cols and rows must be integers")
+    image = render_inline_image(path, mode=mode, max_cols=cols, max_rows=rows) if path else None
+    if image is None:
+        return _ok(rid, {"mode": "off"})
+    if image.mode == "kitty":
+        return _ok(rid, {"mode": "kitty", "cols": image.cols, "rows": image.rows, "color": image.color,
+                         "transmit": image.transmit, "placeholder": image.placeholder})
+    return _ok(rid, {"mode": "unicode", "cols": image.cols, "rows": image.rows,
+                     "cells": [[[*top, *bottom] for top, bottom in row] for row in image.cells]})
+
+
 def register(server) -> None:
     bind_module(globals(), server, skip=("_",))

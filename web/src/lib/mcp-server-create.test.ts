@@ -1,8 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { buildMcpServerCreate, emptyMcpServerDraft } from "./mcp-server-create";
+import { buildMcpServerCreate, emptyMcpServerDraft, mcpTokenAuthFields } from "./mcp-server-create";
 
 describe("buildMcpServerCreate", () => {
+  it("shows query-token fields in both profile contexts and hides them for OAuth", () => {
+    expect(mcpTokenAuthFields("query")?.label).toBe("URL query token");
+    expect(mcpTokenAuthFields("query", "the new profile")?.hint).toContain("Stored in the new profile's .env");
+    expect(mcpTokenAuthFields("header")?.label).toBe("Bearer token");
+    expect(mcpTokenAuthFields("oauth")).toBeNull();
+    expect(mcpTokenAuthFields("none")).toBeNull();
+    expect(() => buildMcpServerCreate({
+      ...emptyMcpServerDraft(), name: "Windmill", url: "https://example.com/mcp", httpAuth: "query",
+    })).toThrow("URL query token required");
+  });
+
   it("builds an HTTP Bearer request without stdio fields", () => {
     const server = buildMcpServerCreate({
       ...emptyMcpServerDraft(),
@@ -46,6 +57,26 @@ describe("buildMcpServerCreate", () => {
     ).toEqual({
       name: "public",
       url: "https://example.com/mcp",
+    });
+  });
+
+  it("builds a URL-query-token request without stdio fields", () => {
+    const server = buildMcpServerCreate({
+      ...emptyMcpServerDraft(),
+      name: "Windmill",
+      url: "https://windmill.example/mcp",
+      httpAuth: "query",
+      bearerToken: "windmill-secret",
+      command: "ignored",
+      args: "--ignored",
+      env: "IGNORED=value",
+    });
+
+    expect(server).toEqual({
+      name: "Windmill",
+      url: "https://windmill.example/mcp",
+      auth: "query",
+      bearer_token: "windmill-secret",
     });
   });
 

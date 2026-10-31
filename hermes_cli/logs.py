@@ -248,6 +248,8 @@ def tail_log(
 
 def _read_tail(path: Path, num_lines: int, *, has_filters: bool = False, **filters) -> list:
     """Read the last *num_lines* matching lines; ``filters`` are ``_matches_filters`` kwargs."""
+    if num_lines == 0:
+        return []  # [-0:] would return every line instead of no history.
     if not has_filters:
         return _read_last_n_lines(path, num_lines)
     # Over-read so enough lines survive filtering.

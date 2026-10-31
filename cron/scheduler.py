@@ -3120,7 +3120,11 @@ def _save_compose_deliver(
         and not _resolve_delivery_targets(job, for_failure=not d.success)
     )
     execution_id = job.get('execution_id')
-    if execution_id and not job.get('no_agent'):
+    # Every run reaches delivery with a durable execution id (run_one_job attaches one before
+    # launching), so the queue is the send lane for no_agent jobs too: their Bot Chat sends were
+    # the one population the write-back could never settle — no ledger row, so the run stayed
+    # ``delivery_queued``/``queued`` forever (#144694).
+    if execution_id:
         from cron.delivery_queue import enqueue
         # Nothing to send: an origin-less job is ``not_configured``, never a queued "delivery".
         if d.unresolved_origin or _normalize_deliver_value(
@@ -4137,6 +4141,23 @@ def _release_tick_lock(lock_fd) -> None:
         with contextlib.suppress((OSError, IOError)):
             msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
     lock_fd.close()
+
+
+def _reconcile_queued_deliveries() -> None:
+    """Settle queued Bot Chat delivery markers against their receipts on every tick (#134092).
+
+    Only jobs that actually carry a ``last_delivery_queued`` marker pay a receipt read; the scan
+    itself never raises — a settle that cannot be observed now simply keeps its marker.
+    """
+    from cron.jobs import list_jobs
+    from cron.scheduler_delivery import reconcile_delivery_receipts
+
+    for job in list_jobs(include_disabled=True):
+        if isinstance(job.get("last_delivery_queued"), dict) and job["last_delivery_queued"]:
+            try:
+                reconcile_delivery_receipts(job)
+            except Exception as exc:  # health: allow BLE001 -- bookkeeping must not fail a tick; an unsettled receipt is routine (logged at debug, no traceback spam every 60s)
+                logger.debug("Delivery receipt reconcile failed for job %s: %s", job.get("id"), exc)
 
 
 def _maybe_reap_dead_owners() -> None:

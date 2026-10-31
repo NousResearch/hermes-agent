@@ -153,6 +153,8 @@ class CLITuiRuntimeMixin:
             n = len(submit_images)
             _attached = t("cli.tui.images_attached_one" if n == 1 else "cli.tui.images_attached_other", count=n)
             _cprint(f"  {_DIM}{_attached}{_RST}")
+            from hermes_cli.cli_inline_images import print_inline_images
+            print_inline_images(self, submit_images)
 
         self._agent_running = self._interactive_turn = True
         self._pet_turn_error = self._pet_reasoning = False

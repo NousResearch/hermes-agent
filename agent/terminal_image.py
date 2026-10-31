@@ -1,9 +1,13 @@
 """Terminal graphics: capability detection and image encoders for the CLI and the TUI.
 
-One home for the escape-level work, so anything that draws pixels in a terminal shares it.
-Protocols in fidelity order: ``kitty`` (kitty, Ghostty, WezTerm), ``iterm`` (iTerm2, WezTerm),
-``sixel`` (xterm -ti vt340, foot, mlterm, …), ``unicode`` (24-bit half-blocks). PIL is
-imported lazily by the encoders that need it.
+One home for the escape-level work so the pet mascot and inline images share it. Protocols
+in fidelity order: ``kitty`` (kitty, Ghostty, WezTerm), ``iterm`` (iTerm2, WezTerm),
+``sixel`` (xterm -ti vt340, foot, mlterm, …), ``unicode`` (24-bit half-blocks).
+
+Inline images (:func:`render_inline_image`) only use the two forms whose cells a line-based
+renderer can measure: kitty Unicode placeholders and half-blocks. iTerm2 and sixel paint
+over rows the CLI's scrollback replay and Ink's layout never counted, so those terminals get
+half-blocks. PIL is imported lazily; a missing Pillow or an unreadable file yields ``None``.
 """
 
 from __future__ import annotations
@@ -13,7 +17,10 @@ import io
 import logging
 import os
 import zlib
+from dataclasses import dataclass, field
 from itertools import groupby
+from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -160,12 +167,18 @@ def encode_sixel(image) -> str:
 Cell = tuple[tuple[int, int, int, int], tuple[int, int, int, int]]
 
 
-def downscale_cells(image, *, target_cols: int) -> list[list[Cell]]:
-    """Downscale to rows of half-block cells (one terminal row = two pixel rows); shared by the ANSI encoder and Ink."""
+def downscale_cells(image, *, target_cols: int, rows: int | None = None) -> list[list[Cell]]:
+    """Downscale to rows of half-block cells (one terminal row = two pixel rows); shared by the ANSI encoder and Ink.
+
+    Without *rows* the grid keeps the image's aspect at a 4-column floor; with it the grid is exactly ``target_cols``×``rows``.
+    """
     from PIL import Image
 
-    target_cols = max(4, target_cols)
-    target_rows = max(2, round(target_cols * (image.height / max(1, image.width)) * 0.5) * 2)
+    if rows is None:
+        target_cols = max(4, target_cols)
+        target_rows = max(2, round(target_cols * (image.height / max(1, image.width)) * 0.5) * 2)
+    else:
+        target_cols, target_rows = max(1, target_cols), max(1, rows) * 2
     px = image.resize((target_cols, target_rows), Image.LANCZOS).convert("RGBA").load()
     return [
         [(px[x, y], px[x, y + 1] if y + 1 < target_rows else (0, 0, 0, 0)) for x in range(target_cols)]
@@ -180,3 +193,131 @@ def encode_unicode(image, *, target_cols: int) -> str:
         return "\x1b[0m " if ta < 32 and ba < 32 else f"\x1b[38;2;{tr};{tg};{tb}m\x1b[48;2;{br};{bg};{bb}m▀"
 
     return "\n".join("".join(cell(t, b) for t, b in row) + "\x1b[0m" for row in downscale_cells(image, target_cols=target_cols))
+
+
+# ── Inline images ────────────────────────────────────────────────────────────
+
+# Public names accepted by ``display.inline_images``.
+INLINE_IMAGE_MODES = ("auto", "kitty", "unicode", "off")
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+
+# Pet ids live in [1, 0x7FFF] (``agent.pet.render.kitty_image_id``); images take the rest of
+# the 24-bit space the placeholder foreground color can carry, so neither replaces the other.
+_IMAGE_ID_BASE, _IMAGE_ID_SPAN = 0x8000, 0xFFFFFF - 0x8000
+# Transmit at up to 2 px per nominal cell pixel: sharp on HiDPI cells without shipping
+# a full-resolution photo through the tty.
+_PIXELS_PER_CELL_PIXEL = 2
+
+
+def resolve_inline_mode(configured: Any, *, graphics: bool = True) -> str:
+    """Effective ``kitty``/``unicode``/``off`` for ``display.inline_images``.
+
+    ``graphics`` says the painter owns a real terminal it can send escapes to. ``auto`` picks
+    kitty placeholders where they paint (kitty, Ghostty) and half-blocks elsewhere. tmux swallows
+    the kitty transmit without ``allow-passthrough``, so ``auto`` stays on half-blocks there;
+    pinning ``kitty`` is the opt-in for a passthrough-enabled tmux.
+    """
+    if configured is False:
+        return "off"
+    mode = "auto" if configured in (None, True) else str(configured).strip().lower()
+    mode = mode if mode in INLINE_IMAGE_MODES else "auto"
+    if mode in ("off", "unicode") or not graphics:
+        return "unicode" if mode != "off" else "off"
+    if mode == "kitty":
+        return mode
+    return "kitty" if supports_kitty_placeholders() and not os.environ.get("TMUX") else "unicode"
+
+
+def local_image_path(candidate: Any) -> str | None:
+    """*candidate* as an existing local image file path, else ``None`` (URLs and data URLs are not fetched)."""
+    if not isinstance(candidate, str) or not candidate.strip() or "://" in candidate or candidate.startswith("data:"):
+        return None
+    path = Path(os.path.expanduser(candidate.strip()))
+    try:
+        return str(path) if path.suffix.lower() in IMAGE_EXTENSIONS and path.is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
+_RESULT_IMAGE_KEYS = ("image_url", "url", "path", "image_path", "screenshot_path")
+_ARG_IMAGE_KEYS = ("image_url", "url", "path")
+
+
+def tool_image_path(args: Any, result: Any) -> str | None:
+    """The local image a tool call produced or looked at, else ``None``.
+
+    Reads named fields only (result first, then args), like the desktop's tool image preview,
+    so a tool that merely lists image paths in free text never floods the transcript.
+    """
+    if isinstance(result, str):
+        try:
+            import json
+
+            result = json.loads(result)
+        except ValueError:
+            result = None
+    for source, keys in ((result, _RESULT_IMAGE_KEYS), (args, _ARG_IMAGE_KEYS)):
+        if isinstance(source, dict):
+            for key in keys:
+                if path := local_image_path(source.get(key)):
+                    return path
+    return None
+
+
+@dataclass(frozen=True)
+class InlineImage:
+    """One image laid out on a ``cols``×``rows`` cell grid.
+
+    kitty mode: send ``transmit`` once, then paint ``placeholder`` rows in ``color``.
+    unicode mode: paint ``cells`` as half-blocks.
+    """
+
+    mode: str
+    cols: int
+    rows: int
+    image_id: int = 0
+    color: str = ""
+    transmit: str = ""
+    placeholder: list[str] = field(default_factory=list)
+    cells: list[list[Cell]] = field(default_factory=list)
+
+
+def _image_id(path: Path) -> int:
+    """Stable per-file kitty image id: re-renders reuse the terminal copy, an edited file gets a new one."""
+    st = path.stat()
+    return _IMAGE_ID_BASE + zlib.crc32(f"{path.resolve()}:{st.st_mtime_ns}:{st.st_size}".encode()) % _IMAGE_ID_SPAN
+
+
+def _grid_for(width: int, height: int, *, max_cols: int, max_rows: int) -> tuple[int, int]:
+    """Cell grid for a *width*×*height* image: never wider than its natural size, never past the caps."""
+    cols = max(1, min(max_cols, -(-width // CELL_W)))
+    rows = max(1, round(cols * height / width * CELL_W / CELL_H))
+    if rows > max_rows:
+        rows = max_rows
+        cols = max(1, min(cols, round(rows * width / height * CELL_H / CELL_W)))
+    return cols, rows
+
+
+def render_inline_image(path: str | Path, *, mode: str, max_cols: int, max_rows: int) -> InlineImage | None:
+    """Lay out the image at *path* for *mode* (``kitty``/``unicode``); ``None`` when it can't be shown."""
+    if mode not in ("kitty", "unicode") or max_cols < 1 or max_rows < 1:
+        return None
+    try:
+        from PIL import Image, ImageOps
+
+        source = Path(path)
+        with Image.open(source) as opened:
+            opened.draft("RGB", (max_cols * CELL_W * _PIXELS_PER_CELL_PIXEL, max_rows * CELL_H * _PIXELS_PER_CELL_PIXEL))
+            image = ImageOps.exif_transpose(opened).convert("RGBA")
+        cols, rows = _grid_for(image.width, image.height, max_cols=max_cols, max_rows=max_rows)
+        if mode == "unicode":
+            return InlineImage(mode=mode, cols=cols, rows=rows, cells=downscale_cells(image, target_cols=cols, rows=rows))
+        image.thumbnail((cols * CELL_W * _PIXELS_PER_CELL_PIXEL, rows * CELL_H * _PIXELS_PER_CELL_PIXEL), Image.LANCZOS)
+        image_id = _image_id(source)
+        return InlineImage(
+            mode=mode, cols=cols, rows=rows, image_id=image_id, color=kitty_color_hex(image_id),
+            transmit=encode_kitty_virtual(image, image_id=image_id, cols=cols, rows=rows),
+            placeholder=kitty_placeholder_rows(cols, rows))
+    except Exception as exc:  # health: allow BLE001 -- PIL raises arbitrary types decoding an untrusted file; display-only
+        logger.debug("inline image render failed (%s): %s", path, exc)
+        return None

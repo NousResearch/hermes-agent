@@ -12,7 +12,14 @@ if ! echo '#include <sqlite3ext.h>' | gcc -E -xc - >/dev/null 2>&1; then
   CFLAGS_EXTRA="-Ivendor"
 fi
 
-gcc -shared -fPIC -O2 -Wall -Wextra $CFLAGS_EXTRA fts5_cjk.c -o libfts5_cjk.so
+UNDEF_LDFLAGS=""
+if [ "$(uname)" = "Darwin" ]; then
+  # macOS ld rejects undefined symbols by default; a loadable extension
+  # resolves sqlite3_* from the host process at load time.
+  UNDEF_LDFLAGS="-undefined dynamic_lookup"
+fi
+
+gcc -shared -fPIC -O2 -Wall -Wextra $CFLAGS_EXTRA $UNDEF_LDFLAGS fts5_cjk.c -o libfts5_cjk.so
 dest="${1:-$HOME/.hermes/lib}"
 mkdir -p "$dest"
 install -m 0644 libfts5_cjk.so "$dest/libfts5_cjk.so"

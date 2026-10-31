@@ -164,8 +164,13 @@ def _(rid, params: dict) -> dict:
         extra = {"hermes_home": str(get_hermes_home()), "viewer_id": viewer_id}
         # A viewer a browser tab opens watches and can drive this screen: it signs out with that tab,
         # so the ticket carries the credential digest the tab's socket was admitted with.
-        if (admitted := admission_of(getattr(current_transport(), "ws", None))) is not None:
+        ws = getattr(current_transport(), "ws", None)
+        if (admitted := admission_of(ws)) is not None:
             extra["admitted_with"] = admitted
+        # A tab another gateway relays here: the viewer ends with that relay's grant too.
+        from hermes_cli.webapp_relay_grants import relay_grant_of
+        if (grant := relay_grant_of(ws)) is not None:
+            extra["relay_grant"] = grant
         ticket = mint_ticket(user_id=f"display:{viewer_id}", provider="bot-desktop", extra=extra)
         return _ok(rid, {"ticket": ticket, "path": "/api/display/ws", "viewer_id": viewer_id,
                          **_display_snapshot()})

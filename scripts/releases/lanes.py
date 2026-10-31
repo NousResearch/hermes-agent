@@ -56,10 +56,10 @@ CANARY = DEFAULT
 # covered by `smoke` and `bootstrap-version`. The Store is stable's and canary's only.
 COMMIT_REFUSED = frozenset({"upgrade", "install-e2e", "windows-store"})
 COMMIT = DEFAULT - COMMIT_REFUSED
-# A channel build is the stable default minus the signed-package upgrade arms (they pair packages
-# of one app identity; upgrading from the channel's own head is a follow-up) and the Store, which
-# is stable's and canary's only. install-e2e runs: a channel build is an updatable install.
-CHANNEL_REFUSED = frozenset({"upgrade", "windows-store"})
+# A channel build is the stable default minus the Store, which is stable's and canary's only. Its
+# signed-package upgrade arms upgrade its channel's head (the channel's own app identity) to this
+# build, and install-e2e runs: a channel build is an updatable install.
+CHANNEL_REFUSED = frozenset({"windows-store"})
 CHANNEL = DEFAULT - CHANNEL_REFUSED
 
 DESKTOP = ("windows", "macos-arm64", "macos-intel")
@@ -109,8 +109,8 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
 }.items()}
 
 CANDIDATE_CALLS = tuple(job for job in JOB_LANES if job.startswith("candidates-"))
-# The signed-package upgrade arms. Whatever its green policy, a canary publishes only if every arm
-# that ran passed (stable-release.yml publish-canary, channel_releases custody).
+# The signed-package upgrade arms. Whatever its green policy, a canary or channel build publishes
+# only if every arm that ran passed (stable-release.yml publish-canary/publish-channel, custody).
 UPGRADE_ARMS = tuple(job for job, needs in JOB_LANES.items() if "upgrade" in needs)
 
 # The release policies stable-release.yml runs. Every build and test job is shared; only these

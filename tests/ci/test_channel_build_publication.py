@@ -9,7 +9,7 @@ import hermes_yaml
 import pytest
 
 from hermes_cli.release_channels import ChannelError, canonical_json
-from scripts.releases import channel_claims
+from scripts.releases import channel_claims, lanes as lane_set
 from tests.ci.desktop_release_roles import (
     DOWNLOADABLE_DISPATCHES, admitted, gate, native_builds, stage_step,
 )
@@ -102,7 +102,9 @@ def claim_publication(monkeypatch, tmp_path):
 
     monkeypatch.setattr(r2, "put", put)
     return {"request": request, "store": store, "publisher": publisher, "seen": seen, "windows": windows,
-            "env": {"CANDIDATE_MANIFEST_SHA256": "c" * 64}, "root": tmp_path}
+            "env": {"CANDIDATE_MANIFEST_SHA256": "c" * 64,
+                    "RELEASE_NEEDS": json.dumps({arm: {"result": "success"} for arm in lane_set.UPGRADE_ARMS})},
+            "root": tmp_path}
 
 
 def test_publish_claim_promotes_the_accepted_candidate_from_its_receipts(claim_publication):
@@ -125,6 +127,12 @@ def test_publish_claim_promotes_the_accepted_candidate_from_its_receipts(claim_p
 
 def test_publish_claim_refuses_other_bytes_other_versions_and_other_policies(claim_publication):
     run = claim_publication
+    # Whatever its green policy, an upgrade arm that ran and failed holds the channel before any write.
+    for result in ("failure", "cancelled"):
+        failed = json.dumps({**json.loads(run["env"]["RELEASE_NEEDS"]), "macos-packaged-arm64": {"result": result}})
+        with pytest.raises(ValueError, match=f"macos-packaged-arm64={result}"):
+            channel_claims.publish_claim({**run["env"], "RELEASE_NEEDS": failed}, run["root"])
+    assert run["seen"]["put"] == [] and run["store"].objects == {}
     prefix = "releases/channel-builds/" + "b" * 32 + "/"
     run["store"].put(prefix + "build.json", b"someone else's manifest")
     with pytest.raises(ChannelError, match="different bytes"):

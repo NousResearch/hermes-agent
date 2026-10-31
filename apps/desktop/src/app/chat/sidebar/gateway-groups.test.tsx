@@ -85,7 +85,7 @@ it('keeps equal profile names on separate gateways and routes section creation a
       .getByText(/\$3\.00/)
       .closest('[data-gateway-group]')
       ?.getAttribute('data-gateway-group')
-  ).toBe(JSON.stringify([null, 'default']))
+  ).toBe(JSON.stringify(['local', 'default']))
   act(() =>
     $sessions.set([
       ...$sessions.get(),

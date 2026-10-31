@@ -72,7 +72,8 @@ export function GatewayProfileGroups({
   const sections: SidebarSessionGroup[] = []
 
   for (const group of groups) {
-    // Unknown legacy ownership stays unassigned; never guess a local gateway.
+    // Without a registry nothing names a gateway, so groups stay flat. With one, the model already
+    // gave bare rows the registry primary (`groupingOwner`), the owner routing resolves them to.
     if (nested || embedded || !group.connectionId) {
       sections.push(group)
 
@@ -163,9 +164,10 @@ function GatewayProfileGroup({
   const aliases = useStore($gatewayGroupAliases)
   const collapsed = useStore($gatewayGroupCollapsed)
   const rankIds = useStore($sidebarSessionRankIds)
+  const primaryConnectionId = useStoreSelector($connectionsRegistry, registry => registry?.primary ?? null)
 
   const usage = useStoreSelector($sessionProfilesUsage, all =>
-    showsProfileTotals(group.connectionId, embedded) ? all[group.profile!] : undefined
+    showsProfileTotals(group.connectionId, embedded, primaryConnectionId) ? all[group.profile!] : undefined
   )
 
   const [renaming, setRenaming] = useState(false)

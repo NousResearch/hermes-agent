@@ -26,20 +26,41 @@ export function gatewayLabel(
   return registered || (connectionId === LOCAL_CONNECTION_ID ? localLabel : connectionId)
 }
 
+/** The owner a row is GROUPED under. Rows the registry primary serves stay untagged (see
+ *  `stampRowsWithOwningConnection`) while exact-owner writers (optimistic rows, cache patches,
+ *  fleet-rail new chats) name the primary's id; routing already reads a bare row as the primary, so
+ *  grouping does too, and one gateway stays one section. No registry means no gateways: a bare row
+ *  stays unassigned and profiles render flat. Grouping only — the row itself is never re-tagged. */
+export function groupingOwner(
+  connectionId: null | string | undefined,
+  registry: DesktopConnectionsRegistry | null
+): null | string {
+  return connectionId?.trim() || registry?.primary?.trim() || null
+}
+
 /** Whether a profile group header shows the profile-keyed usage totals. Those totals are keyed only
- *  by profile, so never attribute them to a registry gateway that happens to expose the same profile
- *  name, or to one messaging platform (`embedded`). A Webapp tab's `local` rows are the serving
- *  host's own, the gateway those totals were read from. */
-export function showsProfileTotals(connectionId: string | null | undefined, embedded: boolean): boolean {
+ *  by profile and read from the primary pool, so never attribute them to a registry gateway that
+ *  happens to expose the same profile name, or to one messaging platform (`embedded`). The primary's
+ *  own groups (`primaryConnectionId`) and a Webapp tab's `local` rows (the serving host's own) are
+ *  the gateway those totals were read from. */
+export function showsProfileTotals(
+  connectionId: string | null | undefined,
+  embedded: boolean,
+  primaryConnectionId?: null | string
+): boolean {
   if (embedded) {
     return false
   }
 
-  return !connectionId || (connectionId === LOCAL_CONNECTION_ID && isBrowserHostedDesktop())
+  if (!connectionId || (primaryConnectionId && connectionId === primaryConnectionId)) {
+    return true
+  }
+
+  return connectionId === LOCAL_CONNECTION_ID && isBrowserHostedDesktop()
 }
 
-/** One group per exact owner `[connectionId, profile]`. Group identity never
- *  depends on a mutable label, URL, or the active gateway. */
+/** One group per owner `[connectionId, profile]`, a bare row owned by the registry primary
+ *  (`groupingOwner`). Group identity never depends on a mutable label, URL, or the active gateway. */
 export function buildGatewaySessionGroups(
   sessions: SessionInfo[],
   registry: DesktopConnectionsRegistry | null,
@@ -49,7 +70,7 @@ export function buildGatewaySessionGroups(
 
   for (const session of sessions) {
     const profile = normalizeProfileKey(session.profile)
-    const connectionId = session.connection_id || null
+    const connectionId = groupingOwner(session.connection_id, registry)
     const id = JSON.stringify([connectionId, profile])
     const group = groups.get(id) ?? ownerGroup(connectionId, profile, registry, colors)
 
@@ -113,14 +134,16 @@ export function profileListConnectionId(apiConnectionId: null | string, browserH
 
 /** Give every listed profile its own section, chats or not, so a new or quiet profile stays one
  *  click away. Groups already present (by exact owner) keep their rows; missing ones are added
- *  empty under `connectionId`, the owner the profile list was read from. */
+ *  empty under `connectionId`, the owner the profile list was read from (untagged = the registry
+ *  primary, as for rows). */
 export function withEmptyProfileGroups(
   groups: SidebarSessionGroup[],
   profiles: readonly string[],
-  connectionId: null | string,
+  listOwner: null | string,
   registry: DesktopConnectionsRegistry | null,
   colors: Record<string, string>
 ): SidebarSessionGroup[] {
+  const connectionId = groupingOwner(listOwner, registry)
   const present = new Set(groups.map(group => group.id))
 
   const missing = profiles

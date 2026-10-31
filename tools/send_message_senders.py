@@ -280,6 +280,22 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
             last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
         for media_path, is_voice in media_files:
+            # Defense-in-depth (#34270): re-check at I/O so a caller that skipped
+            # filter_media_delivery_paths cannot attach a rejected file. A missing
+            # file still falls through to the caption fallback below.
+            try:
+                from gateway.platforms.base import _log_safe_path, validate_media_delivery_path
+                safe_path = validate_media_delivery_path(media_path)
+            except Exception:
+                safe_path = None
+                _log_safe_path = lambda p: str(p)[:200]
+            if safe_path:
+                media_path = safe_path
+            elif os.path.exists(media_path):
+                warning = f"Skipping unsafe media path outside allowed roots: {_log_safe_path(media_path)}"
+                logger.warning(warning)
+                warnings.append(warning)
+                continue
             if not os.path.exists(media_path):
                 warnings.append(f"Media file not found, skipping: {media_path}")
                 logger.warning(warnings[-1])

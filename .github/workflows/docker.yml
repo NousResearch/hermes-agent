@@ -201,6 +201,9 @@ jobs:
           fi
           python3 scripts/write_install_stamp.py --output install-stamp.json \
             --distribution docker --update-mechanism external --source ci "${identity[@]}"
+          # The packaged pyproject version is a 0.0.0 placeholder, so scanners
+          # reading image metadata need the real version as an OCI label.
+          echo "IMAGE_VERSION=$display" >> "$GITHUB_ENV"
       - name: Reject profile exports in the build context
         run: python3 scripts/ci/check_profile_archive_boundary.py
 
@@ -229,6 +232,9 @@ jobs:
           load: true
           platforms: ${{ matrix.platform }}
           tags: ${{ env.IMAGE_NAME }}:test
+          labels: |
+            org.opencontainers.image.version=${{ env.IMAGE_VERSION }}
+            org.opencontainers.image.revision=${{ env.CANDIDATE_COMMIT }}
           build-args: |
             HERMES_BOT_DESKTOP=${{ matrix.variant == 'desktop' && '1' || '0' }}
           # Slim owns the scope; desktop adds the gated apt layer, so it reads
@@ -272,6 +278,13 @@ jobs:
           # the limit and not the processor. This pins the runner's worker
           # count to the core count.
           HERMES_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/
+
+      - name: Verify image version label matches the install stamp
+        run: |
+          label="$(docker image inspect "${IMAGE_NAME}:test" \
+            --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+          echo "org.opencontainers.image.version=$label"
+          test "$label" = "$IMAGE_VERSION"
 
       - name: Verify release image identity
         if: needs.mode.outputs.phase == 'test'
@@ -380,6 +393,9 @@ jobs:
           fi
           python3 scripts/write_install_stamp.py --output install-stamp.json \
             --distribution docker --update-mechanism external --source ci "${identity[@]}"
+          # The packaged pyproject version is a 0.0.0 placeholder, so scanners
+          # reading image metadata need the real version as an OCI label.
+          echo "IMAGE_VERSION=$display" >> "$GITHUB_ENV"
       - name: Reject profile exports in the build context
         run: python3 scripts/ci/check_profile_archive_boundary.py
 
@@ -412,6 +428,7 @@ jobs:
           build-args: |
             HERMES_BOT_DESKTOP=${{ matrix.variant == 'desktop' && '1' || '0' }}
           labels: |
+            org.opencontainers.image.version=${{ env.IMAGE_VERSION }}
             org.opencontainers.image.revision=${{ env.CANDIDATE_COMMIT }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=docker-${{ matrix.arch }}

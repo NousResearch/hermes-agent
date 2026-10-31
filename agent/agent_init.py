@@ -1350,6 +1350,26 @@ def _apply_agent_section(agent, _agent_cfg):
     except (TypeError, ValueError):
         agent._auto_recovery_cycles = 5
 
+    # Proactive feature router (PR-B). Off by default; reads
+    # proactive_features.* from config. Non-fatal: a broken router config
+    # must never break agent init.
+    agent._feature_router = None
+    try:
+        _pf_cfg = _agent_cfg.get("proactive_features", {}) or {}
+        if is_truthy_value(_pf_cfg.get("enabled"), default=False):
+            from agent.feature_router import FeatureRouter as _FeatureRouter
+
+            agent._feature_router = _FeatureRouter(_pf_cfg)
+    except Exception as exc:  # health: allow BLE001 -- init must survive any config failure; the router stays off
+        # Router config values may contain user-typed text; log the type only.
+        logger.warning(
+            "proactive_features config could not be loaded (%s); the proactive "
+            "feature router stays disabled. Check the proactive_features "
+            "section of config.yaml.",
+            type(exc).__name__,
+        )
+        agent._feature_router = None
+
 
 def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:
     """``int(raw)`` when positive, else None. ``reject`` lists types refused outright (bool, float)."""

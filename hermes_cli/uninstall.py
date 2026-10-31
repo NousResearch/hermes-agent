@@ -376,7 +376,25 @@ def _hermes_path_markers(hermes_home: Path, *, include_managed_bin: bool = False
 
 
 def remove_path_from_windows_registry(hermes_home: Path, *, include_managed_bin: bool = False) -> list[str]:
-    """Strip Hermes-owned entries from User-scope PATH in the registry (see ``_hermes_path_markers``)."""
+    """Strip Hermes-owned entries from User-scope PATH in the registry (see ``_hermes_path_markers``).
+
+    Inert under test isolation -- the same marker, and the same placement at the write, as
+    ``hermes_cli._launchers._register_windows_user_path`` and
+    ``hermes_cli._install_repair._write_user_path_raw``. Those two *prepend* an entry; this
+    one *deletes* them, which makes an unguarded run strictly worse: ``hermes_home`` is the
+    caller's to choose (``run_uninstall`` passes ``get_hermes_home()``, which pytest
+    redirects, but nothing in the function itself checks that), and the markers are derived
+    from it -- so a caller handing over the real root strips the operator's REAL PATH, and a
+    deleted entry cannot be reverse-engineered from what is left. Measured 2026-10-10 (card
+    ``t_0cf0aa7e``, probe ``evals/background_review/uninstall_path_stripper_probe.py``):
+    real root + ``include_managed_bin=True`` (the full-uninstall-of-the-default-home config)
+    removes ``%LOCALAPPDATA%\\hermes\\bin``; the real root alone removes ``...\\hermes\\git\\cmd``
+    and ``...\\hermes\\node`` when a pre-``bin`` install.ps1 layout is still present. A real
+    ``hermes uninstall`` never carries the marker, so production behaviour is unchanged.
+    """
+    if os.environ.get("HERMES_TEST_ISOLATION"):
+        return []
+
     markers = tuple(m.lower() for m in _hermes_path_markers(hermes_home, include_managed_bin=include_managed_bin))
 
     def edit(winreg, key, removed):
@@ -396,7 +414,17 @@ def remove_path_from_windows_registry(hermes_home: Path, *, include_managed_bin:
 
 
 def remove_hermes_env_vars_windows() -> list[str]:
-    """Delete HERMES_HOME and HERMES_GIT_BASH_PATH from User-scope env vars."""
+    """Delete HERMES_HOME and HERMES_GIT_BASH_PATH from User-scope env vars.
+
+    Inert under test isolation -- the same marker and the same reason as
+    ``remove_path_from_windows_registry`` above: it runs in the same
+    ``_perform_uninstall`` step list behind the same ``_is_windows()`` gate, and deleting a
+    persisted value leaves nothing behind to tell what it used to be. A real
+    ``hermes uninstall`` never carries the marker, so production is unchanged.
+    """
+    if os.environ.get("HERMES_TEST_ISOLATION"):
+        return []
+
     def edit(winreg, key, removed):
         for name in ("HERMES_HOME", "HERMES_GIT_BASH_PATH"):
             try:

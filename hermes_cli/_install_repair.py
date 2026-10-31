@@ -230,7 +230,27 @@ def _read_user_path_raw() -> tuple[list[str], int]:
 
 
 def _write_user_path_raw(entries: list[str], kind: int) -> None:
-    """Write the user PATH back, preserving the registry value type."""
+    """Write the user PATH back, preserving the registry value type.
+
+    Inert under test isolation -- the same guard on the same marker as
+    ``hermes_cli._launchers._register_windows_user_path``. pytest redirects
+    ``HERMES_HOME`` to a sandbox, so :func:`migrate_windows_bin_path`'s only gate
+    (``root.parent == get_default_hermes_root()``) is satisfied by a root that
+    lives *inside* the sandbox and this write -- the single registry choke point
+    on that route -- would persist a throwaway ``<tmp>\\...\\bin`` into the
+    operator's REAL PATH. Nothing ever removes it: one entry per test that
+    reaches here, until the 32,767-character environment block is full and the
+    operator's own PATH stops loading. ``HERMES_TEST_ISOLATION`` is the hermetic
+    conftest's subprocess-surviving marker
+    (``hermes_state_guard._TEST_ISOLATION_MARKER_ENV``), so a child process
+    re-running the updater inherits it and stays inert too.
+
+    Guarded here, at the write, rather than in the caller: tests that inject
+    their own ``write_user_path`` keep exercising the migration logic untouched.
+    """
+    if os.environ.get("HERMES_TEST_ISOLATION"):
+        return
+
     import winreg
 
     with winreg.OpenKey(

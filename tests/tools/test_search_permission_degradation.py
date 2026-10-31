@@ -417,6 +417,70 @@ def test_find_exit2_still_fails_closed():
     assert result.files == []
 
 
+# --- a real error beside thousands of permission skips -----------------------------
+
+
+def _rg_flood(i):
+    return f"rg: /srv/locked{i}: Permission denied (os error 13)\n"
+
+
+def _find_flood(i):
+    return f"find: '/srv/locked{i}': Permission denied\n"
+
+
+@pytest.mark.parametrize("env_cls,target,flood,real_error,code", [
+    (RecordingEnvironment, "files", _rg_flood, "rg: error parsing glob '[': unclosed character class", 2),
+    (RecordingEnvironment, "content", _rg_flood, "rg: /srv/gone: No such file or directory (os error 2)", 2),
+    (GrepOnlyEnvironment, "files", _find_flood, "find: '/srv/gone': No such file or directory", 1),
+])
+def test_error_beside_a_permission_flood_names_the_failure_in_bounded_text(
+        env_cls, target, flood, real_error, code):
+    output = "".join(flood(i) for i in range(5000)) + real_error + "\n"
+    env = env_cls(rg_output=output, rg_code=code)
+
+    result = ShellFileOperations(env).search(
+        "*.py" if target == "files" else "needle", path="/srv", target=target)
+
+    assert result.error is not None
+    assert real_error in result.error
+    assert len(result.error) < 3000
+
+
+_LONG_ERROR = "rg: /srv/" + "x" * 10_000 + ": No such file or directory (os error 2)"
+
+
+def test_a_real_error_longer_than_the_cap_behind_a_flood_keeps_its_path_and_cause():
+    output = "".join(_rg_flood(i) for i in range(5000)) + _LONG_ERROR + "\n"
+    env = RecordingEnvironment(rg_output=output, rg_code=2)
+
+    result = ShellFileOperations(env).search("needle", path="/srv", target="content")
+
+    assert result.error is not None
+    assert "rg: /srv/xxxx" in result.error and "characters omitted)" in result.error
+    assert "No such file or directory (os error 2)" in result.error
+    assert "Permission denied" not in result.error
+    assert len(result.error) < 3000
+
+
+@pytest.mark.parametrize("env_cls,target,real_error,code", [
+    (RecordingEnvironment, "files", _LONG_ERROR, 2),
+    (RecordingEnvironment, "content", _LONG_ERROR, 2),
+    (GrepOnlyEnvironment, "files",
+     "find: '/srv/" + "x" * 10_000 + "': No such file or directory", 1),
+], ids=["rg-files", "rg-content", "find-files"])
+def test_a_real_error_longer_than_the_cap_on_its_own_keeps_its_path_and_cause(
+        env_cls, target, real_error, code):
+    env = env_cls(rg_output=real_error + "\n", rg_code=code)
+
+    result = ShellFileOperations(env).search(
+        "*.py" if target == "files" else "needle", path="/srv", target=target)
+
+    assert result.error is not None
+    assert real_error[:20] in result.error and "characters omitted)" in result.error
+    assert real_error[-40:] in result.error
+    assert len(result.error) < 3000
+
+
 # --- live end-to-end (real rg, real filesystem) -----------------------------------
 
 

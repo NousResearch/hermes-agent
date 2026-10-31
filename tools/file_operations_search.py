@@ -137,6 +137,9 @@ def _bundled_rg() -> Optional[str]:
 # ("rg: ...", indented carets) never match.
 _SEARCH_OUTPUT_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?[:\-]\d|^[^\s:][^\s]*$')
 
+# Engine-stderr line prefixes; the search lanes classify these lines as diagnostics.
+_DIAGNOSTIC_PREFIXES = ("rg: ", "grep: ", "find: ")
+
 
 def _split_tool_diagnostics(output: str) -> tuple[str, str]:
     """Separate rg/grep diagnostic lines from real match output → ``(diagnostics, payload)``.
@@ -149,7 +152,7 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
         if not line.strip():
             continue
         # Prefix check first: a match path can contain "-<digit>" (".../pytest-686/...").
-        if line.lstrip().startswith(("rg: ", "grep: ", "find: ")):
+        if line.lstrip().startswith(_DIAGNOSTIC_PREFIXES):
             diagnostics.append(line)
         elif line == "--" or _SEARCH_OUTPUT_RE.match(line):
             payload.append(line)
@@ -209,7 +212,7 @@ def _extract_unreadable_paths(diagnostics: str) -> list[str]:
         match = _PERMISSION_DENIED_RE.match(line.strip())
         if not match:
             continue
-        path = match.group("path").strip()
+        path = match.group("path")  # exact spelling: a dir named " " is not its parent
         if match.group("tool") == "find":
             path = _FIND_QUOTES_RE.sub("", path)
         if path and path not in seen:
@@ -332,7 +335,7 @@ def _find_exit_verdict(exit_code: int, raw_files: list[str], diagnostics: list[s
     if not raw_files:
         if order == "modified":
             return SearchResult(error=_FIND_MODIFIED_ORDER_ERROR), None
-        detail = f": {diagnostics[0]}" if diagnostics else "."
+        detail = f": {_error_detail(diagnostic_text)}" if diagnostics else "."
         return SearchResult(error=f"File search failed while running bounded find traversal{detail}"), None
     # A non-permission diagnostic (a dir removed mid-walk) must not be reported as a permission
     # problem: name it, plus any permission skips, so the user chases the real cause.
@@ -443,7 +446,7 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
             elif _PERMISSION_SEARCH_HINT not in warning:
                 warning = f"{warning} {_PERMISSION_SEARCH_HINT}"
             return SearchResult(total_count=0, warning=warning, **skip)
-        return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
+        return SearchResult(error=f"Search failed: {_error_detail(error_msg)}", total_count=0)
     skip = _skipped_fields(diagnostics)
     skipped_warning = _prepend_skipped_paths_warning(skip, None)
     # A non-permission error beside the skips (a path removed mid-search) is named too, not
@@ -512,6 +515,37 @@ def _find_literal_path_expressions(roots: list[str]) -> list[str]:
     left alone: find does not read them as escapes inside a bracket-free pattern,
     and doubling them would break matching on backslash-shaped roots."""
     return [re.sub(r"([*?\[\]])", r"\\\1", root) for root in roots]
+
+
+def _diagnostic_safe_root(root: str) -> str:
+    """``./``-anchor a relative root that the engines would misread: one named like
+    engine stderr (``rg: data``; every result line starts with the root, and the lanes
+    tell stderr from results by these prefixes), one led by whitespace (its result
+    lines get split like stderr), and one led by ``-`` (parsed as an option)."""
+    if root[:1].isspace() or root.startswith("-") or root.lstrip().startswith(_DIAGNOSTIC_PREFIXES):
+        return f"./{root}"
+    return root
+
+
+_ERROR_DETAIL_CHARS = 2000
+_ERROR_DETAIL_TAIL_CHARS = 500
+
+
+def _error_detail(diagnostics: str) -> str:
+    """Engine diagnostics for an error message: the lines naming the real failure,
+    bounded. Permission skips beside it are noise (thousands of them made the error
+    hundreds of KB), so they only stand in when nothing else was reported. Over the
+    cap the middle is cut: an engine puts the cause after the path, so a very long
+    path would otherwise push the cause out of a head-only cut."""
+    lines = [line.rstrip() for line in diagnostics.splitlines()
+             if line.strip() and not _PERMISSION_DENIED_RE.match(line.strip())
+             and not _OMITTED_DIAGNOSTICS_RE.match(line.strip())]
+    detail = "\n".join(lines).strip() or diagnostics.strip()
+    if len(detail) > _ERROR_DETAIL_CHARS:
+        head = _ERROR_DETAIL_CHARS - _ERROR_DETAIL_TAIL_CHARS
+        omitted = len(detail) - _ERROR_DETAIL_CHARS
+        detail = f"{detail[:head]} ... ({omitted} characters omitted) ... {detail[-_ERROR_DETAIL_TAIL_CHARS:]}"
+    return detail
 
 
 class SearchMixin:
@@ -791,8 +825,24 @@ class SearchMixin:
                          file_glob: Optional[str], limit: int, offset: int,
                          output_mode: str, context: int, order: str = "discovery") -> SearchResult:
         if target == "files":
-            return self._search_files(pattern, path, limit, offset, order)
-        return self._search_content(pattern, path, file_glob, limit, offset, output_mode, context)
+            result = self._search_files(pattern, path, limit, offset, order)
+        else:
+            result = self._search_content(pattern, path, file_glob, limit, offset, output_mode, context)
+        return self._unreadable_root_error(result, path) or result
+
+    def _unreadable_root_error(self, result: SearchResult, path: str) -> Optional[SearchResult]:
+        """An error when the search root itself was skipped as unreadable: nothing was
+        searched, so the empty result's "Nothing matched in the readable part" is false."""
+        if result.error or result.total_count or not result.skipped_paths:
+            return None
+        def key(item: str) -> str:
+            return _normalized_filename_search_root(self.env, item, self.cwd)
+
+        root = key(path)
+        if not any(key(item) == root for item in result.skipped_paths):
+            return None
+        return SearchResult(error=(f"Search root is not readable (permission denied): {path}. "
+                                   "Fix its permissions or search a readable path."))
 
     def _path_not_found_result(self, path: str) -> SearchResult:
         """Error result for a missing search root, with nearby-entry suggestions."""
@@ -908,7 +958,8 @@ class SearchMixin:
             else:
                 glob_expr_probe = glob_expr
             probe_words = [rg, flags, "--count-matches", glob_expr_probe,
-                           self._escape_shell_arg(pattern, translate_path=False), self._escape_native_tool_arg(path)]
+                           self._escape_shell_arg(pattern, translate_path=False),
+                           self._escape_native_tool_arg(_diagnostic_safe_root(path))]
             probe = self._run_rg_bounded(probe_words, 50, timeout=30)
             total, per_file = 0, []
             for line in (probe.stdout or "").strip().splitlines():
@@ -1116,9 +1167,10 @@ class SearchMixin:
                       "https://github.com/BurntSushi/ripgrep#installation")
 
         # Prune hidden descendant dirs (and hidden files, matching rg's default) while
-        # still allowing an explicitly selected hidden root; dash-prefixed roots get
-        # ``./`` so find doesn't parse them as options.
-        find_roots = [f"./{root}" if root.startswith("-") else root for root in roots]
+        # still allowing an explicitly selected hidden root. ``./`` keeps dash-prefixed
+        # roots from parsing as options and roots named like stderr (``find: x``) from
+        # reading as diagnostics.
+        find_roots = [_diagnostic_safe_root(root) for root in roots]
         q_roots = [self._escape_shell_arg(root) for root in find_roots]
         hidden_prune = f" {self._hidden_prune_expr(q_roots)} -o"
         protected_paths = [absolute for _r, _rel, absolute in self._effective_macos_search_exclusions(roots)]
@@ -1215,7 +1267,7 @@ class SearchMixin:
                 return SearchResult(error=capability_error)
         rg = self._quote_executable(rg_executable)
         sort_arg = " --sortr=modified" if order == "modified" else ""
-        root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
+        root_args = " ".join(self._escape_native_tool_arg(_diagnostic_safe_root(root)) for root in command_roots)
         cd_prefix = f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
         rg_cmd = (f"{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
@@ -1249,7 +1301,7 @@ class SearchMixin:
         bounded_sigpipe = result.exit_code == 141 and len(all_files) >= fetch_limit
         if (result.exit_code not in {0, 1, 124} and not bounded_sigpipe
                 and not permission_only):
-            detail = diagnostics.strip() or "no diagnostics"
+            detail = _error_detail(diagnostics) or "no diagnostics"
             if order == "modified":
                 # ripgrep 14+ was already verified by the capability gate, so this
                 # failure is an invocation/traversal error, not a version problem.
@@ -1266,7 +1318,8 @@ class SearchMixin:
         # as a coherent page. Only the single-root path supplements (a multi-root
         # walk is already the merged view across roots).
         if limit_reason != "search_timeout" and isinstance(path, str) and self._has_command("find"):
-            dirs, directory_limit_reason = self._search_directories_with_find(glob_pattern, path, fetch_limit)
+            dirs, directory_limit_reason = self._search_directories_with_find(
+                glob_pattern, _diagnostic_safe_root(path), fetch_limit)
             if dirs:
                 existing = set(all_files)
                 merged_entries = self._sort_paths_by_mtime(
@@ -1359,7 +1412,7 @@ class SearchMixin:
             cmd_parts.append(_OUTPUT_MODE_FLAGS[output_mode])
         cmd_parts.append(self._escape_shell_arg(pattern, translate_path=False))
         # rg is a native Windows binary (winget/cargo/choco): needs C:/... not MSYS /c/...
-        cmd_parts.append(self._escape_native_tool_arg(path))
+        cmd_parts.append(self._escape_native_tool_arg(_diagnostic_safe_root(path)))
         ml_note = (
             "Pattern contains \\n — multiline mode (-U) was enabled automatically "
             "so the regex can match across line boundaries."
@@ -1415,7 +1468,7 @@ class SearchMixin:
         (#18473: grep's ``--exclude-dir='.*'`` would drop the root). Trade-off: find folds
         grep's exit code, so a hard grep error surfaces as an empty result."""
         grep_parts = self._grep_cmd(["grep", "-nHE"], pattern, output_mode, context)
-        q_root = self._escape_shell_arg(path or ".")
+        q_root = self._escape_shell_arg(_diagnostic_safe_root(path or "."))
         # ``-H``: follow a symlink handed in as the OPERAND (and only the operand). Without
         # it ``find <link> -type f`` tests the link itself and hands grep nothing, so a
         # symlinked root answered a confident ``total_count: 0`` on every platform (#116270).

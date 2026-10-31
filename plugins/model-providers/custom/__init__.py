@@ -27,6 +27,18 @@ def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
     return bool(host) and (host == "ollama.com" or host.endswith(".ollama.com") or "ollama" in host.split("."))
 
 
+def _mistral_ministral_model(model: str | None, base_url: str | None) -> bool:
+    """Whether this custom route targets a Ministral model at Mistral's API.
+
+    Ministral models reject the otherwise OpenAI-compatible ``reasoning_effort``
+    request field, including the custom profile's unset-effort default.
+    """
+    return (
+        base_url_host_matches(str(base_url or ""), "api.mistral.ai")
+        and str(model or "").strip().lower().startswith("ministral-")
+    )
+
+
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
@@ -58,6 +70,8 @@ class CustomProfile(ProviderProfile):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
+        model = ctx.get("model")
+        base_url = ctx.get("base_url")
         if ollama_num_ctx:
             extra_body["options"] = {"num_ctx": ollama_num_ctx}
         # disabled -> top-level reasoning_effort="none" (Ollama's /v1 ignores
@@ -68,14 +82,14 @@ class CustomProfile(ProviderProfile):
         # the main loop after the route rejected the reasoning field — an unset main
         # effort arrives here already filled by default_reasoning_config). Never emit
         # think=True (Ollama-only flag).
-        if reasoning_config and isinstance(reasoning_config, dict):
+        if reasoning_config and isinstance(reasoning_config, dict) and not _mistral_ministral_model(model, base_url):
             effort = (reasoning_config.get("effort") or "").strip().lower()
             if effort == "none" or reasoning_config.get("enabled", True) is False:
                 # See #14820.
                 top_level["reasoning_effort"] = "none"
-                if _looks_like_ollama_endpoint(ctx.get("base_url")):
+                if _looks_like_ollama_endpoint(base_url):
                     extra_body["think"] = False
-            elif effort and base_url_host_matches(str(ctx.get("base_url") or ""), "api.groq.com"):
+            elif effort and base_url_host_matches(str(base_url or ""), "api.groq.com"):
                 # Groq's OpenAI-compatible wire accepts top-level reasoning_effort only as
                 # "none" / "default"; any graded level ("medium", "high") 400s (#75089).
                 top_level["reasoning_effort"] = "default"

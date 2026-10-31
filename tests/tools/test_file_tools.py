@@ -34,6 +34,12 @@ class TestReadFileHandler:
         schema_default = READ_FILE_SCHEMA["parameters"]["properties"]["limit"]["default"]
         assert mock_ops.read_file.call_args.args[2] == schema_default
 
+    def test_read_schema_teaches_final_newline_contract(self):
+        from tools.file_tools import READ_FILE_SCHEMA
+        description = READ_FILE_SCHEMA["description"]
+        assert "ends_with_newline" in description
+        assert "preserve" in description.lower()
+
     @patch("tools.file_tools._get_file_ops")
     def test_exception_returns_error_json(self, mock_get):
         mock_get.side_effect = RuntimeError("terminal not available")

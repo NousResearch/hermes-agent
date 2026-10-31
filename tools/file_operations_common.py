@@ -16,6 +16,7 @@ class ReadResult:
     content: str = ""
     total_lines: int = 0
     file_size: int = 0
+    ends_with_newline: Optional[bool] = None
     truncated: bool = False
     truncated_lines: Optional[bool] = None
     hint: Optional[str] = None

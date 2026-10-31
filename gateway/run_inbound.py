@@ -1243,6 +1243,39 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             raise RuntimeStoreError('profile_mismatch')
         return False, None
 
+    def _chat_muted_for_source(self, source: SessionSource, _quick_key: str) -> bool:
+        """True when ``/mute`` silenced this chat; a broken mute store fails OPEN (never silences every chat)."""
+        try:
+            from gateway.chat_mute import is_chat_muted
+            platform = source.platform.value if source.platform else "unknown"
+            if is_chat_muted(platform, source.chat_id):
+                logger.info("Dropping message for muted chat %s:%s (session %s)", platform, source.chat_id, _quick_key)
+                return True
+        except Exception:
+            logger.debug("chat-mute gate check failed", exc_info=True)
+        return False
+
+    async def _hm_new_turn_gate(self, source: SessionSource, _quick_key: str) -> tuple[bool, Optional[str]]:
+        """``(True, reply)`` when a non-internal message must not start a turn here; ``(False, None)`` to go on."""
+        if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
+            # Debounced so a user who forgets about topic mode doesn't get ten reminders.
+            if self._should_send_telegram_lobby_reminder(source):
+                return True, self._telegram_topic_root_lobby_message()
+            return True, None
+        # Chat-mute gate (/mute, Poke/Devin-inspired): while a chat is muted, conversational
+        # messages are dropped deterministically — no turn, no tokens, no reply. Sits AFTER
+        # slash dispatch so every command (most importantly /unmute) pierces the mute;
+        # internal events bypass because background completions must not be lost.
+        if self._chat_muted_for_source(source, _quick_key):
+            return True, None
+        # External-drain new-turn gate: when NAS engaged an external drain (.drain_request.json,
+        # seen by _drain_control_watcher), refuse to START new turns so the in-flight set can
+        # only fall to zero. Reversible.
+        if self._external_drain_active:
+            logger.info("Refusing new turn for session %s — external drain active.", _quick_key)
+            return True, t("gateway.busy.draining_maintenance")
+        return False, None
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
@@ -1290,17 +1323,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # Pending exec approvals go through /approve and /deny only — no bare-text matching, or a
         # conversational "yes" would execute a dangerous command.
         if not is_internal:
-            if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
-                # Debounced so a user who forgets about topic mode doesn't get ten reminders.
-                if self._should_send_telegram_lobby_reminder(source):
-                    return self._telegram_topic_root_lobby_message()
-                return None
-            # External-drain new-turn gate: when NAS engaged an external drain (.drain_request.json,
-            # seen by _drain_control_watcher), refuse to START new turns so the in-flight set can
-            # only fall to zero. Reversible.
-            if self._external_drain_active:
-                logger.info("Refusing new turn for session %s — external drain active.", _quick_key)
-                return t("gateway.busy.draining_maintenance")
+            _gated, _gate_reply = await self._hm_new_turn_gate(source, _quick_key)
+            if _gated:
+                return _gate_reply
 
         # Claim this session before any await: many awaits sit between here and _run_agent
         # registering the real AIAgent; without this sentinel a second message during any of them

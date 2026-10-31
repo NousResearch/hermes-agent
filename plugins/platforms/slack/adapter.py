@@ -1022,6 +1022,10 @@ class SlackAdapter(BasePlatformAdapter):
     _CHANNEL_TEAM_MAX = 10000
     _APPROVAL_RESOLVED_MAX = _CLARIFY_RESOLVED_MAX = _ACTIVE_STATUS_THREADS_MAX = 1000
     _CLARIFY_MESSAGE_MAX = 1000
+    # Multi-select clarify card: the checkboxes element's state comes back keyed by the
+    # actions block's block_id plus the element's action_id, so both are fixed.
+    _CLARIFY_MULTI_BLOCK = "hermes_clarify_multi_block"
+    _CLARIFY_MULTI_ACTION = "hermes_clarify_multi"
     # Tighter cap than the approval/clarify dicts: each entry holds the
     # full provider list, and a picker is only live for minutes.
     _MODEL_PICKER_STATE_MAX = 100
@@ -1685,6 +1689,10 @@ class SlackAdapter(BasePlatformAdapter):
         # Block Kit requires unique IDs within an actions block.
         self._app.action(re.compile(r"^hermes_clarify_choice_\d+$"))(self._handle_clarify_action)
         self._app.action("hermes_clarify_other")(self._handle_clarify_action)
+        # Multi-select clarify: checkbox toggles are acked and ignored, and the answer is read
+        # from ``body["state"]`` when the Submit button arrives.
+        self._app.action("hermes_clarify_multi")(self._handle_clarify_multi_toggle)
+        self._app.action("hermes_clarify_submit")(self._handle_clarify_action)
         # Register Block Kit action handlers for the model picker
         # (provider/model static_select + Back/Cancel buttons).
         for _action_id in _MODEL_PICKER_ACTION_IDS:
@@ -4895,6 +4903,21 @@ class SlackAdapter(BasePlatformAdapter):
         btn["value"] = value
         return btn
 
+    def _checkbox_element(self, choices: list, clarify_id: str) -> dict:
+        """Block Kit ``checkboxes`` element for a multi-select clarify card. Values pack
+        ``clarify_id|idx`` exactly like the choice buttons, so Submit resolves the canonical
+        labels from the pending entry. Slack caps options at 10 and option text at 75 chars
+        (clarify caps choices at 4), so the slice is a guard, not a real limit.
+        """
+        options = []
+        for idx, choice in enumerate(list(choices)[:10]):
+            label = str(choice).strip() or f"Option {idx + 1}"
+            options.append({
+                "text": {"type": "plain_text", "text": label[:75], "emoji": True},
+                "value": f"{clarify_id}|{idx}",
+            })
+        return {"type": "checkboxes", "action_id": self._CLARIFY_MULTI_ACTION, "options": options}
+
     async def _post_interactive_blocks(
         self, chat_id: str, text: str, blocks: list, metadata: Optional[Dict[str, Any]], *,
         sanitize: bool = True, team_scoped: bool = True):
@@ -5390,22 +5413,48 @@ class SlackAdapter(BasePlatformAdapter):
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
         session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Clarify prompt as Block Kit buttons: one ``hermes_clarify_choice_<idx>`` per option
-        (value ``clarify_id|idx``) plus "✏️ Other…" (``hermes_clarify_other``), which flips the
-        entry into text-capture mode for the gateway's text-intercept. No choices → base impl."""
+        """Clarify prompt as Block Kit. Single-select: one ``hermes_clarify_choice_<idx>`` button
+        per option (value ``clarify_id|idx``) plus "✏️ Other…" (``hermes_clarify_other``), which
+        flips the entry into text-capture mode for the gateway's text-intercept. Multi-select (the
+        pending entry carries ``multi_select``): a ``checkboxes`` element plus a Submit button, so
+        a toggle never resolves and only Submit does. No choices → base impl."""
         if not choices:
             return await super().send_clarify(
                 chat_id=chat_id, question=question, choices=choices, clarify_id=clarify_id,
                 session_key=session_key, metadata=metadata)
+
+        # Multi-select flag lives on the pending entry (signature stays adapter-compatible).
+        try:
+            from tools import clarify_gateway as _cg
+            with _cg._lock:
+                _is_multi = bool(getattr(_cg._entries.get(clarify_id), "multi_select", False))
+        except Exception:
+            _is_multi = False
 
         def _build() -> Tuple[str, list]:
             # Escape mrkdwn control chars so the question renders literally;
             # budget against the 3000-char section cap.
             q = (question or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             body = f"❓ {q}"
+            if _is_multi:
+                # Slack has no multi-select buttons; without this line the card reads single-select.
+                body = f"{body}\nSelect one or more, then press Submit (or ✏️ Other… to type)."
             budget = 3000 - len("...")
             if len(body) > budget:
                 body = body[:budget] + "..."
+            blocks: list = [{"type": "section", "text": {"type": "mrkdwn", "text": body}}]
+            if _is_multi:
+                blocks.append({
+                    "type": "actions",
+                    "block_id": self._CLARIFY_MULTI_BLOCK,
+                    "elements": [
+                        self._checkbox_element(choices, clarify_id),
+                        self._button("Submit", "hermes_clarify_submit", f"{clarify_id}|submit"),
+                        self._button("✏️ Other…", "hermes_clarify_other",
+                                     f"{clarify_id}|other", emoji=True),
+                    ],
+                })
+                return body, blocks
             # Slack caps an actions block at 5 elements; clarify caps choices at 4 (+ Other) but
             # chunk anyway so larger lists degrade gracefully instead of 400ing.
             elements = []
@@ -5418,7 +5467,6 @@ class SlackAdapter(BasePlatformAdapter):
             elements.append(
                 self._button("✏️ Other…", "hermes_clarify_other", f"{clarify_id}|other", emoji=True)
             )
-            blocks: list = [{"type": "section", "text": {"type": "mrkdwn", "text": body}}]
             for start in range(0, len(elements), 5):
                 blocks.append({"type": "actions", "elements": elements[start : start + 5]})
             return body, blocks
@@ -5652,16 +5700,75 @@ class SlackAdapter(BasePlatformAdapter):
         self._clarify_resolved[msg_ts] = True
         await self._update_clarify_message(channel_id, msg_ts, question_text, notice)
 
+    async def _handle_clarify_multi_toggle(self, ack, body, action) -> None:
+        """Ack a checkbox toggle on a multi-select clarify card. The selection itself rides the
+        interaction payload's ``state``; nothing resolves until the Submit button arrives."""
+        await ack()
+
+    async def _handle_clarify_submit(
+        self, body: dict, action: dict, clarify_id: str, message: dict, msg_ts: str,
+        channel_id: str, user_name: str) -> None:
+        """Resolve a multi-select clarify from the checkboxes state collected on Submit."""
+        from tools import clarify_gateway as _clarify_mod
+        original_text = self._section_text(message, limit=None)
+        state = (body.get("state") or {}).get("values") or {}
+        selected = (
+            state.get(self._CLARIFY_MULTI_BLOCK, {})
+            .get(self._CLARIFY_MULTI_ACTION, {})
+            .get("selected_options") or [])
+        # Canonical labels from the pending entry; the option value only carries the index.
+        try:
+            entry = _clarify_mod._entries.get(clarify_id)  # type: ignore[attr-defined]
+        except Exception:
+            entry = None
+        labels: List[str] = []
+        for option in selected:
+            token = str((option or {}).get("value", "")).rsplit("|", 1)[-1]
+            label = None
+            if token.isdigit() and entry is not None and entry.choices:
+                idx = int(token)
+                if 0 <= idx < len(entry.choices):
+                    label = str(entry.choices[idx]).strip()
+            if label and label not in labels:
+                labels.append(label)
+        if not labels:
+            # Nothing ticked is not an answer: keep the card live so Submit can be retried.
+            await self._update_clarify_message(
+                channel_id, msg_ts, original_text,
+                f"⚠️ {user_name}: select at least one option, then Submit.")
+            return
+        # Double-click guard — atomic pop (mirrors a choice button click).
+        if self._clarify_resolved.pop(msg_ts, True):
+            return
+        self._clarify_messages.pop(clarify_id, None)
+        # The gateway parses this JSON array back into a label list (multi-select response shape).
+        if _clarify_mod.resolve_gateway_clarify(clarify_id, json.dumps(labels, ensure_ascii=False)):
+            await self._update_clarify_message(
+                channel_id, msg_ts, original_text, f"✅ {user_name}: {', '.join(labels)}")
+            logger.info(
+                "Slack checkboxes resolved clarify (id=%s, count=%d, user=%s)",
+                clarify_id, len(labels), user_name)
+        else:
+            await self._update_clarify_message(
+                channel_id, msg_ts, original_text,
+                f"⏳ This prompt expired — please send a new request. (by {user_name})")
+            logger.warning(
+                "[Slack] clarify submit resolve returned False (id=%s) — expired/reset", clarify_id)
+
     async def _handle_clarify_action(self, ack, body, action) -> None:
         """Handle a clarify button click (a choice or "Other") from Block Kit."""
         started = await self._begin_interaction(ack, body, action, "clarify", team_scoped=False)
         if started is None:
             return
         _team_id, action_id, value, message, msg_ts, channel_id, user_name, user_id = started
-        if "|" not in value:  # value packs ``clarify_id|<idx|other>``
+        if "|" not in value:  # value packs ``clarify_id|<idx|other|submit>``
             logger.warning("[Slack] Malformed clarify value: %s", value)
             return
         clarify_id, token = value.split("|", 1)
+        if action_id == "hermes_clarify_submit" or token == "submit":
+            await self._handle_clarify_submit(
+                body, action, clarify_id, message, msg_ts, channel_id, user_name)
+            return
         # Double-click guard — atomic pop (mirrors approval).
         if self._clarify_resolved.pop(msg_ts, True):
             return

@@ -6,6 +6,7 @@ and the indexed ``hermes_clarify_choice_<idx>`` /
 ``hermes_clarify_other`` action dispatch.
 """
 
+import json
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -327,3 +328,131 @@ class TestBaseAdapterClarifyFallbackUnchanged:
         assert "Pick a fruit" in text
         assert "1." in text and "apple" in text
         assert "2." in text and "banana" in text
+
+
+# ===========================================================================
+# Multi-select card: checkboxes + Submit (f)
+# ===========================================================================
+
+class TestSlackClarifyMultiSelect:
+    """A multi-select clarify must not resolve on one click: checkboxes collect the set and
+    Submit resolves it, because Slack has no multi-select button."""
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    @staticmethod
+    def _register_multi(clarify_id="cidMulti", session="sk-multi",
+                        choices=("Ramen", "Udon", "Tempura")):
+        from tools import clarify_gateway as cm
+        cm.register(clarify_id, session, "Which dishes?", list(choices), multi_select=True)
+
+    @pytest.mark.asyncio
+    async def test_renders_checkboxes_plus_submit_instead_of_choice_buttons(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "6.1"})
+        self._register_multi()
+
+        result = await adapter.send_clarify(
+            chat_id="C1", question="Which dishes?", choices=["Ramen", "Udon", "Tempura"],
+            clarify_id="cidMulti", session_key="sk-multi")
+
+        assert result.success is True
+        blocks = mock_client.chat_postMessage.call_args[1]["blocks"]
+        assert "press Submit" in blocks[0]["text"]["text"]
+        actions = [b for b in blocks if b["type"] == "actions"]
+        assert len(actions) == 1
+        assert actions[0]["block_id"] == adapter._CLARIFY_MULTI_BLOCK
+        elements = actions[0]["elements"]
+        assert [e["type"] for e in elements] == ["checkboxes", "button", "button"]
+        checkbox = elements[0]
+        assert checkbox["action_id"] == adapter._CLARIFY_MULTI_ACTION
+        assert [o["value"] for o in checkbox["options"]] == [
+            "cidMulti|0", "cidMulti|1", "cidMulti|2"]
+        assert [o["text"]["text"] for o in checkbox["options"]] == ["Ramen", "Udon", "Tempura"]
+        assert elements[1]["action_id"] == "hermes_clarify_submit"
+        assert elements[1]["value"] == "cidMulti|submit"
+        assert elements[2]["action_id"] == "hermes_clarify_other"
+        # No per-choice buttons: one click can never answer a multi-select question.
+        assert not [e for e in elements if e["action_id"].startswith("hermes_clarify_choice_")]
+
+    @pytest.mark.asyncio
+    async def test_toggle_acks_without_resolving(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        self._register_multi()
+
+        ack = AsyncMock()
+        await adapter._handle_clarify_multi_toggle(ack, {"state": {"values": {}}}, {})
+        assert ack.await_count == 1
+
+        with cm._lock:
+            entry = cm._entries.get("cidMulti")
+        assert entry is not None
+        assert not entry.event.is_set()
+        assert entry.response is None
+
+    @pytest.mark.asyncio
+    async def test_submit_resolves_with_every_selected_label(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+        self._register_multi()
+        adapter._clarify_resolved["6.2"] = False
+
+        body = {
+            "message": {"ts": "6.2", "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": "❓ Which dishes?"}},
+            ]},
+            "channel": {"id": "C1"},
+            "user": {"name": "norbert", "id": "U_N"},
+            "state": {"values": {adapter._CLARIFY_MULTI_BLOCK: {adapter._CLARIFY_MULTI_ACTION: {
+                "selected_options": [
+                    {"value": "cidMulti|0"}, {"value": "cidMulti|2"},
+                ],
+            }}}},
+        }
+        await adapter._handle_clarify_action(
+            AsyncMock(), body, {"action_id": "hermes_clarify_submit", "value": "cidMulti|submit"})
+
+        with cm._lock:
+            entry = cm._entries.get("cidMulti")
+        assert entry.event.is_set()
+        # JSON array — the shape the gateway parses back into a label list.
+        assert json.loads(entry.response) == ["Ramen", "Tempura"]
+        assert "✅ norbert: Ramen, Tempura" in mock_client.chat_update.call_args[1]["text"]
+
+    @pytest.mark.asyncio
+    async def test_submit_with_nothing_ticked_keeps_the_card_live(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+        self._register_multi()
+        adapter._clarify_resolved["6.3"] = False
+
+        body = {
+            "message": {"ts": "6.3", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"name": "norbert", "id": "U_N"},
+            "state": {"values": {adapter._CLARIFY_MULTI_BLOCK: {adapter._CLARIFY_MULTI_ACTION: {
+                "selected_options": [],
+            }}}},
+        }
+        await adapter._handle_clarify_action(
+            AsyncMock(), body, {"action_id": "hermes_clarify_submit", "value": "cidMulti|submit"})
+
+        with cm._lock:
+            entry = cm._entries.get("cidMulti")
+        assert not entry.event.is_set()
+        assert "select at least one" in mock_client.chat_update.call_args[1]["text"]
+        # Guard not consumed, so a second Submit still resolves.
+        assert adapter._clarify_resolved.get("6.3") is False
+

@@ -93,7 +93,11 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 
 _hermes_home = get_hermes_home()  # read by agent_init via _ra()._hermes_home
-_loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent / '.env')
+_loaded_env_paths = load_hermes_dotenv(
+    hermes_home=_hermes_home,
+    project_env=Path(__file__).parent / '.env',
+    cwd_env=True,
+)
 for _env_path in _loaded_env_paths:
     logger.info("Loaded environment variables from %s", _env_path)
 if not _loaded_env_paths:

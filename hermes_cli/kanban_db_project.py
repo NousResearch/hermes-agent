@@ -69,6 +69,23 @@ def worktree_path_unavailable(workspace_path: Optional[str]) -> Optional[str]:
     )
 
 
+def _refuse_unhostable_worktree_path(workspace_path: Optional[str]) -> None:
+    """Raise when *workspace_path* cannot host a worktree; ``None``/in-repo paths pass.
+
+    Called once before the project lookup and once after the kind upgrades in
+    ``resolve_project_link``: a ``scratch`` card can become a ``worktree`` one
+    below the first call while keeping the caller's explicit path, so the same
+    rule has to run again or the card is accepted here and refused at dispatch.
+    """
+    refusal = worktree_path_unavailable(workspace_path)
+    if refusal:
+        raise ValueError(
+            f"{refusal}. Create the task with workspace_kind='scratch', point "
+            "workspace_path at a folder inside a git repo, or omit it and let a "
+            "project anchor the worktree."
+        )
+
+
 def board_workspace_path(
     board: Optional[str], workspace_kind: str, workspace_path: Optional[str],
     project_repo: Optional[str],
@@ -125,20 +142,16 @@ def resolve_project_link(
     worktree on. That path check runs *before* the project lookup: a
     project-less card, an unresolvable id/slug and a project-backed card all
     reach dispatch with the same literal path, so the same rule must refuse it
-    whichever way the lookup goes.
+    whichever way the lookup goes. It runs a second time once the lookups are
+    done, because they can upgrade ``scratch`` -> ``worktree`` while keeping the
+    caller's explicit path.
     """
     if workspace_kind == "worktree":
         # An explicit worktree path overrides every default at dispatch, so it
         # is validated before any project resolution: whichever way the lookup
         # below goes (no project, unresolvable id/slug, project that cannot
         # anchor), the card reaches dispatch with this literal path.
-        refusal = worktree_path_unavailable(workspace_path)
-        if refusal:
-            raise ValueError(
-                f"{refusal}. Create the task with workspace_kind='scratch', point "
-                "workspace_path at a folder inside a git repo, or omit it and let a "
-                "project anchor the worktree."
-            )
+        _refuse_unhostable_worktree_path(workspace_path)
     project_id = (str(project_id).strip() or None) if project_id is not None else None
     if not project_id:
         return None, None, None, workspace_kind, None
@@ -183,6 +196,12 @@ def resolve_project_link(
             "workspace_kind='scratch', point the project at a folder inside a git repo, "
             "or pass an explicit workspace_path inside a git repo."
         )
+    if workspace_kind == "worktree":
+        # The lookups above may have upgraded ``scratch`` -> ``worktree``
+        # (source-task recovery, project anchor) while keeping the caller's
+        # explicit path. Same rule, after the upgrade: nothing else can flip the
+        # kind below this point.
+        _refuse_unhostable_worktree_path(workspace_path)
     if workspace_kind == "worktree" and workspace_path is None and project_obj.primary_path:
         # Concrete path is deferred to the insert loop: a fresh
         # ``<repo>/.worktrees/<task-id>`` keyed on the new task id.

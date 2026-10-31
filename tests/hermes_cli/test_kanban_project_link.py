@@ -301,6 +301,103 @@ def test_source_task_fallback_stays_scratch_when_recovered_repo_is_gone(
     assert str(repo) in skipped[0]["message"]
 
 
+# --- an explicit path that the *upgrade* would turn into a worktree ----------
+# Both upgrade sites keep the caller's ``workspace_path`` while flipping
+# ``scratch`` -> ``worktree``: the source-task recovery above and the project's
+# own ``primary_path``. Creation therefore validated a path it would then treat
+# as a worktree, accepted the card, and dispatch refused it (``not inside a git
+# repo``). The rule now runs again after the upgrades — and every path dispatch
+# can anchor is still accepted.
+
+
+def test_source_task_recovery_with_explicit_non_repo_path_raises_at_creation(
+    kanban_conn, tmp_path, monkeypatch,
+):
+    """The recovered repo upgrades the card to a worktree, so the caller's
+    explicit path has to hold up as one: refuse it at creation, path named."""
+    proj, source = _source_task_and_project(kanban_conn, tmp_path)
+    _hide_project_from_projects_db(monkeypatch)
+    outside = tmp_path / "elsewhere" / "wt"
+    outside.mkdir(parents=True)
+
+    with pytest.raises(ValueError) as excinfo:
+        kb.create_task(
+            kanban_conn, title="recovered stranded", project_id=proj.id,
+            project_source_task_id=source.id,
+            workspace_kind="scratch", workspace_path=str(outside),
+        )
+
+    message = str(excinfo.value)
+    assert str(outside) in message
+    assert "not inside a git repo" in message
+    assert "workspace_kind='scratch'" in message
+    # Refused before the insert: only the source task is on the board.
+    assert kanban_conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+    assert kanban_conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE title = ?", ("recovered stranded",),
+    ).fetchone()[0] == 0
+
+
+def test_project_scratch_with_explicit_non_repo_path_raises_at_creation(kanban_conn, tmp_path):
+    """Same rule through the other upgrade site, with a *resolvable* project:
+    reachable from the shipped surface, which exposes ``workspace_kind`` and
+    ``workspace_path`` as independent properties."""
+    proj = _make_project(tmp_path)
+    outside = tmp_path / "elsewhere" / "wt"
+    outside.mkdir(parents=True)
+
+    with pytest.raises(ValueError) as excinfo:
+        kb.create_task(
+            kanban_conn, title="scratch stranded", project_id=proj.id,
+            workspace_kind="scratch", workspace_path=str(outside),
+        )
+
+    message = str(excinfo.value)
+    assert str(outside) in message
+    assert "not inside a git repo" in message
+    assert "workspace_kind='scratch'" in message
+    # Nothing was created: the refusal happens before the insert.
+    assert kanban_conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_source_task_recovery_with_explicit_in_repo_path_stays_a_worktree(
+    kanban_conn, tmp_path, monkeypatch,
+):
+    """Control: an explicit path inside the recovered repo is exactly what the
+    two checks must keep accepting — explicit path kept, kind upgraded."""
+    proj, source = _source_task_and_project(kanban_conn, tmp_path)
+    _hide_project_from_projects_db(monkeypatch)
+    inside = Path(source.workspace_path).parent.parent / "pkg" / "wt"
+
+    tid = kb.create_task(
+        kanban_conn, title="recovered ok", project_id=proj.id,
+        project_source_task_id=source.id,
+        workspace_kind="scratch", workspace_path=str(inside),
+    )
+    task = kb.get_task(kanban_conn, tid)
+
+    assert task.project_id == proj.id
+    assert task.workspace_kind == "worktree"
+    assert task.workspace_path == str(inside)
+
+
+def test_project_scratch_with_explicit_in_repo_path_stays_a_worktree(kanban_conn, tmp_path):
+    """Control for the project's own upgrade: inside the repo is a worktree,
+    and the explicit path wins over ``<repo>/.worktrees/<id>``."""
+    proj = _make_project(tmp_path)
+    inside = Path(proj.primary_path) / "pkg" / "wt"
+
+    tid = kb.create_task(
+        kanban_conn, title="scratch ok", project_id=proj.id,
+        workspace_kind="scratch", workspace_path=str(inside),
+    )
+    task = kb.get_task(kanban_conn, tid)
+
+    assert task.project_id == proj.id
+    assert task.workspace_kind == "worktree"
+    assert task.workspace_path == str(inside)
+
+
 # --- project-less tasks -----------------------------------------------------
 # A card without a project is not exempt from the creation-time workspace rule:
 # ``resolve_project_link`` used to return before validating anything when

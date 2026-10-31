@@ -1696,8 +1696,8 @@ DEFAULT_CONFIG = {
     # Plugin system. `enabled`/`disabled` (`hermes plugins enable|disable`) and `disabled_by_update` (pm.plugin_eviction:
     # plugins an update turned off, retried by later updates) are omitted so an empty default never clobbers a user's lists.
     "plugins": {
-        # Deadline (seconds) for one plugin Git clone, fetch or checkout. Slow repositories may
-        # need more time; each network operation is capped at one hour.
+        "scan_on_install": True,  # Security scanning for plugin installs and updates.
+        # Git clone/fetch/checkout deadline in seconds; raise for slow repos (one-hour cap).
         "clone_timeout_seconds": 300,
         # Wall-clock cap (seconds) for one in-process Python plugin hook callback; shell hooks keep
         # their own per-entry `timeout`. 0 = no cap (sync call on agent thread). Max 600.

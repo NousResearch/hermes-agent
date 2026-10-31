@@ -68,6 +68,30 @@ def _is_xai_entitlement_text(lower: str) -> bool:
     )
 
 
+def _openrouter_upstream_detail(err_obj: dict) -> str:
+    """``"<provider>: <reason>"`` from OpenRouter's ``error.metadata`` (``raw`` is the upstream's own
+    body, JSON or plain text). Without it a refused request reads only "Provider returned error",
+    naming neither the upstream that refused nor why."""
+    metadata = err_obj.get("metadata")
+    if not isinstance(metadata, dict):
+        return ""
+    raw = metadata.get("raw")
+    reason = ""
+    if isinstance(raw, str) and raw.strip():
+        try:
+            inner = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            inner = None
+        if isinstance(inner, dict):
+            inner_err = inner.get("error")
+            reason = str((inner_err.get("message") if isinstance(inner_err, dict) else inner_err)
+                         or inner.get("message") or "")
+        reason = " ".join((reason or raw).split())[:300]
+    name = metadata.get("provider_name")
+    name = name.strip() if isinstance(name, str) else ""
+    return ": ".join(part for part in (name, reason) if part)
+
+
 def _http_prefix(error: Exception) -> str:
     status_code = getattr(error, "status_code", None)
     return f"HTTP {status_code}: " if status_code else ""
@@ -193,9 +217,13 @@ class ApiErrorSummaryMixin:
         # JSON body errors from OpenAI/Anthropic SDKs
         body = getattr(error, "body", None)
         if isinstance(body, dict):
-            msg = body.get("error", {}).get("message") if isinstance(body.get("error"), dict) else body.get("message")
+            err_obj = body["error"] if isinstance(body.get("error"), dict) else body
+            msg = err_obj.get("message")
             if msg:
                 msg = ApiErrorSummaryMixin._coerce_api_error_detail(msg)
+                upstream = _openrouter_upstream_detail(err_obj)
+                if upstream:
+                    return redact_sensitive_text(f"{prefix}{msg[:120]}: {upstream}")
                 return ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
 
         # SDK may leave body empty while httpx has the payload. Redact: the body is attacker-influenced
@@ -217,7 +245,9 @@ class ApiErrorSummaryMixin:
                 if isinstance(payload, dict):
                     err = payload.get("error")
                     if isinstance(err, dict) and err.get("message"):
-                        return redact_sensitive_text(f"{prefix}{str(err['message'])[:300]}")
+                        upstream = _openrouter_upstream_detail(err)
+                        detail = f"{str(err['message'])[:120]}: {upstream}" if upstream else str(err["message"])[:300]
+                        return redact_sensitive_text(f"{prefix}{detail}")
                     if payload.get("message"):
                         return redact_sensitive_text(f"{prefix}{str(payload['message'])[:300]}")
                 return redact_sensitive_text(f"{prefix}{snippet[:300]}")

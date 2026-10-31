@@ -129,7 +129,8 @@ async def test_a_dm_refused_while_another_writer_holds_the_chat_is_a_definite_no
     assert _admissions(held) == [] and held.executed == []
     # Once the other writer closes, a new send is adopted and admitted exactly once.
     sent = await _send(held, 'ping again')
-    assert sent.get('status') in {'queued', 'claimed', 'settled'}, sent
+    # ENUM B at the sender boundary: the tool never prints the store's words (claimed/settled).
+    assert sent.get('status') in {'queued', 'running', 'delivered'}, sent
     assert sent['delivery_id'] != refused['delivery_id']
     assert _admissions(held) == ['bot:' + sent['delivery_id']]
 
@@ -179,7 +180,7 @@ async def test_a_same_id_attempt_racing_a_delayed_refusal_never_coexists_with_no
     hold.set()  # the first refusal reaches the tool now
     answer = await first
     assert 'NOT sent' not in answer.get('error', ''), answer
-    assert answer.get('status') in {'queued', 'claimed', 'settled', 'ambiguous'}, answer
+    assert answer.get('status') in {'queued', 'running', 'delivered', 'ambiguous'}, answer
     assert _admissions(held) == ['bot:' + delivery_id]
 
 

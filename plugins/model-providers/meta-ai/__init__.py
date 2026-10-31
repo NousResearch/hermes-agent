@@ -9,7 +9,7 @@ emission is gated by a core host allowlist a third-party plugin must not edit.
 import os
 from typing import Any
 
-from agent.reasoning_effort import META_AI_EFFORTS, clamp_effort
+from agent.reasoning_effort import clamp_effort, meta_ai_supported_efforts
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -49,8 +49,9 @@ class MetaAIProfile(ProviderProfile):
         if rc.get("enabled") is False or effort == "none":
             mapped = "minimal"
         else:
-            clamped = clamp_effort(effort, META_AI_EFFORTS)
-            mapped = clamped if clamped in META_AI_EFFORTS else "medium"
+            supported = meta_ai_supported_efforts(context.get("model"))
+            clamped = clamp_effort(effort, supported)
+            mapped = clamped if clamped in supported else "medium"
         return {}, {"reasoning_effort": mapped}
 
 

@@ -55,6 +55,8 @@ PROVIDER_MAX_TEXT_LENGTH: dict[str, int] = {
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "phonon": 2000,       # local 31M/40M model; prosody does not carry across long splits
+    "ollama": 4096,       # docs.ollama.com/capabilities/speech: input cap per request
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models

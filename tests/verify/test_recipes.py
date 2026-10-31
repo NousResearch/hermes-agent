@@ -139,17 +139,74 @@ class TestPythonDetection:
         assert recipe.kind == "python"
         assert recipe.bootstrap == ["uv sync"]
 
-    def test_generic_python_pyproject_editable_install(self, tmp_path):
+    def test_generic_python_editable_install_without_tests(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
         recipe = detect_recipe(tmp_path)
         assert recipe.bootstrap == ["pip install -e ."]
-        assert recipe.test == ["python -m unittest discover"]
+        # No test files and no pytest configuration: an invented `python -m unittest
+        # discover` would fail the whole verification for a project that has no tests.
+        assert recipe.test == []
 
-    def test_pytest_when_tests_dir(self, tmp_path):
+    def test_pytest_when_test_file_exists(self, tmp_path):
         (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
         (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_client.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
         recipe = detect_recipe(tmp_path)
         assert recipe.test == ["pytest"]
+
+    def test_empty_tests_dir_is_not_pytest_evidence(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "__init__.py").touch()
+        recipe = detect_recipe(tmp_path)
+        assert recipe.test == []
+
+    def test_pytest_config_without_tests_dir(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\nname='x'\n\n[tool.pytest.ini_options]\naddopts='-q'\n", encoding="utf-8",
+        )
+        recipe = detect_recipe(tmp_path)
+        assert recipe.test == ["pytest"]
+
+    def test_tests_inside_a_virtualenv_are_not_project_tests(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
+        vendored = tmp_path / ".venv" / "lib" / "python3.12" / "site-packages" / "dep" / "tests"
+        vendored.mkdir(parents=True)
+        (vendored / "test_dep.py").write_text("def test_x():\n    assert True\n", encoding="utf-8")
+        recipe = detect_recipe(tmp_path)
+        assert recipe.test == []
+
+    def test_fastapi_in_a_dependency_group_is_not_an_app(self, tmp_path):
+        # A library may ship FastAPI in its example/test group (pact-python does):
+        # that describes the examples, not the application.
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\nname='x'\ndependencies=['httpx']\n\n"
+            "[dependency-groups]\nexamples=['fastapi','uvicorn']\n",
+            encoding="utf-8",
+        )
+        recipe = detect_recipe(tmp_path)
+        assert recipe.kind == "python"
+        assert recipe.start is None
+        assert not any("FastAPI app" in e for e in recipe.evidence)
+
+    def test_fastapi_dependency_without_entrypoint_has_no_start(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("fastapi\nuvicorn\n", encoding="utf-8")
+        recipe = detect_recipe(tmp_path)
+        assert recipe.kind == "python"
+        assert recipe.start is None
+        assert any("no module defining" in e for e in recipe.evidence)
+
+    def test_fastapi_app_object_in_package_module(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("fastapi\nuvicorn\n", encoding="utf-8")
+        package = tmp_path / "app"
+        package.mkdir()
+        (package / "main.py").write_text(
+            "from fastapi import FastAPI\n\napp = FastAPI()\n", encoding="utf-8",
+        )
+        recipe = detect_recipe(tmp_path)
+        assert recipe.kind == "fastapi"
+        assert recipe.start.startswith("uvicorn app.main:app")
+        assert recipe.port == 8000
 
 
 class TestOtherEcosystems:

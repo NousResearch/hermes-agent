@@ -182,13 +182,14 @@ def lease_current_runtime() -> None:
         lease_directory(Path(sys.prefix))
 
 
-def collect_runtime_generations(root: Path) -> list[Path]:
+def collect_runtime_generations(root: Path, *, dry_run: bool = False) -> list[Path]:
     """Remove PM runtime generations nothing can run from any more.
 
     Staging happens under ``.prepare.lock``, so with it held an unpublished generation
     (no ``pm-runtime.json``) is an aborted stage. A superseded published generation goes
     once every worker launched from it has exited; generations published before leases
-    existed stay, as the application collector keeps its own.
+    existed stay, as the application collector keeps its own. With ``dry_run`` the
+    candidates are returned without removal.
     """
     from pm.filesystem import lock_fd
     from hermes_cli.runtime_state import leases_held
@@ -210,7 +211,8 @@ def collect_runtime_generations(root: Path) -> list[Path]:
             published = (generation / "pm-runtime.json").is_file()
             if published and (not (generation / ".lease-managed").is_file() or leases_held(generation)):
                 continue
-            shutil.rmtree(generation)
+            if not dry_run:
+                shutil.rmtree(generation)
             removed.append(generation)
     return removed
 

@@ -704,7 +704,6 @@ gateway:
     history_unavailable: "⚠️ This session's history is temporarily unavailable, so this message was not processed. Ask the operator to inspect state.db, then resend after it is healthy. Use /reset only if you intentionally want to start a new conversation."
     no_credentials: "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. Use /login to sign in again, or /model to pick a different model. If it keeps failing, run `hermes doctor` on the host."
     cron_session_read_only: "⚠️ This chat belongs to a scheduled job and only runs that job, so your message was not run. Start a new chat to send it."
-    workspace_unavailable: "⚠️ This chat's working folder no longer exists ({path}), so your message was not run. Recreate the folder, or move the chat to another one (`/worktree new` in the CLI, Move to project in the desktop app), then send your message again."
     launch_credentials_unavailable: "⚠️ This chat can't use the API key it was started with any more{detail}, so nothing can run in it. An open chat never switches to a different key on its own, so /retry fails the same way. Use /new to start a new chat on your current key."
 
   skills:
@@ -2615,7 +2614,6 @@ cli:
     title_rejected: "Title rejected: {error}"
     title_empty_untitled: "Title is empty after cleanup — session started untitled."
     title_error_untitled: "{error} — session started untitled."
-    cwd_gone: "⚠ Session's working directory is gone: {recorded} — staying in {current}"
     cwd_restored: "↻ Working directory: {path}"
     cwd_enter_failed: "⚠ Could not enter session's working directory {path}: {error}"
     yolo_restored: "⚡ YOLO mode restored from session — all commands auto-approved. /yolo to turn off."

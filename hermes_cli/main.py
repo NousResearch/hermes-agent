@@ -1534,7 +1534,7 @@ def _resolve_chat_session_args(args, use_tui: bool) -> None:
 
     _resolve_continue_arg(args, use_tui=use_tui)
 
-    from hermes_cli.main_resume_args import import_foreign_resume, recreate_resumed_tui_worktree
+    from hermes_cli.main_resume_args import import_foreign_resume
     import_foreign_resume(args)
 
     resume_val = getattr(args, "resume", None)
@@ -1542,10 +1542,9 @@ def _resolve_chat_session_args(args, use_tui: bool) -> None:
         # On miss keep the original so _init_agent reports "Session not found" with it.
         args.resume = _resolve_session_by_name_or_id(resume_val) or resume_val
 
-    recreate_resumed_tui_worktree(args)
-
     # cd back into a resumed session's recorded cwd (opt out: --no-restore-cwd;
-    # --worktree owns its own dir). A missing dir warns and stays put.
+    # --worktree owns its own dir). A removed dir (a deleted worktree) quietly stays put: the
+    # session's turns run in the checkout it belonged to (session_policy.live_workspace).
     if (
         getattr(args, "resume", None)
         and not getattr(args, "no_restore_cwd", False)
@@ -1553,9 +1552,8 @@ def _resolve_chat_session_args(args, use_tui: bool) -> None:
     ):
         with _session_db() as db:  # never let cwd-restore break a resume
             _saved_cwd = ((db.get_session(args.resume) or {}).get("cwd") or "").strip()
-            if _saved_cwd and not os.path.isdir(_saved_cwd):
-                print(f"⚠ session's recorded dir is gone ({_saved_cwd}); staying in {os.getcwd()}")
-            elif _saved_cwd and os.path.realpath(_saved_cwd) != os.path.realpath(os.getcwd()):
+            if _saved_cwd and os.path.isdir(_saved_cwd) \
+                    and os.path.realpath(_saved_cwd) != os.path.realpath(os.getcwd()):
                 os.chdir(_saved_cwd)
                 print(f"↪ restored workspace dir: {_saved_cwd}")
 

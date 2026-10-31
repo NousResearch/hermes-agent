@@ -222,7 +222,7 @@ Resuming a CLI session also `cd`s back into the session's recorded working direc
 hermes --resume 20250305_091523_a1b2c3 --no-restore-cwd
 ```
 
-A `↪ restored workspace dir: …` line confirms the switch. Restore failures never break the resume itself.
+A `↪ restored workspace dir: …` line confirms the switch. If that directory no longer exists (a deleted worktree, say), the resume stays where you are without a warning, and the session's turns run in the checkout the directory belonged to. Restore failures never break the resume itself.
 
 Resuming an idle session picks up the profile's current config: toolsets, MCP servers, `terminal` settings, `max_turns`, checkpoints and the default reasoning effort. The session keeps its model, its launch flags and any `/reasoning` or workspace change you made. Any difference starts a new prompt-cache prefix, so the first turn after the resume costs more. A change to the `terminal` settings, even an unrelated one like `terminal.timeout`, also resets an earlier `cd` to the session's directory.
 

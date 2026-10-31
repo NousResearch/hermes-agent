@@ -145,7 +145,7 @@ def _spawn(authority, ref, task_id, event_type, body, extra=None, holder=None):
                 text = body()
             except Exception as exc:
                 logger.warning('Side agent %s failed', task_id, exc_info=True)
-                # A refusal names the check that fired (``workspace_unavailable (cwd: <path>)``).
+                # A refusal names the check that fired (``<reason> (<field>: <detail>)``).
                 field, detail = getattr(exc, 'field', None), getattr(exc, 'detail', None)
                 named = f' ({field}: {detail})' if field and detail else ''
                 text = f'error: {getattr(exc, "reason", None) or exc}{named}'

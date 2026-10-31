@@ -6,6 +6,7 @@ bot). Every row is asserted in one fixture so the two historical fixes (#69246 s
 preserved, #70625 route-override egress) cannot drift apart again.
 """
 
+import os
 import weakref
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -173,7 +174,7 @@ def test_inferred_primary_transport_does_not_hide_a_secondary_local_session_poli
                            user_id="viewer", profile="team_b")
     secondary_authority.sessions[source.chat_id] = SimpleNamespace(source=source)
     secondary_adapter.register_source(source)
-    picked_policy = object()
+    picked_policy = SimpleNamespace(cwd=os.getcwd())  # a live folder: returned as-is
     secondary_adapter.policies[source.chat_id] = picked_policy
 
     identity = resolve_identity(source, runner=runner)

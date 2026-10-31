@@ -748,6 +748,9 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
             [str(source_home), job_id, str(run_id), str(home)],
             ensure_ascii=False, separators=(",", ":"),
         ).encode("utf-8")).hexdigest()
+        envelope = dict(delivery_id=key, execution_id=str(run_id), profile_home=str(home),
+                        message_sha256=hashlib.sha256(message.encode("utf-8")).hexdigest(),
+                        notification_category="diagnostic" if for_failure else "result")
         # Read BEFORE discovery: the previous owner may have exited after accepting.
         receipt = read_delivery_result(home, key)
         target = f"bot-chat:{profile_label}"
@@ -765,7 +768,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
             except ValueError:  # the target's gateway is down or starting: not a disposition
                 from cron.bot_chat_legacy import defer
                 defer(key, job, content, home, for_failure=for_failure)
-                job.setdefault("_bot_chat_delivery_receipts", {})[target] = {"status": "queued", "delivery_id": key}
+                job.setdefault("_bot_chat_delivery_receipts", {})[target] = {**envelope, "status": "queued"}
                 return f"{target} queued (receipt {key}): target profile not running; admitted once it is"
             if owner is None:
                 return f"bot-chat delivery to profile '{profile_label}' unverified: no canonical Bot Chat"
@@ -777,7 +780,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
             raise ValueError("delivery id already belongs to a different payload")
         status = receipt["status"]
         receipts = job.setdefault("_bot_chat_delivery_receipts", {})
-        receipts[target] = {"status": status, "delivery_id": key}
+        receipts[target] = {**envelope, "status": status}
         logger.info("Job '%s': Bot Chat %s receipt=%s status=%s",
                     job_id, profile_label, key, status)
         if status == "settled":

@@ -8,6 +8,8 @@ to match the claim-time fingerprint is not proof of death. Terminal states are i
 from __future__ import annotations
 
 import logging
+import errno
+import functools
 import math
 import os
 import sqlite3
@@ -25,6 +27,18 @@ from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM
 from hermes_cli.observability.shared_metrics_gateway import record_cron_finish
 
 logger = logging.getLogger(__name__)
+# fcntl is Unix-only; Windows uses msvcrt. Same cross-platform shape as cron/scheduler.py's tick
+# lock, so the ledger's write mutex degrades to a no-op rather than an ImportError off-Unix.
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
+    try:
+        import msvcrt
+    except ImportError:
+        msvcrt = None
+else:
+    msvcrt = None
 
 # Optional test override. Production resolves the path at transaction time so dashboard operations
 # that temporarily enter another profile cannot leak that profile's records into the import-time
@@ -44,6 +58,33 @@ FIRER_FINISHED_STATES = frozenset({"completed", "failed", "cancelled"})
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
 
+# Ledger write contention knobs (2026-10-02). This ledger is a cross-process bus: one gateway plus
+# one external worker process per dispatch, and 50 jobs share minute 0 (measured peak 12 workers).
+# The defaults below left `database is locked` surfacing as a worker crash -- the worker died in
+# adopt_claimed_execution() before acknowledging ownership, so the run was lost AND the scheduler
+# raised "exited before ownership acknowledgement".
+#
+# Three separate causes, each measured (state/hermes-patches/probe_executions_*.py):
+#   1. busy_timeout was the open_db default 5000ms while a peer write can hold the lock far longer
+#      (the same host's state.db reports "held the write lock for over 20s / over 60s").
+#   2. `_transaction` used a DEFERRED transaction: it took a SHARED lock, then the first UPDATE had
+#      to upgrade to RESERVED. SQLite returns SQLITE_BUSY on that upgrade WITHOUT consulting the
+#      busy handler, so busy_timeout bought nothing on the exact statement that matters.
+#   3. Every `_connect()` re-ran `_initialize_schema`, which issues ALTER TABLE probes
+#      (add_column_if_missing). Those are schema writes: they contend for the schema lock on every
+#      single transaction in the fleet.
+# busy_timeout 10s matches the existing precedent for a shared multi-process store
+# (gateway/delivery_ledger.py); the bounded retry is the belt-and-braces for a burst that outlasts it.
+LEDGER_BUSY_TIMEOUT_MS = 10_000
+LEDGER_BUSY_RETRIES = 3
+LEDGER_WRITE_LOCK_WAIT_SECONDS = 60.0
+_SCHEMA_INIT_LOCK = threading.Lock()
+_SCHEMA_READY_PATHS: set = set()
+_WRITE_LOCK_FD_LOCK = threading.RLock()
+_WRITE_LOCK_FD: Optional[int] = None
+_WRITE_LOCK_FD_PATH: Optional[str] = None
+_WRITE_LOCK_DEPTH = 0
+
 
 # --- executions ledger --------------------------------------------------------------------------
 
@@ -56,7 +97,18 @@ def _connect() -> sqlite3.Connection:
 
     path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
     _ensure_cron_dir(path.parent)
-    return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
+    # Initialize the schema once per process per path, not on every open: the ALTER probes inside
+    # are schema writes and are pure contention after the first call (cause 3 above). A process that
+    # somehow opens a brand-new file later still initializes it -- the cache is keyed by path.
+    key = str(path)
+    with _SCHEMA_INIT_LOCK:
+        initialize = None if key in _SCHEMA_READY_PATHS else _initialize_schema
+    conn = open_db(path, db_label="cron/executions.db", busy_timeout_ms=LEDGER_BUSY_TIMEOUT_MS,
+                   synchronous_full=True, initialize=initialize)
+    if initialize is not None:
+        with _SCHEMA_INIT_LOCK:
+            _SCHEMA_READY_PATHS.add(key)
+    return conn
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
@@ -135,13 +187,142 @@ def _widen_status_check(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def _transaction() -> Iterator[sqlite3.Connection]:
+    """One DEFERRED transaction for the whole ledger, read and write alike.
+
+    Deliberately NOT ``immediate=True``. Two reasons, both measured:
+
+    * A deferred transaction's SHARED->RESERVED upgrade fails with SQLITE_BUSY without consulting
+      the busy handler, which is the crash we are fixing -- but IMMEDIATE is not free either:
+      ``recover_interrupted_executions`` deliberately performs a nested write on ANOTHER connection
+      while holding its transaction open (the owner-liveness check is a point at which a real worker
+      can adopt the row). An outer IMMEDIATE takes the write lock for that whole window, so the
+      nested adopter is locked out and the adoption is lost -- which is exactly the fencing contract
+      test_recovery_does_not_overwrite_concurrent_worker_adoption asserts, and it correctly fails
+      under IMMEDIATE.
+    * Writers here are short (measured p50 milliseconds). The failure mode we must eliminate is a
+      worker losing its run, not throughput, so the correct lever is making the loser WAIT
+      (cross-process flock, below) rather than converting reads into lock-holders.
+    """
     from hermes_cli.sqlite_util import transaction
 
     with _lock, transaction(_connect()) as conn:
         yield conn
 
 
-def _fetch(conn: sqlite3.Connection, execution_id: str) -> Optional[dict[str, Any]]:
+def _is_busy(exc: BaseException) -> bool:
+    """True for SQLite contention specifically (not a real error)."""
+    text = str(exc).lower()
+    return "database is locked" in text or "database table is locked" in text
+
+
+def _ledger_write(fn):
+    """Retry one ledger mutation when SQLite reports contention, and nothing else.
+
+    The bounded backoff covers a burst that outlasts the busy timeout. A real error propagates on
+    the first raise so a bug stays loud instead of being masked, and the ledger stays what its module
+    docstring says it is -- a record, not a retry queue -- so once the budget is spent the caller sees
+    the error.
+
+    This decorates the whole function rather than a transaction context manager on purpose: a
+    @contextmanager cannot re-run the caller's `with` body, so retrying inside one would replay only
+    the open/close and never the statement that hit the lock.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        for attempt in range(LEDGER_BUSY_RETRIES + 1):
+            try:
+                # The flock is re-entrant per PROCESS but not per thread: recover_interrupted_executions
+                # performs a nested write on another connection while its own transaction is open, and
+                # flock() is per open-file-description, so that nested write must be able to take the
+                # same lock. _lock (an RLock) already serializes threads inside one process, so the
+                # nesting here is same-thread re-entry into an already-held flock -- which flock allows.
+                with _ledger_write_lock():
+                    return fn(*args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                if not _is_busy(exc) or attempt == LEDGER_BUSY_RETRIES:
+                    raise
+                time.sleep(min(0.05 * (2 ** attempt), 1.0))
+
+    return wrapper
+
+
+@contextmanager
+def _ledger_write_lock() -> Iterator[None]:
+    """Cross-process mutex around a ledger WRITE, so a loser queues instead of failing.
+
+    SQLite's busy handler is a timed retry, not a queue: under N same-instant workers (measured peak
+    12, 50 jobs share minute 0) some writer still loses and raises SQLITE_BUSY -- raising out of
+    adopt_claimed_execution() is precisely what killed the worker. The ledger's writes are all short
+    (measured p50 milliseconds), so serializing them behind one advisory lock converts the throw into
+    a wait and costs nothing at that duration. Reads are untouched: they stay WAL snapshot readers.
+
+    Re-entrant within the process by DEPTH COUNT, not by flock's own semantics: flock() is per
+    open-file-description, so a nested acquire on the same fd would "succeed" and its matching
+    LOCK_UN would then release the lock the OUTER holder still believes it owns -- letting another
+    process in mid-transaction. Counting depth means only the outermost exit unlocks.
+    """
+    global _WRITE_LOCK_FD, _WRITE_LOCK_FD_PATH, _WRITE_LOCK_DEPTH
+    if fcntl is None and msvcrt is None:      # no advisory locking available: SQLite's own busy
+        yield                                  # timeout plus the retry below is the whole strategy
+        return
+    with _WRITE_LOCK_FD_LOCK:
+        path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
+        key = str(path)
+        # Keyed by path, not cached forever: EXECUTIONS_FILE is a documented test/profile override, so a
+        # stale fd from a previous database would lock the WRONG file (and the profile it guards is the
+        # one that matters). Reopening on a path change is a cheap open(), never a contended one.
+        if _WRITE_LOCK_FD is None or _WRITE_LOCK_FD_PATH != key:
+            if _WRITE_LOCK_FD is not None:
+                try:
+                    os.close(_WRITE_LOCK_FD)
+                except OSError:
+                    pass
+            # The mutex file is a sibling of the database, so its directory must exist before the
+            # open -- _connect() runs _ensure_cron_dir, but only AFTER this lock is taken.
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            _WRITE_LOCK_FD = os.open(key + ".wlock", os.O_CREAT | os.O_RDWR, 0o600)
+            _WRITE_LOCK_FD_PATH = key
+            _WRITE_LOCK_DEPTH = 0
+        fd = _WRITE_LOCK_FD
+        if _WRITE_LOCK_DEPTH == 0:
+            deadline = time.monotonic() + LEDGER_WRITE_LOCK_WAIT_SECONDS
+            while True:
+                try:
+                    if fcntl is not None:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    else:
+                        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    break
+                except (BlockingIOError, OSError) as exc:
+                    if isinstance(exc, OSError) and not isinstance(exc, BlockingIOError):
+                        if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                            raise
+                    if time.monotonic() >= deadline:
+                        raise sqlite3.OperationalError(
+                            "database is locked (ledger write mutex wait exceeded "
+                            f"{LEDGER_WRITE_LOCK_WAIT_SECONDS:.0f}s)"
+                        )
+                    time.sleep(0.002)
+        _WRITE_LOCK_DEPTH += 1
+
+    try:
+        yield
+    finally:
+        with _WRITE_LOCK_FD_LOCK:
+            _WRITE_LOCK_DEPTH -= 1
+            if _WRITE_LOCK_DEPTH <= 0:
+                _WRITE_LOCK_DEPTH = 0
+                try:
+                    if fcntl is not None:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    else:
+                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+
+
+def _fetch(conn: sqlite3.Connection, execution_id: str) -> Optional[Dict[str, Any]]:
     row = conn.execute("SELECT * FROM executions WHERE id=?", (execution_id,)).fetchone()
     return dict(row) if row is not None else None
 
@@ -245,6 +426,7 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
     )
 
 
+@_ledger_write
 def create_execution(
     job_id: str, *, source: str, scheduled_instant: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -268,6 +450,7 @@ def create_execution(
     return record  # type: ignore[return-value]
 
 
+@_ledger_write
 def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:
     """Bind the store-claimed snapshot before a provider hands it to a worker."""
     from cron.occurrences import scheduled_instant
@@ -282,7 +465,8 @@ def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:
             raise RuntimeError("Cron occurrence could not be bound before dispatch")
 
 
-def mark_execution_handoff_pending(execution_id: str) -> Optional[dict[str, Any]]:
+@_ledger_write
+def mark_execution_handoff_pending(execution_id: str) -> Optional[Dict[str, Any]]:
     """Fence restart recovery while an external worker is adopting a claim."""
     with _transaction() as conn:
         cur = conn.execute(
@@ -299,7 +483,8 @@ def mark_execution_handoff_pending(execution_id: str) -> Optional[dict[str, Any]
     return record
 
 
-def adopt_claimed_execution(execution_id: str) -> Optional[dict[str, Any]]:
+@_ledger_write
+def adopt_claimed_execution(execution_id: str) -> Optional[Dict[str, Any]]:
     """Atomically transfer and start an attempt in its worker process.
 
     The dispatching gateway creates the row before spawning a restart-safe
@@ -325,7 +510,8 @@ def adopt_claimed_execution(execution_id: str) -> Optional[dict[str, Any]]:
     return record
 
 
-def mark_execution_running(execution_id: str) -> Optional[dict[str, Any]]:
+@_ledger_write
+def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
     """Transition one claimed attempt to running exactly once."""
     now = _hermes_now().isoformat()
     with _transaction() as conn:
@@ -344,6 +530,7 @@ def mark_execution_running(execution_id: str) -> Optional[dict[str, Any]]:
     return record
 
 
+@_ledger_write
 def finish_execution(
     execution_id: str, *, success: bool, error: Optional[str] = None,
     delivery_outcome: Optional[str] = None, cancelled: bool = False,
@@ -486,6 +673,7 @@ def settle_unstarted_execution(execution_id: str, job_id: str, error: str) -> No
                      job_id, execution_id, error, record_err)
 
 
+@_ledger_write
 def recover_interrupted_executions() -> int:
     """Mark abandoned attempts unknown without scheduling retries: rows whose owner is provably
     dead, plus rows whose live owner holds a claim older than the derived stale bound (the
@@ -562,6 +750,7 @@ def recover_interrupted_executions() -> int:
     return changed
 
 
+@_ledger_write
 def terminalize_dead_owner(execution_id: str, *, reason: str) -> bool:
     """Record one attempt as ``unknown`` with a cause this process actually observed.
 

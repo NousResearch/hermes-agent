@@ -243,6 +243,7 @@ hermes skills uninstall <skill-name>
 |-------|-------------|
 | [**1password**](../user-guide/skills/optional/security/security-1password.md) | Set up op CLI, sign in, and read or inject secrets. |
 | [**godmode**](../user-guide/skills/optional/security/security-godmode.md) | Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN. |
+| [**leanrea**](../user-guide/skills/optional/security/security-leanrea.md) | Reverse engineer apps and binaries with plain CLI tools. |
 | [**oss-forensics**](../user-guide/skills/optional/security/security-oss-forensics.md) | GitHub supply-chain forensics: recovery, IOCs, reporting. |
 | [**sherlock**](../user-guide/skills/optional/security/security-sherlock.md) | Find accounts for a username across 400+ platforms. |
 | [**unbroker**](../user-guide/skills/optional/security/security-unbroker.md) | Remove your info from data-broker sites, by name or phone. |

@@ -1,0 +1,466 @@
+name: Sync upstream Linux release
+
+# Publishes Linux desktop packages for each stable NousResearch/hermes-agent
+# release. Schedule runs only after this file is on the default branch (main).
+# workflow_dispatch works from any branch that contains this file.
+#
+# Secret the owner must add before unattended sync can push:
+#   Name: FORK_SYNC_TOKEN
+#   Fine-grained PAT (recommended), repository imrightguy/hermes-agent only:
+#     Contents: Read and write
+#     Workflows: Read and write
+#   Or a classic PAT with scopes: repo, workflow
+#   The token's user must be allowed to push feat/flatpak-snapcraft-appimage.
+# GITHUB_TOKEN can create the Release and conflict issues, but it cannot push
+# a merge that changes files under .github/workflows. Upstream merges do that
+# on almost every release, so the secret is required for the scheduled sync.
+# After the merge, every file under .github/workflows/ except this one is
+# deleted and committed before push and build. Conflicts limited to those
+# files are resolved by deleting them. Any other conflict still opens an
+# issue and does not publish.
+
+on:
+  schedule:
+    # Every six hours. GitHub may delay scheduled runs under load.
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Upstream tag to publish (v0.22.5). Empty uses the latest stable release."
+        required: false
+        type: string
+        default: ""
+      packaging_ref:
+        description: "Fork ref to merge onto and build. Default is the packaging branch."
+        required: false
+        type: string
+        default: feat/flatpak-snapcraft-appimage
+      push:
+        description: "Push a clean sync merge back to packaging_ref."
+        required: false
+        type: boolean
+        default: true
+      dry_run:
+        description: "Build packages but do not create a GitHub Release."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: sync-upstream-linux-release
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync upstream release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      action: ${{ steps.plan.outputs.action }}
+      tag: ${{ steps.plan.outputs.tag }}
+      sha: ${{ steps.merge.outputs.sha }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - name: Checkout packaging ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.packaging_ref || 'feat/flatpak-snapcraft-appimage' }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve release plan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "$REQUESTED" ]; then
+            UPSTREAM_TAG="$REQUESTED"
+          else
+            UPSTREAM_TAG="$(gh api repos/NousResearch/hermes-agent/releases/latest --jq .tag_name)"
+          fi
+          FORK_ARGS=()
+          if gh release view "$UPSTREAM_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            FORK_ARGS+=(--fork-tag "$UPSTREAM_TAG")
+          fi
+          PLAN="$(python3 scripts/releases/upstream_linux_sync.py plan --upstream-tag "$UPSTREAM_TAG" "${FORK_ARGS[@]}")"
+          echo "$PLAN"
+          ACTION="$(echo "$PLAN" | python3 -c 'import json,sys; print(json.load(sys.stdin)["action"])')"
+          TAG="$(echo "$PLAN" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag"])')"
+          VERSION="$(python3 -c 'import sys; print(sys.argv[1][1:])' "$TAG")"
+          echo "action=$ACTION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "$ACTION" = "skip" ]; then
+            echo "Release $TAG already exists. Nothing to do."
+          fi
+
+      - name: Merge upstream tag
+        id: merge
+        if: steps.plan.outputs.action == 'sync'
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+          PUSH: ${{ (github.event_name != 'workflow_dispatch' || inputs.push) && 'true' || 'false' }}
+          FORK_SYNC_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          PACKAGING_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.packaging_ref || 'feat/flatpak-snapcraft-appimage' }}
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git 2>/dev/null || git remote set-url upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch upstream "refs/tags/${TAG}:refs/tags/${TAG}"
+          set +e
+          RESULT="$(python3 scripts/releases/upstream_linux_sync.py merge --repo "$GITHUB_WORKSPACE" --tag "$TAG")"
+          CODE=$?
+          set -e
+          echo "$RESULT"
+          if [ "$CODE" -eq 2 ]; then
+            mapfile -t CONFLICTS < <(printf '%s\n' "$RESULT" | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)["conflicts"]))')
+            OTHER=0
+            if [ "${#CONFLICTS[@]}" -eq 0 ]; then
+              OTHER=1
+            fi
+            for conflict in "${CONFLICTS[@]}"; do
+              [ -z "$conflict" ] && continue
+              case "$conflict" in
+                .github/workflows/*) ;;
+                *) OTHER=1 ;;
+              esac
+            done
+            if [ "$OTHER" -ne 0 ]; then
+              TITLE="Upstream packaging sync conflict: ${TAG}"
+              printf '%s\n' "${CONFLICTS[@]}" \
+                | python3 scripts/releases/upstream_linux_sync.py issue-body --tag "$TAG" > /tmp/conflict-body.md
+              EXISTING="$(gh issue list --state open --limit 50 --json number,title \
+                --jq ".[] | select(.title==\"${TITLE}\") | .number")"
+              if [ -z "$EXISTING" ]; then
+                gh issue create --title "$TITLE" --body-file /tmp/conflict-body.md
+              else
+                echo "Conflict issue #${EXISTING} is already open."
+              fi
+              echo "Merge conflict outside .github/workflows. Refusing to publish ${TAG}."
+              exit 1
+            fi
+            # The helper aborted. Repeat the merge and drop the workflow files.
+            git merge --no-ff -m "merge upstream ${TAG} into Linux packaging" "$TAG" || true
+            if [ -f .git/MERGE_HEAD ]; then
+              while IFS= read -r conflict; do
+                [ -z "$conflict" ] && continue
+                case "$conflict" in
+                  .github/workflows/sync-upstream-linux-release.yml)
+                    git checkout --ours -- "$conflict"
+                    git add -- "$conflict"
+                    ;;
+                  .github/workflows/*)
+                    git rm -f -- "$conflict"
+                    ;;
+                  *)
+                    echo "::error::Unexpected conflict outside .github/workflows: $conflict"
+                    exit 1
+                    ;;
+                esac
+              done < <(git diff --name-only --diff-filter=U)
+              if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+                echo "::error::Workflow conflicts were not fully resolved."
+                exit 1
+              fi
+              git commit -m "merge upstream ${TAG} into Linux packaging"
+            fi
+          elif [ "$CODE" -ne 0 ]; then
+            exit "$CODE"
+          fi
+          # Upstream workflows come back with every tag merge. Keep only this fork's workflow.
+          removed=0
+          while IFS= read -r workflow; do
+            [ -z "$workflow" ] && continue
+            if [ "$workflow" != ".github/workflows/sync-upstream-linux-release.yml" ]; then
+              git rm -f -- "$workflow"
+              removed=1
+            fi
+          done < <(git ls-files '.github/workflows')
+          if [ "$removed" -eq 1 ]; then
+            git commit -m "ci: drop upstream GitHub workflows after sync"
+          fi
+          SHA="$(git rev-parse HEAD)"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          if [ "$PUSH" != "true" ]; then
+            echo "Push disabled. Building ${SHA} without updating ${PACKAGING_REF}."
+            exit 0
+          fi
+          git fetch origin "refs/heads/${PACKAGING_REF}:refs/remotes/origin/${PACKAGING_REF}"
+          if git merge-base --is-ancestor "$SHA" "origin/${PACKAGING_REF}"; then
+            echo "${PACKAGING_REF} already contains ${SHA}."
+            exit 0
+          fi
+          if [ -z "$FORK_SYNC_TOKEN" ]; then
+            echo "::error::FORK_SYNC_TOKEN is not set. A classic PAT with scopes repo and workflow, or a fine-grained PAT with Contents and Workflows read/write on this repository, is required to push the upstream merge (it changes .github/workflows). Create the secret, resolve nothing else, and re-run."
+            exit 1
+          fi
+          git push "https://x-access-token:${FORK_SYNC_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${SHA}:refs/heads/${PACKAGING_REF}"
+
+  build-packages:
+    name: Build AppImage deb rpm
+    needs: sync
+    if: needs.sync.outputs.action == 'sync'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout synced commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.sync.outputs.sha }}
+          persist-credentials: false
+
+      - name: Install Linux packaging tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          pkgs=(fakeroot rpm)
+          for candidate in libfuse2 libfuse2t64 libgtk-3-0 libgtk-3-0t64 libnotify4 libnss3 libxss1 libxtst6 xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64 libasound2; do
+            if apt-cache show "$candidate" >/dev/null 2>&1; then
+              pkgs+=("$candidate")
+            fi
+          done
+          sudo apt-get install -y -qq "${pkgs[@]}"
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Upgrade npm
+        run: npm i -g npm@12
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Stamp package metadata
+        env:
+          TAG: ${{ needs.sync.outputs.tag }}
+        run: python3 scripts/releases/upstream_linux_sync.py stamp --desktop apps/desktop --tag "$TAG" --date "$(date -u +%F)"
+
+      - name: Build AppImage deb and rpm
+        working-directory: apps/desktop
+        env:
+          VERSION: ${{ needs.sync.outputs.version }}
+        run: npm run dist:linux -- --x64 "-c.extraMetadata.version=${VERSION}"
+
+      - name: Verify native packages
+        env:
+          VERSION: ${{ needs.sync.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd apps/desktop/release
+          ls -lh
+          test -f "Hermes-${VERSION}-linux-x86_64.AppImage"
+          test -f "Hermes-${VERSION}-linux-amd64.deb"
+          test -f "Hermes-${VERSION}-linux-x86_64.rpm"
+          test -d linux-unpacked
+          test -e linux-unpacked/Hermes
+          chmod +x "Hermes-${VERSION}-linux-x86_64.AppImage"
+          dpkg-deb -I "Hermes-${VERSION}-linux-amd64.deb" | head -n 20
+          rpm -qp "Hermes-${VERSION}-linux-x86_64.rpm"
+
+      - name: Upload native packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-packages-appimage-deb-rpm
+          path: |
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.deb
+            apps/desktop/release/*.rpm
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload unpacked Electron app
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-unpacked
+          path: apps/desktop/release/linux-unpacked
+          if-no-files-found: error
+          retention-days: 1
+
+  build-flatpak:
+    name: Build Flatpak
+    needs: [sync, build-packages]
+    if: needs.sync.outputs.action == 'sync'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout synced commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.sync.outputs.sha }}
+          persist-credentials: false
+
+      - name: Install Flatpak
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Download unpacked Electron app
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-unpacked
+          path: apps/desktop/release/linux-unpacked
+
+      - name: Place unpacked app where the manifest expects it
+        run: |
+          set -euo pipefail
+          root=apps/desktop/release/linux-unpacked
+          if [ ! -e "$root/Hermes" ] && [ -e "$root/linux-unpacked/Hermes" ]; then
+            mv "$root/linux-unpacked" "${root}.next"
+            rm -rf "$root"
+            mv "${root}.next" "$root"
+          fi
+          test -e "$root/Hermes"
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Stamp package metadata
+        env:
+          TAG: ${{ needs.sync.outputs.tag }}
+        run: python3 scripts/releases/upstream_linux_sync.py stamp --desktop apps/desktop --tag "$TAG" --date "$(date -u +%F)"
+
+      - name: Stage and build the Flatpak bundle
+        working-directory: apps/desktop
+        env:
+          HERMES_DESKTOP_UNPACKED_READY: "1"
+          VERSION: ${{ needs.sync.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/stage-flatpak.mjs
+          flatpak-builder --user --disable-rofiles-fuse --force-clean \
+            --repo=flatpak/repo flatpak/build-dir flatpak/com.nousresearch.Hermes.yml
+          mkdir -p release
+          flatpak build-bundle flatpak/repo "release/Hermes-${VERSION}-linux-x86_64.flatpak" com.nousresearch.Hermes
+          test -s "release/Hermes-${VERSION}-linux-x86_64.flatpak"
+
+      - name: Upload Flatpak
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-packages-flatpak
+          path: apps/desktop/release/*.flatpak
+          if-no-files-found: error
+          retention-days: 3
+
+  build-snap:
+    name: Build Snap
+    needs: [sync, build-packages]
+    if: needs.sync.outputs.action == 'sync'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout synced commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.sync.outputs.sha }}
+          persist-credentials: false
+
+      - name: Download unpacked Electron app
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-unpacked
+          path: apps/desktop/release/linux-unpacked
+
+      - name: Place unpacked app where Snapcraft expects it
+        run: |
+          set -euo pipefail
+          root=apps/desktop/release/linux-unpacked
+          if [ ! -e "$root/Hermes" ] && [ -e "$root/linux-unpacked/Hermes" ]; then
+            mv "$root/linux-unpacked" "${root}.next"
+            rm -rf "$root"
+            mv "${root}.next" "$root"
+          fi
+          test -e "$root/Hermes"
+
+      - name: Stamp package metadata
+        env:
+          TAG: ${{ needs.sync.outputs.tag }}
+        run: python3 scripts/releases/upstream_linux_sync.py stamp --desktop apps/desktop --tag "$TAG" --date "$(date -u +%F)"
+
+      - name: Install snapcraft
+        run: |
+          set -euo pipefail
+          sudo systemctl start snapd.socket
+          sudo snap wait system seed.loaded
+          sudo snap install snapcraft --classic
+
+      - name: Build the snap
+        working-directory: apps/desktop
+        run: sudo snapcraft --destructive-mode
+
+      - name: Upload Snap
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-packages-snap
+          path: apps/desktop/*.snap
+          if-no-files-found: error
+          retention-days: 3
+
+  release:
+    name: Publish GitHub Release
+    needs: [sync, build-packages, build-flatpak, build-snap]
+    if: needs.sync.outputs.action == 'sync' && (github.event_name != 'workflow_dispatch' || inputs.dry_run == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Checkout synced commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.sync.outputs.sha }}
+          persist-credentials: false
+
+      - name: Download packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: linux-packages-*
+          path: artifacts
+
+      - name: Collect release assets
+        env:
+          TAG: ${{ needs.sync.outputs.tag }}
+          VERSION: ${{ needs.sync.outputs.version }}
+          SHA: ${{ needs.sync.outputs.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find artifacts -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name '*.flatpak' -o -name '*.snap' \) -exec cp -t dist {} +
+          ls -lh dist
+          test -f "dist/Hermes-${VERSION}-linux-x86_64.AppImage"
+          test -f "dist/Hermes-${VERSION}-linux-amd64.deb"
+          test -f "dist/Hermes-${VERSION}-linux-x86_64.rpm"
+          test -f "dist/Hermes-${VERSION}-linux-x86_64.flatpak"
+          compgen -G 'dist/*.snap' >/dev/null
+          chmod +x dist/*.AppImage
+          python3 scripts/releases/upstream_linux_sync.py notes --tag "$TAG" --sha "$SHA" > notes.md
+
+      - name: Create release if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.sync.outputs.tag }}
+          SHA: ${{ needs.sync.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists. Not uploading again."
+            exit 0
+          fi
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SHA" \
+            --title "Hermes Agent ${TAG}" \
+            --notes-file notes.md \
+            dist/*

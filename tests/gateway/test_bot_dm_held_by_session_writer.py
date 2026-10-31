@@ -179,7 +179,9 @@ async def test_a_same_id_attempt_racing_a_delayed_refusal_never_coexists_with_no
     hold.set()  # the first refusal reaches the tool now
     answer = await first
     assert 'NOT sent' not in answer.get('error', ''), answer
-    assert answer.get('status') in {'queued', 'claimed', 'settled', 'ambiguous'}, answer
+    # Sender-facing statuses are the boundary translation (ENUM B): the admitted record's
+    # `claimed` reads `running` and its `settled` reads `delivered`.
+    assert answer.get('status') in {'queued', 'running', 'delivered', 'ambiguous'}, answer
     assert _admissions(held) == ['bot:' + delivery_id]
 
 

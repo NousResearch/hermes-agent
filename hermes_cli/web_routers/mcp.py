@@ -355,10 +355,17 @@ async def mcp_oauth_callback(
          if c.expected_state is not None and state is not None and secrets.compare_digest(c.expected_state, state)),
         None,
     )
-    if flow is None:
-        return HTMLResponse("<h1>OAuth flow expired</h1><p>Return to Hermes and try again.</p>", status_code=404)
     try:
-        flow.deliver_callback(code=code, state=state, error=error, iss=iss)
+        if flow is not None:
+            flow.deliver_callback(code=code, state=state, error=error, iss=iss)
+        else:
+            from tui_gateway.mcp_oauth_sessions import deliver_callback_by_state
+
+            result = deliver_callback_by_state(server_name, code=code, state=state, error=error, iss=iss)
+            if not result["ok"]:
+                if result.get("error_message"):
+                    raise ValueError(result["error_message"])
+                return HTMLResponse("<h1>OAuth flow expired</h1><p>Return to Hermes and try again.</p>", status_code=404)
     except ValueError as exc:
         return HTMLResponse(
             "<h1>OAuth callback rejected</h1><p>The callback was invalid or already used.</p>",

@@ -172,8 +172,23 @@ bot you wouldn't trust with them.
 
 When the bot hits a step it should not do itself (a login, 2FA, a CAPTCHA, a
 payment) it says so in its reply and ends its turn; the ask reaches you in
-whatever chat you are on. Take over when you are ready, do the step, hand back,
-and tell the bot to continue. Nothing blocks on the bot's side while it waits:
+whatever chat you are on. Take over when you are ready, do the step, and hand back.
+With `bot_desktop.resume_on_handback: true` (off by default), **Hand back** continues
+the eligible Desktop/TUI conversation or direct-message chat that last used the screen,
+once, with a notice to re-capture before acting. Every screen action supersedes the
+previous driver, including group, cron and background side-agent actions, which cannot
+arm continuation. Slack group DMs are excluded; Matrix may classify an unnamed
+multi-member room marked direct as a DM. Otherwise, tell the bot to continue.
+Stopping the screen through the gateway (the `display.stop` RPC) disarms continuation, even when
+the stop is refused because a human holds the screen; `hermes computer-use screen stop` runs in its
+own process and does not.
+Automatic continuation needs the release
+to happen in the same gateway process: a release from another process (for example,
+the `hermes computer-use screen` CLI), a gateway restart, or more than an hour since
+the bot's last screen action means you must tell it to continue yourself.
+A notice that has already passed its pending check or entered the conversation's queue
+is not cancelled by a later screen action or Stop.
+Nothing blocks on the bot's side while it waits:
 taking over is always yours to start, and a bot never holds a tool call open
 waiting for you.
 
@@ -343,6 +358,7 @@ bot_desktop:
   auto_start: false         # set true to start on the first computer_use call or headed browser use
   min_free_memory_mb: 1536  # refuse to start below this much free memory (0 = never check)
   idle_stop_minutes: 30     # stop a screen nobody used for this long (0 = keep it up)
+  resume_on_handback: false # continue the last screen-driving conversation once on hand-back
   placement: auto           # auto | terminal | gateway — see "Where the screen runs"
 ```
 

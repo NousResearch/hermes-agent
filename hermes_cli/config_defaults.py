@@ -2510,15 +2510,15 @@ DEFAULT_CONFIG = {
         # host. Off by default so installing TigerVNC for other reasons never yields a screen nobody asked
         # for; Hermes Desktop's Screen pane offers Start and this toggle.
         "auto_start": False,
-        # Refuse to start below this much free memory (MB), measured on the host or its container cgroup,
-        # whichever is tighter. Xvnc + Xfce idle at ~220 MB and a takeover's browser adds 0.5-1 GB, so a
-        # screen with one page runs past 1 GB; the kernel OOM killer picks its victim by score, so on a
-        # small instance the loser is the dashboard or the gateway rather than the desktop. 0 disables the
-        # check.
+        # Opt-in: continue the last screen-driving conversation once after a human hands back.
+        "resume_on_handback": False,
+        # Refuse to start below this much free memory (MB) on the host or its cgroup, whichever is tighter.
+        # Xvnc + Xfce idle at ~220 MB; a takeover's browser adds 0.5-1 GB, so one page runs past 1 GB.
+        # The OOM killer picks its victim by score: on a small instance the dashboard or gateway loses
+        # rather than the desktop. 0 disables the check.
         "min_free_memory_mb": 1536,
-        # Stop a screen nobody has used (no computer_use action, browser spawn, viewer or takeover) for this
-        # long; it restarts on the next use. Idle Xvnc + Xfce hold ~220 MB, an abandoned browser far more.
-        # 0 keeps screens up until stopped.
+        # Stop after this many idle minutes (no computer_use, browser spawn, viewer or takeover); restart
+        # on next use. Xvnc + Xfce hold ~220 MB, an abandoned browser far more. 0 keeps screens up until stopped.
         "idle_stop_minutes": 30,
         # Where the screen (and with it computer_use and the bot's browser) runs.
         #   auto      follow the terminal backend: inside the docker / ssh / streaming plugin sandbox when one is

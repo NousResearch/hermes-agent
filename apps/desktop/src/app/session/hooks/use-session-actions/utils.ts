@@ -36,10 +36,8 @@ import {
   setCurrentBranch,
   setCurrentCwdTransient,
   setCurrentFastMode,
-  setCurrentModel,
   setCurrentModelTransient,
   setCurrentPersonality,
-  setCurrentProvider,
   setCurrentProviderTransient,
   setCurrentReasoningEffort,
   setCurrentReasoningEffortWire,
@@ -2176,15 +2174,15 @@ interface ApplyRuntimeInfoOptions {
   owner?: SessionOwnerScope
 }
 
-/** Mirror a session's runtime state into the composer atoms the MAIN pane
- *  renders from. Foreground sessions only — see ApplyRuntimeInfoOptions. */
+/** Paint foreground runtime metadata without persisting its resolved provider
+ *  class/fallback over the user's sticky composer route. */
 function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
   if (state.model !== undefined) {
-    setCurrentModel(state.model)
+    setCurrentModelTransient(state.model)
   }
 
   if (state.provider !== undefined) {
-    setCurrentProvider(state.provider)
+    setCurrentProviderTransient(state.provider)
   }
 
   if (state.cwd !== undefined) {

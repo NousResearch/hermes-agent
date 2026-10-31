@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tarfile
@@ -14,6 +13,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# Importable only after the ROOT insert above: the bundle scripts run as plain
+# files, and ``utils`` lives beside them at the checkout root.
+from utils import rmtree_readonly
 
 
 # Snapshot dirs the sealed agent payload never reads. Tests, docs and CI
@@ -42,7 +45,12 @@ def snapshot(repo: Path, ref: str, destination: Path, exclude: tuple[str, ...] =
             ["git", "archive", "--format=tar", "--output", str(archive), ref, "--", *pathspecs],
             cwd=repo, check=True)
         if destination.exists():
-            shutil.rmtree(destination)
+            # The destination a previous prepare left behind is read-only: ``bytecode.py``
+            # chmods the baked pycs 0444 (on Windows that is FILE_ATTRIBUTE_READONLY, and
+            # ``os.unlink`` then fails with WinError 5) and a packaged tree can arrive with
+            # 0555 dirs. Either shape stops a bare ``shutil.rmtree``, so re-running the
+            # prepare step died on the tree the first run had produced (#137713).
+            rmtree_readonly(destination)
         destination.mkdir(parents=True)
         with tarfile.open(archive) as source:
             source.extractall(destination, filter="data")

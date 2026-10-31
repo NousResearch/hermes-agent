@@ -517,9 +517,10 @@ export function useGatewayBoot({
           primaryConnection?.registryScoped && primaryConnection.connectionId
             ? (desktop.getConnectionFor?.({
                 connectionId: primaryConnection.connectionId,
-                profile: primaryConnection.profile
+                profile: primaryConnection.profile,
+                redial: true
               }) ?? Promise.reject(new Error('Registry gateway connection is unavailable')))
-            : desktop.getConnection(primaryConnection?.profile),
+            : desktop.getConnection(primaryConnection?.profile, { redial: true }),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out reconnecting to Hermes backend'
         )
@@ -758,13 +759,18 @@ export function useGatewayBoot({
           ? await desktop.profile?.getDefault?.()
           : null
 
+      // This hook owns the primary's retry pacing (bounded boot retry, soft
+      // switch, reconnect loop), so it dials with `redial`: main re-drives a
+      // remote boot that just failed for it, while every other caller gets
+      // that failure back until main's retry window closes (#123225).
+      //
       // Initial registry publication can precede boot. Resolve captured launch
       // intent explicitly rather than through that still-initializing mirror.
       if (route?.connectionId && desktop.getConnectionFor) {
-        return desktop.getConnectionFor(route)
+        return desktop.getConnectionFor({ ...route, redial: true })
       }
 
-      return desktop.getConnection(route?.profile ?? undefined)
+      return desktop.getConnection(route?.profile ?? undefined, { redial: true })
     }
 
     async function adoptPrimaryProfile(
@@ -1006,6 +1012,13 @@ export function useGatewayBoot({
           }
         }
 
+        return
+      }
+
+      // A retryable failure the bounded retry below will re-attempt does not
+      // conclude this boot. Applying it raised the recovery overlay until
+      // boot()'s catch re-armed the retry: one flash per attempt (#123225).
+      if (payload.error && payload.retryable === true && bootRetryAttempt < BOOT_RETRY_MAX_ATTEMPTS) {
         return
       }
 

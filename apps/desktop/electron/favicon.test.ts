@@ -8,16 +8,19 @@ import {
   iconCandidatesFromHtml,
   iconCandidatesFromManifest,
   imageMime,
-  isPublicHttpUrl,
   largestDeclaredSize,
   manifestUrlFromHtml,
   rankCandidates,
   resolveFavicon,
   sniffImageMime
 } from './favicon'
+import { createLinkMetadataPolicy } from './link-title-guard'
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, ...new Array(60).fill(0)])
 const HTML_BYTES = new Uint8Array([...Buffer.from('<!doctype html><html>nope</html>'), ...new Array(40).fill(0x20)])
+// Every name resolves to a public address: the tests exercise the ladder, not DNS.
+const publicTestPolicy = createLinkMetadataPolicy({ lookup: async () => [{ address: '93.184.216.34', family: 4 }] })
+const resolveTestFavicon = (pageUrl: string, io: FaviconIo) => resolveFavicon(pageUrl, io, publicTestPolicy)
 
 /** An IO that serves fixed text per URL and images only for listed URLs,
  *  recording what was asked for and in what order. */
@@ -35,14 +38,18 @@ function fakeIo(options: {
 
         return options.images?.[url] ?? null
       },
-      fetchText: async url => options.text?.[url] ?? ''
+      fetchText: async url => {
+        asked.push(url)
+
+        return options.text?.[url] ?? ''
+      }
     }
   }
 }
 
 describe('which hosts we will ask at all', () => {
-  test('a public https host is fair game', () => {
-    assert.equal(isPublicHttpUrl('https://linear.app'), true)
+  test('a public https host is fair game', async () => {
+    assert.equal(await publicTestPolicy('https://linear.app'), true)
   })
 
   test.each([
@@ -54,11 +61,21 @@ describe('which hosts we will ask at all', () => {
     ['link-local', 'http://169.254.1.1'],
     ['mDNS', 'http://nas.local'],
     ['a bare hostname', 'http://buildbox'],
-    ['a non-http scheme', 'file:///etc/passwd']
-  ])('%s is refused', (_label, url) => {
+    ['a non-http scheme', 'file:///etc/passwd'],
+    ['the DNS-root spelling of localhost', 'http://localhost.:8080/'],
+    ['the unspecified address', 'http://0.0.0.0:8080/'],
+    ['a cloud metadata address', 'http://100.100.100.200/'],
+    ['a cloud VPC name', 'http://db.ec2.internal/']
+  ])('%s is refused', async (_label, url) => {
     // A private endpoint has no logo out there to find, and asking would
     // announce an internal hostname.
-    assert.equal(isPublicHttpUrl(url), false)
+    assert.equal(await publicTestPolicy(url), false)
+  })
+
+  test('a public-looking name that resolves into private space is refused', async () => {
+    const rebinding = createLinkMetadataPolicy({ lookup: async () => [{ address: '10.0.0.8', family: 4 }] })
+
+    assert.equal(await rebinding('https://innocent.example/'), false)
   })
 })
 
@@ -226,7 +243,7 @@ describe('walking the ladder', () => {
   test('a private host is never fetched at all', async () => {
     const { asked, io } = fakeIo({})
 
-    assert.equal(await resolveFavicon('http://127.0.0.1:8000/mcp', io), '')
+    assert.equal(await resolveTestFavicon('http://127.0.0.1:8000/mcp', io), '')
     assert.deepEqual(asked, [])
   })
 
@@ -239,15 +256,39 @@ describe('walking the ladder', () => {
       text: { 'https://acme.test': '<link rel="icon" sizes="180x180" href="/declared.png">' }
     })
 
-    const icon = await resolveFavicon('https://acme.test', io)
+    const icon = await resolveTestFavicon('https://acme.test', io)
 
     assert.ok(icon.startsWith('data:image/png;base64,'))
+  })
+
+  test('page-declared private manifest and icon URLs are never fetched', async () => {
+    const pageUrl = 'https://public.test/'
+    const privateManifest = 'http://private.test/site.webmanifest'
+    const privateIcon = 'http://private.test/icon.png'
+
+    const { asked, io } = fakeIo({
+      images: { [privateIcon]: { bytes: PNG, mime: 'image/png' } },
+      text: {
+        [pageUrl]: `<link rel="manifest" href="${privateManifest}"><link rel="icon" href="${privateIcon}">`,
+        [privateManifest]: JSON.stringify({ icons: [{ src: privateIcon, sizes: '512x512' }] })
+      }
+    })
+
+    const policy = createLinkMetadataPolicy({
+      lookup: async hostname => [{ address: hostname === 'public.test' ? '93.184.216.34' : '127.0.0.1', family: 4 }]
+    })
+
+    await resolveFavicon(pageUrl, io, policy)
+
+    assert.ok(asked.includes(pageUrl))
+    assert.equal(asked.includes(privateManifest), false)
+    assert.equal(asked.includes(privateIcon), false)
   })
 
   test('a site that declares nothing still gets its guessed favicon', async () => {
     const { io } = fakeIo({ images: { 'https://acme.test/favicon.ico': { bytes: PNG, mime: '' } } })
 
-    assert.ok((await resolveFavicon('https://acme.test', io)).startsWith('data:image/png;base64,'))
+    assert.ok((await resolveTestFavicon('https://acme.test', io)).startsWith('data:image/png;base64,'))
   })
 
   test('a candidate that answers with a challenge page is skipped for the next one', async () => {
@@ -258,13 +299,13 @@ describe('walking the ladder', () => {
       }
     })
 
-    assert.ok((await resolveFavicon('https://acme.test', io)).startsWith('data:image/png;base64,'))
+    assert.ok((await resolveTestFavicon('https://acme.test', io)).startsWith('data:image/png;base64,'))
   })
 
   test('a site nobody can read keeps its monogram rather than asking a third party', async () => {
     const { asked, io } = fakeIo({})
 
-    assert.equal(await resolveFavicon('https://walled.test', io), '')
+    assert.equal(await resolveTestFavicon('https://walled.test', io), '')
     // Every attempt was against the site itself. No icon service, because
     // asking one means telling it which connector someone is wiring up.
     assert.ok(asked.length > 0)
@@ -279,6 +320,6 @@ describe('walking the ladder', () => {
       }
     }
 
-    assert.ok((await resolveFavicon('https://acme.test', io)).startsWith('data:image/png;base64,'))
+    assert.ok((await resolveTestFavicon('https://acme.test', io)).startsWith('data:image/png;base64,'))
   })
 })

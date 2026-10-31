@@ -573,7 +573,7 @@ launchers, and invokes native packaging. Maintainers can read
 
 ## Network retries
 
-PM retries transient HTTP failures during tool downloads, artifact hashing and
+By default, PM retries transient HTTP failures during tool downloads, artifact hashing and
 version lookups. Probes and non-resumable transfers get at most four attempts.
 Their backoff waits are 1, 2 and 4 seconds. A `Retry-After` header can extend
 these waits up to 30 seconds. Resumable transfers renew their retry budget
@@ -581,6 +581,12 @@ when they save new progress; four failures without new progress stop retries.
 With a pinned mirror available, waits above 30 seconds switch to that mirror.
 The last source honors `Retry-After` up to five minutes and stops for longer waits.
 Each retry logs its cause, delay and consecutive failures without progress.
+
+Required dashboard model downloads remain active during transient outages, including
+the initial connection. They retry with jittered backoff capped at 30 seconds,
+respect each source's `Retry-After`, and try other mirrors while a source waits.
+Pause interrupts recovery. Optional drafts and non-resumable transfers retain
+the bounded policy.
 
 Retryable HTTP statuses are 408, 429, 500, 502, 503 and 504. Connection resets,
 timeouts, temporary DNS failures and interrupted response bodies also retry.

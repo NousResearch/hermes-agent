@@ -444,7 +444,7 @@ class TestKeepaliveFailureLogging:
         return task
 
     async def test_timeout_failure_names_the_exception(self, caplog):
-        task = self._task_whose_ping_raises(asyncio.TimeoutError())
+        task = self._task_whose_ping_raises(TimeoutError())
         reason, message = await self._keepalive_failure_message(task, caplog)
         assert reason == "reconnect"
         assert "TimeoutError" in message

@@ -310,6 +310,7 @@ def heartbeat_current_worker_from_env() -> bool:
                     conn, tid, note=None, expected_run_id=run_id,
                     session_id=os.environ.get("HERMES_SESSION_ID") or None,
                     worker_home=os.environ.get("HERMES_HOME") or None,
+                    claim_lock=claim_lock,
                 )
             except Exception:
                 logger.debug("auto-heartbeat: heartbeat_worker failed", exc_info=True)
@@ -842,6 +843,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
                 expected_run_id=_worker_run_id(tid),
                 session_id=os.environ.get("HERMES_SESSION_ID") or None,
                 worker_home=os.environ.get("HERMES_HOME") or None,
+                claim_lock=claim_lock,
             )
             if not ok:
                 return tool_error(

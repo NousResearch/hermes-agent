@@ -223,6 +223,20 @@ def test_sanitize_subprocess_env_strips_foreign_session_key_when_engaged(monkeyp
     assert "HERMES_SESSION_THREAD_ID" not in sanitized
 
 
+def test_sanitize_subprocess_env_strips_nested_kanban_worker_identity(monkeypatch):
+    """A terminal-launched Hermes child must not inherit its parent's run."""
+    sanitized = _sanitize_subprocess_env({
+        "HERMES_KANBAN_TASK": "t_parent",
+        "HERMES_KANBAN_RUN_ID": "42",
+        "HERMES_KANBAN_CLAIM_LOCK": "host:pid:lock",
+        "HERMES_KANBAN_DB": "/tmp/kanban.db",
+        "PATH": "/usr/bin",
+    })
+
+    assert all(not key.startswith("HERMES_KANBAN_") for key in sanitized)
+    assert sanitized["PATH"] == "/usr/bin"
+
+
 def test_sanitize_subprocess_env_set_contextvar_wins_when_engaged():
     """Background path: a SET ContextVar overrides the foreign global base."""
     stale_base = {

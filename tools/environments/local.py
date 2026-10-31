@@ -485,6 +485,17 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     # spawn path (process_registry.spawn_local builds env via this function).
     _inject_session_context_env(sanitized)
 
+    # Terminal descendants of a Kanban worker are ordinary child processes,
+    # not dispatcher-owned workers.  Strip the parent's run identity so a
+    # nested ``hermes`` invocation cannot heartbeat or close the parent run.
+    try:
+        from hermes_cli.kanban_db import KANBAN_WORKER_ENV_KEYS
+    except Exception:
+        KANBAN_WORKER_ENV_KEYS = frozenset()
+    for key in tuple(sanitized):
+        if key in KANBAN_WORKER_ENV_KEYS:
+            sanitized.pop(key, None)
+
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         sanitized.pop(_marker, None)
 

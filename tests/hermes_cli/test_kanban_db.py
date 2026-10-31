@@ -62,6 +62,38 @@ def test_init_creates_expected_tables(kanban_home):
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
 
 
+def test_heartbeat_rejects_foreign_worker_identity(kanban_home, caplog):
+    """A different session/home cannot mutate the active worker heartbeat."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="identity", assignee="worker")
+        assert kb.claim_task(conn, tid)
+        task = kb.get_task(conn, tid)
+        run_id = task.current_run_id
+        claim_lock = task.claim_lock
+
+        assert kb.heartbeat_worker(
+            conn, tid, expected_run_id=run_id,
+            session_id="worker-session", worker_home="/worker/home",
+            claim_lock=claim_lock,
+        )
+        before = conn.execute(
+            "SELECT COUNT(*) AS n FROM task_events WHERE task_id = ? AND kind = 'heartbeat'",
+            (tid,),
+        ).fetchone()["n"]
+        assert not kb.heartbeat_worker(
+            conn, tid, expected_run_id=run_id,
+            session_id="foreign-session", worker_home="/foreign/home",
+            claim_lock=claim_lock,
+        )
+        after = conn.execute(
+            "SELECT COUNT(*) AS n FROM task_events WHERE task_id = ? AND kind = 'heartbeat'",
+            (tid,),
+        ).fetchone()["n"]
+
+    assert after == before
+    assert "identity mismatch" in caplog.text
+
+
 def test_connect_honors_kanban_busy_timeout_env(kanban_home, monkeypatch):
     """All kanban connections should use the explicit busy-timeout knob.
 

@@ -1255,11 +1255,17 @@ class AIAgent(
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         # Shown to the user as the reply, so no decision codes; the code stays in result["guardrail"].
+        if decision.code == "loop_web_search_cap":
+            return (
+                f"Task incomplete: this turn hit the per-turn web_search limit "
+                f"({decision.count} searches, successful ones included), so the next search was "
+                "blocked. That is a budget limit, not evidence that search is broken. Work with the "
+                "results you already have, or narrow the search plan and rerun; if coverage stays "
+                "incomplete, say so explicitly rather than presenting a partial result as complete."
+            )
         return (
-            f"I stopped retrying because I kept running {decision.tool_name or 'the same tool'} "
-            f"{decision.count} times without making progress. The last result above shows what "
-            "blocked it. Tell me how you'd like to proceed, or send `continue` and I'll try a "
-            "different approach."
+            f"Task incomplete: {decision.message} "
+            "Inspect the run history and address the reported limit or tool error before rerunning."
         )
 
     def _append_guardrail_observation(self, tool_name: str, function_args: dict, function_result: str, *,

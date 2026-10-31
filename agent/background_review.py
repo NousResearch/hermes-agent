@@ -378,6 +378,13 @@ _MEMORY_ROUTING_BLOCK = (
     "their size limits and crowds out the facts that matter; misrouting it puts it where the next "
     "session won't look. If the tool schema lists only one "
     "target, that store is the only one enabled — use it and skip the other.\n\n"
+    # Without a grounding rule the reviewer saved trait guesses and one-off requests as standing
+    # facts. Store-neutral on purpose: scoped to USER.md only, the same guess moved to MEMORY.md.
+    "Save only facts GROUNDED in this conversation — a user message or tool result you can point "
+    "to. Never infer the user's traits, skill level, role, mood or preferences from topic, tone or "
+    "tools used, and never turn a one-off request into a standing preference (in either store) "
+    "unless the user marked it general ('always', 'from now on', 'remember'). If unsure, leave it "
+    "out — a wrong fact misleads every future session.\n\n"
 )
 
 _MEMORY_REVIEW_PROMPT = (

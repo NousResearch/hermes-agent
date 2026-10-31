@@ -120,8 +120,6 @@ class TestMatrixVoiceMessageDetection:
         self.adapter._startup_ts = 0.0
         self.adapter._dm_rooms = {}
         self.adapter._message_handler = AsyncMock()
-        # Mock _mxc_to_http to return a fake HTTP URL
-        self.adapter._mxc_to_http = lambda url: f"https://matrix.example.org/_matrix/media/v3/download/{url[6:]}"
         # Mock client for authenticated download — download_media returns bytes directly
         self.adapter._client = MagicMock()
         self.adapter._client.download_media = AsyncMock(return_value=b"fake audio data")
@@ -155,8 +153,8 @@ class TestMatrixVoiceMessageDetection:
         assert captured_event.media_types == ["audio/ogg"]
 
 
-class TestMatrixVoiceCacheFallback:
-    """Test graceful fallback when voice caching fails."""
+class TestMatrixVoiceCacheFailure:
+    """Test that a voice caching failure skips the attachment without losing the message."""
 
     def setup_method(self):
         self.adapter = _make_adapter()
@@ -164,13 +162,14 @@ class TestMatrixVoiceCacheFallback:
         self.adapter._startup_ts = 0.0
         self.adapter._dm_rooms = {}
         self.adapter._message_handler = AsyncMock()
-        self.adapter._mxc_to_http = lambda url: f"https://matrix.example.org/_matrix/media/v3/download/{url[6:]}"
         self.adapter._client = MagicMock()
         self.adapter._client.state_store = _make_state_store()
 
     @pytest.mark.asyncio
-    async def test_voice_cache_failure_falls_back_to_http_url(self):
-        """If caching fails (download returns None), voice message should still be delivered with HTTP URL."""
+    async def test_voice_cache_failure_skips_attachment_and_keeps_message(self):
+        """If caching fails (download returns None), the attachment is skipped but the message
+        still dispatches: a remote fallback URL would fail ingress admission
+        (RuntimeStoreError: invalid_params) and drop the whole message, text included (#142487)."""
         event = _make_audio_event(is_voice=True)
 
         # download_media returns None on failure
@@ -187,10 +186,8 @@ class TestMatrixVoiceCacheFallback:
         await self.adapter._on_room_message(event)
 
         assert captured_event is not None
-        assert captured_event.media_urls is not None
-        # Should fall back to HTTP URL
-        assert captured_event.media_urls[0].startswith("http"), \
-            f"Should fall back to HTTP URL on cache failure, got {captured_event.media_urls[0]}"
+        assert captured_event.media_urls is None, \
+            f"media_urls must not hold a remote URL on cache failure, got {captured_event.media_urls}"
 
 
 # ---------------------------------------------------------------------------

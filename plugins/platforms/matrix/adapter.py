@@ -2259,9 +2259,10 @@ class MatrixAdapter(BasePlatformAdapter):
                     is_voice_message, body)
             except Exception as e:
                 logger.warning("[Matrix] Failed to cache media: %s", e)
-        # Unencrypted media may fall back to the HTTP download URL when caching failed.
-        http_url = self._mxc_to_http(url) if url and not is_encrypted_media else ""
-        media_urls = [cached_path] if cached_path else ([http_url] if http_url else None)
+        # Ingress admission requires a local regular file: handing it a remote URL instead drops the
+        # WHOLE message (RuntimeStoreError: invalid_params), text included. Skip the attachment like
+        # Signal does; the message text still reaches the agent.
+        media_urls = [cached_path] if cached_path else None
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
             media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
@@ -3005,11 +3006,6 @@ class MatrixAdapter(BasePlatformAdapter):
         if user_id.startswith("@") and ":" in user_id:
             return user_id[1:].split(":")[0]
         return user_id
-
-    def _mxc_to_http(self, mxc_url: str) -> str:
-        if not mxc_url.startswith("mxc://"):
-            return mxc_url
-        return f"{self._homeserver}/_matrix/client/v1/media/download/{mxc_url[6:]}"
 
     def _markdown_to_html(self, text: str) -> str:
         """Markdown → org.matrix.custom.html via ``markdown`` when installed, else the regex fallback."""

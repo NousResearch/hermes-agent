@@ -67,7 +67,7 @@ _METHODS: dict[str, tuple[str, bool]] = {
 
 
 def _reply_timeout() -> float:
-    """Legacy setting used for unowned-record cleanup and profile transport waits."""
+    """Grace for orphaned work and default forwarded-profile transport timeout."""
     try:
         return max(1.0, float(os.getenv("A2A_REPLY_TIMEOUT", "300")))
     except (ValueError, TypeError):

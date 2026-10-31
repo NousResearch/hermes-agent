@@ -66,8 +66,11 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
    to the last 500 by completion recency. Count eviction may shorten age retention.
    Tasks stay queryable via `tasks/get` / `tasks/list`, and `tasks/subscribe`
   reattaches to a running task's stream via store watchers. A watchdog fails
-  stale records without an execution owner after the bounded legacy reply-timeout
-  grace. Accepted local work, including queued turns, stays owned until completion
+  stale records without an execution owner after the `A2A_REPLY_TIMEOUT` grace,
+  clamped to 300–86400 seconds and checked every 60 seconds. This marks orphans
+  failed; terminal-result retention removes their records later. The same setting
+  supplies the default forwarded-profile transport timeout. Accepted local work,
+  including queued turns, stays owned until completion
   callbacks or shutdown; HTTP disconnects and the return of the dispatch coroutine
   do not release ownership. There is no local execution deadline.
   Winning transitions alone count metrics and

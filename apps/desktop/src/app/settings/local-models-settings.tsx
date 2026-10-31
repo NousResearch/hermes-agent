@@ -14,7 +14,7 @@ import {
 } from '@/store/local-runtime-jobs'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
-import { isActiveStatus } from './local-models-actions'
+import { isActiveStatus, supersededByDone } from './local-models-actions'
 import { LocalModelsBrowseSection } from './local-models-browse'
 import { LocalModelsHardwareSection } from './local-models-hardware-section'
 import { LocalModelsModelsSection } from './local-models-models-section'
@@ -83,7 +83,16 @@ function ScopedLocalModelsSettings(): ReactElement {
     return <SettingsSkeleton sections={[{ rows: 2 }, { rows: 4 }]} />
   }
 
-  const lastError = jobs.find(j => j.status === 'error')
+  // The latest error that is still current: an error superseded by a
+  // newer SUCCESSFUL job of the same operation (retry install after a
+  // transient verify failure, redownload of the same model after a broken
+  // file) is stale history — rendering it next to the green 'up to date'
+  // row reads as a live failure and never heals (#102616). The retry key is
+  // the operation identity (kind + target for multi-target kinds), not the
+  // kind alone, so a success for a DIFFERENT model never retires another
+  // model's still-current error. A newer running job settles the question
+  // when it finishes, so it does not clear the error yet.
+  const lastError = jobs.find(j => j.status === 'error' && !supersededByDone(jobs, j))
 
   // Until something is servable (runtime + at least one model), the pane
   // leads with the quickstart hero. A running quickstart pins this view so
@@ -104,6 +113,9 @@ function ScopedLocalModelsSettings(): ReactElement {
 
   const failedInstall: boolean = jobs.some(
     (job: LocalRuntimeJob): boolean => job.kind === 'runtime-install' && job.status === 'error'
+      // Same recency contract as lastError: a failed install superseded by
+      // a completed retry is history, not a reason to leave the hero.
+      && !supersededByDone(jobs, job)
   )
 
   if ((qJob || (needsSetup && !configure && heroModel)) && !otherActiveJob && !installStarting && !failedInstall) {

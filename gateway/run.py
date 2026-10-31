@@ -4338,13 +4338,6 @@ def _housekeeping_channel_directory(adapters, loop) -> None:
             fut.result(timeout=30)
 
 
-def _housekeeping_paste_sweep() -> None:
-    from hermes_cli.debug import _sweep_expired_pastes
-    deleted, remaining = _sweep_expired_pastes()
-    if deleted:
-        logger.info("Paste sweep: deleted %d expired paste(s), %d pending", deleted, remaining)
-
-
 def _housekeeping_misfire_catch_up(cron_provider, adapters, loop) -> None:
     """External cron providers only: fire jobs whose time passed with no external fire delivered (dead
     loopback hop). No-op for the built-in ticker; enforces misfire_grace_minutes; CAS claim de-dupes."""
@@ -4493,7 +4486,9 @@ def _start_gateway_housekeeping(
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
     from gateway.run_delivery_queue_watch import DRAIN_LABEL, DeliveryQueueWatch, wait_for_next_tick
     from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
-    from gateway.run_housekeeping_disk import housekeeping_media_caches, maybe_post_auto_prune_prompt
+    from gateway.run_housekeeping_disk import (
+        housekeeping_media_caches, housekeeping_paste_sweep,
+        housekeeping_scratch_prune, maybe_post_auto_prune_prompt)
     chores: list[tuple[int, str, Any]] = [
         # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
         # ``hermes gateway status`` / ``/api/status`` warn when it ages past 2x ``interval`` with the
@@ -4507,7 +4502,7 @@ def _start_gateway_housekeeping(
     chores += [
         (5, "Channel directory refresh", lambda: adapters and _housekeeping_channel_directory(adapters, loop)),
         (60, "Media cache cleanup", housekeeping_media_caches),
-        (60, "Paste sweep", _housekeeping_paste_sweep)]
+        (60, "Paste sweep", housekeeping_paste_sweep)]
     # Low disk + auto-prune undecided: ask on the home channel (two syscalls; snoozed per post).
     chores.append((1, "Auto-prune low-disk prompt", lambda: maybe_post_auto_prune_prompt(runner, loop)))
     if cron_provider is not None:
@@ -4532,6 +4527,10 @@ def _start_gateway_housekeeping(
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
+        # One ``stat``, then a detached child: cheap enough for every tick, and the stamp -- not the
+        # tick count -- owns the hourly cadence. Per served profile: an unscoped tick resolves its
+        # root through ``get_hermes_home()``, which is the LAUNCH home on this bare thread.
+        (1, "Scratch prune tick", profile_scoped_chore(runner, housekeeping_scratch_prune)),
         # Last: a real prune can hold this thread for a while; every other chore of the tick runs first.
         (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune)]
 

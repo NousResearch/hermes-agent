@@ -136,8 +136,8 @@ export const hubsEn = {
       procsDone: (count: number) => `${count} done`,
       moreHidden: (count: number) => ` · +${count} more`,
       processes: 'Processes',
-      collapsedHint: ' · Ctrl+T expand · Ctrl+R restore',
-      expandedHint: ' · Ctrl+T expand · Ctrl+R collapse'
+      collapsedHint: ' · Ctrl+T monitor · Ctrl+R restore',
+      expandedHint: ' · Ctrl+T monitor · Ctrl+R collapse'
     },
     agentControls: {
       queued: 'Queued for child — applied at the next tool boundary.',

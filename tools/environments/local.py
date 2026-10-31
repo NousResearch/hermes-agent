@@ -1140,7 +1140,13 @@ class LocalEnvironment(BaseEnvironment):
         if login:
             cmd_string = _append_dropped_path_entries(cmd_string, run_env.get("PATH", ""))
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
-        args = [bash, *(["-l"] if login else []), "-c", cmd_string]
+        run_env = _make_run_env(self.env)
+        if _IS_WINDOWS:  # Git Bash has no pkill/pgrep -f; keep the command on argv there
+            args = [bash, *(["-l"] if login else []), "-c", cmd_string]
+        else:
+            from tools.environments.remote_common import COMMAND_ENV_VAR, bash_env_argv
+            args = [bash, *bash_env_argv(login)[1:]]
+            run_env[COMMAND_ENV_VAR] = cmd_string
         self._recover_cwd()
         # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands
         # its group to the owner-death supervisor and _wait_for_process releases it.

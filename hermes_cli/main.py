@@ -2697,6 +2697,19 @@ def cmd_dashboard(args):
 
     # The in-browser Chat tab (embedded TUI over PTY/WebSocket) is always
     # available — desktop and dashboard both rely on `/api/ws` + `/api/pty`.
+    # Unattended operation: once serve is up, wait a moment and sweep for interrupted-turn
+    # markers so a desktop session that a restart cut off resumes on its own with no client
+    # attached (#135286 / #127919). Background thread; never blocks startup. Turn it off with
+    # desktop.auto_continue.enabled=false or HERMES_AUTO_CONTINUE_SWEEP=0.
+    # Headless backend only: cmd_dashboard serves both dashboard(9119) and serve(9120), and
+    # scheduling on both sides would resume the same session twice.
+    if _headless_backend:
+        try:
+            from tui_gateway.boot_auto_continue import schedule as _schedule_auto_continue_sweep
+            _schedule_auto_continue_sweep()
+        except Exception:                  # the sweep must never break serve startup
+            import logging as _logging
+            _logging.getLogger(__name__).exception("auto-continue sweep schedule failed")
     start_server(
         host=args.host,
         port=args.port,

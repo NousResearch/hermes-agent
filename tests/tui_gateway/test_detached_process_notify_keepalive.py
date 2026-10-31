@@ -386,9 +386,15 @@ def test_agent_rebuild_keeps_pre_compression_process_owners(server, registry, de
     assert not server._session_is_reapable(sid, session)
     monkeypatch.setattr(server, "_make_agent", lambda *a, **k: SimpleNamespace(
         _process_owner_task_ids={session["session_key"]}, _session_db=None))
-    monkeypatch.setattr(server, "_release_build_profile_scopes", lambda *_: None)
+    # NOTE: stubbing the release out leaves the profile scope bound for the rest of
+    # the process (agent.secret_scope._SECRET_SCOPE is a ContextVar), which breaks
+    # every later fail-closed test in the same pytest process (#147198). Release it instead.
+    _real_release = server._release_build_profile_scopes
+    monkeypatch.setattr(server, "_release_build_profile_scopes", lambda s: _real_release(s))
 
     server._rebuild_session_agent(sid, session)
 
     assert "pre-compression-id" in session["agent"]._process_owner_task_ids
     assert not server._session_is_reapable(sid, session)
+    from agent.secret_scope import current_secret_scope
+    assert current_secret_scope() is None

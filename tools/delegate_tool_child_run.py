@@ -61,10 +61,15 @@ def _route_report(child: Any) -> Optional[dict[str, Any]]:
     effort = None
     if isinstance(reasoning, dict):
         effort = reasoning.get("effort") if reasoning.get("enabled", True) else "none"
+    effective = {}
+    if "toolsets" in route:
+        effective["toolsets"] = list(child.enabled_toolsets)
+    if "max_iterations" in route:
+        effective["max_iterations"] = child.max_iterations
     return {**route, "provider": _str_or_none(getattr(child, "provider", None)),
             "model": _str_or_none(getattr(child, "model", None)), "reasoning_effort": _str_or_none(effort),
             "service_tier": service_tier_word(_tier_in_effect(child)),
-            **({"fallback_activated": True} if getattr(child, "_fallback_activated", False) is True else {})}
+            **({"fallback_activated": True} if getattr(child, "_fallback_activated", False) is True else {}), **effective}
 
 def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: float = 0) -> dict[str, Any]:
     """Result entry for a child that raised, never finished, or was abandoned."""

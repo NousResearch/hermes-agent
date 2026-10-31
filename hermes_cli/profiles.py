@@ -1336,7 +1336,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
 def create_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
-    clone_channels: bool = False, sync_imports: bool = False, soul: Optional[str] = None,
+    clone_channels: bool = False, sync_imports: bool = False, soul: Optional[str] = None, display_name: Optional[str] = None,
 ) -> Path:
     """Create a new profile directory and return its path.
 
@@ -1353,8 +1353,7 @@ def create_profile(
     if no_skills and (clone_from is not None or clone_config or clone_all):
         raise ValueError(
             "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
-            "(cloning explicitly copies skills from the source profile)."
-        )
+            "(cloning explicitly copies skills from the source profile).")
     if sync_imports and not (clone_config or clone_all):
         raise ValueError("--sync-imports requires --clone or --clone-from (there is no import "
                          "manifest to carry over without a source profile).")
@@ -1405,7 +1404,8 @@ def create_profile(
             stripped = strip_channel_settings(staging, include_state=clone_all, source_dir=source_dir)
             if stripped:
                 logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
-        finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description, soul=soul)
+        finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description, soul=soul,
+                              display_name=display_name)
         os.rename(staging, profile_dir)
     except BaseException:
         discard_unpublished_vault_key(clone_key)

@@ -25,10 +25,12 @@ import { avatarColor, botAppearance, BotFace } from './avatar'
 import { AvatarPicker } from './avatar-picker'
 import { $botMeta, botSelectionKey, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled } from './dialog-parts'
+import { type AcceptedChange, DraftChangePanel } from './draft-change-panel'
 import { editedLook, type EditProfileLook } from './edit-profile-look'
-import { useBots } from './i18n'
+import { botsText, useBots } from './i18n'
 import { displayName } from './labels'
 import { AdvancedProfileConfig, applyAdvancedConfig, emptyAdvancedState } from './profile-config'
+import { decideField } from './profile-draft'
 import { botRosterMeta, requestForBot } from './routing'
 import type { AvatarAppearance, RosterRow } from './types'
 
@@ -43,6 +45,39 @@ interface EditProfileDialogProps {
   bot: null | RosterRow
   onClose: () => void
   open: boolean
+}
+
+/** Save an accepted "Describe a change" SOUL; false (after a toast) when the write failed.
+ *  A hand edit in Advanced wins: both rewrite the same file. */
+async function writeProposedSoul(
+  bot: RosterRow,
+  soul: string | undefined,
+  adv: { dirtySoul: boolean; loaded: boolean }
+): Promise<boolean> {
+  if (soul === undefined || (adv.loaded && adv.dirtySoul)) {
+    return true
+  }
+
+  try {
+    // A failed file write resolves with `applied.soul: false`, it does not reject.
+    const res = await requestForBot<null | { applied?: Record<string, boolean>; ok?: boolean }>(
+      bot,
+      'profiles.configure',
+      { name: bot.name, soul }
+    )
+
+    if (res?.ok === false || res?.applied?.soul === false) {
+      host.notify({ kind: 'error', message: botsText().editor.sectionsFailed('soul') })
+
+      return false
+    }
+
+    return true
+  } catch (err) {
+    host.notifyError(err, botsText().bot.advancedFailed)
+
+    return false
+  }
 }
 
 export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps) {
@@ -83,6 +118,10 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
   const [busy, setBusy] = useState(false)
   const [advanced, setAdvanced] = useState(false)
   const [adv, setAdv] = useState(emptyAdvancedState())
+  // Accepted parts of a "Describe a change" proposal; the SOUL part is written on Save.
+  const [change, setChange] = useState<AcceptedChange>({})
+  // What Title / Description held before their proposal was accepted (restored on reject).
+  const [held, setHeld] = useState<{ description?: string; title?: string }>({})
 
   // Re-seed local state each time a different bot opens the dialog.
   const [seedKey, setSeedKey] = useState<null | string>(null)
@@ -101,6 +140,8 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
       setBusy(false)
       setAdvanced(false)
       setAdv(emptyAdvancedState())
+      setChange({})
+      setHeld({})
     }
   }
 
@@ -151,6 +192,8 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
         host.notifyError(err, b.avatar.savedLocallyDescriptionFailed)
       }
     }
+
+    advancedFailed = !(await writeProposedSoul(bot, change.soul, adv))
 
     if (adv.loaded && (adv.dirtyModel || adv.dirtySoul || adv.dirtySkills || adv.dirtyToolsets || adv.dirtyMcp)) {
       try {
@@ -236,6 +279,24 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
               value={description}
             />
           )}
+          <DraftChangePanel
+            name={bot.name}
+            onChange={accepted => {
+              const nextTitle = decideField({ held: held.title, value: title }, change.title, accepted.title)
+
+              const nextDescription = decideField(
+                { held: held.description, value: description },
+                change.description,
+                accepted.description
+              )
+
+              setChange(accepted)
+              setTitle(nextTitle.value)
+              setDescription(nextDescription.value)
+              setHeld({ description: nextDescription.held, title: nextTitle.held })
+            }}
+            request={(method, params) => requestForBot(bot, method, params)}
+          />
           <Button
             className="flex items-center gap-1 text-xs font-medium text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)"
             onClick={() => setAdvanced(v => !v)}

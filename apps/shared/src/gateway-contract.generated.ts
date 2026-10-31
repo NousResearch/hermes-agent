@@ -2176,6 +2176,49 @@ export interface UiMetaConflict {
   expected?: unknown
   actual?: number
 }
+/** ``description`` = what the bot should be (or, with ``name``, the change to make). ``name`` = an existing profile to revise (edit mode); ``source`` = the profile whose installed skills and MCP servers form the catalog for a new bot (default ``default``). ``current`` + ``note`` + ``only`` regenerate one part of an unsaved draft. */
+export interface ProfilesDraftParams {
+  profile?: string | null
+  description?: string | null
+  name?: string | null
+  source?: string | null
+  current?: Record<string, unknown> | null
+  note?: string | null
+  only?: string | null
+}
+/** Nothing is written. ``dropped`` = suggested names absent from the target's catalog; ``previous`` (edit mode) = the saved profile the draft is compared against, and ``soul`` is that saved SOUL.md with only the changed sections rewritten. */
+export interface ProfilesDraftResult {
+  ok: boolean
+  reason?: string
+  name?: string
+  title?: string
+  description?: string
+  soul?: string
+  sections?: ProfileDraftSection[]
+  skills?: string[]
+  toolsets?: string[]
+  mcp_servers?: string[]
+  dropped?: ProfileDraftDropped[]
+  previous?: ProfileDraftPrevious | null
+}
+export interface ProfileDraftSection {
+  key: string
+  title: string
+  text?: string
+}
+export interface ProfileDraftDropped {
+  kind: string
+  name: string
+}
+export interface ProfileDraftPrevious {
+  title?: string
+  description?: string
+  soul?: string
+  sections?: ProfileDraftSection[]
+  skills?: string[]
+  toolsets?: string[]
+  mcp_servers?: string[]
+}
 /** ``data`` is a data URL or bare base64 (PNG/JPEG/WebP, sniffed); ``clear`` deletes instead. */
 export interface ProfilesSetAssetParams {
   profile?: string | null
@@ -6327,6 +6370,8 @@ export interface RpcMethods {
   'profiles.create': { params: ProfilesCreateParams; result: ProfilesCreateResult }
   /** Everything the profile editor shows: soul, model pin, skills, toolsets, MCP servers. */
   'profiles.describe': { params: ProfileNameParams; result: ProfilesDescribeResult }
+  /** Draft a bot (name, title, description, sectioned SOUL, catalog-checked capabilities) from a description via the auxiliary model; writes nothing. */
+  'profiles.draft': { params: ProfilesDraftParams; result: ProfilesDraftResult }
   /** A profile asset as a data URL. */
   'profiles.get_asset': { params: ProfilesGetAssetParams; result: ProfilesGetAssetResult }
   /** Roster of profiles with previews so a client paints without N follow-up calls. */
@@ -6700,6 +6745,7 @@ export const RPC_METHODS = [
   'profiles.configure',
   'profiles.create',
   'profiles.describe',
+  'profiles.draft',
   'profiles.get_asset',
   'profiles.list',
   'profiles.set_asset',

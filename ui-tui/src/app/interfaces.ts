@@ -509,7 +509,7 @@ export interface GatewayEventHandlerContext {
     // Session carried across a transport loss or child exit, cleared after resume.
     recoverSidRef?: MutableRefObject<null | string>
     resetSession: () => void
-    resumeById: (id: string) => Promise<void>
+    resumeById: (id: string) => Promise<string | null | undefined>
     setCatalog: (catalog: null | SlashCatalog) => void
   }
   submission: {
@@ -580,7 +580,7 @@ export interface SlashHandlerContext {
     newLiveSession: (msg?: string, title?: string) => void
     newSession: (msg?: string, title?: string) => void
     resetVisibleHistory: (info?: null | SessionInfo) => void
-    resumeById: (id: string) => Promise<void> | void
+    resumeById: (id: string) => Promise<string | null | undefined> | void
     setSessionStartedAt: StateSetter<number>
   }
   slashFlightRef: MutableRefObject<number>

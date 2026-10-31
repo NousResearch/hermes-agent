@@ -270,6 +270,45 @@ class TestSocketModeTeardown:
             f"{session.ws_connect_after_close} time(s)"
         )
 
+    @pytest.mark.asyncio
+    async def test_anonymous_client_task_in_connect_is_stopped(self, adapter):
+        """A task no client attribute points at must not survive teardown either.
+
+        Slack's periodic ``disconnect`` frame is handled in an anonymous
+        ``ensure_future(run_message_listeners(...))`` task that calls
+        connect_to_new_endpoint(). If the watchdog tears the client down while
+        that reconnect is in flight, the task is left retrying against the closed
+        session every ping_interval, forever.
+        """
+        handler = _FakeHandler()
+        client = handler.client
+        _attach(adapter, handler)
+        orphan = asyncio.ensure_future(client.connect_to_new_endpoint())
+        await asyncio.sleep(0.01)
+
+        await adapter._stop_socket_mode_handler()
+        await asyncio.sleep(0.03)
+
+        assert client.aiohttp_client_session.ws_connect_after_close == 0
+        assert orphan.done(), "the anonymous connect() task outlived teardown"
+
+    @pytest.mark.asyncio
+    async def test_teardown_never_cancels_the_calling_task(self, adapter):
+        """Teardown started from inside a client task (a Slack-triggered restart)
+        must finish rather than cancel itself midway."""
+        handler = _FakeHandler()
+        client = handler.client
+        _attach(adapter, handler)
+
+        async def listener(self_):  # runs "as" the client, like a message listener
+            await adapter._stop_socket_mode_handler()
+            return "finished"
+
+        result = await asyncio.wait_for(
+            asyncio.ensure_future(listener.__get__(client)()), timeout=5)
+        assert result == "finished"
+        assert client.closed
+
 
 class TestSocketModeRestart:
 

@@ -63,6 +63,16 @@ def other_pid():
     proc.wait()
 
 
+@pytest.fixture(autouse=True)
+def _no_runtime_host_above_the_runner(monkeypatch):
+    """Judge hand-offs as if no Hermes gateway/serve/dashboard ran this test process.
+
+    A hand-off is refused when such a host sits above us (cli §7 V9), and that walk reads the real
+    process ancestry: run from a terminal that a ``hermes gateway run`` agent opened, every hand-off
+    test was refused. A test that wants a host above it patches ``_is_runtime_host`` to answer True."""
+    monkeypatch.setattr(update_lock, "_is_runtime_host", lambda cmdline: False)
+
+
 def _claim(marker, pid, started_at=None):
     """A v1 (legacy, pid-only) claim."""
     marker.write_text(f"{pid}\n{int(time.time() if started_at is None else started_at)}\n", encoding="utf-8")
@@ -643,6 +653,17 @@ class TestHandoffFromOrchestratingUpdater:
         lock.release()
         assert marker.exists(), "the parent still needs its marker after our stage ends"
         assert int(marker.read_text(encoding="utf-8-sig").splitlines()[0]) == other_pid
+
+    def test_handoff_below_a_runtime_host_is_refused(self, marker, monkeypatch, other_pid):
+        """V9: an update a gateway's agent starts is its own update, never run under another
+        update's claim, even when the hand-off variable names that claim's owner."""
+        _claim(marker, other_pid)
+        monkeypatch.setenv(HANDOFF_PID_ENV, str(other_pid))
+        monkeypatch.setattr(update_lock, "_is_runtime_host", lambda cmdline: True)
+
+        lock = UpdateLock(path=marker)
+        assert lock.acquire() is False
+        assert lock.holder is not None and lock.holder.pid == other_pid
 
     def test_handoff_pid_that_is_not_the_live_holder_grants_nothing(
         self, marker, monkeypatch, other_pid

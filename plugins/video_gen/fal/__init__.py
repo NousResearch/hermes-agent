@@ -49,6 +49,14 @@ FAL_FAMILIES: dict[str, dict[str, Any]] = {
     "seedance-2.0-mini": _family("Seedance 2.0 Mini", "~30-90s", "cheap", "ByteDance. Faster/cheaper Seedance tier, audio + lip-sync, 4-15s.",
                                  "bytedance/seedance-2.0/mini/text-to-video", "bytedance/seedance-2.0/mini/image-to-video", aspect_ratios=_SIX_ASPECTS,
                                  resolutions=("480p", "720p"), durations=(4, 15), audio=True),
+    # HeyGen Video (Oct 2026): MiniMax H3 post-trained by HeyGen, $0.02/s at 480p/768p, $0.06/s at 1080p/2k. Lower-case
+    # 480p/768p/1080p/2k enum (the tool's 720p maps to 768p; "2K" needs the identity alias), int duration 5-15, `seed` on both
+    # endpoints, sound always generated (no toggle). The i2v schema declares no aspect_ratio — the clip follows the image.
+    "heygen-video": _family("HeyGen Video", "~30-90s", "cheap", "HeyGen post-train of MiniMax H3. Speaking characters with their own sound, "
+                            "5-15s, $0.02/s up to 768p.", "heygen/heygen-video/text-to-video", "heygen/heygen-video/image-to-video",
+                            duration_int=True, image_drop_keys=("aspect_ratio",), aspect_ratios=_SIX_ASPECTS, resolutions=("480p", "768p", "1080p", "2k"),
+                            resolution_aliases={"540p": "480p", "720p": "768p", "2k": "2k", "1440p": "2k", "2160p": "2k", "4k": "2k"},
+                            durations=(5, 15), audio_native=True, seed=True),
     # ─── Expensive / premium tier ──────────────────────────────────────
     "veo3.1": _family("Veo 3.1", "~60-120s", "premium", "Google DeepMind. Cinematic, native audio, strong prompt adherence.", "fal-ai/veo3.1",
                       "fal-ai/veo3.1/image-to-video", aspect_ratios=("16:9", "9:16"), resolutions=("720p", "1080p", "4k"), durations=(4, 8), duration_enum=(4, 6, 8),
@@ -355,7 +363,7 @@ class FALVideoGenProvider(VideoGenProvider):
 
     def get_setup_schema(self) -> dict[str, Any]:
         return {"name": "FAL", "badge": "paid", "env_vars": [{"key": "FAL_KEY", "prompt": "FAL.ai API key", "url": "https://fal.ai/dashboard/keys"}],
-                "tag": "LTX 2.3/2.5, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 3.0/4K/O3, Wan 3.0, Happy Horse, Grok Imagine, "
+                "tag": "LTX 2.3/2.5, Pixverse, Seedance 2.0/2.5/Mini, HeyGen Video, Veo 3.1, MiniMax H3, FLUX 3, Kling 3.0/4K/O3, Wan 3.0, Happy Horse, Grok Imagine, "
                        "Gemini Omni — text-to-video & image-to-video"}
 
     def capabilities(self) -> dict[str, Any]:

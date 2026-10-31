@@ -226,7 +226,7 @@ def _nvidia_vram() -> tuple[int, int, str, int | None] | None:
     return query["total_bytes"], query["free_bytes"], query["gpu_name"], query.get("gpu_pci_id")
 
 
-_gpu_query_cache: tuple[float, dict | None] | None = None
+_gpu_query_cache: tuple[float, list[dict] | None] | None = None
 # The statusbar polls /api/local-models/hardware every 5s and the endpoint needs
 # name/util/vram; the budget probe needs total/free. One shared query (with a TTL
 # shorter than the poll) serves both, so one poll = one nvidia-smi spawn (#120262)
@@ -242,6 +242,24 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> dict | None:
     gpu_pci_id=)`` or None when nvidia-smi is absent, fails, or is not an NVIDIA card.
     Cached for ``ttl_s`` (failures too — a missing smi must not spawn per poll).
     """
+    devices = _cached_nvidia_gpu_queries(ttl_s)
+    # Inference budgeting deliberately remains tied to the first device.
+    if not devices or devices[0]["total_bytes"] is None or devices[0]["free_bytes"] is None:
+        return None
+    return devices[0]
+
+
+def _smi_number(value: str, scale: int = 1) -> int | None:
+    """Unsupported NVIDIA readings are unknown, never zero."""
+    try:
+        number = int(value)
+        return number * scale if number >= 0 else None
+    except ValueError:
+        return None
+
+
+def _cached_nvidia_gpu_queries(ttl_s: float = _GPU_QUERY_TTL_S) -> list[dict] | None:
+    """Physical-device telemetry; shares a single cached spawn with budgeting."""
     global _gpu_query_cache
     now = time.monotonic()
     if _gpu_query_cache is not None and now - _gpu_query_cache[0] < ttl_s:
@@ -262,19 +280,23 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> dict | None:
         if out.returncode != 0 or not out.stdout.strip():
             _gpu_query_cache = (now, None)
             return None
-        total_mib, free_mib, name, raw_id, used_mib, util = next(
-            csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True))
-        pci_id = None
-        with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
-            pci_id = int(raw_id, 16)
-        data = {
-            "gpu_name": name.strip(),
-            "total_bytes": int(total_mib) << 20,
-            "free_bytes": int(free_mib) << 20,
-            "used_bytes": int(used_mib) << 20,
-            "gpu_util_percent": int(util),
-            "gpu_pci_id": pci_id,
-        }
+        data = []
+        for row in csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True):
+            if len(row) != 6:
+                # Do not silently renumber devices after a malformed row.
+                raise ValueError("Invalid NVIDIA telemetry row")
+            total_mib, free_mib, name, raw_id, used_mib, util = row
+            pci_id = None
+            with suppress(ValueError):
+                pci_id = int(raw_id, 16)
+            data.append({
+                "gpu_name": name.strip(),
+                "total_bytes": _smi_number(total_mib, 1 << 20),
+                "free_bytes": _smi_number(free_mib, 1 << 20),
+                "used_bytes": _smi_number(used_mib, 1 << 20),
+                "gpu_util_percent": _smi_number(util),
+                "gpu_pci_id": pci_id,
+            })
         _gpu_query_cache = (now, data)
         return data
     _gpu_query_cache = (now, None)

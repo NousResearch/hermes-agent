@@ -234,6 +234,11 @@ _PREFIX_PATTERNS = [
     r"glwt-[A-Za-z0-9_\-]{10,}",        # GitLab workspace token
     r"GR1348941[A-Za-z0-9_\-]{10,}",    # GitLab legacy runner registration token
     r"pk-lf-[A-Za-z0-9\-]{8,}",         # Langfuse public key (sk-lf- already covered by sk- pattern)
+    # NVIDIA NIM / build.nvidia.com key. NVIDIA is an in-tree provider, so this is core rather than a
+    # plugin-registered pattern: a live nvapi- key printed inside auth.json / JSON tool output reached
+    # state.db because nothing else keyed on it (2026-10-22 audit). The 20-char floor keeps prose
+    # such as ``nvapi-endpoint`` untouched.
+    r"nvapi-[A-Za-z0-9_-]{20,}",
 ]
 
 # ENV assignment: KEY=value where KEY carries a secret-like name. Uppercase keys
@@ -447,7 +452,7 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
 
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
-_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
+_JSON_KEY_NAMES = r"(?:api[_-]?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
 _JSON_FIELD_RE = re.compile(rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"', re.IGNORECASE)
 # The same field inside a JSON-encoded string (``{"output": "{\\"api_key\\": \\"…\\"}"}``): every tool result
 # that wraps a config dump in JSON escapes the quotes, so the rule above never saw the value (#115104).
@@ -837,14 +842,33 @@ def _mask_token_nonreusable(token: str) -> str:
     return f"«redacted:{label}…»" if label else "«redacted-secret»"
 
 
-def _assignment_sub(render, *, check_keyword: bool):
-    """re.sub callback: keep the match unless the key/value pair (groups[0], groups[-1]) needs redaction."""
+def _assignment_sub(render, *, check_keyword: bool, require_opaque: bool = False):
+    """re.sub callback: keep the match unless the key/value pair (groups[0], groups[-1]) needs redaction.
+
+    ``require_opaque`` additionally demands a credential-shaped value, for passes that run on
+    source dumps where a strong key name alone (``"apiKey": "test"``) is usually a fixture."""
     def _sub(m):
         groups = m.groups()
+        if require_opaque and not _looks_like_opaque_credential(groups[-1]):
+            return m.group(0)
         if not _should_redact_assignment(groups[0], groups[-1], check_keyword=check_keyword):
             return m.group(0)
         return render(groups)
     return _sub
+
+
+def _redact_json_fields(text: str, mask, *, require_opaque: bool = False) -> str:
+    """Plain and escaped JSON credential fields (``"api_key": "…"``); see _JSON_FIELD_RE."""
+    if ":" not in text or '"' not in text:
+        return text
+    text = _JSON_FIELD_RE.sub(
+        _assignment_sub(lambda g: f'{g[0]}: "{mask(g[1])}"', check_keyword=False,
+                        require_opaque=require_opaque), text)
+    if '\\"' in text:
+        text = _JSON_FIELD_ESCAPED_RE.sub(
+            _assignment_sub(lambda g: f'{g[0]}: {g[1]}"{mask(g[2])}{g[1]}"', check_keyword=False,
+                            require_opaque=require_opaque), text)
+    return text
 
 
 def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
@@ -879,12 +903,7 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
             text = _CFG_DOTTED_RE.sub(_redact_env, text)
             text = _CFG_ANCHORED_RE.sub(_redact_env, text)
 
-    if ":" in text and '"' in text:
-        text = _JSON_FIELD_RE.sub(
-            _assignment_sub(lambda g: f'{g[0]}: "{mask(g[1])}"', check_keyword=False), text)
-        if '\\"' in text:
-            text = _JSON_FIELD_ESCAPED_RE.sub(
-                _assignment_sub(lambda g: f'{g[0]}: {g[1]}"{mask(g[2])}{g[1]}"', check_keyword=False), text)
+    text = _redact_json_fields(text, mask)
 
     # Python mapping repr fields ({'API_KEY': '…'}): single-quoted, so the JSON rule
     # above never sees them — the traceback / pytest-introspection leak shape.
@@ -1056,6 +1075,13 @@ _SHELL_RC_BASENAMES = frozenset({
     ".bashrc", ".bash_profile", ".bash_login", ".profile",
     ".zshrc", ".zprofile", ".zlogin", ".zshenv",
 })
+# Credential stores whose contents are a JSON/INI credential dump wherever they live: Hermes'
+# ``auth.json`` credential pool (``access_token``), cloud-CLI ``credentials`` files, and the
+# ``credentials.json`` / ``secrets.json`` shapes tools write next to them. Unlike ``config.yaml``
+# these names are not shared by ordinary project files, so no directory anchor is needed.
+_CREDENTIAL_STORE_BASENAMES = frozenset({
+    "auth.json", "credentials", "credentials.json", ".credentials.json", "secrets.json",
+})
 # Filter readers take a PATTERN/program as their first positional; only the operands after
 # it are files, so ``grep .bashrc app.py`` must not gate on the pattern.
 _PATTERN_FIRST_COMMANDS = frozenset({"grep", "awk", "sed"})
@@ -1121,7 +1147,7 @@ def _is_under_hermes_home(path: str) -> bool:
 
 
 def _is_secret_file_arg(arg: str) -> bool:
-    """``.env``-style or shell rc basename anywhere; ``config.yaml`` only under a
+    """``.env``-style, shell rc or credential-store (``auth.json``) basename anywhere; ``config.yaml`` only under a
     ``.hermes`` directory, ``$HERMES_HOME``, or the resolved Hermes home (never arbitrary
     YAML). The resolved-home arm is what covers native Windows, where the home directory
     is ``%LOCALAPPDATA%\\hermes`` and carries no ``.hermes`` segment."""
@@ -1141,7 +1167,8 @@ def _is_secret_file_arg(arg: str) -> bool:
     parts = [part.lower() for part in path.split("/") if part]
     if not parts:
         return False
-    if parts[-1] in _ENV_FILE_BASENAMES or parts[-1] in _SHELL_RC_BASENAMES:
+    basename = parts[-1]
+    if basename in _ENV_FILE_BASENAMES or basename in _SHELL_RC_BASENAMES or basename in _CREDENTIAL_STORE_BASENAMES:
         return True
     # ``config.yaml`` plus the ``config.yaml.good.<stamp>`` / ``.corrupt.<stamp>`` copies Hermes
     # writes under ``backups/config/`` — same contents, same secrets.
@@ -1211,12 +1238,20 @@ def redact_for_egress(text: str) -> str:
 def redact_terminal_output(output: str, command: str | None = None, *, force: bool = False) -> str:
     """Single redaction policy for ALL terminal-output surfaces: the ENV/YAML-assignment
     pass runs only when ``command`` is an env dump or reads a secret-bearing file (``.env``,
-    shell rc, Hermes ``config.yaml``); otherwise code_file=True avoids false positives on
-    source/config dumps."""
+    shell rc, Hermes ``config.yaml``, ``auth.json``); otherwise code_file=True avoids false
+    positives on source/config dumps.
+
+    The JSON credential-field pass runs on every output, not only on recognised secret-file
+    reads: the command classifier cannot see ``python -c 'print(open(p).read())'``, ``jq . f``
+    or ``curl`` responses, and that blind spot put live keys into state.db (2026-10-22 audit).
+    On the code_file path it masks only credential-shaped values, so ``"apiKey": "test"``
+    fixtures in a source dump survive while ``"api_key": "<opaque>"`` does not."""
     if not output:
         return output
     code_file = not (is_env_dump_command(command) or _command_reads_secret_file(command))
     redacted = redact_sensitive_text(output, force=force, code_file=code_file)
+    if code_file and (force or _redact_enabled()):
+        redacted = _redact_json_fields(redacted, _mask_token, require_opaque=True)
     # Source-preserving output still gets the Python-repr pass on high-confidence
     # diagnostic lines (pytest ``E   `` introspection, final exception lines): that is
     # where {'BRAVE_API_KEY': '…'} leaks, not in source dumps.

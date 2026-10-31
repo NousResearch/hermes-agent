@@ -7,11 +7,23 @@ gateway /yolo, approvals.mode=off, or cron approve mode.
 Inspired by Mercury Agent's permission-hardened blocklist.
 """
 
+import os
+
 import pytest
 
 from tools.approval import check_all_command_guards, check_dangerous_command, detect_dangerous_command, detect_hardline_command, disable_session_yolo, enable_session_yolo
 from tools.approval_context import reset_current_session_key, set_current_session_key
 from tools import approval_context
+
+
+# Absolute home paths, derived the way tools.approval_detection derives them at import time.
+# tests/conftest.py sandboxes HERMES_HOME before test modules import, so this env read sees
+# the same value the hardline patterns were built from.
+_HOME = os.path.realpath(os.path.expanduser("~"))
+_HERMES_HOME = os.path.realpath(os.environ["HERMES_HOME"]) if os.environ.get("HERMES_HOME") else ""
+_ABSOLUTE_HOME_BLOCK = [f"rm -rf {_HOME}", f"rm -rf {_HOME}/", f'rm -rf "{_HOME}"']
+if _HERMES_HOME:
+    _ABSOLUTE_HOME_BLOCK += [f"rm -rf {_HERMES_HOME}", f"rm -rf {_HERMES_HOME}/*"]
 
 
 # -------------------------------------------------------------------------
@@ -70,6 +82,9 @@ _HARDLINE_BLOCK = [
     "rm -rf ${HOME}",
     'rm -rf "${HOME}"',
     "rm -fr ${HOME}",
+    # Absolute home-path spellings (2026-10-22 audit): the tilde rules did not cover
+    # the literal expanded home dir or HERMES_HOME; these fell past the floor. Derived above.
+    *_ABSOLUTE_HOME_BLOCK,
     # Filesystem format
     "mkfs.ext4 /dev/sda1",
     "mkfs /dev/sdb",

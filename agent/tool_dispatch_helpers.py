@@ -458,6 +458,9 @@ def make_tool_result_message(
     """
     # Replay-recovery callers bypass the executor's canonical-id helper, so normalize here too.
     tool_call_id = _normalize_tool_call_id(tool_call_id)
+    # Threat-scan stored-memory recall results fail-closed before they enter the prompt —
+    # the tool-dispatch twin of the automatic-prefetch scan. No-op for every non-recall tool.
+    content = _maybe_block_memory_recall(name, content)
     # Elision notice is appended to the RAW content first, THEN wrapped, so it sits inside
     # the untrusted block next to the data it describes — once, at construction (cache-safe).
     wrapped = _maybe_wrap_untrusted(name, _maybe_append_elision_notice(name, content))
@@ -485,12 +488,65 @@ _UNTRUSTED_TOOL_NAMES = frozenset({"web_extract", "web_search"})
 _UNTRUSTED_TOOL_PREFIXES = ("browser_", "mcp_")
 _UNTRUSTED_WRAP_MIN_CHARS = 32
 
+# Stored-memory recall tools: their results return STORED content that was not authored this
+# turn, so a poisoned store makes them attacker-controllable. Unlike the untrusted wrap set above
+# (advisory delimiters, never blocks), these are THREAT-SCANNED and fail-closed by
+# ``_maybe_block_memory_recall`` — mirroring the prefetch scan in ``build_memory_context_block``.
+# Exact names, not a prefix: mnemosyne_* write/stats tools echo caller-authored content whose
+# context-scope scan would only self-DoS legitimate writes, not a poisoned-store read.
+_MEMORY_RECALL_TOOL_NAMES = frozenset(
+    {"mnemosyne_recall", "mnemosyne_recall_canonical", "mnemosyne_get", "mnemosyne_shared_recall"}
+)
+
 # Case-insensitive so a differently-cased tag can't forge or prematurely close the boundary.
 _DELIMITER_TOKEN_RE = re.compile(r"untrusted_tool_result", re.IGNORECASE)
 
 
 def _is_untrusted_tool(name: Optional[str]) -> bool:
     return bool(name) and (name in _UNTRUSTED_TOOL_NAMES or name.startswith(_UNTRUSTED_TOOL_PREFIXES))
+
+
+_BLOCKED_RECALL_NOTICE = (
+    "[BLOCKED: recalled memory matched threat pattern(s) — {findings}. "
+    "Removed from the tool result to prevent injection. "
+    "Review the external memory store and quarantine the poisoned entry.]"
+)
+
+
+def _maybe_block_memory_recall(name: str, content: Any) -> Any:
+    """Threat-scan stored-memory recall results and, on a hit, swap the body for a ``[BLOCKED:]``
+    notice. No-op for every tool outside ``_MEMORY_RECALL_TOOL_NAMES``.
+
+    The automatic prefetch is scanned in ``build_memory_context_block``, but the model can also
+    call recall tools *as tools* mid-turn and receive raw results through the normal tool-result
+    path — secret-redacted but not threat-scanned. A poisoned store would then inject promptware
+    on a model-triggered recall exactly as it would on prefetch. Scan at the "context" scope
+    (injection / C2 / role-hijack) — the same rationale as the prefetch scan, where "strict"
+    false-positives on legitimate security-discussion memories — and fail-closed so the model sees
+    recall was suppressed rather than silently missing.
+    """
+    if name not in _MEMORY_RECALL_TOOL_NAMES:
+        return content
+
+    if isinstance(content, str):
+        text_parts = [content]
+    elif isinstance(content, list):
+        text_parts = [item["text"] for item in content if _is_text_item(item)]
+    else:
+        return content
+    if not text_parts:
+        return content
+
+    findings: list[str] = []
+    for text in text_parts:
+        for finding in scan_for_threats(text, scope="context"):
+            if finding not in findings:
+                findings.append(finding)
+    if not findings:
+        return content
+
+    logger.warning("Memory recall tool result blocked at dispatch (%s): %s", name, ", ".join(findings))
+    return _BLOCKED_RECALL_NOTICE.format(findings=", ".join(findings))
 
 
 def _is_text_item(item: Any) -> bool:

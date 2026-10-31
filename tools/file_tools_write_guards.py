@@ -4,7 +4,8 @@ Every guard returns ``None`` when the write may proceed, else an error string
 the tool returns verbatim.
 Guards, in the order the tools apply them: ``_check_sensitive_path`` (hard
 deny), ``_check_binary_document_write``, ``_check_protected_instruction_write``
-(ALWAYS ask), ``_check_approval_required_write`` (normal gate),
+(ALWAYS ask), ``_check_persistence_path_write`` (ALWAYS ask, cron/LaunchAgents/rc),
+``_check_approval_required_write`` (normal gate),
 ``_check_cross_profile_path`` (sandbox-mirror lost-work), ``_is_internal_file_tool_content``.
 ``_stale_overwrite_blocker`` (write_file only, under the per-path lock) refuses a
 whole-file overwrite of content this task never saw or that changed since.
@@ -257,21 +258,25 @@ _APPROVAL_UNAVAILABLE = "requires approval but the approval subsystem is unavail
 _NO_HUMAN = "requires approval but no interactive user or gateway is present to approve it."
 
 
-def _request_protected_instruction_approval(reasons: list[str], task_id: str = "default") -> str | None:
-    """Ask the human to approve a write to protected instruction file(s); ``None`` when approved.
+def _request_protected_instruction_approval(
+        reasons: list[str], task_id: str = "default", *,
+        boundary_noun: str = "protected agent-instruction file(s)",
+        boundary_reason: str = "These files steer future agent behavior;") -> str | None:
+    """Ask the human to approve a write to a protected/persistence boundary file; ``None`` when approved.
 
     Deliberately NOT routed through ``_run_approval_gate`` (honors --yolo and
     allowlists): this gate is one-operation approval EVERY time, no persisted
-    scope, fail-closed without a human channel.
+    scope, fail-closed without a human channel. ``boundary_noun``/``boundary_reason``
+    let the persistence guard reuse this same always-ask machinery with honest wording.
     """
     targets = ", ".join(dict.fromkeys(reasons))
     description = (
-        f"Write to protected agent-instruction file(s): {targets}. "
-        "These files steer future agent behavior; approval is always "
+        f"Write to {boundary_noun}: {targets}. "
+        f"{boundary_reason} approval is always "
         "required (not bypassed by auto-approve).")
     display = f"<write to {targets}>"
     blocked = (
-        f"BLOCKED: write to protected agent-instruction file(s) ({targets}) "
+        f"BLOCKED: write to {boundary_noun} ({targets}) "
         "{why} The user has NOT consented to this write. Do NOT retry it or "
         "attempt the same edit via another path (terminal, execute_code, "
         "etc.).")
@@ -402,6 +407,54 @@ def _check_approval_required_write(paths: list[str], task_id: str = "default") -
     if result.get("approved"):
         return None
     return result.get("message") or blocked.format(why="was denied.")
+
+
+# ── Persistence-boundary files (always-ask on write) ─────────────────────
+# Write-side complement to the terminal side's approvals.deny globs
+# (cron/jobs.json, LaunchAgents, shell rc files). A job or rc line executes as
+# the user on later ticks/terminals, so a write here is a durable code/state
+# vector — same always-ask, fail-closed, --yolo-proof gate as instruction files.
+# NOTE: gating runs on BOTH the normalized input and its realpath so neither a
+# symlink pointing AT a persistence file nor a persistence name that is itself
+# a symlink escapes (`_protected_instruction_reason` uses the same rule).
+_PERSISTENCE_RC_BASENAMES = frozenset({
+    ".zshrc", ".zprofile", ".zshenv", ".bashrc", ".bash_profile"})
+
+
+def _persistence_path_reason(filepath: str, task_id: str = "default") -> str | None:
+    """Return a short label when ``filepath`` is a persistence boundary file, else ``None``."""
+    try:
+        resolved = os.path.realpath(str(_resolve_path_for_task(filepath, task_id)))
+    except (OSError, ValueError, RuntimeError):
+        resolved = os.path.realpath(_expand_tilde(filepath))
+    normalized = os.path.normpath(_expand_tilde(filepath))
+    user_home = os.path.realpath(os.path.expanduser("~")).replace("\\", "/").rstrip("/")
+
+    for candidate in (normalized, resolved):
+        norm = candidate.replace("\\", "/").rstrip("/")
+        base = norm.rsplit("/", 1)[-1] if "/" in norm else norm
+        if base == "jobs.json" and norm.endswith("/cron/jobs.json"):
+            return "cron jobs file"
+        if "/Library/LaunchAgents" in norm:
+            return "macOS LaunchAgents entry"
+        if base in _PERSISTENCE_RC_BASENAMES:
+            parent = norm.rsplit("/", 1)[0] if "/" in norm else ""
+            if parent == user_home:
+                return f"shell rc file ({base})"
+    return None
+
+
+def _check_persistence_path_write(paths: list[str], task_id: str = "default") -> str | None:
+    """Gate a write/patch touching persistence boundary files. ONE matched target gates
+    the ENTIRE multi-file patch (one prompt, all-or-nothing), like protected instructions."""
+    reasons = [r for r in (_persistence_path_reason(p, task_id) for p in paths) if r]
+    if not reasons:
+        return None
+    return _request_protected_instruction_approval(
+        reasons, task_id,
+        boundary_noun="persistence boundary file(s)",
+        boundary_reason="These files run or are read on future sessions "
+                        "(cron, launch agents, shell startup), so a write persists;")
 
 
 def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:

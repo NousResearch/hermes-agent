@@ -21,11 +21,23 @@ export function PageHeaderProvider({
     () => Boolean(document.fullscreenElement),
   );
 
+  const [isFocusMode, setIsFocusMode] = useState(false);
+
+  // Android Firefox on Fire OS may terminate during native fullscreen.
+  // Use an in-page focus mode instead.
+  const isAndroidFirefox =
+    /Android/i.test(navigator.userAgent) &&
+    /Firefox/i.test(navigator.userAgent);
+
   useEffect(() => {
     const update = () => setIsFullscreen(Boolean(document.fullscreenElement));
     document.addEventListener("fullscreenchange", update);
     return () => document.removeEventListener("fullscreenchange", update);
   }, []);
+
+  const toggleFocusMode = () => {
+    setIsFocusMode((current) => !current);
+  };
 
   const toggleFullscreen = async () => {
     try {
@@ -72,12 +84,23 @@ export function PageHeaderProvider({
 
   return (
     <PageHeaderContext.Provider value={value}>
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="relative flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
+        {isFocusMode && (
+          <button
+            type="button"
+            onClick={toggleFocusMode}
+            aria-label="Exit focus mode"
+            className="absolute right-3 top-3 z-50 rounded border border-current/30 bg-background-base px-3 py-2 text-xs"
+          >
+            Exit Focus
+          </button>
+        )}
         <header
           className={cn(
             "z-1 w-full shrink-0",
             "box-border border-b border-current/20",
             "bg-background-base",
+            isFocusMode && "hidden",
             // Mobile stacks title + toolbar — fixed h-14 clips content; desktop stays one row.
             "min-h-0 overflow-x-hidden overflow-y-visible py-3 sm:h-14 sm:min-h-[3.5rem] sm:overflow-hidden sm:py-0",
           )}
@@ -127,17 +150,28 @@ export function PageHeaderProvider({
               ) : null}
             </div>
 
-            {"requestFullscreen" in document.documentElement && "exitFullscreen" in document && (
-              <button
+            <button
               type="button"
-              onClick={toggleFullscreen}
-              aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-              title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+              onClick={toggleFocusMode}
+              aria-label="Enter focus mode"
+              title="Enter focus mode"
               className="shrink-0 rounded border border-current/30 px-2 py-1 text-xs"
             >
-              {isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
-              </button>
-            )}
+              Focus Mode
+            </button>
+
+            {"requestFullscreen" in document.documentElement &&
+              "exitFullscreen" in document && !isAndroidFirefox && (
+                <button
+                  type="button"
+                  onClick={toggleFullscreen}
+                  aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                  title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                  className="shrink-0 rounded border border-current/30 px-2 py-1 text-xs"
+                >
+                  {isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
+                </button>
+              )}
 
             {end ? (
               <div

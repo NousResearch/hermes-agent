@@ -223,6 +223,39 @@ describe("page header fullscreen toggle", () => {
     expect(header().textContent).toContain("Fullscreen");
   });
 
+  it("uses focus mode instead of native fullscreen on Android Firefox", async () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(
+      "Mozilla/5.0 (Android 9; Mobile; rv:152.0) Gecko/152.0 Firefox/152.0",
+    );
+
+    await renderAt("/empty");
+    await click("Focus Mode");
+
+    expect(requestFullscreen).not.toHaveBeenCalled();
+    expect(header().classList.contains("hidden")).toBe(true);
+    expect(document.querySelector('[aria-label="Exit focus mode"]')).not.toBeNull();
+
+    await click("Exit Focus");
+
+    expect(header().classList.contains("hidden")).toBe(false);
+    expect(document.querySelector('[aria-label="Exit focus mode"]')).toBeNull();
+    expect(requestFullscreen).not.toHaveBeenCalled();
+  });
+
+  it("supports Android Firefox focus mode without the native fullscreen API", async () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(
+      "Mozilla/5.0 (Android 9; Mobile; rv:152.0) Gecko/152.0 Firefox/152.0",
+    );
+    delete (document.documentElement as unknown as Record<string, unknown>)
+      .requestFullscreen;
+
+    await renderAt("/empty");
+    await click("Focus Mode");
+
+    expect(header().classList.contains("hidden")).toBe(true);
+    expect(document.querySelector('[aria-label="Exit focus mode"]')).not.toBeNull();
+  });
+
   it("hides the control when fullscreen is unsupported", async () => {
     delete (document.documentElement as unknown as Record<string, unknown>)
       .requestFullscreen;

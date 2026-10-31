@@ -1427,7 +1427,12 @@ class SessionSessionsMixin:
             pinned_clauses, pinned_params = _session_filter_where(
                 exclude_children=not include_children, source=source, sources=sources,
                 session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
-                min_message_count=min_message_count, archived_only=False, include_archived=True,
+                # Do not inherit the *include* side of the archived constraint (a pin must stay
+                # reachable when the sidebar lists with include_archived=False), but DO honour
+                # archived_only: that view declares every row archived, so back-filling a live
+                # pin into it hands clients rows whose ``archived`` flag contradicts the view
+                # (mobile rejects the whole payload as invalid archived metadata).
+                min_message_count=min_message_count, archived_only=archived_only, include_archived=True,
                 include_subagents=include_subagents, local_created_sources=local_created_sources,
             )
             if not include_hidden and not archived_only:

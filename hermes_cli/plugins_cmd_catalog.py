@@ -198,6 +198,70 @@ def at_catalog_pin(sidecar: dict, entry_sha: str) -> bool:
         str(sidecar.get("sha") or "").lower(), str(sidecar.get("pin") or "").lower())
 
 
+def catalog_pin_relation(installed_version: str, catalog_version: str) -> Optional[int]:
+    """How the catalog's version stands against the installed one.
+
+    ``1`` the catalog is newer, ``0`` the same release, ``-1`` the catalog is OLDER, and ``None``
+    when the two cannot be compared (a missing or unparsable label).
+
+    Comparing SHAs alone is not enough: an install can sit on a commit the catalog does not point
+    at (an explicit ``--ref``, a local pin), and the catalog's version can be OLDER than what is
+    installed. Re-pinning then moves the install BACKWARDS, which is never what an update means.
+    """
+    if not installed_version or not catalog_version:
+        return None
+    try:
+        from packaging.version import Version
+    except ImportError:
+        return None
+    try:
+        installed, catalog = Version(installed_version), Version(catalog_version)
+    except ValueError:
+        # packaging raises InvalidVersion (a ValueError) for a label that is not a version.
+        return None
+    if catalog > installed:
+        return 1
+    if catalog < installed:
+        return -1
+    return 0
+
+
+def installed_plugin_version(plugin_dir) -> str:
+    """The version label an installed plugin's own manifest declares ("" when unreadable).
+
+    The install record carries the commit, not the version; the manifest is where the plugin
+    states its own release, so it is what a version comparison has to read.
+    """
+    try:
+        from hermes_cli.plugins_cmd import _read_manifest
+    except ImportError:
+        return ""
+    try:
+        return str(_read_manifest(Path(plugin_dir)).get("version") or "")
+    except (OSError, TypeError, ValueError) as exc:
+        logger.warning("Failed to read the installed version of %s: %s", plugin_dir, exc)
+        return ""
+
+
+def update_available_for(sidecar: Optional[dict], catalog_sha: str, *, installed_version: str = "",
+                          catalog_version: str = "") -> bool:
+    """Whether the catalog offers something the install does not already have.
+
+    An install already at the catalog pin is current. Otherwise the catalog's version decides when
+    both versions are known: a catalog pin that is OLDER than the installed release is not an update
+    (re-pinning would move the install backwards). With no comparable version, the SHA comparison
+    stands.
+    """
+    if not sidecar or not str(sidecar.get("sha") or ""):
+        return False
+    if at_catalog_pin(sidecar, catalog_sha):
+        return False
+    relation = catalog_pin_relation(installed_version, catalog_version)
+    if relation is not None:
+        return relation >= 0
+    return True
+
+
 def catalog_install_record(plugin_dir) -> Optional[dict]:
     """Catalog fields from the authoritative installer-owned record."""
     return read_catalog_sidecar(plugin_dir)
@@ -629,6 +693,15 @@ class RepinConsentRequired(Exception):
             f"Updating '{name}' to {sha[:8]} adds {'; '.join(surface_delta_lines(delta))}. Confirm to continue.")
 
 
+def _is_off_pin_install(sidecar: dict) -> bool:
+    """True for a catalog install made with an explicit ``--ref`` (off the reviewed pin).
+
+    The install record's ``pin`` is the reviewed SHA when the install sits at the catalog pin and
+    empty when the user named a commit themselves. The top-level ``pinned`` flag cannot decide this:
+    it is true for every catalog install, because the installer always resolves a revision.
+    """
+    return not str(sidecar.get("pin") or "") and bool(str(sidecar.get("sha") or ""))
+
 def repin_catalog_plugin(
     target: Path,
     sidecar: dict,
@@ -676,6 +749,19 @@ def repin_catalog_plugin(
             f"Update of {catalog_name} to {entry.sha[:8]} not applied: {held} {catalog_name} stays at "
             f"{str(sidecar.get('sha') or '')[:8] or 'its installed version'}; the update is available after "
             f"you update Hermes (`{recommended_update_command()}`).", failure_class="incompatible")
+    if _is_off_pin_install(sidecar):
+        # An install made with an explicit ``--ref`` sits off the reviewed pin. Re-pinning it to a
+        # catalog pin that is OLDER than what is installed would move it BACKWARDS — an "update"
+        # that downgrades, losing the fixes the named commit carried. A pin at the same or a newer
+        # release is an ordinary re-pin and goes through.
+        installed_version = installed_plugin_version(target)
+        relation = catalog_pin_relation(installed_version, entry.version or "")
+        if relation is not None and relation < 0:
+            raise PluginOperationError(
+                f"Plugin '{catalog_name}' is pinned to {str(sidecar.get('sha'))[:8]} "
+                f"(version {installed_version}), newer than the catalog's {entry.version} "
+                f"({entry.sha[:8]}); re-pinning would downgrade it. To move it anyway, run "
+                f"`hermes plugins install {catalog_name} --force --ref <40-character commit SHA>`.")
 
     local, modified = _local_changes(target)
     old_sha8 = str(sidecar.get("sha") or "old")[:8]
@@ -940,7 +1026,10 @@ def installed_catalog_state(installed: dict[str, dict[str, Any]]) -> dict[str, A
             **entry.to_dict(), "sha_short": entry.sha[:7],
             "capability_summary": entry_capability_summary(entry),
             "installed": local is not None, "installed_sha": installed_sha,
-            "update_available": bool(installed_sha) and not at_catalog_pin(sidecar or {}, entry.sha),
+            "update_available": update_available_for(
+                sidecar, entry.sha,
+                installed_version=installed_plugin_version(local["dir"]) if local else "",
+                catalog_version=entry.version or ""),
             "runtime_status": local["runtime_status"] if local else None,
         })
     return {
@@ -953,7 +1042,12 @@ def installed_catalog_state(installed: dict[str, dict[str, Any]]) -> dict[str, A
 def catalog_row_fields(dir_path, pins: dict[str, str], versions: Optional[dict[str, str]] = None) -> dict[str, Any]:
     """Provenance fields for one installed-plugin row (TUI/desktop ``plugins.manage list``): catalog
     name/tier/installed SHA and, when *pins* has the entry, the current pin (+ its version label from
-    *versions*) and ``update_available``."""
+    *versions*) and ``update_available``.
+
+    The version label is the pin's own release, and it is shown as the TARGET of an update. When the
+    install already carries that version the target is a commit, not a release, so the label drops
+    and the surface shows the commit ref instead of an update "to v1.0.0" that changes no version.
+    """
     versions = versions or {}
     sidecar = catalog_install_record(dir_path)
     if not sidecar:
@@ -965,8 +1059,16 @@ def catalog_row_fields(dir_path, pins: dict[str, str], versions: Optional[dict[s
     pin = pins.get(str(sidecar["catalog_name"]))
     if pin:
         row["catalog_sha"] = pin
-        row["catalog_version"] = versions.get(str(sidecar["catalog_name"])) or None
-        row["update_available"] = bool(installed_sha) and not at_catalog_pin(sidecar, pin)
+        # The pin's declared release, read from the catalog rather than from the row: the label below
+        # may drop it, and the comparison must not depend on what the label ended up showing.
+        catalog_version = versions.get(str(sidecar["catalog_name"])) or ""
+        installed_version = installed_plugin_version(dir_path)
+        row["catalog_version"] = catalog_version or None
+        row["update_available"] = update_available_for(
+            sidecar, pin, installed_version=installed_version, catalog_version=catalog_version)
+        if installed_version and catalog_version == installed_version:
+            # The target is a commit at the same release: label the target by commit, not by version.
+            row["catalog_version"] = None
     return row
 
 

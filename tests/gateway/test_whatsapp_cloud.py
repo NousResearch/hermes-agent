@@ -1406,6 +1406,17 @@ class TestAllowlistNormalization:
         normalized = WhatsAppCloudAdapter._normalize_allow_ids(ids)
         assert normalized == {"15551234567", "15557654321", "15550000000"}
 
+    def test_bsuid_allowlist_entries_do_not_collide_on_digit_projection(self):
+        """Regression for #138192: Cloud BSUIDs are principals, not phone aliases."""
+        from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
+
+        adapter = object.__new__(WhatsAppCloudAdapter)
+        allowlist = {"DE.1A2B3C4D5E"}
+
+        assert adapter._entry_matches(allowlist, "DE.1A2B3C4D5E") is True
+        assert adapter._entry_matches(allowlist, "DE.12345ABCDE") is False
+        assert adapter._entry_matches(allowlist, "12345") is False
+
 
 class TestBoundedInteractiveState:
     def test_bounded_put_evicts_oldest(self):

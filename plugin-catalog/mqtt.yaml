@@ -1,0 +1,23 @@
+name: mqtt
+repo: https://github.com/JasonSwindle/hermes-mqtt
+sha: 103ec28e9e2f68b080fd8e8074d0e5a98750e06e
+description: "MQTT as a Hermes platform: one authenticated broker connection, per-topic routing (deliver, agent, job, drop) and JSON replies published outside the consumed namespace; ships its own standard-library MQTT 3.1.1/5.0 client over TCP or TLS (verified by default, optional private CA/mTLS) with keepalive, reconnect and opt-in burst coalescing, and drops unmatched topics. Disclosure — holds one outbound broker connection and its reconnect loop, reads the MQTT username/password through Hermes's scoped secret route and optional TLS files at operator-provided paths, and enables trusted_inbound (the broker's authentication is the trust boundary): any publisher the broker's ACL admits can start agent turns, while payload text can never issue gateway commands; no telemetry, no shell, no writes."
+maintainer: JasonSwindle
+tier: community
+category: platform
+requires_hermes: ">=0.22.3,<0.23"
+docs_url: https://github.com/JasonSwindle/hermes-mqtt#readme
+version: "0.7.0"
+title: "MQTT"
+image: https://raw.githubusercontent.com/JasonSwindle/hermes-mqtt/103ec28e9e2f68b080fd8e8074d0e5a98750e06e/docs/banner.png
+platforms: [linux, macos, windows]
+known_issues:
+  - "Intel Macs are not tested or supported (CI covers macos-latest, which is Apple Silicon)."
+  - "trusted_inbound is on: every publisher the broker's ACL admits can start agent turns, so scope the broker account to the subscription filter and reply topic."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - MQTT_HERMES_URL
+    - MQTT_HERMES_PASSWORD

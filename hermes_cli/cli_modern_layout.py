@@ -112,6 +112,108 @@ def answer_label(timestamp: str = "") -> str:
     return f"\n{separator(True)}\n{_fg(_skin_hex('ui_accent', '#FFBF00'), bold=True)}{glyph} {name}{_RST}{stamp}"
 
 
+def text_lead() -> str:
+    """The brand glyph that leads an answer or an in-between message, e.g. ``☤ ``."""
+    glyph, _ = _brand_glyph()
+    return f"{_fg(_skin_hex('ui_accent', '#FFBF00'), bold=True)}{glyph}{_RST} "
+
+
+TEXT_HANG = "  "  # text after a block's first line hangs under its first word, past the glyph
+
+
+def open_text_block() -> str:
+    """The blank line that opens a text block (it settles a gap the previous block owes)."""
+    global _GAP_PENDING
+    _GAP_PENDING = False
+    return ""
+
+
+def close_text_block() -> None:
+    """A text block ends without a bar: the blank line after it is owed to whatever prints next."""
+    global _GAP_PENDING
+    _GAP_PENDING = True
+
+
+def text_block_lines(text: str) -> list[str]:
+    """A whole message as a glyph-led block (non-streamed interims): ``☤ first line`` then the rest
+    hung under it."""
+    lines = (text or "").strip("\n").split("\n")
+    return [open_text_block()] + [(text_lead() if i == 0 else TEXT_HANG) + line for i, line in enumerate(lines)]
+
+
+_BATCH_RE = re.compile(r"^Subagent Tasks (?P<outcome>[\w ]+?): (?P<titles>.*) \((?P<count>\d+) tasks\)$", re.DOTALL)
+_SINGLE_RE = re.compile(r"^Subagent Task (?P<outcome>[\w ]+?): (?P<titles>.*)$", re.DOTALL)
+
+
+def notification_row(text: str) -> str:
+    """A background notice (subagents back, a process finished) as one dim ``◈`` row after a
+    blank line: ``◈ 3 subagents completed · api audit; web audit; …``, cut like a tool row."""
+    text = " ".join(str(text or "").split())
+    batch, single = _BATCH_RE.match(text), _SINGLE_RE.match(text)
+    if batch:
+        text = f"{batch['count']} subagents {batch['outcome'].lower()} · {batch['titles']}"
+    elif single:
+        text = f"subagent {single['outcome'].lower()} · {single['titles']}"
+    global _GAP_PENDING
+    _GAP_PENDING = True  # the next row (usually the turn's first tool row) gets its blank line
+    return fit_row(f"{_DIM}◈ ", text, _RST)
+
+
+# ── answer markdown: code blocks and tables (width-independent, no frames) ─────────────────
+
+_FENCE_RE = re.compile(r"^\s*(```+|~~~+)\s*([\w+#.-]*)\s*$")
+
+
+def code_fence(line: str) -> str | None:
+    """The language of a fence line (``""`` when unnamed), or None for any other line."""
+    match = _FENCE_RE.match(line or "")
+    return match.group(2) if match else None
+
+
+def code_line(text: str, lang: str) -> str:
+    """One line of a fenced block: a dim ``▏`` gutter, then the code highlighted with the terminal's
+    own 16 ANSI colours (so it follows the terminal/Omarchy theme). Plain when the language is
+    unknown. Never padded, so a resize cannot re-wrap it."""
+    body = text.rstrip("\n")
+    try:
+        from pygments import highlight
+        from pygments.formatters import TerminalFormatter
+        from pygments.lexers import get_lexer_by_name
+        from pygments.util import ClassNotFound
+        try:
+            lexer = get_lexer_by_name(lang or "text", stripnl=False, ensurenl=False)
+        except ClassNotFound:
+            lexer = None
+        if lexer is not None and body.strip():
+            body = highlight(body, lexer, TerminalFormatter()).rstrip("\n")
+    except Exception:
+        pass
+    return f"{_DIM}▏{_RST} {body}"
+
+
+def code_label(lang: str) -> str:
+    """The row that opens a fenced block: its language, dim, on the gutter."""
+    return f"{_DIM}▏ {lang}{_RST}" if lang else f"{_DIM}▏{_RST}"
+
+
+def table_rows(lines: list[str]) -> list[str]:
+    """An already-aligned markdown table without its pipes: the header bold, a dim ``─`` rule per
+    column under it, cells two spaces apart. Rows that are not ``| … |`` pass through."""
+    out = []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not (stripped.startswith("|") and stripped.endswith("|")):
+            out.append(line)
+            continue
+        cells = stripped[1:-1].split("|")
+        if all(set(c.strip()) <= set("-: ") and c.strip() for c in cells):
+            out.append(_DIM + "  ".join("─" * max(1, len(c) - 2) for c in cells) + _RST)
+            continue
+        text = "  ".join(c[1:-1] if len(c) >= 2 else c.strip() for c in cells).rstrip()
+        out.append(f"{_BOLD}{text}{_RST}" if index == 0 else text)
+    return out
+
+
 def _full_title(text: str) -> str:
     """The reasoning's first ``**bold**`` heading, else its first sentence, whitespace-collapsed."""
     text = (text or "").strip()
@@ -164,7 +266,44 @@ def completed_tool_line(cli, function_name: str, args: dict | None, duration: fl
     return f"  {get_cute_tool_message(function_name, args, duration, result=result)}"
 
 
-def tool_row(function_name: str, args: dict | None, duration: float, result=None, is_error: bool = False) -> str:
+_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1\s.*?\s\2(?=\s|$)")
+
+
+def compact_detail(text: str) -> str:
+    """A row's detail as the user would type it: paths under the working directory relative, the
+    home directory as ``~``, and a heredoc body (already flattened to one line) folded to ``…``."""
+    from hermes_cli.cli_tool_render import _short_paths
+    text = _HEREDOC_RE.sub(lambda m: f"<<{m.group(1)}{m.group(2)}{m.group(1)} … {m.group(2)}", text or "")
+    return _short_paths(text)
+
+
+# A row's detail stops at this many cells (with ``…``), whatever the window: a heredoc, a long path
+# or a vision prompt stays one row on an ordinary terminal, and the row is the same at every width,
+# so a resize cannot re-wrap it. The full text is in the Ctrl+O viewer.
+DETAIL_MAX = 96
+
+
+def fit_row(head: str, detail: str, tail: str, width: int | None = None) -> str:
+    """``head + detail + tail`` with the detail cut to ``DETAIL_MAX`` cells (or to ``width`` when
+    a caller passes one, e.g. a fixed-width panel)."""
+    from prompt_toolkit.utils import get_cwidth
+    if width:
+        room = width - 1 - get_cwidth(_ANSI_RE.sub("", head)) - get_cwidth(_ANSI_RE.sub("", tail))
+    else:
+        room = DETAIL_MAX
+    if get_cwidth(detail) > room:
+        cut, used = [], 0
+        for ch in detail:
+            used += get_cwidth(ch)
+            if used > max(room - 1, 8):
+                break
+            cut.append(ch)
+        detail = "".join(cut).rstrip() + "…"
+    return head + detail + tail
+
+
+def tool_row(function_name: str, args: dict | None, duration: float, result=None, is_error: bool = False,
+             width: int | None = None) -> str:
     """``📖 Read calc.py  0.2s`` / ``✗ $ pytest -q  0.4s [exit 1]`` — one row per completed call, led by
     the tool's emoji (the classic ``┊`` row's), or a red ``✗`` when that entry failed. A tool in
     ``NEUTRAL_FAILURE_TOOLS`` keeps its emoji and shows the reason dim."""
@@ -173,17 +312,52 @@ def tool_row(function_name: str, args: dict | None, duration: float, result=None
     neutral = is_neutral_failure(function_name, result)
     out = []
     for index, (emoji, verb, detail, suffix) in enumerate(rows):
-        verb = (verb or function_name).strip()
-        mark = f"{_RED}✗{_RST}" if suffix is not None and not neutral else (emoji or "●")
-        line = f"{mark} {_BOLD}{verb[:1].upper()}{verb[1:]}{_RST}"
-        if detail:
-            line += f" {detail}"
+        state = "ok" if suffix is None else "neutral" if neutral else "failed"
+        tail = ""
         if index == len(rows) - 1 and duration >= 0.1:
-            line += f"  {_DIM}{duration:.1f}s{_RST}"
+            tail += f"  {_DIM}{duration:.1f}s{_RST}"
         if suffix:
-            line += f"{_DIM if neutral else _RED}{suffix}{_RST}"
-        out.append(line)
+            suffix = _exception_suffix(suffix, result)
+            tail += f"{_DIM if neutral else _RED} {' '.join(suffix.split())}{_RST}"
+        out.append(fit_row(row_head(emoji, verb or function_name, state), compact_detail(detail), tail, width))
     return "\n".join(out)
+
+
+_EXCEPTION_RE = re.compile(r"^\s*([A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt))\b")
+
+
+def _exception_suffix(suffix: str, result) -> str:
+    """A failure suffix that opens a Python traceback (``[Traceback (most recent call last): File
+    "/h…]``) names the exception instead: ``[ModuleNotFoundError]``. The preview under the row
+    already shows the exception's line."""
+    if "Traceback" not in suffix:
+        return suffix
+    from hermes_cli.cli_tool_render import result_text
+    names = [m.group(1) for line in result_text(result).splitlines() if (m := _EXCEPTION_RE.match(line))]
+    return f"[{names[-1].rsplit('.', 1)[-1]}]" if names else "[traceback]"
+
+
+VERB_COLUMN = 9  # "Explored" + one space: every row's detail starts in the same column
+
+
+def _ok_mark() -> str:
+    return f"{_fg(_skin_hex('ui_ok', '#4caf50'))}✓{_RST}"
+
+
+def row_head(emoji: str, verb: str, state: str = "ok") -> str:
+    """``✓ 💻 $        `` — status mark (``ok`` ✓, ``failed`` red ✗, ``neutral`` dim ✗ for a refusal
+    the agent handles itself), the tool's emoji (normalised to two cells) and the bold verb padded
+    to ``VERB_COLUMN``, so tool rows read as one aligned list. Width-independent."""
+    from prompt_toolkit.utils import get_cwidth
+    icon = (emoji or "●").strip()
+    # An emoji with the VS16 selector (⚙️, 👁️) draws two cells although wcwidth counts one.
+    icon += " " * max(0, 2 - (2 if "\ufe0f" in icon else get_cwidth(icon)))
+    verb = verb.strip()
+    verb = verb[:1].upper() + verb[1:]
+    mark = {"failed": f"{_RED}✗{_RST}", "neutral": f"{_DIM}✗{_RST}"}.get(state) or _ok_mark()
+    if verb == "$":  # a command reads as typed: ``$ make test``, not padded into the verb column
+        return f"{mark} {icon} {_BOLD}${_RST} "
+    return f"{mark} {icon} {_BOLD}{verb}{_RST}{' ' * max(1, VERB_COLUMN - get_cwidth(verb))}"
 
 
 _ACTIVE = False  # one CLI per process; read by printers that get no CLI handle (gateway inline diffs)
@@ -251,7 +425,9 @@ def activity_text(cli) -> str:
     """What the agent is doing: the classic spinner's text (kaomoji face or tool emoji included)."""
     if getattr(cli, "_command_running", False):
         return str(getattr(cli, "_command_status", "") or "")
-    text = str(getattr(cli, "_spinner_text", "") or "").strip()
+    # While tools run: the one running tool's label, or how many run at once.
+    running = cli._running_tool_status() if hasattr(cli, "_running_tool_status") else None
+    text = str(running[0] if running else getattr(cli, "_spinner_text", "") or "").strip()
     return text or (t("cli.modern.working") if getattr(cli, "_agent_running", False) else "")
 
 

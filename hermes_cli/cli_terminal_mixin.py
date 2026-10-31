@@ -17,6 +17,7 @@ from hermes_cli.cli_render import (
     _hold_paints,
     _output_history_rows,
     _release_paints,
+    _pin_chrome,
     _set_chrome_floor,
     _set_paint_gate,
     _take_suspect_rows,
@@ -135,6 +136,9 @@ class CLITerminalMixin:
         monitor = getattr(self, "_subagent_monitor", None)
         if monitor is not None:
             monitor.invalidate()
+        viewer = getattr(self, "_transcript_viewer_app", None)
+        if viewer is not None:  # its before_render closes it so the modal can show
+            _run_on_app_loop(viewer, viewer.invalidate)
         app = getattr(self, "_app", None)
         if app is not None:
             self._app_invalidate(app, "paint_now", swallow=True)
@@ -237,6 +241,7 @@ class CLITerminalMixin:
             size = out.get_size()
             fit = None
             out.reset_attributes()
+            _pin_chrome(False)  # the replay decides where the chrome lands now
             if rebuild_scrollback:
                 out.erase_screen()
                 out.write_raw("\x1b[3J")

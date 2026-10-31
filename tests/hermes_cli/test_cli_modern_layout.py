@@ -40,12 +40,13 @@ def test_glyph_layout_scrollback_is_width_independent(monkeypatch, modern):
     thought = [line for line in rows if line.startswith("∴")]
     assert len(thought) == 1 and "Planning the change" in thought[0], rows
     # Reasoning streams in full like classic, under a fixed-width dim bar (never re-wraps on resize)
-    # and closed by the ∴ summary; the answer opens under its own bar.
+    # and closed by the ∴ summary; the answer is a ☤-led block after a blank line, its first line
+    # beside the glyph and the rest hung under it.
     start = rows.index("**Planning the change**")
     assert rows[start - 1] == "─" * 40 and rows[start + 1] == "I will read calc.py first.", rows
     assert rows[start + 2] == thought[0], rows
-    assert rows[next(i for i, r in enumerate(rows) if r.startswith("☤ Hermes")) - 1] == "─" * 40, rows
-    assert any("Added multiply to calc.py." in line for line in rows)
+    answer = next(i for i, r in enumerate(rows) if "Added multiply to calc.py." in r)
+    assert rows[answer].startswith("☤ ") and rows[answer - 1] == "", rows
 
 
 @pytest.mark.parametrize("reasoning", [
@@ -195,8 +196,8 @@ def test_long_user_message_soft_wraps_so_a_resize_reflows_it(monkeypatch):
 
 
 def test_tool_rows_keep_the_classic_tool_emoji():
-    """Each finished tool row leads with the same emoji the classic ``┊`` row shows (📖 read, 💻
-    terminal…); a failed entry swaps it for the red ✗ so failures stay obvious."""
+    """Each finished tool row is ``✓ <emoji> <Verb>`` with the same emoji the classic ``┊`` row shows
+    (📖 read, 💻 terminal…); a failed entry gets the red ✗ so failures stay obvious."""
     from agent.display import get_cute_tool_message
     from hermes_cli.cli_modern_layout import tool_row
 
@@ -204,14 +205,14 @@ def test_tool_rows_keep_the_classic_tool_emoji():
     for name, args in (("read_file", {"path": "/etc/hostname"}), ("terminal", {"command": "echo ok"}),
                        ("execute_code", {"code": "import math"}), ("clarify", {"question": "Which?"})):
         classic_emoji = get_cute_tool_message(name, args, 0.2).split()[1]
-        assert _plain(tool_row(name, args, 0.2)).startswith(classic_emoji + " "), (name, classic_emoji)
+        assert _plain(tool_row(name, args, 0.2)).startswith(f"✓ {classic_emoji}"), (name, classic_emoji)
     failed = _plain(tool_row("terminal", {"command": "false"}, 0.2, result='{"exit_code": 1, "output": ""}'))
     assert failed.startswith("✗ ") and "[exit 1]" in failed, failed
 
 
 def test_refused_skill_write_reads_neutral_not_failed():
     """A skill_manage write the agent will re-plan (size cap, stale old_string) keeps the tool's own
-    emoji and a dim reason: no red ✗ for the agent's routine retry loop."""
+    emoji with a dim ✗ and a dim reason: no red ✗ (and no ✓) for the agent's routine retry loop."""
     from agent.display import get_tool_emoji
     from hermes_cli.cli_modern_layout import _RED, tool_row
 
@@ -219,11 +220,11 @@ def test_refused_skill_write_reads_neutral_not_failed():
                'SKILL.md content is 100,193 characters (limit: 100,000).", '
                '"file_preview": "Never ignore a ROLLBACK FAILED note."}')
     row = tool_row("skill_manage", {"operations": [{"action": "patch", "name": "hermes-agent-dev"}]}, 1.1, refused)
-    assert _plain(row).startswith(get_tool_emoji("skill_manage") + " "), row
+    assert _plain(row).startswith("✗ " + get_tool_emoji("skill_manage")), row
     assert "[operations[0]" in _plain(row) and _RED not in row, row
     # A failed rollback left partial changes on disk: that one stays a red failure.
     broken = refused.replace('(limit: 100,000)."', '(limit: 100,000). — batch aborted, ROLLBACK FAILED for demo."')
-    assert _plain(tool_row("skill_manage", {"operations": []}, 1.1, broken)).startswith("✗ ")
+    assert _RED in tool_row("skill_manage", {"operations": []}, 1.1, broken)
 
 
 def test_every_block_is_framed_by_bars_and_blank_lines(monkeypatch):
@@ -256,6 +257,6 @@ def test_every_block_is_framed_by_bars_and_blank_lines(monkeypatch):
     got = ["BAR" if r == bar else ("" if not r else r.split()[0]) for r in rows[start - 1:]]
     assert got == ["", "BAR", "❯", "BAR",          # user message
                    "", "BAR", "Plan", "∴", "BAR",  # reasoning
-                   "", "📖", "💻",                  # tool rows, tight
+                   "", "✓", "✓",                    # tool rows, tight
                    "", "BAR", "☤", "It", "BAR",    # answer
                    "", "─"], got                   # footer

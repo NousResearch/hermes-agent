@@ -101,7 +101,9 @@ class CLIChatTurnMixin:
             message = str(message)  # UI metadata is on the staged row, never in model content.
 
         if not getattr(self, "_modern_layout", False):
-            ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+            # Interactive classic turns already opened with the full-width user band; the rule is for -q.
+            if not getattr(self, "_interactive_turn", False):
+                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
             _cprint("")
 
         from agent.notification_presentation import notification_config_snapshot, notification_policy_snapshot
@@ -113,9 +115,12 @@ class CLIChatTurnMixin:
             try:
                 self._reset_stream_state()
                 # Not part of _reset_stream_state: must persist across intermediate turn
-                # boundaries (tool-calling loops), reset once per user turn.
+                # boundaries (tool-calling loops), reset once per user turn. One reply frame
+                # (top rule at the first text, bottom rule at turn end) spans the whole turn.
                 self._reasoning_shown_this_turn = False
                 self._streamed_text_this_turn = ""
+                self._reply_frame_open = False
+                self._running_tools = []
                 self._chat_setup_turn_audio(turn, message, voice_input)
                 # Per-prompt elapsed timer — frozen when the agent thread finishes.
                 self._prompt_start_time = time.time()
@@ -127,6 +132,10 @@ class CLIChatTurnMixin:
                 self._chat_settle_turn(turn)
                 return self._chat_render_turn(turn, agent_thread, interrupt_msg)
             except Exception as e:
+                try:
+                    self._close_reply_frame()
+                except Exception:  # cosmetic; the error line below matters more
+                    logging.getLogger(__name__).debug("reply frame close failed", exc_info=True)
                 _cprint(t("gateway.model.error_prefix", error=e))
                 return None
             finally:
@@ -654,7 +663,10 @@ class CLIChatTurnMixin:
         self._last_turn_failed = bool(turn.result and turn.result.get("failed"))
         if _interrupted_this_turn:
             pending_message = turn.result.get("interrupt_message") or interrupt_msg
-            _show_interrupt_marker = bool(response and pending_message)
+            # Classic: every interrupted turn leaves a receipt in scrollback, with or without a
+            # follow-up. The glyph layout marks only an answer cut short by a new message.
+            _show_interrupt_marker = (bool(response and pending_message) if getattr(self, "_modern_layout", False)
+                                      else True)
         elif interrupt_msg:
             # agent.interrupt() fired but the result doesn't acknowledge it (racy): either
             # the thread had passed its last interrupt check so finalize_turn() never saw
@@ -680,10 +692,14 @@ class CLIChatTurnMixin:
         # intermediate turn boundaries (tool loops) and re-rendered the box after the answer.
         if self.show_reasoning and turn.result and not self._reasoning_shown_this_turn:
             reasoning = turn.result.get("last_reasoning")
+            if reasoning:  # Ctrl+O gets the full text whichever layout or style prints it below.
+                self._transcript().add_reasoning(reasoning, None)
             if reasoning and getattr(self, "_modern_layout", False):
                 from hermes_cli.cli_modern_layout import thought_rows
                 for line in thought_rows(None, reasoning, self.reasoning_full):
                     _cprint(line)
+            elif reasoning and self._reasoning_collapsed():
+                self._print_collapsed_reasoning_recap(reasoning)
             elif reasoning:
                 w = self._scrollback_box_width()
                 r_label = f" {t('cli.chat.reasoning_label')} "
@@ -745,11 +761,15 @@ class CLIChatTurnMixin:
                 _post_stream_text = _post_stream_transform_output(response, turn.result)
                 if _post_stream_text.strip():
                     _cprint(_post_stream_text)
+                if modern and response.strip():  # the answer is the turn's last text block: bar it
+                    from hermes_cli.cli_modern_layout import closing_separator
+                    _cprint(closing_separator(True))
             elif modern:
-                from hermes_cli.cli_modern_layout import answer_label, closing_separator
-                _cprint(answer_label())
+                from hermes_cli.cli_modern_layout import TEXT_HANG, closing_separator, open_text_block, text_lead
+                _cprint(open_text_block())
                 ChatConsole().print(_render_final_assistant_content(response, mode=mode),
-                                    style=_resp_text, soft_wrap=True)  # terminal wraps; resize re-flows
+                                    style=_resp_text, soft_wrap=True,  # terminal wraps; resize re-flows
+                                    line_prefixes=(text_lead(), TEXT_HANG))
                 _cprint(closing_separator(True))
             else:
                 ChatConsole().print(Panel(

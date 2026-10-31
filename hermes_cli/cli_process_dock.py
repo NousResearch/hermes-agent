@@ -61,18 +61,21 @@ def process_rows(now: float | None = None) -> list:
             "kind": "process",
             "key": proc.id,
             "id": proc.id,
-            "command": " ".join((proc.command or "").split()) or t("cli.dock.process_goal_label"),
+            "command": " ".join((getattr(proc, "command_summary", "") or proc.command or "").split())
+                       or t("cli.dock.process_goal_label"),
             "status": status,
             "exit_code": proc.exit_code,
             "elapsed": max(0, int(end - proc.started_at)),
             "since_exit": max(0, int(now - exited_at)) if exited_at else 0,
             "detail": _last_output_line(proc.output_buffer),
+            # watch_patterns: the agent is monitoring this stream, not waiting for it to finish.
+            "watching": bool(getattr(proc, "watch_patterns", None)),
         })
     rows.sort(key=lambda r: (r["status"] != "running", -r["elapsed"] if r["status"] == "running" else r["since_exit"]))
     return rows
 
 
-_GLYPH = {"running": "⚙", "done": "✔", "failed": "✘", "killed": "✘", "lost": "?"}
+_GLYPH = {"running": "⚙", "done": "✓", "failed": "✗", "killed": "✗", "lost": "?"}
 # Finished-status id → catalog key of the exit verdict (looked up at paint time).
 _VERDICT_KEYS = {"done": "cli.dock.exit_code", "failed": "cli.dock.exit_code",
                  "killed": "cli.dock.verdict_killed", "lost": "cli.dock.verdict_lost"}

@@ -609,6 +609,14 @@ def _owned_locked(registry, keys, owners):
             if p.session_key in keys and (p.owner_task_id or p.task_id) in owners]
 
 
+def _command_summary(command) -> str:
+    try:
+        from agent.display import summarize_shell_command
+        return summarize_shell_command(str(command or ""))[:200]
+    except Exception:
+        return ""
+
+
 def process_snapshot(authority, ref, agent, records):
     module = sys.modules.get('tools.process_registry')
     if module is None:
@@ -617,9 +625,13 @@ def process_snapshot(authority, ref, agent, records):
     keys, owners = _ownership(authority, ref, agent, records)
     # Keep ownership and output together.
     with registry._lock:
+        # ``command`` is cut at 200 chars, often inside the ``cd``/``X=`` plumbing ahead of the real
+        # command; ``command_summary`` summarises the full command first, for one-row footers.
         return [{'session_id': p.id, 'command': p.command[:200],
+                 'command_summary': _command_summary(p.command),
                  'status': 'exited' if p.exited else 'running', 'exit_code': p.exit_code,
                  # The classic CLI dock's elapsed / exit-age / verdict and its 32k tail view.
                  'started_epoch': p.started_at, 'exited_at': p.exited_at or None,
                  'completion_reason': p.completion_reason if p.exited else None,
+                 'watch_patterns': list(p.watch_patterns or []),  # the dock draws these as monitors
                  'output_tail': p.output_buffer[-_PROCESS_TAIL_CHARS:]} for p in _owned_locked(registry, keys, owners)]

@@ -608,6 +608,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             'rt="$(readlink -f "$t" 2>/dev/null || realpath "$t" 2>/dev/null || true)"; '
             '[ -n "$rt" ] && { t="$rt"; d="$(dirname "$t")"; }; '
             "fi; "
+            # `mv` needs only the directory's permission: refuse a read-only target as `cat >` would,
+            # and write a multiply-linked file in place so the rename can't split its hard links.
+            'if [ -e "$t" ] && [ ! -w "$t" ]; then echo "Permission denied: $t" >&2; exit 1; fi; '
+            'if [ -f "$t" ] && [ "$(stat -c%h "$t" 2>/dev/null || stat -f%l "$t" 2>/dev/null || echo 1)" -gt 1 ]; '
+            'then cat > "$t"; exit 0; fi; '
             'mkdir -p "$d"; '
             'tmp="$(mktemp -p "$d" ' + tmpl + ' 2>/dev/null '
             '|| mktemp "$d/.hermes-tmp.$$.XXXXXX" 2>/dev/null '

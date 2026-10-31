@@ -62,6 +62,44 @@ def test_init_creates_expected_tables(kanban_home):
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
 
 
+def test_read_assignee_credentials_scopes_shared_anthropic_pool_per_profile(tmp_path, monkeypatch):
+    """Sequential profile reads must not reuse the dispatcher's pool state."""
+    from hermes_cli.kanban_db import _read_assignee_credentials
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    shared = root / ".anthropic_oauth"
+    shared.mkdir()
+    (shared / "grant.json").write_text(
+        '{"label":"cg.chae-claude","accessToken":"shared-token"}',
+        encoding="utf-8",
+    )
+    profiles = []
+    for name in ("alpha", "beta"):
+        home = root / "profiles" / name
+        home.mkdir(parents=True)
+        (home / "auth.json").write_text(
+            '{"credential_pool":{"anthropic":[{"id":"%s","label":"cg.chae-claude",'
+            '"source":"hermes_pkce_shared","auth_type":"oauth"}]}}' % name,
+            encoding="utf-8",
+        )
+        profiles.append(home)
+
+    monkeypatch.setenv("HERMES_HOME", str(profiles[0]))
+    tokens = []
+    for home in profiles:
+        override = set_hermes_home_override(home)
+        try:
+            creds = _read_assignee_credentials(home)
+        finally:
+            reset_hermes_home_override(override)
+        assert "anthropic" in creds
+        tokens.append(creds["anthropic"][0])
+
+    assert tokens == ["shared-token", "shared-token"]
+
+
 def test_connect_honors_kanban_busy_timeout_env(kanban_home, monkeypatch):
     """All kanban connections should use the explicit busy-timeout knob.
 

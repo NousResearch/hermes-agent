@@ -148,6 +148,148 @@ describe('parseMultipleKeypresses text control splitting', () => {
     expect(after.pendingReturn).toBe(false)
   })
 
+  it('submits a held CR when an Enter read follows inside the window (scripted text + Enter, then Enter)', () => {
+    const [keys, held] = parseMultipleKeypresses(INITIAL_STATE, 'alpha\r', 1_000)
+    const [next, after] = parseMultipleKeypresses(held, '\r', 1_060)
+
+    expect([...keys, ...next]).toEqual([
+      expect.objectContaining({ raw: 'alpha' }),
+      expect.objectContaining({ name: 'return' }),
+      expect.objectContaining({ name: 'return' })
+    ])
+    expect(after.pendingReturn).toBe(false)
+  })
+
+  it('keeps holding a CR across terminal reports, so a split paste stays content', () => {
+    // A focus report, a DECRPM reply, an SGR mouse event and a horizontal
+    // wheel event land between the two reads of a non-bracketed paste split
+    // right after a CR.
+    let [keys, state] = parseMultipleKeypresses(INITIAL_STATE, 'lineA\r', 1_000)
+
+    for (const [i, report] of ['\x1b[I', '\x1b[?1003;2$y', '\x1b[<35;10;5M', '\x1b[<66;10;5M'].entries()) {
+      const [parsed, next] = parseMultipleKeypresses(state, report, 1_010 + i * 10)
+
+      keys = [...keys, ...parsed]
+      state = next
+      expect(state.pendingReturn).toBe(true)
+    }
+
+    const [tail, rest] = parseMultipleKeypresses(state, 'lineB', 1_100)
+    const [flushed] = parseMultipleKeypresses(rest, null, 1_100 + BURST_END_QUIET_MS)
+    const all = [...keys, ...tail, ...flushed]
+
+    expect(all.some(key => key.kind === 'key' && key.name === 'return')).toBe(false)
+    expect(all.at(-1)).toEqual(expect.objectContaining({ raw: '\rlineB' }))
+  })
+
+  it('submits a held CR and an Enter read in one chunk with a terminal report, in either order', () => {
+    const [, held] = parseMultipleKeypresses(INITIAL_STATE, 'alpha\r', 1_000)
+    const [keys, after] = parseMultipleKeypresses(held, '\x1b[I\r', 1_010)
+
+    expect(keys.map(key => (key.kind === 'key' ? key.name || key.sequence : key.kind))).toEqual([
+      '\x1b[I',
+      'return',
+      'return'
+    ])
+    expect(after.pendingReturn).toBe(false)
+
+    const [reversed, afterReversed] = parseMultipleKeypresses(held, '\r\x1b[I', 1_010)
+
+    expect(reversed.map(key => (key.kind === 'key' ? key.name || key.sequence : key.kind))).toEqual([
+      'return',
+      'return',
+      '\x1b[I'
+    ])
+    expect(afterReversed.pendingReturn).toBe(false)
+  })
+
+  it('submits a held CR when an LF Return shares a read with a terminal report, in either order', () => {
+    // LF is a Return too (Ctrl+J; it submits on some POSIX setups), so it
+    // releases the held CR like Enter and keeps its own sequence.
+    const [, held] = parseMultipleKeypresses(INITIAL_STATE, 'alpha\r', 1_000)
+
+    for (const [input, expected] of [
+      ['\x1b[I\n', ['\x1b[I', 'return', 'return']],
+      ['\x1b[?1003;2$y\n', ['response', 'return', 'return']],
+      ['\n\x1b[I', ['return', 'return', '\x1b[I']]
+    ] as const) {
+      const [keys, after] = parseMultipleKeypresses(held, input, 1_010)
+      const returns = keys.filter(key => key.kind === 'key' && key.name === 'return')
+
+      expect(keys.map(key => (key.kind === 'key' ? key.name || key.sequence : key.kind))).toEqual(expected)
+      expect(returns.map(key => key.sequence)).toEqual(['\r', '\n'])
+      expect(after.pendingReturn).toBe(false)
+    }
+  })
+
+  it('keeps a held CR as paste content when its read carries more text after a newline and a report', () => {
+    // Split unbracketed paste with a blank line at the boundary and a report
+    // inside the next read: the newline token is no Enter, the read is a paste.
+    const [, held] = parseMultipleKeypresses(INITIAL_STATE, 'lineA\r', 1_000)
+
+    for (const [input, report] of [
+      ['\n\x1b[IlineB', '\x1b[I'],
+      ['\r\x1b[IlineB', '\x1b[I'],
+      ['\n\x1b[?1003;2$ylineB', 'response'],
+      ['\r\n\x1b[<35;10;5MlineB', 'mouse']
+    ] as const) {
+      const [keys, after] = parseMultipleKeypresses(held, input, 1_010)
+      const [flushed] = parseMultipleKeypresses(after, null, 1_010 + BURST_END_QUIET_MS)
+      const all = [...keys, ...flushed]
+
+      expect(all.some(key => key.kind === 'key' && key.name === 'return')).toBe(false)
+      expect(all.map(key => (key.kind === 'key' ? key.name || key.raw : key.kind))).toEqual([
+        '\r' + input.slice(0, input.indexOf('\x1b')),
+        report,
+        'lineB'
+      ])
+    }
+  })
+
+  it('keeps a held CR as paste content when the next read is several line breaks', () => {
+    // Only a read whose text is one CR or LF is an Enter; '\r\n', '\r\r' or
+    // '\n\n' after a held CR stays one pasted text run, as before the hold
+    // learned about Enter.
+    const [, held] = parseMultipleKeypresses(INITIAL_STATE, 'lineA\r', 1_000)
+
+    for (const input of ['\r\n', '\r\r', '\n\n']) {
+      const [keys, after] = parseMultipleKeypresses(held, input, 1_010)
+
+      expect(keys).toEqual([expect.objectContaining({ raw: '\r' + input })])
+      expect(after.pendingReturn).toBe(false)
+    }
+  })
+
+  it('ends the hold one window after the CR, however long mouse motion keeps streaming', () => {
+    let [, state] = parseMultipleKeypresses(INITIAL_STATE, 'alpha\r', 1_000)
+    const released: number[] = []
+
+    for (let now = 1_010; now <= 1_300; now += 30) {
+      const [keys, next] = parseMultipleKeypresses(state, '\x1b[<35;10;5M', now)
+
+      if (keys.some(key => key.kind === 'key' && key.name === 'return')) {
+        released.push(now)
+      }
+
+      state = next
+    }
+
+    expect(released).toEqual([1_250])
+    expect(state.pendingReturn).toBe(false)
+  })
+
+  it('releases a held CR before a key escape that follows a terminal report', () => {
+    const [, held] = parseMultipleKeypresses(INITIAL_STATE, 'alpha\r', 1_000)
+    const [keys, after] = parseMultipleKeypresses(held, '\x1b[I\x1b[A', 1_010)
+
+    expect(keys.map(key => (key.kind === 'key' ? key.name || key.sequence : key.kind))).toEqual([
+      '\x1b[I',
+      'return',
+      'up'
+    ])
+    expect(after.pendingReturn).toBe(false)
+  })
+
   it('keeps every CR of a non-bracketed paste split across reads as content', () => {
     // Tail read: 'line one\rline ' then 'two\r' inside the quiet window.
     const [first, mid] = parseMultipleKeypresses(INITIAL_STATE, 'line one\rline ', 1_000)

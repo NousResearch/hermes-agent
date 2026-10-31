@@ -19,8 +19,10 @@ from time import monotonic
 
 RAPID_INPUT_ENTER_WINDOW_S = 0.05
 # Long enough for the next read of a paste split across reads (slow SSH links), short enough
-# that a scripted submit still feels immediate. Humans never reach this path: their Enter comes
-# more than RAPID_INPUT_ENTER_WINDOW_S after the last keystroke.
+# that a scripted submit still feels immediate. A typed Enter usually comes more than
+# RAPID_INPUT_ENTER_WINDOW_S after the last keystroke; a single fast one inside that window
+# takes this path too and still submits once input stays quiet. A run of Enters inside the
+# window (auto-repeat) stays newlines.
 BURST_END_QUIET_S = 0.25
 
 
@@ -39,7 +41,7 @@ def note_text_change(cli) -> float:
 
 
 def handle_burst_enter(cli, event, buf) -> bool:
-    """Handle an Enter that arrived mid-burst; False when it is an ordinary (human) Enter.
+    """Handle an Enter that arrived mid-burst; False when it is an ordinary Enter (outside the window).
 
     ``cli._tui_submit_buffer(event, buf)`` is called later when this Enter turns out to end the
     burst.

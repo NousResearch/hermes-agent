@@ -154,6 +154,50 @@ describe('TextInput submit clearing', () => {
     expect(changes).not.toContain('hellox')
   })
 
+  it('keeps a split paste unsent when a newline, a focus report and more text share the read after a held CR', async () => {
+    const streams = makeStreams()
+    const submits: string[] = []
+    let current = ''
+
+    function Harness() {
+      const [value, setValue] = useState('')
+      current = value
+
+      return (
+        <TextInput
+          columns={80}
+          onChange={setValue}
+          onSubmit={text => {
+            submits.push(text)
+            setValue('')
+          }}
+          value={value}
+        />
+      )
+    }
+
+    const instance = renderSync(React.createElement(Harness), {
+      patchConsole: false,
+      stderr: streams.stderr as NodeJS.WriteStream,
+      stdin: streams.stdin as unknown as NodeJS.ReadStream,
+      stdout: streams.stdout as NodeJS.WriteStream
+    })
+
+    await settle()
+
+    // Two reads of one unbracketed paste, handled in the same tick: the first
+    // ends in CR (held), the second starts with the blank line's LF and has a
+    // focus report before the rest of the paste.
+    streams.stdin.send('lineA\r', '\n\x1b[IlineB')
+    await settle(25)
+
+    instance.unmount()
+    instance.cleanup()
+
+    expect(submits).toEqual([])
+    expect(current).toMatch(/^lineA\n+lineB$/)
+  })
+
   describe('keys after a CSI-u Enter in the same read', () => {
     afterEach(() => {
       vi.unstubAllEnvs()

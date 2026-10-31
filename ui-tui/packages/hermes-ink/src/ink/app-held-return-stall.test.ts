@@ -77,6 +77,48 @@ describe('App held CR under an event-loop stall', () => {
     expect(submitted).toEqual([])
   })
 
+  it('submits a held CR one window after the hold even when a report was read since', () => {
+    const stdin = makeStdin()
+    const app = makeApp(stdin)
+
+    stdin.queue.push('/help\r')
+    ;(app as any).handleReadable()
+    vi.advanceTimersByTime(200)
+    stdin.queue.push('\x1b[I')
+    ;(app as any).handleReadable()
+    expect((app as any).keyParseState.pendingReturn).toBe(true)
+
+    vi.advanceTimersByTime(60)
+
+    expect(submitted).toEqual(['\r'])
+  })
+
+  it('gives an escape read late in the hold window the normal escape timeout', () => {
+    const stdin = makeStdin()
+    const app = makeApp(stdin)
+    const names: string[] = []
+
+    vi.mocked(reconciler.discreteUpdates).mockImplementation(((_fn: unknown, _app: unknown, keys: any[]) => {
+      for (const key of keys) {
+        if (key.kind === 'key' && key.name) {
+          names.push(key.name)
+        }
+      }
+    }) as any)
+
+    stdin.queue.push('/help\r')
+    ;(app as any).handleReadable()
+    vi.advanceTimersByTime(240)
+    stdin.queue.push('\x1b')
+    ;(app as any).handleReadable()
+    vi.advanceTimersByTime(20)
+    stdin.queue.push('[A')
+    ;(app as any).handleReadable()
+    vi.runAllTimers()
+
+    expect(names).toEqual(['return', 'up'])
+  })
+
   it('still submits a held CR when nothing arrives', () => {
     const stdin = makeStdin()
     const app = makeApp(stdin)

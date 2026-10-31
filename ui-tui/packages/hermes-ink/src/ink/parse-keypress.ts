@@ -6,8 +6,8 @@
  */
 import { Buffer } from 'buffer'
 
-import { PASTE_END, PASTE_START } from './termio/csi.js'
-import { createTokenizer, type Tokenizer } from './termio/tokenize.js'
+import { FOCUS_IN, FOCUS_OUT, PASTE_END, PASTE_START } from './termio/csi.js'
+import { createTokenizer, type Token, type Tokenizer } from './termio/tokenize.js'
 
 // eslint-disable-next-line no-control-regex
 const META_KEY_CODE_RE = /^(?:\x1b)([a-zA-Z0-9])$/
@@ -258,6 +258,9 @@ export type KeyParseState = {
   pasteBuffer: string
   // CR held back from the end of a single-line read; see BURST_END_QUIET_MS.
   pendingReturn?: boolean
+  // When that CR was held. Reports read meanwhile do not move it, so the hold
+  // ends BURST_END_QUIET_MS after it began.
+  pendingReturnAt?: number
   // Last read of a non-bracketed paste burst: a read that carried a line break
   // as text, or any read that followed one without input going quiet.
   pasteBurstAt?: number
@@ -275,7 +278,7 @@ export const INITIAL_STATE: KeyParseState = {
 // Enter write (`tmux send-keys 'text' Enter`, a PTY write of `text\r`) or the
 // first chunk of a non-bracketed paste split across reads. The CR is held for
 // this long: a flush with nothing else read turns it into `return` (submit);
-// any read inside the window makes it paste content. Once a read carried a
+// text read inside the window makes it paste content. Once a read carried a
 // pasted line break, a read ending in CR is the tail of that paste and stays
 // content until input has been quiet for this long, however many reads the
 // paste spans. Mirrors hermes_cli/cli_enter_burst.py.
@@ -286,15 +289,82 @@ interface TextBurst {
   pasteBurstAt: number
 }
 
-// A CR held from the previous read: a flush (or an escape sequence, which is
-// no paste chunk) releases it as `return`; text read inside the window takes
-// it as the line break of a split paste.
-function resumeHeldReturn(prevState: KeyParseState, input: string, isFlush: boolean): [ParsedKey[], string] {
-  if (!prevState.pendingReturn) {
-    return [[], input]
+// A CR held from the previous read is released as `return` by a quiet flush,
+// Enter (scripted `text` + Enter, then Enter again: a read whose only text is
+// one CR or LF, since LF is a Return too) or a key escape; any other text read
+// inside the window takes it as the line break of a split paste. The Enter
+// test covers the whole read, not one token: a report can split a paste's
+// leading newline from the rest of its text. Terminal
+// replies, focus and mouse reports are no keystroke, so the CR stays held
+// across them, but only until the window that began with the hold ends: a
+// report read after that releases it, so mouse motion cannot hold it longer.
+function isTerminalReport(key: ParsedInput): boolean {
+  return (
+    key.kind !== 'key' ||
+    key.sequence === FOCUS_IN ||
+    key.sequence === FOCUS_OUT ||
+    key.name === 'wheelup' ||
+    key.name === 'wheeldown' ||
+    key.name === 'mouse'
+  )
+}
+
+function createHeldReturn(
+  prevState: KeyParseState,
+  keys: ParsedInput[],
+  tokens: readonly Token[],
+  isFlush: boolean,
+  now: number
+) {
+  let pending = Boolean(prevState.pendingReturn)
+  const expired = now - (prevState.pendingReturnAt ?? now) >= BURST_END_QUIET_MS
+  const readText = tokens.flatMap(token => (token.type === 'text' ? [token.value] : [])).join('')
+  const enterRead = readText === '\r' || readText === '\n'
+
+  const held = {
+    pending: (): boolean => pending,
+    heldAt: (): number | undefined => (pending ? prevState.pendingReturnAt : undefined),
+    release: (): void => {
+      if (pending) {
+        keys.push(parseKeypress('\r'))
+        pending = false
+      }
+    },
+    beforeKey: (key: ParsedInput): void => {
+      if (expired || !isTerminalReport(key)) {
+        held.release()
+      }
+    },
+    takeAsText: (text: string): string => {
+      if (enterRead) {
+        held.release()
+
+        return text
+      }
+
+      const taken = pending ? '\r' + text : text
+
+      pending = false
+
+      return taken
+    }
   }
 
-  return isFlush || input.startsWith('\x1b') ? [[parseKeypress('\r')], input] : [[], '\r' + input]
+  if (isFlush) {
+    held.release()
+  }
+
+  return held
+}
+
+function parseSequenceToken(sequence: string): ParsedInput {
+  const response = parseTerminalResponse(sequence)
+
+  if (response) {
+    return { kind: 'response', sequence, response }
+  }
+
+  return parseMouseEvent(sequence) ?? parseKeypress(sequence)
 }
 
 // Any read inside the quiet window keeps a paste burst alive, so a paste that
@@ -345,8 +415,8 @@ export function parseMultipleKeypresses(
   now: number = Date.now()
 ): [ParsedInput[], KeyParseState] {
   const isFlush = input === null
-  const [held, inputString] = resumeHeldReturn(prevState, isFlush ? '' : inputToString(input), isFlush)
-  const keys: ParsedInput[] = [...held]
+  const inputString = isFlush ? '' : inputToString(input)
+  const keys: ParsedInput[] = []
   const burst: TextBurst = { pendingReturn: false, pasteBurstAt: prevState.pasteBurstAt ?? -Infinity }
 
   // Get or create tokenizer
@@ -354,6 +424,7 @@ export function parseMultipleKeypresses(
 
   // Tokenize the input
   const tokens = isFlush ? tokenizer.flush() : tokenizer.feed(inputString)
+  const heldReturn = createHeldReturn(prevState, keys, tokens, isFlush, now)
 
   // Convert tokens to parsed keys, handling paste mode
   let inPaste = prevState.mode === 'IN_PASTE'
@@ -362,12 +433,14 @@ export function parseMultipleKeypresses(
   for (const [index, token] of tokens.entries()) {
     if (token.type === 'sequence') {
       if (token.value === PASTE_START) {
+        heldReturn.release()
         inPaste = true
         pasteBuffer = ''
       } else if (token.value === PASTE_END) {
         // Always emit a paste key, even for empty pastes. This allows
         // downstream handlers to detect empty pastes (e.g., for clipboard
         // image handling on macOS). The paste content may be empty string.
+        heldReturn.release()
         keys.push(createPasteKey(pasteBuffer))
         inPaste = false
         pasteBuffer = ''
@@ -375,19 +448,10 @@ export function parseMultipleKeypresses(
         // Sequences inside paste are treated as literal text
         pasteBuffer += token.value
       } else {
-        const response = parseTerminalResponse(token.value)
+        const key = parseSequenceToken(token.value)
 
-        if (response) {
-          keys.push({ kind: 'response', sequence: token.value, response })
-        } else {
-          const mouse = parseMouseEvent(token.value)
-
-          if (mouse) {
-            keys.push(mouse)
-          } else {
-            keys.push(parseKeypress(token.value))
-          }
-        }
+        heldReturn.beforeKey(key)
+        keys.push(key)
       }
     } else if (token.type === 'text') {
       if (inPaste) {
@@ -403,7 +467,9 @@ export function parseMultipleKeypresses(
         const resynthesized = '\x1b' + token.value
         keys.push(parseKeypress(resynthesized))
       } else {
-        keys.push(...parseTextToken(token.value, burst, index === tokens.length - 1 && !tokenizer.buffer(), now))
+        const text = heldReturn.takeAsText(token.value)
+
+        keys.push(...parseTextToken(text, burst, index === tokens.length - 1 && !tokenizer.buffer(), now))
       }
     }
   }
@@ -425,7 +491,8 @@ export function parseMultipleKeypresses(
     mode: inPaste ? 'IN_PASTE' : 'NORMAL',
     incomplete: tokenizer.buffer(),
     pasteBuffer,
-    pendingReturn: burst.pendingReturn,
+    pendingReturn: heldReturn.pending() || burst.pendingReturn,
+    pendingReturnAt: burst.pendingReturn ? now : heldReturn.heldAt(),
     pasteBurstAt: extendPasteBurst(burst.pasteBurstAt, isFlush, now),
     _tokenizer: tokenizer
   }

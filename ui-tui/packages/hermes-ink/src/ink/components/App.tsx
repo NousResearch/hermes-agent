@@ -595,7 +595,13 @@ export default class App extends PureComponent<Props, State> {
       return this.PASTE_TIMEOUT
     }
 
-    return this.keyParseState.pendingReturn ? BURST_END_QUIET_MS : this.NORMAL_TIMEOUT
+    const { pendingReturn, pendingReturnAt = Date.now() } = this.keyParseState
+
+    // A held CR's window began with the hold; a report read since does not restart it.
+    // An incomplete escape still gets at least the normal escape timeout.
+    const floor = this.keyParseState.incomplete ? this.NORMAL_TIMEOUT : 0
+
+    return pendingReturn ? Math.max(floor, pendingReturnAt + BURST_END_QUIET_MS - Date.now()) : this.NORMAL_TIMEOUT
   }
   handleReadable = (): void => {
     // Detect long stdin gaps (tmux attach, ssh reconnect, laptop wake).

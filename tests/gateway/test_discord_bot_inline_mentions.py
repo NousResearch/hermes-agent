@@ -58,3 +58,27 @@ def test_explicit_false_restores_reply_ping_compatibility(monkeypatch):
     admitted, _ = adapter._discord_message_admission(
         _reply_ping_from_bot(adapter, "legacy reply handoff"), claim=False)
     assert admitted is True
+
+
+def _flagless_webhook_post(content: str):
+    # Discord guarantees only ``webhook_id`` on webhook posts; the author is the webhook's
+    # id/name/avatar and real payloads may omit ``bot`` (discord.py then reports bot=False).
+    return SimpleNamespace(
+        id=124, webhook_id=555, author=SimpleNamespace(id=555, bot=False),
+        channel=SimpleNamespace(id=7), content=content, mentions=[],
+        type=discord.MessageType.default,
+    )
+
+
+@pytest.mark.parametrize(("allow_bots", "content", "admitted"), [
+    ("none", "<@99> deploy failed", False),  # allow-all human rung must not admit a webhook
+    ("mentions", "deploy failed", False),
+    ("mentions", "<@99> deploy failed", True),
+])
+def test_flagless_webhook_posts_follow_allow_bots(monkeypatch, allow_bots, content, admitted):
+    monkeypatch.delenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", raising=False)
+    monkeypatch.setenv("DISCORD_IGNORE_NO_MENTION", "false")
+    adapter = _adapter(allow_bots=allow_bots)
+
+    got, _ = adapter._discord_message_admission(_flagless_webhook_post(content), claim=False)
+    assert got is admitted

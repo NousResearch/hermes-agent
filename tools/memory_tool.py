@@ -41,7 +41,8 @@ def get_memory_dir() -> Path:
 
 
 from tools.memory_tool_store import (
-    ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, MemoryStore, _scan_memory_content)
+    ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, REPLAY_PENDING_ID, MemoryStore,
+    _scan_memory_content)
 
 
 def load_on_disk_store() -> MemoryStore:
@@ -362,12 +363,17 @@ def apply_memory_pending(payload: dict[str, Any], store: MemoryStore) -> dict[st
     if any(not op.get("matched_entry") for op in destructive_ops(payload)):
         return {"success": False, "error": "This destructive pending write predates entry pinning and cannot be "
                                            "verified; nothing was applied. Reject it and recreate the change."}
-    if action == "batch":
-        return store.apply_batch(target, payload.get("operations") or [])
-    if action not in _STORE_ACTIONS:
+    if action != "batch" and action not in _STORE_ACTIONS:
         return {"success": False, "error": f"Unknown staged action '{action}'."}
-    return _STORE_ACTIONS[action][0](store, target, payload.get("content") or "", payload.get("old_text") or "",
-                                     payload.get("matched_entry"))
+    # post_memory_write observers learn which pending record this replay applied.
+    token = REPLAY_PENDING_ID.set(payload.get("pending_id") or None)
+    try:
+        if action == "batch":
+            return store.apply_batch(target, payload.get("operations") or [])
+        return _STORE_ACTIONS[action][0](store, target, payload.get("content") or "", payload.get("old_text") or "",
+                                         payload.get("matched_entry"))
+    finally:
+        REPLAY_PENDING_ID.reset(token)
 
 
 MEMORY_SCHEMA = {

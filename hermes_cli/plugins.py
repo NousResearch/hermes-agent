@@ -131,8 +131,8 @@ VALID_HOOKS: set[str] = {
     # error_body may be unredacted.
     "transform_api_error_classification", "on_session_start", "on_session_end",
     "on_session_finalize", "on_session_reset", "on_session_delete",
-    # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
-    "on_skill_lifecycle", "subagent_start", "subagent_stop",
+    # on_skill_lifecycle: skill lifecycle facts; post_memory_write: built-in memory write (hooks.md).
+    "on_skill_lifecycle", "post_memory_write", "subagent_start", "subagent_stop",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.

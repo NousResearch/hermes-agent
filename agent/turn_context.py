@@ -503,6 +503,7 @@ class TurnContext:
     current_turn_user_idx: int  # index of the current user turn within ``messages``
     should_review_memory: bool = False  # post-turn memory review should fire
     plugin_user_context: str = ""  # ``pre_llm_call`` context (appended to user message)
+    plugin_block_message: str = ""  # ``pre_llm_call`` veto: the turn ends with this, no inference
     ext_prefetch_cache: str = ""  # external-memory prefetch, reused across iterations
     preflight_compression_blocked: bool = False  # immediate retry proved ineffective
 
@@ -800,13 +801,21 @@ def _ensure_session_row(agent: Any, pending_cli_message: Any) -> None:
     )
 
 
+# ``turn_exit_reason`` of a turn a ``pre_llm_call`` hook vetoed before any inference request, and
+# the ``api_content`` later turns replay in place of the vetoed prompt (the transcript keeps it).
+PRE_LLM_BLOCK_EXIT_REASON = "blocked_by_plugin_pre_llm_call"
+PRE_LLM_BLOCK_WITHHELD_PROMPT = "[Message withheld: a pre_llm_call policy hook blocked it.]"
+
+
 def _collect_pre_llm_call_context(
     agent: Any, *, effective_task_id: str, turn_id: str, original_user_message: Any,
-    messages: list[Any], conversation_history: Optional[list[Any]],
+    messages: list[Any], conversation_history: Optional[list[Any]], blocks: Optional[list[str]] = None,
 ) -> str:
     """Run ``pre_llm_call`` plugins; their context is injected into the user message
     (never the system prompt). Oversized per-hook context is spilled to disk so a
-    runaway plugin can't inflate every subsequent turn's prompt."""
+    runaway plugin can't inflate every subsequent turn's prompt. Each
+    ``{"action": "block", "message": ...}`` veto is appended to ``blocks`` (#57364); one
+    without a message is ignored, as for ``pre_tool_call``."""
     if getattr(agent, "_persist_disabled", False):
         return ""
     try:
@@ -836,6 +845,11 @@ def _collect_pre_llm_call_context(
             _spill_config_cached = None
         _ctx_parts: list[str] = []
         for r in _pre_results:
+            if isinstance(r, dict) and r.get("action") == "block":
+                _msg = r.get("message")
+                if blocks is not None and isinstance(_msg, str) and _msg.strip():
+                    blocks.append(_msg.strip())
+                continue
             if isinstance(r, dict) and r.get("context"):
                 _piece = str(r["context"])
             elif isinstance(r, str) and r.strip():
@@ -1185,11 +1199,13 @@ def build_turn_context(
     conversation_history = compaction.conversation_history
     current_turn_user_idx = compaction.current_turn_user_idx
 
+    _blocks: list[str] = []
     plugin_user_context = _collect_pre_llm_call_context(
         agent, effective_task_id=effective_task_id, turn_id=turn_id,
         original_user_message=original_user_message, messages=messages,
-        conversation_history=conversation_history,
+        conversation_history=conversation_history, blocks=_blocks,
     )
+    plugin_block_message = _blocks[0] if _blocks else ""  # first veto wins
     # Every turn, not only on a prompt restore: a long-lived agent (CLI, TUI, Desktop) keeps its
     # prompt in memory for the whole conversation and would never re-check its skills index.
     stage_skills_index_note(agent, active_system_prompt, messages)
@@ -1198,16 +1214,21 @@ def build_turn_context(
     )
 
     _bind_interrupt_scope(agent, ra)
-    ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
+    # A vetoed prompt never leaves the host: no external-memory prefetch, no titling call.
+    ext_prefetch_cache = "" if plugin_block_message else _memory_turn_start_and_prefetch(
+        agent, original_user_message, turn_author)
 
     # Title the session now: titling depends only on the user's ask (before any injected
     # context lands on list content), so it runs concurrently with the turn. Daemon thread,
     # no-op once titled; it ensures the session row itself.
-    _maybe_title_session_at_turn_start(agent, messages, title_user_message)
+    if not plugin_block_message:
+        _maybe_title_session_at_turn_start(agent, messages, title_user_message)
 
     # Sidecar skipped for codex_app_server/MoA; list content carries its context as a part in every mode.
     if 0 <= current_turn_user_idx < len(messages) and messages[current_turn_user_idx].get("role") == "user":
-        if isinstance(messages[current_turn_user_idx].get("content"), list):
+        if plugin_block_message:
+            messages[current_turn_user_idx]["api_content"] = PRE_LLM_BLOCK_WITHHELD_PROMPT
+        elif isinstance(messages[current_turn_user_idx].get("content"), list):
             _append_multimodal_context(
                 agent, messages[current_turn_user_idx], ext_prefetch_cache, plugin_user_context,
                 preflight_compressed=compaction.compressed,
@@ -1225,8 +1246,8 @@ def build_turn_context(
         conversation_history=conversation_history, active_system_prompt=active_system_prompt,
         effective_task_id=effective_task_id, turn_id=turn_id,
         current_turn_user_idx=current_turn_user_idx, should_review_memory=should_review_memory,
-        plugin_user_context=plugin_user_context, ext_prefetch_cache=ext_prefetch_cache,
-        preflight_compression_blocked=compaction.blocked,
+        plugin_user_context=plugin_user_context, plugin_block_message=plugin_block_message,
+        ext_prefetch_cache=ext_prefetch_cache, preflight_compression_blocked=compaction.blocked,
     )
 
 

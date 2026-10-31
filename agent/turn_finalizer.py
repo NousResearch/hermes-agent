@@ -588,6 +588,34 @@ def public_pre_transform(agent, pre_transform: Optional[Any]) -> Optional[Any]:
     return None if getattr(agent, "_hold_stream", False) else pre_transform
 
 
+def _mirror_turn_to_memory(
+    agent, *, original_user_message, final_response, interrupted, messages, review_memory, review_skills, vetoed,
+) -> None:
+    """External-memory sync (+ next prefetch), then the background memory/skill review. A prompt a
+    ``pre_llm_call`` hook vetoed never leaves the host, so neither runs for that turn."""
+    if vetoed:
+        return
+    agent._sync_external_memory_for_turn(
+        original_user_message=original_user_message, final_response=final_response,
+        interrupted=interrupted, messages=messages,
+    )
+    # Background memory/skill review runs AFTER delivery so it never competes with the
+    # user's task. Suppressed by skip_background_review (e.g. cron): the fork costs
+    # ~30K tokens / event with no human-in-the-loop benefit. Best-effort; the review
+    # clones the snapshot structurally so its sanitizers can't reach the live transcript.
+    if (
+        final_response
+        and not interrupted
+        and not getattr(agent, "skip_background_review", False)
+        and (review_memory or review_skills)
+    ):
+        with suppress(Exception):
+            agent._spawn_background_review(
+                messages_snapshot=list(messages), review_memory=review_memory,
+                review_skills=review_skills,
+            )
+
+
 def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
@@ -837,27 +865,12 @@ def finalize_turn(
     if _should_review_skills:
         agent._iters_since_skill = 0
 
-    # External memory provider: sync the completed turn + queue next prefetch.
-    agent._sync_external_memory_for_turn(
-        original_user_message=original_user_message, final_response=final_response,
-        interrupted=interrupted, messages=messages,
+    from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON
+    _mirror_turn_to_memory(
+        agent, original_user_message=original_user_message, final_response=final_response,
+        interrupted=interrupted, messages=messages, review_memory=_should_review_memory,
+        review_skills=_should_review_skills, vetoed=_turn_exit_reason == PRE_LLM_BLOCK_EXIT_REASON,
     )
-
-    # Background memory/skill review runs AFTER delivery so it never competes with the
-    # user's task. Suppressed by skip_background_review (e.g. cron): the fork costs
-    # ~30K tokens / event with no human-in-the-loop benefit. Best-effort; the review
-    # clones the snapshot structurally so its sanitizers can't reach the live transcript.
-    if (
-        final_response
-        and not interrupted
-        and not getattr(agent, "skip_background_review", False)
-        and (_should_review_memory or _should_review_skills)
-    ):
-        with suppress(Exception):
-            agent._spawn_background_review(
-                messages_snapshot=list(messages), review_memory=_should_review_memory,
-                review_skills=_should_review_skills,
-            )
 
     # Opt-in (compression.prepare_ahead): near the trigger, write the next compaction summary
     # between turns. No-op otherwise; never raises.

@@ -42,6 +42,21 @@ def _redact_telegram_error_text(error: object) -> str:
         return "<telegram error redacted>"
 
 
+def _resolve_webhook_port(extra: Optional[dict]) -> int:
+    """Resolve the Telegram webhook port from the OWNING profile's config.
+
+    A raw ``os.environ`` read collapses every served profile onto the default profile's port under
+    a multiplex gateway (``os.environ`` holds only the launch/default profile there), so all but one
+    adapter fails to bind with ``EADDRINUSE``. Read per-profile exactly like ``TELEGRAM_WEBHOOK_URL``
+    and ``TELEGRAM_WEBHOOK_SECRET``: env ``TELEGRAM_WEBHOOK_PORT`` -> ``config.extra['webhook_port']``
+    -> 8443, scoped to the profile whose adapter is connecting (gateway/AGENTS.md § Profile scope).
+    """
+    try:
+        return int(_extra_or_secret(extra, "webhook_port", "TELEGRAM_WEBHOOK_PORT", 8443))
+    except (TypeError, ValueError):
+        return 8443
+
+
 def _consume_abandoned_task(task: asyncio.Task) -> None:
     """Observe a detached task's terminal exception to avoid noisy loop logs."""
     try:
@@ -3115,7 +3130,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """Start PTB's webhook server (Telegram pushes updates; lets cloud platforms auto-wake suspended
         machines). SECURITY: TELEGRAM_WEBHOOK_SECRET is REQUIRED — without it the endpoint accepts forged
         updates (GHSA-3vpc-7q5r-276h); refuse to start rather than run fail-open."""
-        webhook_port = env_int("TELEGRAM_WEBHOOK_PORT", 8443)
+        webhook_port = _resolve_webhook_port(self.config.extra)
         # Default "" → tornado listens on IPv4 + IPv6; "0.0.0.0" is unreachable on IPv6-only networks.
         webhook_host = (os.getenv("TELEGRAM_WEBHOOK_HOST", "").strip() or str((self.config.extra or {}).get("webhook_host") or "").strip())
         webhook_secret = (_get_scoped_secret("TELEGRAM_WEBHOOK_SECRET") or "").strip()

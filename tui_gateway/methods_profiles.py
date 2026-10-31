@@ -675,7 +675,32 @@ def _configure_model(profile_dir, params, applied):
         confirm_message = _try(lambda: getattr(warn(model, provider=provider or None), "message", None), None)
     if confirm_message is None:
         applied["model"] = _best_effort(lambda: _pin_profile_model(profile_dir, provider, model))
+        if applied["model"]:
+            _sync_profile_model_chats(profile_dir)
     return confirm_message
+
+
+def _sync_profile_model_chats(profile_dir) -> None:
+    """Publish an editor model change to idle Bot Chats instead of waiting for another prompt.
+
+    Busy turns retain their runtime; their existing turn-start sync adopts the saved config.
+    Ordinary sessions and other profiles must not inherit a Bot editor selection.
+    """
+    target_home = Path(profile_dir).resolve()
+    with _sessions_lock:
+        sessions = list(_sessions.items())
+    for sid, session in sessions:
+        try:
+            if not session.get("follow_profile_config") or session.get("running") or session.get("agent") is None:
+                continue
+            if Path(session.get("profile_home") or _hermes_home).resolve() != target_home:
+                continue
+            with _session_profile_runtime_scope(session):
+                _sync_agent_model_with_config(sid, session)
+        except Exception:
+            # The profile is already saved; one failed chat must not turn the
+            # save into an error or prevent the other followers from updating.
+            logger.exception("Could not sync saved profile model for session %s", sid)
 
 
 def _clean_names(values) -> set:

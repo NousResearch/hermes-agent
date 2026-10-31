@@ -73,6 +73,8 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
 def test_decompose_records_audit_comment_and_event(kanban_home):
     with kbc.connect() as conn:
         tid = _create_triage(conn)
+
+    with kbc.connect() as conn:
         child_ids = decompose_triage_task(
             conn,
             tid,
@@ -89,6 +91,34 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
     assert comments
     assert any(ev.kind == "decomposed" for ev in events)
 
+
+def test_worktree_children_inherit_root_anchor(kanban_home, tmp_path):
+    repo_anchor = tmp_path / "repo"
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship a worktree feature",
+            assignee="orchestrator",
+            workspace_kind="worktree",
+            workspace_path=str(repo_anchor),
+            triage=True,
+        )
+        child_ids = decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orchestrator",
+            children=[{"title": "child A"}, {"title": "child B"}],
+            author="decomposer",
+        )
+        assert child_ids is not None
+        children = []
+        for child_id in child_ids:
+            child = kb.get_task(conn, child_id)
+            assert child is not None
+            children.append(child)
+
+    assert [child.workspace_kind for child in children] == ["worktree", "worktree"]
+    assert [child.workspace_path for child in children] == [str(repo_anchor)] * 2
 
 
 

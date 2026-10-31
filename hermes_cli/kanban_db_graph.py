@@ -173,12 +173,12 @@ def _insert_decomposed_child(
     """Insert one decomposed child as ``todo`` (linked under the root later so
     the dispatcher only ever sees a coherent graph); returns its id.
 
-    Workspace: per-child override wins, else inherit the root's kind. Path
-    inherits only when kinds match (a 'dir' child must not point at the
-    root's worktree) and NEVER for worktrees — siblings dispatch concurrently
-    and one shared checkout would put them all on the first sibling's branch
-    with no lock; leaving it unset makes dispatch materialize a fresh
-    ``<repo>/.worktrees/<child-id>`` per child from the board anchor.
+    Workspace: per-child override wins, else inherit the root's kind and
+    anchor path. Worktree children inherit the root path as an anchor, not as
+    a shared checkout: the workspace resolver detects a repo root or an
+    occupied worktree and materializes a fresh
+    ``<repo>/.worktrees/<child-id>`` checkout for each child. This keeps
+    sibling branches isolated without requiring board ``default_workdir``.
     """
     from hermes_cli.kanban_db import (
         _new_task_id, _canonical_assignee, _append_event,
@@ -188,8 +188,10 @@ def _insert_decomposed_child(
     child_ws_kind = child.get("workspace_kind") or root_ws_kind
     if child.get("workspace_path"):
         child_ws_path = child.get("workspace_path")
-    elif child_ws_kind == "worktree":
-        child_ws_path = None
+    elif child_ws_kind == "worktree" and root_ws_kind == "worktree":
+        # Carry the root repo/worktree as an anchor.  The resolver creates a
+        # distinct child worktree instead of reusing this checkout.
+        child_ws_path = root_row["workspace_path"]
     elif child_ws_kind == root_ws_kind:
         child_ws_path = root_row["workspace_path"]
     else:

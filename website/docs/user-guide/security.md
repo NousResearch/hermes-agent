@@ -824,8 +824,8 @@ destructive-verb list misses:
 - Invisible or bidirectional Unicode control characters (zero-width spaces,
   right-to-left overrides, isolates, and variation selectors that do not follow
   an emoji), which make the command you approve differ from the one that runs.
-  Emoji joiner sequences and an emoji's own presentation selector (as in folder
-  names like `ℹ️ Info`) are not flagged.
+  Emoji joiner sequences, keycap emoji (`1️⃣`, `#️⃣`), and an emoji's own
+  presentation selector (as in folder names like `ℹ️ Info`) are not flagged.
 
 Both go through the normal approval flow like every other dangerous pattern.
 

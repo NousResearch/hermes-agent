@@ -717,6 +717,19 @@ class TestBuildMessageEvent:
         assert event.source.chat_type == "group"
         assert event.source.thread_id == "spaces/G/threads/T1"
 
+    @pytest.mark.asyncio
+    async def test_labelled_link_keeps_its_url(self, adapter):
+        """Chat's plain text drops a labelled link's URL; formattedText still carries it."""
+        env = _make_chat_envelope(text="see (AIG-1646) and Docs please")
+        msg = env["chat"]["messagePayload"]["message"]
+        msg["formattedText"] = (
+            "see (<https://jira.example/AIG-1646|AIG-1646>) and <https://docs.example/a|Docs> please"
+        )
+        event = await adapter._build_message_event(msg, env)
+        assert event.text == (
+            "see ([AIG-1646](https://jira.example/AIG-1646)) and [Docs](https://docs.example/a) please"
+        )
+
 
 # ===========================================================================
 # send() — text, patch-in-place, chunking, error handling

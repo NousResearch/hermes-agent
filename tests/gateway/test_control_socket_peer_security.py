@@ -1,6 +1,7 @@
 """Control-socket trust boundary: server identity, home writability, pointer mode, fallback root."""
 import os
 import socket
+import struct
 from pathlib import Path
 
 import pytest
@@ -184,3 +185,82 @@ def test_long_home_prefers_the_private_runtime_dir(tmp_path, monkeypatch):
         assert resolve_server_socket_path(home)[0].parent.parent != runtime
     finally:
         runtime.rmdir()
+
+
+# A uid at or above 2**31 is normal under Google Cloud OS Login, SSSD/AD ID mapping and some
+# user-namespace mappings (#146782). struct ucred is {pid_t pid; uid_t uid; gid_t gid;} and uid_t
+# is unsigned, so such a uid must read back as os.getuid() returns it, never as a negative number.
+HIGH_UID = 3093752771
+
+
+class _PeerCred:
+    """A connected AF_UNIX socket as SO_PEERCRED reports it, for a peer running as *uid*."""
+
+    def __init__(self, uid):
+        self.uid = uid
+
+    def getsockopt(self, level, option, size):
+        assert (level, option, size) == (socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+        return struct.pack("iII", 4242, self.uid, self.uid)
+
+
+def test_a_peer_uid_at_or_above_2_31_reads_back_unsigned():
+    from hermes_cli.gateway_runtime_discovery import socket_peer_uid
+    assert socket_peer_uid(_PeerCred(HIGH_UID)) == HIGH_UID
+    assert socket_peer_uid(_PeerCred(2**31)) == 2**31
+    assert socket_peer_uid(_PeerCred(1000)) == 1000
+    ours, theirs = socket.socketpair(socket.AF_UNIX)
+    try:
+        assert socket_peer_uid(ours) == os.getuid()  # the real kernel answer is unchanged
+    finally:
+        ours.close()
+        theirs.close()
+
+
+def test_the_client_connects_to_its_own_listener_when_its_uid_is_at_or_above_2_31(tmp_path, monkeypatch):
+    from hermes_cli import gateway_runtime_discovery as discovery
+
+    class Listener(_PeerCred):  # the control socket the client connects to, run by the same user
+        def __init__(self, *_args):
+            super().__init__(HIGH_UID)
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, _path):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(discovery.os, "getuid", lambda: HIGH_UID)
+    monkeypatch.setattr(discovery, "_socket_path", lambda _home: tmp_path / "control.sock")
+    monkeypatch.setattr(discovery.socket, "socket", Listener)
+    assert isinstance(discovery.connect_private(tmp_path, timeout=1), Listener)
+
+
+def test_the_server_authenticates_a_same_user_peer_whose_uid_is_at_or_above_2_31(tmp_path, monkeypatch):
+    import stat
+    from types import SimpleNamespace
+    from gateway.control_socket import GatewayControlServer
+    from hermes_cli import gateway_runtime_discovery as discovery
+    server = GatewayControlServer(tmp_path)
+
+    class Home:  # the gateway home as lstat reports it for that user
+        def lstat(self):
+            return SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=HIGH_UID)
+
+        def absolute(self):
+            return self
+
+        def resolve(self):
+            return self
+
+    class Writer:
+        def get_extra_info(self, _key):
+            return _PeerCred(HIGH_UID)
+
+    server._home = Home()
+    monkeypatch.setattr(os, "getuid", lambda: HIGH_UID)
+    monkeypatch.setattr(discovery, "home_mode_unsafe", lambda _info, _home: False)
+    assert server._posix_peer_subject(Writer()) == f"uid:{HIGH_UID}"

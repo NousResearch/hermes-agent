@@ -271,7 +271,15 @@ def test_v2_marker_whose_pid_was_reused_is_reclaimed(marker, other_pid):
     assert int(marker.read_text(encoding="utf-8-sig").splitlines()[0]) == os.getpid()
 
 
-def test_delegate_keeps_the_claim_live_after_the_partner_dies(marker, monkeypatch, other_pid):
+@pytest.fixture
+def outside_runtime_host(monkeypatch):
+    """The ancestry runtime-host guard (cli §7 V9) is off under pytest: the
+    supervisor's tests must adopt a hand-off claim regardless of where the
+    suite itself happens to run (a gateway session would otherwise refuse)."""
+    monkeypatch.setattr(update_lock, "_runtime_host_below", lambda _pid: False)
+
+
+def test_delegate_keeps_the_claim_live_after_the_partner_dies(marker, monkeypatch, other_pid, outside_runtime_host):
     """Rule 6: `hermes update` adopting a hand-off claim names itself on line 4, restores
     lines 1-3 byte-identical on exit, and is what keeps the claim visible if the partner dies."""
     _claim_v2(marker, other_pid)
@@ -641,7 +649,7 @@ class TestHandoffFromOrchestratingUpdater:
     HANDOFF_PID_ENV; a live holder matching it is our own orchestrator.
     """
 
-    def test_child_runs_under_the_parents_live_claim(self, marker, monkeypatch, other_pid):
+    def test_child_runs_under_the_parents_live_claim(self, marker, monkeypatch, other_pid, outside_runtime_host):
         # other_pid stands in for the live parent updater.
         _claim(marker, other_pid)
         monkeypatch.setenv(HANDOFF_PID_ENV, str(other_pid))

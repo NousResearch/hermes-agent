@@ -20,11 +20,11 @@ We cover three backends:
 
 | Backend | Install | Best at | Format |
 |---------|---------|---------|--------|
-| **llama.cpp** | `brew install llama.cpp` | GGUF models, quantized KV cache for low memory | GGUF |
-| **omlx** | [omlx.ai](https://omlx.ai) | MLX models, multi-model serving | MLX (safetensors) |
+| **llama.cpp** | `brew install llama.cpp` | Fastest time-to-first-token, quantized KV cache for low memory | GGUF |
+| **omlx** | [omlx.ai](https://omlx.ai) | Fastest token generation, native Metal optimization | MLX (safetensors) |
 | **vllm-metal** | [Installation guide](https://docs.vllm.ai/projects/vllm-metal/en/latest/installation/) | vLLM's serving API on Apple Silicon | MLX (safetensors) |
 
-All three expose an OpenAI-compatible `/v1/chat/completions` endpoint. Connect through Hermes' **Custom endpoint** option using the server's `/v1` base URL.
+All three expose an OpenAI-compatible `/v1/chat/completions` endpoint. Hermes works with any of them — just point it at `http://localhost:8080` or `http://localhost:8000`.
 
 :::info Apple Silicon only
 This guide targets Macs with Apple Silicon (M1 and later). Intel Macs will work with llama.cpp but without GPU acceleration — expect significantly slower performance.

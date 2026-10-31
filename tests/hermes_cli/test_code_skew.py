@@ -21,8 +21,16 @@ import hermes_cli.web_server_profiles as _web_server_profiles
 
 @pytest.fixture(autouse=True)
 def _reset_boot_fingerprint(monkeypatch):
-    """Each test starts with no recorded boot fingerprint."""
+    """Each test starts with no recorded boot fingerprint.
+
+    Both halves of the record are reset: the ref half lives here, and the CONTENT half lives in
+    ``hermes_cli.tree_fingerprint`` (ruling ``t_8fed34c8``) -- a leftover content record would let a
+    later test in this process be gated on a tree it never adopted.
+    """
+    from hermes_cli import tree_fingerprint
+
     monkeypatch.setattr(code_skew, "_boot_fingerprint", None)
+    monkeypatch.setattr(tree_fingerprint, "_boot_record", None)
 
 
 class TestDetectCodeSkew:

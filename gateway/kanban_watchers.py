@@ -28,6 +28,7 @@ from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_coll
 from gateway.kanban_watchers_dispatcher import (
     _KanbanDispatcher,
     _log_spawn_results,
+    _log_tick_yields,
     _resolve_dispatcher_settings,
 )
 
@@ -307,8 +308,15 @@ class GatewayKanbanWatchersMixin:
                         await _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)
                     results = await _to_thread_process_service(dispatcher.tick_once)
                     any_spawned = _log_spawn_results(results)
-                    ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
-                    bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
+                    if _log_tick_yields(results):
+                        # Working as designed: the content-skew gate refused to spawn from a mixed
+                        # revision. Counting it as a "stuck dispatcher" would mislabel a healthy
+                        # refusal as a broken profile; the non-green status record and the acting
+                        # card are the signal (ruling t_8fed34c8).
+                        bad_ticks = 0
+                    else:
+                        ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
+                        bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
                 now = int(time.time())
                 if bad_ticks >= _HEALTH_WINDOW and now - last_warn_at >= 300:
                     held = _kbd.describe_suppression(res for _slug, res in (results or []))

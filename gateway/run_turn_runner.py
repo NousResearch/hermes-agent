@@ -1020,7 +1020,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             from gateway.session_results import execution_result
             captured = execution_result.get()
             before = (getattr(agent, 'session_prompt_tokens', 0) or 0,
-                      getattr(agent, 'session_completion_tokens', 0) or 0)
+                      getattr(agent, 'session_completion_tokens', 0) or 0,
+                      getattr(agent, 'session_estimated_cost_usd', 0.0) or 0.0)
             with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
                 from gateway.response_filters import silence_allowed
                 # Where a bare marker would become the "needed a reply" warning, the agent ends a
@@ -1034,8 +1035,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             if captured is not None:
                 incoming = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
                 outgoing = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
+                from gateway.session_usage import cost_fields
                 captured['usage'] = {'input_tokens': incoming, 'output_tokens': outgoing,
-                                     'total_tokens': incoming + outgoing}
+                                     'total_tokens': incoming + outgoing,
+                                     # This run's priced cost (USD) from the agent's own accounting,
+                                     # delta against the retained agent's turn-start total.
+                                     **cost_fields(agent, before=before[2])}
                 _settle_api_runtime_lock(agent, result, captured)
             return result
         finally:

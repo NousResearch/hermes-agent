@@ -202,6 +202,50 @@ async def test_cancelled_drain_keeps_delivery_and_collection_owned(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_media_turns_settling_together_collect_one_at_a_time(tmp_path, monkeypatch):
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    allow_cleanup, lock = threading.Event(), threading.Lock()
+    running, peak, releases, sent = [0], [0], [], []
+
+    def slow_release(owner, row):
+        with lock:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+        try:
+            assert allow_cleanup.wait(10), 'test did not release the cleanup worker'
+            releases.append(row['admission_id'])
+        finally:
+            with lock:
+                running[0] -= 1
+
+    async def execute(owner, ref, row):
+        owner.pending_results[row['admission_id']] = {'result': {'final_response': 'reply'}, 'usage': {}}
+        owner.pending_deliveries[row['admission_id']] = (
+            object(), SimpleNamespace(message_id=row['admission_id']), 'route', 'reply', None)
+        return 'reply'
+
+    async def send(adapter, event, key, response):
+        sent.append(event.message_id)
+
+    monkeypatch.setattr(recovery, '_release_media', slow_release)
+    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr(session_ingress, 'deliver_response', send)
+    with db:
+        receipts = [await _submit(authority, f'photo-{n}') for n in range(3)]
+        ids = [receipt.admission_id for receipt in receipts]
+        try:
+            await asyncio.wait_for(authority._drain(REF), 5)
+            assert sent == ids, 'every reply goes out while collection is still held'
+            await asyncio.sleep(0)
+            assert len(mutation_tasks(authority)) == 1, 'collections for one profile must not stack'
+        finally:
+            allow_cleanup.set()
+            await async_wait_until(lambda: not mutation_tasks(authority), timeout=5, what='queued collection')
+        assert releases == ids and peak[0] == 1
+
+
+@pytest.mark.asyncio
 async def test_shutdown_joins_cleanup_created_after_its_initial_snapshot(monkeypatch):
     from gateway import run_runtime
     from gateway import session_runtime_workers

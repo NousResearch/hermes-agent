@@ -38,6 +38,7 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     context = json.loads(policy.kanban_json)
     assert policy.source == 'kanban' and policy.cwd == str(workspace)
     assert policy.model == task.model_override and policy.provider == task.provider_override
+    assert policy.pins_route  # the board chose the model: no profile fallback chain
     assert {'kanban', 'terminal', 'file'} <= set(policy.toolsets)
     assert context['task_id'] == task.id and context['run_id'] == task.current_run_id
     assert context['board'] == 'owned' and context['claim_lock'] == task.claim_lock

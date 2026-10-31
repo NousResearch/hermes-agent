@@ -473,6 +473,11 @@ describe('transcriptFromOpenAiMultipartBody', () => {
   })
 
   it('leaves a non-envelope JSON object intact', () => {
-    expect(transcriptFromOpenAiMultipartBody('{"error":"nope"}')).toBe('{"error":"nope"}')
+    expect(transcriptFromOpenAiMultipartBody('{"example":"spoken JSON"}')).toBe('{"example":"spoken JSON"}')
+    expect(transcriptFromOpenAiMultipartBody('{not JSON}')).toBe('{not JSON}')
+  })
+
+  it('rejects a provider error instead of inserting it as dictation', () => {
+    expect(() => transcriptFromOpenAiMultipartBody('{"error":"nope"}')).toThrow(/transcription.*response/i)
   })
 })

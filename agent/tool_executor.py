@@ -709,6 +709,9 @@ def _dispatch_authorized_once(
         elif callback is not None:
             callback()
 
+    from tools.approval_context import _take_human_approval_note as _clear_approval_note
+    _clear_approval_note()  # drop any stale trace from an earlier call (#142867)
+
     block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"
@@ -749,6 +752,14 @@ def _dispatch_authorized_once(
     elif ref.name == "skill_manage":
         agent._iters_since_skill = 0
 
+    # A human approval granted by the plugin gate above leaves a trace note;
+    # attach it (or one from a gate inside the tool itself — execute_code,
+    # protected writes, computer_use) to the result the model sees, so an
+    # approved gated call is distinguishable from an ungated one (#142867).
+    from tools.approval import annotate_tool_result_approval
+    from tools.approval_context import _take_human_approval_note
+    approval_note = _take_human_approval_note()
+
     from agent.terminal_approval_batch import prepare_current_terminal
     prepare_current_terminal(ref)
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
@@ -756,8 +767,10 @@ def _dispatch_authorized_once(
     from tools.connectors.data_use import collect_data_use
     with bound_tool_progress(agent.tool_progress_callback, ref.name, ref.call_id), collect_data_use() as data_use:
         try:
-            return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+            result = _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+            return annotate_tool_result_approval(result, approval_note or _take_human_approval_note())
         finally:
+            _take_human_approval_note()  # never leak a trace into the next call
             state.data_use = frozenset(data_use)
 
 

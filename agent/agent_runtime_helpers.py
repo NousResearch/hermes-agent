@@ -2528,6 +2528,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             _tool_middleware_trace = _tool_request_mw.trace
     except Exception as _mw_err:
         logger.debug("tool_request middleware error: %s", _mw_err)
+    from tools.approval import _take_human_approval_note, annotate_tool_result_approval
+    _take_human_approval_note()  # clear any stale human-approval trace (#142867)
     block_message: Optional[str] = None
     if not pre_tool_block_checked:
         block_message, function_args = _pre_tool_block_message(
@@ -2579,13 +2581,11 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             import model_tools
             return model_tools.handle_function_call(function_name, next_args, effective_task_id, **dispatch_kwargs)
     if skip_tool_execution_middleware:
-        return _execute(function_args)
+        return annotate_tool_result_approval(_execute(function_args), _take_human_approval_note())
     from hermes_cli.middleware import run_tool_execution_middleware
-    return run_tool_execution_middleware(
-        function_name, function_args,
+    return annotate_tool_result_approval(run_tool_execution_middleware(function_name, function_args,
         lambda next_args: _execute(next_args if isinstance(next_args, dict) else function_args),
-        original_args=function_args, **hook_ids,
-    )
+        original_args=function_args, **hook_ids), _take_human_approval_note())
 
 
 def repair_tool_call(agent, tool_name: str) -> str | None:

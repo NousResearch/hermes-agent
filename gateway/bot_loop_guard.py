@@ -10,8 +10,8 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
-from typing import Callable, Deque, Dict, Hashable, Tuple
+from dataclasses import dataclass, field
+from typing import Callable, Deque, Dict, Hashable, Mapping, Tuple
 
 __all__ = ["BotLoopGuard", "BotLoopGuardSettings", "load_settings", "settings_from_config"]
 
@@ -25,6 +25,9 @@ class BotLoopGuardSettings:
     max_events: int = 20
     window_seconds: float = 300.0
     cooldown_seconds: float = 600.0
+    # Platform -> user ids that must be COUNTED AS BOTS even though the platform does not mark them
+    # (``source.is_bot`` stays False). See :func:`_normalize_bot_senders`.
+    bot_senders: Mapping[str, frozenset] = field(default_factory=dict)
 
 
 def _as_bool(raw, default: bool) -> bool:
@@ -53,6 +56,58 @@ def _as_positive_int(raw, default: int) -> int:
     return int(value) if value >= 1 and value == int(value) else default
 
 
+def _normalize_bot_senders(raw) -> Dict[str, frozenset]:
+    """Parse ``gateway.bot_loop_guard.bot_senders`` into ``{platform: frozenset(user ids)}``.
+
+    Both shapes are accepted and equivalent (the mapping reads better in YAML)::
+
+        bot_senders:
+          matrix: ["@heimdall:nanopi.example.org"]
+        bot_senders: ["matrix:@heimdall:nanopi.example.org"]
+
+    WHY this exists: ``{PLATFORM}_ALLOW_BOTS`` gates admission, and the guard's ``is_bot`` test only
+    works where the platform marks bot authors. Matrix has no such flag, so a peer bot reaches the
+    gateway as an ordinary AUTHORIZED user -- ``source.is_bot`` is False, the guard never counts it,
+    and two Hermes instances in one room answer each other without a bound (observed live: room
+    traffic ping-ponging on model-fallback and interrupt notices). Naming the peer here makes the
+    guard treat its messages as bot-authored: same window budget, same cooldown.
+
+    Keys and ids are matched case-insensitively, and an id is split from its platform on the FIRST
+    colon only (Matrix ids contain colons: ``@user:server``).
+    """
+    grouped: Dict[str, set] = {}
+
+    def _add(platform, user_id) -> None:
+        platform = str(platform or "").strip().lower()
+        user_id = str(user_id or "").strip().lower()
+        if platform and user_id:
+            grouped.setdefault(platform, set()).add(user_id)
+
+    if isinstance(raw, Mapping):
+        for platform, ids in raw.items():
+            if isinstance(ids, str):
+                # ``hermes config set`` writes a list value as its literal string, so the same
+                # normalization the other allowlists use is applied here.
+                from gateway.platforms._shared import decode_json_list_literal as _decode
+
+                decoded = _decode(ids)
+                ids = decoded if isinstance(decoded, list) else ids.split(",")
+            if not isinstance(ids, (list, tuple, set, frozenset)):
+                continue
+            for user_id in ids:
+                _add(platform, user_id)
+    elif isinstance(raw, (list, tuple, set, frozenset)):
+        for entry in raw:
+            # Strings only: str() on a dict/list entry yields a bogus "platform:id" pair rather
+            # than being ignored as unusable.
+            if not isinstance(entry, str):
+                continue
+            platform, sep, user_id = entry.partition(":")
+            if sep:
+                _add(platform, user_id)
+    return {platform: frozenset(ids) for platform, ids in grouped.items()}
+
+
 def settings_from_config(cfg) -> BotLoopGuardSettings:
     """Read ``gateway.bot_loop_guard`` from a loaded config dict. Unusable values keep the default."""
     from hermes_cli.config import cfg_get
@@ -66,6 +121,7 @@ def settings_from_config(cfg) -> BotLoopGuardSettings:
         max_events=_as_positive_int(block.get("max_events"), defaults.max_events),
         window_seconds=_as_positive(block.get("window_seconds"), defaults.window_seconds),
         cooldown_seconds=_as_positive(block.get("cooldown_seconds"), defaults.cooldown_seconds),
+        bot_senders=_normalize_bot_senders(block.get("bot_senders")),
     )
 
 
@@ -99,6 +155,18 @@ class BotLoopGuard:
     def tracked_conversations(self) -> int:
         with self._lock:
             return len(self._events)
+
+    def is_declared_bot(self, platform: str, user_id: str) -> bool:
+        """True when ``user_id`` is named as a bot author for ``platform`` in the live settings.
+
+        Read through the same settings callable as the budget, so a config.yaml edit takes effect on
+        the next message without a restart.
+        """
+        declared = getattr(self._settings(), "bot_senders", None) or {}
+        ids = declared.get(str(platform or "").strip().lower())
+        if not ids:
+            return False
+        return str(user_id or "").strip().lower() in ids
 
     def blocked(self, conversation: Hashable) -> bool:
         """True while ``conversation`` is cooling down. Reads only, so callers may ask as often as they like."""

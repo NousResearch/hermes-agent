@@ -272,3 +272,115 @@ def test_load_settings_reads_config_yaml(monkeypatch):
 
     monkeypatch.setattr(hermes_config, "load_config_readonly", boom)
     assert load_settings() == BotLoopGuardSettings()
+
+
+# --- declared bot senders: platforms that never set is_bot (Matrix) ----------
+#
+# Matrix has no bot flag, so a peer Hermes instance arrives as an ordinary authorized user. Live
+# incident: two instances in one Element room answered each other's model-fallback and interrupt
+# notices until a human kicked one out, because the guard's is_bot test returned early every time.
+
+MATRIX_PEER = "@heimdall:nanopi.example.org"
+MATRIX_ROOM = "!room:nanopi.example.org"
+MATRIX_HUMAN = "@ama:nanopi.example.org"
+
+
+def _matrix_peer(user_id: str = MATRIX_PEER, chat_id: str = MATRIX_ROOM) -> SessionSource:
+    """Exactly what the Matrix adapter delivers for a peer bot: is_bot is False."""
+    return SessionSource(platform=Platform.MATRIX, chat_id=chat_id, chat_type="group", user_id=user_id,
+                         user_name="Heimdall", is_bot=False)
+
+
+def _matrix_human(user_id: str = MATRIX_HUMAN, chat_id: str = MATRIX_ROOM) -> SessionSource:
+    return SessionSource(platform=Platform.MATRIX, chat_id=chat_id, chat_type="group", user_id=user_id,
+                         user_name="Adrian", is_bot=False)
+
+
+def _declared_peer_settings(**overrides) -> BotLoopGuardSettings:
+    fields = {"max_events": 3, "window_seconds": 60, "cooldown_seconds": 60,
+              "bot_senders": {"matrix": frozenset({MATRIX_PEER.lower()})}}
+    fields.update(overrides)
+    return BotLoopGuardSettings(**fields)
+
+
+def test_declared_bot_sender_is_counted_without_an_is_bot_flag(monkeypatch, runner, settings):
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", MATRIX_PEER)
+    settings["value"] = _declared_peer_settings()
+
+    assert all(_inbound(runner, _matrix_peer()) for _ in range(3))
+    assert _inbound(runner, _matrix_peer()) is False
+    assert runner._is_user_authorized(_matrix_peer()) is False
+
+
+def test_undeclared_matrix_human_is_never_counted(monkeypatch, runner, settings):
+    """The brake must not leak onto the humans in the same room."""
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", MATRIX_HUMAN)
+    settings["value"] = _declared_peer_settings()
+
+    assert all(_inbound(runner, _matrix_human()) for _ in range(40))
+    assert runner._is_user_authorized(_matrix_human()) is True
+
+
+def test_declared_sender_cooldown_expires(monkeypatch, runner, settings, clock):
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", MATRIX_PEER)
+    settings["value"] = _declared_peer_settings()
+
+    for _ in range(4):
+        _inbound(runner, _matrix_peer())
+    assert runner._is_user_authorized(_matrix_peer()) is False
+
+    clock.advance(61)
+    assert _inbound(runner, _matrix_peer()) is True
+
+
+def test_is_declared_bot_is_platform_scoped_and_case_insensitive(clock):
+    guard = BotLoopGuard(settings=lambda: _declared_peer_settings(), clock=clock.now)
+
+    assert guard.is_declared_bot("matrix", MATRIX_PEER) is True
+    assert guard.is_declared_bot("MATRIX", MATRIX_PEER.upper()) is True
+    assert guard.is_declared_bot("telegram", MATRIX_PEER) is False
+    assert guard.is_declared_bot("matrix", MATRIX_HUMAN) is False
+    assert guard.is_declared_bot("", MATRIX_PEER) is False
+
+
+def test_bot_senders_config_accepts_a_mapping_with_a_colon_in_the_id():
+    as_mapping = settings_from_config(
+        {"gateway": {"bot_loop_guard": {"bot_senders": {"matrix": [MATRIX_PEER]}}}})
+    assert as_mapping.bot_senders == {"matrix": frozenset({MATRIX_PEER.lower()})}
+
+
+def test_bot_senders_config_accepts_a_platform_prefixed_list():
+    """``platform:id`` is split on the FIRST colon so ``@user:server`` survives intact."""
+    from_list = settings_from_config(
+        {"gateway": {"bot_loop_guard": {"bot_senders": [f"matrix:{MATRIX_PEER}", "telegram:555"]}}})
+    assert from_list.bot_senders == {
+        "matrix": frozenset({MATRIX_PEER.lower()}), "telegram": frozenset({"555"})}
+
+
+def test_bot_senders_config_accepts_a_json_literal_list():
+    """``hermes config set`` stores a list as its literal string; that shape must parse too."""
+    literal = settings_from_config(
+        {"gateway": {"bot_loop_guard": {"bot_senders": {"matrix": f'["{MATRIX_PEER}"]'}}}})
+    assert literal.bot_senders == {"matrix": frozenset({MATRIX_PEER.lower()})}
+
+
+def test_bot_senders_config_accepts_a_comma_string():
+    comma = settings_from_config(
+        {"gateway": {"bot_loop_guard": {"bot_senders": {"matrix": f"{MATRIX_PEER}, @other:example.org"}}}})
+    assert comma.bot_senders == {"matrix": frozenset({MATRIX_PEER.lower(), "@other:example.org"})}
+
+
+def test_bot_senders_config_ignores_junk_and_keeps_the_budget_defaults():
+    junk = settings_from_config({"gateway": {"bot_loop_guard": {"bot_senders": [None, "", "nocolon", 7,
+                                                                             {"not": "a list"}]}}})
+    assert junk.bot_senders == {}
+    assert junk.max_events == BotLoopGuardSettings().max_events
+    assert junk.window_seconds == BotLoopGuardSettings().window_seconds
+
+
+def test_absent_bot_senders_leave_every_platform_unaffected(monkeypatch, runner, settings):
+    """Default (no declaration): a Matrix peer is still treated as an ordinary user."""
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", MATRIX_PEER)
+    settings["value"] = BotLoopGuardSettings(max_events=3, window_seconds=60, cooldown_seconds=60)
+
+    assert all(_inbound(runner, _matrix_peer()) for _ in range(10))

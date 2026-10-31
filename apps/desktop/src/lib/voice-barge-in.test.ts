@@ -1,34 +1,56 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $voiceSilenceMs } from '@/store/voice-prefs'
+
 import {
   bargeInTriggerLevels,
   DEFAULT_BARGE_IN_THRESHOLD_MULTIPLIER,
   monitorSpeechDuringPlayback
 } from './voice-barge-in'
 
-// Drive the real monitor with a fake mic: `micLevel` is the byte-domain RMS
-// level the analyser reports, `playing` is the TTS-flowing flag, and each
-// `advance(ms)` runs one animation frame per 16ms of simulated time.
+// Audio samples advance independently of Date.now() and animation frames.
+const meter = vi.hoisted(() => ({
+  onLevel: null as ((level: number, audioTimeMs: number) => void) | null,
+  onError: null as (() => void) | null
+}))
+
+vi.mock('@/lib/voice-level-meter', () => ({
+  startVoiceLevelMeter: (
+    context: AudioContext,
+    _source: MediaStreamAudioSourceNode,
+    onLevel: (level: number, audioTimeMs: number, isCurrent: boolean) => void,
+    onError: () => void
+  ) => {
+    meter.onLevel = (level, at) => onLevel(level, at, context.currentTime * 1_000 < at + 1_000 / 60)
+    meter.onError = onError
+
+    return () => {
+      meter.onLevel = null
+      meter.onError = null
+    }
+  }
+}))
+
 let now = 0
+let captureClock = 0
 let micLevel = 0
-let frames: FrameRequestCallback[] = []
 
 beforeEach(() => {
   now = 1_000_000
+  captureClock = now
   micLevel = 0
-  frames = []
-  vi.spyOn(Date, 'now').mockImplementation(() => now)
-  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => frames.push(cb))
+  meter.onLevel = null
+  meter.onError = null
+  vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+  vi.stubGlobal('requestAnimationFrame', () => 1)
   vi.stubGlobal('cancelAnimationFrame', () => undefined)
   vi.stubGlobal(
     'AudioContext',
     class {
-      createAnalyser() {
-        return {
-          fftSize: 256,
-          getByteTimeDomainData: (data: Uint8Array) => data.fill(128 + Math.round(micLevel * 42))
-        }
+      get currentTime() {
+        return captureClock / 1_000
       }
+      state = 'running'
 
       createMediaStreamSource() {
         return { connect: () => undefined }
@@ -59,9 +81,8 @@ async function flushMicrotasks() {
 function advance(ms: number) {
   for (let elapsed = 0; elapsed < ms; elapsed += 16) {
     now += 16
-    const pending = frames
-    frames = []
-    pending.forEach(cb => cb(now))
+    captureClock = Math.max(captureClock, now)
+    meter.onLevel?.(Math.round(micLevel * 42) / 42, now)
   }
 }
 
@@ -107,5 +128,236 @@ describe('monitorSpeechDuringPlayback — voice.barge_in_threshold_multiplier (#
     for (const value of [null, undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(bargeInTriggerLevels(value)).toEqual(bargeInTriggerLevels(DEFAULT_BARGE_IN_THRESHOLD_MULTIPLIER))
     }
+  })
+})
+
+class CaptureRecorder {
+  static instances: CaptureRecorder[] = []
+  static isTypeSupported = () => true
+  state: RecordingState = 'inactive'
+  mimeType = 'audio/webm'
+  ondataavailable: ((event: { data: Blob }) => void) | null = null
+  onstop: (() => void) | null = null
+  stops = 0
+
+  constructor() {
+    CaptureRecorder.instances.push(this)
+  }
+
+  start() {
+    this.state = 'recording'
+  }
+
+  emit(text: string) {
+    this.ondataavailable?.({ data: new Blob([text], { type: this.mimeType }) })
+  }
+
+  stop() {
+    this.stops++
+    this.state = 'inactive'
+    queueMicrotask(() => {
+      this.emit('tail')
+      this.onstop?.()
+    })
+  }
+}
+
+function blobText(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsText(blob)
+  })
+}
+
+describe('barge capture on the audio clock', () => {
+  beforeEach(() => {
+    CaptureRecorder.instances = []
+    vi.stubGlobal('MediaRecorder', CaptureRecorder)
+  })
+
+  it('keeps the speech onset and delivers one complete utterance without paint frames', async () => {
+    const onSpeech = vi.fn()
+    const onUtterance = vi.fn()
+    monitorSpeechDuringPlayback({ isPlaying: () => false, onSpeech, onUtterance })
+    await flushMicrotasks()
+    advance(600)
+    const recorder = CaptureRecorder.instances[0]
+    recorder.emit('onset')
+    micLevel = 0.2
+    advance(500)
+    expect(onSpeech).toHaveBeenCalledOnce()
+    micLevel = 0
+    advance($voiceSilenceMs.get() + 500)
+    await flushMicrotasks()
+
+    expect(recorder.stops).toBe(1)
+    expect(onUtterance).toHaveBeenCalledOnce()
+    expect(await blobText(onUtterance.mock.calls[0][0])).toBe('onsettail')
+    advance(2_000)
+    expect(onUtterance).toHaveBeenCalledOnce()
+  })
+
+  it('rotates quiet pre-roll without losing the next speech onset', async () => {
+    const onUtterance = vi.fn()
+    monitorSpeechDuringPlayback({ isPlaying: () => false, onSpeech: vi.fn(), onUtterance })
+    await flushMicrotasks()
+    CaptureRecorder.instances[0].emit('old')
+    advance(5_600)
+    expect(CaptureRecorder.instances).toHaveLength(2)
+    CaptureRecorder.instances[1].emit('onset')
+    micLevel = 0.2
+    advance(500)
+    micLevel = 0
+    advance($voiceSilenceMs.get() + 500)
+    await flushMicrotasks()
+
+    expect(onUtterance).toHaveBeenCalledOnce()
+    expect(await blobText(onUtterance.mock.calls[0][0])).toBe('onsettail')
+  })
+
+  it('drains a quiet rotation boundary before deciding whether captured speech can be discarded', async () => {
+    const onSpeech = vi.fn()
+    const onUtterance = vi.fn()
+    monitorSpeechDuringPlayback({ isPlaying: () => false, onSpeech, onUtterance })
+    await flushMicrotasks()
+    advance(4_800)
+    const recorder = CaptureRecorder.instances[0]
+
+    // Audio capture continues through a renderer stall: speech begins at 5.2s,
+    // but the quiet 5s report is not delivered until capture has reached 5.8s.
+    captureClock += 1_000
+    recorder.emit('onset')
+    advance(400)
+    expect(CaptureRecorder.instances).toHaveLength(1)
+    expect(recorder.stops).toBe(0)
+    micLevel = 0.2
+    advance(600)
+    expect(onSpeech).toHaveBeenCalledOnce()
+    expect(recorder.state).toBe('recording')
+    recorder.emit('command')
+    micLevel = 0
+    advance($voiceSilenceMs.get() + 500)
+    await flushMicrotasks()
+
+    expect(onUtterance).toHaveBeenCalledOnce()
+    expect(await blobText(onUtterance.mock.calls[0][0])).toBe('onsetcommandtail')
+  })
+
+  it('does not end a captured utterance at historical silence before queued speech resumes', async () => {
+    const onUtterance = vi.fn()
+    monitorSpeechDuringPlayback({ isPlaying: () => false, onSpeech: vi.fn(), onUtterance })
+    await flushMicrotasks()
+    advance(600)
+    const recorder = CaptureRecorder.instances[0]
+    recorder.emit('onset')
+    micLevel = 0.2
+    advance(500)
+    const quietMs = $voiceSilenceMs.get() + 100
+    captureClock += quietMs + 800
+    micLevel = 0
+    advance(quietMs)
+    expect(recorder.stops).toBe(0)
+    micLevel = 0.2
+    advance(800)
+    expect(recorder.state).toBe('recording')
+    recorder.emit('continuation')
+    micLevel = 0
+    advance($voiceSilenceMs.get() + 500)
+    await flushMicrotasks()
+
+    expect(onUtterance).toHaveBeenCalledOnce()
+    expect(await blobText(onUtterance.mock.calls[0][0])).toBe('onsetcontinuationtail')
+  })
+
+  it('bounds continuous speech by captured audio time, not the stalled wall clock', async () => {
+    const onUtterance = vi.fn()
+    monitorSpeechDuringPlayback({ isPlaying: () => false, onSpeech: vi.fn(), onUtterance })
+    await flushMicrotasks()
+    advance(600)
+    micLevel = 0.2
+    advance(29_500)
+    expect(onUtterance).not.toHaveBeenCalled()
+    advance(1_500)
+    await flushMicrotasks()
+
+    expect(CaptureRecorder.instances[0].stops).toBe(1)
+    expect(onUtterance).toHaveBeenCalledOnce()
+  })
+
+  it.each([false, true])('waits for current audio at the duration cap, unless cancelled: %s', async cancelled => {
+    const onUtterance = vi.fn()
+    const stop = monitorSpeechDuringPlayback({ isPlaying: () => false, onSpeech: vi.fn(), onUtterance })
+    await flushMicrotasks()
+    advance(600)
+    const recorder = CaptureRecorder.instances[0]
+    recorder.emit('onset')
+    micLevel = 0.2
+    advance(29_500)
+
+    captureClock += 2_000
+    advance(1_000)
+    expect(recorder.stops).toBe(0)
+    expect(onUtterance).not.toHaveBeenCalled()
+
+    if (cancelled) {
+      stop()
+    } else {
+      advance(1_000)
+    }
+
+    await flushMicrotasks()
+    expect(recorder.stops).toBe(1)
+    expect(onUtterance).toHaveBeenCalledTimes(cancelled ? 0 : 1)
+  })
+
+  it('does not deliver an utterance when the owner cancels inside onSpeech', async () => {
+    const onUtterance = vi.fn()
+    const stop = monitorSpeechDuringPlayback({
+      isPlaying: () => false,
+      onSpeech: () => stop(),
+      onUtterance
+    })
+    await flushMicrotasks()
+    advance(600)
+    micLevel = 0.2
+    advance(500)
+    await flushMicrotasks()
+
+    expect(CaptureRecorder.instances[0].stops).toBe(1)
+    expect(onUtterance).not.toHaveBeenCalled()
+  })
+
+  it('releases a pending conversation capture when the meter fails, without transcribing partial speech', async () => {
+    const onUtterance = vi.fn()
+    monitorSpeechDuringPlayback({ isPlaying: () => false, onSpeech: vi.fn(), onUtterance })
+    await flushMicrotasks()
+    advance(600)
+    micLevel = 0.2
+    advance(500)
+    const fail = meter.onError!
+    fail()
+    fail()
+    await flushMicrotasks()
+
+    expect(onUtterance.mock.calls).toEqual([[null]])
+    expect(CaptureRecorder.instances[0].stops).toBe(1)
+  })
+
+  it('cancels an endpoint whose native recorder stop event is still queued', async () => {
+    const onUtterance = vi.fn()
+    const stop = monitorSpeechDuringPlayback({ isPlaying: () => false, onSpeech: vi.fn(), onUtterance })
+    await flushMicrotasks()
+    advance(600)
+    micLevel = 0.2
+    advance(500)
+    micLevel = 0
+    advance($voiceSilenceMs.get() + 500)
+    expect(CaptureRecorder.instances[0].state).toBe('inactive')
+    stop()
+    await flushMicrotasks()
+
+    expect(onUtterance).not.toHaveBeenCalled()
   })
 })

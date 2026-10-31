@@ -56,6 +56,35 @@ assume:
 - **Preserve reference identity on no-ops.** Handing React a fresh array that
   contains the same data re-renders expensive trees for nothing.
 
+## Voice detection follows audio, not paint
+
+Microphone endpointing and barge-in detection use `voice-level-meter.ts` and its
+AudioWorklet's audio timestamps. Never put functional detection back on
+`requestAnimationFrame`, or keep a whole window painting to make voice work.
+The worklet reports at 60 Hz and preserves the 256-sample byte-domain RMS scale
+used by existing sensitivity preferences. Its output is silent; it does not
+play microphone input through the speakers. Hidden windows skip cosmetic
+meter-state updates, not speech detection or PCM capture.
+
+The capture owner closes its AudioContext through `mic-meter-context.ts`.
+Stopping the meter fences pending module loads and queued samples. A failed
+meter must release a pending conversation capture without transcribing a
+potentially truncated command; explicit cancellation delivers nothing.
+Detach recorder handlers even after `stop()` has made the recorder inactive:
+its final events can still be queued.
+
+Process queued audio levels in order, including historical speech. Rotate quiet
+pre-roll or end capture only when the audio clock is still inside that sample's
+reporting interval. The worklet supplies the next report timestamp, including
+frame rounding; a delayed quiet sample must not discard already-recorded speech
+that its queued successors have not reported yet. Cancellation and meter-failure
+cleanup do not wait for a fresh sample.
+
+The worklet is a Vite-emitted local asset, not a blob/data-URL fallback or a
+reason to weaken CSP. This removes a paint-clock dependency, not the main
+thread's role in handling voice messages. It does not change native window
+scheduling or establish a GPU/battery improvement percentage.
+
 ## Switching context is a re-home, not a reboot
 
 Changing profile, connection, or mode is a workspace switch, not a cold start.
@@ -89,7 +118,7 @@ for all of it is the same — an ordered ladder of candidates:
 1. Precedence is written down, in one place, as data or a pure function.
 2. A candidate is trusted only after it is validated at the right boundary.
    Existence is not proof; probe what you're about to rely on.
-3. A failed *read* falls to the next rung; a failed *authoritative write*
+3. A failed _read_ falls to the next rung; a failed _authoritative write_
    surfaces or rolls back rather than silently retargeting.
 4. A missing capability and a transient failure are different: the first may
    enable a compatibility path or a disabled state; the second should retry.

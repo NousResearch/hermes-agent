@@ -1,0 +1,28 @@
+name: recued
+title: Recued
+repo: https://github.com/recued/agent-plugin
+sha: c9c37fb055925e423ff9a28d1376efad3d4c49f7
+description: >-
+  Connect Hermes to your own self-hosted Recued server on the same computer: your notes, tasks,
+  mail, calendar and records, through the tools a Recued contract grants. Reads run at once, and
+  every change waits for your approval in Recued. Portable Agent Plugins v1 package (mcp.json and
+  one skill), no plugin code: Hermes starts the installed `recued --mcp` as a local stdio MCP
+  server. Disclosure — the tools reach the services you connected to Recued, such as your mail,
+  only as the contract allows. The contract's key is saved in Recued with `recued mcp-key set`,
+  never in Hermes or the plugin. The plugin makes no network calls and sends no telemetry.
+maintainer: recued
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/recued/agent-plugin/blob/c9c37fb055925e423ff9a28d1376efad3d4c49f7/README.md
+version: "1.0.0"
+platforms: []
+known_issues:
+  - Needs Recued 26.10.30 or later on the same computer, with the recued command on Hermes's PATH.
+  - Offers no tools until a contract's key is saved for Hermes with `recued mcp-key set`. Restart Hermes after saving it.
+  - An mcp_servers.recued entry in your config.yaml takes precedence over the plugin's server.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -568,9 +568,18 @@ def heartbeat_current_worker_from_env() -> bool:
     now = time.monotonic()
     if not tid or (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS:
         return False
-    if _is_delegated_child_context():
-        # An in-process delegate child's activity is not the worker's liveness; checked before
-        # stamping the window so a chatty child cannot starve the worker's own heartbeat.
+    if not _is_dispatcher_owned_worker():
+        # Reject before opening the board or consuming the owner's rate-limit slot.
+        # Keep the inherited-process diagnostic; cron and in-process delegates stay quiet.
+        if (tid and os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT")
+                and not _is_delegated_child_context() and not _auto_heartbeat_fence_warned):
+            _auto_heartbeat_fence_warned = True
+            logger.warning(
+                "kanban auto-heartbeat for task %s refused: this process carries "
+                "HERMES_DELEGATED_CHILD_CONTEXT together with HERMES_KANBAN_TASK, so the board "
+                "treats it as a delegate_task descendant and its claim will not be extended by "
+                "activity. Only the dispatcher's own spawn grants worker scope; do not copy a "
+                "worker's environment into a hand-launched process.", tid)
         return False
     _auto_heartbeat_last_attempt = now
     try:

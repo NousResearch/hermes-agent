@@ -24,8 +24,11 @@ def _bound():
     from tools.terminal_scope import get_terminal_scope
     secrets = current_secret_scope()
     terminal = get_terminal_scope()
-    return (get_hermes_home_override(), dict(secrets) if secrets is not None else None,
-            current_secret_scope_home(), dict(terminal) if terminal is not None else None, type(terminal).__name__)
+    return {"home": get_hermes_home_override(),
+            "secrets": dict(secrets) if secrets is not None else None,
+            "secret_home": current_secret_scope_home(),
+            "terminal": dict(terminal) if terminal is not None else None,
+            "terminal_type": type(terminal).__name__}
 
 
 @pytest.fixture
@@ -45,8 +48,8 @@ async def test_async_owner_scope_binds_what_owner_scope_binds_with_the_reads_off
     authority = _authority(profile)
     with session_authorities.owner_scope(authority):
         expected = _bound()
-    assert expected[0] == str(profile) and expected[1]["LOOPSTALL_PROBE_KEY"] == "from-profile"
-    assert expected[3]["TERMINAL_TIMEOUT"] == "77"
+    assert expected["home"] == str(profile) and expected["secrets"]["LOOPSTALL_PROBE_KEY"] == "from-profile"
+    assert expected["terminal"]["TERMINAL_TIMEOUT"] == "77"
 
     loop_thread = threading.get_ident()
     build_threads = []
@@ -81,23 +84,67 @@ async def test_async_owner_scope_keeps_owner_scope_for_unrouted_owners(tmp_path)
             assert _bound() == expected
 
 
-@pytest.mark.asyncio
-async def test_ancillary_polls_project_off_the_loop(monkeypatch):
-    """``subagent.list`` / ``process.list`` / ``session.control.read`` build their projection in a worker:
-    it takes the session's event lock (held by every streamed token) and reads state.db."""
+class _RecordingLock:
+    """``event_stream.lock`` stand-in: records the thread that takes it, optionally runs a hook first."""
+
+    def __init__(self, on_enter=None):
+        self.threads = []
+        self._on_enter = on_enter
+
+    def __enter__(self):
+        self.threads.append(threading.get_ident())
+        if self._on_enter:
+            self._on_enter()
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _ancillary_fixture(monkeypatch, *, on_enter=None, snapshot=None):
     from gateway import session_ancillary
-
-    loop_thread = threading.get_ident()
-    seen = []
-
-    def projection(authority, live, ref, params, kind):
-        seen.append((threading.get_ident(), kind))
-        return {'subagents': [], 'delegations': []}
-
-    monkeypatch.setattr(session_ancillary, "_read_projection", projection)
+    lock = _RecordingLock(on_enter)
+    live = SimpleNamespace(event_stream=SimpleNamespace(lock=lock))
+    authority = SimpleNamespace(sessions={"s1": live})
     monkeypatch.setattr(session_ancillary, "authorize", lambda *a, **k: None)
+    monkeypatch.setattr(session_ancillary, "control_snapshot", snapshot or (lambda authority, ref: {"revision": "r1"}))
     ref = SimpleNamespace(session_id="s1", profile_id="fixture")
-    connection = SimpleNamespace(authority=SimpleNamespace(sessions={"s1": object()}))
-    result = await session_ancillary.read(connection, ref, {"session_id": "s1"}, kind="subagents")
-    assert result == {'subagents': [], 'delegations': []}
-    assert seen and seen[0][0] != loop_thread, "the projection ran on the event loop"
+    return session_ancillary, SimpleNamespace(authority=authority), ref, lock
+
+
+@pytest.mark.asyncio
+async def test_ancillary_polls_take_the_event_lock_off_the_loop(monkeypatch):
+    """The projection takes the session's event lock (held by every streamed token) and reads state.db:
+    it must do both in a worker, not on the event loop."""
+    session_ancillary, connection, ref, lock = _ancillary_fixture(monkeypatch)
+    result = await session_ancillary.read(connection, ref, {"session_id": "s1"}, kind="control")
+    assert result == {"control": {"revision": "r1"}}
+    assert lock.threads and threading.get_ident() not in lock.threads, "the event lock was taken on the loop"
+
+
+@pytest.mark.asyncio
+async def test_ancillary_poll_of_a_session_retired_mid_read_is_not_found(monkeypatch):
+    """A chat deleted or pruned while its poll waits in the worker answers not_found (what the loop-side
+    check answers), not an internal error from the projection re-indexing ``authority.sessions``."""
+    from hermes_state_runtime import RuntimeStoreError
+
+    def retire_then_index(authority, ref):
+        authority.sessions.pop("s1")
+        return authority.sessions["s1"]  # physical_target / _require_current_route re-index like this
+
+    session_ancillary, connection, ref, _lock = _ancillary_fixture(monkeypatch, snapshot=retire_then_index)
+    with pytest.raises(RuntimeStoreError) as exc:
+        await session_ancillary.read(connection, ref, {"session_id": "s1"}, kind="control")
+    assert str(exc.value) == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_ancillary_projection_keyerror_of_a_live_session_still_raises(monkeypatch):
+    """Only a retired session maps to not_found: a KeyError from a bug in a live session's projection
+    still surfaces."""
+    def broken(authority, ref):
+        return {}["missing"]
+
+    session_ancillary, connection, ref, _lock = _ancillary_fixture(monkeypatch, snapshot=broken)
+    with pytest.raises(KeyError):
+        await session_ancillary.read(connection, ref, {"session_id": "s1"}, kind="control")

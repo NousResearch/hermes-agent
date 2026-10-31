@@ -284,25 +284,16 @@ def holds_admission(authority, session_id) -> bool:
 
 
 def _prepare_owner_scope(home: Path):
-    """``(secrets, terminal scope)`` of the profile at *home*, built the way ``_profile_runtime_scope``
-    builds them on entry (under the home override, the terminal policy under the secret scope);
-    ``None`` when *home* is not a directory (``owner_scope`` binds nothing then)."""
+    """Enter ``owner_scope``'s profile scope in this (worker) thread and return what it bound:
+    ``(secrets, terminal scope)``, or ``None`` when *home* is not a directory (``owner_scope`` binds
+    nothing then). Entering the real scope keeps one definition of how it is built."""
     if not home.is_dir():
         return None
-    from agent.secret_scope import reset_secret_scope, set_secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.terminal_scope import prepare_profile_terminal_scope
-    from tui_gateway.launch_profile_policy import owner_secret_scope
-    home_token = set_hermes_home_override(str(home))
-    try:
-        secrets = owner_secret_scope(home)
-        secret_token = set_secret_scope(secrets, profile_home=str(home))
-        try:
-            return secrets, prepare_profile_terminal_scope(home)
-        finally:
-            reset_secret_scope(secret_token)
-    finally:
-        reset_hermes_home_override(home_token)
+    from agent.secret_scope import current_secret_scope
+    from gateway.run import _profile_runtime_scope
+    from tools.terminal_scope import get_terminal_scope
+    with _profile_runtime_scope(home, hydrate_secrets=False):
+        return current_secret_scope(), get_terminal_scope()
 
 
 @asynccontextmanager

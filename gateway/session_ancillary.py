@@ -243,18 +243,30 @@ async def read(connection, ref, params, *, kind):
 
 def _read_projection(authority, live, ref, params, kind):
     with live.event_stream.lock:
-        if kind == 'control':
-            # Persisted per session id, never the route's live objects: readable after a messaging
-            # route moved on to another conversation.
-            return {'control': control_snapshot(authority, ref)}
-        _require_current_route(authority, ref)
-        agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
-        if kind == 'subagents':
-            return {'subagents': [{key: record.get(key) for key in _SUBAGENT_FIELDS}
-                                  for record in records], 'delegations': []}
-        if kind == 'tail':
-            return subagent_tail(records, params['subagent_id'])
-        return {'processes': process_snapshot(authority, ref, agent, records)}
+        try:
+            return _project(authority, ref, params, kind)
+        except KeyError:
+            # Deleted/pruned while this read waited for a worker or the lock (retire_live_sessions pops
+            # on the loop): the projection re-indexes authority.sessions, and a gone session is
+            # not_found, as the loop-side check answers.
+            if authority.sessions.get(ref.session_id) is not live:
+                raise RuntimeStoreError('not_found') from None
+            raise
+
+
+def _project(authority, ref, params, kind):
+    if kind == 'control':
+        # Persisted per session id, never the route's live objects: readable after a messaging
+        # route moved on to another conversation.
+        return {'control': control_snapshot(authority, ref)}
+    _require_current_route(authority, ref)
+    agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
+    if kind == 'subagents':
+        return {'subagents': [{key: record.get(key) for key in _SUBAGENT_FIELDS}
+                              for record in records], 'delegations': []}
+    if kind == 'tail':
+        return subagent_tail(records, params['subagent_id'])
+    return {'processes': process_snapshot(authority, ref, agent, records)}
 
 
 def _owned_targets(connection, ref, params, *, select):

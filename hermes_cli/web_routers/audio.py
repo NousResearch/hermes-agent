@@ -20,7 +20,7 @@ from fastapi import APIRouter
 from hermes_cli.dashboard_auth.native_http import grant_home_scope
 from hermes_cli.web_routers._common import http_failure
 from hermes_cli.web_deps import late
-from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
+from hermes_cli.web_server_chat import _ws_auth_ok, _ws_reject, _ws_request_is_allowed
 from hermes_cli.web_server_gateway import _read_dashboard_json_response, _split_text_for_speak_stream
 from hermes_cli.web_session_sockets import SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
@@ -529,10 +529,10 @@ async def transcribe_stream_ws(ws: WebSocket) -> None:
     """
     # A socket ticket opens this stream only when minted for it (``/api/webapp/socket-ticket``).
     if not _ws_auth_ok(ws, socket=TRANSCRIBE_STREAM_SOCKET):
-        await ws.close(code=4401)
+        await _ws_reject(ws, 4401)
         return
     if not _ws_request_is_allowed(ws):
-        await ws.close(code=4403)
+        await _ws_reject(ws, 4403)
         return
     await ws.accept(subprotocol=getattr(ws, "_hermes_ws_subprotocol", None))
 
@@ -621,10 +621,10 @@ async def speak_stream_ws(ws: WebSocket) -> None:
     """
     # A socket ticket opens this stream only when minted for it (``/api/webapp/socket-ticket``).
     if not _ws_auth_ok(ws, socket=SPEAK_STREAM_SOCKET):
-        await ws.close(code=4401)
+        await _ws_reject(ws, 4401)
         return
     if not _ws_request_is_allowed(ws):
-        await ws.close(code=4403)
+        await _ws_reject(ws, 4403)
         return
     await ws.accept(subprotocol=getattr(ws, "_hermes_ws_subprotocol", None))
 

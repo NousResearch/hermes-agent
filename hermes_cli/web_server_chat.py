@@ -455,26 +455,26 @@ async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
     peer = ws.client.host if ws.client else "?"
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         _log.info("%s refused: embedded chat disabled peer=%s", kind, peer)
-        await ws.close(code=4404, reason="embedded chat disabled")
+        await _ws_reject(ws, 4404, reason="embedded chat disabled")
         return None
 
     auth_reason, cred = _ws_auth_reason(ws, socket=kind)
     mode = _ws_auth_mode()
     if auth_reason is not None:
         _log.warning("%s auth rejected reason=%s mode=%s cred=%s peer=%s", kind, auth_reason, mode, cred, peer)
-        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
+        await _ws_reject(ws, 4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
         return None
 
     host_origin_reason = _ws_host_origin_reason(ws)
     if host_origin_reason is not None:
         _log.warning("%s refused: %s peer=%s", kind, host_origin_reason, peer)
-        await ws.close(code=4403, reason=_ws_close_reason(host_origin_reason))
+        await _ws_reject(ws, 4403, reason=_ws_close_reason(host_origin_reason))
         return None
 
     client_reason = _ws_client_reason(ws)
     if client_reason is not None:
         _log.warning("%s refused: %s", kind, client_reason)
-        await ws.close(code=4408, reason=_ws_close_reason(client_reason))
+        await _ws_reject(ws, 4408, reason=_ws_close_reason(client_reason))
         return None
     return peer, mode, cred
 
@@ -486,6 +486,39 @@ async def _pty_fail(ws: WebSocket, exc: BaseException, *, surface: str = "Chat")
     _log.warning("pty start failed: %s: %s", type(exc).__name__, exc)
     await ws.send_text(f"\r\n\x1b[31m{chat_start_failure_message(exc, surface=surface)}\x1b[0m\r\n")
     await ws.close(code=1011)
+
+
+async def _ws_reject(ws: "WebSocket", code: int, reason: str = "") -> None:
+    """Application-level rejection that the client can actually observe.
+
+    A ``ws.close()`` issued *before* ``ws.accept()`` never reaches the peer as
+    a close frame: uvicorn answers the upgrade with a bare HTTP 403 instead
+    (websockets_impl / wsproto_impl / websockets_sansio_impl all do this), so
+    a browser sees ``close code=1006 reason=""`` and the app-level codes the
+    dashboard keys on (4401 auth, 4403 host/origin, 4404 chat disabled, ...)
+    are lost. Complete the handshake first, then close with the code — the
+    only frames on the wire are the handshake and the close.
+
+    Every caller must ``return`` right after this; nothing is registered,
+    subscribed, or read on a rejected socket. Peer-gone errors are expected
+    here and swallowed; anything else propagates.
+    """
+    # Browsers offering protocols need one selected, but tickets are credentials.
+    protocols = [
+        value for value in ws.scope.get("subprotocols", [])
+        if not value.startswith(_GATEWAY_WS_TICKET_PROTOCOL_PREFIX)
+    ]
+    subprotocol = getattr(ws, "_hermes_ws_subprotocol", None)
+    if subprotocol not in protocols:
+        subprotocol = next(iter(protocols), None)
+    try:
+        if subprotocol is not None:
+            await ws.accept(subprotocol=subprotocol)
+        else:
+            await ws.accept()
+        await ws.close(code=code, reason=reason)
+    except (WebSocketDisconnect, OSError):
+        return
 
 
 def _resolve_chat_argv(

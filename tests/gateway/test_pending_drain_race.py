@@ -225,3 +225,93 @@ async def test_no_pending_cleans_up_normally():
     assert sk not in adapter._pending_messages
 
     await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+async def test_drain_drops_completion_consumed_after_busy_admission(monkeypatch):
+    """A wait/log result consumed after admission must not re-wake the finished turn."""
+    from tools import process_registry as processes
+    from gateway.process_completion_provenance import stamp_completion_provenance
+
+    process_registry = processes.ProcessRegistry()
+    monkeypatch.setattr(processes, "process_registry", process_registry)
+    adapter = _make_adapter()
+    sk = _sk()
+    process_id = "pending-completion-consumed"
+    processed = []
+
+    async def handler(event):
+        processed.append(event.text)
+        return "unexpected"
+
+    completion = _make_event(text="background process finished")
+    completion.internal = True
+    completion.metadata.update({
+        "notification_origin": "process_registry_synthetic",
+        "gateway_session_key": sk,
+        "gateway_process_session_ids": [process_id],
+    })
+    entries = []
+    for session_id in completion.metadata["gateway_process_session_ids"]:
+        session = processes.ProcessSession(id=session_id, command="build", started_at=123.0, session_key=sk, exited=True)
+        process_registry._running[session_id] = session
+        entries.append(dict(type="completion", session_id=session_id, started_at=session.started_at, session_key=sk))
+    stamp_completion_provenance(completion, entries)
+    adapter._message_handler = handler
+    adapter._active_sessions[sk] = asyncio.Event()
+    process_registry._completion_consumed.add(process_id)
+
+    try:
+        adapter._spawn_drain_task(completion, sk)
+        owner_task = adapter._session_tasks[sk]
+        await asyncio.wait_for(asyncio.shield(owner_task), timeout=5.0)
+
+        assert processed == []
+        assert sk not in adapter._active_sessions
+    finally:
+        process_registry._completion_consumed.discard(process_id)
+        await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+async def test_drain_keeps_batched_completion_with_an_unconsumed_result(monkeypatch):
+    """A coalesced completion remains runnable until every process result is consumed."""
+    from tools import process_registry as processes
+    from gateway.process_completion_provenance import stamp_completion_provenance
+
+    process_registry = processes.ProcessRegistry()
+    monkeypatch.setattr(processes, "process_registry", process_registry)
+    adapter = _make_adapter()
+    sk = _sk()
+    consumed_process_id = "batch-completion-consumed"
+    pending_process_id = "batch-completion-pending"
+    processed = []
+
+    async def handler(event):
+        processed.append(event.text)
+
+    completion = _make_event(text="two background processes finished")
+    completion.internal = True
+    completion.metadata.update({
+        "notification_origin": "process_registry_synthetic",
+        "gateway_session_key": sk,
+        "gateway_process_session_ids": [consumed_process_id, pending_process_id],
+    })
+    entries = []
+    for session_id in completion.metadata["gateway_process_session_ids"]:
+        session = processes.ProcessSession(id=session_id, command="build", started_at=123.0, session_key=sk, exited=True)
+        process_registry._running[session_id] = session
+        entries.append(dict(type="completion", session_id=session_id, started_at=session.started_at, session_key=sk))
+    stamp_completion_provenance(completion, entries)
+    adapter._message_handler = handler
+    adapter._active_sessions[sk] = asyncio.Event()
+    process_registry._completion_consumed.add(consumed_process_id)
+
+    try:
+        adapter._spawn_drain_task(completion, sk)
+        await asyncio.wait_for(asyncio.shield(adapter._session_tasks[sk]), timeout=5.0)
+
+        assert processed == ["two background processes finished"]
+    finally:
+        process_registry._completion_consumed.discard(consumed_process_id)
+        await adapter.cancel_background_tasks()

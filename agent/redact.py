@@ -681,6 +681,36 @@ def mask_secret(value: str, *, head: int = 4, tail: int = 4, floor: int = 12,
     return placeholder if len(value) < floor else f"{value[:head]}...{value[-tail:]}"
 
 
+# Approval-prompt display integrity: the copy a human approves must show everything that will run.
+# Invisible/format Unicode (zero-width, bidi overrides/isolates, variation selectors, U+E0000 tag
+# block) and raw control bytes (ANSI/OSC escapes, bare \r) are rendered as visible escapes, and
+# whitespace padding that pushes the tail off screen or past a preview cut collapses to a marker.
+_APPROVAL_INVISIBLE_RE = re.compile(
+    r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180e"
+    r"\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb"
+    r"\U000e0000-\U000e007f]")
+_APPROVAL_SPACE = r"[ \t\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]"
+# Mid-line runs (after visible text) of 21+, or line-leading runs past any sane indentation.
+_APPROVAL_PAD_RE = re.compile(rf"(?<=\S){_APPROVAL_SPACE}{{21,}}|(?m:^){_APPROVAL_SPACE}{{65,}}")
+_APPROVAL_BLANK_RE = re.compile(r"\n{4,}")
+
+
+def sanitize_command_for_display(text: str | None) -> str:
+    """Make hidden content in an approval-prompt string visible; clean text comes back unchanged.
+
+    Display-only: the executed command, smart assessment and allowlist keys never see this copy."""
+    if not text:
+        return ""
+    out = _APPROVAL_INVISIBLE_RE.sub(lambda m: m.group().encode("unicode_escape").decode("ascii"), text)
+    out = _APPROVAL_PAD_RE.sub(lambda m: f" ⟨+{len(m.group())} whitespace chars⟩ ", out)
+    return _APPROVAL_BLANK_RE.sub(lambda m: f"\n⟨+{len(m.group()) - 1} blank lines⟩\n", out)
+
+
+def redact_approval_display(text: str | None, *, force: bool = False) -> str:
+    """Secret redaction plus :func:`sanitize_command_for_display`, for every approval surface."""
+    return sanitize_command_for_display(redact_sensitive_text(str(text or ""), force=force))
+
+
 def _mask_token(token: str) -> str:
     """Mask a log token — 18-char floor, preserves 6 prefix / 4 suffix; empty → ``***``."""
     if not token:

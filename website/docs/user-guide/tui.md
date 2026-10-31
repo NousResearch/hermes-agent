@@ -113,6 +113,8 @@ On macOS, `F7` means the physical F7 function key. MacBook keyboards may use tha
 - **Slash autocompletion** opens as a floating panel with descriptions, not an inline dropdown.
 - **Typing while the agent is busy** (`display.busy_input_mode: queue`, the TUI default) submits the message to the gateway immediately. The gateway's durable session queue orders it behind the running turn, so it survives a gateway crash or restart and shows up as `[queued] …` in the `queued (N)` panel of every client attached to the session — the Desktop app sees the same list. Your message's transcript bubble appears when its turn actually starts. `steer` and `interrupt` still act on the live turn as before.
 - **`Ctrl+X`** opens the live session switcher. When a queued message is highlighted (sent while the agent was still running), it still deletes that queued message instead — for a gateway-queued row this cancels it on the gateway (`prompt.cancel`), so it disappears for every viewer; picking and re-sending an edited row cancels the original and submits the edit as a new input (if the original has already started by then, it is stopped and the edit runs after it). **`Esc`** cancels editing and unhighlights without deleting.
+- **`Esc Esc`** on an idle, empty composer opens the **rewind picker** (same as `/rewind`): your earlier prompts, newest first. **Enter** opens the highlighted one for editing; **Enter** again removes that prompt and everything after it from the session and sends your edit as a new turn. Nothing is removed until you send, and **Esc** steps back (edit → list → closed). With a draft in the composer `Esc Esc` still discards the draft, and mid-turn it still interrupts. Prompts that carried images are listed by number only and can't be picked.
+- **Approval prompts** offer **No, and tell Hermes what to do instead** after **Deny**. Pick it (or press its number), type the instruction, and press **Enter**: the instruction is steered into the running turn (as `/steer` would) and the command is denied, so Hermes sees both together and tries again your way. If the turn already ended, the instruction is queued as your next prompt. **Esc** on the typing row goes back to the choices; **Esc** on the choices still denies outright.
 - **`Ctrl+G` / `Ctrl+X Ctrl+E`** — open the current input buffer in `$EDITOR` for multi-line / long-prompt composition; save-and-exit sends the contents back as the prompt.
 
 ## Slash commands
@@ -122,6 +124,7 @@ All slash commands work unchanged. A few are TUI-owned — they produce richer o
 | Command | TUI behavior |
 |---------|--------------|
 | `/help` | Overlay with categorized commands, arrow-key navigable |
+| `/rewind` | Rewind picker: pick an earlier prompt, edit it, and resend it (everything after it is removed when you send). Also `Esc Esc` on an empty composer |
 | `/sessions` (alias `/switch`) | Live session switcher — list open TUI sessions, switch between them, close them, or start another one |
 | `/model` | Modal model picker grouped by provider, with cost hints |
 | `/skin` | Live preview — theme change applies as you browse |

@@ -40,6 +40,7 @@ export const chromeEn = {
     redraw: 'redraw / repaint',
     paste: 'paste text; /paste attaches clipboard image',
     discardDraft: 'discard draft (recall with ↑)',
+    rewindPicker: 'empty composer, idle: rewind to an earlier prompt (/rewind)',
     applyCompletion: 'apply completion',
     arrows: 'completions / queue edit / history',
     sessionSwitcher: 'open live session switcher (deletes queued message while editing)',

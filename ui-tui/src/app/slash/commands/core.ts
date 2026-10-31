@@ -30,6 +30,7 @@ import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState, sessionCwd } from '../../uiStore.js'
+import { openRewindPicker } from '../canonicalRewindPicker.js'
 import { canonicalRewind, canonicalTitle } from '../canonicalSessionCommands.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 
@@ -904,6 +905,12 @@ export const coreCommands: SlashCommand[] = [
         })
       )
     }
+  },
+
+  {
+    help: 'rewind to an earlier prompt: pick it, edit it, resend it (also Esc Esc on an empty composer)',
+    name: 'rewind',
+    run: (_arg, ctx) => openRewindPicker(ctx)
   },
 
   {

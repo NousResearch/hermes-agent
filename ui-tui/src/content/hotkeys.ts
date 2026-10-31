@@ -27,6 +27,7 @@ export function hotkeys(): [string, string][] {
     [action + '+L', h.redraw],
     [paste + '+V / /paste', h.paste],
     ['Esc Esc', h.discardDraft],
+    ['Esc Esc', h.rewindPicker],
     ['Tab', h.applyCompletion],
     ['↑/↓', h.arrows],
     ['Ctrl+X', h.sessionSwitcher],

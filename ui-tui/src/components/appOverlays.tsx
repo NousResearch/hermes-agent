@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
-import type { AppOverlaysProps } from '../app/interfaces.js'
+import type { AppOverlaysProps, RewindTarget } from '../app/interfaces.js'
 import { $overlayState, hasFloatingPanel, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
@@ -19,6 +19,7 @@ import { listRowStyle } from './overlayPrimitives.js'
 import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
+import { RewindPicker } from './rewindPicker.js'
 import { SkillsHub } from './skillsHub.js'
 import { SubscriptionOverlay } from './subscriptionOverlay.js'
 import { WidgetGrid, type WidgetGridWidget } from './widgetGrid.js'
@@ -60,6 +61,7 @@ function PromptCell({ children, cols, id }: { children: ReactNode; cols: number;
 export function PromptZone({
   cols,
   onApprovalChoice,
+  onApprovalTell,
   onClarifyCancel,
   onClarifyQuestionAnswer,
   onSecretSubmit,
@@ -71,6 +73,7 @@ export function PromptZone({
   AppOverlaysProps,
   | 'cols'
   | 'onApprovalChoice'
+  | 'onApprovalTell'
   | 'onClarifyCancel'
   | 'onClarifyQuestionAnswer'
   | 'onSecretSubmit'
@@ -85,7 +88,13 @@ export function PromptZone({
   if (overlay.approval) {
     return (
       <PromptCell cols={cols} id="approval">
-        <ApprovalPrompt cols={cols} onChoice={onApprovalChoice} req={overlay.approval} t={theme} />
+        <ApprovalPrompt
+          cols={cols}
+          onChoice={onApprovalChoice}
+          onTell={onApprovalTell}
+          req={overlay.approval}
+          t={theme}
+        />
       </PromptCell>
     )
   }
@@ -126,6 +135,27 @@ export function PromptZone({
     return (
       <PromptCell cols={cols} id="connection">
         <ConnectionSetupOverlay cols={cols} t={theme} />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.rewind) {
+    const req = overlay.rewind
+
+    const onSubmit = (target: RewindTarget, text: string) => {
+      patchOverlayState({ rewind: null })
+      req.onSubmit(target, text)
+    }
+
+    return (
+      <PromptCell cols={cols} id="rewind">
+        <RewindPicker
+          cols={cols}
+          onClose={() => patchOverlayState({ rewind: null })}
+          onSubmit={onSubmit}
+          req={req}
+          t={theme}
+        />
       </PromptCell>
     )
   }

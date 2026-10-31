@@ -9,7 +9,6 @@ import { afterEach, expect, test } from 'vitest'
 import { downloadArtifact, stageBundleInputs } from '../tests/install/e2e-assets/bundle-inputs.mjs'
 import { validateBundleInputs, validateDownloadedBundle } from '../tests/install/e2e-assets/bundle-manifest.cjs'
 import { validateBundledManifest } from '../tests/install/e2e-assets/windows-bundled-helpers.mjs'
-import { bundledMatrix, renderMarkdownResults } from '../scripts/sandbox/generate-e2e-matrix.mjs'
 import { releaseVersion } from '../scripts/msix-shared.mjs'
 
 const cleanup = []
@@ -27,16 +26,12 @@ function fixture(platform = 'windows') {
   } }
 }
 
-test('package transitions are ordered, identity-preserving, and report through the existing family', () => {
+test('package transitions are ordered and identity-preserving', () => {
   for (const platform of ['windows', 'macos']) {
     const manifest = fixture(platform)
     expect(validateBundleInputs(manifest, platform, 'x64')).toBe(manifest)
     const arm = { ...manifest, arch: 'arm64' }
     expect(validateBundleInputs(arm, platform, 'arm64')).toBe(arm)
-    const { include } = bundledMatrix(platform, manifest.old.tag)
-    expect(include).toHaveLength(1)
-    expect(include[0].update_method).toBe('open-app-update')
-    expect(renderMarkdownResults([{ name: `${include[0].name} / e2e`, conclusion: 'failure' }])).toContain('1 failed')
   }
 })
 
@@ -139,18 +134,6 @@ test.each(['windows', 'macos'])('%s staging and resumed validation use actual fi
   const bad = path.join(directory, 'bad')
   await expect(stageBundleInputs({ manifestUrl: `${base}/manifest.json`, platform, arch: 'x64', out: bad })).rejects.toThrow('SHA-256')
   expect(await readdir(bad)).toEqual([])
-})
-
-test('explicit bundled routes refuse absent package inputs instead of reporting a skipped pass', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'bundle-plan-test-'))
-  cleanup.push(() => rm(directory, { recursive: true, force: true }))
-  const script = fileURLToPath(new URL('../tests/install/e2e-assets/bundle-plan.mjs', import.meta.url))
-  const env = { ...process.env, BUNDLE_WINDOWS_MANIFEST: '', BUNDLE_MACOS_MANIFEST: '',
-    GITHUB_OUTPUT: path.join(directory, 'output'), GITHUB_STEP_SUMMARY: path.join(directory, 'summary') }
-  expect(() => execFileSync(process.execPath, [script], { env: { ...env, BUNDLE_ROUTE: 'windows-bundled' }, stdio: 'pipe' })).toThrow()
-  execFileSync(process.execPath, [script], { env: { ...env, BUNDLE_ROUTE: 'all' }, stdio: 'pipe' })
-  expect(await readFile(env.GITHUB_STEP_SUMMARY, 'utf8')).toContain('no signed package pair supplied')
-  expect(await readFile(env.GITHUB_OUTPUT, 'utf8')).toContain('windows={"include":[]}')
 })
 
 test('a download whose connection resets mid-body is retried, a wrong digest is not', async () => {

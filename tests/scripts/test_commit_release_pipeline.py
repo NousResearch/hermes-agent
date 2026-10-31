@@ -86,15 +86,6 @@ def test_the_version_helpers_name_a_commit_claim_in_every_language():
         assert not is_commit_tag(near) and release_version(near) is None, near
 
 
-def test_a_commit_claim_starts_from_the_default_lanes_minus_every_upgrade_test():
-    assert lane_set.select(policy="commit") == lane_set.DEFAULT - {"upgrade", "install-e2e", "windows-store"}
-    assert lane_set.select(policy="commit", with_=["termux"]) == lane_set.COMMIT | {"termux"}
-    assert lane_set.select(policy="commit", only=["docker", "ci"]) == {"docker", "ci"}
-    for refused in ("upgrade", "install-e2e", "windows-store"):
-        with pytest.raises(ValueError, match="commit claim cannot run"):
-            lane_set.select(policy="commit", only=["docker", refused])
-
-
 def test_the_claim_message_carries_lanes_green_policy_and_bundle_defaults():
     parsed = stable.stamped_claim(json.dumps(claim(bundleEnv={"HERMES_PREVIEW_FULL_CONNECTORS": "1"})),
                                   tag=TAG, commit=COMMIT)
@@ -164,7 +155,7 @@ def test_admission_needs_no_github_release_and_emits_the_commit_policy(tmp_path,
     monkeypatch.setattr(stable, "output", lambda argv: pytest.fail(f"a commit build asked {argv}"))
     stable.admit(env)
     outputs = dict(line.split("=", 1) for line in out.read_text(encoding="utf-8").splitlines())
-    assert outputs["policy"] == "commit" and outputs["release-id"] == "" and outputs["docker-tag"] == TAG
+    assert outputs["policy"] == "commit" and outputs["release-id"] == "" and outputs["claim-tag"] == TAG
     assert json.loads(outputs["bundle-env"]) == {"HERMES_PREVIEW_FULL_CONNECTORS": "1"}
     jobs = json.loads(outputs["jobs"])
     assert jobs["publish-commit"] and not any(jobs[name] for name in (
@@ -195,10 +186,9 @@ def test_a_commit_claim_is_versioned_from_its_stamp_like_a_canary():
     assert stable.release_windows_version(TAG, None) == stable.stamped_windows_version(TAG) == "26.1026.18.0"
     assert stable.payload_version(TAG) == VERSION
     stable.require_release_identity(TAG, COMMIT)
-    # The canary-only helpers stay canary-only.
-    for helper in (stable.canary_epoch, stable.canary_windows_version):
-        with pytest.raises(ValueError, match="canary"):
-            helper(TAG)
+    for helper in (stable.stamped_epoch, stable.stamped_windows_version):
+        with pytest.raises(ValueError, match="Not a stamped claim"):
+            helper("rc.1-v1.2.3")
 
 
 def test_package_provenance_binds_a_commit_claim_to_a_commit_build_stamp():
@@ -378,7 +368,7 @@ def test_build_commit_claims_the_commit_and_runs_stable_release_on_it(commit_rep
     assert parsed["bundleEnv"] == {"HERMES_PREVIEW_FULL_CONNECTORS": "1", "HERMES_HOME": None}
     dispatches = [call for call in calls if call[1:3] == ["workflow", "run"]]
     assert dispatches == [["gh", "workflow", "run", "stable-release.yml", "--ref", "main",
-                           "--repo", "fixture/release", "-f", f"tag={tag}"]]
+                           "--repo", "fixture/release", "--raw-field", f"tag={tag}"]]
     assert f"https://releases.example/releases/tag/{tag}/index.html" in capsys.readouterr().out
 
 

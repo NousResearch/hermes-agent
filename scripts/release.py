@@ -23,8 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hermes_cli.update_channel import (
-    _CANARY_TAG_RE, STABLE_TAG_RE, canary_tag_for_date, canary_timestamp,
-    is_canary_tag, release_version,
+    canary_tag_for_date, canary_timestamp, is_canary_tag, release_version,
 )
 from scripts.releases.authors import resolve_author
 
@@ -64,58 +63,29 @@ def list_remotes() -> list[str]:
     return [name for name in result.stdout.split() if name]
 
 
-def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
-    """Dispatch the release pipeline after its draft exists.
+def dispatch_release(tag: str, repository: str) -> bool:
+    """Start Stable Release on the claim once its draft exists (stable.dispatch_command).
 
-    Both channels run the same default-branch Stable Release workflow with the tag
-    as an input, so a canary runs exactly the jobs a stable release does (every
-    lane on), caches share one scope and scripts come from main. Admission resolves
-    the tag to the commit under test and picks the policy that decides where the
-    release publishes. Explicit dispatch also works for tags created by GITHUB_TOKEN.
+    Explicit dispatch also works for tags created by GITHUB_TOKEN.
     """
-    canary = _CANARY_TAG_RE.fullmatch(tag) is not None
-    if not canary and not STABLE_TAG_RE.fullmatch(tag):
-        raise ValueError("Expected an exact stable or canary release tag")
-    workflow = "stable-release.yml"
-    cmd = ["gh", "workflow", "run", workflow, "--ref", "main", "-f", f"tag={tag}"]
-    if gh_repo:
-        cmd += ["--repo", gh_repo]
+    from scripts.releases.stable import dispatch_command
 
+    cmd = dispatch_command(tag, repository)
     if not shutil.which("gh"):
         print("  ✗ Cannot start the release pipeline: `gh` CLI not found.")
         print(f"    Start it manually: {' '.join(cmd)}")
         return False
-
-    dispatch_ref = _default_branch(gh_repo) or "main"
-    cmd[cmd.index("--ref") + 1] = dispatch_ref
-
     result = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(REPO_ROOT),
-        check=False,
+        check=False, timeout=60,
     )
     if result.returncode != 0:
         print(f"  ✗ Could not start the release pipeline: {result.stderr.strip()}")
         print(f"    Start it manually: {' '.join(cmd)}")
         return False
-
-    print(f"  ✓ {workflow} started for {tag} (workflow from {dispatch_ref})")
+    print(f"  ✓ Stable Release started for {tag}")
     return True
-
-
-def _default_branch(gh_repo: str | None) -> str | None:
-    """The repo's default branch, resolved via gh. None on any failure."""
-    cmd = ["gh", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"]
-    if gh_repo:
-        cmd += [gh_repo]
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", cwd=str(REPO_ROOT),
-        check=False,
-    )
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip() or None
 
 
 def resolve_push_remote(requested: str | None) -> str:
@@ -462,7 +432,7 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
     if published is not None and published == (release_version(tag), commit):
         print(f"✓ {tag} is already published.")
         return
-    if not dispatch_desktop_build(tag, repository):
+    if not dispatch_release(tag, repository):
         raise SystemExit(1)
     print(f"Resumed canary publication for {tag}.")
     print(f"Workflow: https://github.com/{repository}/actions/workflows/stable-release.yml")
@@ -573,14 +543,6 @@ def cmd_canary(args) -> None:
     changelog_file.write_text(changelog, encoding="utf-8")
     _resume_canary(tag_name, push_remote, gh_repo, notes_file=changelog_file)
     changelog_file.unlink(missing_ok=True)
-    # Record the tag for any workflow step that wants it. release.py
-    # starts the build itself, so nothing consumes this today; it stays
-    # because a step output is the cheap, conventional handle for "which
-    # tag did this run cut".
-    github_output = os.environ.get("GITHUB_OUTPUT")
-    if github_output:
-        with open(github_output, "a", encoding="utf-8") as f:
-            f.write(f"tag={tag_name}\n")
 
 
 def _canary_date(tag: str) -> str | None:

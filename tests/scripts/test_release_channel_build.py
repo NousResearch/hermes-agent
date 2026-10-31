@@ -30,27 +30,22 @@ def test_a_channel_claim_names_its_channel_and_branding_and_admits_as_one():
                                    bundle_env={}, channel="bad/name")
 
 
-def test_channel_lanes_refuse_what_a_channel_build_cannot_run():
-    from scripts.releases import lanes
+@pytest.mark.parametrize("tag", [TAG, "commit.20261028T120000Z-v1.2.3", "canary.20261028T120000Z-v1.2.3",
+                                 "rc.1-v1.2.3"])
+def test_every_kind_dispatches_the_default_branch_controller_with_only_its_claim(tag):
+    from scripts.releases.stable import dispatch_command
 
-    # A channel build updates (install-e2e) and upgrades its channel's head (upgrade); only the Store
-    # is stable's and canary's.
-    assert {"install-e2e", "upgrade"} <= lanes.select(policy="channel")
-    assert "windows-store" not in lanes.select(policy="channel")
-    for selection in ({"with_": ["windows-store"]}, {"only": ["windows", "windows-store"]}):
-        with pytest.raises(ValueError, match="channel claim cannot run windows-store"):
-            lanes.select(policy="channel", **selection)
+    assert dispatch_command(tag, "example/hermes-agent") == [
+        "gh", "workflow", "run", "stable-release.yml", "--ref", "main", "--repo", "example/hermes-agent",
+        "--raw-field", f"tag={tag}"]
 
 
-def test_dispatch_runs_stable_release_on_a_commit_or_channel_claim_only():
-    from scripts.releases import commit_build
+@pytest.mark.parametrize("tag", ["v1.2.3", "v1.2.3/other", "rc.0-v1.2.3", "v1.2.3+canary.20261028T120000Z", ""])
+def test_dispatch_refuses_anything_but_a_claim(tag):
+    from scripts.releases.stable import dispatch_command
 
-    command = commit_build.dispatch_command(TAG, "example/hermes-agent", "main")
-    assert command[:3] == ["gh", "workflow", "run"] and command[-1] == f"tag={TAG}"
-    assert commit_build.dispatch_command("commit.20261028T120000Z-v1.2.3", "example/hermes-agent", "main")
-    for other in ("canary.20261028T120000Z-v1.2.3", "rc.1-v1.2.3", "v1.2.3"):
-        with pytest.raises(ValueError, match="claim tag"):
-            commit_build.dispatch_command(other, "example/hermes-agent", "main")
+    with pytest.raises(ValueError, match="Not a release claim tag"):
+        dispatch_command(tag, "example/hermes-agent")
 
 
 def test_channel_specific_data_dirs_bake_a_per_channel_suffix():

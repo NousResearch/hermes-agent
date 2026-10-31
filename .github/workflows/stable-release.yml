@@ -24,10 +24,6 @@ on:
         description: Exact annotated claim tag (rc.N-vX.Y.Z, canary.<stamp>-vX.Y.Z, commit.<stamp>-vX.Y.Z or channel.<stamp>-vX.Y.Z). Admission resolves it to the commit under test
         required: true
         type: string
-      baseline-manifest:
-        description: Optional HTTPS manifest of the previous published packages of the claim's policy (stable or canary)
-        default: ''
-        type: string
 
 permissions:
   contents: read
@@ -71,7 +67,6 @@ jobs:
       # a build or test job.
       policy: ${{ steps.admit.outputs.policy }}
       # The versioned image tag: the claim tag, or a canary tag with its `+` as `-`.
-      docker-tag: ${{ steps.admit.outputs.docker-tag }}
       # The claim's lanes (scripts/releases/lanes.py): `lanes` is one flag per lane and `jobs`
       # one run flag per lane-controlled job. Every job's `if` reads its own `jobs` entry, so the
       # lane table alone decides what runs and what the gates expect to have skipped.
@@ -139,7 +134,7 @@ jobs:
       commit: ${{ needs.admit.outputs.commit }}
       release-phase: test
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes)['docker-tests'] }}
-      tag: ${{ needs.admit.outputs.docker-tag }}
+      tag: ${{ needs.admit.outputs.claim-tag }}
       version: ${{ needs.admit.outputs.version }}
 
   nix:
@@ -270,7 +265,6 @@ jobs:
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
       skip-signed: ${{ !fromJSON(needs.admit.outputs.lanes).windows }}
       skip-store: ${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}
-      windows-smokes-with-bundle: true
 
   candidates-win32-x64:
     name: Build signed release candidates (win32-x64)
@@ -297,7 +291,6 @@ jobs:
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
       skip-signed: ${{ !fromJSON(needs.admit.outputs.lanes).windows }}
       skip-store: ${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}
-      windows-smokes-with-bundle: true
 
   candidates-win32-bundle:
     name: Build signed release candidates (win32-bundle)
@@ -326,7 +319,6 @@ jobs:
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
       skip-signed: ${{ !fromJSON(needs.admit.outputs.lanes).windows }}
       skip-store: ${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}
-      windows-smokes-with-bundle: true
 
   candidates-termux:
     name: Build signed release candidates (termux)
@@ -382,7 +374,6 @@ jobs:
           RELEASE_TAG: ${{ needs.admit.outputs.tag }}
           RELEASE_CLAIM_TAG: ${{ needs.admit.outputs.claim-tag }}
           RELEASE_CLAIM_OBJECT: ${{ needs.admit.outputs.claim-object }}
-          BASELINE_MANIFEST_URL: ${{ inputs.baseline-manifest }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
@@ -418,7 +409,6 @@ jobs:
           RELEASE_TAG: ${{ needs.admit.outputs.tag }}
           RELEASE_CLAIM_TAG: ${{ needs.admit.outputs.claim-tag }}
           RELEASE_CLAIM_OBJECT: ${{ needs.admit.outputs.claim-object }}
-          BASELINE_MANIFEST_URL: ${{ inputs.baseline-manifest }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
@@ -454,7 +444,6 @@ jobs:
           RELEASE_TAG: ${{ needs.admit.outputs.tag }}
           RELEASE_CLAIM_TAG: ${{ needs.admit.outputs.claim-tag }}
           RELEASE_CLAIM_OBJECT: ${{ needs.admit.outputs.claim-object }}
-          BASELINE_MANIFEST_URL: ${{ inputs.baseline-manifest }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
@@ -650,7 +639,7 @@ jobs:
     with:
       commit: ${{ needs.admit.outputs.commit }}
       release-phase: publish
-      tag: ${{ needs.admit.outputs.docker-tag }}
+      tag: ${{ needs.admit.outputs.claim-tag }}
       version: ${{ needs.admit.outputs.version }}
 
   publish-bundles:
@@ -923,7 +912,7 @@ jobs:
           && needs.publish-docker.result == 'success' && needs.publish-canary.result == 'success' }}
         run: python -m scripts.releases.docker promote-canary --tag "$DOCKER_TAG"
         env:
-          DOCKER_TAG: ${{ needs.admit.outputs.docker-tag }}
+          DOCKER_TAG: ${{ needs.admit.outputs.claim-tag }}
       - run: python -m scripts.releases.stable gate admit ci docker acceptance candidate-manifest publication publish-docker
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}

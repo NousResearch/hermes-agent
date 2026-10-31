@@ -30,8 +30,7 @@ def require_stable_tag(tag: str) -> str:
 
 
 def is_canary_image_tag(tag: object) -> bool:
-    """A canary's versioned image tag: its git tag, ``canary.<stamp>-vX.Y.Z``, unchanged
-    (scripts/releases/stable.py docker_tag)."""
+    """A canary's versioned image tag: its claim tag, ``canary.<stamp>-vX.Y.Z``, unchanged."""
     from hermes_cli.update_channel import is_canary_tag
 
     return is_canary_tag(tag)

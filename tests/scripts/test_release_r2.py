@@ -37,8 +37,6 @@ from scripts.releases.r2 import (
     canonical_query,
     canonical_request,
     channel_page_key_for,
-    commit_page_key_for,
-    commit_prefix_for,
     encode_key_path,
     feed_referenced_keys,
     public_base_url,
@@ -187,9 +185,6 @@ def test_relative_artifact_path_rejects_windows_reserved_names_without_ntpath(mo
 def test_download_page_keys_and_public_urls():
     assert channel_page_key_for("stable") == "releases/stable/index.html"
     assert channel_page_key_for("canary") == "releases/canary/index.html"
-    commit = "a" * 40
-    assert commit_page_key_for(commit) == f"releases/commit/{commit}/index.html"
-    assert commit_prefix_for(commit) == f"releases/commit/{commit}/"
     assert public_url_for("https://cdn.example.com/", "releases/tag/v1/Hermes-1-x64.msix") == (
         "https://cdn.example.com/releases/tag/v1/Hermes-1-x64.msix"
     )

@@ -464,13 +464,6 @@ def staging_key_for(tag: str, filename: str) -> str:
     return f"releases/tag/{tag}/{filename}"
 
 
-_FULL_SHA_RE = re.compile(r"[a-f0-9]{40}")
-
-
-def is_full_sha(value: str) -> bool:
-    return bool(isinstance(value, str) and _FULL_SHA_RE.fullmatch(value))
-
-
 # Windows reserved names (CPython ntpath parity). COM/LPT superscript forms
 # (COM² etc.) are reserved under NTFS namespace rules, same as the digit forms.
 _WIN_RESERVED_NAMES = frozenset(
@@ -506,17 +499,6 @@ def relative_artifact_path(value: str) -> str:
     return value
 
 
-def commit_key_for(commit: str, filename: str) -> str:
-    """Keep nested artifacts inside the exact commit namespace."""
-    return commit_prefix_for(commit) + relative_artifact_path(filename)
-
-
-def commit_prefix_for(commit: str) -> str:
-    if not is_full_sha(commit):
-        raise ValueError("Commit builds require an exact full 40-character SHA")
-    return f"releases/commit/{commit}/"
-
-
 # Public download origin for object keys. CI supplies the authoritative
 # value as CLOUDFLARE_R2_PUBLIC_URL; the documented production origin is the
 # fallback so a local command can still name a page it is about to publish.
@@ -535,11 +517,6 @@ def public_url_for(base_url: str, key: str) -> str:
 def channel_page_key_for(channel: str) -> str:
     """The mutable per-channel downloads page, replaced by each release."""
     return f"releases/{channel}/index.html"
-
-
-def commit_page_key_for(commit: str) -> str:
-    """The per-commit-build downloads page (every expected binary, built or not)."""
-    return commit_prefix_for(commit) + "index.html"
 
 
 def feed_dir_for(platform: str, channel: str) -> str:

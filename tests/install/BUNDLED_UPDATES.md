@@ -1,10 +1,8 @@
 # Bundled application update acceptance
 
-The `packaged-app -> open-app-update` arms belong to the existing Install & Update E2E workflow. They are not crossed with source-checkout update methods. Source-tag sampling remains unchanged.
+The `packaged-app -> open-app-update` arms are Stable Release's signed-package upgrade arms (`windows-packaged`, `macos-packaged-arm64`, `macos-packaged-x64`). They call the per-OS run workflows (`install-e2e-windows-run.yml`, `install-e2e-macos-run.yml`) directly with the transition manifest their `transitions-*` job pinned (`bundle-manifest-url`, `bundle-manifest-sha256`). They are not crossed with source-checkout update methods, and the Install & Update E2E matrix (`install-e2e.yml`) runs source legs only.
 
 ## Input contract
-
-Manual routes are `windows-bundled`, `macos-bundled`, and `bundled` (both). Supply `windows-bundle-manifest` and/or `macos-bundle-manifest` with an HTTPS URL. An explicitly selected bundle route without its manifest fails. An ordinary scheduled/source run without manifests reports no bundled coverage, not a passed update.
 
 Each JSON manifest has `schema: 1`, `platform` (`windows` or `macos`), `arch` (`x64` or `arm64`), and `old`/`new` objects. Each object contains:
 

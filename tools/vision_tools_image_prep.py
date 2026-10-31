@@ -32,16 +32,16 @@ _EXTENSION_MIME_TYPES = {
 _ANTHROPIC_SUPPORTED_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
 
 
-def unsupported_inline_image_media_type(url: str) -> Optional[str]:
+def unsupported_inline_image_media_type(url: str, also_rejected: frozenset = frozenset()) -> Optional[str]:
     """``image/<subtype>`` of a ``data:image/...`` URL the inline-image wire paths reject
-    (``image/jpg`` counts as JPEG); None for accepted rasters and for non-data URLs (the
-    provider owns remote-URL validation)."""
+    (``image/jpg`` counts as JPEG; ``also_rejected`` adds one backend's own refusals); None
+    for accepted rasters and for non-data URLs (the provider owns remote-URL validation)."""
     header = url.partition(",")[0].lower()
     if not header.startswith("data:image/"):
         return None
     subtype = header[len("data:image/"):].split(";", 1)[0].strip() or "unknown"
     media_type = "image/jpeg" if subtype == "jpg" else f"image/{subtype}"
-    return None if media_type in _ANTHROPIC_SUPPORTED_MEDIA_TYPES else media_type
+    return None if media_type in _ANTHROPIC_SUPPORTED_MEDIA_TYPES - also_rejected else media_type
 
 
 _MAGIC_MIME_TYPES = (

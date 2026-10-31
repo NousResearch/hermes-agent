@@ -824,6 +824,11 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
         dispatch_kwargs["enabled_tools"] = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
     else:
         dispatch_kwargs["user_task"] = user_task
+    from agent.plugin_session_fork import current_turn_origin
+    if (turn_origin := current_turn_origin()) is not None:
+        # Only inside a plugin session fork ("plugin_fork:<plugin id>"), so a plugin's tool can
+        # refuse calls the live agent makes; live-turn handlers see no new kwarg.
+        dispatch_kwargs["turn_origin"] = turn_origin
 
     def _dispatch(next_args: dict[str, Any]) -> Any:
         from tools.connectors import dispatch_connector_call, is_connector_name

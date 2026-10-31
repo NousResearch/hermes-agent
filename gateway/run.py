@@ -4355,9 +4355,9 @@ def _housekeeping_misfire_catch_up(cron_provider, adapters, loop) -> None:
 
 
 def _housekeeping_curator() -> None:
-    """maybe_run_curator() is gated by config.interval_hours (7 days default); this is the poll."""
-    from agent.curator import maybe_run_curator
-    maybe_run_curator(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg))
+    """The idle poll: the curator (gated by curator.interval_hours), then plugin idle tasks (their own intervals)."""
+    from hermes_cli.plugins_idle_tasks import run_idle_jobs
+    run_idle_jobs(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg))
 
 
 def _housekeeping_plugin_update_check() -> None:

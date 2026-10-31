@@ -326,8 +326,7 @@ def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineTo
     """
     if function_name in INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES:
         return INLINE_TOOL_EXECUTORS[function_name]
-    memory_manager = agent._memory_manager
-    if memory_manager and memory_manager.has_tool(function_name):
+    if is_memory_provider_tool(agent, function_name):
         return lambda agent, args, ctx: agent._memory_manager.handle_tool_call(
             function_name, args,
             caller_gsk=(getattr(agent, "_gateway_session_key", "") or ""),
@@ -335,3 +334,40 @@ def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineTo
     if function_name == "message_agent":
         return None
     return INLINE_TOOL_EXECUTORS.get(function_name)
+
+
+def is_memory_provider_tool(agent, function_name: str) -> bool:
+    """``function_name`` is served by the agent's memory provider (both paths, before the registry)."""
+    memory_manager = getattr(agent, "_memory_manager", None)
+    return bool(memory_manager) and memory_manager.has_tool(function_name)
+
+
+def is_context_engine_tool(agent, function_name: str) -> bool:
+    """``function_name`` is served by the agent's context engine (sequential path, before the registry)."""
+    names = getattr(agent, "_context_engine_tool_names", None)
+    return bool(names) and function_name in names
+
+
+def pre_registry_route(function_name: str, agent: Any = None) -> Optional[str]:
+    """Which seam dispatches ``function_name`` instead of its tool-registry handler on some path
+    (``model_tools.handle_function_call``, the sequential path, ``invoke_tool``), or None when every
+    path reaches the registry handler: ``alias``, ``bridge``, ``inline``, ``connector``, and with
+    ``agent`` also ``context_engine`` / ``memory_provider``. Each test is the one the dispatcher
+    runs, so a registration under such a name never runs its own handler there."""
+    from model_tools import _AGENT_LOOP_TOOLS, _LEGACY_TOOL_ALIASES
+    from tools.connectors import is_connector_name
+    from tools.tool_search import is_bridge_tool
+
+    if function_name in _LEGACY_TOOL_ALIASES:
+        return "alias"
+    if is_bridge_tool(function_name):
+        return "bridge"
+    if function_name in INLINE_TOOL_EXECUTORS or function_name in _AGENT_LOOP_TOOLS:
+        return "inline"
+    if is_connector_name(function_name):
+        return "connector"
+    if agent is not None and is_context_engine_tool(agent, function_name):
+        return "context_engine"
+    if agent is not None and is_memory_provider_tool(agent, function_name):
+        return "memory_provider"
+    return None

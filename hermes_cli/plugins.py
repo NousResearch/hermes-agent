@@ -36,8 +36,7 @@ from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_rel
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
 from hermes_cli.plugins_manifest import (
     _CONFIG_SCHEMA_TYPES, SUPPORTED_MANIFEST_VERSION, PluginManifest, _portable_data_namespace,
-    manifest_key, parse_manifest_file, resolve_module_origin, resolve_plugin_load_order,
-    validate_config_schema,
+    manifest_key, parse_manifest_file, resolve_module_origin, resolve_plugin_load_order, validate_config_schema,
 )
 from hermes_cli.plugins_discovery import (
     ENTRY_POINTS_GROUP, _get_disabled_plugins, _get_enabled_plugins, collect_directory_manifests,
@@ -58,6 +57,7 @@ from hermes_cli.plugins_dispatch import (
     is_valid_system_prompt_section_id, resolve_plugin_command_result,
 )
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
+from hermes_cli.plugins_idle_tasks import PluginIdleTaskCtxMixin
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
 from hermes_cli.plugins_state import (
@@ -227,7 +227,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext(PluginCapabilityCtxMixin):
+class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -860,10 +860,10 @@ class PluginContext(PluginCapabilityCtxMixin):
         """Register an auxiliary LLM task with its own ``auxiliary.<key>`` config block (picker entry,
         ``AUXILIARY_<KEY>_*`` env bridge, defaults merged into loaded configs). ``defaults`` may
         override provider/model/base_url/api_key/timeout/extra_body (unknown keys kept verbatim).
-        ``inherit_from`` names a built-in or already-registered auxiliary task whose effective
-        configuration becomes the base for this one; it is resolved at read time, so the task tracks
-        the base's current config instead of snapshotting it (precedence: inherited base, then
-        ``defaults``, then user config in ``auxiliary.<key>``). An unknown or self-referential
+        ``inherit_from`` names a picker task, ``background_review``, ``curator`` or a registered task;
+        its effective config becomes this one's base at read time (precedence: inherited base, then
+        ``defaults``, then user config in ``auxiliary.<key>``). A core base's route carries over only
+        with ``plugins.entries.<id>.llm.allow_task_override``. An unknown or self-referential
         ``inherit_from`` logs a warning and registers the task without inheritance.
         Raises ``ValueError`` for an empty/invalid key, a built-in key, or another plugin's key."""
         from hermes_cli.plugins_aux_tasks import build_auxiliary_task_entry

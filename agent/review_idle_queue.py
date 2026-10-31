@@ -66,6 +66,9 @@ class _PendingReview:
     kwargs: dict[str, Any]
     enqueued_at: float
     context: contextvars.Context
+    # Other review-shaped work under the same idle rules (a plugin session fork): run this instead
+    # of the agent's review spawn. ``kwargs["task_cfg"]`` still drives the age-out.
+    dispatch: Optional[Callable[[], None]] = None
 
 
 class ReviewIdleQueue:
@@ -94,14 +97,15 @@ class ReviewIdleQueue:
                 self._quiet_since = self._now()
         self._wake.set()
 
-    def enqueue(self, agent: Any, session_key: str, kwargs: dict[str, Any]) -> None:
+    def enqueue(self, agent: Any, session_key: str, kwargs: dict[str, Any],
+                dispatch: Optional[Callable[[], None]] = None) -> None:
         """Add (or replace — newest snapshot wins) a session's pending review, keeping the ORIGINAL
         enqueue time on coalesce so a busy session cannot push its age-out forever."""
         with self._lock:
             existing = self._pending.get(session_key)
             enqueued_at = existing.enqueued_at if existing is not None else self._now()
             self._pending[session_key] = _PendingReview(
-                agent, session_key, kwargs, enqueued_at, contextvars.copy_context())
+                agent, session_key, kwargs, enqueued_at, contextvars.copy_context(), dispatch)
         self._ensure_thread()
         self._wake.set()
         logger.info("Background review deferred (session=%s, queued=%d)", session_key[-12:], len(self._pending))
@@ -109,6 +113,14 @@ class ReviewIdleQueue:
     def pending_count(self) -> int:
         with self._lock:
             return len(self._pending)
+
+    def discard(self, session_key: str, dispatch: Callable[[], None]) -> None:
+        """Drop the session's pending item when it is still ``dispatch``'s (a fenced plugin fork);
+        a newer item that replaced it stays queued."""
+        with self._lock:
+            item = self._pending.get(session_key)
+            if item is not None and item.dispatch is dispatch:
+                del self._pending[session_key]
 
     def _ensure_thread(self) -> None:
         with self._lock:
@@ -161,6 +173,9 @@ class ReviewIdleQueue:
                 time.sleep(_POLL_INTERVAL_S)
 
     def _dispatch(self, item: _PendingReview) -> None:
+        if item.dispatch is not None:
+            item.dispatch()
+            return
         if not self._still_enabled(item):
             logger.info(
                 "Deferred background review dropped: reviews were disabled while it was queued (session=%s)",

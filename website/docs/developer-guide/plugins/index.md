@@ -409,6 +409,8 @@ Known capability ids: `tools.override`, `llm.provider_override`,
 `llm.model_override`, `llm.agent_id_override`, `llm.profile_override`,
 `llm.task_override`, `llm.side_question` (ask the session's own agent after
 a turn, see [Plugin LLM Access](../plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question)),
+`llm.session_fork` (run a bounded background copy of the session's agent, see
+[Plugin LLM Access](../plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session)),
 `gateway.platform_actions` (see `hermes_cli/plugin_capabilities.py` for the
 canonical registry). Unknown ids are ignored. The older per-capability
 config keys (`plugins.entries.<id>.allow_tool_override`, …) still work but
@@ -888,7 +890,9 @@ def unit_convert(args: dict, **kwargs) -> str:
 3. **Never raise:** Catch all exceptions, return error JSON instead.
 4. **Accept `**kwargs`:** Hermes injects context keywords (`task_id`, `session_id`, `user_task`,
    `parent_agent`, ...) and only forwards the ones your signature names, so `def handler(args)`
-   works; `**kwargs` is how you opt into the full, additively growing context.
+   works; `**kwargs` is how you opt into the full, additively growing context. Inside a
+   plugin's [session fork](../plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session)
+   the handler also receives `turn_origin="plugin_fork:<plugin id>"`; live-turn calls carry none.
 
 ## Step 5: Write the registration
 
@@ -1532,7 +1536,7 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | [`pre_tool_call`](../../user-guide/features/hooks.md#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | optional directive: `{"action": "block", "message": ...}` vetoes the call; `{"action": "approve", "message": ...}` escalates to the human-approval gate |
 | [`post_tool_call`](../../user-guide/features/hooks.md#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
 | [`pre_llm_call`](../../user-guide/features/hooks.md#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
-| [`post_llm_call`](../../user-guide/features/hooks.md#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
+| [`post_llm_call`](../../user-guide/features/hooks.md#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str, side_question_token: str \| None, review_signals: dict` | ignored |
 | `pre_api_request` | Before each raw provider API request (several per turn when the model calls tools) | `session_id: str, model: str, provider: str, base_url: str, api_mode: str, api_call_count: int, message_count: int, tool_count: int, approx_input_tokens: int, max_tokens: int, request: dict` | ignored |
 | `post_api_request` | After each raw provider API request returns | `pre_api_request` fields plus `api_duration: float, finish_reason: str, response_model: str \| None, usage: dict, response: dict, assistant_content_chars: int, assistant_tool_call_count: int` | ignored |
 | `api_request_error` | A provider API call raised | correlation fields plus `status_code: int \| None, retry_count: int \| None, max_retries: int \| None, retryable: bool \| None, reason: str \| None, error: dict, request: dict` | ignored |
@@ -1911,6 +1915,55 @@ def register(ctx):
 ```
 
 For running a full `hermes <subcommand>` (e.g. `hermes kanban show`), shell out with the `terminal` tool via `ctx.dispatch_tool("terminal", {"command": "hermes kanban show ..."})` — there is no in-process slash-command bridge for headless worker sessions, and tools are the supported way to drive Hermes from a hook.
+
+### Follow the user's self-learning cadence (`review_signals`)
+
+After every successful turn, `post_llm_call` carries `review_signals`: the counters behind Hermes' own background memory/skill review (`skills.creation_nudge_interval`, `memory.nudge_interval`) and whether that review is due and enabled this turn. A plugin with after-turn work of its own (judging the skills a turn touched, say) can run on the same cadence the user already tuned instead of counting tool calls itself:
+
+```python
+def register(ctx):
+    def on_post_llm_call(review_signals=None, **kwargs):
+        if not review_signals or not review_signals["background_review_enabled"]:
+            return  # cron run, subagent, or the user turned background review off
+        if review_signals["skill_review_due"]:
+            ...  # the same turn Hermes reviews skills on
+
+    ctx.register_hook("post_llm_call", on_post_llm_call)
+```
+
+The hook fires before Hermes decides, and the due flags are the values that decision uses. Keys and semantics: [`post_llm_call`](../../user-guide/features/hooks.md#review_signals). To do that work the way Hermes' own review does (a background copy of the session's agent with a narrow tool list), pair the signal with [`ctx.fork_session`](../plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session).
+
+### Run a job when Hermes is idle (`ctx.register_idle_task`)
+
+Some work has no turn to hang off: re-scoring your plugin's data once a day, suggesting a cleanup, compacting a cache. `ctx.register_idle_task` runs it on the same scheduler as the skill [curator](../../user-guide/features/curator.md), from the same places (gateway housekeeping for every served profile, CLI/TUI startup, the `hermes serve` maintenance tick):
+
+```python
+def register(ctx):
+    def suggest(run):
+        # run.name, run.idle_for_seconds, run.last_run_at (ISO or None), run.run_count
+        candidates = ctx.state.get("candidates", [])
+        if not candidates:
+            return None
+        result = ctx.llm.complete(
+            messages=[{"role": "user", "content": f"Rank these for promotion: {candidates}"}],
+            task="suggest",  # a task this plugin registered with ctx.register_auxiliary_task
+        )
+        ctx.state.set("ranking", result.text)
+        return f"ranked {len(candidates)} skills"  # optional summary, shown by `hermes plugins idle-tasks`
+
+    ctx.register_idle_task("suggest", suggest, interval_hours=24, min_idle_hours=2)
+```
+
+`register_idle_task(name, fn, *, interval_hours, min_idle_hours=2, first_run="defer")` returns a `PluginRegistration` (dispose it to stop polling). A task runs when:
+
+- the host has been idle `min_idle_hours` (gateway housekeeping and CLI startup count as fully idle, `hermes serve` measures chat inactivity);
+- `interval_hours` (floored to 1) have passed since its last run. The first poll records "now" and waits one interval, like the curator, so an install or update never runs the job straight away; `first_run="immediate"` runs it on the first idle poll instead;
+- it is not paused (`hermes plugins idle-tasks <plugin> --pause <task>`);
+- no other run of it is in flight, in this process or another one.
+
+`fn` runs synchronously on the polling thread, in the profile that registered it, so keep it bounded. An exception is logged and recorded as `last_status: error` and never reaches the host. State lives in the plugin's data dir, `<data dir>/idle-tasks/<name>.json` (`last_run_at`, `run_count`, `paused`, `last_summary`, `last_status`, `last_error`), so each profile schedules its own copy.
+
+No capability gates this: the scheduler only calls your own function. Anything privileged that function does goes through its own gate (model calls through the [`ctx.llm` trust gate](../plugin-llm-access.md#trust-gate), and so on).
 
 ### Send raw CDP commands to the agent's browser
 

@@ -669,6 +669,13 @@ _REASONING_CARRIER_ROUTES: tuple = (
     # Vendors that document reasoning_details replay next to reasoning_content.
     (frozenset({RC, RD}), frozenset({"novita", "tencent-tokenhub", "minimax", "minimax-cn"}),
      ("novita.ai", "tokenhub.tencentmaas.com", "tokenhub-intl.tencentcloudmaas.com", "minimax.io", "minimaxi.com")),
+    # NVIDIA NIM (integrate.api.nvidia.com) aliases ``reasoning`` onto its
+    # ``reasoning_content`` field, so replaying both carriers 400s with
+    # "duplicate field `reasoning_content`". NVIDIA is a remote, strict hosted
+    # endpoint even when registered under the shared "custom" profile — match the
+    # host before the local "custom" name row and carry only the canonical
+    # ``reasoning_content`` (strip ``reasoning`` and ``reasoning_details``).
+    (frozenset({RC}), frozenset(), ("integrate.api.nvidia.com",)),
     (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "custom", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
 )
 

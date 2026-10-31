@@ -26,6 +26,9 @@ from gateway.session import SessionEntry, SessionSource, SessionStore
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 from gateway.run_notifications_update import GatewayUpdateNotificationsMixin
 from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin
+from gateway.run_notifications_busy_result import (carry_completion_into_running_turn,
+                                                  record_coalesced_completion_siblings,
+                                                  settle_carried_completions, settle_completion_claims)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -1278,7 +1281,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         evt = await follow_detached_pin(self, evt)
         identity = self._completion_delivery_identity(evt)
         claim = self._CompletionClaim()
-        accepted = identity_claimed = refused = False
+        accepted = identity_claimed = refused = carried = False
         try:
             claim = await self._preflight_completion_delivery(evt)
             if not claim.proceed:
@@ -1300,9 +1303,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             completion_ids = [claim.delegation_id] if claim.claim_id else []
             completion_ids += [sibling["delegation_id"] for sibling, claim_id in sibling_claims if claim_id]
             evt = {**evt, "completion_ids": completion_ids}
-            injection_result = await self._inject_watch_notification(synth_text, evt, raise_not_accepted=True)
-            if injection_result is not True:
-                return injection_result
+            carry = carry_completion_into_running_turn(self, synth_text, evt, claim, identity, sibling_claims)
+            if carry is True:
+                carried = True  # the running turn's tool result delivers it; claims settle there
+                return True
+            if not carry or not await carry:  # a process completion no tool result carried: queue it
+                injection_result = await self._inject_watch_notification(synth_text, evt, raise_not_accepted=True)
+                if injection_result is not True:
+                    return injection_result
             accepted = True
             if identity is not None:
                 with self._completion_delivery_lock:
@@ -1315,17 +1323,12 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             refused = not exc.permanent
             return False
         finally:
-            if identity_claimed and not accepted:
-                with self._completion_delivery_lock:
-                    self._completion_deliveries_inflight.discard(identity)
-            operation = "complete" if accepted else "defer" if refused or claim.defer else "release"
-            if claim.claim_id:
-                self._settle_durable_claim(operation, claim.delegation_id, claim.claim_id)
-            for sibling, claim_id in sibling_claims:
-                if claim_id:
-                    self._settle_durable_claim(operation, sibling["delegation_id"], claim_id)
-            if accepted and sibling_claims:
-                self._record_coalesced_completion_siblings([event for event, _claim_id in sibling_claims])
+            if not carried:
+                settle_completion_claims(self, claim, sibling_claims, identity, identity_claimed, accepted, refused)
+
+    async def _settle_carried_completions(self, agent: Any = None, *, final: bool = False) -> None:
+        """Acknowledge completions a tool result carried (see ``run_notifications_busy_result``)."""
+        await settle_carried_completions(self, agent, final=final)
 
     @staticmethod
     def _event_route_key(evt: dict, fields: tuple[str, ...]) -> tuple[str, ...]:
@@ -1362,12 +1365,6 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         lines.append("If a result does not change the current conclusion, absorb it silently.]")
         return "\n".join(lines)
 
-    def _record_coalesced_completion_siblings(self, events: list[dict]) -> None:
-        """Extend a successful primary delivery claim to its batched siblings."""
-        identities = [i for i in map(self._completion_delivery_identity, events) if i is not None]
-        with self._completion_delivery_lock:
-            self._mark_completions_delivered_locked(identities)
-
     async def _flush_process_completion_batch(self, key: tuple[str, ...]) -> None:
         """Deliver one short-window completion batch and resolve its waiters."""
         current_task = asyncio.current_task()
@@ -1397,7 +1394,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             # sibling is never discarded with it.
             delivered = None
             for _text, candidate_evt, _future in entries_to_deliver:
-                candidate_evt = dict(candidate_evt, _display_text=display_text)
+                candidate_evt = dict(candidate_evt, _display_text=display_text, _batch_session_ids=[
+                    evt.get("session_id") for _text, evt, _future in entries_to_deliver])
                 if getattr(self, 'session_authority', None) is not None:
                     candidate_evt = dict(candidate_evt, _automation_identities=[
                         producer_identity(self, evt) for _text, evt, _future in entries_to_deliver])
@@ -1405,7 +1403,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 if delivered is not None:
                     break
             if delivered is True and len(entries) > 1:
-                self._record_coalesced_completion_siblings([evt for _text, evt, _future in entries])
+                record_coalesced_completion_siblings(self, [evt for _text, evt, _future in entries])
         except asyncio.CancelledError:
             # Shutdown cancellation: recover undetached entries and resolve every waiter as retryable.
             delivered = False
@@ -1635,6 +1633,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         last_orphan_sweep = None
         while self._running:
             with _log_suppressed(logging.DEBUG, "Async delegation watcher error: %s"):
+                # Acknowledge completions a running turn's tool result carried (busy_result_mode: steer).
+                await self._settle_carried_completions()
                 # Completions whose owner process died while this gateway runs (#97202).
                 if last_orphan_sweep is None or time.monotonic() - last_orphan_sweep >= ORPHAN_SWEEP_INTERVAL_S:
                     last_orphan_sweep = time.monotonic()

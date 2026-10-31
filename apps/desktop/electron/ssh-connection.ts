@@ -290,10 +290,11 @@ function target(user, host) {
   return user ? `${user}@${host}` : host
 }
 
-// Quote for the login shell sshd invokes. fish treats `\` inside `'…'`; POSIX
-// does not. Close the quote and escape outside it so both decode identically.
+// Quote for the login shell sshd invokes. Backslash-free: the classic
+// form relies on backslashes, which MSYS ssh collapses in the forwarded
+// command.
 function loginShellQuote(value: string) {
-  return `'${String(value).replace(/['\\]/g, ch => (ch === `'` ? `'\\''` : `'\\\\'`))}'`
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`
 }
 
 function buildExecArgs(conn, remoteCommand, connectTimeoutMs?) {

@@ -4,7 +4,7 @@ import type { HermesApiRequest } from '@/global'
 import { translateNow } from '@/i18n'
 import { requireBrowserConnection } from '@/lib/browser-connection'
 import { fetchBrowserImage } from '@/lib/browser-image-download'
-import { type BrowserBootstrap, FILE_ENDPOINTS, fileEndpointUrl } from '@/lib/browser-transport'
+import { browserApi, type BrowserBootstrap, FILE_ENDPOINTS, fileEndpointUrl } from '@/lib/browser-transport'
 import { clickDownloadLink, downloadBlob, downloadFilename } from '@/lib/download'
 import { notifyError } from '@/store/notifications'
 
@@ -22,13 +22,17 @@ interface BrowserFilesOptions {
   api: <T>(request: HermesApiRequest) => Promise<T>
   bootstrap: BrowserBootstrap
   currentProfile: () => string | null
+  /** The bootstrap a file of *connectionId* is read through: a relayed gateway's, when the serving
+   *  gateway relays to it (`browser-relay.ts`). Absent: only the serving gateway's files. */
+  bootstrapFor?: (connectionId?: null | string) => BrowserBootstrap
 }
 
 /** Server files reach the page through /api/fs reads and ticketed download/stream URLs. */
 export function createBrowserFilesBridge({
   api,
   bootstrap,
-  currentProfile
+  currentProfile,
+  bootstrapFor
 }: BrowserFilesOptions): Pick<
   Window['hermesDesktop'],
   | 'getGatewayFileStreamUrl'
@@ -43,6 +47,19 @@ export function createBrowserFilesBridge({
     api<T>({ path: queryPath(`/api/fs/${route}`, { path }), profile: currentProfile() })
 
   const readDataUrl = async (path: string) => (await fsGet<{ dataUrl: string }>('read-data-url', path)).dataUrl
+
+  // A payload's own connection when it names one, else the window's (*api* and *bootstrap* follow it).
+  const owner = (connectionId?: null | string) => {
+    if (!connectionId || !bootstrapFor) {
+      requireBrowserConnection(connectionId)
+
+      return { api, bootstrap }
+    }
+
+    const target = bootstrapFor(connectionId)
+
+    return { api: <T>(request: HermesApiRequest) => browserApi<T>(target, request), bootstrap: target }
+  }
 
   const downloadUrl = async (url: string, filename = '') => {
     const target = new URL(url, window.location.href)
@@ -64,7 +81,7 @@ export function createBrowserFilesBridge({
 
   return {
     getGatewayFileStreamUrl: async payload => {
-      requireBrowserConnection(payload.connectionId)
+      const target = owner(payload.connectionId)
 
       // The gateway decodes an encoded separator into another path segment; stream only a
       // file: URL the shared parser reads, so the clip is the file its label names.
@@ -72,11 +89,13 @@ export function createBrowserFilesBridge({
         throw new Error(`${payload.path} does not name one file`)
       }
 
-      return (await fileEndpointUrl(bootstrap, 'stream', {
-        path: payload.path,
-        profile: payload.profile ?? currentProfile(),
-        session_id: payload.sessionId
-      })).href
+      return (
+        await fileEndpointUrl(target.bootstrap, 'stream', {
+          path: payload.path,
+          profile: payload.profile ?? currentProfile(),
+          session_id: payload.sessionId
+        })
+      ).href
     },
     readDir: (path: string) =>
       fsGet<Awaited<ReturnType<Window['hermesDesktop']['readDir']>>>('list', path),
@@ -85,20 +104,23 @@ export function createBrowserFilesBridge({
     readFileText: (path: string) =>
       fsGet<Awaited<ReturnType<Window['hermesDesktop']['readFileText']>>>('read-text', path),
     saveGatewayFile: async payload => {
-      requireBrowserConnection(payload.connectionId)
+      const target = owner(payload.connectionId)
       const query = { path: payload.path, profile: payload.profile ?? currentProfile(), session_id: payload.sessionId }
 
       // Validate before handing the transfer to the browser so missing or
       // denied files surface in the chat without navigating away. HEAD keeps
       // large downloads out of renderer memory.
-      await api({
+      await target.api({
         method: 'HEAD',
         path: queryPath(FILE_ENDPOINTS.download, { path: query.path, session_id: query.session_id }),
         profile: query.profile
       })
 
       return {
-        saved: await downloadUrl((await fileEndpointUrl(bootstrap, 'download', query)).href, payload.suggestedName)
+        saved: await downloadUrl(
+          (await fileEndpointUrl(target.bootstrap, 'download', query)).href,
+          payload.suggestedName
+        )
       }
     },
     saveImageFromUrl: async (url: string) => {

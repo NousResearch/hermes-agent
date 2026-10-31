@@ -9,9 +9,10 @@ import { createBrowserFilesBridge } from '@/lib/browser-files'
 import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { onBrowserFocusSession, showBrowserNotification } from '@/lib/browser-notifications'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
+import { type BrowserRelays, createBrowserRelays, relayEnabled } from '@/lib/browser-relay'
 import { createBrowserSettings } from '@/lib/browser-settings'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
-import { browserApi, browserBootstrap, ticketedWebsocketUrl } from '@/lib/browser-transport'
+import { browserApi, type BrowserBootstrap, browserBootstrap, ticketedWebsocketUrl } from '@/lib/browser-transport'
 import { createBrowserUiPreferences } from '@/lib/browser-ui-preferences'
 import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
 import { announceWebappWindow, createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-window'
@@ -51,15 +52,43 @@ export function installBrowserDesktopBridge(): boolean {
 
   const api = <T>(request: HermesApiRequest) => browserApi<T>(bootstrap, request)
 
+  // Gateways the serving one relays to, when its relay is on: registry connections whose requests
+  // ride `/api/relay/<id>` on this origin (browser-relay.ts). Off, every route below is this origin's.
+  const relays: BrowserRelays | null = relayEnabled() ? createBrowserRelays({ api, bootstrap }) : null
+  const bootstrapFor = (connectionId?: null | string) => relays?.bootstrapFor(connectionId) ?? bootstrap
+  const activeConnectionId = () => $connection.get()?.connectionId ?? LOCAL_CONNECTION_ID
+
+  // A request names its connection; untagged, it goes to the one this window is on.
+  const activeApi = <T>(request: HermesApiRequest) =>
+    browserApi<T>(bootstrapFor(request.connectionId ?? activeConnectionId()), request)
+
+  // Members with no connection of their own (host files, uploads) follow the window's connection.
+  const activeBootstrap: BrowserBootstrap = {
+    get authRequired() {
+      return bootstrapFor(activeConnectionId()).authRequired
+    },
+    get basePath() {
+      return bootstrapFor(activeConnectionId()).basePath
+    },
+    get privateSession() {
+      return bootstrapFor(activeConnectionId()).privateSession
+    },
+    get token() {
+      return bootstrapFor(activeConnectionId()).token
+    }
+  }
+
   // The renderer's REST door, owning session rows the way Electron's main process does: every row
-  // this tab lists comes from the one gateway serving it, the `local` source the tab's sockets and
-  // new chats already name. An untagged listed row beside a `local` new chat read as two owners,
-  // which split one gateway's sessions into an unowned group and a `local` gateway group.
+  // this tab lists comes from the gateway the request went to, the source its sockets and new chats
+  // already name (`local` for the one serving this page). An untagged listed row beside a `local`
+  // new chat read as two owners, which split one gateway's sessions into an unowned group and a
+  // `local` gateway group.
   const rendererApi = async <T>(request: HermesApiRequest): Promise<T> => {
-    const response = await api<T>(request)
+    const owner = request.connectionId || LOCAL_CONNECTION_ID
+    const response = await browserApi<T>(bootstrapFor(owner), request)
 
     return (request.method || 'GET').toUpperCase() === 'GET'
-      ? (tagRegistrySessionResponse(request.path, response, LOCAL_CONNECTION_ID) as T)
+      ? (tagRegistrySessionResponse(request.path, response, owner) as T)
       : response
   }
 
@@ -95,13 +124,26 @@ export function installBrowserDesktopBridge(): boolean {
     }
   }
 
-  const uploads = createBrowserUploadsBridge({ api, bootstrap, currentProfile, objectUrls, previewUrls })
-  const files = createBrowserFilesBridge({ api, bootstrap, currentProfile })
+  const uploads = createBrowserUploadsBridge({
+    api: activeApi,
+    bootstrap: activeBootstrap,
+    currentProfile,
+    objectUrls,
+    previewUrls
+  })
+
+  const files = createBrowserFilesBridge({
+    api: activeApi,
+    bootstrap: activeBootstrap,
+    bootstrapFor: relays ? bootstrapFor : undefined,
+    currentProfile
+  })
 
   const bridge: Window['hermesDesktop'] = {
     ...BROWSER_BRIDGE_STUBS,
     ...createBrowserClipboardBridge({ saveBuffer: uploads.saveImageBuffer }),
-    ...createBrowserConnectionBridge({ api, bootstrap }),
+    ...createBrowserConnectionBridge({ api, bootstrap, relays }),
+    ...(relays ? { connections: relays.connections, gatewayRelay: relays.bridge } : {}),
     ...files,
     ...createBrowserDesktopPluginsBridge({ api, files }),
     ...uploads,
@@ -150,8 +192,16 @@ export function installBrowserDesktopBridge(): boolean {
     terminal: createBrowserTerminal({
       basePath: bootstrap.basePath,
       currentProfile,
-      websocketUrl: profile => ticketedWebsocketUrl(bootstrap, '/api/host-terminal', profile),
-      defaultCwd: async profile => (await api<{ cwd?: string }>({ path: '/api/fs/default-cwd', profile })).cwd || '',
+      // The host terminal of the gateway this window is on, relayed when it is not the serving one.
+      websocketUrl: profile => {
+        const connectionId = activeConnectionId()
+
+        return relays && connectionId !== LOCAL_CONNECTION_ID
+          ? relays.socketUrl(connectionId, '/api/host-terminal', profile)
+          : ticketedWebsocketUrl(bootstrap, '/api/host-terminal', profile)
+      },
+      defaultCwd: async profile =>
+        (await activeApi<{ cwd?: string }>({ path: '/api/fs/default-cwd', profile })).cwd || '',
       // The chat's sign-in view for a launch-link tab. Behind the sign-in gate the next ticket
       // request already takes the tab to the login page.
       onSignedOut: () => {

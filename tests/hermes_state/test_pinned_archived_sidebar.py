@@ -80,6 +80,24 @@ def test_pinned_backfill_still_obeys_other_filters(db):
     assert "cron-pin" not in _sidebar_ids(db, exclude_sources=["cron"])
 
 
+def test_archived_only_view_never_backfills_a_live_pin(db):
+    """The archived view declares every row archived, so a live pin must not leak into it."""
+    _seed(db, "live-pin", pinned=True)
+    _seed(db, "archived", archived=True)
+
+    rows = db.list_sessions_rich(
+        limit=20,
+        offset=0,
+        min_message_count=1,
+        archived_only=True,
+        order_by_last_active=True,
+        compact_rows=True,
+        include_pinned=True,
+    )
+    assert [row["id"] for row in rows] == ["archived"]
+    assert all(row["archived"] for row in rows)
+
+
 def test_stale_sweep_does_not_archive_pinned_session(db):
     """The idle sweep retires an unpinned stale row and leaves a pin active."""
     db.create_session(session_id="keep", source="cli")

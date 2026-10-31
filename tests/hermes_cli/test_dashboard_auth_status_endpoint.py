@@ -88,7 +88,7 @@ def test_status_withholds_host_detail_in_gated_mode(gated_client):
     assert r.status_code == 200
     body = r.json()
     # Liveness / auth-gate shape stays public.
-    for key in ("version", "gateway_state", "auth_required", "auth_providers"):
+    for key in ("version", "gateway_state", "gateway_messaging_configured", "auth_required", "auth_providers"):
         assert key in body, f"liveness field {key!r} must stay public"
     # Deployment recon must be withheld from the anonymous public probe.
     leaked = _HOST_DETAIL_FIELDS & set(body.keys())

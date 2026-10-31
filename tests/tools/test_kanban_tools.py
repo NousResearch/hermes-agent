@@ -1440,7 +1440,7 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
 
     payload = b"public fetch body"
 
-    def fake_stream(method, url, **kwargs):
+    def fake_stream(self, method, url, **kwargs):
         assert url == "http://files.example.com/docs/spec.pdf"
         return _FakeStreamResponse(
             status_code=200,
@@ -1448,7 +1448,7 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
             body=payload,
         )
 
-    monkeypatch.setattr(httpx, "stream", fake_stream)
+    monkeypatch.setattr(httpx.Client, "stream", fake_stream)
 
     out = kt._handle_attach_url({"url": "http://files.example.com/docs/spec.pdf"})
     d = json.loads(out)
@@ -1476,6 +1476,75 @@ class TestDefaultTaskId:
         from tools import kanban_tools as kt
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
         assert kt._default_task_id("  task-99  ") == "task-99"
+
+
+def test_attach_url_dns_rebinding_is_pinned_at_connect(worker_env, default_url_guard, monkeypatch):
+    """VF-01: a hostname that resolves public for the pre-flight check and loopback for the
+    connect must never reach the loopback listener (resolve once, dial the vetted IP)."""
+    import http.server
+    import ipaddress
+    import socket as _socket
+    import threading
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    from tools import url_safety
+
+    hits = []
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # pragma: no cover - must never run
+            hits.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"secret-internal")
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    answers = iter(["93.184.216.34"])  # first lookup public, every later lookup loopback
+
+    def rebinding_getaddrinfo(host, *args, **kwargs):
+        try:
+            ipaddress.ip_address(host)
+            ip = host
+        except ValueError:
+            ip = next(answers, "127.0.0.1")
+        port_ = args[0] if args and isinstance(args[0], int) else 0
+        return [(_socket.AF_INET, _socket.SOCK_STREAM, 6, "", (ip, port_))]
+
+    monkeypatch.setattr(url_safety.socket, "getaddrinfo", rebinding_getaddrinfo)
+    try:
+        out = kt._handle_attach_url({"url": f"http://rebind.example.com:{port}/loot"})
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    d = json.loads(out)
+    assert "error" in d, out
+    assert hits == [], "loopback listener was reached through a rebinding answer"
+    conn = kbc.connect()
+    try:
+        assert kb.list_attachments(conn, worker_env) == []
+    finally:
+        conn.close()
+
+
+def _orchestrator_env(monkeypatch, tmp_path):
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
 
     def test_blank_task_id_falls_back(self, monkeypatch, worker_env):
         from tools import kanban_tools as kt

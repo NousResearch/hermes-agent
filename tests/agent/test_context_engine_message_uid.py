@@ -201,6 +201,38 @@ def test_consecutive_user_merge_keeps_the_first_uid_and_records_the_absorbed_one
     assert "_absorbed_row_ids" not in a
 
 
+def test_consecutive_user_merge_takes_the_absorbed_stamp_when_the_earlier_turn_is_empty():
+    """The survivor's stamp belongs to the turn whose text leads it. An earlier user turn that contributed
+    no text leaves the absorbed turn's text alone in the row, so the row must carry that turn's stamp: the
+    persist override then hands consumers the current text under the previous occurrence's time (#140786)."""
+    from agent.agent_runtime_helpers import _merge_consecutive_users
+
+    earlier = {"role": "user", "content": "", "timestamp": 1000.0}
+    absorbed = {"role": "user", "content": "second attempt", "timestamp": 2000.0}
+
+    merged, repairs = _merge_consecutive_users([earlier, absorbed])
+
+    assert repairs == 1 and merged == [earlier]
+    assert earlier["content"] == "second attempt"
+    assert earlier["timestamp"] == 2000.0
+
+
+def test_consecutive_user_merge_keeps_the_earlier_stamp_while_its_text_leads():
+    """A survivor whose leading text is still the earlier turn's keeps that turn's stamp (the override keeps
+    the prefix, so the row does start with that occurrence)."""
+    from agent.agent_runtime_helpers import _merge_consecutive_users
+
+    earlier = {"role": "user", "content": "unanswered before the restart", "timestamp": 1000.0}
+    absorbed = {"role": "user", "content": "second attempt", "timestamp": 2000.0}
+
+    merged, repairs = _merge_consecutive_users([earlier, absorbed])
+
+    assert repairs == 1
+    assert merged == [earlier]
+    assert earlier["content"] == "unanswered before the restart\n\nsecond attempt"
+    assert earlier["timestamp"] == 1000.0
+
+
 def test_restart_after_a_merge_still_sees_the_composites_constituents(db):
     """A dangling user row, a restart, the next prompt merged into it, a turn flush, another restart: the
     restored survivor names the absorbed row by uid instead of leaving the engine to parse ``\\n\\n``."""

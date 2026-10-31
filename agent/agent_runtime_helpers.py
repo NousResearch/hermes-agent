@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- #140786: the merged user row must carry the stamp of the turn whose text leads it; a 3-line branch at the existing merge chokepoint (no sibling module owns it)
 """Assorted AIAgent runtime helpers (message repair/sanitization, credential recovery, primary
 runtime restore, prompt-cache policy, client construction, model switching, tool invocation).
 Each function takes the parent ``AIAgent`` as ``agent`` except the stateless message helpers.
@@ -702,6 +703,10 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             # unanswered text before it; kept across replay passes (an empty turn absorbs too).
             if prev_content:
                 prev[MERGED_TURN_PREFIX] = prev_content
+            elif new_content and (absorbed_stamp := msg.get("timestamp")) is not None:
+                # Its text now leads the row, so its stamp must too: the earlier turn contributed none, and
+                # the override hands the current text to consumers under the previous occurrence's time.
+                prev["timestamp"] = absorbed_stamp
             # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
             drop_stale_api_content(prev)
             # A display-marker row (e.g. a model-switch marker persisted as role=user on

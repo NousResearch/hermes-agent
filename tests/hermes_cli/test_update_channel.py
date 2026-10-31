@@ -8,6 +8,7 @@ comes from the stamp; external installs have no channel at all.
 import hashlib
 import json
 from pathlib import Path
+import argparse
 
 import pytest
 
@@ -42,7 +43,6 @@ def _config_for(root: Path, channel: str) -> dict:
 
 
 def test_dynamic_channel_parser_and_per_install_round_trip(tmp_path, monkeypatch):
-    import argparse
     import hermes_yaml as yaml
     from hermes_cli.subcommands.update import build_update_parser
 
@@ -65,6 +65,24 @@ def test_dynamic_channel_parser_and_per_install_round_trip(tmp_path, monkeypatch
             resolve_update_channel(_config_for(root, invalid), root)
         with pytest.raises(SystemExit):
             parser.parse_args(["update", "--channel", invalid])
+
+
+def test_update_channel_help_explains_selection_and_persistence(capsys):
+    from hermes_cli.subcommands.update import build_update_parser
+
+    parser = argparse.ArgumentParser()
+    build_update_parser(parser.add_subparsers(), cmd_update=lambda args: None)
+    with pytest.raises(SystemExit):
+        parser.parse_args(["update", "--help"])
+    help_text = " ".join(capsys.readouterr().out.split())
+
+    assert "Use CHANNEL for this update only" in help_text
+    assert "does not change the saved channel" in help_text
+    assert "Save CHANNEL as the default for future source updates" in help_text
+    assert "then exits" in help_text
+    assert "hermes update --check" in help_text
+    with pytest.raises(SystemExit):
+        parser.parse_args(["update", "--channel", "main", "--set-channel", "stable"])
 
 
 class TestInstallId:

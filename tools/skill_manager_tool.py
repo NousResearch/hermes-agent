@@ -857,6 +857,14 @@ _NAME = {"type": "string"}
 _OLD_STRING = {"type": "string",
                "description": "Text to find (same matching semantics as the patch tool)."}
 _NEW_STRING = {"type": "string", "description": "Replacement; empty string deletes the match."}
+# LOCAL PATCH (memory-git-autocommit): shared by every _op_schema() branch.
+_CHANGE_SUMMARY = {
+    "type": "string",
+    "description": (
+        "Optional short (<=72 chars) summary of WHY this skill change happened, "
+        "e.g. 'fix stale vault path'. Only used for memory git-autocommit labeling."
+    ),
+}
 _FILE_PATH = {
     "type": "string",
     "description": (
@@ -869,8 +877,15 @@ _FILE_PATH = {
 def _op_schema(action: str, props: dict, required: tuple) -> dict:
     """One self-contained per-action op shape. ``additionalProperties: false`` is what lets a
     grammar-constrained backend refuse another action's text slot outright."""
+    # LOCAL PATCH (memory-git-autocommit): every op shape gets an optional
+    # change_summary — not consumed by skill_manage() itself, carried through
+    # to args and read only by the post_tool_call autocommit hook
+    # (~/.hermes/plugins/memory-git-autocommit) to label the commit it makes.
+    # additionalProperties:false means it must be declared here, not bolted
+    # on only to the shapes that happened to need it first.
     return {"type": "object", "additionalProperties": False,
-            "properties": {"name": _NAME, "action": {"type": "string", "enum": [action]}, **props},
+            "properties": {"name": _NAME, "action": {"type": "string", "enum": [action]},
+                           "change_summary": _CHANGE_SUMMARY, **props},
             "required": ["name", "action", *required]}
 
 

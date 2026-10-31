@@ -1179,6 +1179,13 @@ WRITE_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
             "content": {"type": "string", "description": "Complete content to write to the file"},
+            # LOCAL PATCH (memory-git-autocommit): optional, free-text, <=72 chars.
+            # Not consumed by the write itself — carried through to args unused by
+            # _handle_write_file, read only by the post_tool_call autocommit hook
+            # (~/.hermes/plugins/memory-git-autocommit) to label the commit it makes
+            # for ~/.hermes/memory. Costs nothing beyond the few words supplied —
+            # no extra model call, no network call inside the hook.
+            "change_summary": {"type": "string", "description": "Optional short (<=72 chars) summary of WHY this write happened, e.g. 'fix stale vault path'. Only used for memory git-autocommit labeling; omit for files outside ~/.hermes/memory."},
             # NOTE: the handler still accepts `cross_profile` (bool) — it now
             # bypasses only the #32049 sandbox-mirror lost-write guards, whose
             # rejection error teaches it. Unadvertised: the cross-PROFILE
@@ -1224,6 +1231,12 @@ PATCH_SCHEMA = {
                 "type": "boolean",
                 "description": "Replace all occurrences instead of requiring a unique match (default: false)",
                 "default": False,
+            },
+            # LOCAL PATCH (memory-git-autocommit): see WRITE_FILE_SCHEMA's NOTE
+            # for the same field — identical contract, read by the same hook.
+            "change_summary": {
+                "type": "string",
+                "description": "Optional short (<=72 chars) summary of WHY this edit happened, e.g. 'fix stale vault path'. Only used for memory git-autocommit labeling; omit for files outside ~/.hermes/memory.",
             },
             # NOTE: handler still accepts `cross_profile` — see write_file's
             # NOTE (mirror-guard bypass only; unadvertised by design).

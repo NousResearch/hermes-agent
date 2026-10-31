@@ -34,12 +34,7 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import time
-import webbrowser
-import http.server
-import threading
-import urllib.parse
 from pathlib import Path
 from typing import Any, Optional
 
@@ -164,6 +159,12 @@ def avito_login_app_auth() -> dict:
     return {"status": "logged_in", "mode": "app_auth", "expires_in": getattr(resp, "expires_in", None)}
 
 
+DEFAULT_CALLBACK_REDIRECT_URI = os.environ.get("AVITO_CALLBACK_URL", "https://cb.mstylehome.ru/avito")
+# Shared OAuth callback catcher (optional-mcps/oauth-callback, run separately):
+# writes the incoming code/state to this file once Avito redirects here.
+_CALLBACK_FILE = Path.home() / ".hermes" / "mcp-tokens" / "oauth-callbacks" / "avito.json"
+
+
 @server.tool()
 def avito_login_start(scopes: list[str], redirect_uri: Optional[str] = None) -> dict:
     """Start personal (authorization_code) login: returns a URL to open in a browser.
@@ -171,26 +172,61 @@ def avito_login_start(scopes: list[str], redirect_uri: Optional[str] = None) -> 
     Args:
         scopes: list of scope strings, e.g. ["messenger:read", "messenger:write",
             "user:read", "items:info"]. See avito_list_scopes for the full set.
-        redirect_uri: optional; if your Avito app is registered with a redirect
-            URI, pass it here so Avito redirects back with the code in the URL.
-            If omitted, Avito shows the code directly on its confirmation page
-            for you to copy.
+        redirect_uri: defaults to the shared callback catcher
+            (https://cb.mstylehome.ru/avito, registered as this app's Redirect
+            URI on avito.ru/developers -- Avito requires a real, owned-domain
+            HTTPS endpoint here, not a bare "show code on page" option).
+            Override only if a different Avito app with a different
+            registered Redirect URI is being used.
 
-    After the user approves in their browser, call avito_login_finish with the
-    resulting `code`.
+    After the user approves in their browser, call avito_login_wait_callback
+    to pick up the code automatically (polls the shared callback catcher),
+    or avito_login_finish(code) if you already have the code some other way.
     """
+    # Clear any stale callback from a previous attempt so wait_callback can't
+    # pick up an old code.
+    if _CALLBACK_FILE.exists():
+        _CALLBACK_FILE.unlink()
     client = _build_auth_client()
     invalid = [s for s in scopes if s not in {x.value for x in Scope}]
     if invalid:
         return {"error": f"Unknown scope(s): {invalid}. Call avito_list_scopes for valid values."}
-    url = client.get_authorization_url(client_id=_client_id(), scopes=scopes, redirect_uri=redirect_uri)
+    effective_redirect = redirect_uri or DEFAULT_CALLBACK_REDIRECT_URI
+    url = client.get_authorization_url(client_id=_client_id(), scopes=scopes, redirect_uri=effective_redirect)
     return {
         "authorize_url": url,
+        "redirect_uri": effective_redirect,
         "instructions": (
-            "Open this URL in a browser, log in to Avito, approve access, "
-            "then call avito_login_finish with the 'code' you receive."
+            "Open this URL in a browser, log in to Avito, approve access, then "
+            "call avito_login_wait_callback (or avito_login_finish with the code "
+            "from the redirect URL if you'd rather read it yourself)."
         ),
     }
+
+
+@server.tool()
+def avito_login_wait_callback(timeout: int = 180) -> dict:
+    """Wait for the shared OAuth callback catcher to receive Avito's redirect, then finish login.
+
+    Polls ~/.hermes/mcp-tokens/oauth-callbacks/avito.json (written by the
+    callback catcher behind https://cb.mstylehome.ru/avito) for up to
+    `timeout` seconds, then completes the token exchange automatically --
+    no manual code copy-paste needed, as long as avito_login_start used the
+    default (or a matching) redirect_uri.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _CALLBACK_FILE.exists():
+            try:
+                data = json.loads(_CALLBACK_FILE.read_text())
+            except Exception:
+                data = {}
+            code = (data.get("params") or {}).get("code")
+            if code:
+                _CALLBACK_FILE.unlink()
+                return avito_login_finish(code)
+        time.sleep(2)
+    return {"error": f"no callback received within {timeout}s -- did you open the authorize_url and approve access?"}
 
 
 @server.tool()

@@ -467,7 +467,8 @@ def auth_list_command(args) -> None:
         })
     for provider in providers:
         pool = load_pool(provider)
-        entries = pool.effective_entries()
+        _eff = getattr(pool, "effective_entries", None)
+        entries = _eff() if _eff is not None else pool.entries()
         if not entries:
             continue
         current = pool.peek()

@@ -1153,6 +1153,46 @@ def test_auth_list_prefers_explicit_reset_time(monkeypatch, capsys):
     assert "7d 0h left" in out
 
 
+def test_auth_list_falls_back_to_entries_when_effective_entries_absent(monkeypatch, capsys):
+    """auth_list_command must work with pools that only expose entries()/peek(),
+    not effective_entries() — regression for lightweight adapter compatibility."""
+    from hermes_cli.auth_commands import auth_list_command
+
+    class _Entry:
+        id = "cred-fallback"
+        label = "fallback-cred"
+        auth_type = "api_key"
+        source = "manual"
+        last_status = None
+        last_error_code = None
+        last_status_at = None
+
+    class _LegacyPool:
+        """Adapter with only entries()/peek() — no effective_entries()."""
+
+        def entries(self):
+            return [_Entry()]
+
+        def peek(self):
+            return _Entry()
+
+    assert not hasattr(_LegacyPool(), "effective_entries"), "test setup: pool must NOT have effective_entries"
+
+    monkeypatch.setattr(
+        "hermes_cli.auth_commands.load_pool",
+        lambda provider: _LegacyPool() if provider == "openrouter" else type("_EmptyPool", (), {"entries": lambda self: [], "peek": lambda self: None})(),
+    )
+
+    class _Args:
+        provider = "openrouter"
+
+    auth_list_command(_Args())
+
+    out = capsys.readouterr().out
+    assert "openrouter (1 credentials):" in out
+    assert "fallback-cred" in out
+
+
 def test_auth_remove_env_seeded_clears_env_var(tmp_path, monkeypatch):
     """Removing an env-seeded credential should also clear the env var from .env
     so the entry doesn't get re-seeded on the next load_pool() call."""

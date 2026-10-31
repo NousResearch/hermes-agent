@@ -7,6 +7,7 @@ DNS-rebinding Host check and gate decision. ``hermes_cli.web_server`` and
 ``hermes_cli.web_server_chat`` re-export these names, so ``web_server.<name>`` keeps working.
 """
 
+import contextvars
 import os
 import re
 import urllib.parse
@@ -143,6 +144,81 @@ def _desktop_loopback_auth_exempt(
         and os.environ.get("HERMES_DESKTOP") == "1"
         and bool(os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or ssh_session_token or ssh_owner_nonce)
     )
+
+
+# --- A loopback listener that only a public URL put behind sign-in -------------------------------
+#
+# ``webapp.public_url`` names the address a proxy or tunnel (Tailscale Serve, a reverse proxy) serves this
+# listener at, and engages sign-in for the whole listener: the proxy reaches it on 127.0.0.1 too, so the
+# peer address alone cannot tell a phone on the tailnet from this machine. A forwarded request is marked,
+# though: the proxy names the public host and adds forwarding headers. So the gate is decided per request.
+# Forwarded, or anything not plainly addressed to this machine, keeps sign-in; a request made directly on
+# this machine gets what the listener gave it before the public URL was set (the paired browser
+# extension's tickets, Desktop's local clients). A proxy that hides both the public host and every
+# forwarding header would look local: set the public URL only behind a proxy that marks what it forwards.
+
+_DIRECT_LOCAL: "contextvars.ContextVar[Optional[bool]]" = contextvars.ContextVar("hermes_direct_local", default=None)
+_FORWARDING_HEADERS = frozenset({
+    b"x-forwarded-for", b"x-forwarded-host", b"x-forwarded-proto", b"x-forwarded-port", b"x-forwarded-server",
+    b"forwarded", b"x-real-ip", b"cf-connecting-ip", b"true-client-ip", b"x-original-host"})
+_DIRECT_HOST_NAMES = frozenset({"127.0.0.1", "localhost", "[::1]"})
+
+
+def scope_is_direct_local(scope) -> bool:
+    """True only for an HTTP or WebSocket request from a loopback peer, over plain http, addressed to
+    127.0.0.1 / localhost / [::1], and carrying no forwarding header of any proxy."""
+    if not isinstance(scope, dict) or scope.get("type") not in ("http", "websocket"):
+        return False
+    if scope.get("scheme") not in ("http", "ws"):
+        return False
+    client = scope.get("client") or ("", 0)
+    peer = str(client[0] or "")
+    if not (peer == "::1" or peer.startswith("127.")):
+        return False
+    host = ""
+    for name, value in scope.get("headers") or ():
+        lowered = bytes(name).lower()
+        if lowered in _FORWARDING_HEADERS or lowered.startswith(b"tailscale-"):
+            return False
+        if lowered == b"host":
+            host = bytes(value).decode("latin-1").strip().lower()
+    hostname = host.split("]")[0] + "]" if host.startswith("[") else host.rsplit(":", 1)[0]
+    return hostname in _DIRECT_HOST_NAMES
+
+
+def direct_local_context() -> Optional[bool]:
+    """Whether the request being served came directly from this machine; None outside any request."""
+    return _DIRECT_LOCAL.get()
+
+
+class PublicUrlGate:
+    """``app.state.auth_required`` for a loopback listener whose sign-in a public URL engaged: true for
+    a forwarded request and outside any request, false for a request made directly on this machine."""
+
+    private_for_direct = True
+
+    def __bool__(self) -> bool:
+        return _DIRECT_LOCAL.get() is not True
+
+    def __repr__(self) -> str:
+        return f"PublicUrlGate(active={bool(self)})"
+
+
+class MarkDirectLocal:
+    """ASGI wrapper recording, for each request it passes on, whether it came directly from this machine."""
+
+    def __init__(self, app):
+        self.app = app
+
+    def __getattr__(self, name):
+        return getattr(self.app, name)
+
+    async def __call__(self, scope, receive, send):
+        token = _DIRECT_LOCAL.set(scope_is_direct_local(scope))
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _DIRECT_LOCAL.reset(token)
 
 
 def listener_auth_required(host: str, trusted_public_hosts: frozenset[str]) -> bool:

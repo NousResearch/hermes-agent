@@ -1588,15 +1588,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.labels ?? undefined
           )
         } else {
-          turnController.recordToolComplete(
-            ev.payload.tool_id,
-            ev.payload.name,
-            ev.payload.summary ?? undefined,
-            ev.payload.duration_s ?? undefined,
-            ev.payload.todos ?? undefined,
-            resultText,
-            ev.payload.labels ?? undefined
-          )
+          turnController.recordToolComplete(ev.payload, resultText)
         }
 
         return

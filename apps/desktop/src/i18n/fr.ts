@@ -5205,7 +5205,8 @@ export const frOverrides = {
         ran: 'Exécuté',
         running: 'Exécution en cours',
         ranCode: 'Code exécuté',
-        runningCode: 'Script en cours'
+        runningCode: 'Script en cours',
+        blocked: 'Bloqué'
       },
       prefixes: {
         browser: 'Navigateur',

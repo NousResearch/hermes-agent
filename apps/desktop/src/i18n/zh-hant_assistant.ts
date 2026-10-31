@@ -365,7 +365,8 @@ export const zhHantAssistant = {
         ran: '已執行',
         running: '正在執行',
         ranCode: '已執行程式碼',
-        runningCode: '正在撰寫腳本'
+        runningCode: '正在撰寫腳本',
+        blocked: '已阻擋'
       },
       prefixes: {
         browser: '瀏覽器',

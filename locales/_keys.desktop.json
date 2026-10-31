@@ -377,6 +377,7 @@
     "assistant.thread.today",
     "assistant.thread.turnDuration",
     "assistant.thread.yesterday",
+    "assistant.tool.actions.blocked",
     "assistant.tool.actions.failedToOpen",
     "assistant.tool.actions.opened",
     "assistant.tool.actions.opening",

@@ -5183,7 +5183,8 @@ export const esOverrides = {
         ran: 'Ejecutó',
         running: 'Ejecutando',
         ranCode: 'Ejecutó código',
-        runningCode: 'Ejecutando código'
+        runningCode: 'Ejecutando código',
+        blocked: 'Bloqueado'
       },
       prefixes: {
         browser: 'Navegador',

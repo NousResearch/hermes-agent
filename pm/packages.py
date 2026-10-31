@@ -551,7 +551,8 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
         # Keep one Node version across targets. If unofficial musl publication
         # lags nodejs.org, the later artifact pin/download fails before the
         # lockfile is written rather than selecting glibc bytes on musl.
-        return node_latest_versions()
+        # *target* lets a darwin host skip majors its libc++ cannot run.
+        return node_latest_versions(target)
 
     def repair_staged_verification(self, entry: Path, target: str, reason: str) -> tuple[str, str]:
         """Repair the host library needed by official Linux Node, then re-probe.

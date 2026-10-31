@@ -747,6 +747,41 @@ class TestPermanentAllowlistReload:
             assert is_approved("reload", "stale-pattern") is False
 
 
+class TestForceWithLeaseUnattendedScope:
+    """The lease key is USELESS unless allowlisting it actually clears the unattended deny path
+    (`approval._unattended_deny`, the -q/cron branch of `check_all_command_guards`) — and it must
+    clear it for the caller's OWN branch only, never for main/master or the bare rewrites
+    (authorization on card t_ca4879f5)."""
+
+    LEASE_KEY = "git push --force-with-lease (lease-checked force push)"
+
+    def test_lease_key_allowlisted_clears_own_branch_and_nothing_else(self):
+        own = "git push --force-with-lease origin wt/card-branch"
+        with mock_patch.object(approval_module, "_permanent_approved", {self.LEASE_KEY}), \
+                mock_patch.object(approval_context, "_get_single_query_approval_mode", return_value="deny"):
+            assert approval_module._unattended_deny(
+                own, approval_module._SINGLE_QUERY_CTX) is None, (
+                "allowlisting the lease key must clear the -q deny path for the own-branch form"
+            )
+            for cmd, why in (
+                ("git push --force-with-lease origin main", "leased push to main"),
+                ("git push --force-with-lease origin master", "leased push to master"),
+                ("git push --force origin wt/card-branch", "bare --force"),
+                ("git push -f origin wt/card-branch", "bare -f"),
+            ):
+                blocked = approval_module._unattended_deny(cmd, approval_module._SINGLE_QUERY_CTX)
+                assert blocked is not None and blocked.get("approved") is False, (why, blocked)
+                assert blocked.get("pattern_key") != self.LEASE_KEY, (why, blocked)
+
+    def test_without_the_allowlist_entry_the_lease_form_still_denies(self):
+        """Default state (no allowlist entry) is unchanged: the lease form is refused headless."""
+        with mock_patch.object(approval_module, "_permanent_approved", set()), \
+                mock_patch.object(approval_context, "_get_single_query_approval_mode", return_value="deny"):
+            blocked = approval_module._unattended_deny(
+                "git push --force-with-lease origin wt/card-branch", approval_module._SINGLE_QUERY_CTX)
+            assert blocked is not None and blocked.get("approved") is False, blocked
+
+
 class TestFullCommandAlwaysShown:
     """The full command is always shown in the approval prompt (no truncation).
 
@@ -1253,6 +1288,69 @@ class TestGitDestructiveOps:
             dangerous, _, desc = detect_dangerous_command(cmd)
             assert dangerous is True, cmd
             assert word in desc.lower(), cmd
+
+    def test_force_with_lease_gets_its_own_detector_key(self):
+        """`--force-with-lease` refuses to overwrite a remote tip that moved since the lease was
+        taken, so it is a DIFFERENT consent class from bare `--force` / `-f` and carries its own
+        key. That is what lets a profile pre-approve exactly this verb
+        (`_is_permanently_approved`) without also approving the bare rewrites — see card
+        t_ca4879f5. Covers both flag orders and the `--force-with-lease=<ref>` spelling."""
+        lease_key = "git push --force-with-lease (lease-checked force push)"
+        for cmd in (
+            "git push --force-with-lease origin wt/card-branch",
+            "git push --force-with-lease=origin/wt/card-branch origin wt/card-branch",
+            "git push origin wt/card-branch --force-with-lease",
+            "git push --force-with-lease origin HEAD:wt/card-branch",
+        ):
+            dangerous, key, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert key == lease_key, (cmd, key)
+            assert desc == lease_key, (cmd, desc)
+
+    def test_force_with_lease_to_main_keeps_the_bare_key(self):
+        """The authorization that motivated the lease key is OWN-BRANCH-ONLY: a leased push whose
+        destination is main/master keeps the BARE force-push key, which no lease allowlist entry
+        can approve. Covers git's refspec spellings, both flag orders, and the bulk forms
+        (`--all` / `--mirror`) that are never "the caller's own branch"."""
+        bare_key = "git force push (rewrites remote history)"
+        for cmd in (
+            "git push --force-with-lease origin main",
+            "git push --force-with-lease origin master",
+            "git push origin main --force-with-lease",
+            "git push --force-with-lease origin HEAD:main",
+            "git push --force-with-lease origin refs/heads/master",
+            "git push --force-with-lease origin +main",
+            "git push --force-with-lease origin wt/card-branch:main",
+            "git push --force-with-lease=main origin main",
+            "git push --force-with-lease --all",
+            "git push --mirror --force-with-lease",
+        ):
+            dangerous, key, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert key == bare_key, (cmd, key)
+
+    def test_lease_key_does_not_swallow_bare_force_or_short_flag(self):
+        """Bare --force and -f keep their own keys, and an ABBREVIATED lease spelling (git
+        resolves unambiguous long-option prefixes) must fail CLOSED onto the bare key."""
+        for cmd, key in (
+            ("git push --force origin wt/card-branch", "git force push (rewrites remote history)"),
+            ("git push -f origin wt/card-branch", "git force push short flag (rewrites remote history)"),
+            ("git push --force-with-leas origin wt/card-branch", "git force push (rewrites remote history)"),
+        ):
+            dangerous, got, _ = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert got == key, (cmd, got)
+
+    def test_force_with_lease_verdict_is_segment_bounded(self):
+        """A later command in the same line cannot contaminate the verdict: the leased push still
+        belongs to the caller's own branch."""
+        for cmd in (
+            "git push --force-with-lease origin wt/card-branch && git log main",
+            "git push --force-with-lease origin wt/card-branch; git checkout master",
+        ):
+            dangerous, key, _ = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert key == "git push --force-with-lease (lease-checked force push)", (cmd, key)
 
 
     def test_safe_git_ops_not_flagged(self):

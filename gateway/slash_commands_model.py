@@ -61,6 +61,15 @@ def _model_switch_skew_guard() -> Optional[str]:
     )
 
 
+def _switch_provider_capabilities(result) -> dict[str, bool]:
+    """Return raw provider policy flags, not derived runtime capabilities."""
+    capabilities = getattr(result, "provider_capabilities", None)
+    if capabilities is None:
+        capabilities = getattr(result, "runtime_capabilities", None)
+    return ({str(key): value for key, value in capabilities.items() if isinstance(value, bool)}
+            if isinstance(capabilities, dict) else {})
+
+
 async def _persist_model_switch_to_config(result, config_path) -> None:
     """Write-through a resolved /model switch to the profile config at ``config_path``, off the
     event loop (the route comparison can do cold-start disk I/O)."""
@@ -194,6 +203,11 @@ class GatewayModelCommandsMixin:
         if cached_agent is None:
             return None
         try:
+            # ``switch_model``'s ``capabilities`` kwarg is the FINAL resolved destination map
+            # (consumed verbatim as ``agent.runtime_capabilities``), not raw provider policy —
+            # match the CLI/TUI call sites and use the already-derived ``runtime_capabilities``.
+            # ``_switch_provider_capabilities`` (raw provider policy) belongs only in the session
+            # override dict below, which feeds a FRESH agent's own re-derivation in agent_init.
             cached_agent.switch_model(
                 new_model=result.new_model, new_provider=result.target_provider,
                 api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode,
@@ -250,7 +264,7 @@ class GatewayModelCommandsMixin:
             "model": result.new_model, "provider": result.target_provider, "api_key": result.api_key,
             "base_url": result.base_url, "api_mode": result.api_mode,
             "request_overrides": dict(result.request_overrides or {}),
-            "capabilities": dict(result.runtime_capabilities or {}),
+            "capabilities": _switch_provider_capabilities(result),
         }
         if one_turn:
             # A repeated --once before the turn runs must keep the EARLIEST snapshot: the later

@@ -134,7 +134,6 @@ _FTS5_SPECIAL_CHARS = '+{}():"^@/#&|~[]<>,;!?$=\\\''
 _FTS5_SPECIAL_RE = re.compile(f"[{re.escape(_FTS5_SPECIAL_CHARS)}]")
 
 _FTS_OPERATORS = frozenset({"AND", "OR", "NOT"})
-_LIKE_SKIP_TOKENS = _FTS_OPERATORS | {"NEAR"}
 _LIKE_TOKEN_RE = re.compile(r'"[^"]+"|\S+')
 _QUOTED_PHRASE_RE = re.compile(r'"[^"]*"')
 
@@ -291,6 +290,57 @@ class SessionSearchMixin:
     _SEARCH_MESSAGE_RESULT_FIELDS = (
         "id", "session_id", "role", "snippet", "timestamp", "tool_name", "source", "model", "session_started", "context"
     )
+
+    # ── Search availability (StateStoreInterface probe members) ────────────
+
+    def is_search_available(self) -> bool:
+        """True when the indexed route serves the next ``search_messages`` call; False when
+        the call would run fail-open (canonical LIKE scan or ``[]``). Fail-open itself: an
+        error probing availability reports False, never raises — a degraded index must not
+        make the pre-call gate a new failure point. Point-in-time: another process can
+        latch fail-open (or repair) between this check and the search."""
+        return self.fts_health()["available"]
+
+    def fts_health(self) -> dict[str, Any]:
+        """Read-only index health for ``is_search_available`` / diagnostics; never raises.
+
+        ``available`` mirrors the exact gating ``_search_messages_impl`` performs
+        (stale probe first, then ``_fts_enabled``), so the contract "True == the
+        indexed route serves the next call" cannot drift from the routing code.
+        ``routes`` details the sub-indexes the router can still pick; ``reason``
+        names the first unavailability cause. Any probe failure degrades to the
+        same shape with ``available=False`` and ``reason="probe_error"``."""
+        health: dict[str, Any] = {
+            "available": False, "stale": False, "routes": {},
+            "rebuild": None, "reason": None,
+        }
+        try:
+            try:
+                self._refresh_fts_stale_state()
+            except Exception:
+                pass
+            routes: dict[str, bool] = {}
+            if self._fts_enabled:
+                routes["messages_fts"] = True
+                if self._trigram_available:
+                    routes["messages_fts_trigram"] = True
+                if self._fts_cjk_available:
+                    routes["messages_fts_cjk"] = True
+            health["routes"] = routes
+            health["rebuild"] = self.fts_rebuild_status()
+            if self._fts_stale:
+                health["stale"] = True
+                health["reason"] = "fts_stale"
+            elif not self._fts_enabled:
+                health["reason"] = "fts_unavailable"
+            else:
+                health["available"] = True
+            return health
+        except Exception as exc:  # probe must never raise
+            health["available"] = False
+            health["reason"] = "probe_error"
+            health["error"] = str(exc)
+            return health
 
     @classmethod
     def _search_message_fields(cls, fields: Optional[Collection[str]]) -> Optional[tuple[str, ...]]:
@@ -1174,7 +1224,7 @@ class SessionSearchMixin:
                     groups.append([])
                 negate_next = False
                 continue
-            if operator in {"AND", "NEAR"}:
+            if operator == "AND":
                 continue
             if operator == "NOT":
                 negate_next = True
@@ -1309,7 +1359,8 @@ class SessionSearchMixin:
             matches = self._search_messages_like_fallback(query, limit=limit, offset=offset, sort=sort, **filters)
             return self._finalize_search_matches(matches, result_fields=result_fields)
         if not self._fts_enabled:
-            return []
+            matches = self._search_messages_like_fallback(query, limit=limit, offset=offset, sort=sort, **filters)
+            return self._finalize_search_matches(matches, result_fields=result_fields)
 
         order_by_sql = _FTS_ORDER_BY.get(sort.strip().lower() if isinstance(sort, str) else None, "ORDER BY rank")
         route = dict(order_by_sql=order_by_sql, limit=limit, offset=offset, **filters)
@@ -1325,7 +1376,8 @@ class SessionSearchMixin:
             try:
                 matches = [dict(row) for row in self._read_all(sql, params)]
             except sqlite3.OperationalError:
-                return []  # FTS5 syntax error despite sanitization
+                matches = self._search_messages_like_fallback(query, limit=limit, offset=offset, sort=sort, **filters)
+                return self._finalize_search_matches(matches, result_fields=result_fields)
             except sqlite3.DatabaseError as exc:
                 # Corruption parent class: detach the derived indexes and answer from
                 # canonical rows; repair paths own the rebuild.
@@ -1420,7 +1472,7 @@ class SessionSearchMixin:
         if status is None or limit <= 0:
             return []
         terms = [tok for tok in (t.strip('"').strip("*").strip() for t in _LIKE_TOKEN_RE.findall(fts_query))
-                 if tok and tok.upper() not in _LIKE_SKIP_TOKENS]
+                 if tok and tok.upper() not in _FTS_OPERATORS]
         if not terms:
             return []
         where = ["m.id > ? AND m.id <= ?", *([_LIKE_ANY_COLUMN_SQL] * len(terms))]

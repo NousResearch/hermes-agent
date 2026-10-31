@@ -611,6 +611,8 @@ if not _pm_repair:
     try:
         recover_if_needed(_root)
         activate_dependencies(_root)
+        from pm.environments import report_live_runtime
+        report_live_runtime()
     except (RuntimeError, OSError) as exc:
         if isinstance(exc, PermissionError) and (message := install_state_permission_message(_root, exc)):
             print(f"hermes: {message}", file=sys.stderr)

@@ -526,6 +526,79 @@ def activate_dependencies(project_root: Path) -> None:
         os.environ["PATH"] = os.pathsep.join([*prefix, os.environ.get("PATH", "")])
 
 
+def _pm_dependency_site_packages(path: str | Path) -> Path | None:
+    """Return the PM generation's site-packages root contained in *path*."""
+    candidate = Path(path)
+    parts = candidate.parts
+    try:
+        site_index = parts.index("site-packages")
+        installs_index = parts.index("installs")
+        environments_index = parts.index("environments", installs_index + 1)
+        venv_index = parts.index("venv", environments_index + 1)
+    except ValueError:
+        return None
+    if not installs_index < environments_index < venv_index < site_index:
+        return None
+    return Path(*parts[:site_index + 1])
+
+
+def live_runtime_paths() -> tuple[str, str | None]:
+    """Return the live PM interpreter and dependency generation for this process."""
+    import sys
+
+    interpreter = str(Path(sys.executable).resolve())
+    for entry in sys.path:
+        if dependency := _pm_dependency_site_packages(entry):
+            return interpreter, str(dependency.resolve())
+    return interpreter, None
+
+
+def report_live_runtime() -> None:
+    """Emit the stable, secret-free startup audit line for this process."""
+    import sys
+
+    interpreter, deps = live_runtime_paths()
+    print(
+        f"hermes: live interpreter={interpreter} deps={deps}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def pid_runtime_paths(
+    pid: int, *, proc_root: Path = Path("/proc"),
+) -> tuple[str | None, str | None]:
+    """Resolve a PID's live interpreter and PM dependency generation via procfs.
+
+    No process environment is read: the command exposes only ``exe`` and the
+    structurally recognised PM generation path from ``maps``.
+    """
+    if pid <= 0:
+        return None, None
+    process_root = proc_root / str(pid)
+    interpreter: str | None = None
+
+    try:
+        exe = process_root / "exe"
+        if exe.is_symlink():
+            interpreter = str(exe.resolve())
+    except OSError:
+        pass
+
+    try:
+        with (process_root / "maps").open(encoding="utf-8", errors="replace") as maps:
+            for line in maps:
+                fields = line.rstrip("\n").split(maxsplit=5)
+                if not fields:
+                    continue
+                mapped_path = fields[-1]
+                if dependency := _pm_dependency_site_packages(mapped_path):
+                    return interpreter, str(dependency)
+    except OSError:
+        pass
+    return interpreter, None
+
+
 def activation_environment(project_root: Path) -> dict[str, str]:
     """Read the installed PM environment; do not provision or switch imports."""
     from pm.install import env_for

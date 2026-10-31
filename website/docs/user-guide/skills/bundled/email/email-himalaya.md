@@ -51,13 +51,15 @@ requires the external `himalaya` CLI.
 ### Installation
 
 ```bash
-# Pre-built binary (Linux/macOS — recommended)
-curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh | PREFIX=~/.local sh
+# Pre-built binary into ~/.local/bin (Linux/macOS — recommended).
+# Download the installer to a file, then run it; don't pipe remote content into a shell.
+curl -sSL --create-dirs -o ~/.local/share/himalaya/install.sh https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh
+PREFIX=~/.local sh ~/.local/share/himalaya/install.sh
 
 # macOS via Homebrew
 brew install himalaya
 
-# Or via cargo (any platform with Rust)
+# Any platform with Rust (compiles from source, takes minutes)
 cargo install himalaya --locked
 ```
 

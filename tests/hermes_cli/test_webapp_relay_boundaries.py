@@ -10,6 +10,7 @@ import json
 import urllib.parse
 
 import httpx
+import pytest
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
@@ -34,6 +35,9 @@ def _evil_gateway(gateway_a, seen: dict) -> Starlette:
         return JSONResponse({"grant_id": seen["grant_id"], "subject": "stub-user-1", "provider": "stub",
                              "issuer": "", "scopes": []})
 
+    async def redirect(request: Request):
+        return Response(status_code=307, headers={"Location": request.query_params["to"]})
+
     async def page(_request: Request):
         return HTMLResponse("<script>fetch('/api/env/reveal',{method:'POST'})</script>", headers={
             "Service-Worker-Allowed": "/", "Clear-Site-Data": '"cookies"', "Strict-Transport-Security": "max-age=1",
@@ -57,7 +61,7 @@ def _evil_gateway(gateway_a, seen: dict) -> Starlette:
 
     return Starlette(routes=[
         Route("/api/webapp/relay/token", token, methods=["POST"]), Route("/page", page),
-        Route("/offsite", offsite), Route("/onsite", onsite),
+        Route("/offsite", offsite), Route("/onsite", onsite), Route("/redirect", redirect, methods=["GET", "POST"]),
         Route("/api/profiles/{name}/soul", soul, methods=["PUT"])])
 
 
@@ -144,3 +148,46 @@ def test_one_paired_gateway_cannot_replay_the_hubs_requests_at_another(relay_app
     assert sent.status_code == 200
     assert seen["replay"].status_code == 401, seen["replay"].text
     assert browser.get(soul).json() == before
+
+
+@pytest.mark.parametrize("escape", [
+    "/../../../api/gateway/restart",
+    "/%2e%2e/%2E%2E/%2e./api/gateway/restart",
+    "/.%2E/%2e./api/x/../gateway/restart",
+    "/a/../../../../api/gateway/restart",
+    "http://evil.spoke:8000/../../../api/gateway/restart",
+])
+def test_a_paired_gateway_redirect_cannot_climb_out_of_its_relay(relay_app, monkeypatch, escape):
+    # A browser resolves dot segments (plain or percent-encoded, any case) in the Location against
+    # the relay prefix: left in, any of these sends a cookie-carrying POST to this hub's own
+    # /api/gateway/restart. Resolved against the gateway instead, they name its route, through the relay.
+    browser = relay_app.browser()
+    _sign_in(browser)
+    row, _seen = _with_evil(relay_app, monkeypatch, browser)
+    base = f"/api/relay/{row['id']}"
+    sent = browser.post(f"{base}/redirect", params={"to": escape}, headers=ORIGIN, follow_redirects=False)
+    assert (sent.status_code, sent.headers.get("location")) == (307, f"{base}/api/gateway/restart"), escape
+
+
+@pytest.mark.parametrize("hidden", ["/.\t./.\t./../api/gateway/restart", "/..\\..\\api/gateway/restart",
+                                    "/ok\n/x", "/a b", "../../api/gateway/restart"])
+def test_a_paired_gateway_redirect_a_browser_would_reparse_is_refused(relay_app, monkeypatch, hidden):
+    # Browsers drop tabs and newlines from a URL and read a backslash as a slash, so these hide
+    # dot segments from anything that reads the header as written. (HTTPX itself refuses a Location
+    # with a tab or newline, as an unreachable gateway; the hub refuses the rest.)
+    browser = relay_app.browser()
+    _sign_in(browser)
+    row, _seen = _with_evil(relay_app, monkeypatch, browser)
+    sent = browser.post(f"/api/relay/{row['id']}/redirect", params={"to": hidden}, headers=ORIGIN,
+                        follow_redirects=False)
+    assert sent.status_code == 502 and "location" not in sent.headers, (hidden, sent.status_code, sent.headers)
+
+
+def test_a_paired_gateway_redirect_within_itself_resolves_under_its_relay(relay_app, monkeypatch):
+    browser = relay_app.browser()
+    _sign_in(browser)
+    row, _seen = _with_evil(relay_app, monkeypatch, browser)
+    base = f"/api/relay/{row['id']}"
+    for to, expected in (("/a/../b?x=1", f"{base}/b?x=1"), ("/a/%2E/b/.", f"{base}/a/b/"), ("/a/b/..", f"{base}/a/")):
+        sent = browser.get(f"{base}/redirect", params={"to": to}, follow_redirects=False)
+        assert sent.status_code == 307 and sent.headers["location"] == expected, (to, sent.status_code, sent.headers)

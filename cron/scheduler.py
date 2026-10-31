@@ -89,6 +89,29 @@ def _set_cron_session_title(session_db, session_id, base_title):
         return deduped
 
 
+def _cron_title_fallbacks(session_db, job_id: str, session_id) -> list:
+    """Best-effort recovery candidates after a failed cron title write (#146855).
+
+    Every candidate is computed defensively: ``get_next_title_in_lineage`` shares the bounded
+    session DB with the write that just failed and can itself raise, and ``session_id`` may be
+    unset. A raise here would escape the recovery ``except`` block, abort ``run_job``'s
+    cleanup ``finally`` before ``defer_agent_teardown``, and leak the ephemeral agent's
+    transports, sandboxes and MCP children. The plain ``cron <job_id>`` candidate last keeps
+    the non-blank guarantee of #50535 even when everything above fails.
+    """
+    fallbacks = []
+    next_title_fn = getattr(session_db, "get_next_title_in_lineage", None)
+    if next_title_fn is not None:
+        try:
+            fallbacks.append(next_title_fn(f"cron {job_id}"))
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug("Job '%s': lineage title lookup failed: %s", job_id, e)
+    if session_id:
+        fallbacks.append(f"cron {job_id} {str(session_id)[-6:]}")
+    fallbacks.append(f"cron {job_id}")
+    return fallbacks
+
+
 def _job_route_pinned(job: dict) -> bool:
     """True when the job carries its own provider, model or endpoint. Unpinned jobs store none of
     these (they follow the main model at fire time), so any value is an explicit operator pin."""
@@ -2152,9 +2175,9 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
         # Never leave the session untitled.
         # Try the next free title in the lineage, then a bare id-stamped title. See #50535.
-        for _fallback in (
-            getattr(_session_db, "get_next_title_in_lineage", lambda b: b)(f"cron {job_id}"),
-            f"cron {job_id} {_final_cron_session_id[-6:]}"):
+        # Candidates are computed defensively (_cron_title_fallbacks): a raise here would
+        # escape recovery and abort run_job's cleanup, leaking the agent (#146855).
+        for _fallback in _cron_title_fallbacks(_session_db, job_id, _final_cron_session_id):
             try:
                 if _set_cron_session_title(_session_db, _final_cron_session_id, _fallback):
                     break

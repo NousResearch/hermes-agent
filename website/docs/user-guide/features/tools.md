@@ -232,6 +232,7 @@ terminal(command="pytest -v tests/", background=true)
 process(action="list")       # Show all running processes
 process(action="poll", session_id="proc_abc123")   # Check status
 process(action="wait", session_id="proc_abc123")   # Block until done
+process(action="wait", session_id="proc_abc123", until="ready")  # ...or until output says "ready"
 process(action="log", session_id="proc_abc123")    # Full output
 process(action="kill", session_id="proc_abc123")   # Terminate
 process(action="write", session_id="proc_abc123", data="y")  # Send input
@@ -248,6 +249,17 @@ approval checks as any background command. Shapes that mix in other commands
 wrappers, command substitutions (`$(...)`, backticks, `<(...)`) and commands
 whose approval category would change without the `&` are still refused with
 guidance, because Hermes cannot safely tell which part should keep running.
+
+### Waiting for a line of output
+
+`wait` with `until` returns as soon as the process prints that text (a plain substring, ANSI
+colours ignored) instead of holding the whole timeout: start a dev server in the background, then
+`process(action="wait", session_id=..., until="listening on")` and carry on the moment it is up.
+The result has `status: "matched"` and the process keeps running. Text printed before the wait
+began counts, so a server that was already ready matches at once; a later `until` wait on the same
+process only looks at output after the previous match, so waiting for the next `Compiled` of a
+watch-mode rebuild does not match the old one. If the process exits first, the wait returns the
+exit as usual; if the timeout elapses, the timeout note says the text has not appeared yet.
 
 ### Repeated waits on a quiet process
 

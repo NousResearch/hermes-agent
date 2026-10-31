@@ -31,6 +31,9 @@ def _ensure_teams_mock():
     microsoft_teams_api_activities_invoke_adaptive_card = types.ModuleType(
         "microsoft_teams.api.activities.invoke.adaptive_card"
     )
+    microsoft_teams_api_activities_invoke_file_consent = types.ModuleType(
+        "microsoft_teams.api.activities.invoke.file_consent"
+    )
     microsoft_teams_common = types.ModuleType("microsoft_teams.common")
     microsoft_teams_common_http = types.ModuleType("microsoft_teams.common.http")
     microsoft_teams_common_http_client = types.ModuleType("microsoft_teams.common.http.client")
@@ -95,6 +98,9 @@ def _ensure_teams_mock():
     # Adaptive card invoke activity mock
     microsoft_teams_api_activities_invoke_adaptive_card.AdaptiveCardInvokeActivity = MagicMock
 
+    # File consent invoke activity mock
+    microsoft_teams_api_activities_invoke_file_consent.FileConsentInvokeActivity = MagicMock
+
     # Adaptive card response mocks
     microsoft_teams_api_models_adaptive_card.AdaptiveCardActionCardResponse = MagicMock
     microsoft_teams_api_models_adaptive_card.AdaptiveCardActionMessageResponse = MagicMock
@@ -147,6 +153,7 @@ def _ensure_teams_mock():
         "microsoft_teams.api.activities.typing": microsoft_teams_api_activities_typing,
         "microsoft_teams.api.activities.invoke": microsoft_teams_api_activities_invoke,
         "microsoft_teams.api.activities.invoke.adaptive_card": microsoft_teams_api_activities_invoke_adaptive_card,
+        "microsoft_teams.api.activities.invoke.file_consent": microsoft_teams_api_activities_invoke_file_consent,
         "microsoft_teams.common": microsoft_teams_common,
         "microsoft_teams.common.http": microsoft_teams_common_http,
         "microsoft_teams.common.http.client": microsoft_teams_common_http_client,

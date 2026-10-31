@@ -82,10 +82,20 @@ def await_permission(
     """Schedule ``request_permission`` on ``loop`` from a worker thread and block for the answer.
     Returns ``(response, timed_out)``; ``(None, False)`` when scheduling or the request failed.
 
-    Clients materialise the request's ``tool_call`` as a pending bubble, so once the answer is
-    in, ``send_update`` (when given) closes it: ``completed`` for an allow, ``failed`` otherwise."""
+    With ``send_update`` the bubble follows the spec lifecycle ``tool_call (pending) →
+    request_permission → tool_call_update``: the start goes out first so a client that only
+    tracks tool calls it has seen created (rather than upserting from the permission request)
+    has something to attach the request and the terminal status to; the answer then closes it
+    ``completed`` for an allow, ``failed`` otherwise."""
     from agent.async_utils import safe_schedule_threadsafe
 
+    if send_update is not None:
+        import acp as _acp
+
+        send_update(_acp.start_tool_call(
+            tool_call.tool_call_id, tool_call.title or "", kind=tool_call.kind, status="pending",
+            content=tool_call.content, locations=tool_call.locations, raw_input=tool_call.raw_input,
+        ))
     coro = request_permission_fn(session_id=session_id, tool_call=tool_call, options=options)
     future = safe_schedule_threadsafe(coro, loop, logger=logger, log_message=f"{what}: failed to schedule on loop")
     if future is None:

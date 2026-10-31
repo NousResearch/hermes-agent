@@ -87,3 +87,14 @@ def _rmtree_with_retry(profile_dir: Path, onexc_handler) -> None:
                 time.sleep(0.3 * (attempt + 1))
     if last_exc is not None:
         raise last_exc
+
+
+def gateway_stop_notice(profile_dir: Path) -> str:
+    """The `profile delete` stop warning, decided by who owns the gateway (#144703).
+
+    `_stop_gateway_process` needs this profile's own `gateway.pid`; a multiplexer-served profile has
+    none, so promising "it will be stopped" sent operators looking for a process that never existed.
+    """
+    if (profile_dir / "gateway.pid").exists():
+        return "  ⚠ Gateway is running — it will be stopped."
+    return "  ⚠ Served by the running multiplexer — its routes are released; the gateway keeps running."

@@ -51,14 +51,25 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   the normal `MessageEvent` → `handle_message` path keyed by the A2A
   `contextId`, so the agent that answers is the same one serving the user —
   full memory/context, not a clone. The reply returns through `adapter.send()`,
-  which fulfils the pending per-**task** `Future` the HTTP request is blocked
-  on (per-context FIFO, so concurrent same-context requests can't cross-talk);
-  `on_processing_complete` resolves failures/cancellations promptly.
+  which completes the stored task before fulfilling the per-**task** `Future`.
+  The HTTP request is only an observer. Originating message IDs and the dispatch
+  context bind final sends to their task; the processing-start hook rebinds that
+  identity for queued turns rather than inheriting the previous turn's ID.
+   Local per-context asyncio lanes wait for the real base processing task before
+   dispatching the next input, preventing debounce/merge from dropping task IDs.
+   Context FIFO remains an ambiguous compatibility fallback for unanchored sends;
+   it does not skip canceled entries and misroute their late replies to a successor.
+   `on_processing_complete` also handles failures,
+  cancellations, empty replies, and the gateway's streamed-final-response stash.
 - **Task store:** every task (including terminal ones, bounded to the last
-  500) stays queryable via `tasks/get` / `tasks/list`, and `tasks/subscribe`
+   500 by completion recency) stays queryable via `tasks/get` / `tasks/list`, and `tasks/subscribe`
   reattaches to a running task's stream via store watchers. A watchdog fails
-  orphaned tasks after 5 minutes (idempotent transitions — no double
-  counting in metrics).
+  stale records without an execution owner after the bounded legacy reply-timeout
+  grace. Accepted local work, including queued turns, stays owned until completion
+  callbacks or shutdown; HTTP disconnects and the return of the dispatch coroutine
+  do not release ownership. There is no local execution deadline.
+  Winning transitions alone count metrics and
+  schedule completion I/O; no detached-task waiter threads are created.
 - **input-required:** the platform hint tells the agent to start a reply with
   `[INPUT_REQUIRED]` when it needs clarification; the adapter maps that to
   `TASK_STATE_INPUT_REQUIRED` with the question in `status.message`.
@@ -68,6 +79,19 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   receives a v1.0 `StreamResponse` (`statusUpdate`) payload, HMAC-SHA256
   signed (`X-A2A-Signature`, secret `A2A_PUSH_SECRET` falling back to the
   bearer token), with SSRF-guarded callback URLs.
+- **Completion I/O:** admission reserves one of 512 recording slots before execution;
+   a separate single worker writes audit/conversation records and drains on shutdown.
+   Interrupted tasks retain their reservation until cancellation or adapter shutdown.
+   Capacity exhaustion refuses new execution. Recording is queued at the stored
+   transition before observers wake. Two independent push workers allow at most
+   128 jobs; overload or shutdown may drop only optional pushes. The owning profile
+   context is copied per job. Shutdown joins running workers. Push URLs are
+  captured at transition time so delayed workers cannot consume later configs.
+- **Observation:** blocking sends and healthy SSE streams wait for terminal or
+  interrupted outcomes without the old HTTP reply timer. Explicit
+  `returnImmediately` returns a live task. Subscribers receive a current Task
+  snapshot and unregister on disconnect. Terminal subscription replay remains a
+  legacy compatibility behavior, rather than a claim of full v1.0 conformance.
 
 ## v1.0 wire format notes
 - Task states / roles are SCREAMING_SNAKE_CASE (TASK_STATE_*, ROLE_*).
@@ -157,6 +181,7 @@ plugins/platforms/a2a/
 ├── plugin.yaml      # manifest (kind: platform)
 ├── __init__.py      # register(): platform adapter + client tools
 ├── adapter.py       # inbound A2A v1.0 server (stdlib http.server)
+├── completion.py    # bounded completion I/O offload
 ├── tools.py         # outbound client tools
 ├── protocol.py      # Agent Card, JSON-RPC framing, task store, persistence
 ├── security.py      # auth/identity, injection filters, redaction, audit

@@ -182,6 +182,34 @@ curl -s http://127.0.0.1:8000/v1/models | jq '.data[].id'
 
 ---
 
+## Option C: vllm-metal
+
+[vllm-metal](https://github.com/vllm-project/vllm-metal) runs vLLM on Apple Silicon and requires macOS 15 or later. Install it with Homebrew:
+
+```bash
+brew tap vllm-project/vllm-metal https://github.com/vllm-project/vllm-metal
+brew install vllm-project/vllm-metal/vllm-metal
+```
+
+Start an OpenAI-compatible server with an MLX-format Qwen3.5-9B model:
+
+```bash
+vllm serve mlx-community/Qwen3.5-9B-4bit \
+  --host 127.0.0.1 --port 8000 \
+  --max-model-len 65536 --max-num-seqs 1 \
+  --gpu-memory-utilization 0.3 \
+  --no-enable-prefix-caching \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3_xml \
+  --reasoning-parser qwen3
+```
+
+The tool and reasoning parsers above are for Qwen3.5. The memory budget is 30% of unified memory; if startup reports insufficient capacity, increase `--gpu-memory-utilization` or use a smaller model while keeping at least Hermes' 64K context minimum.
+
+In `hermes model`, choose **Custom endpoint**, enter `http://127.0.0.1:8000/v1`, leave the API key blank, and select `mlx-community/Qwen3.5-9B-4bit`. Set the context length to `65536` to match the server. See the [vllm-metal installation guide](https://docs.vllm.ai/projects/vllm-metal/en/latest/installation/) for other installation options.
+
+---
+
 ## Benchmarks: llama.cpp vs MLX
 
 Both backends tested on the same machine (Apple M5 Max, 128 GB unified memory) running the same model (Qwen3.5-9B) at comparable quantization levels (Q4_K_M for GGUF, mxfp4 for MLX). Five diverse prompts, three runs each, backends tested sequentially to avoid resource contention.

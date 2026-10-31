@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hermes Agent</string>
+    <string name="app_description">AI Agent with Continuous Learning by Nous Research</string>
+    <string name="starting">Starting Hermes Agent...</string>
+    <string name="error_title">Error</string>
+    <string name="error_message">An error occurred while starting Hermes Agent.</string>
+    <string name="permissions_required">Permissions Required</string>
+    <string name="storage_permission_rationale">Hermes needs storage access to save conversation data and models.</string>
+    <string name="installing">Installing dependencies...</string>
+    <string name="update_available">Update Available</string>
+    <string name="version">Version</string>
+</resources>

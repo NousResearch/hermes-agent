@@ -1,0 +1,95 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    // Hermes supports Python 3.13 and 3.14 via Chaquopy 17.1.0.
+    // Default is 3.14; override with: ./gradlew assembleDebug -PandroidPythonVersion=3.13
+    id 'com.chaquo.python' version '17.1.0'
+}
+
+android {
+    namespace 'com.nousresearch.hermes'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.nousresearch.hermes"
+        minSdk 24
+        targetSdk 34
+        versionCode (project.findProperty('androidVersionCode')?.toString()?.toInteger() ?: 1)
+        versionName (project.findProperty('androidVersionName')?.toString() ?: "1.0.0")
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        multiDexEnabled true
+
+        // Python 3.13 and 3.14 are 64-bit only in Chaquopy.
+        ndk {
+            abiFilters "arm64-v8a", "x86_64"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            minifyEnabled false
+            shrinkResources false
+            debuggable true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    buildFeatures {
+        viewBinding true
+    }
+
+    packagingOptions {
+        resources {
+            excludes += '/META-INF/{AL2.0,LGPL2.1}'
+        }
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version = project.findProperty('androidPythonVersion')?.toString() ?: "3.14"
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+
+    testImplementation 'junit:junit:4.13.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
+}
+
+// Release signing is intentionally conditional. Debug builds work without a
+// private keystore; release builds must opt in with real credentials.
+def releaseKeystorePath = System.getenv('ANDROID_KEYSTORE_PATH') ?: 'keystore/hermes-release.keystore'
+def releaseKeystore = file(releaseKeystorePath)
+def releaseStorePassword = System.getenv('ANDROID_STORE_PASSWORD')
+def releaseKeyPassword = System.getenv('ANDROID_KEY_PASSWORD')
+def releaseKeyAlias = System.getenv('ANDROID_KEY_ALIAS') ?: 'hermes'
+
+if (releaseKeystore.exists() && releaseStorePassword && releaseKeyPassword) {
+    android.signingConfigs.create('hermesRelease') {
+        storeFile releaseKeystore
+        storePassword releaseStorePassword
+        keyAlias releaseKeyAlias
+        keyPassword releaseKeyPassword
+    }
+    android.buildTypes.release.signingConfig android.signingConfigs.hermesRelease
+}

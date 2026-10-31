@@ -330,6 +330,16 @@ def test_fresh_empty_marker_is_a_claim_in_flight(marker):
     assert lock.acquire() is False and marker.read_bytes() == b""
 
 
+def test_claim_falls_back_when_os_link_is_unavailable(marker, monkeypatch):
+    """Android/Termux Python builds may not expose os.link; O_EXCL must still publish a claim."""
+    monkeypatch.delattr(os, "link")
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True
+    assert marker.read_text(encoding="utf-8").splitlines()[0] == str(os.getpid())
+    lock.release()
+    assert not marker.exists()
+
+
 def test_claim_publishes_whole_and_reclaims_dead_writers_tmp_files(marker):
     """Contract A3 + litter: the claim lands complete (tmp + exclusive link) and leaves no tmp;
     a tmp left by a writer that died between write and publish is reclaimed, a live one is kept."""

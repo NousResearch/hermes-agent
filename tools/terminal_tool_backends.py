@@ -6,7 +6,6 @@ import functools
 import importlib.util
 import inspect
 import logging
-import shutil
 import subprocess
 from typing import Any, Dict, Optional
 
@@ -14,7 +13,6 @@ from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
-from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from tools.terminal_tool_config import _get_plugin_env_provider
@@ -51,7 +49,7 @@ def terminal_backend_unavailable_reason() -> Optional[str]:
 
 _VERCEL_SANDBOX_DEFAULT_CWD = "/vercel/sandbox"
 _SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
-_BUILTIN_BACKENDS = "local, docker, singularity, modal, daytona, vercel_sandbox, ssh"
+_BUILTIN_BACKENDS = "local, docker, modal, daytona, vercel_sandbox, ssh"
 
 # Config -> kwargs shapers, driven by (out_key, config_key, default) tables. The container table's
 # (key, default) literal is intentionally greppable; tools/terminal_tool.py keeps its own for the AST test.
@@ -184,7 +182,6 @@ def _build_modal_env(*, image, cwd, timeout, cc, task_id, **_):
 # env_type -> (class getter, takes image, extra kwargs from (cc, resource kwargs)). SDK-backed modules
 # (daytona/vercel) are imported lazily so they are only required when that backend is selected.
 _SANDBOX_ROWS = {
-    "singularity": (lambda: _SingularityEnvironment, True, lambda cc, kw: {}),
     "daytona": (lambda: importlib.import_module("tools.environments.daytona").DaytonaEnvironment, True,
                 lambda cc, kw: {"cpu": int(kw["cpu"])}),
     "vercel_sandbox": (lambda: importlib.import_module("tools.environments.vercel_sandbox").VercelSandboxEnvironment,
@@ -201,7 +198,6 @@ def _build_sandbox_env(env_type, *, image, cwd, timeout, cc, task_id, **_):
     return cls()(**kwargs)
 
 
-_build_singularity_env = functools.partial(_build_sandbox_env, "singularity")
 _build_daytona_env = functools.partial(_build_sandbox_env, "daytona")
 _build_vercel_env = functools.partial(_build_sandbox_env, "vercel_sandbox")
 
@@ -240,6 +236,15 @@ def _stamp_sandbox_home(env_obj, provider, cwd) -> None:
 def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
     provider = _get_plugin_env_provider(env_type)
     if provider is not None:
+        from hermes_cli.plugin_host import is_hosted_object
+        if is_hosted_object(provider):
+            # The environment would come back as an opaque placeholder, and its execute() would run outside
+            # this process's interrupt, activity and terminal-scope state: refuse before the host starts a
+            # sandbox nothing here could use or clean up.
+            raise ValueError(
+                f"terminal.backend is {env_type}, a plugin that runs in the plugin host (plugins.isolation: host), "
+                f"and the host cannot hand its environment to Hermes, so commands cannot run in it. Set "
+                f"plugins.isolation: in_process to use this backend.")
         env_obj = provider.create_environment(cwd=cwd, timeout=timeout, task_id=task_id, image=image,
                                               container_config=cc)
         # Stamp the backend name so path-resolution and progress surfaces can identify plugin
@@ -256,12 +261,13 @@ def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
     except Exception:
         plugin_names = []
     known = ", ".join(f"'{n}'" for n in _BUILTIN_BACKENDS.split(", ") + list(plugin_names))
-    raise ValueError(f"Unknown environment type: {env_type}. Use {known}")
+    from hermes_cli.left_core_migration import terminal_backend_install_hint
+    raise ValueError(f"Unknown environment type: {env_type}. Use {known}{terminal_backend_install_hint(env_type)}")
 
 
 # Built-in backend -> builder. Anything else is looked up in the plugin registry.
-_ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "singularity": _build_singularity_env,
-                 "modal": _build_modal_env, "daytona": _build_daytona_env, "vercel_sandbox": _build_vercel_env,
+_ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "modal": _build_modal_env,
+                 "daytona": _build_daytona_env, "vercel_sandbox": _build_vercel_env,
                  "ssh": _build_ssh_env}
 
 
@@ -345,7 +351,6 @@ _BACKEND_SPECS: dict[str, dict[str, Any]] = {
     "local": {},
     "docker": {"binary": (lambda: importlib.import_module("tools.environments.docker").find_docker(), "version",
                           "Docker is not installed — no docker executable in PATH or the usual install locations")},
-    "singularity": {"binary": (lambda: shutil.which("apptainer") or shutil.which("singularity"), "--version", None)},
     "ssh": {"pre": _ssh_pre},
     "modal": {"pre": _modal_pre,
               "module": ("modal", "modal is required for direct modal terminal backend. Run hermes setup terminal and select Modal.")},
@@ -356,7 +361,6 @@ _BACKEND_SPECS: dict[str, dict[str, Any]] = {
 
 _PROBE_FAILED_REASONS = {
     "docker": "Docker is installed but the Docker daemon is not running",
-    "singularity": "Apptainer/Singularity is installed but `--version` failed, so the install looks broken",
 }
 
 
@@ -389,7 +393,9 @@ def _check_plugin_requirements(config: dict[str, Any]) -> bool:
     if provider is not None:
         ok = bool(provider.check_requirements(config))
         return ok or _reject(f"the {env_type!r} plugin backend reported its requirements are not met")
-    return _reject(f"Unknown TERMINAL_ENV '{env_type}'. Use one of: {_BUILTIN_BACKENDS}, or a plugin-registered backend.")
+    from hermes_cli.left_core_migration import terminal_backend_install_hint
+    return _reject(f"Unknown TERMINAL_ENV '{env_type}'. Use one of: {_BUILTIN_BACKENDS}, or a plugin-registered "
+                   f"backend{terminal_backend_install_hint(env_type)}")
 
 
 # Built-in backend -> requirements checker; unknown backends go to the plugin registry.

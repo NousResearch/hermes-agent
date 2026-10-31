@@ -63,6 +63,12 @@ def device_requests() -> list[str]:
     return sorted(name for name in SERVER_REQUESTS if name.startswith(DEVICE_REQUEST_PREFIX))
 
 
+def unknown_method_message(method: str) -> str:
+    """The ``-32601`` text both routes send. A JSON-RPC client sends no version, so a missing
+    method says only what the backend knows: this backend does not serve it."""
+    return f"unknown method: {method} — not available on this Hermes backend"
+
+
 def _declare(table: dict, entry) -> None:
     # Method names may have different envelopes on independently shipped
     # transports. Duplicates within one transport's catalog are still errors.

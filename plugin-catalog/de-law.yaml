@@ -1,0 +1,22 @@
+name: de-law
+repo: https://github.com/MadeByBrain/hermes-de-law
+sha: 4be88cd048c5ae4d37491ba4e6eb88996886ae7e
+description: "German federal law, EU law and German federal court decisions for Hermes Agent: read one section or article (§ 203 StGB, Art. 6 DSGVO, Art. 50 AI Act) in the source wording with version status (Stand), gazette reference and a ready source line, search the index of federal laws, list a law's sections, and find and read published decisions of BVerfG, BGH, BVerwG, BFH, BAG, BSG and BPatG. Legal texts, not legal advice. Disclosure: sends HTTPS GET requests only to www.gesetze-im-internet.de (law folder names, the daily index, weekly abbreviation lists), www.rechtsprechung-im-internet.de (the daily index, document ids of decisions you read) and publications.europa.eu (CELEX numbers, text language, one SPARQL query per act listing its consolidated versions); section numbers and search words are not sent, because whole laws are downloaded and searched locally. Public sources, no key. Writes public legal texts and indexes (JSON with ETag, Last-Modified and fetch time; no questions, no session data) under HERMES_HOME/plugin-data/de-law/cache, capped by the cache_max_mb setting (default 200 MB). Reads only its own plugin settings. At most one request per second per host, 25 s timeout, 40 MB response cap. rechtsprechung-im-internet.de sends a tdm-reservation header; the plugin fetches its index and single decisions on request only, and case_law: false turns that source off. No hooks, no cron jobs, no background processes. Tools stay on every platform, including gateways (a guest can call them; hermes tools disables one). While the plugin is enabled, its skill adds one line to the skills index of every session."
+maintainer: MadeByBrain
+tier: community
+category: tools
+docs_url: https://github.com/MadeByBrain/hermes-de-law#readme
+version: "1.0.0"
+image: https://raw.githubusercontent.com/MadeByBrain/hermes-de-law/4be88cd048c5ae4d37491ba4e6eb88996886ae7e/docs/banner.png
+requires_hermes: ">=0.22.2"
+platforms: []
+capabilities:
+  provides_tools:
+    - de_law_get
+    - de_law_search
+    - de_law_toc
+    - de_case_search
+    - de_case_get
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

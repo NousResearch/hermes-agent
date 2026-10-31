@@ -49,6 +49,11 @@ class ClientCapabilitiesParams(Params):
     #: "no device behind me" — the desktop and the TUI advertise nothing, and ``device.request``
     #: fails fast for them instead of waiting for a capability that will never arrive.
     device_capabilities: list[DeviceCapability] | None = None
+    #: The client is the Desktop app connected to a backend on its own machine (its connection mode is
+    #: local). Counted only on a connection that redeemed a native ticket minted over this machine's
+    #: private control socket; it is what makes the welcome trial and first-run onboarding available
+    #: in a gateway that also serves the CLI, the TUI and bots.
+    desktop_local: bool = False
 
 
 class ClientCapabilitiesResult(Result):
@@ -62,6 +67,11 @@ class ClientCapabilitiesResult(Result):
     #: Device-shaped server→client requests this backend may send — a client advertises
     #: ``device_capabilities`` and reads this to know which of them to expect.
     device_requests: list[str]
+    #: A canonical owner on this backend admits ``clarify_batch`` on ``prompt.submit``: the turn's
+    #: multi-question clarify arrives as ONE ``clarify`` request answered with ``clarify.lock``, not
+    #: one card per question. An older owner refuses the unknown key, so a client declares it only when
+    #: this is true. (The legacy sidecar always asks the batch at once and is never sent the key.)
+    canonical_clarify_batch: bool = False
 
 
 method("client.capabilities", params=ClientCapabilitiesParams, result=ClientCapabilitiesResult,

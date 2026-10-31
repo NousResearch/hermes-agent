@@ -436,7 +436,7 @@ auxiliary:
 ```
 
 With `enabled: false`, automatic post-turn forks do not spawn; manual
-`/refine` still works.
+`/refine` still works, with or without focus text.
 
 ### Capping review cost (`max_input_tokens`)
 

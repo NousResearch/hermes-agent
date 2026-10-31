@@ -135,10 +135,17 @@ export interface Translations {
     sharedMetricsBody?: string;
     sharedMetricsReaskBody?: string;
     sharedMetricsShare?: string;
-    sharedMetricsLocal?: string;
     sharedMetricsOff?: string;
     sharedMetricsDetails?: string;
     sharedMetricsSaveFailed?: string;
+  };
+
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: string;
+    noProvider: string;
+    builtinLayer: string;
+    builtinNote: string;
   };
 
   // ── Status page ──

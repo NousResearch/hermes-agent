@@ -35,6 +35,34 @@ def _login_label(subject):
     return None if label.startswith('auth:') else label
 
 
+def binding_names(saved, profile_id, subject):
+    """Whether a stored ``[profile_id, subject]`` binding names *subject* in *profile_id*: same profile,
+    and the same owner (a binding a Webapp login stored belongs to the machine owner,
+    gateway.owner_identity.same_owner). Every reader of a binding asks this, never a string compare."""
+    try:
+        saved_profile, saved_subject = json.loads(saved)
+    except (TypeError, ValueError):
+        return False
+    from gateway.owner_identity import same_owner
+    return saved_profile == profile_id and same_owner(saved_subject, subject)
+
+
+def _bound_to(saved, actor):
+    return binding_names(saved, actor.profile_id, actor.subject)
+
+
+def _bindings_agree(first, second):
+    """Two stored bindings name the same owner (both absent agrees; one absent does not)."""
+    if first == second or first is None or second is None:
+        return first == second
+    try:
+        (first_profile, first_subject), (profile_id, subject) = json.loads(first), json.loads(second)
+    except (TypeError, ValueError):
+        return False
+    from gateway.owner_identity import owners_agree
+    return first_profile == profile_id and owners_agree(first_subject, subject)
+
+
 def import_history_control(conn, actor, session_ids):
     binding = json.dumps([actor.profile_id, actor.subject], separators=(',', ':'))
     for sid in session_ids:
@@ -54,12 +82,13 @@ def authorize_history(conn, actor, session_id, *, claim=False):
     binding = json.dumps([actor.profile_id, actor.subject], separators=(',', ':'))
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
     if saved is not None:
-        if saved[0] != binding:
+        if not _bound_to(saved[0], actor):
             raise RuntimeStoreError('permission_denied')
         return True
     if row['source'] not in _history_sources():
         return False
-    if _owner_user(row) and row['user_id'] not in (actor.subject, _login_label(actor.subject)):
+    from gateway.owner_identity import same_owner
+    if _owner_user(row) and not same_owner(row['user_id'], actor.subject):
         raise RuntimeStoreError('permission_denied')
     if 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
@@ -80,7 +109,9 @@ def same_history_owner(conn, anchor_id, session_id):
     carry the anchor's exact (user_id, session_key, chat_id). A routeless member needs the
     anchor's exact import binding; unbound, it must also pass :func:`authorize_history`'s local
     rule (local source, no foreign user_id) — e.g. the pre-adoption ancestors of an adopted
-    legacy CLI conversation. A bound (imported) anchor therefore never reaches unbound rows.
+    legacy CLI conversation — or share an unbound routeless anchor's source (an old cron run's or
+    subagent's own compression chain, mounted as one chat). A bound (imported) anchor therefore
+    never reaches unbound rows.
     """
     columns = 'SELECT source,user_id,session_key,chat_id,origin_json FROM sessions WHERE id=?'
     anchor, row = (conn.execute(columns, (sid,)).fetchone() for sid in (anchor_id, session_id))
@@ -89,7 +120,10 @@ def same_history_owner(conn, anchor_id, session_id):
     if row['session_key'] or row['chat_id'] or row['origin_json']:
         return tuple(row)[1:4] == tuple(anchor)[1:4]
     binding = history_binding(conn, session_id)
-    if binding != history_binding(conn, anchor_id):
+    if not _bindings_agree(binding, history_binding(conn, anchor_id)):
         return False
+    routeless_peer = row['source'] == anchor['source'] and not any(tuple(anchor)[2:5])
+    from gateway.owner_identity import owners_agree
     return binding is not None or (
-        row['source'] in _history_sources() and _owner_user(row) in (None, '', anchor['user_id']))
+        (row['source'] in _history_sources() or routeless_peer)
+        and (_owner_user(row) in (None, '') or owners_agree(_owner_user(row), anchor['user_id'])))

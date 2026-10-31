@@ -47,7 +47,7 @@ class TerminalEnvironmentProvider(ProviderBase):
       a local argv that runs its remainder (``bash -c <script>``, passed through as separate words)
       inside the sandbox with stdin/stdout open, or ``None`` when it cannot right now. Bot Desktop,
       ``computer_use`` and the browser then follow the terminal into this backend, as they do for
-      docker/ssh/singularity, instead of refusing.
+      docker/ssh, instead of refusing.
 
     ``default_cwd`` home resolution and ``exec_prefix`` need the environment object itself, so they
     work for in-process plugins only; under ``plugins.isolation: host`` the environment reaches Hermes

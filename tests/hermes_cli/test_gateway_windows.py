@@ -16,6 +16,33 @@ from hermes_cli import setup
 _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
 
+def test_resolve_task_user_uses_whoami_instead_of_poisoned_userdomain(monkeypatch):
+    """A domain-joined host can have a local logon while USERDOMAIN names the AD domain (#137645)."""
+    monkeypatch.setenv("USERNAME", "tester")
+    monkeypatch.setenv("USERDOMAIN", "YINHE")
+
+    def fake_run(argv, **kwargs):
+        assert argv == ["whoami", "/fo", "csv", "/nh"]
+        return SimpleNamespace(returncode=0, stdout=b'"ZDBJ0602434\\tester"\r\n', stderr=b"")
+
+    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
+
+    assert gateway_windows._resolve_task_user() == r"ZDBJ0602434\tester"
+
+
+def test_resolve_task_user_falls_back_to_environment_when_whoami_fails(monkeypatch):
+    """Keep the legacy task principal as a fail-open path when ``whoami`` is unavailable."""
+    monkeypatch.setenv("USERNAME", "tester")
+    monkeypatch.setenv("USERDOMAIN", "YINHE")
+    monkeypatch.setattr(
+        gateway_windows.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout=b"", stderr=b"whoami failed"),
+    )
+
+    assert gateway_windows._resolve_task_user() == r"YINHE\tester"
+
+
 def test_exec_schtasks_decodes_ansi_output_under_utf8_mode(monkeypatch):
     """schtasks emits the ANSI code page even when Python runs in UTF-8 mode; a non-ASCII account
     path in the task XML must survive `_exec_schtasks` intact or `scheduled_task_drift` reports
@@ -330,7 +357,7 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     script_path = tmp_path / "Hermes_Gateway_alice.cmd"
     xml_seen = {}
 
-    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"DOMAIN\\alice")
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"MACHINE\alice")
 
     def fake_schtasks(args):
         calls.append(tuple(args))
@@ -349,6 +376,7 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "/Change" not in [arg for call in calls for arg in call]
     assert calls[0][:4] == ("/Delete", "/F", "/TN", "Hermes_Gateway_alice")
     assert calls[1][0] == "/Create"
+    assert calls[1][calls[1].index("/RU") + 1] == r"MACHINE\alice"
     assert "/XML" in calls[1]
     assert "/SC" not in calls[1]
     assert "<Delay>PT30S</Delay>" in xml_seen["text"]
@@ -364,6 +392,7 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "<Command>wscript.exe</Command>" in xml_seen["text"]
     assert "//B //Nologo" in xml_seen["text"]
     assert "Hermes_Gateway_alice.vbs" in xml_seen["text"]
+    assert r"<UserId>MACHINE\alice</UserId>" in xml_seen["text"]
     assert "cmd.exe" not in xml_seen["text"]
 
 

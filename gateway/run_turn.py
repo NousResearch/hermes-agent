@@ -9,6 +9,7 @@ from pm import install_hint
 import logging
 from typing import TYPE_CHECKING
 import asyncio
+import codecs
 import dataclasses
 import inspect
 import json
@@ -927,10 +928,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                         return self._proxy_error_result(t("gateway.proxy.http_error", status=resp.status, error=error_text[:300]))
 
                     buffer = ""
+                    _sse_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")  # a char may span chunks
                     async for chunk in resp.content.iter_any():
                         if not _run_still_current():
                             return _stale_result("stream")
-                        buffer += chunk.decode("utf-8", errors="replace")
+                        buffer += _sse_decoder.decode(chunk)
                         while "\n" in buffer:
                             line, buffer = buffer.split("\n", 1)
                             if _consume_sse_line(line):
@@ -941,18 +943,16 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                             break
                         if len(buffer) > _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS:
                             raise ValueError("Proxy SSE stream exceeded max buffer size without a line boundary")
-                    # The final SSE frame may not be newline-terminated: flush the residual
-                    # buffer after EOF instead of silently dropping its content.
+                    # The final SSE frame may not be newline-terminated: flush the decoder and the
+                    # residual buffer after EOF instead of silently dropping its content.
+                    buffer += _sse_decoder.decode(b"", final=True)
                     if not saw_done and buffer:
                         saw_done = _consume_sse_line(buffer)
                     if not saw_done:
-                        # Clean EOF without [DONE] — the upstream dropped the response
-                        # mid-stream. Keep any partial text but say so instead of
-                        # presenting the truncation as a complete answer.
-                        logger.warning(
-                            "Proxy SSE stream from %s ended without [DONE] — response may be truncated "
-                            "(%d chars received)", proxy_url, len(full_response),
-                        )
+                        # Clean EOF without [DONE] — the upstream dropped the response mid-stream. Keep any
+                        # partial text but say so instead of presenting the truncation as a complete answer.
+                        logger.warning("Proxy SSE stream from %s ended without [DONE] — response may be truncated "
+                                       "(%d chars received)", proxy_url, len(full_response))
                         if not full_response:
                             return self._proxy_error_result(t("gateway.proxy.closed_early"))
         except asyncio.CancelledError:

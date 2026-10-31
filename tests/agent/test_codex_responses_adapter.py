@@ -1047,3 +1047,36 @@ def test_role_message_phase_is_kept_only_for_assistant_values_the_api_accepts():
     ])
 
     assert [item.get("phase") for item in wire] == ["final_answer", None, None, None]
+
+
+@pytest.mark.parametrize(
+    ("model", "base_url", "reasoning", "expected"),
+    [
+        ("gpt-6.1-sol", "https://chatgpt.com/backend-api/codex", {"enabled": False},
+         {"effort": "low", "summary": "auto"}),
+        ("gpt-6.1-sol", "https://api.openai.com/v1", {"enabled": False},
+         {"effort": "low", "summary": "auto"}),
+        ("gpt-6-sol", "https://chatgpt.com/backend-api/codex", {"enabled": False},
+         {"effort": "none"}),
+        ("gpt-4o", "https://api.openai.com/v1", {"enabled": False}, None),
+        ("gpt-6.1-sol", "https://chatgpt.com/backend-api/codex", None, None),
+    ],
+    ids=["codex_floor", "openai_floor", "none", "empty_vocabulary", "unset"],
+)
+def test_auxiliary_adapter_reasoning_off_floor(model, base_url, reasoning, expected):
+    from agent.auxiliary_client import _CodexCompletionsAdapter
+
+    adapter = _CodexCompletionsAdapter(SimpleNamespace(base_url=base_url), model)
+    kwargs = {"model": model, "messages": [{"role": "user", "content": "hi"}]}
+    if reasoning is not None:
+        kwargs["extra_body"] = {"reasoning": reasoning}
+    resp_kwargs, _, _ = adapter._build_responses_kwargs(kwargs)
+
+    if expected is None:
+        assert "reasoning" not in resp_kwargs
+    else:
+        assert resp_kwargs.get("reasoning") == expected
+    if expected and expected.get("summary") == "auto":
+        assert resp_kwargs["include"] == ["reasoning.encrypted_content"]
+    else:
+        assert "include" not in resp_kwargs

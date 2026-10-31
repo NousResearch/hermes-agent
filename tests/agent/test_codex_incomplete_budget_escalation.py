@@ -19,7 +19,10 @@ def _agent(max_tokens: int | None = 2000):
     agent.log_prefix = ""
     agent._codex_incomplete_retries = 0
     agent._codex_reasoning_only_streak = 0
+    # The reasoning one-shots must stay unarmed (MagicMock would fabricate a truthy
+    # attribute, so the "never reasoning-off" assertions below need real False values).
     agent._ephemeral_reasoning_off = False
+    agent._ephemeral_reasoning_omit = False
     agent._ephemeral_max_output_tokens = None
     agent._build_assistant_message.side_effect = lambda msg, fr: {
         "role": "assistant", "content": msg.content or "", "finish_reason": fr,
@@ -44,14 +47,19 @@ def _run(agent, response):
     )
 
 
-def test_budget_exhausted_empty_fragment_raises_cap_and_drops_reasoning():
+def test_budget_exhausted_empty_fragment_raises_cap_and_keeps_reasoning():
     agent = _agent()
     exhausted = SimpleNamespace(
         status="incomplete", incomplete_details={"reason": "max_output_tokens"},
         usage=SimpleNamespace(output_tokens=2000, output_tokens_details={"reasoning_tokens": 1997}),
     )
     assert _run(agent, exhausted) is None
-    assert agent._ephemeral_reasoning_off is True
+    assert agent._ephemeral_reasoning_off is False, (
+        "the retry must never go out with reasoning disabled — thinking stays on"
+    )
+    assert agent._ephemeral_reasoning_omit is False, (
+        "the retry must not omit the reasoning fields either — thinking stays configured"
+    )
     first_boost = agent._ephemeral_max_output_tokens
     assert first_boost > 2000
     agent._ephemeral_max_output_tokens = None  # request builder consumes it
@@ -75,5 +83,4 @@ def test_no_configured_cap_seeds_escalation_from_observed_ceiling():
                               codex_reasoning_items=None)
     continue_codex_incomplete(agent, partial, "incomplete", messages=messages,
                               conversation_history=None, api_call_count=1, response=exhausted)
-    assert agent._ephemeral_reasoning_off is False
     assert agent._ephemeral_max_output_tokens is None

@@ -1469,4 +1469,24 @@ Always set `TELEGRAM_ALLOWED_USERS` to restrict who can interact with your bot. 
 
 Never share your bot token publicly. If compromised, revoke it immediately via BotFather's `/revoke` command.
 
+### Ignoring forwarded messages (Optional)
+
+By default a message an allowed user forwards to the bot is handled like any
+other message from that user, so the forwarded text can steer the agent. If
+the bot should only act on what allowed users write themselves, set:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      ignore_forwarded_messages: true
+```
+
+With this on, forwarded text, commands, locations and media are dropped right
+after the sender check, before the message reaches the agent or a group's
+observed transcript. In a private chat the sender gets a one-line notice
+(once per forwarded album); in groups the forward is dropped silently. Covered
+forms: Bot API 7.0 `forward_origin`, the older `forward_*` fields, and channel
+posts Telegram auto-forwards into a linked discussion group. Default: `false`.
+
 For more details, see the [Security documentation](../security.md). You can also use [DM pairing](./index.md#dm-pairing-alternative-to-allowlists) for a more dynamic approach to user authorization.

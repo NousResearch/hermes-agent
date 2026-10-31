@@ -1,15 +1,15 @@
 name: revamp
 repo: https://github.com/KeyArgo/hermes-revamp
-sha: a882c1e499622b8652a39c04e2a13f9487f93a83
+sha: 89aeccb040d974d079fb79cd41ec8775498e2e48
 description: Winamp-style music, audiobook and radio player for Hermes Desktop.
 maintainer: KeyArgo
 tier: community
 category: desktop
 docs_url: https://github.com/KeyArgo/hermes-revamp#readme
-version: "1.0.0-alpha.4"
-image: https://raw.githubusercontent.com/KeyArgo/hermes-revamp/a882c1e499622b8652a39c04e2a13f9487f93a83/assets/social-card.png
+version: "1.0.0-alpha.5"
+image: https://raw.githubusercontent.com/KeyArgo/hermes-revamp/89aeccb040d974d079fb79cd41ec8775498e2e48/assets/social-card.png
 screenshots:
-  - https://raw.githubusercontent.com/KeyArgo/hermes-revamp/a882c1e499622b8652a39c04e2a13f9487f93a83/assets/screenshots/full-player.png
+  - https://raw.githubusercontent.com/KeyArgo/hermes-revamp/89aeccb040d974d079fb79cd41ec8775498e2e48/assets/screenshots/full-player.png
 capabilities:
   provides_tools:
     - revamp_player

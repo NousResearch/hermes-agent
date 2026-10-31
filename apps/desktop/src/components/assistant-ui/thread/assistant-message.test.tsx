@@ -338,6 +338,22 @@ describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
 
     expect(await screen.findByRole('menuitem', { name: 'Branch in new chat' })).toBeTruthy()
   })
+
+  it('enters share-image mode from both the desktop button and the touch More menu', async () => {
+    const share = await import('./share-chat-image')
+    $touchPointer.set(true)
+    render(<Harness />)
+    await screen.findByText('done')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Share conversation as image' }))
+    expect(share.isShareChatModeActive()).toBe(true)
+    share.exitShareChatMode()
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions' }), { button: 0, pointerType: 'touch' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Share conversation as image' }))
+    expect(share.isShareChatModeActive()).toBe(true)
+    share.exitShareChatMode()
+  })
 })
 
 describe('stopped reply marker', () => {

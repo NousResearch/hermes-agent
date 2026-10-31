@@ -101,6 +101,37 @@ def provider_label_for(provider: Any) -> str:
     return provider_label(str(provider or ""))
 
 
+_ADD_BACKUP_PROVIDER = "To avoid this in future, add a backup provider with `hermes fallback add`."
+_NOUS_ADD_BACKUP = "To avoid waits, add a backup provider with `hermes fallback add`."
+
+
+def backup_provider_clause(agent: Any, *, add_backup: str = _ADD_BACKUP_PROVIDER) -> str:
+    """The out-of-retries reply's backup sentence, matching the fallback chain the agent walked: ``add_backup``
+    with no chain, what failed when it was walked, nothing when it was not (cron's ``_fallback_chain_phrase``)."""
+    try:
+        chain = getattr(agent, "_fallback_chain", None)
+        if not chain:
+            return add_backup
+        unavailable = "None of your backup providers could take over. Check them with `hermes fallback list`."
+        if getattr(agent, "_provider_fallback_active", False):
+            primary = getattr(agent, "_primary_runtime", None) or {}
+            if not primary.get("model") or not primary.get("provider"):
+                return unavailable
+            return (
+                f"Hermes had already switched from {primary['model']} ({provider_label_for(primary['provider'])}) "
+                "to a backup, and no other backup could take over. Check your backups with `hermes fallback list`."
+            )
+        return unavailable if getattr(agent, "_fallback_index", 0) >= len(chain) else ""
+    except Exception:  # health: allow BLE001 -- failure-copy state reads must never break the terminal reply
+        return add_backup
+
+
+def nous_rate_limit_copy(agent: Any) -> str:
+    """Next steps once a signed-in Nous account is rate limited and no backup provider took over."""
+    clause = backup_provider_clause(agent, add_backup=_NOUS_ADD_BACKUP)
+    return f"Wait for the reset and send /retry, or switch models with /model.{' ' + clause if clause else ''}"
+
+
 # ---- turn_exit_reason → failure verdict (finalize_turn stamps these) --------------------------
 
 class ExitFailure(NamedTuple):
@@ -381,10 +412,6 @@ _ONE_OFF_COPY: dict[str, str] = {
         "I ran out of steps for this turn ({limit} tool calls) before finishing, and couldn't "
         "produce a summary. Send `continue` to keep going, or raise `max_iterations` in your config."
     ),
-    "nous_rate_limit": (
-        "Wait for the reset and send /retry, or switch models with /model. To avoid waits, add "
-        "a backup provider with `hermes fallback add`."
-    ),
 }
 _SITE_COPY: dict[str, str] = {**_FAILURE_CODE_COPY, **_ONE_OFF_COPY}
 
@@ -395,7 +422,8 @@ def site_copy(code: str, **fields: Any) -> str:
     return _SITE_COPY[code].format_map(_Defaults(fields))
 
 
-def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
+def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None,
+                   backup_clause: Optional[str] = None) -> str:
     """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
     limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
     first_attempt = attempts == 1 and reason in _EXHAUSTED_FIRST_ATTEMPT_LEADS
@@ -408,9 +436,9 @@ def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, rese
                      "Send /retry after that, or switch models with /model.")
     else:
         situation = f"it looks temporarily unavailable. {_NEXT_STEPS_RETRY}"
+    backup_clause = _ADD_BACKUP_PROVIDER if backup_clause is None else backup_clause
     return (
-        f"{lead} — {situation} To avoid this in future, "
-        f"add a backup provider with `hermes fallback add`.\n\nProvider said: {summary}"
+        f"{lead} — {situation}{' ' + backup_clause if backup_clause else ''}\n\nProvider said: {summary}"
     )
 
 

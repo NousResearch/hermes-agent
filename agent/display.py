@@ -1053,9 +1053,14 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
 
     if isinstance(data, dict):
         failed = data.get("success") is False
-        # Memory: distinguish "store full" from real errors.
-        if tool_name == "memory" and failed and "exceed the limit" in data.get("error", ""):
-            return True, t("display.failure.memory_full")
+        # Memory: distinguish "store full" from real errors. Match the legacy
+        # "exceed the limit" wording and any newer variant containing "full"
+        # (e.g. "memory store is full", "MemoryFullError"), case-insensitively.
+        if tool_name == "memory" and failed:
+            err_raw = data.get("error") or ""
+            err_lower = err_raw.lower() if isinstance(err_raw, str) else str(err_raw).lower()
+            if "exceed the limit" in err_lower or "full" in err_lower:
+                return True, t("display.failure.memory_full")
         err = data.get("error") or data.get("message")
         if err and (failed or "error" in data):
             return True, f" [{_trim_error(str(err))}]"

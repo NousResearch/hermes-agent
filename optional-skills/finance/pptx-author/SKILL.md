@@ -39,6 +39,7 @@ runs Hermes:
 python -c "import pptx" 2>/dev/null && PY=python || if command -v hermes >/dev/null 2>&1; then
   PY="$(hermes pm environment documents --extra documents --extra documents-pdf)"
 else
+  [ -f scripts/side_env.py ] || echo "run from the skill directory (~/.hermes/skills/... in a sandbox)" >&2
   PY="$(python3 scripts/side_env.py documents)"
 fi
 export PY

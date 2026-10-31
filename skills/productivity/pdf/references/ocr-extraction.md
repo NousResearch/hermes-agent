@@ -61,6 +61,7 @@ below with `"$PY"` instead of `python`:
 if command -v hermes >/dev/null 2>&1; then
   PY="$(hermes pm environment pdf-pymupdf --requirement 'pymupdf>=1.26,<3' --requirement 'pymupdf4llm>=0.2,<3')"
 else
+  [ -f scripts/side_env.py ] || echo "run from the skill directory (~/.hermes/skills/... in a sandbox)" >&2
   PY="$(python3 scripts/side_env.py pdf-pymupdf)"
 fi
 export PY
@@ -98,6 +99,7 @@ python scripts/extract_marker.py --check
 if command -v hermes >/dev/null 2>&1; then
   PY="$(hermes pm environment pdf-marker --requirement 'marker-pdf>=1.8,<3')"
 else
+  [ -f scripts/side_env.py ] || echo "run from the skill directory (~/.hermes/skills/... in a sandbox)" >&2
   PY="$(python3 scripts/side_env.py pdf-marker)"
 fi
 export PY

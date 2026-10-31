@@ -7,8 +7,11 @@ microsoft-office, excel-author and pptx-author skills; keep the copies identical
 
 Safe to run from several agents at once: a builder holds `<name>.lock`, re-checks the
 published environment after waiting for it, builds into a private stage and publishes it by
-atomically swapping the `<name>` symlink. Stages left by a crashed build and replaced
-generations are deleted once they are an hour old.
+atomically swapping the `<name>` symlink. Each publish deletes the generation it replaced;
+stages, generations and links that a crashed build left behind are deleted once they are an
+hour old.
+
+POSIX only (bin/python, flock); not supported on Windows.
 """
 from __future__ import annotations
 
@@ -24,7 +27,7 @@ import time
 
 try:
     import fcntl
-except ImportError:  # not POSIX: no lock; the atomic publish still keeps the env whole
+except ImportError:  # Windows: main() refuses to run there
     fcntl = None
 
 # "documents" is the pyproject `documents` + `documents-pdf` extras (a test keeps them equal).
@@ -79,7 +82,12 @@ def _sweep(cache: Path, name: str) -> None:
         published = None
     cutoff = time.time() - STALE_AFTER_S
     for entry in cache.glob(name + ".*"):
-        if entry.name in (published, name + ".lock") or entry.lstat().st_mtime > cutoff:
+        if entry.name in (published, name + ".lock"):
+            continue
+        try:
+            if entry.lstat().st_mtime > cutoff:
+                continue
+        except FileNotFoundError:  # removed by another process since the glob
             continue
         if entry.is_dir() and not entry.is_symlink():
             shutil.rmtree(entry, ignore_errors=True)
@@ -93,9 +101,12 @@ def ensure(preset: str, cache: Path) -> Path:
     cache.mkdir(parents=True, exist_ok=True)
     python = cache / name / "bin" / "python"
     if _imports_ok(python, modules):
-        with _lock(cache / f"{name}.lock", wait=False) as held:
-            if held:
-                _sweep(cache, name)
+        try:  # best effort: a read-only cache or a failing lock must not fail a healthy env
+            with _lock(cache / f"{name}.lock", wait=False) as held:
+                if held:
+                    _sweep(cache, name)
+        except OSError:
+            pass
         return python
     with _lock(cache / f"{name}.lock"):
         if _imports_ok(python, modules):  # another caller published it while this one waited
@@ -126,6 +137,9 @@ def main(argv=None) -> int:
                                      "prints its interpreter path.")
     parser.add_argument("preset", choices=sorted(PRESETS))
     args = parser.parse_args(argv)
+    if os.name == "nt":
+        print("side_env.py is POSIX only (bin/python, flock); not supported on Windows", file=sys.stderr)
+        return 1
     try:
         python = ensure(args.preset, Path.home() / ".cache")
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:

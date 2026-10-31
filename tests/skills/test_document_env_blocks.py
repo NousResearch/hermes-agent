@@ -73,8 +73,9 @@ def _venv(directory, healthy):
     _script(directory / "bin" / "python", "exit 0\n" if healthy else "exit 1\n")
 
 
-def _run_block(document, preset, tmp_path, *, hermes=None):
-    """Run the block from the skill's directory; ``python`` lacks every library, ``python3`` is real."""
+def _run_block(document, preset, tmp_path, *, hermes=None, cwd=None):
+    """Run the block (from the skill's directory unless ``cwd``); ``python`` lacks every library,
+    ``python3`` is real. Returns the finished process; the block itself must succeed."""
     system_path = os.pathsep.join(dict.fromkeys(os.path.dirname(shutil.which(tool)) for tool in TOOLS))
     if shutil.which("hermes", path=system_path):
         pytest.skip("a hermes on the system PATH would take the PM branch")
@@ -87,18 +88,18 @@ def _run_block(document, preset, tmp_path, *, hermes=None):
         _script(stubs / "hermes", f"echo {hermes}\n")
     env = {"HOME": str(home), "PATH": f"{stubs}{os.pathsep}{system_path}", "LC_ALL": "C"}
     result = subprocess.run([shutil.which("bash"), "-c", _setup_block(document, preset) + "export -p\n"],
-                            env=env, cwd=(REPO / document).parent.parent if "references" in document
-                            else (REPO / document).parent, capture_output=True, check=False, text=True,
-                            timeout=60)
+                            env=env, cwd=cwd or ((REPO / document).parent.parent if "references" in document
+                                                 else (REPO / document).parent),
+                            capture_output=True, check=False, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
-    return result.stdout
+    return result
 
 
 @pytest.mark.parametrize("document,preset", BLOCKS)
 def test_block_exports_py_for_the_next_terminal_call(tmp_path, document, preset):
     # The terminal tool carries only `export -p` into the next call, so an unexported PY is
     # empty there and every `"$PY" scripts/...` line fails.
-    exported = _run_block(document, preset, tmp_path, hermes="/side-env/bin/python")
+    exported = _run_block(document, preset, tmp_path, hermes="/side-env/bin/python").stdout
     assert "PY=" in exported and "/side-env/bin/python" in exported, exported
 
 
@@ -108,8 +109,17 @@ def test_sandbox_branch_takes_the_interpreter_side_env_prints(tmp_path, document
     cache = tmp_path / "home" / ".cache"
     _venv(cache / f"{name}.PUBLSH", healthy=True)
     (cache / name).symlink_to(f"{name}.PUBLSH")
-    exported = _run_block(document, preset, tmp_path)
-    assert f'PY="{cache / name / "bin" / "python"}"' in exported, exported
+    result = _run_block(document, preset, tmp_path)
+    assert f'PY="{cache / name / "bin" / "python"}"' in result.stdout, result.stdout
+    assert "skill directory" not in result.stderr
+
+
+@pytest.mark.parametrize("document,preset", BLOCKS)
+def test_sandbox_branch_from_the_wrong_directory_says_where_to_run(tmp_path, document, preset):
+    # The model is not told the in-sandbox skill path; from elsewhere the helper is missing.
+    (tmp_path / "elsewhere").mkdir()
+    result = _run_block(document, preset, tmp_path, cwd=tmp_path / "elsewhere")
+    assert "run from the skill directory" in result.stderr, result.stderr
 
 
 def test_every_skill_ships_the_same_helper():
@@ -176,6 +186,7 @@ def test_repairer_that_waited_reuses_the_env_published_meanwhile(tmp_path, monke
         _venv(cache / "hermes-docs-venv.FIRST1", healthy=True)
         (cache / "hermes-docs-venv").symlink_to("hermes-docs-venv.FIRST1")
     waiter.join(30)
+    assert not waiter.is_alive()
     assert result == {"py": cache / "hermes-docs-venv" / "bin" / "python"} and built == []
     assert os.readlink(cache / "hermes-docs-venv") == "hermes-docs-venv.FIRST1"
 
@@ -200,3 +211,49 @@ def test_stale_stages_and_old_generations_are_swept(tmp_path, monkeypatch):
     assert sorted(p.name for p in cache.iterdir()) == [
         "hermes-docs-venv", "hermes-docs-venv.CURRNT", "hermes-docs-venv.YOUNG1", "hermes-docs-venv.lock",
         "hermes-pdf-marker-venv.OTHER1"]
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores the 0555 mode")
+def test_healthy_env_in_a_read_only_cache_is_still_used(tmp_path, monkeypatch):
+    # No .lock can be created in the cache: the best-effort sweep is skipped, the env still works.
+    side, cache = _helper(), tmp_path / "cache"
+    cache.mkdir()
+    built = _fake_builder(side, monkeypatch)
+    _venv(cache / "hermes-docs-venv.CURRNT", healthy=True)
+    (cache / "hermes-docs-venv").symlink_to("hermes-docs-venv.CURRNT")
+    cache.chmod(0o555)
+    try:
+        assert side.ensure("documents", cache) == cache / "hermes-docs-venv" / "bin" / "python"
+    finally:
+        cache.chmod(0o755)
+    assert built == [] and not (cache / "hermes-docs-venv.lock").exists()
+
+
+def test_old_stage_survives_while_another_builder_holds_the_lock(tmp_path, monkeypatch):
+    # The lock is the only guard: a stage's mtime freezes during pip install, so age alone
+    # cannot tell a live build from an abandoned one.
+    side, cache = _helper(), tmp_path / "cache"
+    cache.mkdir()
+    built = _fake_builder(side, monkeypatch)
+    _venv(cache / "hermes-docs-venv.CURRNT", healthy=True)
+    (cache / "hermes-docs-venv").symlink_to("hermes-docs-venv.CURRNT")
+    _venv(cache / "hermes-docs-venv.BUILDG", healthy=False)
+    two_hours_ago = time.time() - 2 * 3600
+    os.utime(cache / "hermes-docs-venv.BUILDG", (two_hours_ago, two_hours_ago))
+    with side._lock(cache / "hermes-docs-venv.lock"):  # another builder, mid pip install
+        assert side.ensure("documents", cache) == cache / "hermes-docs-venv" / "bin" / "python"
+    assert built == [] and (cache / "hermes-docs-venv.BUILDG").is_dir()
+
+
+def test_sweep_skips_an_entry_removed_since_the_glob(tmp_path, monkeypatch):
+    side, cache = _helper(), tmp_path / "cache"
+    cache.mkdir()
+    stale = cache / "hermes-docs-venv.OLDGEN"
+    _venv(stale, healthy=True)
+    hour_ago = time.time() - side.STALE_AFTER_S - 60
+    os.utime(stale, (hour_ago, hour_ago))
+    real_glob = type(cache).glob
+    monkeypatch.setattr(type(cache), "glob",
+                        lambda self, pattern, **kw: [cache / "hermes-docs-venv.GONE00", *real_glob(self, pattern, **kw)])
+    side._sweep(cache, "hermes-docs-venv")
+    assert not stale.exists()

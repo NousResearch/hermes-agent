@@ -345,3 +345,30 @@ def test_in_place_compress_keeps_foreign_rows_above_an_unpersisted_turn(session_
         assert any(content in (m.get("content") or "") for m in model_history)
         assert _flags(session_db, content) == [(0, 0), (1, 0)]
     assert session_db.search_messages("vault 7741")
+
+
+def test_partial_here_n_compresses_head_without_protect_last_window():
+    """``/compress here [N]``: the user-chosen boundary already decides what stays
+    verbatim, so the split-off head must not re-apply the compressor's own
+    protect_last_n window — otherwise a large tool result a few messages before
+    the boundary survives verbatim and the attempt is refused as would_grow
+    (#144423). The head compression is invoked with the tail window disabled."""
+    agent, history = _agent(), _history()
+
+    result = compress_now(agent, history, parse_compress_args("here 1"))
+
+    assert result.status == "compressed"
+    kwargs = agent._compress_context.call_args.kwargs
+    assert kwargs.get("protect_last_n_override") == 0
+
+
+def test_plain_compress_keeps_the_default_tail_window():
+    """Plain ``/compress`` (no boundary) passes no override — the compressor's
+    configured protect_last_n applies exactly as before (#144423)."""
+    agent, history = _agent(), _history()
+
+    result = compress_now(agent, history, parse_compress_args(""))
+
+    assert result.status == "compressed"
+    kwargs = agent._compress_context.call_args.kwargs
+    assert "protect_last_n_override" not in kwargs

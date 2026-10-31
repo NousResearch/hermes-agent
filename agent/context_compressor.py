@@ -53,6 +53,7 @@ from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
+from agent.conversation_compression_call import _tc_get, _tool_calls_by_id  # moved verbatim (FILE_LINES ratchet)
 
 
 # Summary-route pin lives in a ContextVar (not on the shared compressor) so the retry after a stalled
@@ -1177,27 +1178,10 @@ def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:
         items.append(value)
 
 
-def _tc_get(obj: Any, key: str, default: Any = "") -> Any:
-    """Field of a dict- or object-shaped tool call (or its ``function`` sub-object)."""
-    return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
-
-
 def _extract_tool_call_name_and_args(tool_call: Any) -> tuple[str, str]:
     """Return a best-effort ``(name, arguments)`` pair for dict/object tool calls."""
     fn = _tc_get(tool_call, "function") or {}
     return str(_tc_get(fn, "name") or "unknown"), str(_tc_get(fn, "arguments") or "")
-
-
-def _tool_calls_by_id(messages: list[dict[str, Any]]) -> dict[str, tuple]:
-    """Map ``tool_call_id -> (tool_name, raw_arguments)`` over every assistant tool call."""
-    out: dict[str, tuple] = {}
-    for msg in messages:
-        if msg.get("role") != "assistant":
-            continue
-        for tc in msg.get("tool_calls") or []:
-            fn = _tc_get(tc, "function", {})
-            out[_tc_get(tc, "id") or ""] = (_tc_get(fn, "name", "unknown"), _tc_get(fn, "arguments"))
-    return out
 
 
 def _collect_path_mentions(text: str, relevant_files: list[str], *, limit: int = 12) -> None:
@@ -4984,7 +4968,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _find_tail_cut_by_tokens(
         self, messages: list[dict[str, Any]], head_end: int, token_budget: int | None = None,
-        *, allow_split_turn: bool = True,
+        *, allow_split_turn: bool = True, protect_last_n: int | None = None,
     ) -> int:
         """Walk backward accumulating tokens until the budget; return the tail start index.
         Optional rows are bounded by a 1.5x soft ceiling. Required last-user/last-assistant (and
@@ -4994,10 +4978,10 @@ Write only the summary body. Do not include any preamble or prefix."""
         if token_budget is None:
             token_budget = self.tail_token_budget
         n = len(messages)
-        # Bounded recent-message floor: protect_last_n is a minimum up to a cap so bulky tool runs
-        # aren't all kept.
+        # Bounded recent-message floor (a caller boundary passes its own count, #144423):
+        effective_protect_last_n = self.protect_last_n if protect_last_n is None else protect_last_n
         available_tail = max(0, n - head_end - 1)
-        min_tail_floor = max(3, min(self.protect_last_n, _MAX_TAIL_MESSAGE_FLOOR))
+        min_tail_floor = max(3, min(effective_protect_last_n, _MAX_TAIL_MESSAGE_FLOOR))
         # Keep >= 2 non-head messages summarizable so a tiny middle still saves messages.
         compressible_tail_cap = max(3, available_tail - 2)
         min_tail = min(min_tail_floor, compressible_tail_cap, available_tail) if available_tail > 1 else 0
@@ -5434,6 +5418,7 @@ Write only the summary body. Do not include any preamble or prefix."""
     def compress(
         self, messages: list[dict[str, Any]], current_tokens: Optional[int] = None, focus_topic: Optional[str] = None,
         force: bool = False, memory_context: str = "", bypass_cooldown: bool = False,
+        protect_last_n_override: Optional[int] = None,
     ) -> list[dict[str, Any]]:
         """Summarize the middle turns: prune tool-result bodies (tool-call args untouched), protect head and a
         token-budget tail from the pruned copy, summarize, then clean orphaned tool pairs. ``force`` clears the failure cooldown and bypasses
@@ -5455,6 +5440,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         from agent.conversation_compression import _raise_if_stale_attempt
 
         _raise_if_stale_attempt(self)
+        # ``protect_last_n_override``: a caller-chosen verbatim boundary (``/compress here N``,
+        # #144423) replaces the tail window through _plan_compaction_window below; ``None`` keeps
+        # the configured window.
         telemetry = self._begin_compress_attempt(current_tokens, force)
         telemetry["has_focus_topic"] = bool(focus_topic)
         n_messages = len(messages)
@@ -5472,8 +5460,12 @@ Write only the summary body. Do not include any preamble or prefix."""
         # assembled and measured from the pruned copy (#61932).
         canonical_messages = self._drop_blank_echoes(messages)
         # Phases 1-2: prune (cheap, no LLM call), drop blank echoes, determine boundaries on the pruned
-        # copy so a pressure-demoted tail can compress (#61932)
-        messages, pruned_count, compress_start, compress_end = self._plan_compaction_window(messages)
+        # copy so a pressure-demoted tail can compress (#61932). ``protect_last_n_override`` is the
+        # caller-chosen verbatim boundary (``/compress here N``, manual partial): when set, it replaces
+        # the default tail window through pruning and the boundary cut alike.
+        messages, pruned_count, compress_start, compress_end = self._plan_compaction_window(
+            messages, protect_last_n=protect_last_n_override,
+        )
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
         n_messages = len(messages)

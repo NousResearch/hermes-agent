@@ -27,11 +27,18 @@ def compact_result(result, *, user_message=None):
     value.pop('tools', None)
     messages = value.get('messages')
     if isinstance(messages, list):
+        # A context-pressure failure turn still carries the full transcript, and the tail it
+        # settles on is the open machinery row its exemption from durable-turn closure left
+        # behind (#147057): no user-originated anchor survives, so the trim below keeps every
+        # row and stamps the suffix flag over it — the whole session history stored under a
+        # true flag. A failed turn's storable output is its reply/error copy, never history.
+        if value.get('failure_reason') in ('context_overflow', 'compression_exhausted') or value.get('compression_exhausted'):
+            value.pop('messages', None)
         # Agent results include all previous turns. APIs only project this turn's
         # assistant/tool suffix; previous_response_id stores its own history. Compression
         # is the exception: its replacement snapshot is the only immutable record of the
         # rewritten prefix for this turn. A later live transcript may include a successor.
-        if not value.get('_compressed') and not value.get('_messages_are_turn_suffix'):
+        elif not value.get('_compressed') and not value.get('_messages_are_turn_suffix'):
             from agent.turn_context import reanchor_current_turn_user_idx
             anchor = value.get('current_turn_user_idx')
             if not (type(anchor) is int and 0 <= anchor < len(messages)

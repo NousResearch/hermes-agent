@@ -108,26 +108,13 @@ def resolve_local_schema_ref(schema: Any, root_schema: Any, seen_refs: set[str] 
 
 
 def unrename_tool_args(params_schema: Any, args: Any, root_schema: Any = None) -> Any:
-    """Map sanitized keys in model-emitted args back to wire names. ``params_schema`` is the
-    ORIGINAL registry schema; recurses into objects/array items, following local ``$ref``s
-    (the sanitizer renames keys inside ``$defs`` too); unknown keys pass through."""
+    """Reverse the exposed root map once, then follow only agreed nested wire ownership."""
     root = params_schema if root_schema is None else root_schema
-    params_schema = resolve_local_schema_ref(params_schema, root)
-    props = params_schema.get("properties") if isinstance(params_schema, dict) else None
-    if not isinstance(props, dict) or not isinstance(args, dict):
-        return args
-    reverse = {v: k for k, v in _rename_property_keys(props, "<unrename>").items()}
-    out = {}
-    for key, value in args.items():
-        orig = reverse.get(key, key)
-        sub = resolve_local_schema_ref(props[orig], root) if isinstance(props.get(orig), dict) else {}
-        if isinstance(value, dict) and sub:
-            value = unrename_tool_args(sub, value, root)
-        elif isinstance(value, list) and isinstance(sub.get("items"), dict):
-            value = [unrename_tool_args(sub["items"], item, root) if isinstance(item, dict) else item
-                     for item in value]
-        out[orig] = value
-    return out
+    if root_schema is None and isinstance(params_schema, dict):
+        params_schema = preserve_root_union_properties(params_schema)
+        params_schema = {k: v for k, v in params_schema.items() if k not in _UNION_KEYS}
+    return _unrename_value(params_schema, args, root)
+
 
 
 def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:
@@ -145,7 +132,8 @@ def _sanitize_single_tool(tool: dict) -> dict:
         fn["parameters"] = _empty_object()
         return out
     name = fn.get("name", "<tool>")
-    top = _sanitize_node(params, path=name)
+    projected = preserve_root_union_properties(params)
+    top = _sanitize_node(_preserve_removed_root_refs(projected, params), path=name)
     top = top if isinstance(top, dict) else {}  # guarantee an object with properties on top
     top["type"] = "object"
     if not isinstance(top.get("properties"), dict):
@@ -175,10 +163,155 @@ def _strip_ref_siblings(node: Any) -> Any:
 _TOP_LEVEL_FORBIDDEN_KEYS = ("allOf", "anyOf", "oneOf", "enum", "not")
 
 
+def _union_fields(branches: list) -> tuple[dict, set]:
+    alternatives: dict[str, list] = {}
+    requirements = []
+    for branch in branches:
+        branch = branch if isinstance(branch, dict) else {}
+        props = branch.get("properties", {})
+        props = props if isinstance(props, dict) else {}
+        required = branch.get("required", [])
+        names = {name for name in required if isinstance(name, str)} if isinstance(required, list) else set()
+        names.update(name for name, schema in props.items()
+                     if isinstance(schema, dict) and schema.get("required") is True)
+        requirements.append(names)
+        for name, schema in props.items():
+            if isinstance(schema, dict) and isinstance(schema.get("required"), bool):
+                schema = {k: v for k, v in schema.items() if k != "required"}
+            choices = alternatives.setdefault(name, [])
+            if schema not in choices:
+                choices.append(schema)
+    return alternatives, set.intersection(*requirements) if requirements else set()
+
+
+def preserve_root_union_properties(params: dict) -> dict:
+    """Project inline branch fields before root combinator removal; server validation stays authoritative.
+
+    Existing root fields constrain every branch and retain ownership. Branch-specific requirements
+    are only model hints when every alternative requires them. References and allOf are not hoisted.
+    """
+    out = dict(params)
+    root_props = params.get("properties")
+    props = dict(root_props) if isinstance(root_props, dict) else {}
+    required = params.get("required", [])
+    required = list(required) if isinstance(required, list) else []
+    for key in _UNION_KEYS:
+        branches = params.get(key)
+        if not isinstance(branches, list):
+            continue
+        alternatives, common = _union_fields(branches)
+        for name, choices in alternatives.items():
+            if name not in props:
+                props[name] = _project_choices(choices)
+        required.extend(name for name in props if name in common and name not in required)
+    if props:
+        out.update(properties=props, required=required)
+    return out
+
+
+def _union_rename_candidates(schema: dict, args: Any, root: dict) -> list:
+    """Only explicit container-type disagreement excludes an arm; opaque arms remain candidates."""
+    kind = "object" if isinstance(args, dict) else "array"
+    candidates = []
+    for key in _UNION_KEYS:
+        branches = schema.get(key)
+        if not isinstance(branches, list):
+            continue
+        for branch in branches:
+            resolved = resolve_local_schema_ref(branch, root)
+            if resolved is False:
+                continue
+            declared = resolved.get("type") if isinstance(resolved, dict) else None
+            types = declared if isinstance(declared, list) else [declared]
+            if declared is None or kind in types:
+                candidates.append(branch)
+    return candidates
+
+
+def _project_choices(choices: list) -> Any:
+    if len(choices) == 1:
+        return choices[0]
+    out = {"anyOf": choices}
+    normalized = [strip_nullable_unions(_sanitize_node(choice, "<projection>")) for choice in choices]
+    kinds = [choice.get("type") if isinstance(choice, dict) else None for choice in normalized]
+    if isinstance(kinds[0], str) and all(kind == kinds[0] for kind in kinds):
+        out["type"] = kinds[0]
+        if any(choice.get("nullable") is True for choice in normalized):
+            out["nullable"] = True
+    return out
+
+
+def _unrename_value(schema: Any, args: Any, root: dict, seen: frozenset = frozenset()) -> Any:
+    if id(schema) in seen:
+        return args
+    seen = seen | {id(schema)}
+    schema = resolve_local_schema_ref(schema, root)
+    if not isinstance(schema, dict) or not isinstance(args, (dict, list)):
+        return args
+    candidates = _union_rename_candidates(schema, args, root)
+    if isinstance(args, list):
+        # Enclosing items own this position; otherwise every possible arm must agree.
+        if isinstance(schema.get("items"), dict):
+            return [_unrename_value(schema["items"], item, root) for item in args]
+        outputs = [_unrename_value(branch, args, root, seen) for branch in candidates]
+        return outputs[0] if outputs and all(out == outputs[0] for out in outputs) else args
+    return dict(_unrename_entries(schema, args, root, seen).values())
+
+
+def _unrename_entries(schema: Any, args: dict, root: dict, seen: frozenset) -> dict:
+    entries = {key: (key, value) for key, value in args.items()}
+    schema = resolve_local_schema_ref(schema, root)
+    if not isinstance(schema, dict):
+        return entries
+    props = schema.get("properties")
+    props = props if isinstance(props, dict) else {}
+    reverse = {v: k for k, v in _rename_property_keys(props, "<unrename>").items()}
+    owned = set(props) | set(reverse)
+    candidates = _union_rename_candidates(schema, args, root)
+    outputs = [_unrename_entries(branch, args, root, seen | {id(branch)})
+               if id(branch) not in seen else entries for branch in candidates]
+    for key, value in args.items():
+        if key in owned:
+            orig = reverse.get(key, key)
+            if orig != key and orig in args:
+                orig = key
+            entries[key] = (orig, _unrename_value(props.get(orig), value, root))
+        elif outputs:
+            agreed = outputs[0][key]
+            occupied = {name for supplied, (name, _) in entries.items() if supplied != key}
+            if all(output[key] == agreed for output in outputs) and agreed[0] not in occupied | owned:
+                entries[key] = agreed
+    return entries
+
+
+def _preserve_removed_root_refs(node: Any, root: dict, seen: frozenset = frozenset()) -> Any:
+    """Inline only references into root union arms that the provider schema is about to lose."""
+    if isinstance(node, list):
+        return [_preserve_removed_root_refs(child, root, seen) for child in node]
+    if not isinstance(node, dict):
+        return node
+    ref = node.get("$ref")
+    if isinstance(ref, str) and unquote(ref).split("/")[0:2] in (["#", "anyOf"], ["#", "oneOf"]):
+        resolved = resolve_local_schema_ref(node, root)
+        if ref in seen or resolved is node:
+            # A cyclic/opaque target cannot survive removal. Omit the model hint;
+            # dispatch and server validation still retain the original schema.
+            node = {k: v for k, v in node.items() if k != "$ref"}
+        else:
+            return _preserve_removed_root_refs(resolved, root, seen | {ref})
+    return {key: _preserve_ref_child(key, value, root, seen) for key, value in node.items()}
+
+
+def _preserve_ref_child(key: str, value: Any, root: dict, seen: frozenset) -> Any:
+    if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+        return {name: _preserve_removed_root_refs(child, root, seen) for name, child in value.items()}
+    if key in _SCHEMA_CHILD_KEYS:
+        return _preserve_removed_root_refs(value, root, seen)
+    return value
+
+
 def _strip_top_level_combinators(params: dict, *, path: str = "<tool>") -> dict:
-    """Drop combinators from the TOP level only (Codex rejects them there). They are usually
-    conditional-required hints, so validity is unchanged (handlers re-validate); nested ones
-    stay."""
+    """Drop root combinators after projecting their fields; original server validation still applies."""
     if not isinstance(params, dict):
         return params
     out = dict(params)

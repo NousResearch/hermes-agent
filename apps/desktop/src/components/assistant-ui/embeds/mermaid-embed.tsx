@@ -14,9 +14,16 @@ import { useIsDark } from './use-is-dark'
 let lastTheme: 'dark' | 'default' | null = null
 const loadMermaid = createRetryableLoader<MermaidApi>(() => import('mermaid').then(module => module.default))
 
+const MERMAID_FONT_FAMILY =
+  "'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'HarmonyOS Sans SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Source Han Sans SC', 'Segoe UI', Roboto, sans-serif"
+
+const MERMAID_FONT_SIZE = '14px'
+
 // Re-initialise only on first use / theme flip. `securityLevel: 'strict'` makes
 // mermaid sanitise label HTML and drop click handlers, so the rendered SVG is
-// safe to inject.
+// safe to inject. Use an explicit sans-serif font stack + fixed pixel fontSize
+// instead of `fontFamily: 'inherit'` so the DOM measurement pass and the
+// isolated `data:image/svg+xml` `<img>` render use identical glyph metrics.
 function ensureInit(mermaid: MermaidApi, dark: boolean) {
   const theme = dark ? 'dark' : 'default'
 
@@ -24,7 +31,16 @@ function ensureInit(mermaid: MermaidApi, dark: boolean) {
     return
   }
 
-  mermaid.initialize({ fontFamily: 'inherit', securityLevel: 'strict', startOnLoad: false, theme })
+  mermaid.initialize({
+    fontFamily: MERMAID_FONT_FAMILY,
+    securityLevel: 'strict',
+    startOnLoad: false,
+    theme,
+    themeVariables: {
+      fontFamily: MERMAID_FONT_FAMILY,
+      fontSize: MERMAID_FONT_SIZE
+    }
+  })
   lastTheme = theme
 }
 

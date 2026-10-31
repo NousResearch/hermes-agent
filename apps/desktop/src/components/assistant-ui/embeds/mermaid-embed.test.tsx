@@ -37,6 +37,14 @@ describe('MermaidRenderer', () => {
 
     const images = [...container.querySelectorAll('img')]
     expect(renderMermaid).toHaveBeenCalledTimes(1)
+    expect(initialize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fontFamily: expect.stringContaining('Microsoft YaHei'),
+        themeVariables: expect.objectContaining({
+          fontSize: '14px'
+        })
+      })
+    )
     expect(container.querySelector('svg#shared')).toBeNull()
     expect(images[0]?.src).toMatch(/^data:image\/svg\+xml/)
     expect(images[1]?.src).toBe(images[0]?.src)
@@ -65,5 +73,6 @@ describe('MermaidRenderer', () => {
 
     expect(doc.documentElement.tagName).toBe('svg')
     expect(doc.querySelector('p')?.textContent).toBe('ab c')
+    expect(doc.querySelector('foreignObject')?.getAttribute('overflow')).toBe('visible')
   })
 })

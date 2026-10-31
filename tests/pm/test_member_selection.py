@@ -32,7 +32,7 @@ def test_manifest_only_member_is_named_after_its_plugin_dir_and_stays_unique(tmp
         (plugin / "plugin.yaml").write_text("name: my-plugin\npip_dependencies: [left-pad-py]\n", encoding="utf-8")
         root = tmp_path / f"gen-{home}"
         root.mkdir()
-        members.append(_workspace_member(plugin, root, identity=plugin))
+        members.append(_workspace_member(plugin, root, identity=plugin, core_source=tmp_path / "core"))
     names = [tomllib.loads((m / "pyproject.toml").read_text(encoding="utf-8"))["project"]["name"] for m in members]
     assert all(name.startswith("hermes-plugin-my-plugin-") for name in names), names
     assert names[0] != names[1]
@@ -59,7 +59,7 @@ def test_pyproject_member_is_renamed_by_its_key_and_stays_unique(tmp_path):
         )
         root = tmp_path / f"gen-{home}"
         root.mkdir()
-        members.append(_workspace_member(plugin, root, identity=plugin))
+        members.append(_workspace_member(plugin, root, identity=plugin, core_source=tmp_path / "core"))
     names = [tomllib.loads((m / "pyproject.toml").read_text(encoding="utf-8"))["project"]["name"] for m in members]
     assert all(name.startswith("hermes-plugin-hindsight-") for name in names), names
     assert names[0] != names[1]
@@ -84,7 +84,7 @@ def test_buildable_pyproject_member_keeps_its_declared_name(tmp_path):
     )
     root = tmp_path / "gen"
     root.mkdir()
-    member = _workspace_member(plugin, root, identity=plugin)
+    member = _workspace_member(plugin, root, identity=plugin, core_source=tmp_path / "core")
     assert (member / "pyproject.toml").read_text(encoding="utf-8") == (
         plugin / "pyproject.toml").read_text(encoding="utf-8")
 
@@ -103,7 +103,7 @@ def test_virtual_member_without_project_metadata_gets_a_version(tmp_path):
     (plugin / "pyproject.toml").write_text('[tool.ruff]\ntarget-version = "py311"\n', encoding="utf-8")
     root = tmp_path / "gen"
     root.mkdir()
-    member = _workspace_member(plugin, root, identity=plugin)
+    member = _workspace_member(plugin, root, identity=plugin, core_source=tmp_path / "core")
     project = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     assert project["version"] == "0.0.0"
 
@@ -125,7 +125,7 @@ def test_virtual_member_declaring_dynamic_version_is_left_alone(tmp_path):
     )
     root = tmp_path / "gen"
     root.mkdir()
-    member = _workspace_member(plugin, root, identity=plugin)
+    member = _workspace_member(plugin, root, identity=plugin, core_source=tmp_path / "core")
     project = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     assert "version" not in project
     assert project["dynamic"] == ["version"]
@@ -146,6 +146,6 @@ def test_buildable_member_without_a_version_gets_one_and_keeps_its_name(tmp_path
     )
     root = tmp_path / "gen"
     root.mkdir()
-    member = _workspace_member(plugin, root, identity=plugin)
+    member = _workspace_member(plugin, root, identity=plugin, core_source=tmp_path / "core")
     project = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     assert project == {"name": "noversion-plugin", "version": "0.0.0"}

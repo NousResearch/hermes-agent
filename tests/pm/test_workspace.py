@@ -203,3 +203,45 @@ def test_staging_root_and_env_are_honored_without_live_mutation(layout, monkeypa
         assert kwargs["env"]["UV_PROJECT_ENVIRONMENT"] == str(environment.destination)
         assert kwargs["env"]["UV_PYTHON"] == str(environment.python)
     assert os.environ["PM_WORKSPACE_TEST_SENTINEL"] == "live"
+
+
+def test_member_group_or_extra_naming_the_root_gets_a_workspace_source(layout):
+    """A plugin pinning hermes-agent for its own pytest lane stays installable.
+
+    honcho's [dependency-groups] test carries "hermes-agent @ git+…" — its own
+    `uv run --group test pytest` input, which PM never installs. But uv parses
+    every dependency table of every member when locking the generated workspace,
+    and the name collides with the workspace root: without a tool.uv.sources
+    entry uv refuses the whole member ("is included as a workspace member, but
+    is missing an entry in tool.uv.sources"). And once parseable, uv still LOCKS
+    every group, so the group's pins (pytest-asyncio==1.3.0 against core's dev
+    1.4.0) poison the venv solve. PM drops the unrunnable non-default groups
+    from the snapshot and binds surviving root-named dependencies to the root
+    member — groups and extras ship in no wheel or sdist metadata, and a uv
+    source beats an inline specifier, direct URLs included.
+    """
+    import tomllib
+
+    tmp, core, plug_a, _ = layout
+    manifest = core / "pyproject.toml"
+    manifest.write_text(manifest.read_text() + '[dependency-groups]\ndev=["chosen-dep==1.0"]\n')
+    (plug_a / "pyproject.toml").write_text(
+        '[project]\nname="core-pinning-plugin"\nversion="1"\nrequires-python=">=3.11"\n'
+        'dependencies=["member-dep==1.0"]\n'
+        '[project.optional-dependencies]\nci=["construction-root>=0"]\n'
+        '[dependency-groups]\n'
+        'test=["construction-root @ git+https://example.invalid/hermes-agent'
+        '@0000000000000000000000000000000000000000", "chosen-dep==0.9"]\n'
+        '[tool.uv]\npackage=false\n', encoding="utf-8")
+    root = tmp / "workspace"
+    ws.lock_and_sync([plug_a], [], root=root, source=core, seed_lock=None,
+                     environment=managed_environment(tmp / "env"))
+
+    [staged] = (root / "plugin-sources").glob("*/pyproject.toml")
+    document = tomllib.loads(staged.read_text())
+    assert "test" not in document.get("dependency-groups", {})
+    assert document["project"]["optional-dependencies"]["ci"] == ["construction-root>=0"]
+    assert document["tool"]["uv"]["sources"]["construction-root"] == {"workspace": True}
+    locked = tomllib.loads((root / "uv.lock").read_text())
+    names = {p["name"] for p in locked["package"]}
+    assert {"construction-root", "member-dep", "chosen-dep"} <= names

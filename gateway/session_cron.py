@@ -61,6 +61,22 @@ def _actor(authority, actor):
     return Principal(CRON_PRINCIPAL_ID, authority.profile_id, actor.capabilities, actor.transport_id)
 
 
+def _launch_params(job, request_id):
+    from gateway.session_policy import terminal_uses_host_cwd
+    from hermes_constants import get_hermes_home
+    from tools.terminal_scope import build_profile_terminal_scope
+
+    launch = {'source': 'cli', 'request_id': request_id, 'toolsets': []}
+    home = get_hermes_home()
+    if not terminal_uses_host_cwd(build_profile_terminal_scope(home)):
+        # Session admission needs a host directory, not the backend's workdir.
+        # The frozen job retains that path; run_job binds it to the backend task.
+        launch['cwd'] = str(home)
+    elif job.get('workdir'):
+        launch['cwd'] = job['workdir']
+    return launch
+
+
 def _create(authority, actor, params):
     from cron.jobs import get_job
     from gateway.session_local_recovery import local_identity, restore_local_session
@@ -91,9 +107,7 @@ def _create(authority, actor, params):
         raise RuntimeStoreError('not_found')
     config = _load_gateway_config()
     private = {}
-    launch = {'source': 'cli', 'request_id': request_id, 'toolsets': []}
-    if job.get('workdir'):
-        launch['cwd'] = job['workdir']
+    launch = _launch_params(job, request_id)
     policy = build_policy(launch, config, private_secrets=private)
     policy = replace(policy, source='cron', platform='cron', model=_load_cron_job_config(job, jid, job.get('name') or jid).model,
                      request_json=json.dumps({'cron_job': job, 'extra_prompt': extra, 'request_id': request_id}))

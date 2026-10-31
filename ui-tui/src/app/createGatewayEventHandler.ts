@@ -1599,7 +1599,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           )
         }
 
-        return
+        return turnController.pushImageSegment(ev.payload.image_path)
       }
 
       case 'request.cancel': {

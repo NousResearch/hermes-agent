@@ -78,13 +78,14 @@ function beginOwnedTurn(
   text: string,
   displayOverride: string | undefined,
   displayText: string,
-  show: boolean
+  show: boolean,
+  images: string[] = []
 ): void {
   turnController.clearStatusTimer()
   deps.setLastUserMsg(text)
 
   if (show) {
-    deps.appendMessage({ role: 'user', text: displayOverride || displayText })
+    deps.appendMessage({ role: 'user', text: displayOverride || displayText, ...(images.length && { images }) })
   }
 
   patchUiState({ busy: true, status: 'running…' })
@@ -375,7 +376,9 @@ export function submitPrompt(
 
   const startSubmit = (displayText: string, submitText: string, show = true) => {
     if (ownsTurn()) {
-      beginOwnedTurn(deps, text, displayOverride, displayText, show)
+      const images = (opts.queueItem?.attachments ?? opts.attachments ?? []).map(attachment => attachment.path)
+
+      beginOwnedTurn(deps, text, displayOverride, displayText, show, images)
     }
 
     const item = opts.queueItem

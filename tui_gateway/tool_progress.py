@@ -353,6 +353,9 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
+    from agent.terminal_image import tool_image_path
+    if image_path := tool_image_path(args, payload["result"]):
+        payload["image_path"] = image_path
     if _session_verbose(sid) and (result_text := _tool_result_text(result)):
         payload["result_text"] = result_text
     from tools.todo_tool import is_todo_tool_name

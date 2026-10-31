@@ -136,7 +136,10 @@ export interface ClarifyReq {
 
 export interface Msg {
   info?: SessionInfo
-  kind?: 'diff' | 'event' | 'intro' | 'panel' | 'slash' | 'trail'
+  kind?: 'diff' | 'event' | 'image' | 'intro' | 'panel' | 'slash' | 'trail'
+  // Local image paths shown inline under the row: a user turn's attachments,
+  // or (kind 'image') the picture a tool call produced or looked at.
+  images?: string[]
   panelData?: PanelData
   role: Role
   text: string

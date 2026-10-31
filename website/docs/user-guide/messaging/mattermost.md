@@ -155,6 +155,9 @@ MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 
 # Optional: channels where bot responds without @mention (comma-separated channel IDs)
 # MATTERMOST_FREE_RESPONSE_CHANNELS=channel_id_1,channel_id_2
+
+# Optional: once @mentioned in a thread, respond to later replies in that thread without @mention
+# MATTERMOST_THREAD_FREE_RESPONSE=true
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:
@@ -220,6 +223,7 @@ By default, the bot only responds in channels when `@mentioned`. You can change 
 |----------|---------|-------------|
 | `MATTERMOST_REQUIRE_MENTION` | `true` | Set to `false` to respond to all messages in channels (DMs always work). |
 | `MATTERMOST_FREE_RESPONSE_CHANNELS` | _(none)_ | Comma-separated channel IDs where the bot responds without `@mention`, even when require_mention is true. |
+| `MATTERMOST_THREAD_FREE_RESPONSE` | `false` | Set to `true` to keep responding in a thread once the bot has been `@mentioned` in it. The mention arms that thread's root for the gateway's lifetime; other threads and top-level channel posts still require `@mention`. Arming is in-memory only — a gateway restart clears it. |
 
 To find a channel ID in Mattermost: open the channel, click the channel name header, and look for the ID in the URL or channel details.
 

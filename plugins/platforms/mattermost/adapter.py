@@ -15,6 +15,7 @@ import logging
 import mimetypes
 import os
 import re
+from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import unquote as _unquote
 from typing import Any, Dict, List, Optional, Tuple
@@ -43,6 +44,9 @@ _CHANNEL_TYPE_MAP = {"D": "dm", "G": "group", "P": "group", "O": "channel"}
 _MATTERMOST_DISABLE_MENTIONS_PROPS = {"disable_mentions": True}
 
 _RECONNECT_BASE_DELAY, _RECONNECT_MAX_DELAY, _RECONNECT_JITTER = 2.0, 60.0, 0.2  # exponential backoff
+
+# Cap on remembered mention-armed thread roots (LRU) so long-lived gateways can't grow unbounded.
+_MAX_ARMED_THREADS = 500
 
 _POST_WITH_FILE_ERROR = "Failed to post with file"
 _MEDIA_MSG_TYPES = (("image/", MessageType.PHOTO), ("audio/", MessageType.VOICE))  # first match wins
@@ -123,6 +127,12 @@ class MattermostAdapter(BasePlatformAdapter):
         self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
         self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
+        # Thread arming: once @mentioned in a thread, later replies in that thread skip the mention
+        # gate (MATTERMOST_THREAD_FREE_RESPONSE, default off). In-memory only; lost on gateway restart.
+        self._thread_free_response: bool = str(_extra_or_secret(
+            config.extra, "thread_free_response", "MATTERMOST_THREAD_FREE_RESPONSE", "false",
+            blank_is_unset=False)).lower() in {"true", "1", "yes"}
+        self._armed_threads: "OrderedDict[str, None]" = OrderedDict()
 
     # --- HTTP helpers ---
 
@@ -493,10 +503,21 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.info("Mattermost: WebSocket closed (%s)", kind)
                 break
 
-    def _apply_channel_gating(self, channel_id: str, message_text: str) -> Optional[str]:
+    def _arm_thread(self, root_id: str) -> None:
+        """Remember a thread root where the bot was @mentioned; later replies there skip the mention gate."""
+        if not root_id:
+            return
+        self._armed_threads[root_id] = None
+        self._armed_threads.move_to_end(root_id)
+        while len(self._armed_threads) > _MAX_ARMED_THREADS:
+            self._armed_threads.popitem(last=False)
+
+    def _apply_channel_gating(self, channel_id: str, message_text: str,
+                              root_id: str = "", post_id: str = "") -> Optional[str]:
         """Mention-gate a non-DM post; return the cleaned text, or None to ignore it. allowed_channels is a
         whitelist checked first (@mentions elsewhere are ignored); require_mention (default true) is
-        bypassed in free_response_channels."""
+        bypassed in free_response_channels, and — when thread_free_response is on — in threads whose root
+        was already @mentioned (the mention arms the thread for the gateway's lifetime)."""
         allowed_channels = _channel_id_set(_extra_or_secret(self.config.extra, "allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", blank_is_unset=False))
         if allowed_channels and channel_id not in allowed_channels:
             logger.debug("Mattermost: ignoring message in non-allowed channel: %s", channel_id)
@@ -507,9 +528,12 @@ class MattermostAdapter(BasePlatformAdapter):
             _extra_or_secret(self.config.extra, "free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", blank_is_unset=False))
         mention_patterns = [f"@{self._bot_username}", f"@{self._bot_user_id}"]
         has_mention = any(pattern.lower() in message_text.lower() for pattern in mention_patterns)
+        if has_mention and self._thread_free_response:
+            self._arm_thread(root_id or post_id)  # top-level mention arms the thread its replies will form
         if require_mention and channel_id not in free_channels and not has_mention:
-            logger.debug("Mattermost: skipping non-DM message without @mention (channel=%s)", channel_id)
-            return None
+            if not (self._thread_free_response and root_id and root_id in self._armed_threads):
+                logger.debug("Mattermost: skipping non-DM message without @mention (channel=%s)", channel_id)
+                return None
         if has_mention:  # strip the @mention so the agent sees clean input
             for pattern in mention_patterns:
                 message_text = re.sub(re.escape(pattern), "", message_text, flags=re.IGNORECASE).strip()
@@ -563,7 +587,8 @@ class MattermostAdapter(BasePlatformAdapter):
         channel_id, is_dm = post.get("channel_id", ""), data.get("channel_type", "O") == "D"
         message_text = post.get("message", "")
         if not is_dm:  # DMs need no gating; channels are mention-gated.
-            message_text = self._apply_channel_gating(channel_id, message_text)
+            message_text = self._apply_channel_gating(channel_id, message_text,
+                                                      post.get("root_id") or "", post_id)
             if message_text is None:
                 return
         # Thread support: replies use root_id; in thread mode a top-level channel post is itself a valid root.
@@ -701,6 +726,7 @@ def interactive_setup() -> None:
 
 _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge; allowed_channels is a whitelist
     ("require_mention", "MATTERMOST_REQUIRE_MENTION", "lower"),
+    ("thread_free_response", "MATTERMOST_THREAD_FREE_RESPONSE", "lower"),
     ("free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", "csv"),
     ("allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", "csv"))
 

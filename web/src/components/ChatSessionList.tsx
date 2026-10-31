@@ -2,34 +2,46 @@
  * ChatSessionList — a ChatGPT-style conversation switcher that sits beside
  * the embedded TUI on the dashboard Chat tab.
  *
- * It lists the most recent sessions for the active management profile and
- * lets the user swap between them without leaving the Chat page. Selecting
- * a row sets `/chat?resume=<id>`; ChatPage treats the resume target as part
- * of the PTY identity, so the change tears down the current terminal child
- * and respawns it resuming that conversation (see ChatPage.tsx). The
- * "New session" action clears the resume param, which spawns a fresh PTY.
+ * Features:
+ * - Lists main sessions; subagent children appear as an indented tree under
+ *   their parent when the user expands a row.
+ * - Optional "group by project" mode that buckets sessions by their workspace
+ *   path matched against projects.  State persisted to localStorage.
+ * - Kanban worker sessions (no parent, worktree cwd) are labelled with a
+ *   small badge so they're visually distinct from interactive chat sessions.
  *
- * Best-effort, like ChatSidebar: a failed fetch surfaces a small inline
- * error with a retry affordance and the terminal pane keeps working.
- *
- * This is a navigation surface, NOT a session-management one — delete,
- * rename, export, and bulk actions live on the Sessions page. Keeping this
- * panel read-only (plus select / new) avoids duplicating that machinery and
- * keeps the chat context focused on switching conversations quickly.
+ * Navigation surface only — delete/rename/export lives on the Sessions page.
  */
 
 import { Button } from "@nous-research/ui/ui/components/button";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { AlertCircle, MessageSquarePlus, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AlertCircle,
+  ChevronDown,
+  ChevronRight,
+  FolderOpen,
+  MessageSquarePlus,
+  RefreshCw,
+  Layers,
+} from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { useI18n } from "@/i18n";
-import { api, type SessionInfo } from "@/lib/api";
+import { api, type SessionInfo, type ProjectSummary } from "@/lib/api";
 import { cn, timeAgo } from "@/lib/utils";
 
 const SESSION_LIMIT = 30;
+const LS_GROUP_BY_PROJECT = "chatSessionList.groupByProject";
+
 interface ChatSessionListProps {
   /** Active resume target (the session currently shown in the terminal). */
   activeSessionId: string | null;
@@ -55,6 +67,134 @@ function rowLabel(session: SessionInfo, untitled: string): string {
   return untitled;
 }
 
+/** Return the primary path for a project (longest match wins for nesting). */
+function primaryPath(p: ProjectSummary): string | null {
+  const f = p.folders?.find((f) => f.is_primary);
+  return f?.path ?? p.primary ?? null;
+}
+
+/** Match a session's cwd to a project (prefix matching). */
+function matchProject(
+  cwd: string | null | undefined,
+  projects: ProjectSummary[],
+): ProjectSummary | null {
+  if (!cwd) return null;
+  let best: ProjectSummary | null = null;
+  let bestLen = 0;
+  for (const p of projects) {
+    const pp = primaryPath(p);
+    if (!pp) continue;
+    const prefix = pp.replace(/\/+$/, "");
+    if (
+      (cwd === prefix ||
+        cwd.startsWith(prefix + "/") ||
+        cwd.startsWith(prefix + "\\")) &&
+      prefix.length > bestLen
+    ) {
+      best = p;
+      bestLen = prefix.length;
+    }
+  }
+  return best;
+}
+
+// ─── Single session row ───────────────────────────────────────────────────────
+
+interface SessionRowProps {
+  session: SessionInfo;
+  isActive: boolean;
+  depth?: number;
+  expanded?: boolean;
+  onToggleExpand?: () => void;
+  onPick: (id: string) => void;
+  untitled: string;
+}
+
+function SessionRow({
+  session,
+  isActive,
+  depth = 0,
+  expanded,
+  onToggleExpand,
+  onPick,
+  untitled,
+}: SessionRowProps) {
+  const hasChildren = (session.child_count ?? 0) > 0;
+  const isWorker = session.kind === "kanban_worker";
+
+  return (
+    <ListItem
+      onClick={() => onPick(session.id)}
+      aria-current={isActive ? "true" : undefined}
+      className={cn(
+        "flex-col items-start gap-0.5 rounded px-2 py-1.5",
+        "normal-case tracking-normal",
+        depth > 0 && "ml-3 border-l border-border/40 pl-2",
+        isActive
+          ? "bg-primary/10 text-foreground border-l-2 border-primary"
+          : "text-text-secondary hover:bg-midground/5 hover:text-foreground",
+      )}
+    >
+      <div className="flex w-full items-center gap-1">
+        {hasChildren && onToggleExpand && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleExpand();
+            }}
+            className="shrink-0 text-text-tertiary hover:text-foreground"
+            aria-label={expanded ? "Collapse sub-sessions" : "Expand sub-sessions"}
+          >
+            {expanded ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronRight className="h-3 w-3" />
+            )}
+          </button>
+        )}
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">
+          {rowLabel(session, untitled)}
+        </span>
+        {isWorker && (
+          <Badge tone="secondary" className="shrink-0 px-1 py-0 text-[0.6rem]">
+            worker
+          </Badge>
+        )}
+        {hasChildren && (
+          <Badge tone="secondary" className="shrink-0 px-1 py-0 text-[0.6rem]">
+            {session.child_count}
+          </Badge>
+        )}
+      </div>
+      <span className="flex w-full items-center gap-1.5 pl-4 text-[0.6875rem] text-text-tertiary">
+        <span>{timeAgo(session.last_active)}</span>
+        {session.message_count > 0 && (
+          <>
+            <span aria-hidden>·</span>
+            <span>{session.message_count} msgs</span>
+          </>
+        )}
+        {session.source && session.source !== "cli" && (
+          <>
+            <span aria-hidden>·</span>
+            <span className="truncate">{session.source}</span>
+          </>
+        )}
+        {isWorker && session.kanban_task_id && (
+          <>
+            <span aria-hidden>·</span>
+            <span className="truncate font-mono text-[0.6rem]">
+              {session.kanban_task_id.slice(0, 12)}
+            </span>
+          </>
+        )}
+      </span>
+    </ListItem>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+
 export function ChatSessionList({
   activeSessionId,
   profile,
@@ -67,17 +207,25 @@ export function ChatSessionList({
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Bumped to force a refetch (after switching, on Refresh, on mount).
   const [reloadNonce, setReloadNonce] = useState(0);
 
-  // `profile` is read inside the fetch; it's part of the scope key so a
-  // profile switch refetches. The empty-string fallback keeps the dep
-  // stable when no profile is selected (default profile).
-  const scopeKey = profile ?? "";
+  // Expanded session IDs → their fetched children.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [childrenMap, setChildrenMap] = useState<
+    Map<string, SessionInfo[] | "loading">
+  >(new Map());
 
-  // Monotonic request token: only the most recent fetch is allowed to
-  // commit state, so a fast profile switch (or Refresh spam) can't land a
-  // stale list out of order.
+  // Project grouping mode.
+  const [groupByProject, setGroupByProject] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(LS_GROUP_BY_PROJECT) === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
+
+  const scopeKey = profile ?? "";
   const reqRef = useRef(0);
 
   const load = useCallback(() => {
@@ -100,18 +248,39 @@ export function ChatSessionList({
   }, [scopeKey]);
 
   useEffect(() => {
-    // Dashboard data surfaces fetch from an effect on mount + scope change;
-    // keep this local and explicit until the shared lint profile is updated
-    // for async loaders (matches FilesPage).
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
-    // `reloadNonce` is a manual refetch trigger (Refresh button / row pick).
   }, [load, reloadNonce]);
+
+  // Fetch projects when group mode is enabled.
+  useEffect(() => {
+    if (!groupByProject) return;
+    let cancelled = false;
+    api
+      .getProjects(scopeKey)
+      .then((res) => {
+        if (!cancelled) setProjects(res.projects);
+      })
+      .catch(() => {
+        if (!cancelled) setProjects([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [groupByProject, scopeKey]);
 
   const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
 
-  // Picking a row sets `/chat?resume=<id>`. Re-picking the row already in
-  // the terminal is a no-op (avoids a needless PTY teardown).
+  const toggleGroupByProject = useCallback(() => {
+    setGroupByProject((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem(LS_GROUP_BY_PROJECT, next ? "true" : "false");
+      } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+
   const pick = useCallback(
     (id: string) => {
       onPicked?.();
@@ -128,11 +297,6 @@ export function ChatSessionList({
     [activeSessionId, onPicked, setSearchParams],
   );
 
-  // "New chat" prefers ChatPage's robust handler (clears resume + forces a
-  // PTY respawn even from an already-fresh session). Fallback: clear the
-  // resume param ourselves, which spawns a fresh PTY whenever one was being
-  // resumed. Session management (delete/rename/export) lives on the Sessions
-  // page; this panel only switches and starts conversations.
   const startNew = useCallback(() => {
     onPicked?.();
     if (onNewChat) {
@@ -148,6 +312,161 @@ export function ChatSessionList({
       { replace: false },
     );
   }, [onNewChat, onPicked, setSearchParams]);
+
+  /** Toggle expand/collapse for a session. Fetches children on first expand. */
+  const toggleExpand = useCallback(
+    (id: string) => {
+      setExpandedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) {
+          next.delete(id);
+          return next;
+        }
+        next.add(id);
+        return next;
+      });
+      // Fetch children if not already loaded.
+      setChildrenMap((prev) => {
+        if (prev.has(id)) return prev;
+        const next = new Map(prev);
+        next.set(id, "loading");
+        // Kick off the fetch (side-effectful but inside a functional update — safe here).
+        api
+          .getSessionChildren(id, scopeKey)
+          .then((res) => {
+            setChildrenMap((cm) => {
+              const m = new Map(cm);
+              m.set(id, res.sessions);
+              return m;
+            });
+          })
+          .catch(() => {
+            setChildrenMap((cm) => {
+              const m = new Map(cm);
+              m.set(id, []);
+              return m;
+            });
+          });
+        return next;
+      });
+    },
+    [scopeKey],
+  );
+
+  // ── Render helpers ──────────────────────────────────────────────────────────
+
+  const renderSession = useCallback(
+    (s: SessionInfo, depth = 0) => {
+      const isActive = s.id === activeSessionId;
+      const isExpanded = expandedIds.has(s.id);
+      const hasChildren = (s.child_count ?? 0) > 0;
+
+      return (
+        <div key={s.id}>
+          <SessionRow
+            session={s}
+            isActive={isActive}
+            depth={depth}
+            expanded={isExpanded}
+            onToggleExpand={hasChildren ? () => toggleExpand(s.id) : undefined}
+            onPick={pick}
+            untitled={t.sessions.untitledSession}
+          />
+          {isExpanded && (
+            <div className="mt-0.5">
+              {childrenMap.get(s.id) === "loading" ? (
+                <div className="ml-5 flex items-center gap-1 py-1 text-xs text-text-tertiary">
+                  <Spinner className="h-3 w-3" /> loading…
+                </div>
+              ) : (
+                (childrenMap.get(s.id) as SessionInfo[] | undefined)?.map((c) => (
+                  <SessionRow
+                    key={c.id}
+                    session={c}
+                    isActive={c.id === activeSessionId}
+                    depth={depth + 1}
+                    onPick={pick}
+                    untitled={t.sessions.untitledSession}
+                  />
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      );
+    },
+    [activeSessionId, childrenMap, expandedIds, pick, t, toggleExpand],
+  );
+
+  // Flat list (no grouping).
+  const flatList = useMemo(() => {
+    if (!sessions?.length) return null;
+    return (
+      <div className="flex flex-col gap-0.5">
+        {sessions.map((s) => renderSession(s))}
+      </div>
+    );
+  }, [sessions, renderSession]);
+
+  // Project-grouped list.
+  const groupedList = useMemo(() => {
+    if (!sessions?.length) return null;
+    if (!projects) {
+      return (
+        <div className="flex items-center gap-2 px-2 py-4 text-xs text-text-tertiary">
+          <Spinner className="h-3 w-3" /> grouping…
+        </div>
+      );
+    }
+
+    type Group = { project: ProjectSummary | null; sessions: SessionInfo[] };
+    const groups: Group[] = [];
+    const projectMap = new Map<string, Group>();
+
+    for (const p of projects) {
+      const g: Group = { project: p, sessions: [] };
+      projectMap.set(p.id, g);
+      groups.push(g);
+    }
+    const noProject: Group = { project: null, sessions: [] };
+    groups.push(noProject);
+
+    for (const s of sessions) {
+      const cwd = (s as unknown as { cwd?: string }).cwd;
+      const matched = matchProject(cwd, projects);
+      if (matched) {
+        projectMap.get(matched.id)?.sessions.push(s);
+      } else {
+        noProject.sessions.push(s);
+      }
+    }
+
+    return (
+      <div className="flex flex-col gap-2">
+        {groups
+          .filter((g) => g.sessions.length > 0)
+          .map((g) => {
+            const key = g.project?.id ?? "__none__";
+            const label = g.project?.name ?? "No project";
+            return (
+              <div key={key}>
+                <div className="flex items-center gap-1 px-2 pb-0.5 pt-1">
+                  <FolderOpen className="h-3 w-3 text-text-tertiary" />
+                  <span className="text-display truncate text-[0.625rem] tracking-wider text-text-tertiary">
+                    {label}
+                  </span>
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  {g.sessions.map((s) => renderSession(s))}
+                </div>
+              </div>
+            );
+          })}
+      </div>
+    );
+  }, [sessions, projects, renderSession, t]);
+
+  // ── Content ─────────────────────────────────────────────────────────────────
 
   const content = useMemo(() => {
     if (loading && sessions === null) {
@@ -177,47 +496,17 @@ export function ChatSessionList({
         </div>
       );
     }
-    return (
-      <div className="flex flex-col gap-0.5">
-        {sessions.map((s) => {
-          const isActive = s.id === activeSessionId;
-          return (
-            <ListItem
-              key={s.id}
-              onClick={() => pick(s.id)}
-              aria-current={isActive ? "true" : undefined}
-              className={cn(
-                "flex-col items-start gap-0.5 rounded px-2 py-1.5",
-                "normal-case tracking-normal",
-                isActive
-                  ? "bg-primary/10 text-foreground border-l-2 border-primary"
-                  : "text-text-secondary hover:bg-midground/5 hover:text-foreground",
-              )}
-            >
-              <span className="w-full truncate text-sm font-medium">
-                {rowLabel(s, t.sessions.untitledSession)}
-              </span>
-              <span className="flex w-full items-center gap-1.5 text-[0.6875rem] text-text-tertiary">
-                <span>{timeAgo(s.last_active)}</span>
-                {s.message_count > 0 && (
-                  <>
-                    <span aria-hidden>·</span>
-                    <span>{s.message_count} msgs</span>
-                  </>
-                )}
-                {s.source && s.source !== "cli" && (
-                  <>
-                    <span aria-hidden>·</span>
-                    <span className="truncate">{s.source}</span>
-                  </>
-                )}
-              </span>
-            </ListItem>
-          );
-        })}
-      </div>
-    );
-  }, [activeSessionId, error, loading, pick, reload, sessions, t]);
+    return groupByProject ? groupedList : flatList;
+  }, [
+    loading,
+    sessions,
+    error,
+    reload,
+    t,
+    groupByProject,
+    groupedList,
+    flatList,
+  ]);
 
   return (
     <aside
@@ -226,20 +515,35 @@ export function ChatSessionList({
         className,
       )}
     >
-      <div className="flex items-center justify-between gap-2 px-2 pb-2">
+      <div className="flex items-center justify-between gap-1 px-2 pb-2">
         <span className="text-display text-xs tracking-wider text-text-tertiary">
           {t.sessions.title}
         </span>
-        <Button
-          ghost
-          size="icon"
-          onClick={reload}
-          aria-label={t.common.refresh}
-          title={t.common.refresh}
-          className="text-text-secondary hover:text-foreground"
-        >
-          <RefreshCw className={cn(loading && "animate-spin")} />
-        </Button>
+        <div className="flex items-center gap-0.5">
+          <Button
+            ghost
+            size="icon"
+            onClick={toggleGroupByProject}
+            aria-label="Group by project"
+            title="Group by project"
+            className={cn(
+              "text-text-secondary hover:text-foreground",
+              groupByProject && "text-primary",
+            )}
+          >
+            <Layers />
+          </Button>
+          <Button
+            ghost
+            size="icon"
+            onClick={reload}
+            aria-label={t.common.refresh}
+            title={t.common.refresh}
+            className="text-text-secondary hover:text-foreground"
+          >
+            <RefreshCw className={cn(loading && "animate-spin")} />
+          </Button>
+        </div>
       </div>
 
       <Button

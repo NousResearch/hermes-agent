@@ -344,13 +344,30 @@ export const api = {
     offset = 0,
     profile = getManagementProfile(),
     order: "created" | "recent" = "created",
+    kind?: "main" | "subagent" | "kanban_worker",
+    includeChildren?: boolean,
+  ) => {
+    let url = `/api/sessions?limit=${limit}&offset=${offset}&order=${order}`;
+    if (kind) url += `&kind=${kind}`;
+    if (includeChildren) url += `&include_children=true`;
+    return fetchJSON<PaginatedSessions>(appendProfileParam(url, profile));
+  },
+  /** Fetch subagent children of a given parent session. */
+  getSessionChildren: (
+    parentId: string,
+    profile = getManagementProfile(),
   ) =>
     fetchJSON<PaginatedSessions>(
       appendProfileParam(
-        `/api/sessions?limit=${limit}&offset=${offset}&order=${order}`,
+        `/api/sessions?include_children=true&kind=subagent&limit=100`,
         profile,
       ),
-    ),
+    ).then((res) => ({
+      ...res,
+      sessions: res.sessions.filter(
+        (s) => s.parent_session_id === parentId,
+      ),
+    })),
   getSessionMessages: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionMessagesResponse>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
@@ -1884,6 +1901,12 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  /** Session classification: "main" | "subagent" | "kanban_worker". */
+  kind?: "main" | "subagent" | "kanban_worker";
+  /** Kanban task id when kind === "kanban_worker". */
+  kanban_task_id?: string | null;
+  /** Number of direct subagent children (only set on kind === "main" rows). */
+  child_count?: number;
 }
 
 export interface SessionLatestDescendantResponse {

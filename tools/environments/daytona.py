@@ -35,10 +35,13 @@ class DaytonaEnvironment(BaseEnvironment):
                  task_id: str = "default"):
         super().__init__(cwd=cwd, timeout=timeout)
         ensure_lazy_dep("daytona")
-        from daytona import Daytona, CreateSandboxFromImageParams, DaytonaError, Resources, SandboxState
+        from daytona import (Daytona, CreateSandboxFromImageParams, DaytonaConfig, DaytonaError, Resources,
+                             SandboxState)
+        from agent.secret_scope import get_secret
 
         self._persistent, self._task_id, self._SandboxState = persistent_filesystem, task_id, SandboxState
-        self._daytona = Daytona()
+        # The SDK reads os.environ, which holds the launch profile's secrets, not this profile's.
+        self._daytona = Daytona(DaytonaConfig(api_key=get_secret("DAYTONA_API_KEY")))
         self._sandbox = None
         self._lock = threading.Lock()
 

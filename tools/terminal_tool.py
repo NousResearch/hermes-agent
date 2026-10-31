@@ -1666,6 +1666,64 @@ TERMINAL_SCHEMA = {
 }
 
 
+_BOOL_WORDS = {"true": True, "false": False}
+
+
+def _coerce_notify_args(notify, notify_on_complete, watch_patterns):
+    """Repair string-typed notification args models emit instead of real JSON values.
+
+    DeepSeek-class models send ``"true"`` for a boolean and a JSON-encoded string for a list
+    (``'["ERROR"]'``). The generic schema coercer cannot reach these: ``notify`` is a type-less
+    ``anyOf``, and ``notify_on_complete`` / ``watch_patterns`` are unadvertised aliases with no
+    schema entry. Refusing them made the model retry without ``notify``, so the job ran silently
+    and never woke the agent; an unparsed ``"false"`` would also have counted as truthy.
+
+    Returns ``(notify, notify_on_complete, watch_patterns, error)``; ``error`` is a message or None.
+    """
+    def parse_list(name, text):
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            return None, f"{name} looks like a JSON list but could not be parsed."
+        return parsed, None  # text starts with "[", so a successful parse is always a list
+
+    if isinstance(notify_on_complete, str):
+        word = notify_on_complete.strip().lower()
+        if word in _BOOL_WORDS:
+            notify_on_complete = _BOOL_WORDS[word]
+        elif word in ("", "null", "none"):
+            notify_on_complete = False
+        else:
+            return notify, notify_on_complete, watch_patterns, (
+                "notify_on_complete must be true or false."
+            )
+
+    if isinstance(notify, str):
+        text = notify.strip()
+        word = text.lower()
+        if word in _BOOL_WORDS:
+            notify = _BOOL_WORDS[word]
+        elif word in ("", "null", "none"):
+            notify = None
+        elif text.startswith("["):
+            notify, error = parse_list("notify", text)
+            if error:
+                return notify, notify_on_complete, watch_patterns, error
+
+    if isinstance(watch_patterns, str):
+        text = watch_patterns.strip()
+        if text.lower() in ("", "null", "none"):
+            watch_patterns = None
+        elif text.startswith("["):
+            watch_patterns, error = parse_list("watch_patterns", text)
+            if error:
+                return notify, notify_on_complete, watch_patterns, error
+        else:
+            watch_patterns = [watch_patterns]  # a bare pattern, as the generic array coercion does
+
+    return notify, notify_on_complete, watch_patterns, None
+
+
 def _handle_terminal(args, **kw):
     from agent.terminal_approval_batch import validate_prepared_terminal
     validate_prepared_terminal(args)
@@ -1686,9 +1744,14 @@ def _handle_terminal(args, **kw):
     # shape) send `heartbeat=60` on ordinary commands — refusing it produced
     # identical-call retry loops (46 subagent sessions, 4 refusals each, 38 of
     # which never ran a single command), so it is normalized away instead.
-    notify = args.get("notify")
-    notify_on_complete = args.get("notify_on_complete", False)
-    watch_patterns = args.get("watch_patterns")
+    notify, notify_on_complete, watch_patterns, notify_error = _coerce_notify_args(
+        args.get("notify"), args.get("notify_on_complete", False), args.get("watch_patterns"),
+    )
+    if notify_error:
+        return tool_error(
+            f"{notify_error} notify takes true/false (notify on exit) or a list of strings "
+            "(notify on output pattern match)."
+        )
     heartbeat = args.get("heartbeat") or 0
     persist_on_release = bool(args.get("persist_on_release", False))
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:

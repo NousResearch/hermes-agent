@@ -11,10 +11,17 @@ wall-clock one-shot late, contradicting the "will never fire" contract.
 These tests pin the due-scan grace gate:
   - beyond grace  -> not due; record retired with a diagnostic
   - within grace  -> still due (legitimate catch-up)
-  - beyond grace + claim -> not due, but the record is kept (a run may be
+  - beyond grace + live claim -> not due, but the record is kept (a run may be
     in flight in another process; its mark_job_run must still land)
+  - beyond grace + dead claim (owner exited, or TTL expired) -> retired with
+    a diagnostic: nothing can land that mark_job_run, so keeping the record
+    would wedge the job forever (#147102)
   - re-triggered  -> due again (the Run button still works)
 """
+
+import socket
+import subprocess
+import sys
 
 import pytest
 from datetime import datetime, timedelta, timezone, UTC
@@ -80,15 +87,15 @@ class TestOneShotGraceDueScan:
         # Still stored (dispatch proceeds normally).
         assert [j["id"] for j in load_jobs()] == ["recent"]
 
-    def test_stale_with_claim_skipped_but_record_kept(self, cron_store):
-        # A (possibly stale) run_claim means a run may still be in flight in
-        # another process — the due-scan must not fire OR retire the record,
-        # so mark_job_run can still land.
+    def test_live_claim_beyond_grace_skipped_but_record_kept(self, cron_store):
+        # A live run_claim (fresh, owner not provably dead) means a run may
+        # still be in flight in another process — the due-scan must not fire
+        # OR retire the record, so mark_job_run can still land.
         claimed = _oneshot(
             "claimed",
             FIXED_NOW - timedelta(hours=3),
             completed=1,
-            run_claim={"at": (FIXED_NOW - timedelta(hours=3)).isoformat(), "by": "other"},
+            run_claim={"at": (FIXED_NOW - timedelta(seconds=60)).isoformat(), "by": "other-host:4242"},
         )
         save_jobs([claimed])
 
@@ -96,6 +103,51 @@ class TestOneShotGraceDueScan:
         assert [d["id"] for d in due] == []
         # Record preserved (not retired) despite being beyond grace.
         assert [j["id"] for j in load_jobs()] == ["claimed"]
+
+    def test_dead_owner_claim_beyond_grace_is_retired_with_diagnostic(self, cron_store):
+        # #147102: a run_claim whose owner pid is provably dead can never land
+        # its mark_job_run — treating its presence as liveness wedged the job
+        # forever (never fired, never retired, never diagnosed). It must be
+        # retired with the missed-run diagnostic like a missing claim.
+        proc = subprocess.run(
+            [sys.executable, "-c", "import os; print(os.getpid())"],
+            capture_output=True, text=True, check=True)
+        dead_claim = _oneshot(
+            "dead-owner",
+            FIXED_NOW - timedelta(hours=3),
+            run_claim={
+                "at": (FIXED_NOW - timedelta(seconds=60)).isoformat(),
+                "by": f"{socket.gethostname()}:{int(proc.stdout.strip())}",
+            },
+        )
+        save_jobs([dead_claim])
+
+        due = get_due_jobs()
+
+        assert [d["id"] for d in due] == []
+        assert [j["id"] for j in load_jobs()] == []
+        out_dir = cron_store / "cron" / "output" / "dead-owner"
+        diag = list(out_dir.glob("*.md")) if out_dir.exists() else []
+        assert diag, "expected a missed-run diagnostic for the retired dead-claim one-shot"
+
+    def test_expired_claim_beyond_grace_is_retired_with_diagnostic(self, cron_store):
+        # The other dead-claim shape: a claim older than the run-claim TTL. A
+        # live one-shot run keeps its claim fresh via the scheduler heartbeat,
+        # so an expired claim means the owning tick died — same retirement.
+        expired = _oneshot(
+            "expired-claim",
+            FIXED_NOW - timedelta(hours=3),
+            run_claim={"at": (FIXED_NOW - timedelta(hours=3)).isoformat(), "by": "other-host:4242"},
+        )
+        save_jobs([expired])
+
+        due = get_due_jobs()
+
+        assert [d["id"] for d in due] == []
+        assert [j["id"] for j in load_jobs()] == []
+        out_dir = cron_store / "cron" / "output" / "expired-claim"
+        diag = list(out_dir.glob("*.md")) if out_dir.exists() else []
+        assert diag, "expected a missed-run diagnostic for the retired expired-claim one-shot"
 
     def test_retriggered_stale_oneshot_is_due(self, cron_store):
         # A user can still explicitly re-run a stale one-shot: trigger_job

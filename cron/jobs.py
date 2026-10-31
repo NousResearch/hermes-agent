@@ -3119,7 +3119,7 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
     return False
 
 
-def _retire_expired_oneshot(d: _DueJob) -> bool:
+def _retire_expired_oneshot(d: _DueJob, run_claim_ttl: float) -> bool:
     """One-shot grace gate; True when the job must not fire this tick.
 
     A one-shot beyond the grace window must never fire (create/update/resume reject such schedules
@@ -3135,7 +3135,11 @@ def _retire_expired_oneshot(d: _DueJob) -> bool:
     # An outage-covered claim that never reached its fire claim never started: it stays covered.
     if isinstance(claim, dict) and claim.get("outage") and not d.job.get("fire_claim"):
         return False
-    if not (claim or d.job.get("fire_claim")):
+    # Presence is not liveness: a claim whose owner died (or whose TTL expired — a live one-shot
+    # run keeps its claim fresh via the scheduler heartbeat) can never land its mark_job_run, so
+    # treating it as in flight wedges the job forever. Only a live claim suppresses retirement.
+    if not (_claim_is_live(claim, d.scan.now, run_claim_ttl)
+            or _claim_is_live(d.job.get("fire_claim"), d.scan.now, FIRE_CLAIM_TTL_SECONDS)):
         from cron.jobs_oneshot_diagnostics import write_missed
         write_missed(d.job, d.next_run)
         d.scan.retire(d.job["id"])
@@ -3264,7 +3268,7 @@ def _evaluate_due_job(job: dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     if not manual_run and recurring and _fast_forward_missed_recurring(d, grace):
         return False
     if kind == "once":
-        if _retire_expired_oneshot(d) or _oneshot_dispatch_limit_reached(job, scan):
+        if _retire_expired_oneshot(d, run_claim_ttl) or _oneshot_dispatch_limit_reached(job, scan):
             return False
         # Durably claim the one-shot for the DURATION of its run: a second scheduler process on the
         # same HERMES_HOME must not re-dispatch it while in flight, and advancing next_run_at by a

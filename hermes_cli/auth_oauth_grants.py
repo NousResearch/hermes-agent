@@ -23,8 +23,13 @@ logger = logging.getLogger("hermes_cli.auth")
 # owners — the first to refresh strands the other with ``invalid_grant`` /
 # ``refresh_token_reused``.
 # Profiles must never receive a copy: ONE grant lives at the global root and named profiles read
-# it through the ``read_credential_pool`` root fallback.
-SINGLE_USE_REFRESH_POOL_PROVIDERS = frozenset({"anthropic", "openai-codex", "xai-oauth", "nous"})
+# it through the ``read_credential_pool`` root fallback, except profile-bound registrations
+# whose selection and grants must remain local to their owning profile.
+SINGLE_USE_REFRESH_POOL_PROVIDERS = frozenset({"anthropic", "openai-codex", "xai-oauth", "nous", "openai-chatgpt"})
+
+# These provider blocks bind the host, issued clients and explicit account selection. They cannot
+# be copied into a new profile or restored independently of the current live token generation.
+_PROFILE_BOUND_REGISTRATION_PROVIDERS = frozenset({"openai-chatgpt"})
 
 # Singleton credential files holding the same single-use grants outside ``auth.json``. Copying one
 # into a profile re-seeds a forked pool row on the profile's next ``load_pool()``.
@@ -61,6 +66,19 @@ def _is_oauth_pool_payload(entry: Any) -> bool:
         str(entry.get("auth_type") or "").strip().lower() == "oauth"
         or bool(str(entry.get("refresh_token") or "").strip())
         or str(entry.get("access_token") or "").startswith("sk-ant-oat"))
+
+
+def _restore_live_registration_blocks(restored: dict, live_store: dict) -> None:
+    providers = restored.get("providers")
+    live_providers = live_store.get("providers")
+    for provider in _PROFILE_BOUND_REGISTRATION_PROVIDERS:
+        live_block = live_providers.get(provider) if isinstance(live_providers, dict) else None
+        if isinstance(live_block, dict):
+            if not isinstance(providers, dict):
+                providers = restored["providers"] = {}
+            providers[provider] = copy.deepcopy(live_block)
+        elif isinstance(providers, dict):
+            providers.pop(provider, None)
 
 
 def merge_snapshot_auth_preserving_live_single_use_grants(
@@ -202,10 +220,22 @@ def merge_snapshot_auth_preserving_live_single_use_grants(
             # resurrect a credential whose single-use token may already be spent.
             snapshot_providers.pop(provider_id, None)
 
+    _restore_live_registration_blocks(restored, live_store)
     return restored
 
 def _is_pkce_row(row: dict[str, Any]) -> bool:
     return str(row.get("source") or "").endswith("hermes_pkce")
+
+
+def _strip_cloned_registration_blocks(store: dict, stripped: dict) -> bool:
+    providers = store.get("providers")
+    if not isinstance(providers, dict):
+        return False
+    removed = [provider for provider in _PROFILE_BOUND_REGISTRATION_PROVIDERS if provider in providers]
+    for provider in removed:
+        providers.pop(provider)
+    stripped["providers"].extend(removed)
+    return bool(removed)
 
 
 def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> dict[str, Any]:
@@ -277,6 +307,7 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> dict[str, Any]:
                 del providers[provider_id]
                 stripped["providers"].append(provider_id)
                 changed = True
+    changed |= _strip_cloned_registration_blocks(store, stripped)
     if not changed:
         return stripped
     try:
@@ -495,7 +526,8 @@ def heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[dict[str, 
     ``{"adopted", "stripped_ids", "files", "providers_block"}`` when something healed, else None.
     Never raises.
     """
-    if provider_id not in SINGLE_USE_REFRESH_POOL_PROVIDERS:
+    if (provider_id not in SINGLE_USE_REFRESH_POOL_PROVIDERS
+            or provider_id in _PROFILE_BOUND_REGISTRATION_PROVIDERS):
         return None
     try:
         return _heal_forked_single_use_oauth_grants(provider_id)

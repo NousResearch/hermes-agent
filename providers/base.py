@@ -169,9 +169,13 @@ class ProviderProfile:
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
     # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
     supports_model_listing: bool = True
+    requires_streaming: bool = field(default=False, kw_only=True)
+    fixed_api_mode: bool = field(default=False, kw_only=True)  # True → this profile fixes its transport.
+    fixed_base_url: bool = field(default=False, kw_only=True)  # True → credentials stay on this endpoint.
 
     # ── Provider-owned auth (optional; non-api-key plugins) ──────────
-    # ``auth_handler(action, args) -> bool``: ``hermes auth add|status|logout|refresh <name>`` calls it
+    # ``auth_handler(action, args) -> bool``: auth add/status/logout/refresh/remove calls it;
+    # noninteractive ``disconnect`` handles whole-provider cleanup without printing to stdout.
     # FIRST with the parsed CLI namespace; truthy = the plugin owned the action, falsy = built-in path.
     # ``refresh_credential(entry) -> Mapping | None``: the credential pool's refresh of a pooled OAuth
     # row — return the rotated fields (``access_token``, ``refresh_token``, ``expires_at_ms`` …) or raise.
@@ -182,6 +186,8 @@ class ProviderProfile:
     # Return ``{"reason": <FailoverReason name>, ...hint flags}`` to override, ``None`` to decline.
     auth_handler: Callable[[str, Any], Any] | None = None
     refresh_credential: Callable[[Any], Any] | None = None
+    # Terminal refresh cleanup returns field updates; the pool owns locking and persistence.
+    clear_credential: Callable[[Any], Any] | None = field(default=None, kw_only=True)
     classify_api_error: Callable[..., Any] | None = None
 
     # ── Vision support ────────────────────────────────────────
@@ -279,6 +285,14 @@ class ProviderProfile:
     setup_reasoning_efforts: Callable[[str], Any] | None = None
 
     # ── Hooks (override in subclass for complex providers) ───
+
+    def credential_is_eligible(self, entry: Any) -> bool:
+        """Whether a pooled row may serve inference (for explicit account selection).
+
+        Expiry and refresh remain the pool's responsibility. An ineligible row stays
+        stored and visible to auth commands, but cannot be used as a rotation target.
+        """
+        return True
 
     def fetch_account_usage(
         self, *, base_url: str | None = None, api_key: str | None = None

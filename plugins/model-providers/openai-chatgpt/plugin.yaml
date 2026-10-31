@@ -1,0 +1,4 @@
+name: openai-chatgpt-provider
+kind: model-provider
+version: 1.0.0
+description: Official Sign in with ChatGPT and public Responses API

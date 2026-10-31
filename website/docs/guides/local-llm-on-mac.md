@@ -16,14 +16,15 @@ run yourself.
 
 This guide walks you through running a local LLM server on macOS with an OpenAI-compatible API. You get full privacy, zero API costs, and surprisingly good performance on Apple Silicon.
 
-We cover two backends:
+We cover three backends:
 
 | Backend | Install | Best at | Format |
 |---------|---------|---------|--------|
-| **llama.cpp** | `brew install llama.cpp` | Fastest time-to-first-token, quantized KV cache for low memory | GGUF |
-| **omlx** | [omlx.ai](https://omlx.ai) | Fastest token generation, native Metal optimization | MLX (safetensors) |
+| **llama.cpp** | `brew install llama.cpp` | GGUF models, quantized KV cache for low memory | GGUF |
+| **omlx** | [omlx.ai](https://omlx.ai) | MLX models, multi-model serving | MLX (safetensors) |
+| **vllm-metal** | [Installation guide](https://docs.vllm.ai/projects/vllm-metal/en/latest/installation/) | vLLM's serving API on Apple Silicon | MLX (safetensors) |
 
-Both expose an OpenAI-compatible `/v1/chat/completions` endpoint. Hermes works with either one — just point it at `http://localhost:8080` or `http://localhost:8000`.
+All three expose an OpenAI-compatible `/v1/chat/completions` endpoint. Connect through Hermes' **Custom endpoint** option using the server's `/v1` base URL.
 
 :::info Apple Silicon only
 This guide targets Macs with Apple Silicon (M1 and later). Intel Macs will work with llama.cpp but without GPU acceleration — expect significantly slower performance.
@@ -210,35 +211,35 @@ In `hermes model`, choose **Custom endpoint**, enter `http://127.0.0.1:8000/v1`,
 
 ---
 
-## Benchmarks: llama.cpp vs MLX
+## Benchmarks: llama.cpp, oMLX, and vllm-metal
 
-Both backends tested on the same machine (Apple M5 Max, 128 GB unified memory) running the same model (Qwen3.5-9B) at comparable quantization levels (Q4_K_M for GGUF, mxfp4 for MLX). Five diverse prompts, three runs each, backends tested sequentially to avoid resource contention.
+Tested on October 31, 2026, on an **Apple M5 Pro with 64 GB unified memory**, running macOS 27.0.1 and **Qwen3.5-9B**. vllm-metal and oMLX loaded identical `mlx-community/Qwen3.5-9B-4bit` weights; llama.cpp used `unsloth/Qwen3.5-9B-GGUF` in Q4_K_M format. The MLX and GGUF quantizations differ.
+
+Five shared prompts, three runs each, with one request at a time and a 65,536-token context limit. Engines ran sequentially, with thinking and prompt-cache reuse disabled. Two warmup requests per engine excluded model loading from the measurements. All 45 measured requests had matching prompt token counts and produced exactly 512 output tokens. llama.cpp used f16 K/V cache for this comparison, rather than the quantized cache in Option A.
 
 ### Results
 
-| Metric | llama.cpp (Q4_K_M) | MLX (mxfp4) | Winner |
-|--------|-------------------|-------------|--------|
-| **TTFT (avg)** | **67 ms** | 289 ms | llama.cpp (4.3x faster) |
-| **TTFT (p50)** | **66 ms** | 286 ms | llama.cpp (4.3x faster) |
-| **Generation (avg)** | 70 tok/s | **96 tok/s** | MLX (37% faster) |
-| **Generation (p50)** | 70 tok/s | **96 tok/s** | MLX (37% faster) |
-| **Total time (512 tokens)** | 7.3s | **5.5s** | MLX (25% faster) |
+| Metric | llama.cpp b10731 | oMLX 0.6.4 | vllm-metal 0.32.0 |
+|--------|-----------------|------------|------------------|
+| **TTFT (avg)** | 149.6 ms | 339.7 ms | 116.3 ms |
+| **TTFT (p50)** | 146.5 ms | 338.7 ms | 116.5 ms |
+| **Generation (avg)** | 42.4 tok/s | 54.0 tok/s | 52.9 tok/s |
+| **Generation (p50)** | 42.5 tok/s | 54.1 tok/s | 52.8 tok/s |
+| **Total time (512 tokens, avg)** | 12.21 s | 9.80 s | 9.77 s |
+
+See the [benchmark details](https://github.com/NousResearch/hermes-agent/pull/147355) for model revisions and the measurement method.
 
 ### What this means
 
-- **llama.cpp** excels at prompt processing — its flash attention + quantized KV cache pipeline gets you the first token in ~66ms. If you're building interactive applications where perceived responsiveness matters (chatbots, autocomplete), this is a meaningful advantage.
-
-- **MLX** generates tokens ~37% faster once it gets going. For batch workloads, long-form generation, or any task where total completion time matters more than initial latency, MLX finishes sooner.
-
-- Both backends are **extremely consistent** — variance across runs was negligible. You can rely on these numbers.
+**vllm-metal** had the lowest time to first token in this workload. **oMLX** had a small generation-rate advantage, while its total response time was close to vllm-metal's. These short, single-request measurements do not establish performance for long-context agent turns, cached conversations, or concurrent workloads.
 
 ### Which one should you pick?
 
 | Use case | Recommendation |
 |----------|---------------|
-| Interactive chat, low-latency tools | llama.cpp |
-| Long-form generation, bulk processing | MLX (omlx) |
-| Memory-constrained (8-16 GB) | llama.cpp (quantized KV cache is unmatched) |
+| Lowest time to first token in this benchmark | vllm-metal |
+| 512-token responses in this benchmark | oMLX or vllm-metal |
+| GGUF models with quantized KV cache | llama.cpp |
 | Serving multiple models simultaneously | omlx (built-in multi-model support) |
 | Maximum compatibility (Linux too) | llama.cpp |
 

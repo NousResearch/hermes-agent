@@ -23,7 +23,8 @@ from hermes_cli.config import load_config, save_config, get_env_value, save_env_
 from hermes_cli.cli_output import prompt as _prompt_input
 from utils import rmtree_readonly
 
-_MANIFEST_VERSION = 1
+# Newest manifest_version this Hermes understands; every version from 1 up still parses. 2 adds ``trust``.
+_MANIFEST_VERSION = 2
 
 # Substituted at install time inside `transport.command` / `transport.args`.
 _INSTALL_DIR_VAR = "${INSTALL_DIR}"
@@ -117,6 +118,7 @@ class CatalogEntry:
     install: Optional[InstallSpec] = None
     post_install: str = ""
     suggest: Optional[SuggestSpec] = None
+    trust: str = "full"  # "untrusted": every write-capable tool call asks the user first
     manifest_path: Path = field(default_factory=Path)
 
 
@@ -308,6 +310,18 @@ def _parse_install(path: Path, install_raw: Any) -> Optional[InstallSpec]:
     return InstallSpec(type=i_type, url=url, ref=ref, bootstrap=[str(c) for c in bootstrap])
 
 
+def _parse_trust(path: Path, raw: Any, manifest_version: int) -> str:
+    if raw is None:
+        return "full"
+    # A version-1 Hermes ignores unknown keys and would install the entry without the gate; it refuses
+    # version 2 ("requires a newer Hermes") instead.
+    if manifest_version < 2:
+        raise CatalogError(f"{path}: 'trust' requires manifest_version 2")
+    if raw not in ("full", "untrusted"):
+        raise CatalogError(f"{path}: trust must be 'untrusted' or 'full', not {raw!r}")
+    return raw
+
+
 def _parse_manifest(path: Path) -> CatalogEntry:
     """Read and validate a manifest.yaml. Raise CatalogError on any problem."""
     try:
@@ -319,10 +333,10 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         raise CatalogError(f"{path}: manifest must be a mapping")
 
     mv = data.get("manifest_version")
-    if mv != _MANIFEST_VERSION:
+    if mv not in range(1, _MANIFEST_VERSION + 1):
         raise CatalogError(
             f"{path}: manifest_version {mv!r} unsupported "
-            f"(this Hermes understands version {_MANIFEST_VERSION})"
+            f"(this Hermes understands versions up to {_MANIFEST_VERSION})"
         )
     name = data.get("name") or ""
     if not name or not re.match(r"^[A-Za-z0-9_-]+$", name):
@@ -331,17 +345,18 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     if not description:
         raise CatalogError(f"{path}: 'description' required")
 
-    # Validation order (transport, auth, tools, suggest, install) determines which error surfaces.
+    # Validation order (transport, auth, tools, suggest, install, trust) determines which error surfaces.
     transport = _parse_transport(path, data.get("transport"))
     auth = _parse_auth(path, data.get("auth"), name, transport.type == "http")
     tools = _parse_tools(path, data.get("tools"))
     suggest = _parse_suggest(path, data.get("suggest"))
     connector_slug = _parse_connector_slug(path, data.get("connector_slug"))
     install = _parse_install(path, data.get("install"))
+    trust = _parse_trust(path, data.get("trust"), mv)
     return CatalogEntry(
         name=name, description=description, source=str(data.get("source") or "").strip(),
         transport=transport, auth=auth, connector_slug=connector_slug, tools=tools, install=install,
-        post_install=str(data.get("post_install") or ""), suggest=suggest, manifest_path=path,
+        post_install=str(data.get("post_install") or ""), suggest=suggest, trust=trust, manifest_path=path,
     )
 
 
@@ -556,6 +571,8 @@ def _build_server_config(entry: CatalogEntry, install_dir: Optional[Path]) -> di
             from hermes_cli.mcp_config import _bearer_auth_headers
 
             cfg["headers"] = _bearer_auth_headers(entry.name)
+    if entry.trust == "untrusted":
+        cfg["trust"] = "untrusted"
     return cfg
 
 
@@ -778,7 +795,7 @@ def _install_entry(entry: CatalogEntry, *, enable: bool, preloaded_env: Optional
     """Install a catalog entry end-to-end.
 
     Order: git clone + bootstrap (if any); credential prompts (``auth.env``) to .env; write
-    ``mcp_servers.<name>`` (with the ``auth: oauth`` marker and any pre-registered ``oauth`` block); probe + tool checklist (falling back per
+    ``mcp_servers.<name>`` (with the ``auth: oauth`` marker, any pre-registered ``oauth`` block and the manifest's ``trust: untrusted``); probe + tool checklist (falling back per
     :func:`_apply_tool_selection`); print post_install notes.
 
     ``preloaded_env`` carries env values already supplied by the caller (e.g.

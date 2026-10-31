@@ -34,6 +34,10 @@ optional_env:
     description: "Allow any Feishu user to trigger the bot (dev only)"
     prompt: "Allow all users? (true/false)"
     password: false
+  - name: FEISHU_THREAD_REPLY
+    description: "Reply inside a topic thread (reply_in_thread) for group-chat messages"
+    prompt: "Reply in group topics? (true/false)"
+    password: false
   - name: FEISHU_HOME_CHANNEL
     description: "Default chat ID for cron / notification delivery"
     prompt: "Home channel ID"

@@ -79,8 +79,9 @@ def test_fail_closed_dashboard_guard_needs_a_completed_probe(monkeypatch):
         (0, "rc=0\n", "must NOT serve"),
         (1, "", "refusal"),  # docker exec into a container that already exited
         (127, "rc=127\n", "refusal"),  # curl missing
+        (126, "", "refusal"),  # docker exec could not start the probe (exec user missing)
     ],
-    ids=["refused", "served", "container-gone", "curl-missing"],
+    ids=["refused", "served", "container-gone", "curl-missing", "exec-user-missing"],
 )
 def test_fail_closed_dashboard_guard_needs_an_observed_refusal(monkeypatch, returncode, stdout, failure):
     """A completed probe that never reached the port proves nothing either: only a refusal passes."""

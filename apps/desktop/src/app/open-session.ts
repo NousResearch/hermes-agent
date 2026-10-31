@@ -107,6 +107,22 @@ export function openSessionFromPicker(
 }
 
 /**
+ * Restore the chat that was selected last WHERE IT IS: when it is already open
+ * as a tab, front that tab in its own zone and report true; the caller then
+ * leaves main alone. False when it isn't on screen as a tab, so the caller
+ * loads it into main as before.
+ *
+ * Cold start used to route the remembered chat into main unconditionally.
+ * When that chat was also an open tab (main sat on a fresh draft at quit),
+ * resumeSession closed the tab so main could own it, and the tab jumped to
+ * the main zone on every restart. Any restore that brings back a selection
+ * over a restored layout should come through here.
+ */
+export function restoreSelectionInPlace(storedSessionId: string): boolean {
+  return Boolean(storedSessionId) && focusOpenSession(storedSessionId) === 'tile'
+}
+
+/**
  * @param navigate Required for `in-place` (route into main when not on screen).
  *   `tab` / `window` ignore it — pass a no-op when you don't have a router handle.
  */

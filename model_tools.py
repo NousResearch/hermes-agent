@@ -640,6 +640,7 @@ class _CallIds:
     tool_call_id: Optional[str] = None
     turn_id: Optional[str] = None
     api_request_id: Optional[str] = None
+    platform: Optional[str] = None
 
     def hook_kwargs(self) -> dict[str, str]:
         """Same fields with None -> "" (hook/middleware wire contract)."""
@@ -667,9 +668,9 @@ def _tool_result_observer_fields(tool_name: str, result: Any) -> tuple[str, Opti
 def _emit_post_tool_call_hook(
     *, function_name: str, function_args: dict[str, Any], result: Any,
     task_id: Optional[str] = None, session_id: Optional[str] = None, tool_call_id: Optional[str] = None,
-    turn_id: Optional[str] = None, api_request_id: Optional[str] = None, duration_ms: int = 0,
-    status: Optional[str] = None, error_type: Optional[str] = None, error_message: Optional[str] = None,
-    middleware_trace: Optional[list[dict[str, Any]]] = None,
+    turn_id: Optional[str] = None, api_request_id: Optional[str] = None, platform: Optional[str] = None,
+    duration_ms: int = 0, status: Optional[str] = None, error_type: Optional[str] = None,
+    error_message: Optional[str] = None, middleware_trace: Optional[list[dict[str, Any]]] = None,
 ) -> None:
     """Emit the ``post_tool_call`` observer hook; gated on has_hook, and ok/error
     fields are derived from the result only past that gate when status is None."""
@@ -683,7 +684,7 @@ def _emit_post_tool_call_hook(
             status, error_type, error_message = _tool_result_observer_fields(function_name, result)
         invoke_hook(
             "post_tool_call", tool_name=function_name, args=function_args, result=result,
-            **_CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id).hook_kwargs(),
+            **_CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, platform).hook_kwargs(),
             duration_ms=duration_ms, status=status, error_type=error_type, error_message=error_message,
             middleware_trace=list(middleware_trace or []),
         )
@@ -866,10 +867,12 @@ def _elapsed_ms(start: float) -> int:
 def handle_function_call(
     function_name: str, function_args: dict[str, Any], task_id: Optional[str] = None,
     tool_call_id: Optional[str] = None, session_id: Optional[str] = None, turn_id: Optional[str] = None,
-    api_request_id: Optional[str] = None, user_task: Optional[str] = None, enabled_tools: Optional[list[str]] = None,
+    api_request_id: Optional[str] = None,
+    user_task: Optional[str] = None, enabled_tools: Optional[list[str]] = None,
     skip_pre_tool_call_hook: bool = False, skip_tool_request_middleware: bool = False,
     skip_tool_execution_middleware: bool = False, tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
     enabled_toolsets: Optional[list[str]] = None, disabled_toolsets: Optional[list[str]] = None,
+    platform: Optional[str] = None,
 ) -> str:
     """Route a tool call through hooks/middleware to the registry; returns a JSON string.
 
@@ -884,7 +887,7 @@ def handle_function_call(
         function_args = {}
     trace = list(tool_request_middleware_trace or [])
     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
-    ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id)
+    ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, platform)
     start = time.monotonic()
 
     def _emit(result: Any, **extra: Any) -> Any:

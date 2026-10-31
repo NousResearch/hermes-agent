@@ -25,7 +25,7 @@ interface Mod {
 }
 
 const { hostMock } = vi.hoisted(() => ({
-  hostMock: { notify: vi.fn(), navigate: vi.fn() }
+  hostMock: { dismissNotification: vi.fn(), notify: vi.fn(), navigate: vi.fn() }
 }))
 
 vi.mock('@hermes/plugin-sdk', () => ({
@@ -399,6 +399,35 @@ describe('notification failure isolation', () => {
 })
 
 describe('terminal kinds beyond completed', () => {
+  it('retracts only the matching task warning after unblocked', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    await m.onKanbanEventsFrame('smoke', [
+      ev(101, 'blocked', { reason: 'task A blocked' }, 'task-a'),
+      ev(102, 'blocked', { reason: 'task B blocked' }, 'task-b')
+    ])
+    expect(hostMock.notify.mock.calls[0][0]).toMatchObject({ id: 'kanban:smoke:task-a' })
+    expect(hostMock.notify.mock.calls[1][0]).toMatchObject({ id: 'kanban:smoke:task-b' })
+
+    const fired = await m.onKanbanEventsFrame('smoke', [ev(103, 'unblocked', null, 'task-a')])
+
+    expect(fired).toBe(false)
+    expect(hostMock.dismissNotification).toHaveBeenCalledExactlyOnceWith('kanban:smoke:task-a')
+    expect(hostMock.dismissNotification).not.toHaveBeenCalledWith('kanban:smoke:task-b')
+  })
+
+  it('retracts a transient crash when the same task is claimed for retry', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'crashed', null, 'task-a')])
+    await m.onKanbanEventsFrame('smoke', [ev(102, 'claimed', null, 'task-a')])
+
+    expect(hostMock.notify).toHaveBeenCalledWith(expect.objectContaining({ id: 'kanban:smoke:task-a' }))
+    expect(hostMock.dismissNotification).toHaveBeenCalledExactlyOnceWith('kanban:smoke:task-a')
+  })
+
   it('blocked notifies with the payload reason and a warning toast', async () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)

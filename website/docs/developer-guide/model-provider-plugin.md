@@ -217,6 +217,20 @@ class AcmeProfile(ProviderProfile):
         return None
 ```
 
+### Authoritative live context windows
+
+Override `live_context_length(model, *, api_key, base_url)` when a provider's own
+catalog supplies its context windows. Set `use_live_model_metadata=True` on the
+profile to consult this hook before the persistent context cache. The default
+remains `False`, preserving existing providers' resolution order.
+
+Explicit user configuration, endpoint-scoped metadata and a qualified
+`get_model_context_length()` bound still win. A missing, invalid or failed live
+answer falls through to the existing cache and catalog sources. The hook is not
+retried later in the same resolution. Provider implementations must bound their
+I/O and cache successful and failed probes by endpoint and credential; core does
+not add another catalog cache for this hook.
+
 ## ProviderProfile fields and hooks
 
 Every field and hook `providers/base.py` declares, in declaration order. Names ending in `()` are methods
@@ -295,7 +309,8 @@ meaning says otherwise.
 | `hostnames` | Hosts (and subdomains) serving this API, so a `custom` endpoint or aux client there is recognised | `()` |
 | `metadata_hostnames` | Hosts identifying this catalog for model metadata only (other credentials) | `()` |
 | `models_dev_id` | models.dev provider id when it differs from `name` | `""` |
-| `live_context_length()` | Context window from the live, credentialed catalog; after the persistent cache | `None` |
+| `use_live_model_metadata` | Consult `live_context_length()` before the persistent cache; keyword-only opt-in | `False` |
+| `live_context_length()` | Context window from the live, credentialed catalog; after the persistent cache unless opted in | `None` |
 | `normalize_model_id()` | Provider-native id for a model (aliases, catalog repair) | `None` (generic normalization) |
 | `ambient_credentials` | Credentials are ambient: never auto-detected; aux fallback skips unless configured | `False` |
 | `resolve_api_key_secret()` | Provider-owned `(runtime_api_key, source)` | `None` (env/pool ladder) |

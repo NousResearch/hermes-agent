@@ -75,7 +75,8 @@ _EDIT_FORMAT_GUIDANCE: dict[str, tuple[tuple[str, ...], str]] = {
          "hermes", "llama", "mistral", "devstral", "minimax"),
         "- Edit format: author new files with `write_file`; for edits to "
         "existing code prefer `patch` in `mode='replace'` — match a unique "
-        "snippet and swap it. Reach for `mode='patch'` (V4A) only when an edit "
+        "snippet and swap it; put several edits to one file in one `patch` call with `edits`. "
+        "Reach for `mode='patch'` (V4A) only when an edit "
         "genuinely spans several files at once.",
     ),
 }

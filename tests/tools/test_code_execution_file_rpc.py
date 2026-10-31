@@ -21,7 +21,7 @@ CALLS = {
     "search_files": {"pattern": "x", "target": "files", "path": ".", "file_glob": "*.py",
                      "limit": 4, "offset": 2, "output_mode": "count", "context": 3, "order": "modified"},
     "patch": {"path": "output", "old_string": "old", "new_string": "new", "replace_all": True,
-              "mode": "replace", "patch": None, "cross_profile": False},
+              "mode": "replace", "patch": None, "cross_profile": False, "edits": None},
     "terminal": {"command": "echo fixture", "timeout": 3, "workdir": "/tmp"},
 }
 

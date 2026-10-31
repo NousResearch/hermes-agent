@@ -1,11 +1,33 @@
 {
-  "description": "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing.\n\nREPLACE MODE (mode='replace', default): find a unique string and replace it. REQUIRED PARAMETERS: mode, path, old_string, new_string.\nPATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. REQUIRED PARAMETERS: mode, patch.",
+  "description": "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing.\n\nREPLACE MODE (mode='replace', default): find a unique string and replace it. REQUIRED PARAMETERS: mode, path, old_string, new_string (or edits). For several edits to one file, use edits instead of old_string/new_string; they apply in order, all-or-nothing.\nPATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. REQUIRED PARAMETERS: mode, patch.",
   "name": "patch",
   "parameters": {
     "properties": {
+      "edits": {
+        "description": "Several edits to this ONE file in one call, applied in order, all-or-nothing. When used, omit old_string/new_string.",
+        "items": {
+          "properties": {
+            "new_string": {
+              "type": "string"
+            },
+            "old_string": {
+              "type": "string"
+            },
+            "replace_all": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "old_string",
+            "new_string"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
       "mode": {
         "default": "replace",
-        "description": "Edit mode. 'replace' (default): requires path + old_string + new_string. 'patch': requires patch content only.",
+        "description": "Edit mode. 'replace' (default): requires path + old_string/new_string or edits. 'patch': requires patch content only.",
         "enum": [
           "replace",
           "patch"

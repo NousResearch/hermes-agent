@@ -281,7 +281,8 @@ $GAPI sheets append SHEET_ID "Sheet1!A:C" --values '[["new","row","data"]]'
 ### Docs
 
 ```bash
-# Read (a tabbed Doc returns a "tabs" array; single-tab and legacy Docs also return "body")
+# Read (a tabbed Doc returns a "tabs" array; single-tab and legacy Docs also return "body";
+# tables come back in place, one "| cell | cell |" line per row)
 $GAPI docs get DOC_ID
 $GAPI docs get DOC_ID --tab TAB_ID     # read one tab of a tabbed Doc
 

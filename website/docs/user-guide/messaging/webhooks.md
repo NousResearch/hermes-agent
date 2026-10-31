@@ -596,7 +596,7 @@ The adapter validates incoming webhook signatures using the appropriate method f
 - **GitLab**: `X-Gitlab-Token` header — plain secret string match
 - **Standard Webhooks**: `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers — signed content is `{id}.{timestamp}.{raw_body}` with a `v1,<base64-hmac-sha256>` signature
 - **Generic (V2, recommended)**: `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` headers — HMAC-SHA256 hex digest of `<timestamp>.<body>`. The timestamp (Unix seconds) must be within ±300 seconds of the server clock, which prevents captured requests from being replayed later.
-- **Generic (V1, legacy)**: `X-Webhook-Signature` header — raw HMAC-SHA256 hex digest of the body only. Still accepted for backward compatibility, but it has no replay protection (a captured request replays indefinitely); the gateway logs a deprecation warning once per route. Switch senders to V2.
+- **Generic (V1, rejected)**: `X-Webhook-Signature` signs only the body, so a captured request remains valid after the delivery-ID cache expires. V1-only requests receive `401 Unauthorized`, including on loopback; there is no `allow_legacy_v1` exception. Switch senders to the timestamp-bound V2 format above. The gateway logs migration instructions once per route.
 
 If a secret is configured but no recognized signature header is present, the request is rejected.
 
@@ -668,6 +668,7 @@ This is the same trust model that applies to everything the agent reads: web pag
 - Ensure the secret in your route config exactly matches the secret configured in the webhook source
 - For GitHub, the secret is HMAC-based — check `X-Hub-Signature-256`
 - For GitLab, the secret is a plain token match — check `X-Gitlab-Token`
+- For generic senders, use `X-Webhook-Signature-V2` and `X-Webhook-Timestamp`; body-only V1 signatures are rejected
 - Check gateway logs for `Invalid signature` warnings
 
 ### Event being ignored

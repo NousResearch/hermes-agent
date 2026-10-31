@@ -510,6 +510,20 @@ describe('quickstart', () => {
     expect(await screen.findByText('Qwen3.6 27B')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
   })
+
+  it('says why a downloaded model will not start', async () => {
+    const reason = 'needs ~7.1 GiB at the 64K floor but only ~1.3 GiB of memory is free now; close other apps'
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      models: [{ id: 'Mine-4B-Q4_K_M', size_bytes: 3 * 2 ** 30, size_label: '3.0 GB', launch_refusal: reason }]
+    })
+    mocked.getLocalCatalog.mockResolvedValue({ models: [] })
+    renderPane()
+
+    expect(await screen.findByText('Not enough memory to start')).toBeTruthy()
+    expect(screen.getByText(reason)).toBeTruthy()
+  })
 })
 
 describe('BrowseSection', () => {

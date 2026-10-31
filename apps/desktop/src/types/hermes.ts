@@ -1521,7 +1521,8 @@ export interface LocalModelsStatus {
   /** Models loading into memory right now: real per-tensor load percent. */
   loading?: Record<string, LocalModelLoadProgress>
   placement?: Record<string, LocalModelPlacement>
-  models: { id: string; size_bytes: number; size_label: string }[]
+  // launch_refusal: why the planner will not start this model with the memory free now (null when it fits).
+  models: { id: string; size_bytes: number; size_label: string; launch_refusal?: null | string }[]
   models_dir: string
 }
 

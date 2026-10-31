@@ -1235,6 +1235,7 @@ export const zhHantSettings = {
       pillFitsGpu: '完全在 GPU 上執行',
       pillUsesRam: '使用系統記憶體',
       pillTooBig: '超出本機記憶體',
+      pillNoRoomNow: '記憶體不足，無法啟動',
       browseTitle: '發現更多模型',
       browseHint: '搜尋整個 Hugging Face。在這裡下載的模型會自動適配你的機器，但未經我們測試。',
       browsePlaceholder: '按名稱或作者搜尋模型…',

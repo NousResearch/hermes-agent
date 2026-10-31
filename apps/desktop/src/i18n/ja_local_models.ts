@@ -83,6 +83,7 @@ export const jaLocalModels: TranslationOverride<Translations['settings']['localM
   pillFitsGpu: 'GPU に完全に収まります',
   pillUsesRam: 'システム RAM を使用',
   pillTooBig: 'このマシンには大きすぎます',
+  pillNoRoomNow: '起動に必要なメモリが不足しています',
   browseTitle: 'さらにモデルを探す',
   browseHint:
     'Hugging Face 全体を検索できます。ここでダウンロードしたモデルは自動でマシンに合わせて動作しますが、当方でのテストは行われていません。',

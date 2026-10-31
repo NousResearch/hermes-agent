@@ -100,6 +100,7 @@ export const enLocalModels: Translations['settings']['localModels'] = {
   pillFitsGpu: 'Fits your GPU',
   pillUsesRam: 'Uses system RAM',
   pillTooBig: 'Too big for this machine',
+  pillNoRoomNow: 'Not enough memory to start',
   browseTitle: 'Find more models',
   browseHint:
     'Search all of Hugging Face. Models you download here are sized to your machine automatically, but not tested by us.',

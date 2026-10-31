@@ -140,12 +140,22 @@ def _probe_glibc_malloc_trim() -> Callable[[int], int] | None:
 
 
 def trim_memory(
-    *, force: bool = False, reason: str = "", cooldown_seconds: float | None = None) -> bool:
+    *, force: bool = False, reason: str = "", cooldown_seconds: float | None = None,
+    collect: bool = True) -> bool:
     """Collect cycles and ask glibc to release free heap pages.
 
     Returns ``True`` only when ``malloc_trim(0)`` ran and reported success. Unsupported allocators,
     the config kill switch, cooldown suppression, and all runtime errors return ``False`` without
     affecting the caller.
+
+    ``collect=False`` drops the forced ``gc.collect()`` and only asks the allocator to return
+    already-free arenas. ``gc.collect()`` holds the GIL for its whole run -- on a large heap this is
+    measured at seconds, and it stalls every thread in the process (#146375), including an
+    in-process dashboard's event loop; the stall is the same regardless of which thread calls
+    ``trim_memory`` (CPython's collector is stop-the-world across the whole interpreter, not just
+    the calling thread). A compaction's own freed messages are typically acyclic and already
+    reclaimed by reference counting by the time this runs, so ``malloc_trim(0)`` alone still returns
+    meaningful pages to the OS without the collection.
     """
     enabled, configured_cooldown, log_every_n, info_log_min_delta_mb = _config_settings()
     if not enabled:
@@ -165,7 +175,8 @@ def trim_memory(
         try:
             before = collect_memory_snapshot()
             started = time.perf_counter()
-            gc.collect()
+            if collect:
+                gc.collect()
             # Cycle collection is allocator-independent; only the page release needs glibc.
             trim_result = trim(0) if trim is not None else 0
             released = bool(trim_result)
@@ -176,9 +187,9 @@ def trim_memory(
                 force=force, log_every_n=log_every_n, call_count=_trim_call_count,
                 before=before, after=after, info_log_min_delta_mb=info_log_min_delta_mb):
                 logger.info(
-                    "memory trim: reason=%s malloc_trim=%s rss_kib=%s->%s "
+                    "memory trim: reason=%s malloc_trim=%s collected=%s rss_kib=%s->%s "
                     "rss_anon_kib=%s->%s threads=%s duration_ms=%.1f",
-                    reason or "cleanup", trim_result,
+                    reason or "cleanup", trim_result, collect,
                     before.get("rss_kib"), after.get("rss_kib"),
                     before.get("rss_anon_kib"), after.get("rss_anon_kib"),
                     after.get("thread_count"), duration_ms)

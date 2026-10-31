@@ -60,7 +60,10 @@ def _safe_delivery_transport(platform, config, adapters, *, profile: Optional[st
 
 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
 # Routing fields copied verbatim from a process watcher onto its synthetic completion event.
-_WATCHER_ROUTE_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id", "user_name")
+# ``parent_chat_id``/``scope_id`` are route anchors a committed Discord-thread envelope carries;
+# carrying them on the event keeps the session-key rebuild from degrading the route (#144006).
+_WATCHER_ROUTE_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id",
+                         "user_name", "parent_chat_id", "scope_id")
 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 # Storage causes that clear on their own (one session's lease/compression, not the store): the
 # home-channel notice appends the operator restart tail for every OTHER cause.
@@ -720,7 +723,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         return SessionSource(
             platform=platform, chat_id=chat_id, chat_type=chat_type,
             thread_id=_opt("thread_id") or derived_thread_id,
-            user_id=_opt("user_id"), user_name=_opt("user_name"), scope_id=scope_id, profile=profile,
+            user_id=_opt("user_id"), user_name=_opt("user_name"), scope_id=scope_id,
+            # Route anchor a committed thread envelope carries; reported verbatim from the event,
+            # never invented (#144006). Credit: carried from #145501 by uttkarsh-26.
+            parent_chat_id=_opt("parent_chat_id"), profile=profile,
         )
 
     async def _drain_watch_notifications(self, completion_queue) -> None:

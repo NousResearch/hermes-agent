@@ -268,3 +268,26 @@ async def test_thread_wake_rebuilt_from_the_session_key_keeps_its_thread_id(tmp_
         assert await runner._inject_watch_notification('[done]', evt) is True
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_thread_wake_rebuild_carries_the_events_route_anchors(tmp_path, monkeypatch):
+    """A watcher that carries its route anchors (#145501) must see them on the rebuilt source:
+    the session-key fallback reports them verbatim instead of degrading the route (#144006)."""
+    runner, authority, _adapter, _source, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'human-1',
+        dict(_SOURCE, chat_type='thread', thread_id='42', parent_chat_id='7'))
+    try:
+        route = metadata['gateway_session_key']
+        runner.session_store._entries[route].origin = None  # session-key fallback lane
+        evt = {'type': 'completion', 'session_id': 'proc_x', 'session_key': route, 'platform': 'discord',
+               'chat_id': '42', 'chat_type': 'thread', 'parent_chat_id': '7', 'scope_id': '5',
+               'exit_code': 0, 'output': 'done', 'started_at': 1.0,
+               'parent_session_id': metadata['gateway_session_id']}
+        rebuilt = runner._build_process_event_source(evt)
+        assert rebuilt is not None
+        assert rebuilt.thread_id == '42'      # from the parsed session key
+        assert rebuilt.parent_chat_id == '7'  # carried verbatim from the event (#145501)
+        assert rebuilt.scope_id == '5'
+    finally:
+        authority.db.close()

@@ -20,6 +20,8 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Iterable
+from contextlib import suppress
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from xml.etree import ElementTree
@@ -1341,6 +1343,7 @@ def uninstall() -> None:
     _assert_windows()
     task_name = get_task_name()
     script_path = get_task_script_path()
+    end_launchers()   # nothing is left to relaunch the gateway once this install is gone
 
     scheduled_task_removed = False
     if is_task_registered():
@@ -1742,6 +1745,31 @@ def start() -> None:
     _report_gateway_start("direct spawn")
 
 
+def end_launchers(homes: Iterable[str | Path] | None = None) -> int:
+    """End the ``wscript.exe`` hosting each home's generated launcher (default: this one); the count ended.
+
+    A stop or an update does this first. The launcher reads any exit but 0 and 78 as a crash, and both of
+    those end a gateway on purpose: a socket pause drains to 75 and a force-kill is nonzero, so a live
+    launcher would relaunch it a minute later, in the middle of the update it paused for. Only the host
+    dies (no ``/T``), so its gateway keeps running and drains as asked. Matched on the script it runs, not
+    through a gateway's parents: a launcher in its restart delay has no gateway to be found by."""
+    import ntpath
+
+    import psutil
+
+    dirs = {ntpath.normcase(ntpath.join(str(home), "gateway-service")) for home in (homes or [_hermes_home()])}
+    ended = 0
+    for proc in psutil.process_iter(["name", "cmdline"]):
+        if str(proc.info.get("name") or "").lower() != "wscript.exe":
+            continue
+        scripts = [arg for arg in (proc.info.get("cmdline") or [])[1:] if arg.lower().endswith(".vbs")]
+        if any(ntpath.normcase(ntpath.dirname(script)) in dirs for script in scripts):
+            with suppress(psutil.Error):
+                proc.kill()
+                ended += 1
+    return ended
+
+
 def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:
     """Write the planned-stop marker and wait for the PID to exit. Windows can't deliver POSIX signals
     to an asyncio loop, so the marker is the ONLY way to ask the gateway to drain and persist."""
@@ -1833,6 +1861,7 @@ def stop() -> None:
 
     # A user-initiated stop is a planned death: don't later report it as a silent crash.
     _clear_start_attestation()
+    launchers_ended = end_launchers()
 
     pid = get_running_pid()
     stop_pids = _collect_gateway_stop_pids(pid)
@@ -1840,7 +1869,7 @@ def stop() -> None:
     identities = _gateway_pid_identities(stop_pids)
     drained = pid is not None and _drain_gateway_pid(pid, _windows_stop_drain_timeout())
 
-    stopped_any = drained
+    stopped_any = drained or bool(launchers_ended)
     if is_task_registered():
         code, _out, err = _exec_schtasks(["/End", "/TN", get_task_name()])
         # schtasks returns nonzero when the task isn't currently running — not an error.

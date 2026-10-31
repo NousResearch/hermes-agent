@@ -958,8 +958,9 @@ Plugins occupy one of three states:
 | `enabled` | Loaded on next session | Yes | No |
 | `disabled` | Explicitly off — won't load even if also in `enabled` | (irrelevant) | Yes |
 | `not enabled` | Discovered but never opted in | No | No |
+| `missing` | Hermes installed it, but its folder under `~/.hermes/plugins/` was deleted, so nothing loads | Yes | No |
 
-The default for a newly-installed or bundled plugin is `not enabled`. `hermes plugins list` shows all three distinct states so you can tell what's been explicitly turned off vs. what's just waiting to be enabled.
+The default for a newly-installed or bundled plugin is `not enabled`. `hermes plugins list` shows these states so you can tell what's been explicitly turned off vs. what's just waiting to be enabled. A `missing` row names the source it was installed from: reinstall with `hermes plugins install <source>`, or forget it with `hermes plugins remove <name>` (which drops the install record and the `plugins.enabled` entry). `hermes doctor` flags the same case.
 
 In a running session, `/plugins` shows which plugins are currently loaded.
 

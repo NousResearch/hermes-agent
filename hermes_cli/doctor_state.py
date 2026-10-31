@@ -678,6 +678,19 @@ def _check_plugins_in_both_lists(should_fix: bool, f: Finding) -> None:
                                f"memory.provider set), or keep it off with `hermes plugins disable {name}`")
 
 
+@doctor_check("")  # best-effort: unreadable install metadata is the plugins commands' finding
+def _check_enabled_plugins_missing(should_fix: bool, f: Finding) -> None:
+    """Enabled plugins Hermes installed whose files were deleted: nothing loads and no verb found them."""
+    from hermes_cli.plugins_missing import enabled_missing_plugins, repair_hint
+    missing = enabled_missing_plugins()
+    if not missing:
+        return
+    _section("Enabled Plugins With Missing Files")
+    for name, source in sorted(missing.items()):
+        check_warn(f"{name} will not load", "(its installed files are gone)")
+        f.manual_issues.append(f"Plugin '{name}' is enabled but its files are gone — {repair_hint(name, source)}")
+
+
 @doctor_check("")  # best-effort: profile enumeration must never break doctor
 def _check_profiles(should_fix: bool, f: Finding) -> None:
     from hermes_constants import PROFILE_ID_RE

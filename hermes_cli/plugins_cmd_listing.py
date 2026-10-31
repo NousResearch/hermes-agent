@@ -34,7 +34,7 @@ def _entry_status(entry: tuple, enabled: set, disabled: set, active: set) -> str
     return _pc()._plugin_status(name, enabled, disabled, key, source=source, dir_path=dir_path, active=active)
 
 
-_STATUS_MARKUP = {"disabled": "[red]disabled[/red]", "enabled": "[green]enabled[/green]"}
+_STATUS_MARKUP = {"disabled": "[red]disabled[/red]", "enabled": "[green]enabled[/green]", "missing": "[red]missing[/red]"}
 
 
 def cmd_list(args: Any | None = None) -> None:
@@ -64,6 +64,12 @@ def cmd_list(args: Any | None = None) -> None:
          catalog.removed_annotation(name, _dir, removed_entries))
         for name, version, description, source, _dir, key in entries
     ]
+    from rich.markup import escape
+
+    from hermes_cli.plugins_missing import enabled_missing_plugins, repair_hint
+    missing = enabled_missing_plugins()
+    rows += [(name, "missing", "", "enabled, but its installed files are gone", source, "")
+             for name, source in sorted(missing.items())]
 
     if getattr(args, "json", False):
         keys = ("name", "status", "version", "description", "source", "removed")
@@ -75,7 +81,7 @@ def cmd_list(args: Any | None = None) -> None:
             print(f"{status:12} {source:8} {version:8} {name}")
         return
 
-    if not entries:
+    if not rows:
         console.print("[dim]No plugins matched the selected filters.[/dim]")
         return
 
@@ -107,6 +113,8 @@ def cmd_list(args: Any | None = None) -> None:
     console.print(table)
     for line in removed_lines:
         console.print(line)
+    for name, source in sorted(missing.items()):
+        console.print(f"[red]✗ {name}[/red] is enabled but its files are gone — {escape(repair_hint(name, source))}")
     console.print()
     console.print("[dim]Compact view:[/dim] hermes plugins list --plain --no-bundled")
     console.print("[dim]Interactive toggle:[/dim] hermes plugins")

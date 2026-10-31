@@ -32,6 +32,7 @@ from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
 from hermes_cli.middleware import VALID_MIDDLEWARE
 from hermes_cli.plugin_capabilities import plugin_capability_granted
+from hermes_cli.plugin_session import PluginSessionContextMixin
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
 from hermes_cli.plugins_manifest import (
@@ -227,7 +228,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext(PluginCapabilityCtxMixin):
+class PluginContext(PluginCapabilityCtxMixin, PluginSessionContextMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -593,16 +594,6 @@ class PluginContext(PluginCapabilityCtxMixin):
         (``origin``); ``True`` means a host accepted it. Contract: plugins_injection.py, plugin docs."""
         from hermes_cli.plugins_injection import inject_plugin_message
         return inject_plugin_message(self, content, role, session_key=session_key, origin=origin)
-
-    def session_cwd(self) -> str:
-        """The calling session's recorded cwd, never the gateway's own (``plugin_session``)."""
-        from hermes_cli.plugin_session import context_cwd
-        return context_cwd(self._manager)
-
-    def session_surface(self) -> str:
-        """The calling session's client (``cli``/``tui``/``desktop``/``acp``) or messaging platform."""
-        from hermes_cli.plugin_session import context_surface
-        return context_surface(self._manager)
 
     def post_message(self, text: str) -> Any:
         """Post *text* into the session bound to this call; the handle's ``edit(text)`` updates it in

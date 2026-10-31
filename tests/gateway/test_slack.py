@@ -2843,6 +2843,33 @@ class TestThreadReplyHandling:
         assert msg_event.text == "Follow-up question"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("scope, tracked", [(None, False), ("addressed", False), ("all", True)])
+    async def test_unmentioned_thread_reply_reactions_follow_reaction_scope(
+        self, adapter_with_session_store, mock_session_store, scope, tracked
+    ):
+        """An admitted unmentioned thread follow-up gets lifecycle reactions only with
+        ``reaction_scope: all``; the default stays DMs and @mentions only."""
+        from gateway.session import SessionEntry
+
+        a = adapter_with_session_store
+        session_key = "agent:main:slack:group:T_TEAM:C123:123.000:U_USER"
+        a.config.extra["thread_sessions_per_user"] = True
+        if scope is not None:
+            a.config.extra["reaction_scope"] = scope
+        mock_session_store._entries = {session_key: SessionEntry.from_dict({
+            "session_key": session_key, "session_id": "slack-thread-session",
+            "created_at": "2024-01-01T00:00:00", "updated_at": "2024-01-01T00:00:00",
+        })}
+        event = {
+            "text": "Follow-up question", "user": "U_USER", "channel": "C123",
+            "ts": "123.456", "thread_ts": "123.000", "channel_type": "channel", "team": "T_TEAM",
+        }
+        await a._handle_slack_message(event)
+        a.handle_message.assert_called_once()
+        marker = a._workspace_message_marker("T_TEAM", "123.456")
+        assert (marker in a._reacting_message_ids) is tracked
+
+    @pytest.mark.asyncio
     async def test_thread_reply_routes_when_parent_mentioned_bot(
         self, adapter_with_session_store, mock_session_store
     ):

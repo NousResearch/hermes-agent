@@ -120,6 +120,15 @@ class ProviderRegistry(Generic[P]):
                 or self._providers.get(key)
             )
 
+    def all_scopes(self) -> list[tuple[Optional[str], P]]:
+        """Every registration as ``(scope, provider)``: the global layer (scope ``None``) and every
+        profile's scoped map, for a consumer that serves all of this process's profiles at once."""
+        with self._lock:
+            rows: list[tuple[Optional[str], P]] = [(None, p) for p in self._providers.values()]
+            for scope, providers in self._scoped_providers.items():
+                rows.extend((scope, p) for p in providers.values())
+        return rows
+
     def registry_generation(self, *, scope: Optional[str] = None) -> tuple:
         """Cache fingerprint ``(global_generation, scoped_generation)``."""
         active_scope = hermes_home_key(scope)

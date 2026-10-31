@@ -50,8 +50,10 @@ _EMOJI_PRESENTATION_BASES = (
     r'\u2b05-\u2b07\u2b1b\u2b1c\u2b50\u2b55\u3030\u303d\u3297\u3299' + _EMOJI_RANGE
 )
 # Matched on the RAW command: detection variants are NFKC-folded, which turns ℹ + VS16 into ``i`` + VS16.
+# A keycap emoji (digit, ``#`` or ``*`` + VS16 + U+20E3) is exempt only as that exact sequence, so a
+# selector after a digit with no keycap mark is still flagged.
 _HIDDEN_VARIATION_SELECTOR_RE = re.compile(
-    rf'(?<![{_EMOJI_PRESENTATION_BASES}])[\ufe00-\ufe0f\U000e0100-\U000e01ef]')
+    rf'(?<![{_EMOJI_PRESENTATION_BASES}])(?!(?<=[0-9#*])\ufe0f\u20e3)[\ufe00-\ufe0f\U000e0100-\U000e01ef]')
 _INVISIBLE_UNICODE_DESCRIPTION = "invisible or bidirectional Unicode control character (possible obfuscation)"
 # Global flags before a subcommand, each with an optional value. Every flag has one parse ('-' plus
 # its possessive remainder, so '--x' and '--x=v' never split two ways) and a value cannot itself be a

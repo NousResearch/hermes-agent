@@ -352,6 +352,22 @@ canonical_method("runtime.describe", params=RuntimeDescribeParams, result=Runtim
                  doc="Owner identity and the canonical capabilities a client may rely on.")
 
 
+class ClarifyPresentationParams(Params):
+    session_id: str
+    execution_generation: int
+    prompt_id: str
+    state: Literal['presented', 'interaction', 'hidden']
+
+
+class ClarifyPresentationResult(Result):
+    prompt_id: str
+    status: Literal['recorded', 'already_recorded', 'invalidated', 'ineligible', 'already_resolved']
+
+
+canonical_method('clarify.presentation', params=ClarifyPresentationParams, result=ClarifyPresentationResult,
+                 doc='Record authenticated software presentation facts without answering a question.')
+
+
 class ClarifyRespondParams(Params):
     session_id: str
     execution_generation: int

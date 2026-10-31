@@ -53,6 +53,8 @@ export interface ServerRequest<M extends string = string, P extends ServerReques
    * card can skip re-notifying.
    */
   replayed?: boolean
+  /** Software presentation facts for a canonical clarify, never a human response. */
+  reportClarifyPresentation?: (state: 'presented' | 'interaction' | 'hidden') => void
 }
 
 /** Handles one inbound server→client request; return `false` to decline (next handler tries). */

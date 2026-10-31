@@ -41,6 +41,13 @@ export function hasOpenServerRequest(id: string): boolean {
   return open.has(id)
 }
 
+/** Capture this exact request's callback so a reconnect cannot redirect old UI evidence. */
+export function clarifyPresentationReporter(id: string | undefined): ServerRequest['reportClarifyPresentation'] {
+  const request = id ? open.get(id) : undefined
+
+  return request?.method === 'clarify' ? request.reportClarifyPresentation : undefined
+}
+
 export function resetServerRequestsForTests(): void {
   open.clear()
 }

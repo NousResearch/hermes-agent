@@ -727,6 +727,49 @@ def test_approval_respond_4001_when_nothing_resolves(server, monkeypatch):
     assert response["error"]["code"] == 4001
 
 
+def test_approval_pending_falls_back_to_stored_session_id(server, monkeypatch):
+    """approval.pending accepts the STORED id approval.respond accepts: the client re-lists
+    right after answering through the stored-id fallback, and a 4001 there latches the
+    session gone, so its remaining queued approvals never come back (#91684)."""
+    from tools import approval
+
+    server._sessions["ui-stored"] = {"session_key": "stored-91684", "history": []}
+    pending = [{"request_id": "req-2", "command": "danger"}]
+    monkeypatch.setattr(approval, "list_gateway_approvals",
+                        lambda key: pending if key == "stored-91684" else [])
+
+    response = server.handle_request(
+        {"id": "r-pending-stored", "method": "approval.pending",
+         "params": {"session_id": "stored-91684"}})
+
+    assert response.get("result") == {"approvals": pending}
+
+
+def test_approval_pending_stored_id_fallback_stays_in_requested_profile(server, monkeypatch):
+    """The stored-id rung is a read of command text: a stored id that only another profile's
+    live session holds must stay 4001 unless that profile is the one asked for (#100029)."""
+    from tools import approval
+
+    other_home = "/profiles/other"
+    server._sessions["ui-other"] = {"session_key": "stored-shared", "history": [],
+                                    "profile_home": other_home}
+    pending = [{"request_id": "req-other", "command": "other profile's command"}]
+    monkeypatch.setattr(approval, "list_gateway_approvals",
+                        lambda key: pending if key == "stored-shared" else [])
+    monkeypatch.setattr(server, "_profile_home",
+                        lambda profile: Path(other_home) if profile == "other" else None)
+
+    unscoped = server.handle_request(
+        {"id": "r-unscoped", "method": "approval.pending",
+         "params": {"session_id": "stored-shared"}})
+    scoped = server.handle_request(
+        {"id": "r-scoped", "method": "approval.pending",
+         "params": {"session_id": "stored-shared", "profile": "other"}})
+
+    assert unscoped["error"]["code"] == 4001
+    assert scoped.get("result") == {"approvals": pending}
+
+
 # ── Session lookup ───────────────────────────────────────────────────
 
 

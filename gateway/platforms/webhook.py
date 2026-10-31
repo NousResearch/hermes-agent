@@ -25,6 +25,7 @@ from collections import deque
 from datetime import datetime, timezone, UTC
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional
 
 try:
@@ -37,7 +38,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.tcp_site import start_tcp_site
 from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
@@ -199,6 +200,11 @@ def _validate_svix_signature(body: bytes, secret: str, msg_id: str, timestamp: s
         if _ and version == "v1" and _hmac_str_equal(signature, expected):
             return True
     return False
+
+
+# Settled admission outcomes that report a finished run to a route completion script; interrupted,
+# cancelled and rejected admissions never ran to completion.
+_COMPLETION_OUTCOMES = {"completed": ProcessingOutcome.SUCCESS, "failed": ProcessingOutcome.FAILURE}
 
 
 class WebhookAdapter(BasePlatformAdapter):
@@ -809,6 +815,11 @@ class WebhookAdapter(BasePlatformAdapter):
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
         source = self._admission_source(route_name, profile, delivery_id)
+        # completion_script is snapshotted (env-expanded, path unresolved) at dispatch time so a
+        # config reload mid-run cannot swap the script out from under an in-flight delivery.
+        completion_script = route_config.get("completion_script")
+        if completion_script:
+            completion_script = self._route_processor.snapshot_script_value(completion_script)
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id, timestamp=datetime.fromtimestamp(0, UTC))
         from gateway.platforms.webhook_ingress import admit_producer
@@ -831,12 +842,21 @@ class WebhookAdapter(BasePlatformAdapter):
         from gateway.session_authorities import active_authority, authority_for_profile_id
         runner = self._message_handler.__self__
         authority = authority_for_profile_id(runner, receipt.ref.profile_id) or active_authority(runner)
-        task = asyncio.create_task(self._finalize_delivery(event, authority, receipt))
+        runtime_home = runner._resolve_profile_home_for_source(source)
+        task = asyncio.create_task(self._finalize_delivery(event, authority, receipt, route_name=route_name,
+                                                           runtime_home=runtime_home, completion_script=completion_script))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return "accepted"
 
-    async def _finalize_delivery(self, event, authority, receipt):
+    async def _finalize_delivery(self, event, authority, receipt, *, route_name: str, runtime_home: Path,
+                                 completion_script: Any):
+        """Wait for the admitted run to settle, close its one-shot session, then run the completion script.
+
+        Completion scripts are best effort and run only for the terminal ``completed``/``failed``
+        outcomes — an interrupted or cancelled run must not be reported as complete. A script failure
+        never replaces the original outcome nor blocks session cleanup, which is why it runs last.
+        """
         from hermes_state_runtime import get_session_admission
         try:
             row = get_session_admission(authority.db, admission_id=receipt.admission_id)
@@ -849,6 +869,22 @@ class WebhookAdapter(BasePlatformAdapter):
             await self._end_webhook_session(event, event.source.chat_id)
         except Exception:
             logger.exception("[webhook] Could not finalize admitted delivery %s", receipt.admission_id)
+            return
+        outcome = _COMPLETION_OUTCOMES.get(row['outcome'])
+        if completion_script and outcome is not None:
+            await self._run_completion_script(event, route_name, runtime_home, completion_script, outcome)
+
+    async def _run_completion_script(self, event: MessageEvent, route_name: str, runtime_home: Path,
+                                     script: Any, outcome: ProcessingOutcome) -> None:
+        """Run the completion script snapshotted when the route was dispatched, off the event loop.
+
+        The request's scope has closed, so bind the admitted runtime home, including bare routes
+        re-homed by ``profile_routes``. ``to_thread`` carries the scope into the worker."""
+        from gateway.run import _async_profile_runtime_scope
+        envelope = {"version": 1, "route": route_name, "outcome": outcome.value,
+                    "delivery_id": event.message_id, "payload": event.raw_message}
+        async with _async_profile_runtime_scope(runtime_home):
+            await asyncio.to_thread(self._route_processor.run_completion_script, script, envelope)
 
     async def _end_webhook_session(self, event: MessageEvent, session_chat_id: str) -> None:
         from gateway.platforms.webhook_ingress import finalize_webhook

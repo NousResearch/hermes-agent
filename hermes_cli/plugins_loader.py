@@ -574,6 +574,10 @@ class PluginLoaderMixin:
             # Declared language packs register before any plugin code runs, inside the same ledger slice
             # so a failing register() unwinds them too.
             self._register_declared_locales(manifest, ctx)
+            if self._is_desktop_only_plugin(manifest):
+                logger.info("Plugin '%s' ships no Python half (desktop/plugin.js only); nothing to import",
+                            plugin_key)
+                return True
             if in_host and not self._is_manifest_only_language_pack(manifest):
                 self._plugin_host().load(manifest, ctx, module_name=module_name,
                                          entrypoint=manifest.source not in {"user", "project"})
@@ -638,6 +642,33 @@ class PluginLoaderMixin:
         manifest-only desktop plugin, it loads from its declared files alone."""
         return bool(manifest.provides_locales and manifest.path
                     and not (Path(manifest.path) / "__init__.py").is_file())
+
+    def _is_desktop_only_plugin(self, manifest: PluginManifest) -> bool:
+        """A directory plugin whose payload is ``desktop/plugin.js`` is complete without Python: the
+        Desktop app loads that half itself, so there is nothing to import and no ``register()`` to run.
+        ``hermes plugins validate`` already counts ``desktop/plugin.js`` as a loadable entry point, so
+        importing the absent ``__init__.py`` could only ever report ``Failed to load plugin '<name>': No
+        __init__.py in ...`` on every load pass — one per session creation (e.g. the kanban dispatcher's
+        runs), not only per process start — atop the real load failures an operator looks for (#132741).
+
+        Keyed on the file system, not on ``kind``: a plugin may ship no ``kind`` at all and still be
+        desktop-only, and ``desktop/`` is what decides it either way. The payload is required as well as
+        the missing ``__init__.py`` — a directory left half-written (or one whose Python half is broken)
+        keeps the warning, which is the whole reason this warning is worth reading.
+
+        ``glob("*.py")`` is root-only on purpose, so a plugin carrying ``dashboard/plugin_api.py`` and no
+        root ``.py`` (cron-bulletin, home-dashboard) still skips: that backend is imported by the web
+        server straight from ``dashboard/manifest.json``'s ``api`` field via ``spec_from_file_location``
+        (``web_server_dashboard._mount_one_plugin_api``), never through this loader — its mount failures
+        log on the web server side, not as this ``No __init__.py`` warning (#132762's shape, where the
+        warning was never the signal for the unmounted routes).
+        """
+        if not manifest.path:
+            return False
+        plugin_dir = Path(manifest.path)
+        if (plugin_dir / "__init__.py").is_file():
+            return False
+        return (plugin_dir / "desktop" / "plugin.js").is_file() and not any(plugin_dir.glob("*.py"))
 
     def _register_declared_locales(self, manifest: PluginManifest, ctx) -> None:
         """``provides_locales`` -> ``ctx.register_locale_dir(<plugin>/locales)``; a declared id with no file

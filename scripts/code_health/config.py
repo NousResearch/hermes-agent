@@ -45,6 +45,50 @@ TESTS = ("tests/*", "*/tests/*", "tests-js/*", "*/conftest.py")
 # child with a scoped env, installers): the profile-scope rules don't apply to them.
 SINGLE_PROFILE = TESTS + ("scripts/*", "skills/*", "optional-skills/*", "evals/*", "setup.py")
 
+# --- Import graph: the #14182 dependency DAG and module-level acyclicity ---------------------
+# A layer edge and a cycle are properties of two modules, not of one function, so they are
+# judged by a graph pass (`py_imports`) with the same ratchet semantics as TARGETS: the cap is
+# the count measured on the base revision -- existing debt is frozen and may only go down, new
+# violations fail.
+#
+# Only the directions #14182 states outright are encoded ("cli -> agent -> tools, never
+# reverse"). Pairs the DAG does not define (`cron/`, `tui_gateway/`, `plugins/`, and whether
+# `gateway` may import `cli`) are deliberately not judged: an encoded guess would fail correct
+# code. Adding a pair here is a one-line decision for the owner of #14182.
+GRAPH_EXCLUDE = PY_EXCLUDE + TESTS + (
+    "scripts/*", "apps/*", "website/*", "evals/*", "skills/*", "optional-skills/*",
+    "optional-mcps/*", "plugin-catalog/*", "plugins/*", "ui-tui/*", "web/*", "native/*",
+    "docker/*", "nix/*", "assets/*", "locales/*", "contributors/*",
+)
+# Top-level package -> band. Anything unlisted is a leaf: it may import any band.
+GRAPH_LAYERS = {
+    "hermes_cli": "cli", "cli": "cli",
+    "agent": "agent", "run_agent": "agent", "model_tools": "agent", "toolsets": "agent",
+    "tools": "tools",
+    "gateway": "gateway",
+    "acp_adapter": "acp",
+    "providers": "providers",
+    "cron": "cron",
+    "tui_gateway": "tui_gateway",
+}
+GRAPH_FORBIDDEN = (("tools", "agent"), ("agent", "cli"), ("tools", "cli"),
+                   ("tools", "gateway"), ("agent", "gateway"))
+
+# The message a tripped graph rule leaves for the agent: the remedy, not a restatement.
+GRAPH_FIX = {
+    "LAYER_EDGE": "import it the other way, or move the imported module down to a leaf both bands"
+    " may reach (#14278 applies exactly this fix to `hermes_cli/_subprocess_compat.py`); a new"
+    " direction is a line in GRAPH_FORBIDDEN, not a silent import",
+    "IMPORT_CYCLE": "break the loop with a late import inside the function (the documented"
+    " convention: a call-time import is not an edge), or move the shared piece into a sibling"
+    " both sides may import",
+}
+
+
+def graph_scope(path: str) -> bool:
+    """Product Python the import graph judges (``py_imports``)."""
+    return in_scope(path) == "py" and not _matches(path, GRAPH_EXCLUDE)
+
 
 @dataclass(frozen=True)
 class Rule:

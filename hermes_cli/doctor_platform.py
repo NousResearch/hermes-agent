@@ -584,6 +584,72 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
     _check_windows_gateway_autostart(should_fix, f)
 
 
+def _hermes_command_link() -> tuple[Path, str, Path]:
+    """Install command location, matching install.sh: Termux ``$PREFIX/bin``, else ``~/.local/bin``."""
+    prefix = os.environ.get("PREFIX", "")
+    termux = prefix and (os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+    link_dir, display = (
+        (Path(prefix) / "bin", "$PREFIX/bin") if termux else (Path.home() / ".local" / "bin", "~/.local/bin")
+    )
+    return link_dir, display, link_dir / "hermes"
+
+
+def _hijack_remedy(resolved: Path, found: str, display: str) -> str:
+    shadowed_by_npm = any(part == "node_modules" for part in resolved.parts) or "npm" in str(resolved).lower()
+    if shadowed_by_npm:
+        return (
+            "`hermes` is shadowed by an npm package. If you did not "
+            "mean to install it, remove it (e.g. `npm uninstall -g "
+            "hermes` / `npm uninstall -g hermes-cli`), or move "
+            f"{display} earlier on your PATH."
+        )
+    return (
+        f"`hermes` resolves to {found} instead of the Hermes command. "
+        f"Put {display} earlier on your PATH, or remove the conflicting binary."
+    )
+
+
+def _resolved_hermes_is_ours(found: str, resolved: Path, expected: list[Path], project_root: Path) -> bool:
+    """True when PATH's hermes is the managed link, the project entry, or a launcher this install published."""
+    if resolved in expected or resolved.is_relative_to(project_root):
+        return True
+    # /usr/local/bin and the data-root bin are shell forwarders, not symlinks into the tree.
+    from hermes_cli._launchers import _owns_launcher
+
+    return _owns_launcher(Path(found), project_root)
+
+
+def _report_hermes_command_hijack(
+    venv_bin: Path | None, link: Path, display: str, manual_issues: list[str],
+) -> None:
+    """Warn when ``hermes`` on PATH is not this install.
+
+    The link check only inspects a fixed directory. Another ``hermes`` earlier
+    on PATH — often an unrelated npm package — is what the shell actually runs.
+    Package-managed installs (nix, docker, apt) are not checked here: their
+    command lives outside the project and is reported by the caller.
+    """
+    from hermes_cli.doctor import PROJECT_ROOT, _safe_which
+
+    found = _safe_which("hermes")
+    if not found:
+        return
+    project_root = PROJECT_ROOT.resolve()
+    resolved = Path(found).resolve()
+    expected = [link.resolve()]
+    if venv_bin is not None:
+        expected.append(venv_bin.resolve())
+    if _resolved_hermes_is_ours(found, resolved, expected, project_root):
+        check_ok("PATH resolves `hermes` to the Hermes binary")
+        return
+    check_warn(
+        "`hermes` on your PATH points to a different binary",
+        f"(which hermes → {found}; expected the Hermes "
+        f"command at {display}/hermes or the project venv)",
+    )
+    manual_issues.append(_hijack_remedy(resolved, found, display))
+
+
 @doctor_check()
 def _check_command_installation(should_fix: bool, f: Finding) -> None:
     """Check the install-owned launch contract without replacing custom commands."""
@@ -605,54 +671,67 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
     from hermes_cli._launchers import resolve_store_python
     from pm.environments import base_venv, selected_venv
 
+    venv_bin: Path | None = None
+    link_dir, display, link = _hermes_command_link()
     try:
-        selected = selected_venv(PROJECT_ROOT)
-    except (OSError, ValueError, RuntimeError) as exc:
-        check_fail("Cannot resolve selected dependencies", str(exc))
-        return f.manual_issues.append(_python_repair_hint())
-    pm_launcher = selected != base_venv(PROJECT_ROOT) or resolve_store_python(PROJECT_ROOT) is not None
-    venv_bin = PROJECT_ROOT / "hermes" if pm_launcher else selected / "bin" / "hermes"
-    if not venv_bin.is_file():
-        check_warn("Hermes entry point not found", f"({venv_bin})")
-        return f.manual_issues.append("Repair or reinstall the Hermes launcher through the installation owner")
-    check_ok(f"Hermes entry point exists ({venv_bin})")
-    # Expected command link directory (mirrors install.sh logic).
-    prefix = os.environ.get("PREFIX", "")
-    termux = prefix and (os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
-    link_dir, display = (Path(prefix) / "bin", "$PREFIX/bin") if termux else (Path.home() / ".local" / "bin", "~/.local/bin")
-    link = link_dir / "hermes"
-    if link.is_symlink():
-        target, expected = link.resolve(), venv_bin.resolve()
-        if target == expected:
-            return check_ok(f"{display}/hermes → correct target")
-        check_warn(f"{display}/hermes points to wrong target", f"(→ {target}, expected → {expected})")
-        owned_targets = {(PROJECT_ROOT / name / "bin" / "hermes").resolve() for name in ("venv", ".venv")}
-        if target not in owned_targets:
-            return f.manual_issues.append(f"Review {display}/hermes manually; its target is user-managed and was not changed")
-        if not should_fix:
-            return f.issues.append(f"Broken symlink at {display}/hermes — run 'hermes doctor --fix'")
-        verb = "Fixed"
-    elif link.exists():  # regular file (wrapper script), not a symlink
-        return check_ok(f"{display}/hermes exists (non-symlink)")
-    else:
-        check_fail(f"{display}/hermes not found", "(hermes command may not work outside the venv)")
-        if not should_fix:
-            return f.issues.append(f"Missing {display}/hermes symlink — run 'hermes doctor --fix'")
-        link_dir.mkdir(parents=True, exist_ok=True)
-        verb = "Created"
-    if pm_launcher:
-        from hermes_cli._launchers import stage_launcher
-
-        if stage_launcher("hermes", PROJECT_ROOT, link_dir) is None:
-            check_fail("Could not publish Hermes launcher")
-            return f.manual_issues.append("Repair the PM store interpreter through the installation owner, then rerun 'hermes doctor --fix'")
-        check_ok(f"{verb} PM launcher: {display}/hermes")
-    else:
+        try:
+            selected = selected_venv(PROJECT_ROOT)
+        except (OSError, ValueError, RuntimeError) as exc:
+            check_fail("Cannot resolve selected dependencies", str(exc))
+            f.manual_issues.append(_python_repair_hint())
+            return
+        pm_launcher = selected != base_venv(PROJECT_ROOT) or resolve_store_python(PROJECT_ROOT) is not None
+        venv_bin = PROJECT_ROOT / "hermes" if pm_launcher else selected / "bin" / "hermes"
+        if not venv_bin.is_file():
+            check_warn("Hermes entry point not found", f"({venv_bin})")
+            f.manual_issues.append("Repair or reinstall the Hermes launcher through the installation owner")
+            return
+        check_ok(f"Hermes entry point exists ({venv_bin})")
         if link.is_symlink():
-            link.unlink()
-        link.symlink_to(venv_bin)
-        check_ok(f"{verb} symlink: {display}/hermes → {venv_bin}")
-    f.fixed += 1
-    if verb == "Created" and str(link_dir) not in os.environ.get("PATH", "").split(os.pathsep):
-        check_warn(f"{display} is not on your PATH", "(add it to your shell config: export PATH=\"$HOME/.local/bin:$PATH\")")
-        f.manual_issues.append(f"Add {display} to your PATH")
+            target, expected = link.resolve(), venv_bin.resolve()
+            if target == expected:
+                return check_ok(f"{display}/hermes → correct target")
+            check_warn(f"{display}/hermes points to wrong target", f"(→ {target}, expected → {expected})")
+            owned_targets = {(PROJECT_ROOT / name / "bin" / "hermes").resolve() for name in ("venv", ".venv")}
+            if target not in owned_targets:
+                f.manual_issues.append(
+                    f"Review {display}/hermes manually; its target is user-managed and was not changed"
+                )
+                return
+            if not should_fix:
+                f.issues.append(f"Broken symlink at {display}/hermes — run 'hermes doctor --fix'")
+                return
+            verb = "Fixed"
+        elif link.exists():  # regular file (wrapper script), not a symlink
+            return check_ok(f"{display}/hermes exists (non-symlink)")
+        else:
+            check_fail(f"{display}/hermes not found", "(hermes command may not work outside the venv)")
+            if not should_fix:
+                f.issues.append(f"Missing {display}/hermes symlink — run 'hermes doctor --fix'")
+                return
+            link_dir.mkdir(parents=True, exist_ok=True)
+            verb = "Created"
+        if pm_launcher:
+            from hermes_cli._launchers import stage_launcher
+
+            if stage_launcher("hermes", PROJECT_ROOT, link_dir) is None:
+                check_fail("Could not publish Hermes launcher")
+                f.manual_issues.append(
+                    "Repair the PM store interpreter through the installation owner, then rerun 'hermes doctor --fix'"
+                )
+                return
+            check_ok(f"{verb} PM launcher: {display}/hermes")
+        else:
+            if link.is_symlink():
+                link.unlink()
+            link.symlink_to(venv_bin)
+            check_ok(f"{verb} symlink: {display}/hermes → {venv_bin}")
+        f.fixed += 1
+        if verb == "Created" and str(link_dir) not in os.environ.get("PATH", "").split(os.pathsep):
+            check_warn(
+                f"{display} is not on your PATH",
+                '(add it to your shell config: export PATH="$HOME/.local/bin:$PATH")',
+            )
+            f.manual_issues.append(f"Add {display} to your PATH")
+    finally:
+        _report_hermes_command_hijack(venv_bin, link, display, f.manual_issues)

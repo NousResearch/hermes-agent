@@ -37,7 +37,8 @@ class BedrockTransport(ProviderTransport):
         self, model: str, messages: list[dict[str, Any]],
         tools: Optional[list[dict[str, Any]]] = None, **params,
     ) -> dict[str, Any]:
-        """Build Converse kwargs, leaving the optional output limit to the provider."""
+        """Build Converse kwargs, leaving the optional output limit to the provider. ``reasoning_config``
+        becomes the model's ``additionalModelRequestFields`` reasoning switch (see ``build_converse_kwargs``)."""
         from agent.bedrock_adapter import build_converse_kwargs
 
         self._model = model  # stamps the turns normalize_response captures as this model's own

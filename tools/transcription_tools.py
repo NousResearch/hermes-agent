@@ -88,7 +88,27 @@ def _load_stt_config() -> dict:
     """Load the ``stt`` section from user config, falling back to defaults."""
     try:
         from hermes_cli.config import load_config
-        return load_config().get("stt") or {}
+        from agent.secret_scope import (
+            build_profile_secret_scope, current_secret_scope, load_env_file,
+            reset_secret_scope, set_secret_scope,
+        )
+        from hermes_constants import get_hermes_home
+
+        if current_secret_scope() is not None:
+            return load_config().get("stt") or {}
+        home = get_hermes_home()
+        # Boot/warmup callers can precede a turn scope. Seed the owner's dotenv
+        # before building the full scope: lazy provider discovery can itself read config.
+        token = set_secret_scope(load_env_file(home / ".env"), profile_home=str(home))
+        try:
+            secrets = build_profile_secret_scope(home)
+            full_token = set_secret_scope(secrets, profile_home=str(home))
+            try:
+                return load_config().get("stt") or {}
+            finally:
+                reset_secret_scope(full_token)
+        finally:
+            reset_secret_scope(token)
     except Exception:
         return {}
 

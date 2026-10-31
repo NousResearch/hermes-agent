@@ -58,14 +58,14 @@ class TodoProgress:
         self.disabled = False
 
     def absorb(self, snapshot: TodoChecklist) -> None:
-        # Keep whole rows and reserve space for an omission notice in platform length units.
+        # Measure formatted payloads: Markdown escaping can otherwise split one checklist into multiple messages.
         st = self.state
         lines = snapshot.text.splitlines()
         kept = []
         for index, line in enumerate(lines):
             footer = f"… ({len(lines) - index} more tasks)"
             candidate = "\n".join([*kept, line, *([footer] if index < len(lines) - 1 else [])])
-            if st._progress_len_fn(candidate) > st._PROGRESS_TEXT_LIMIT:
+            if st._progress_len_fn(st.adapter.format_message(candidate)) > st._PROGRESS_TEXT_LIMIT:
                 kept.append(footer)
                 break
             kept.append(line)

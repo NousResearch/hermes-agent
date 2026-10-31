@@ -35,6 +35,7 @@ def _pin_max_concurrent_children(monkeypatch):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def make_tc(name: str, arguments: str = "{}") -> types.SimpleNamespace:
     """Create a minimal tool_call SimpleNamespace mirroring the OpenAI SDK object."""
     tc = types.SimpleNamespace()
@@ -55,8 +56,8 @@ def assistant_dict_call(call_id: str, name: str = "terminal") -> dict:
 # Phase 1 — _sanitize_api_messages
 # ---------------------------------------------------------------------------
 
-class TestSanitizeApiMessages:
 
+class TestSanitizeApiMessages:
     def test_orphaned_result_removed(self):
         msgs = [
             {"role": "assistant", "tool_calls": [assistant_dict_call("c1")]},
@@ -90,10 +91,13 @@ class TestSanitizeApiMessages:
 
     def test_mixed_orphaned_result_and_orphaned_call(self):
         msgs = [
-            {"role": "assistant", "tool_calls": [
-                assistant_dict_call("c4"),
-                assistant_dict_call("c5"),
-            ]},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    assistant_dict_call("c4"),
+                    assistant_dict_call("c5"),
+                ],
+            },
             tool_result("c4"),
             tool_result("c_DANGLING"),
         ]
@@ -111,10 +115,20 @@ class TestSanitizeApiMessages:
         per-call copy only (#51944): a shallow copy of the history row — the iteration-limit summary
         path's shape — must leave the persisted dict untouched, valid names must be byte-identical
         (prompt-cache prefix), and the result's wire name follows the coerced call name."""
-        stored_call = {"id": "c1", "function": {"name": "multi_tool_use.parallel", "arguments": "{}"}}
-        stored = {"role": "assistant", "tool_calls": [stored_call, assistant_dict_call("c2", "terminal")]}
+        stored_call = {
+            "id": "c1",
+            "function": {"name": "multi_tool_use.parallel", "arguments": "{}"},
+        }
+        stored = {
+            "role": "assistant",
+            "tool_calls": [stored_call, assistant_dict_call("c2", "terminal")],
+        }
         out = AIAgent._sanitize_api_messages(
-            [dict(stored), {**tool_result("c1"), "name": "multi_tool_use.parallel"}, tool_result("c2")]
+            [
+                dict(stored),
+                {**tool_result("c1"), "name": "multi_tool_use.parallel"},
+                tool_result("c2"),
+            ]
         )
         names = [tc["function"]["name"] for tc in out[0]["tool_calls"]]
         assert names == ["multi_tool_use_parallel", "terminal"]
@@ -130,17 +144,17 @@ class TestSanitizeApiMessages:
         stored = {"role": "assistant", "tool_calls": [tc_obj]}
         out = AIAgent._sanitize_api_messages([dict(stored), tool_result("c1")])
         assert out[0]["tool_calls"][0] == {
-            "id": "c1", "type": "function",
+            "id": "c1",
+            "type": "function",
             "function": {"name": "multi_tool_use_parallel", "arguments": '{"x": 1}'},
         }
         assert fn.name == "multi_tool_use.parallel"
         assert stored["tool_calls"][0] is tc_obj
 
-
     def test_sdk_object_tool_calls(self):
-        tc_obj = types.SimpleNamespace(id="c6", function=types.SimpleNamespace(
-            name="terminal", arguments="{}"
-        ))
+        tc_obj = types.SimpleNamespace(
+            id="c6", function=types.SimpleNamespace(name="terminal", arguments="{}")
+        )
         msgs = [
             {"role": "assistant", "tool_calls": [tc_obj]},
         ]
@@ -153,8 +167,8 @@ class TestSanitizeApiMessages:
 # Phase 2a — _cap_delegate_task_calls
 # ---------------------------------------------------------------------------
 
-class TestCapDelegateTaskCalls:
 
+class TestCapDelegateTaskCalls:
     def test_excess_delegates_truncated(self):
         tcs = [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN + 2)]
         out = AIAgent._cap_delegate_task_calls(tcs)
@@ -162,10 +176,10 @@ class TestCapDelegateTaskCalls:
         assert delegate_count == MAX_CONCURRENT_CHILDREN
 
     def test_non_delegate_calls_preserved(self):
-        tcs = (
-            [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN + 1)]
-            + [make_tc("terminal"), make_tc("web_search")]
-        )
+        tcs = [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN + 1)] + [
+            make_tc("terminal"),
+            make_tc("web_search"),
+        ]
         out = AIAgent._cap_delegate_task_calls(tcs)
         names = [tc.function.name for tc in out]
         assert "terminal" in names
@@ -176,19 +190,21 @@ class TestCapDelegateTaskCalls:
         out = AIAgent._cap_delegate_task_calls(tcs)
         assert out is tcs
 
-
     def test_empty_list_safe(self):
         assert AIAgent._cap_delegate_task_calls([]) == []
 
-
     def test_interleaved_order_preserved(self):
-        delegates = [make_tc("delegate_task", f'{{"task":"{i}"}}')
-                     for i in range(MAX_CONCURRENT_CHILDREN + 1)]
+        delegates = [
+            make_tc("delegate_task", f'{{"task":"{i}"}}')
+            for i in range(MAX_CONCURRENT_CHILDREN + 1)
+        ]
         t1 = make_tc("terminal", '{"cmd":"ls"}')
         w1 = make_tc("web_search", '{"q":"x"}')
         tcs = [delegates[0], t1, delegates[1], w1] + delegates[2:]
         out = AIAgent._cap_delegate_task_calls(tcs)
-        expected = [delegates[0], t1, delegates[1], w1] + delegates[2:MAX_CONCURRENT_CHILDREN]
+        expected = [delegates[0], t1, delegates[1], w1] + delegates[
+            2:MAX_CONCURRENT_CHILDREN
+        ]
         assert len(out) == len(expected)
         for i, (actual, exp) in enumerate(zip(out, expected)):
             assert actual is exp, f"mismatch at index {i}"
@@ -198,8 +214,8 @@ class TestCapDelegateTaskCalls:
 # Phase 2b — _deduplicate_tool_calls
 # ---------------------------------------------------------------------------
 
-class TestDeduplicateToolCalls:
 
+class TestDeduplicateToolCalls:
     def test_duplicate_pair_deduplicated(self):
         tcs = [
             make_tc("web_search", '{"query":"foo"}'),
@@ -239,7 +255,6 @@ class TestDeduplicateToolCalls:
 
         assert out == [first, distinct]
 
-
     def test_empty_list_safe(self):
         assert AIAgent._deduplicate_tool_calls([]) == []
 
@@ -248,7 +263,10 @@ class TestDeduplicateToolCalls:
 # Phase 2c — _uniquify_tool_call_ids
 # ---------------------------------------------------------------------------
 
-def make_tc_id(id_: str, name: str, arguments: str = "{}", call_id=None) -> types.SimpleNamespace:
+
+def make_tc_id(
+    id_: str, name: str, arguments: str = "{}", call_id=None
+) -> types.SimpleNamespace:
     tc = types.SimpleNamespace()
     tc.id = id_
     if call_id is not None:
@@ -258,7 +276,6 @@ def make_tc_id(id_: str, name: str, arguments: str = "{}", call_id=None) -> type
 
 
 class TestUniquifyToolCallIds:
-
     def test_distinct_calls_sharing_id_get_unique_ids(self):
         tcs = [
             make_tc_id("call_1", "read_file", '{"path":"a.txt"}'),
@@ -266,40 +283,52 @@ class TestUniquifyToolCallIds:
         ]
         out = AIAgent._uniquify_tool_call_ids(tcs)
         assert out is tcs
-        assert tcs[0].id == "call_1"          # first occurrence untouched
-        assert tcs[1].id == "call_1_d2"       # deterministic suffix
+        assert tcs[0].id == "call_1"  # first occurrence untouched
+        assert tcs[1].id == "call_1_d2"  # deterministic suffix
         assert len({tc.id for tc in tcs}) == 2
 
     def test_three_way_collision(self):
-        tcs = [make_tc_id("x", "t", '{"a":1}'),
-               make_tc_id("x", "t", '{"a":2}'),
-               make_tc_id("x", "t", '{"a":3}')]
+        tcs = [
+            make_tc_id("x", "t", '{"a":1}'),
+            make_tc_id("x", "t", '{"a":2}'),
+            make_tc_id("x", "t", '{"a":3}'),
+        ]
         AIAgent._uniquify_tool_call_ids(tcs)
         assert [tc.id for tc in tcs] == ["x", "x_d2", "x_d3"]
 
-
-    def test_blank_and_missing_ids_left_for_fallback(self):
+    def test_blank_and_missing_ids_filled_deterministically(self):
+        # Blank/missing ids get the deterministic fill at ingest so a later turn's
+        # id-less repeat cannot collide (#144039); distinct names/args hash apart.
         tc_blank = make_tc_id("", "t1")
         tc_none = make_tc_id(None, "t2")
         tc_noattr = make_tc("t3")  # no .id attribute at all
         AIAgent._uniquify_tool_call_ids([tc_blank, tc_none, tc_noattr])
-        assert tc_blank.id == ""
-        assert tc_none.id is None
-        assert not hasattr(tc_noattr, "id")
+        assert tc_blank.id.startswith("call_")
+        assert tc_none.id.startswith("call_")
+        assert tc_noattr.id.startswith("call_")
+        assert len({tc_blank.id, tc_none.id, tc_noattr.id}) == 3
 
     def test_call_id_sibling_kept_consistent(self):
         # Responses-path objects carry call_id; build_assistant_message
         # prefers it, so the rename must update both.
-        tcs = [make_tc_id("call_1", "t", '{"a":1}', call_id="call_1"),
-               make_tc_id("call_1", "t", '{"a":2}', call_id="call_1")]
+        tcs = [
+            make_tc_id("call_1", "t", '{"a":1}', call_id="call_1"),
+            make_tc_id("call_1", "t", '{"a":2}', call_id="call_1"),
+        ]
         AIAgent._uniquify_tool_call_ids(tcs)
         assert tcs[1].id == "call_1_d2"
         assert tcs[1].call_id == "call_1_d2"
         assert tcs[0].call_id == "call_1"
 
     def test_dict_entries_supported(self):
-        tcs = [{"id": "c", "function": {"name": "t", "arguments": '{"a":1}'}},
-               {"id": "c", "call_id": "c", "function": {"name": "t", "arguments": '{"a":2}'}}]
+        tcs = [
+            {"id": "c", "function": {"name": "t", "arguments": '{"a":1}'}},
+            {
+                "id": "c",
+                "call_id": "c",
+                "function": {"name": "t", "arguments": '{"a":2}'},
+            },
+        ]
         AIAgent._uniquify_tool_call_ids(tcs)
         assert tcs[0]["id"] == "c"
         assert tcs[1]["id"] == "c_d2"
@@ -312,8 +341,10 @@ class TestUniquifyToolCallIds:
     def test_composite_responses_ids_collide_on_call_half(self):
         # "call_x|fc_y" composites pair on the call half; the rename must
         # keep the provider's response-item half intact.
-        tcs = [make_tc_id("call_x|fc_1", "t", '{"a":1}'),
-               make_tc_id("call_x|fc_2", "t", '{"a":2}')]
+        tcs = [
+            make_tc_id("call_x|fc_1", "t", '{"a":1}'),
+            make_tc_id("call_x|fc_2", "t", '{"a":2}'),
+        ]
         AIAgent._uniquify_tool_call_ids(tcs)
         assert tcs[0].id == "call_x|fc_1"
         assert tcs[1].id == "call_x_d2|fc_2"
@@ -328,9 +359,8 @@ class TestUniquifyToolCallIds:
 # _get_tool_call_name_static
 # ---------------------------------------------------------------------------
 
+
 class TestGetToolCallNameStatic:
-
-
     def test_object_without_function_attr(self):
         tc = types.SimpleNamespace(id="call_1")
         assert AIAgent._get_tool_call_name_static(tc) == ""

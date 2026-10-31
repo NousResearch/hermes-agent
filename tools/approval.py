@@ -12,6 +12,7 @@ call time; sibling-defined names are imported from their defining module.
 """
 
 from dataclasses import dataclass
+import functools
 import hashlib
 import importlib
 import logging
@@ -20,6 +21,7 @@ import threading
 from typing import Optional
 
 from utils import env_var_enabled, is_truthy_value
+from agent import tool_decision
 from agent.i18n import t
 from tools import approval_context
 from tools.approval_context import (
@@ -527,8 +529,23 @@ def is_approval_bypass_active() -> bool:
 
 # --- Result builders shared by the gates ----------------------------------------------------------------------------
 
-def _approved() -> dict:
+def _approved(auto_source: str = "") -> dict:
+    """``auto_source`` names what approved a flagged action without a human (``tool_decision``)."""
+    if auto_source:
+        tool_decision.note("auto_approved", auto_source)
     return {"approved": True, "message": None}
+
+
+def _records_decision(gate: str):
+    """Report a gate's result to the ``tool_decision`` hook; the result is returned unchanged."""
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            result = fn(*args, **kwargs)
+            tool_decision.note_approval_result(result, gate)
+            return result
+        return wrapper
+    return decorate
 
 
 # ``outcome`` -> one plain sentence for the person who just answered (or did not), keyed as
@@ -838,6 +855,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
         if not smart_denied:
             _persist_choice(session_key, choice, pattern_keys)
+        tool_decision.note("user_approved", "approval_prompt")
         if spec.user_approved:
             return _user_approved(session_key, description)
         return _approved()
@@ -975,6 +993,7 @@ def _presence(approval_callback=None) -> tuple:
     return approval_callback, is_cli, is_gateway, is_ask
 
 
+@_records_decision("approval_gate")
 def _run_approval_gate(
     *, pattern_key: str, description: str, display_target: str, approval_callback=None,
     subject: str = "", noun: str = "flagged actions",
@@ -998,10 +1017,10 @@ def _run_approval_gate(
     # guards honour it, so every action routed through this gate (computer_use, plugin rules, SSH-config writes,
     # dangerous-pattern prompts) must too, or "off" still prompts on those surfaces.
     if _yolo_active() or approval_context._get_approval_mode() == "off":
-        return _approved()
+        return _approved("yolo" if _yolo_active() else "approvals.mode=off")
     session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):
-        return _approved()
+        return _approved("allowlist")
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
     if not is_cli and not is_gateway and not is_ask:
@@ -1026,7 +1045,7 @@ def _run_approval_gate(
                 # otherwise block what single_query_mode: approve just authorized.
                 logger.warning("%s (pattern: %s): %s — single-query auto-approve "
                                "(approvals.single_query_mode: approve).", *log_args)
-                return _approved()
+                return _approved("approvals.single_query_mode")
             break  # cron/unattended approve-mode: auto-approve below
         else:
             if fail_closed_when_no_human:
@@ -1039,7 +1058,7 @@ def _run_approval_gate(
                     pattern_key=pattern_key, description=description)
         logger.warning("%s (pattern: %s): %s — set HERMES_INTERACTIVE or "
                        "HERMES_GATEWAY_SESSION to require approval.", *log_args)
-        return _approved()
+        return _approved("non_interactive")
 
     return _human_decision(
         _ACTION_GATE, command=display_target, description=description, pattern_key=pattern_key,
@@ -1102,6 +1121,7 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     return _user_deny_block(command)
 
 
+@_records_decision("command_guard")
 def check_dangerous_command(command: str, env_type: str,
                             approval_callback=None,
                             has_host_access: bool = False) -> dict:
@@ -1116,7 +1136,7 @@ def check_dangerous_command(command: str, env_type: str,
     if _yolo_active():
         return _approved()
     if _command_matches_permanent_allowlist(command):
-        return _approved()
+        return _approved("allowlist")
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
         return _approved()
@@ -1158,6 +1178,7 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
 
 # --- Combined pre-exec guard (floors + dangerous command detection) ------------------------------------------------
 
+@_records_decision("command_guard")
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
                              has_host_access: bool = False) -> dict:
@@ -1180,22 +1201,25 @@ def check_all_command_guards(command: str, env_type: str,
     if _yolo_active() or approval_mode == "off":
         return _approved()
     if _command_matches_permanent_allowlist(command):
-        return _approved()
+        return _approved("allowlist")
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
     # Outside CLI/gateway/ask flows we never block on approvals: each
     # unattended context applies its configured deny/approve mode, else allow.
     if not is_cli and not is_gateway and not is_ask:
-        for ctx in _unattended_contexts():
+        contexts = _unattended_contexts()
+        for ctx in contexts:
             result = _unattended_deny(command, ctx)
             if result is not None:
                 return result
-        return _approved()
+        return _approved("unattended_approve" if contexts and tool_decision._has_subscriber() and detect_dangerous_command(command)[0] else None)
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     session_key = get_current_session_key()
-    if not is_dangerous or is_approved(session_key, pattern_key):
+    if not is_dangerous:
         return _approved()
+    if is_approved(session_key, pattern_key):
+        return _approved("allowlist")
     return _human_decision(
         _COMMAND_GATE, command=command, description=description,
         pattern_key=pattern_key, pattern_keys=[pattern_key],
@@ -1223,6 +1247,7 @@ def _is_local_viewer_turn() -> bool:
             and _gateway_notify_cb(get_current_session_key()) is not None)
 
 
+@_records_decision("execute_code_guard")
 def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.
 
@@ -1261,7 +1286,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
                 "subprocess calls that bypass shell-string approval checks). " + ctx.exec_tail,
                 pattern_key=pattern_key, description=description, outcome="blocked", noun="code",
             )
-        return _approved()
+        return _approved(f"approvals.{ctx.cfg_key}")
 
     # Only gateway/ask contexts get the one-shot whole-script approval. In an interactive CLI the script's terminal()
     # calls are guarded per-call (context propagates into the RPC thread, #33057), so a whole-script prompt would fire
@@ -1281,7 +1306,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # Without this, "Approve session" / "Always" choices are stored but never
     # consulted, so every execute_code call re-prompts (#39275).
     if is_approved(session_key, pattern_key):
-        return _approved()
+        return _approved("allowlist")
 
     # Smart mode: an APPROVE only suppresses the redundant whole-script prompt; the per-call terminal() guards still
     # run independently. The gateway renders the pending payload to Discord/Slack, so the script body is redacted for

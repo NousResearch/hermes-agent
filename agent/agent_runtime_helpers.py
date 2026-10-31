@@ -2487,14 +2487,14 @@ def switch_model(
     _persist_switch_billing_route(agent)
 
 
-def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):
+def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace, dispatch_turn_id):
     """Plugin pre-tool-call hook verdict: ``(block_message, function_args)``; failures never block."""
     try:
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
         block_message, modified_args = _dispatch_pre_tool_call_hooks(
             function_name, function_args, task_id=effective_task_id or "",
             session_id=getattr(agent, "session_id", "") or "", tool_call_id=tool_call_id or "",
-            turn_id=getattr(agent, "_current_turn_id", "") or "",
+            turn_id=dispatch_turn_id,
             api_request_id=getattr(agent, "_current_api_request_id", "") or "",
             middleware_trace=list(middleware_trace),
         )
@@ -2508,7 +2508,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                  pre_tool_block_checked: bool = False,
                  skip_tool_request_middleware: bool = False,
                  tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
-                 skip_tool_execution_middleware: bool = False) -> str:
+                 skip_tool_execution_middleware: bool = False, dispatch_turn_id: Optional[str] = None) -> str:
     """Invoke a single tool (agent-level or registry-dispatched) and return the result string;
     no display logic. Used by the concurrent path; the sequential path keeps its own inline
     invocation for display."""
@@ -2518,7 +2518,9 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     )
     if not isinstance(function_args, dict):
         function_args = {}
-    hook_ids = tool_hook_ids(agent, effective_task_id, tool_call_id)
+    from agent.tool_decision import DispatchTurn
+    dispatch_turn_id = DispatchTurn(dispatch_turn_id if dispatch_turn_id is not None else getattr(agent, "_current_turn_id", ""))
+    hook_ids = tool_hook_ids(agent, effective_task_id, tool_call_id, dispatch_turn_id)
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
     try:
         from hermes_cli.middleware import apply_tool_request_middleware
@@ -2531,7 +2533,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     block_message: Optional[str] = None
     if not pre_tool_block_checked:
         block_message, function_args = _pre_tool_block_message(
-            agent, function_name, function_args, effective_task_id, tool_call_id, _tool_middleware_trace
+            agent, function_name, function_args, effective_task_id, tool_call_id, _tool_middleware_trace, dispatch_turn_id
         )
     if block_message is not None:
         result = json.dumps({"error": block_message}, ensure_ascii=False)
@@ -2539,7 +2541,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             agent, function_name=function_name, function_args=function_args, result=result,
             effective_task_id=effective_task_id, tool_call_id=tool_call_id, status="blocked",
             error_type="plugin_block", error_message=block_message,
-            middleware_trace=_tool_middleware_trace,
+            middleware_trace=_tool_middleware_trace, dispatch_turn_id=dispatch_turn_id,
         )
         return result
     tool_start_time = time.monotonic()
@@ -2548,7 +2550,6 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         inline_ctx = InlineToolContext(
             effective_task_id=effective_task_id, tool_call_id=tool_call_id, messages=messages
         )
-
         def _execute(next_args: dict) -> Any:
             result = inline_executor(agent, next_args, inline_ctx)
             call_args = next_args if isinstance(next_args, dict) else function_args
@@ -2556,7 +2557,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             emit_terminal_post_tool_call(
                 agent, function_name=function_name, function_args=call_args,
                 result=result, effective_task_id=effective_task_id, tool_call_id=tool_call_id,
-                duration_ms=duration_ms, middleware_trace=_tool_middleware_trace,
+                duration_ms=duration_ms, middleware_trace=_tool_middleware_trace, dispatch_turn_id=dispatch_turn_id,
             )
             return apply_transform_tool_result(
                 agent, function_name=function_name, function_args=call_args, result=result,
@@ -2566,7 +2567,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         def _execute(next_args: dict) -> Any:
             dispatch_kwargs = dict(
                 tool_call_id=tool_call_id, session_id=agent.session_id or "",
-                turn_id=getattr(agent, "_current_turn_id", "") or "",
+                turn_id=dispatch_turn_id,
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                 skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
@@ -2612,7 +2613,6 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
         return None
     _norm = lambda s: s.lower().replace("-", "_").replace(" ", "_")
     _camel_snake = lambda s: re.sub(r"(?<!^)(?=[A-Z])", "_", s).lower()
-
     def _strip_tool_suffix(s: str) -> str | None:
         lc = s.lower()
         return next((s[: -len(sfx)].rstrip("_-") for sfx in ("_tool", "-tool", "tool") if lc.endswith(sfx)), None)

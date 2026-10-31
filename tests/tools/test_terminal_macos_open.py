@@ -18,7 +18,7 @@ transforming on Darwin), ``test_bare_open_file_is_transformed_on_darwin`` and
 import tools.terminal_tool_macos_open as macos_open
 
 # Markers that must appear in a transformed command.
-LADDER_MARKERS = ("osascript", "activate", "lsappinfo", "frontmost")
+LADDER_MARKERS = ("osascript", "activate", "lsappinfo", "frontmost", "HermesTerminalHelper")
 
 
 def _assert_transformed(command, system="Darwin"):
@@ -161,3 +161,40 @@ def test_ladder_is_valid_shell_syntax_for_quoting_edge_cases():
             check=False,
         )
         assert result.returncode == 0, (command, result.stderr)
+
+
+# --- Helper routing: Apple Events attribute to Hermes, not bare osascript ----
+
+def test_ladder_routes_apple_events_through_named_helper():
+    """Every Apple-Event rung offers the named helper first.
+
+    macOS TCC attributes automation prompts to the process that SENDS the
+    event, so the ladder must route through HermesTerminalHelper (regression
+    guard: if the rungs go back to bare osascript, the prompts read
+    "osascript wants to control System Events" again). The helper is
+    runtime-resolved, so the osascript fallback must remain present for hosts
+    without it.
+    """
+    transformed = macos_open._transform_macos_open_command(
+        "open -a Preview /path/to/file.pdf", system="Darwin"
+    )
+    assert transformed is not None
+    # Runtime probe: helper used only when an executable exists.
+    assert '_H_HELPER=""' in transformed
+    assert '[ -x "$_H_HELPER" ]' in transformed or '[ -n "$_H_HELPER" ]' in transformed
+    # Helper actions for every Apple-Event rung.
+    for action in ('activate "$_H_APP"', 'frontmost "$_H_APP"', "unhide-all", "getName"):
+        assert action in transformed, action
+    # osascript fallback preserved for helper-less hosts.
+    assert "osascript" in transformed
+
+
+def test_terminal_helper_binary_contract():
+    """Resolver returns None (absent) or an executable path — never junk."""
+    import os
+    from pathlib import Path
+
+    resolved = macos_open.terminal_helper_binary()
+    assert resolved is None or (
+        Path(resolved).is_file() and os.access(resolved, os.X_OK)
+    )

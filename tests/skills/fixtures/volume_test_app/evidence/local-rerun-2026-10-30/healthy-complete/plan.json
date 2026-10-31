@@ -1,0 +1,86 @@
+{
+  "run": "volume-e90679faf6f34210a25545ba2fa2aef4",
+  "seed": 42,
+  "volumes": [
+    100,
+    1000,
+    10000
+  ],
+  "samples": 10,
+  "timeout_seconds": 3,
+  "duration_seconds": 120,
+  "max_records": 10000,
+  "max_errors": 50,
+  "concurrency": 1,
+  "page_size": 50,
+  "batch_size": 250,
+  "counted_entity": "products",
+  "cleanup": "Delete only products/categories with this exact run; verify unrelated sentinel",
+  "dataset": {
+    "fields": [
+      "id",
+      "name",
+      "price",
+      "category"
+    ],
+    "relationships": "8 run-owned categories; enforced product category foreign key",
+    "distribution": "Repeated Unicode names and prices; skewed categories; seed/index-stable prefix"
+  },
+  "operations": [
+    {
+      "name": "listing",
+      "endpoint": "/products",
+      "parameters": {
+        "page": 1
+      }
+    },
+    {
+      "name": "search",
+      "endpoint": "/products",
+      "parameters": {
+        "q": "Café",
+        "page": 1
+      }
+    },
+    {
+      "name": "category",
+      "endpoint": "/products",
+      "parameters": {
+        "category": "0",
+        "page": 1
+      }
+    },
+    {
+      "name": "price-sort",
+      "endpoint": "/products",
+      "parameters": {
+        "sort": "price",
+        "page": 1
+      }
+    },
+    {
+      "name": "last-page",
+      "endpoint": "/products",
+      "parameters": {
+        "page": 1
+      }
+    },
+    {
+      "name": "export",
+      "endpoint": "/export",
+      "parameters": {}
+    },
+    {
+      "name": "filtered-export",
+      "endpoint": "/export",
+      "parameters": {
+        "category": "0"
+      }
+    }
+  ],
+  "criteria": "Exact independently generated ordered content, totals, complete pagination/export, no orphans; zero residuals and intact sentinel",
+  "cache_policy": "First request follows preparation/page verification; no OS/SQLite cache flush; 1 warmup + 10 warm samples",
+  "performance_sla": null,
+  "target_url": "http://127.0.0.1:40121",
+  "application_repository": "tests/skills/fixtures/volume_test_app"
+}

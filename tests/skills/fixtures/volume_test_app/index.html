@@ -1,0 +1,17 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Synthetic Product Catalog</title>
+<style>body{font:16px system-ui;max-width:960px;margin:30px auto}table{width:100%;border-collapse:collapse}td,th{padding:5px;border-bottom:1px solid #ddd}input,select,button{padding:6px}</style>
+<h1>Synthetic Product Catalog</h1><p>Disposable local fixture. No external services.</p>
+<label>Search <input id="search"></label><label>Category <select id="category"><option value="">All</option></select></label>
+<label>Sort <select id="sort"><option value="name">Name</option><option value="price">Price</option></select></label>
+<button id="apply">Apply</button><label>Page <input id="page" type="number" min="1" value="1" style="width:60px"></label><button id="go">Go</button><button id="prev">Previous</button><button id="next">Next</button><a id="export">Export CSV</a>
+<p id="status" role="status">Loading</p><table><thead><tr><th>ID</th><th>Name</th><th>Price cents</th><th>Category</th></tr></thead><tbody id="rows"></tbody></table>
+<script>
+const run=new URLSearchParams(location.search).get('run');let page=1,token=0;
+for(let i=0;i<8;i++){let o=document.createElement('option');o.value=i;o.textContent=`Category ${i}`;document.querySelector('#category').append(o)}
+async function refresh(){const request=++token;const params=new URLSearchParams({run,page,page_size:50,q:document.querySelector('#search').value,category:document.querySelector('#category').value,sort:document.querySelector('#sort').value});
+try{const r=await fetch('/products?'+params);if(!r.ok)throw Error('HTTP '+r.status);const data=await r.json();if(request!==token)return;
+const body=document.querySelector('#rows');body.replaceChildren();for(const row of data.rows){const tr=document.createElement('tr');for(const field of ['id','name','price','category']){const td=document.createElement('td');td.textContent=row[field];tr.append(td)}body.append(tr)}
+window.catalogState={total:data.total,ids:data.rows.map(r=>r.id),page,request,complete:true};document.querySelector('#status').textContent=`${data.total} products · page ${page}`;document.querySelector('#export').href='/export?'+params;
+}catch(e){console.error(e);document.querySelector('#status').textContent=e.message;window.catalogState={complete:false,error:e.message}}}
+document.querySelector('#go').onclick=()=>{page=Math.max(1,Number(document.querySelector('#page').value));refresh()};document.querySelector('#apply').onclick=()=>{page=1;refresh()};document.querySelector('#prev').onclick=()=>{page=Math.max(1,page-1);refresh()};document.querySelector('#next').onclick=()=>{page++;refresh()};refresh();
+</script></html>

@@ -110,6 +110,21 @@ async def test_a_closed_unviewed_local_session_still_leaves_the_live_feed(owner)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('method', ['session.list', 'session.active_list'])
+async def test_a_compression_rotation_s_parent_leaves_the_live_feed(owner, method):
+    """A rotation closes the parent and continues the conversation in its child in one transaction:
+    the agent re-points itself and nobody pops the parent's live mount, so the feeds must drop the
+    ended parent themselves. Its route has moved on to the child, so resuming it is refused — the
+    picker must not offer it as live (#143767)."""
+    parent, live_tail = owner.sids[0], owner.sids[1]
+    owner.db.end_session(parent, 'compression')
+    with owner.db._lock:  # newest, so session.list's 200-row window holds both
+        owner.db._conn.execute('UPDATE sessions SET started_at = 9e9 WHERE id IN (?,?)', (parent, live_tail))
+    ids = {row['id'] for row in await owner.listing(method)}
+    assert parent not in ids and live_tail in ids, method
+
+
+@pytest.mark.asyncio
 async def test_a_session_retired_during_the_read_is_not_listed_or_restored(owner, monkeypatch):
     from gateway import session_live_listing
     original = session_live_listing._store_facts

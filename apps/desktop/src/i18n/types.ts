@@ -28,6 +28,7 @@ import type { NoticeTranslations } from './types_notices'
 import type { NotificationSettingsTranslations } from './types_notifications'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { PluginPreviewAccessTranslations } from './types_plugin_preview_access'
+import type { PluginSettingsFormCopy } from './types_plugin_settings_form'
 import type { PluginUpdateTranslations } from './types_plugin_update'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { RightSidebarTranslations } from './types_right_sidebar'
@@ -1959,15 +1960,7 @@ export interface Translations extends NoticeTranslations {
         deepLinkCatalogUnknown: (name: string) => string
         deepLinkCatalogUnavailable: string
         settingsToggle: (name: string) => string
-        settingsForm: {
-          save: string
-          saved: (name: string) => string
-          saveFailed: (name: string) => string
-          required: string
-          optional: string
-          secretSet: string
-          secretStoredAs: (env: string) => string
-        }
+        settingsForm: PluginSettingsFormCopy
       }
     officialCatalog: string
     officialPill: string

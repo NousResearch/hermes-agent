@@ -66,7 +66,7 @@ def test_context_rejection_far_below_the_window_is_not_blamed_on_the_conversatio
     """A single-slot local server rejecting a ~3k-token request (another thread held its
     context) must not read as "this conversation has grown too long": no compression, transient
     + retryable, and the gateway's overflow verdict (drop message / auto-reset) stays off."""
-    from gateway.run_turn import is_context_overflow_failure_result
+    from gateway.run_turn_context_overflow import is_context_overflow_failure_result
 
     verdict, compressed = _context_rejection(3_000)
     result = verdict.result

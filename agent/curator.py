@@ -14,7 +14,6 @@ import logging
 import os
 import re
 import threading
-import time
 from collections import Counter
 from contextvars import copy_context
 from datetime import datetime, timedelta, timezone, UTC
@@ -151,32 +150,22 @@ def get_consolidate() -> bool:
 # --- Idle / interval check ---
 
 def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
-    try:
-        return datetime.fromisoformat(ts) if ts else None
-    except (TypeError, ValueError):
-        return None
+    from agent.idle_schedule import parse_iso
+
+    return parse_iso(ts)
 
 
 def should_run_now(now: Optional[datetime] = None) -> bool:
     """Gates: curator.enabled, not paused, ``last_run_at`` present AND older than interval_hours. First observation seeds
     ``last_run_at`` to now and defers one interval, so a fresh install/update never mutates the library on its first tick.
     ``hermes curator run`` bypasses this; the idle check is the caller's."""
+    from agent.idle_schedule import interval_due
+
     if not is_enabled() or is_paused():
         return False
-    state = load_state()
-    last = _parse_iso(state.get("last_run_at"))
-    now = now or datetime.now(UTC)
-    if last is None:
-        try:
-            state["last_run_at"] = now.isoformat()
-            state["last_run_summary"] = "deferred first run — curator seeded, will run after one interval; use `hermes curator run --dry-run` to preview now"
-            save_state(state)
-        except Exception as e:  # pragma: no cover — best-effort persistence
-            logger.debug("Failed to seed curator last_run_at: %s", e)
-        return False
-    if last.tzinfo is None:
-        last = last.replace(tzinfo=UTC)
-    return (now - last) >= timedelta(hours=get_interval_hours())
+    return interval_due(
+        load_state(), get_interval_hours(), now=now or datetime.now(UTC), save=save_state,
+        seed_summary="deferred first run — curator seeded, will run after one interval; use `hermes curator run --dry-run` to preview now")
 
 
 # --- Automatic state transitions (pure function, no LLM) ---
@@ -1168,31 +1157,16 @@ def _run_claim_path() -> Path:
 
 def _claim_run() -> bool:
     """One automatic pass per home across processes: two CLIs launched seconds apart both saw the
-    weekly interval elapsed and both pruned the tree. O_EXCL create wins the claim; a claim older than
-    an hour is a crashed holder and is taken over. When the lock dir cannot be created, run anyway."""
-    lock = _run_claim_path()
-    try:
-        lock.parent.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return True
-    try:
-        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        try:
-            if time.time() - lock.stat().st_mtime > _CLAIM_STALE_SECONDS:
-                lock.unlink()
-                return _claim_run()
-        except OSError:
-            pass
-        return False
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(str(os.getpid()))
-    return True
+    weekly interval elapsed and both pruned the tree."""
+    from agent.idle_schedule import claim_run
+
+    return claim_run(_run_claim_path(), _CLAIM_STALE_SECONDS)
 
 
 def _release_run_claim() -> None:
-    with contextlib.suppress(OSError):
-        _run_claim_path().unlink()
+    from agent.idle_schedule import release_run
+
+    release_run(_run_claim_path())
 
 
 def maybe_run_curator(*, idle_for_seconds: Optional[float] = None, on_summary: Optional[Callable[[str], None]] = None) -> Optional[dict[str, Any]]:

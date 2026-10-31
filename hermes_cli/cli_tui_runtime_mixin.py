@@ -400,8 +400,8 @@ class CLITuiRuntimeMixin:
 
     def _run_startup_maintenance(self):
         with suppress(Exception):
-            from agent.curator import maybe_run_curator
-            maybe_run_curator(
+            from hermes_cli.plugins_idle_tasks import run_idle_jobs
+            run_idle_jobs(
                 idle_for_seconds=float("inf"),  # CLI startup = fully idle
                 on_summary=lambda msg: self._console_print(f"[dim #6b7684]💾 {msg}[/]"),
             )

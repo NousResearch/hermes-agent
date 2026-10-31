@@ -79,10 +79,20 @@ async def dispatch_group_control(connection, method, params):
             except RuntimeStoreError:
                 raise
             except HostedRoomError as exc:
-                raise RuntimeStoreError(getattr(exc, 'reason', None) or 'invalid_params') from exc
+                raise _refusal(getattr(exc, 'reason', None) or 'invalid_params',
+                               admitted=getattr(exc, 'admitted', None)) from exc
             except (ValueError, TypeError) as exc:
-                raise RuntimeStoreError('invalid_params') from exc
+                raise _refusal('invalid_params', admitted=getattr(exc, 'admitted', None)) from exc
     return await asyncio.to_thread(invoke)
+
+
+def _refusal(reason, *, admitted=None):
+    """The wire refusal; ``admitted=False`` (a groups.send refused before its user event
+    committed: ``HostedRoomService.send``, or no driver to take it) rides along as error data."""
+    refusal = RuntimeStoreError(reason)
+    if admitted is False:
+        refusal.admitted = False
+    return refusal
 
 
 def _group(authority, actor, method, params, *, host_scope=False):
@@ -118,6 +128,8 @@ def _group(authority, actor, method, params, *, host_scope=False):
         return handler(service, actor, params)
     if method in execution_methods:
         if service is None:
+            if method == 'groups.send':
+                raise _refusal('runtime_coordination_required', admitted=False)
             raise RuntimeStoreError('runtime_coordination_required')
         if not params.get('room_id'):
             raise RuntimeStoreError('invalid_params')

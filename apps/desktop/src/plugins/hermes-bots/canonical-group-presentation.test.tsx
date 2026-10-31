@@ -8,8 +8,8 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { relativeTime } = await import('@/lib/time')
 
   // The shell's shared message renderer; media marks whether MEDIA: paths would resolve locally.
-  const MessageTextContent = ({ media = true, text }: { media?: boolean; text: string }) =>
-    <div data-media={String(media)} data-testid="message-text"><Streamdown>{text}</Streamdown></div>
+  const MessageTextContent = ({ media = true, previewOnly = false, text }: { media?: boolean; previewOnly?: boolean; text: string }) =>
+    <div data-media={String(media)} data-preview-only={String(previewOnly)} data-testid="message-text"><Streamdown>{text}</Streamdown></div>
 
   return { MessageTextContent, Streamdown, relativeTime, useI18n: () => ({ locale: 'en', t: en }),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
@@ -60,6 +60,8 @@ it('renders the canonical log actors, timestamps and Markdown without transport 
   expect(screen.queryByText('turn.settled')).toBeNull()
   // Room text goes through the shared renderer, never resolving MEDIA: paths on this gateway.
   expect(screen.getAllByTestId('message-text').map(node => node.dataset.media)).toEqual(['false', 'false', 'false', 'false'])
+  // Its images, file links and directive cards stay inert too.
+  expect(screen.getAllByTestId('message-text').map(node => node.dataset.previewOnly)).toEqual(['true', 'true', 'true', 'true'])
   expect([...container.querySelectorAll('time')].map(node => node.dateTime)).toEqual(
     events.slice(0, 4).map(event => new Date(event.created_at * 1000).toISOString())
   )
@@ -83,6 +85,9 @@ it('keeps attachment-only messages and rows without optional display metadata re
   expect(screen.getByText('bare-bot')).toBeTruthy()
   expect(screen.getByText('notes.txt')).toBeTruthy()
   expect(screen.getByText('Older message')).toBeTruthy()
+  // This Desktop's own messages (the gateway's user `desktop`) read as You, not as an id.
+  expect(screen.getByText('You')).toBeTruthy()
+  expect(screen.queryByText('desktop')).toBeNull()
   expect(screen.getByText('Missing clock')).toBeTruthy()
   expect(screen.getByText('bot-handle')).toBeTruthy()
   expect(screen.getByText('helper')).toBeTruthy()

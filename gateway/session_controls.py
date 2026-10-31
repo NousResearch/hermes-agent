@@ -31,7 +31,9 @@ def _refusal_data(exc: RuntimeStoreError) -> dict:
         if isinstance(getattr(exc, key, None), int):
             data[key] = getattr(exc, key)
     if getattr(exc, 'admitted', None) is False:
-        data['admitted'] = False  # nothing admitted yet: the sender may finalize with ``bot_relay.settle``
+        # Nothing of this request was admitted: bot_relay.deliver's sender may finalize with
+        # ``bot_relay.settle``; groups.send's words may come back for editing.
+        data['admitted'] = False
     return data
 
 

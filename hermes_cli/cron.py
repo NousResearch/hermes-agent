@@ -218,6 +218,12 @@ def _last_run_display(job: dict[str, Any]) -> str:
         # Agent succeeded but the result never reached the user — not green; last_error is None.
         return color(f"ran, but the result was not delivered ({_short_reason(job.get('last_delivery_error'))}). "
                      f"{_delivery_fix_hint(job)}", Colors.YELLOW)
+    if last_status == "delivery_not_configured":
+        # Run succeeded, but deliver='origin' resolved to no target (no captured origin, no home
+        # channel), so the output was only saved locally. Deliberately not a failure (#43014) — but
+        # never a green "ok" either: the user was expecting to be told.
+        return color("ran; nothing was delivered (deliver='origin' had no origin and no home channel — "
+                     f"output saved locally). {_delivery_fix_hint(job)}", Colors.YELLOW)
     display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
     streak = int(job.get("failure_streak") or 0)
     if streak >= 2:
@@ -704,8 +710,13 @@ def _cron_doctor_issues_for_job(job: dict[str, Any]) -> list[str]:
     issues: list[str] = []
     last_status = str(job.get("last_status") or "").strip().lower()
     # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
-    if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:
+    # "delivery_not_configured" = same run succeeded, deliver='origin' had no target (reported below).
+    if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued",
+                                           "delivery_not_configured"}:
         issues.append(f"last run failed: {str(job.get('last_error') or 'unknown error').strip()}")
+    if last_status == "delivery_not_configured":
+        issues.append("last run finished but delivered nowhere: deliver='origin' resolved to no target "
+                      f"(no captured origin, no home channel). {_delivery_fix_hint(job)}")
     if delivery_err := str(job.get("last_delivery_error") or "").strip():
         issues.append(f"last run finished but the result was not delivered ({_short_reason(delivery_err)}). "
                       f"{_delivery_fix_hint(job)}")

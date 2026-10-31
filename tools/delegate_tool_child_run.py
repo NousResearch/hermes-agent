@@ -1049,7 +1049,8 @@ class _ChildRun:
         if handed:
             entry["handed_off_processes"] = handed
         with _quiet(None):
-            from tools.process_registry import process_registry, _output_tail
+            from tools.process_registry import process_registry
+            from tools.process_registry_output_view import _output_tail
             leftover = process_registry.running_owned_by(self.child_task_id)
             if leftover:
                 entry["orphaned_processes"] = [

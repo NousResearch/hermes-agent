@@ -39,6 +39,7 @@ from tools.process_registry_output_log import ProcessOutputLogMixin, open_output
 from tools.process_registry_ownership import ProcessOwnershipMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
+from tools.process_registry_output_view import _completion_output, _output_tail
 from tools.process_registry_env_log import log_delta_command
 from tools.process_registry_wsl import _is_wsl_launcher_command
 
@@ -519,24 +520,6 @@ def format_uptime_short(seconds: int) -> str:
 
 def _not_found(session_id: str) -> dict:
     return {"status": "not_found", "error": f"No process with ID {session_id}"}
-
-
-def _output_tail(session: "ProcessSession", n: int) -> str:
-    """Last *n* chars of the session output with ANSI sequences stripped."""
-    from tools.ansi_strip import strip_ansi
-
-    return strip_ansi(session.output_buffer[-n:])
-
-
-def _completion_output(session: "ProcessSession") -> dict:
-    """``output`` sized by the session's ``completion_output_chars`` plus ``output_cut`` when trimmed.
-
-    Shared by the completion notification AND the wait/poll/kill snapshots: a bot in an api_server
-    or one-shot session cannot receive notifications and polls instead, so the polled result must
-    carry the same whole reply and the same cut marker (#115334)."""
-    limit = session.completion_output_chars or COMPLETION_OUTPUT_CHARS
-    cut = len(session.output_buffer) - limit
-    return {"output": _output_tail(session, limit), **({"output_cut": cut} if cut > 0 else {})}
 
 
 @dataclass
@@ -2034,8 +2017,16 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             observed_completion_output = bool(selected) or total_lines == 0
         else:
             offset = offset or 0
-            selected = lines[offset:offset + limit]
-            stop = slice(offset, offset + limit).indices(total_lines)[1]
+            if offset < 0:
+                # A negative offset counts from the end of the log ("last N lines"):
+                # slice the tail window first, then cap it at limit. The old
+                # lines[offset:offset + limit] turned offset=-80/limit=80 into
+                # lines[-80:0], which is always empty (#146914).
+                selected = lines[offset:][:limit]
+                stop = slice(offset, None).indices(total_lines)[0] + len(selected)
+            else:
+                selected = lines[offset:offset + limit]
+                stop = slice(offset, offset + limit).indices(total_lines)[1]
             observed_completion_output = total_lines == 0 or (bool(selected) and stop == total_lines)
         result = {
             **self._status_head(session), "output": "\n".join(selected),
@@ -2605,7 +2596,7 @@ PROCESS_SCHEMA = {
             },
             "offset": {
                 "type": "integer",
-                "description": "Log line offset (default: last 200)."
+                "description": "Log line offset (default: last 200). Negative counts from the end of the log."
             },
             "limit": {
                 "type": "integer",

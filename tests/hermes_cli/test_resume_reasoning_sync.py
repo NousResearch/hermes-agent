@@ -9,10 +9,7 @@ the owner of session state: ``session.info.reasoning_effort`` is adopted after t
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from hermes_cli.cli_model_switch_mixin import (
-    CLIModelSwitchMixin,
-    _sync_cli_reasoning_from_session,
-)
+from hermes_cli.cli_model_switch_mixin import _sync_cli_reasoning_from_session
 
 _CFG = {
     "agent": {"reasoning_effort": "medium", "reasoning_overrides": {"glm-5.3-flash": "high"}},
@@ -61,20 +58,42 @@ def test_sync_is_a_no_op_without_an_agent():
     assert cli.reasoning_config == before
 
 
-def test_resume_restores_the_sessions_pinned_effort_after_the_profile_resolve():
+def _restore_through_entry(cli, session_meta):
+    """Drive the real ``-c/--continue`` entry: cwd/yolo are irrelevant here, but the model
+    restore stays un-stubbed so the call order (restore, then the entry's sync) is the one
+    production runs."""
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+    from hermes_cli.cli_model_switch_mixin import CLIModelSwitchMixin
+
+    cli._restore_session_cwd = lambda *a, **k: None
+    cli._restore_session_yolo = lambda *a, **k: None
+    cli._restore_session_model = (
+        lambda meta, quiet=False: CLIModelSwitchMixin._restore_session_model(cli, meta, quiet=quiet))
+    CLIAgentSetupMixin._restore_session_state(cli, session_meta, quiet=True)
+
+
+def test_same_model_resume_still_adopts_the_sessions_effort():
+    """A same-model resume returns from ``_restore_session_model`` before its re-resolve, so
+    nothing inside that method can adopt the session's level: the entry's own sync has to."""
+    cli = _cli(model="glm-5.3-flash", reasoning={"enabled": True, "effort": "high"},
+               agent=_agent({"reasoning_effort": "max"}))
+    _restore_through_entry(cli, {"model": "glm-5.3-flash", "model_config": {"gateway_runtime": {
+        "provider": "custom:ark", "base_url": "https://ark.example/v3",
+        "api_mode": "chat_completions"}}})
+    assert cli.reasoning_config == _MAX
+
+
+def test_the_profiles_per_model_override_does_not_outrank_the_sessions_effort():
+    """``_restore_session_model`` re-resolves the launch profile first (glm-5.3-flash -> high);
+    the session's own level must still win afterwards."""
     import cli as cli_mod
 
     with patch.dict(cli_mod.CLI_CONFIG, _CFG):
-        cli = _cli(reasoning={"enabled": True, "effort": "medium"},
+        cli = _cli(model="deepseek-v4-flash", reasoning={"enabled": True, "effort": "medium"},
                    agent=_agent({"reasoning_effort": "max"}))
-        CLIModelSwitchMixin._restore_session_model(
-            cli,
-            {"model": "glm-5.3-flash", "model_config": {"gateway_runtime": {
-                "provider": "custom:ark", "base_url": "https://ark.example/v3",
-                "api_mode": "chat_completions"}}},
-            quiet=True,
-        )
-        # The profile resolve for glm-5.3-flash would be high; the session's own max wins.
+        _restore_through_entry(cli, {"model": "glm-5.3-flash", "model_config": {"gateway_runtime": {
+            "provider": "custom:ark", "base_url": "https://ark.example/v3",
+            "api_mode": "chat_completions"}}})
         assert cli.reasoning_config == _MAX
 
 

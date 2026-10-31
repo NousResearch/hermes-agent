@@ -1296,17 +1296,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         _save(f"{subsystem}.write_approval", bool(enabled))
 
     # ---- prompt-queueing handlers: /learn, /plan, /init -----------------------------------
-    def _queue_prompt_turn(self, msg: str, command: str, ack: str = "") -> None:
-        """Inject ``msg`` onto the agent's input queue as the next normal user turn (the
-        /learn, /plan, /init pattern: no engine, no model-tool footprint, prompt-cache safe). ``ack``
-        paints first on the turn's own channel (_cprint), so the turn's `────` never overtakes it."""
-        if ack:
-            __import__("cli")._cli_visible_print("\n" + ack)
-        if hasattr(self, "_pending_input"):
-            self._pending_input.put(msg)
-        else:  # pragma: no cover - defensive (no live input loop)
-            print(f"  {_t('shared.needs_active_session', command=command)}")
-
+    # `_queue_prompt_turn` (the shared queue-injection helper) lives with the other split
+    # handlers in `cli_commands_session_tools`; `self` resolves it up the MRO.
     def _handle_learn_command(self, cmd: str):
         """Handle /learn — distill a reusable skill from anything the user describes (a directory,
         a URL, "what we just did", pasted notes). The live agent gathers the material with the

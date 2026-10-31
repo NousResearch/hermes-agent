@@ -12,6 +12,9 @@ import shlex
 import tempfile
 import unicodedata
 
+from tools.approval_detection_assignments import eval_payloads, resolve_shell_assignment_variants
+from tools.approval_detection_awk import AWK_EXEC_DESCRIPTION, AWK_NAMES, awk_program_runs_shell
+
 logger = logging.getLogger("tools.approval")
 
 # Sensitive write targets, matched via ~ / $HOME / $HERMES_HOME spellings. The resolved absolute
@@ -607,7 +610,7 @@ _PARAM_DEFAULT_RE = re.compile(r"\$\{[^}:}\s]+:-(?P<default>[^}]*)\}")
 _SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _COMMAND_WRAPPER_WORDS = {"sudo", "env", "exec", "nohup", "setsid", "time", "command", "builtin",
-                          "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot"}
+                          "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot", "xargs"}
 _SUDO_OPTIONS_WITH_ARG = {"-c", "--close-from", "-g", "--group", "-h", "--host", "-p", "--prompt", "-u", "--user"}
 # Adapted from embwl0x's command-position work in #76063. Option operands are
 # data, not executable positions; option spelling remains case-sensitive.
@@ -620,9 +623,13 @@ _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
     "timeout": {"-k", "--kill-after", "-s", "--signal"},
     "stdbuf": {"-e", "--error", "-i", "--input", "-o", "--output"},
     "ionice": {"-c", "--class", "-n", "--classdata"},
+    # GNU findutils xargs (+ BSD -J/-R/-S): -i/-e/-l and --replace/--eof/--max-lines take only
+    # ATTACHED optional values.
+    "xargs": {"-a", "--arg-file", "-d", "--delimiter", "-E", "-I", "-J", "-L", "-n", "--max-args", "-P",
+              "--max-procs", "-R", "-s", "-S", "--max-chars", "--process-slot-var"},
 }
 _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS = {
-    "command": {"-v", "-V"}, "chrt": {"-p", "--pid"},
+    "command": {"-v", "-V"}, "chrt": {"-p", "--pid"}, "xargs": {"--help", "--version"},
     "ionice": {"-p", "--pid", "--pgid", "--uid"}, "taskset": {"-p", "--pid"},
 }
 _COMMAND_WRAPPER_POSITIONAL_ARGS = {"chroot": 1, "chrt": 1, "taskset": 1, "timeout": 1}
@@ -883,16 +890,139 @@ def _shell_segment_tokens(segment: str, start: int) -> list[str] | None:
         return None
 
 
-def _iter_top_level_shell_segments(command: str):
-    """Yield top-level command segments in one left-to-right pass."""
-    start = 0
-    for kind, i, j, quote in _scan_shell(command, comments=True):
-        if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n"):
+def _is_redirection_operator_char(text: str, i: int, previous) -> bool:
+    """Whether the unquoted ``&`` / ``|`` at *i* belongs to a redirection operator (``>&``, ``<&``,
+    ``&>``, ``&>>``, ``>|``) rather than separating commands. *previous* is the prior ``_scan_shell``
+    step; only an unquoted plain ``<`` / ``>`` char there can own the ``&`` / ``|``. Treating the
+    ``&`` in ``bash 2>&1 -c 'reboot'`` as a separator cut the command before ``-c``."""
+    before = text[previous[1]] if previous and previous[0] == "char" and previous[3] is None else ""
+    if text[i] == "|":
+        return before == ">"
+    if text[i] != "&":
+        return False
+    return before in ("<", ">") or (text.startswith(">", i + 1) and before not in ("&", "|"))
+
+
+_REDIRECTION_OPERATOR_RE = re.compile(r"&>>?|<<<|<<-?|<>|>>|>&|<&|>\||[<>]")
+_REDIRECTION_FD_PREFIX_RE = re.compile(r"(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})$")
+
+
+def _blank_shell_redirections(text: str, start: int) -> str:
+    """Replace every unquoted redirection (optional fd / ``{var}`` prefix, operator, target word) in
+    ``text[start:]`` with spaces, keeping offsets. Redirections may appear anywhere in a simple
+    command, and ``bash 2>/dev/null -c 'reboot'`` otherwise leaves ``2 > /dev/null`` in argv where
+    option parsing stops at the first non-option before ``-c``. Substitutions are skipped as units
+    and process substitutions ``<(...)`` / ``>(...)`` are words, not redirections."""
+    edits, skip_to, previous = [], start, None
+    for step in _scan_shell(text, start, subst="uq"):
+        kind, i, _, quote = step
+        if i < skip_to:
+            continue
+        match = None
+        if kind == "char" and quote is None and not text.startswith(("<(", ">("), i):
+            match = _REDIRECTION_OPERATOR_RE.match(text, i)
+            if match and match.group().startswith("&") and previous and previous[0] == "char" \
+                    and previous[3] is None and text[previous[1]] in "&|":
+                match = None  # `&&>x` / `|&>x`: the `&` is a separator, the `>` is matched next
+        if match is None:
+            previous = step
+            continue
+        op_start = i
+        if not match.group().startswith("&"):
+            # Bounded lookback for an fd (`2>`) or `{var}>` prefix that forms its own word.
+            prefix = _REDIRECTION_FD_PREFIX_RE.search(text, max(start, i - 64), i)
+            if prefix and (prefix.start() == start or text[prefix.start() - 1].isspace()):
+                op_start = prefix.start()
+        _, target_end, _ = _read_shell_word(text, match.end())
+        edits.append((op_start, target_end, " " * (target_end - op_start)))
+        skip_to, previous = target_end, None
+    return _splice(text, edits) if edits else text
+
+
+def _top_level_shell_segments(command: str, subst: str) -> tuple[list[str], bool]:
+    """Split *command* at unquoted separators -> (segments, closed) where *closed* says the final
+    quote state is balanced."""
+    segments, start, state, previous = [], 0, None, None
+    for step in _scan_shell(command, subst=subst, comments=True):
+        kind, i, j, quote = step
+        state = (None if quote else command[i]) if kind == "quote" else quote
+        separator = (kind == "char" and quote is None and command[i] in ";&|\n"
+                     and not _is_redirection_operator_char(command, i, previous))
+        previous = step
+        if kind == "comment" or separator:
             if start < i:
-                yield command[start:i]
+                segments.append(command[start:i])
             start = j
     if start < len(command):
-        yield command[start:]
+        segments.append(command[start:])
+    return segments, state is None
+
+
+def _iter_top_level_shell_segments(command: str):
+    """Yield top-level command segments in one left-to-right pass."""
+    # A "$(...)" inside double quotes starts a fresh quote context, so its own quotes must not
+    # toggle the outer state: `echo "$(grep -c "a|b" f)"` would otherwise expose the pattern's
+    # `|` as a top-level separator and split grep into an unterminated (fail-closed) fragment.
+    segments, closed = _top_level_shell_segments(command, "q")
+    if not closed:
+        # An outer quote left open after skipping a substitution (`echo "$(grep "a|b" f)`) is not
+        # valid shell, so the fresh-context reading has no authority. Fall back to the flat quote
+        # parity, which reports the grep fragment as malformed (fail-closed) exactly as before.
+        segments, _ = _top_level_shell_segments(command, "")
+    yield from segments
+
+
+def _substitution_body_spans(command: str) -> list[tuple[int, int]]:
+    """``(body_start, body_end)`` of every ``$(...)`` / backtick body, nested ones included, found
+    with the same quote-aware recursion as ``_iter_shell_command_starts`` (an unterminated one runs
+    to the end of its enclosing span)."""
+    spans: list[tuple[int, int]] = []
+
+    def scan(start: int, end: int) -> None:
+        for kind, i, j, _ in _scan_shell(command, start, end, subst="uq", stop_unterminated=True,
+                                         comments=True):
+            if kind == "subst":
+                inner = i + (1 if command[i] == "`" else 2)
+                body_end = end if j is None else j - 1
+                spans.append((inner, body_end))
+                scan(inner, body_end)
+
+    scan(0, len(command))
+    return spans
+
+
+def _simple_command_end(command: str, start: int, spans: list[tuple[int, int]]) -> int:
+    """End offset of the simple command starting at *start*: bounded by the innermost substitution
+    body that contains it, then by the first unquoted separator or closing ``)`` at its own nesting
+    level. Nested ``$(...)`` / backtick operands are skipped as units, so their quotes and
+    separators never leak into (or truncate) the enclosing command's words — without this,
+    ``echo "$(grep "a|b" f; bash -c 'reboot')"`` tokenized ``bash`` through the enclosing ``)"``,
+    lexed as malformed, and the shell payload was silently skipped."""
+    limit = len(command)
+    enclosing = max((span for span in spans if span[0] <= start < span[1]), default=None)
+    if enclosing is not None:
+        limit = enclosing[1]
+    depth = 0  # unquoted `(`: subshells, process substitutions, arrays
+    previous = None
+    for step in _scan_shell(command, start, limit, subst="uq", brace=True, comments=True):
+        kind, i, _, quote = step
+        prior, previous = previous, step
+        if kind == "comment":
+            return i
+        if kind != "char" or quote is not None:
+            continue
+        ch = command[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            if depth == 0:
+                return i
+            depth -= 1
+        elif ch == "`" or (depth == 0 and ch in ";&|\n"
+                           and not _is_redirection_operator_char(command, i, prior)):
+            # A backtick left as a char has no closer: it ends the command it sits inside.
+            return i
+    return limit
 
 
 def _interpreter_exec_flag(family: str, args: list[str]) -> str | None:
@@ -990,24 +1120,121 @@ def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:
     return None
 
 
+def _substitution_body(text: str, i: int, j: int) -> str:
+    """Body of the ``$(...)`` / backtick span ``text[i:j]`` found by ``_scan_shell``."""
+    return text[i + (1 if text[i] == "`" else 2):j - 1]
+
+
+def _quoted_heredoc_body_spans(text: str, *, quoted_only: bool = True) -> list[tuple[int, int]]:
+    """``(start, end)`` of each heredoc body whose delimiter word is quoted or escaped; with
+    *quoted_only* False, of every heredoc body.
+    (``<<'EOF'``, ``<<"EOF"``, ``<<\\EOF``, ``<<E'O'F``). The shell performs no expansion there, so a
+    ``$(...)`` in such a body is data. Bodies are read line by line, not through the quote scanner:
+    an apostrophe in heredoc text is not a quote."""
+    spans, pos, n = [], 0, len(text)
+    while pos < n:
+        pending, body_start = [], None
+        for kind, i, _, quote in _scan_shell(text, pos, subst="uq", comments=True):
+            if kind != "char" or quote is not None:
+                continue
+            if text.startswith("<<", i) and not text.startswith("<<<", i) and (i == 0 or text[i - 1] != "<"):
+                strip = text.startswith("<<-", i)
+                pending.append((_read_shell_word(text, i + 2 + strip)[2], strip))
+            elif text[i] == "\n" and pending:
+                body_start = i + 1
+                break
+        if body_start is None:
+            break
+        pos = body_start
+        for word, strip in pending:  # bodies follow the line in operator order
+            delimiter, start = _strip_shell_word_syntax(word), pos
+            while pos < n:
+                newline = text.find("\n", pos)
+                line_end = n if newline < 0 else newline
+                line = text[pos:line_end]
+                end, pos = pos, line_end + 1
+                if (line.lstrip("\t") if strip else line) == delimiter:
+                    break
+            else:
+                end = n
+            if not quoted_only or any(ch in word for ch in "'\"\\"):
+                spans.append((start, end))
+    return spans
+
+
+def _blank_nested_substitutions(text: str) -> tuple[str, list[str]]:
+    """Return *text* with each complete ``$(...)`` / backtick span (quoted or unquoted) blanked to a
+    same-length empty ``$(   )``, plus the blanked bodies. Offsets are preserved. A literal
+    substitution (``$(echo bash)``) stays so command-word deobfuscation still resolves it. Callers
+    scan each body separately, so every nesting level is walked once instead of once per ancestor.
+    Substitutions inside a quoted heredoc body never run and are left as text."""
+    literal = _quoted_heredoc_body_spans(text) if "<<" in text else []
+    scanned = _splice(text, [(s, e, re.sub(r"[^\n]", " ", text[s:e])) for s, e in literal])
+    parts, bodies = [], []
+    for kind, i, j, _ in _scan_shell(scanned, subst="uq"):
+        if kind == "subst" and j is not None and j - i >= 3:
+            body = _substitution_body(text, i, j)
+            if _literal_command_substitution_output(body) is None:
+                parts.append("$(" + " " * (j - i - 3) + ")")
+                bodies.append(body)
+                continue
+        parts.append(text[i:j])
+    return "".join(parts), bodies
+
+
+def _iter_command_substitution_bodies(command: str):
+    """Yield every non-literal ``$(...)`` / backtick body at any nesting depth, each with its own
+    nested substitutions blanked (they are yielded separately)."""
+    pending = [command]
+    while pending:
+        _, bodies = _blank_nested_substitutions(pending.pop())
+        for body in bodies:
+            blanked, _ = _blank_nested_substitutions(body)
+            yield blanked
+            pending.append(body)
+
+
 def _execution_flag_findings(command: str):
-    """Yield scoped execution mechanisms and any executable payloads."""
+    """Yield scoped execution mechanisms and any executable payloads.
+    ``$(...)`` / backtick bodies (quoted or unquoted) are scanned as commands of their own: a
+    command inside a double-quoted substitution otherwise lexes with the outer closing quote
+    attached, fails to tokenize, and its ``bash -c`` payload went unseen."""
+    pending = [command]
+    while pending:
+        yield from _execution_flag_findings_flat(pending.pop(0), pending)
+
+
+def _execution_flag_findings_flat(command: str, bodies: list[str]):
     for segment in _iter_top_level_shell_segments(command):
-        for start, _, word in _iter_shell_command_word_spans(segment):
+        # Command words are located on the blanked copy (same offsets), so words inside a
+        # substitution are left to that body's own pass; tokens still come from the real text.
+        blanked, nested = _blank_nested_substitutions(segment)
+        bodies.extend(nested)
+        spans = _substitution_body_spans(blanked)
+        for start, _, word in _iter_shell_command_word_spans(blanked):
             executable = _deobfuscate_shell_word_for_detection(word)
-            tokens = _shell_segment_tokens(segment, start)
+            bounded = segment[:_simple_command_end(blanked, start, spans)]
+            tokens = _shell_segment_tokens(bounded, start)
             executable_name = os.path.basename(executable).lower()
             family = _interpreter_family(executable)
+            relevant = (family is not None or executable_name in _READ_TOOL_EXEC_FLAGS
+                        or executable_name in _SHELL_NAMES or executable_name in AWK_NAMES)
+            if relevant and tokens:
+                # Option parsing runs on argv as the program sees it: redirections are removed by the
+                # shell wherever they sit. Heredoc detection still reads the raw tokens below.
+                argv = _shell_segment_tokens(_blank_shell_redirections(bounded, start), start)
+                if argv is None:
+                    tokens = None
             if tokens is None:
-                if family is not None or executable_name in _READ_TOOL_EXEC_FLAGS:
+                if relevant:
                     yield (_MALFORMED_EXEC_DESCRIPTION, None)
                 continue
-            if not tokens:
+            if not tokens or not relevant:
                 continue
-            args = tokens[1:]
+            args = argv[1:]
             if family and _interpreter_exec_flag(family, args):
                 yield ("script execution via -e/-c flag", None)
-            elif family and any(token.startswith("<<") for token in args):
+            elif family and any(token.startswith("<<") for token in tokens[1:]):
                 yield ("script execution via heredoc", None)
             else:
                 if executable_name in _SHELL_NAMES:
@@ -1018,6 +1245,8 @@ def _execution_flag_findings(command: str):
                     finding = _read_tool_exec_flag(executable_name, args)
                     if finding:
                         yield (f"arbitrary program execution via {executable_name} {finding[0]}", finding[1])
+                if executable_name in AWK_NAMES and awk_program_runs_shell(args):
+                    yield (AWK_EXEC_DESCRIPTION, None)
 
 
 def _skip_shell_whitespace(command: str, pos: int) -> int:
@@ -1170,9 +1399,11 @@ def _iter_shell_command_starts(command: str):
     starts = [0]
 
     def scan(start: int, end: int) -> None:
-        skip = -1
-        for kind, i, j, quote in _scan_shell(command, start, end, subst="uq", stop_unterminated=True,
-                                            comments=True):
+        skip, previous = -1, None
+        for step in _scan_shell(command, start, end, subst="uq", stop_unterminated=True,
+                                comments=True):
+            kind, i, j, quote = step
+            prior, previous = previous, step
             if kind == "subst":
                 # Record a nested $(...)/backtick command start and scan its body.
                 inner = i + (1 if command[i] == "`" else 2)
@@ -1185,7 +1416,7 @@ def _iter_shell_command_starts(command: str):
                 if command[i] in "(;\n" or (command[i] == "{" and (i == 0 or command[i - 1].isspace()
                                                                    or command[i - 1] in "(;&|)")):
                     starts.append(i + 1)
-                elif command[i] in "&|":
+                elif command[i] in "&|" and not _is_redirection_operator_char(command, i, prior):
                     repeated = i + 1 < end and command[i + 1] == command[i]
                     skip = i + 1 if repeated else skip
                     starts.append(i + 1 + repeated)
@@ -1427,7 +1658,55 @@ def _deny_command_variants(command: str):
                 pending.append(payload)
 
 
-def _command_detection_variants(command: str):
+def _command_detection_variants(command: str, *, resolve_assignments: bool = True, _eval_depth: int = 0):
+    """Every detection view of *command*. With *resolve_assignments*, variables assigned in the
+    same command are then substituted into each view (per use; one form per possible value) and
+    each result expanded once more, so
+    ``X="rm -rf /home"; $X`` is seen as ``rm -rf /home`` (see approval_detection_assignments)."""
+    seen: set[str] = set()
+    for variant in _command_detection_variants_unresolved(command):
+        if variant is None:
+            continue
+        seen.add(variant)
+        yield variant
+    if not resolve_assignments:
+        return
+    # `eval` re-parses its (expanded) arguments as a script: that script is a command of its own,
+    # like a `bash -c` payload. Payloads are expanded with the same-command values, so
+    # `X="rm -rf /home"; eval "$X"` is seen as `rm -rf /home`.
+    evaluated, _ = eval_payloads(command) if _eval_depth < _MAX_EVAL_DEPTH else ([], True)
+    for payload in evaluated:
+        for variant in _command_detection_variants(payload, _eval_depth=_eval_depth + 1):
+            if variant not in seen:
+                seen.add(variant)
+                yield variant
+    # Variants that differ from an earlier source only by whitespace (the command-start-marked
+    # forms insert newlines) resolve to the same command, so each is resolved and expanded once.
+    # Quoting is NOT folded: `"rm" -rf /` and `rm -rf /` expand to different variant sets.
+    done: set[str] = set()
+    for source in [command, *seen]:
+        key = _RESOLVE_DEDUP_RE.sub("", source)
+        if key in done:
+            continue
+        done.add(key)
+        for resolved in resolve_shell_assignment_variants(source):
+            resolved_key = _RESOLVE_DEDUP_RE.sub("", resolved)
+            if resolved_key in done:
+                continue
+            done.add(resolved_key)
+            for variant in _command_detection_variants_unresolved(resolved):
+                if variant is not None and variant not in seen:
+                    seen.add(variant)
+                    yield variant
+
+
+_RESOLVE_DEDUP_RE = re.compile(r"\s")
+# Nested `eval` payloads expanded for detection. Deeper nesting is refused in unattended approve
+# mode by approval_detection_assignments.uninspectable_reasons (same depth bound).
+_MAX_EVAL_DEPTH = 3
+
+
+def _command_detection_variants_unresolved(command: str):
     # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
     # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
     # afterwards could swallow a REAL unquoted newline separator. The raw command carries faithful quote state.
@@ -1480,6 +1759,15 @@ def _command_detection_variants(command: str):
     faithful = _normalize_command_for_detection(_mark_command_starts(_mask_quoted_newlines(command), marker=" \n"))
     if fresh(faithful):
         yield faithful
+    # A $(...) / backtick body, quoted or unquoted, is a command with its own quote context. Seen
+    # only through the outer command, `echo "$(curl x | sh)"` has the pipe inside the outer quotes
+    # and `$(curl x | sh)` has no word boundary before curl, so position-free patterns such as
+    # pipe-to-shell missed it. Each body is its own variant, taken from the RAW command (quoted
+    # newlines masked) so normalization cannot flip the quote parity that bounds it.
+    for body in _iter_command_substitution_bodies(_mask_quoted_newlines(command)):
+        body_variant, _ = _grep_safe_detection_variant(_normalize_command_for_detection(body))
+        if fresh(body_variant):
+            yield body_variant
     # Quoting/escaping can spell an executable in pieces (r\m, r''m). Keep that deobfuscation scoped
     # to command words so arguments don't false-positive.
     # One variant with EVERY command word deobfuscated, not one full-length variant per word: a heredoc

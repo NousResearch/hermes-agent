@@ -190,6 +190,7 @@ def ingress_fingerprint(payload, raw=None):
     re-captures them under a fresh staging name (``reconcile_native_retry``)."""
     envelope = {**payload['native_text_v1']}
     envelope.pop('ingress_sha256', None)
+    envelope.pop('voice_stt', None)
     if 'media' in envelope:
         envelope['media'] = [[media['sha256'], media['size']] for media in envelope['media']]
     received = {**payload, 'native_text_v1': envelope}
@@ -223,6 +224,9 @@ def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload,
                 (r['sha256'], r['size']) for r in fresh]:
             return payload
         resolved = {**payload, 'native_text_v1': {**payload['native_text_v1'], 'media': committed}}
+        resolved['native_text_v1'].pop('voice_stt', None)
+        if 'voice_stt' in retained['native_text_v1']:
+            resolved['native_text_v1']['voice_stt'] = retained['native_text_v1']['voice_stt']
     committed = resolved['native_text_v1'].get('media', [])
     if committed and row[0] != 'terminal':
         # A live row still executes these bytes, so they must verify (a terminal one is digest evidence).

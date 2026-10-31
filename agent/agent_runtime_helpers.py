@@ -2124,6 +2124,7 @@ _SWITCH_SNAPSHOT_FIELDS = (
     "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
     "_credential_pool", "_credential_pool_entry_id",
     "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected",
+    "_custom_providers", "_use_prompt_caching", "_use_native_cache_layout",
 )
 _MISSING = object()
 
@@ -2346,40 +2347,6 @@ def _resolve_switch_context_length(agent, snapshot):
     return custom_providers, effective
 
 
-def _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot) -> None:
-    """Point the context compressor at the new model (rolls back the switch on failure)."""
-    from agent.model_metadata import get_model_context_length
-    if custom_providers is None:
-        try:
-            from hermes_cli.config import get_compatible_custom_providers, load_config
-            custom_providers = get_compatible_custom_providers(load_config())
-        except Exception:
-            custom_providers = None
-    # agent.api_key may be a callable (Azure Foundry Entra ID); get_model_context_length expects a
-    # string for live probes, so coerce defensively.
-    ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
-    try:
-        new_context_length = get_model_context_length(
-            agent.model, base_url=agent.base_url, api_key=ctx_api_key, provider=agent.provider,
-            config_context_length=effective_context_length, custom_providers=custom_providers,
-        )
-        agent.context_compressor.update_model(
-            model=agent.model,
-            context_length=new_context_length,
-            base_url=agent.base_url,
-            api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
-            provider=agent.provider,
-            api_mode=agent.api_mode,
-        )
-    except Exception:
-        _restore_switch_snapshot(agent, snapshot)
-        raise
-    # Outside the rollback guard: a probe hiccup must not undo a good switch. Eager, so the aux
-    # clamp lands before the first compaction on the new window, not after it (#114707).
-    from agent.conversation_compression import revalidate_compression_feasibility
-    revalidate_compression_feasibility(agent)
-
-
 def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
     """Post-switch bookkeeping: fallback reset/prune, request_overrides, billing route."""
     agent._fallback_activated = False
@@ -2457,7 +2424,8 @@ def switch_model(
         provider=new_provider, base_url=agent.base_url, api_mode=api_mode, model=new_model
     )
     if hasattr(agent, "context_compressor") and agent.context_compressor:
-        _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot)
+        from agent.model_selection_context import update_switch_compressor
+        update_switch_compressor(agent, custom_providers, effective_context_length, snapshot)
     # Re-read the per-model reasoning_effort override so it applies immediately (per-model > global;
     # YAML False = disabled).
     try:

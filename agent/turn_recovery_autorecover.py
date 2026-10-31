@@ -14,6 +14,7 @@ overload backoff path.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason
@@ -22,11 +23,19 @@ logger = logging.getLogger("agent.conversation_loop")
 
 # Transient transport verdicts: the provider is expected back. Everything else (auth, format,
 # content policy, billing, entitlement, overflow, model-not-found ...) is deterministic for this
-# request and stays out.
-_LADDER_REASONS = frozenset({FailoverReason.overloaded, FailoverReason.server_error, FailoverReason.timeout})
+# request and stays out. ``rate_limit`` (429) also parks here when it is a transient concurrency /
+# RPM throttle (no far-future usage-window reset; see ``ladder_eligible``).
+_LADDER_REASONS = frozenset({FailoverReason.overloaded, FailoverReason.server_error, FailoverReason.timeout, FailoverReason.rate_limit})
 
 _LADDER_BASE_DELAY_S = 15.0
 _LADDER_CAP_S = 60.0
+# Rate limits recover on their own clock, not the overload schedule: a busier curve keeps a
+# throttled key from being hammered back the moment it frees up.
+_RATE_LIMIT_BASE_DELAY_S = 30.0
+_RATE_LIMIT_CAP_S = 120.0
+# A usage-window rate limit whose reset lands far past the ladder's total reach cannot be waited
+# out by this path: 5 cycles at ≤120 s ≈ 10 min, so resets beyond that stay out.
+_WINDOW_RESET_MAX_S = 600.0
 # A provider that names its own cooldown knows better than the schedule, within reason.
 _RETRY_AFTER_CAP_S = 120.0
 
@@ -46,21 +55,27 @@ def auto_recovery_cycles(agent: Any) -> int:
     return max(int(getattr(agent, "_auto_recovery_cycles", 0) or 0), 0)
 
 
-def ladder_wait_seconds(cycle: int, api_error: Any) -> float:
-    """Wait before recovery ``cycle`` (1-based): jittered 15/30/60/60/60 s, or the provider's
-    ``Retry-After`` when present (honoured past the 60 s cap, up to 120 s)."""
+def ladder_wait_seconds(cycle: int, api_error: Any, *, reason: Optional[FailoverReason] = None) -> float:
+    """Wait before recovery ``cycle`` (1-based): jittered 15/30/60/60/60 s (rate limits 30/60/120/
+    120/120 s), or the provider's ``Retry-After`` when present (honoured past the cap, up to 120 s)."""
     from agent.retry_utils import jittered_backoff, provider_retry_after_seconds
     retry_after = provider_retry_after_seconds(api_error)
     if retry_after is not None:
         return min(retry_after, _RETRY_AFTER_CAP_S)
-    return jittered_backoff(cycle, base_delay=_LADDER_BASE_DELAY_S, max_delay=_LADDER_CAP_S, jitter_ratio=0.2)
+    base, cap = (_RATE_LIMIT_BASE_DELAY_S, _RATE_LIMIT_CAP_S) if reason is FailoverReason.rate_limit else (_LADDER_BASE_DELAY_S, _LADDER_CAP_S)
+    return jittered_backoff(cycle, base_delay=base, max_delay=cap, jitter_ratio=0.2)
 
 
 def ladder_eligible(agent: Any, classified: Any) -> bool:
-    """True when the ladder may engage: cycles configured, a transient transport verdict, and no
+    """True when the ladder may engage: cycles configured, a transient transport verdict (rate
+    limits included unless the usage window resets past what this ladder can wait out), and no
     answer text streamed to the user yet (delivered text is never replayed by this path)."""
     if auto_recovery_cycles(agent) <= 0 or classified.reason not in _LADDER_REASONS:
         return False
+    if classified.reason is FailoverReason.rate_limit:
+        reset_at = classified.error_context.get("reset_at") if isinstance(classified.error_context, dict) else None
+        if isinstance(reset_at, (int, float)) and reset_at - time.time() > _WINDOW_RESET_MAX_S:
+            return False
     streamed = getattr(agent, "_current_streamed_assistant_text", "") or ""
     return not agent._has_content_after_think_block(streamed)
 
@@ -92,7 +107,7 @@ def auto_recover_after_exhaustion(
         return None
     cycle = used + 1
     _retry.auto_recovery_cycles_used = cycle
-    wait_s = ladder_wait_seconds(cycle, api_error)
+    wait_s = ladder_wait_seconds(cycle, api_error, reason=classified.reason)
     notice = ladder_notice(agent, wait_s=wait_s, cycle=cycle, total=total)
     # Durable line on every surface (CLI print, TUI status.update, gateway bubble, api_server SSE)
     # plus the live wait line (spinner / thinking.delta / activity heartbeat).

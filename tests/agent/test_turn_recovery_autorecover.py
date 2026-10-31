@@ -157,3 +157,41 @@ def test_interrupt_during_ladder_wait_returns_interrupted_result():
     verdict, retry = _settle(agent, _Err(503, "down"))
     assert verdict.action == "return" and verdict.result["interrupted"] is True
     assert retry.auto_recovery_cycles_used == 1
+
+
+def test_transient_rate_limit_enters_ladder_on_the_busier_curve():
+    """A plain 429 throttle (no usage-window reset) parks on the ladder with the 30/60/120 curve."""
+    from agent.error_classifier import ClassifiedError, FailoverReason
+    from agent.turn_recovery_autorecover import ladder_eligible
+
+    agent = _Agent()
+    throttled = ClassifiedError(reason=FailoverReason.rate_limit, status_code=429)
+    assert ladder_eligible(agent, throttled) is True
+    verdict, retry = _settle(agent, _Err(429, "Too Many Requests"))
+    assert (verdict.action, retry.auto_recovery_cycles_used) == ("continue", 1)
+    assert "(cycle 1/5)" in agent.statuses[0]
+
+    calls = []
+    with patch("agent.retry_utils.jittered_backoff",
+               lambda attempt, *, base_delay, max_delay, jitter_ratio: calls.append((base_delay, max_delay)) or 0):
+        assert [ladder_wait_seconds(c, _Err(429, "429"), reason=FailoverReason.rate_limit) for c in (1, 2, 3, 4, 5)] == [0, 0, 0, 0, 0]
+    assert calls[0] == (30.0, 120.0) and calls[-1] == (30.0, 120.0)
+
+
+def test_usage_window_rate_limit_past_ladder_reach_stays_out():
+    """A usage-window 429 whose reset lands ~2h out cannot be waited out: no ladder, turn ends."""
+    import time as _time
+    from agent.error_classifier import ClassifiedError, FailoverReason
+    from agent.turn_recovery_autorecover import ladder_eligible
+
+    agent = _Agent()
+    window = ClassifiedError(reason=FailoverReason.rate_limit, status_code=429,
+                             error_context={"reset_at": _time.time() + 7200})
+    assert ladder_eligible(agent, window) is False
+    verdict, retry = _settle(agent, _Err(429, "usage limit reached"))
+    assert verdict.action == "return" and retry.auto_recovery_cycles_used == 0
+
+    # A reset inside the ladder's reach still parks.
+    soon = ClassifiedError(reason=FailoverReason.rate_limit, status_code=429,
+                           error_context={"reset_at": _time.time() + 90})
+    assert ladder_eligible(agent, soon) is True

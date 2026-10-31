@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import sqlite3
 import subprocess
@@ -597,27 +596,25 @@ class TestKanbanIsolationDrift:
     real DB.
     """
 
-    def test_isolation_list_covers_all_kanban_env_vars_in_source(self):
-        """_KANBAN_ENV_VARS ⊇ {every HERMES_KANBAN_[A-Z_]+ in kanban_db.py}.
+    def test_isolation_list_covers_all_kanban_worker_env_keys(self):
+        """_KANBAN_ENV_VARS ⊇ KANBAN_WORKER_ENV_KEYS (runtime contract).
 
-        Reads kanban_db.py as text, extracts every unique HERMES_KANBAN_*
-        token, and asserts that _KANBAN_ENV_VARS contains them all.
+        KANBAN_WORKER_ENV_KEYS is an explicit frozenset declared in
+        kanban_db.py that enumerates every HERMES_KANBAN_* key
+        _default_spawn() injects into a worker's environment.
+
+        This test asserts the *relationship* (superset) without reading
+        source text: if _default_spawn() gains a new HERMES_KANBAN_* key,
+        the author must add it to KANBAN_WORKER_ENV_KEYS, which will
+        immediately fail this test, prompting them to also add it to
+        _KANBAN_ENV_VARS so isolation fixtures strip it.
         """
-        kanban_db_src = (
-            Path(__file__).parent.parent.parent
-            / "hermes_cli"
-            / "kanban_db.py"
-        )
-        source_text = kanban_db_src.read_text(encoding="utf-8")
-        # Extract every HERMES_KANBAN_<UPPER_WORD> token from the source.
-        found_in_source: set[str] = set(
-            re.findall(r"HERMES_KANBAN_[A-Z_]+", source_text)
-        )
+        from hermes_cli.kanban_db import KANBAN_WORKER_ENV_KEYS
 
         isolation_set = set(_KANBAN_ENV_VARS)
-        missing = found_in_source - isolation_set
+        missing = KANBAN_WORKER_ENV_KEYS - isolation_set
         assert not missing, (
-            f"_KANBAN_ENV_VARS is missing env vars that kanban_db.py uses.\n"
+            f"_KANBAN_ENV_VARS is missing keys listed in KANBAN_WORKER_ENV_KEYS.\n"
             f"Add these to _KANBAN_ENV_VARS in tests/hermes_cli/_kanban_isolation.py:\n"
             f"  {sorted(missing)}\n"
             "Without this, dispatcher-injected vars survive into test processes "

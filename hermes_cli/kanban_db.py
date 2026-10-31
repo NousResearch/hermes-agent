@@ -150,6 +150,25 @@ KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
+# All HERMES_KANBAN_* env-var keys that _default_spawn() injects into a worker
+# environment.  Declared here as an explicit runtime constant so tests can
+# assert isolation completeness without reading source text.
+KANBAN_WORKER_ENV_KEYS: frozenset[str] = frozenset({
+    # Always injected — worker identity & location
+    "HERMES_KANBAN_TASK",
+    "HERMES_KANBAN_WORKSPACE",
+    "HERMES_KANBAN_DB",
+    "HERMES_KANBAN_WORKSPACES_ROOT",
+    "HERMES_KANBAN_BOARD",
+    # Conditionally injected — branch / run tracking
+    "HERMES_KANBAN_BRANCH",
+    "HERMES_KANBAN_RUN_ID",
+    "HERMES_KANBAN_CLAIM_LOCK",
+    # Conditionally injected — goal-loop mode
+    "HERMES_KANBAN_GOAL_MODE",
+    "HERMES_KANBAN_GOAL_MAX_TURNS",
+})
+
 
 def _assert_not_delegated_child_mutation() -> None:
     """Reject Kanban state mutations from ``delegate_task`` child contexts.

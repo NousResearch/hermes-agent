@@ -1295,7 +1295,8 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
     def _queue_skill_message(self, msg) -> None:
         if hasattr(self, '_pending_input'):
-            self._pending_input.put(msg)
+            from hermes_cli.cli_commands_session_tools import queue_slash_turn
+            queue_slash_turn(self, msg)
 
     def _run_skill_bundle_command(self, base_cmd: str, bundle_info: dict, user_instruction: str) -> None:
         """``/<bundle>`` loads several skills at once (bundles win over same-named skills)."""

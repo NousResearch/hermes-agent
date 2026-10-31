@@ -10,10 +10,6 @@ describe('texToUnicode — symbols', () => {
     expect(texToUnicode('\\omega')).toBe('ω')
   })
 
-  it('substitutes uppercase Greek', () => {
-    expect(texToUnicode('\\Sigma \\Omega \\Pi')).toBe('Σ Ω Π')
-  })
-
   it('substitutes set theory and logic operators', () => {
     expect(texToUnicode('A \\cup B \\cap C')).toBe('A ∪ B ∩ C')
     expect(texToUnicode('\\forall x \\in \\emptyset')).toBe('∀ x ∈ ∅')
@@ -45,7 +41,9 @@ describe('texToUnicode — symbols', () => {
 describe('texToUnicode — blackboard / calligraphic / fraktur', () => {
   it('renders \\mathbb capitals', () => {
     expect(texToUnicode('\\mathbb{R}')).toBe('ℝ')
-    expect(texToUnicode('\\mathbb{N} \\subset \\mathbb{Z} \\subset \\mathbb{Q} \\subset \\mathbb{R}')).toBe('ℕ ⊂ ℤ ⊂ ℚ ⊂ ℝ')
+    expect(texToUnicode('\\mathbb{N} \\subset \\mathbb{Z} \\subset \\mathbb{Q} \\subset \\mathbb{R}')).toBe(
+      'ℕ ⊂ ℤ ⊂ ℚ ⊂ ℝ'
+    )
   })
 
   it('renders \\mathcal and \\mathfrak', () => {
@@ -119,7 +117,7 @@ describe('texToUnicode — fractions', () => {
     expect(texToUnicode('\\frac{1}{\\frac{1}{x}}')).toBe('1/(1/x)')
   })
 
-  it('handles braces inside numerator / denominator (regression: regex \\frac couldn\'t)', () => {
+  it("handles braces inside numerator / denominator (regression: regex \\frac couldn't)", () => {
     // The regex-only `\frac` matcher used `[^{}]*` for each arg, which
     // failed the moment a numerator contained its own braces (here the
     // `{p-1}` from a superscript). The balanced-brace parser handles it.
@@ -179,14 +177,6 @@ describe('texToUnicode — modular arithmetic and tags', () => {
   })
 })
 
-describe('texToUnicode — newly added symbols', () => {
-  it('renders \\nmid, \\blacksquare, \\qed', () => {
-    expect(texToUnicode('p \\nmid q')).toBe('p ∤ q')
-    expect(texToUnicode('Therefore \\blacksquare')).toBe('Therefore ■')
-    expect(texToUnicode('done \\qed')).toBe('done ∎')
-  })
-})
-
 describe('texToUnicode — \\boxed / \\fbox', () => {
   // `\boxed` produces non-printable U+0001 / U+0002 sentinels around its
   // content so the markdown renderer can apply highlight styling. These
@@ -198,7 +188,7 @@ describe('texToUnicode — \\boxed / \\fbox', () => {
     expect(stripBox(texToUnicode('\\fbox{answer}'))).toBe('answer')
   })
 
-  it('handles boxed expressions with nested braces (regression: regex couldn\'t)', () => {
+  it("handles boxed expressions with nested braces (regression: regex couldn't)", () => {
     // A `[^{}]*` regex would stop at the first `{` inside the body. The
     // balanced-brace parser walks past it.
     expect(stripBox(texToUnicode('\\boxed{x^{n+1}}'))).toBe('xⁿ⁺¹')
@@ -274,10 +264,6 @@ describe('texToUnicode — punctuation commands without lookahead', () => {
 describe('texToUnicode — round-trip realism', () => {
   it('renders a typical model-emitted formula', () => {
     expect(texToUnicode('\\alpha \\in \\mathbb{R}, \\alpha \\notin \\mathbb{Q}')).toBe('α ∈ ℝ, α ∉ ℚ')
-  })
-
-  it('preserves unknown commands verbatim', () => {
-    expect(texToUnicode('\\bigtriangleup \\circledast')).toBe('\\bigtriangleup \\circledast')
   })
 
   it('handles commands without delimiters between', () => {

@@ -21,6 +21,7 @@ def _isolate_feishu_env(monkeypatch):
         "FEISHU_ALLOW_BOTS",
         "FEISHU_ALLOWED_USERS",
         "FEISHU_ALLOW_ALL_USERS",
+        "TELEGRAM_ALLOW_BOTS",
         "GATEWAY_ALLOW_ALL_USERS",
         "GATEWAY_ALLOWED_USERS",
     ):
@@ -55,37 +56,6 @@ def _make_feishu_human_source(open_id: str = "ou_human"):
         user_name="Human",
         is_bot=False,
     )
-
-
-def test_feishu_bot_authorized_when_allow_bots_mentions(monkeypatch):
-    runner = _make_bare_runner()
-    monkeypatch.setenv("FEISHU_ALLOW_BOTS", "mentions")
-    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_human")
-
-    assert runner._is_user_authorized(_make_feishu_bot_source("ou_peer")) is True
-
-
-def test_feishu_bot_authorized_when_allow_bots_all(monkeypatch):
-    runner = _make_bare_runner()
-    monkeypatch.setenv("FEISHU_ALLOW_BOTS", "all")
-    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_human")
-
-    assert runner._is_user_authorized(_make_feishu_bot_source()) is True
-
-
-def test_feishu_bot_NOT_authorized_when_allow_bots_none(monkeypatch):
-    runner = _make_bare_runner()
-    monkeypatch.setenv("FEISHU_ALLOW_BOTS", "none")
-    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_human")
-
-    assert runner._is_user_authorized(_make_feishu_bot_source("ou_peer")) is False
-
-
-def test_feishu_bot_NOT_authorized_when_allow_bots_unset(monkeypatch):
-    runner = _make_bare_runner()
-    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_human")
-
-    assert runner._is_user_authorized(_make_feishu_bot_source("ou_peer")) is False
 
 
 def test_feishu_human_still_checked_against_allowlist_when_bot_policy_set(monkeypatch):

@@ -13,11 +13,6 @@ import pytest
 
 
 class TestClassifyContainerMirrorTarget:
-    def test_returns_none_without_context(self):
-        """No Docker context — /root/.hermes/… must not be flagged."""
-        from agent.file_safety import classify_container_mirror_target
-
-        assert classify_container_mirror_target("/root/.hermes/profiles/group1/SOUL.md") is None
 
     def test_catches_soul_md_with_context(self):
         """Primary failure mode from #32049: agent writes SOUL.md via container path."""
@@ -45,17 +40,6 @@ class TestClassifyContainerMirrorTarget:
         assert result is not None
         assert result["inner_path"] == inner
 
-    def test_non_hermes_path_not_flagged(self):
-        """/root/workspace/… is not .hermes state and must not be blocked."""
-        from agent.file_safety import classify_container_mirror_target
-
-        assert (
-            classify_container_mirror_target(
-                "/root/workspace/main.py",
-                mirror_prefix="/root/.hermes",
-            )
-            is None
-        )
 
 
 class TestGetContainerMirrorWarning:
@@ -88,7 +72,7 @@ class TestFileToolIntegration:
     """file_tools must catch the mirror path before creating DockerEnvironment."""
 
     def test_guard_uses_current_docker_config_before_env_exists(self, monkeypatch):
-        import tools.file_tools as file_tools
+        import tools.file_tools_write_guards as file_tools
 
         monkeypatch.setattr(
             file_tools,

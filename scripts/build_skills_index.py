@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
 """Build the Hermes Skills Index — a centralized JSON catalog of all skills.
 
 This script crawls every skill source (skills.sh, GitHub taps, official,
-clawhub, lobehub, claude-marketplace) and writes a JSON index with resolved
+clawhub, lobehub) and writes a JSON index with resolved
 GitHub paths. The index is served as a static file on the docs site so that
 `hermes skills search/install` can use it without hitting the GitHub API.
 
@@ -18,35 +18,33 @@ Output: website/static/api/skills-index.json
 
 import json
 import os
+import re
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 # Allow importing from repo root
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
-# Ensure HERMES_HOME is set (needed by tools/skills_hub.py imports)
+# Ensure HERMES_HOME is set (needed by tools/skills_hub*.py imports)
 os.environ.setdefault("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes"))
 
-from tools.skills_hub import (
-    GitHubAuth,
-    GitHubSource,
-    SkillsShSource,
-    OptionalSkillSource,
-    WellKnownSkillSource,
-    ClawHubSource,
-    ClaudeMarketplaceSource,
-    LobeHubSource,
-    BrowseShSource,
-    SkillMeta,
-)
+from tools.skills_hub_clawhub import ClawHubSource
+from tools.skills_hub_github import GitHubAuth, GitHubSource
+from tools.skills_hub_models import SkillMeta
+from tools.skills_hub_official import OptionalSkillSource
+from tools.skills_hub_skillssh import SkillsShSource
+from tools.skills_hub_sources import BrowseShSource, LobeHubSource, WellKnownSkillSource
 import httpx
 
 OUTPUT_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "skills-index.json")
 INDEX_VERSION = 1
+CLAWHUB_ENRICH_BUDGET_SECONDS = 480
+# Per-repo cap on contents/<candidate>/SKILL.md probes when the recursive tree is truncated.
+MAX_TRUNCATED_TREE_PROBES = 10
 
 
 def _meta_to_dict(meta: SkillMeta) -> dict:
@@ -108,8 +106,9 @@ def crawl_skills_sh(source: SkillsShSource) -> list:
     return list(all_skills.values())
 
 
-def _fetch_repo_tree(repo: str, auth: GitHubAuth) -> list:
-    """Fetch the recursive tree for a repo. Returns list of tree entries."""
+def _fetch_repo_tree(repo: str, auth: GitHubAuth) -> tuple[str, list]:
+    """Recursive tree for a repo as ``(status, entries)``: ``ok``, ``truncated`` (partial
+    entries), ``gone`` (the repo 404s) or ``error`` (anything transient — the row is kept)."""
     headers = auth.get_headers()
     try:
         resp = httpx.get(
@@ -117,7 +116,7 @@ def _fetch_repo_tree(repo: str, auth: GitHubAuth) -> list:
             headers=headers, timeout=15, follow_redirects=True,
         )
         if resp.status_code != 200:
-            return []
+            return ("gone" if resp.status_code == 404 else "error"), []
         branch = resp.json().get("default_branch", "main")
 
         resp = httpx.get(
@@ -126,13 +125,27 @@ def _fetch_repo_tree(repo: str, auth: GitHubAuth) -> list:
             headers=headers, timeout=30, follow_redirects=True,
         )
         if resp.status_code != 200:
-            return []
+            return "error", []
         data = resp.json()
-        if data.get("truncated"):
-            return []
-        return data.get("tree", [])
+        return ("truncated" if data.get("truncated") else "ok"), data.get("tree", [])
     except Exception:
-        return []
+        return "error", []
+
+
+def _probe_skill_md(repo: str, identifier: str, auth: GitHubAuth) -> str | None:
+    """First of the client's own candidate paths for ``owner/repo/slug`` (``SkillsShSource._candidate_identifiers``)
+    that holds a SKILL.md, for repos too big for one recursive tree (posthog/posthog)."""
+    for candidate in SkillsShSource._candidate_identifiers(identifier):
+        try:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{repo}/contents/{candidate.split('/', 2)[2]}/SKILL.md",
+                headers=auth.get_headers(), timeout=15, follow_redirects=True,
+            )
+        except httpx.HTTPError:
+            continue
+        if resp.status_code == 200:
+            return candidate
+    return None
 
 
 def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
@@ -163,31 +176,41 @@ def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
     print(f"    {len(by_repo)} unique repos to scan", flush=True)
 
     resolved_count = 0
+    dropped: dict[str, str] = {}  # identifier -> "repo_gone" | "not_in_repo"
+
+    def _norm(name: str) -> str:
+        return re.sub(r"[-_]", "", name.lower())
 
     # Fetch trees in parallel (up to 6 concurrent)
     def _resolve_repo(repo: str, entries: list):
-        tree = _fetch_repo_tree(repo, auth)
-        if not tree:
+        status, tree = _fetch_repo_tree(repo, auth)
+        if status == "gone":
+            # A 404 repo can never install: shipping the row only made every client spend
+            # ~40 API calls on it and fail as stale_index.
+            dropped.update((e["identifier"], "repo_gone") for e in entries)
+            return 0
+        if status == "error":
             return 0
 
         # Find all SKILL.md paths in this repo
         skill_paths = {}  # skill_dir_name -> full_path
+        skill_dirs = []
         for item in tree:
             if item.get("type") != "blob":
                 continue
             path = item.get("path", "")
-            if path.endswith("/SKILL.md"):
-                skill_dir = path[: -len("/SKILL.md")]
-                dir_name = skill_dir.split("/")[-1]
-                skill_paths[dir_name.lower()] = f"{repo}/{skill_dir}"
-
-                # Also check SKILL.md frontmatter name if we can match by path
-                # For now, just index by directory name
-            elif path == "SKILL.md":
-                # Root-level SKILL.md
-                skill_paths["_root_"] = f"{repo}"
+            if path.endswith("/SKILL.md") or path == "SKILL.md":
+                skill_dir = path[: -len("SKILL.md")].rstrip("/")
+                skill_dirs.append(skill_dir)
+                if skill_dir:
+                    skill_paths[skill_dir.split("/")[-1].lower()] = f"{repo}/{skill_dir}"
+        # The client installs a single-skill repo whose only SKILL.md sits at the root or in a
+        # generic dir whatever the slug (GitHubSource._find_skill_in_repo_tree / _find_repo_root_skill).
+        lone_skill = (f"{repo}/{skill_dirs[0]}"
+                      if skill_dirs in ([""], ["skills"], [".agents/skills"], [".claude/skills"]) else None)
 
         count = 0
+        probes_left = MAX_TRUNCATED_TREE_PROBES
         for entry in entries:
             # Try to match the skill's name/path to a tree entry
             skill_name = entry.get("name", "").lower()
@@ -199,26 +222,25 @@ def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
             parts = identifier.replace("skills-sh/", "").replace("skills.sh/", "")
             skill_token = parts.split("/")[-1].lower() if "/" in parts else ""
 
-            # Try matching in order of likelihood
-            for candidate in [skill_token, skill_name, skill_path]:
-                if not candidate:
-                    continue
-                matched = skill_paths.get(candidate)
-                if matched:
-                    entry["resolved_github_id"] = matched
-                    count += 1
-                    break
-            else:
-                # Try fuzzy: skill_token with common transformations
-                for tree_name, tree_path in skill_paths.items():
-                    if (skill_token and (
-                        tree_name.replace("-", "") == skill_token.replace("-", "")
-                        or skill_token in tree_name
-                        or tree_name in skill_token
-                    )):
-                        entry["resolved_github_id"] = tree_path
-                        count += 1
-                        break
+            # Try matching in order of likelihood, then fuzzy (``pdb-database`` slug vs
+            # ``pdb_database`` dir), then the lone-skill layout.
+            matched = next((skill_paths[c] for c in (skill_token, skill_name, skill_path)
+                            if c and c in skill_paths), None) or next(
+                (tree_path for tree_name, tree_path in skill_paths.items() if skill_token and (
+                    _norm(tree_name) == _norm(skill_token)
+                    or skill_token in tree_name
+                    or tree_name in skill_token
+                )), None) or lone_skill
+            if not matched and status == "truncated" and probes_left > 0:
+                probes_left -= 1
+                matched = _probe_skill_md(repo, parts, auth)
+            if matched:
+                entry["resolved_github_id"] = matched
+                count += 1
+            elif status == "ok":
+                # The whole tree was read and no SKILL.md dir is this skill: renamed or removed
+                # upstream while skills.sh still lists it.
+                dropped[identifier] = "not_in_repo"
 
         return count
 
@@ -235,9 +257,11 @@ def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
                 print(f"    Warning: {repo}: {e}", file=sys.stderr)
 
     elapsed = time.time() - start
-    print(f"  Resolved {resolved_count}/{len(skills_sh)} paths ({elapsed:.1f}s)",
+    reasons = Counter(dropped.values())
+    print(f"  Resolved {resolved_count}/{len(skills_sh)} paths, dropped {len(dropped)} uninstallable "
+          f"({reasons['repo_gone']} repo gone, {reasons['not_in_repo']} not in repo) ({elapsed:.1f}s)",
           flush=True)
-    return skills
+    return [s for s in skills if s.get("identifier") not in dropped]
 
 
 def main():
@@ -256,15 +280,16 @@ def main():
         "well-known": WellKnownSkillSource(),
         "github": GitHubSource(auth=auth),
         "clawhub": ClawHubSource(),
-        "claude-marketplace": ClaudeMarketplaceSource(auth=auth),
         "lobehub": LobeHubSource(),
         "browse-sh": BrowseShSource(),
     }
 
     all_skills: list[dict] = []
 
-    # Crawl skills.sh
+    # Crawl skills.sh, then resolve its repo paths right away: the CI App token lives 1 h and
+    # the ClawHub walk below runs longer, so resolving after it 401'd every tree (0/20000).
     all_skills.extend(crawl_skills_sh(skills_sh_source))
+    all_skills = batch_resolve_paths(all_skills, auth)
 
     # Crawl other sources in parallel.
     # Per-source soft caps — sources stop returning when they run out, so these
@@ -272,11 +297,11 @@ def main():
     # (well above current catalog size) lets the full catalog land in the
     # index instead of being truncated at an arbitrary build-time limit.
     SOURCE_LIMITS = {
-        # ClawHub had 49,698+ skills as of May 2026; 200k leaves headroom.
-        "clawhub": 200_000,
+        # 0 = unbounded catalog walk (max_items=0 in ClawHubSource). A positive
+        # limit bounds the walk and also enables the interactive 12s budget.
+        "clawhub": 0,
         "lobehub": 100_000,
         "browse-sh": 5_000,
-        "claude-marketplace": 5_000,
         "github": 5_000,
         "well-known": 5_000,
         "official": 5_000,
@@ -294,8 +319,60 @@ def main():
             except Exception as e:
                 print(f"  Error: {e}", file=sys.stderr)
 
-    # Batch resolve GitHub paths for skills.sh entries
-    all_skills = batch_resolve_paths(all_skills, auth)
+    # Enrich ClawHub skills with owner handles. The listing API does not
+    # include owner info, so we fetch each skill's detail page concurrently.
+    # This is needed to build valid "View source" URLs on the Skills Hub page:
+    # https://clawhub.ai/{owner}/skills/{slug}. Without the owner segment the
+    # URL leads to a 404.
+    clawhub_skills = [s for s in all_skills if s["source"] == "clawhub"]
+    if clawhub_skills:
+        # Convert dicts back to SkillMeta for enrichment, then update in place.
+        clawhub_metas = []
+        for s in clawhub_skills:
+            meta = SkillMeta(
+                name=s["name"],
+                description=s["description"],
+                source=s["source"],
+                identifier=s["identifier"],
+                trust_level=s["trust_level"],
+                repo=s.get("repo") or None,
+                path=s.get("path") or None,
+                tags=s.get("tags") or [],
+                extra=dict(s.get("extra") or {}),
+            )
+            clawhub_metas.append(meta)
+
+        print(f"  Enriching {len(clawhub_metas)} ClawHub skills with owner handles...",
+              flush=True)
+        enrich_start = time.time()
+        # Best-effort: ~2s per detail call means the full catalog would take >1h;
+        # the un-enriched remainder ships without an owner link (see enrich_owners).
+        enriched = sources["clawhub"].enrich_owners(
+            clawhub_metas, max_workers=30, budget_seconds=CLAWHUB_ENRICH_BUDGET_SECONDS)
+        # Write enriched owner back into the index dicts.
+        meta_by_id = {m.identifier: m for m in clawhub_metas}
+        for s in clawhub_skills:
+            meta = meta_by_id.get(s["identifier"])
+            if meta and meta.extra.get("owner"):
+                s.setdefault("extra", {})["owner"] = meta.extra["owner"]
+        enrich_elapsed = time.time() - enrich_start
+        print(f"  Enriched {enriched}/{len(clawhub_metas)} ClawHub owners "
+              f"({enrich_elapsed:.1f}s)", flush=True)
+
+    # Collect which sources hit a GitHub API rate limit during the crawl.
+    # github / well-known both read api.github.com, so a rate-limited token
+    # zeroes both at once — surfaced below so the failure message names the
+    # real cause instead of "source returned 0".
+    rate_limited_sources = {
+        name for name, source in sources.items()
+        if getattr(source, "is_rate_limited", False)
+    }
+    if rate_limited_sources:
+        print(
+            "  WARNING: GitHub API rate limit hit for: "
+            + ", ".join(sorted(rate_limited_sources)),
+            file=sys.stderr,
+        )
 
     # Deduplicate by identifier
     seen: dict[str, dict] = {}
@@ -308,28 +385,11 @@ def main():
     # Sort
     source_order = {"official": 0, "skills-sh": 1, "skills.sh": 1,
                     "github": 2, "well-known": 3, "clawhub": 4,
-                    "browse-sh": 5, "claude-marketplace": 6, "lobehub": 7}
+                    "browse-sh": 5, "lobehub": 6}
     deduped.sort(key=lambda s: (source_order.get(s["source"], 99), s["name"]))
 
-    # Build index
-    index = {
-        "version": INDEX_VERSION,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "skill_count": len(deduped),
-        "skills": deduped,
-    }
-
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-        json.dump(index, f, separators=(",", ":"), ensure_ascii=False)
-
-    elapsed = time.time() - overall_start
-    file_size = os.path.getsize(OUTPUT_PATH)
-    print(f"\nDone! {len(deduped)} skills indexed in {elapsed:.0f}s")
-    print(f"Output: {OUTPUT_PATH} ({file_size / 1024:.0f} KB)")
-
-    from collections import Counter
     by_source = Counter(s["source"] for s in deduped)
+    print(f"\nCrawled {len(deduped)} skills in {time.time() - overall_start:.0f}s")
     for src, count in sorted(by_source.items(), key=lambda x: -x[1]):
         resolved = sum(1 for s in deduped
                        if s["source"] == src and s.get("resolved_github_id"))
@@ -380,13 +440,45 @@ def main():
         )
         for line in health_errors:
             print(line, file=sys.stderr)
+        if rate_limited_sources:
+            print(
+                "\nGitHub API rate limit was hit during this crawl for: "
+                + ", ".join(sorted(rate_limited_sources))
+                + ". This is the usual cause of an all-GitHub-tap collapse "
+                "(github / well-known dropping to zero together). "
+                "Re-run with a higher-quota GITHUB_TOKEN.",
+                file=sys.stderr,
+            )
         print(
             "\nIf the drop is expected (e.g. a hub is genuinely shutting "
             "down), lower the floor in scripts/build_skills_index.py "
             "EXPECTED_FLOORS in the same PR.",
             file=sys.stderr,
         )
+        # IMPORTANT: do NOT write OUTPUT_PATH on failure. The index file is
+        # gitignored, so a fresh deploy checkout has no copy on disk — leaving
+        # it absent lets website/scripts/extract-skills.py fall back to the
+        # legacy snapshot cache (or skip the unified index) instead of reading
+        # a degenerate file. Writing-then-exiting-2 was the bug that shipped an
+        # index with every GitHub-API source dropped to zero: deploy-site.yml
+        # swallows the exit code with `|| echo non-fatal`, and the partial file
+        # was already on disk for extract-skills to pick up.
         sys.exit(2)
+
+    # Healthy — only now write the index out for the docs build to consume.
+    index = {
+        "version": INDEX_VERSION,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "skill_count": len(deduped),
+        "skills": deduped,
+    }
+    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+        json.dump(index, f, separators=(",", ":"), ensure_ascii=False)
+    file_size = os.path.getsize(OUTPUT_PATH)
+    print(f"\nDone! {len(deduped)} skills indexed in "
+          f"{time.time() - overall_start:.0f}s")
+    print(f"Output: {OUTPUT_PATH} ({file_size / 1024:.0f} KB)")
 
 
 if __name__ == "__main__":

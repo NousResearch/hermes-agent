@@ -8,7 +8,7 @@
 //!   3. Network: download from GitHub raw at a pinned commit or branch.
 //!      Commit pins are immutable; branch pins are HEAD-tracking.
 //!
-//! Mirrors `apps/desktop/electron/bootstrap-runner.cjs`'s `resolveInstallScript`,
+//! Mirrors `apps/desktop/electron/bootstrap-runner.ts`'s `resolveInstallScript`,
 //! but the dev-checkout resolution is driven by an env var rather than the
 //! Electron app's APP_ROOT/../.. trick, because Hermes-Setup.exe is meant
 //! to live OUTSIDE any repo checkout.
@@ -35,7 +35,6 @@ pub struct ResolvedScript {
 pub enum ScriptSource {
     DevCheckout,
     Bundled,
-    Cached,
     Downloaded,
 }
 
@@ -64,7 +63,7 @@ impl ScriptKind {
 }
 
 /// Validates a string looks like a git SHA (7+ hex chars). Mirrors
-/// `STAMP_COMMIT_RE` from bootstrap-runner.cjs.
+/// `STAMP_COMMIT_RE` from bootstrap-runner.ts.
 fn is_valid_commit(s: &str) -> bool {
     let len = s.len();
     (7..=40).contains(&len) && s.chars().all(|c| c.is_ascii_hexdigit())
@@ -100,6 +99,10 @@ pub async fn resolve(
     // 2. (Not implemented) bundled fallback.
 
     // 3. Network. Pin must be a real commit or a branch ref.
+    //
+    // Always download; a previously downloaded script is never reused. A
+    // stale script drives a tree it predates (the repository stage follows
+    // the live branch), and a failed download is fatal so Retry refetches.
     let commit_or_ref = match (&pin.commit, &pin.branch) {
         (Some(c), _) if is_valid_commit(c) => c.clone(),
         (_, Some(b)) if !b.trim().is_empty() => b.clone(),
@@ -115,33 +118,16 @@ pub async fn resolve(
         }
     };
 
-    let cached = cached_path(kind, &commit_or_ref);
-    if cached.exists() {
-        emit_log(&format!(
-            "[bootstrap] using cached {} for {}",
-            kind.filename(),
-            truncate_ref(&commit_or_ref)
-        ));
-        return Ok(ResolvedScript {
-            path: cached,
-            source: ScriptSource::Cached,
-            commit: pin.commit.clone(),
-            branch: pin.branch.clone(),
-        });
-    }
-
+    let dest = download_path(kind, &commit_or_ref);
     emit_log(&format!(
         "[bootstrap] downloading {} for {} from GitHub",
         kind.filename(),
         truncate_ref(&commit_or_ref)
     ));
-
-    download(kind, &commit_or_ref, &cached).await?;
-
-    emit_log(&format!("[bootstrap] cached to {}", cached.display()));
-
+    download(kind, &commit_or_ref, &dest).await?;
+    emit_log(&format!("[bootstrap] downloaded to {}", dest.display()));
     Ok(ResolvedScript {
-        path: cached,
+        path: dest,
         source: ScriptSource::Downloaded,
         commit: pin.commit.clone(),
         branch: pin.branch.clone(),
@@ -154,7 +140,7 @@ pub struct Pin {
     pub branch: Option<String>,
 }
 
-fn cached_path(kind: ScriptKind, commit_or_ref: &str) -> PathBuf {
+fn download_path(kind: ScriptKind, commit_or_ref: &str) -> PathBuf {
     let safe = sanitize_ref(commit_or_ref);
     let filename = match kind {
         ScriptKind::Ps1 => format!("install-{safe}.ps1"),
@@ -185,8 +171,39 @@ fn truncate_ref(s: &str) -> &str {
     }
 }
 
+/// UTF-8 BOM. Windows PowerShell 5.1 reads a BOM-less `.ps1` using the system
+/// ANSI code page; a leading BOM is what tells it the file is UTF-8. The
+/// `irm | iex` / `[scriptblock]::Create` path strips BOMs on purpose, but the
+/// GUI bootstrap runs the *cached file* via `-File`, so we write the opposite
+/// (#67193).
+const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
+
+/// Prepare bytes for the on-disk bootstrap cache.
+///
+/// `.ps1` files get a UTF-8 BOM (unless one is already present). `.sh` files
+/// are left unchanged — a BOM would break `#!/usr/bin/env bash`.
+pub(crate) fn prepare_cached_script_bytes(kind: ScriptKind, bytes: &[u8]) -> Vec<u8> {
+    match kind {
+        ScriptKind::Ps1 => {
+            if bytes.starts_with(UTF8_BOM) {
+                bytes.to_vec()
+            } else {
+                let mut out = Vec::with_capacity(UTF8_BOM.len() + bytes.len());
+                out.extend_from_slice(UTF8_BOM);
+                out.extend_from_slice(bytes);
+                out
+            }
+        }
+        ScriptKind::Sh => bytes.to_vec(),
+    }
+}
+
 /// Downloads to `dest_path` via reqwest with rustls. Atomically renames
-/// `dest_path.tmp` → `dest_path` so partial writes don't poison the cache.
+/// `dest_path.tmp` → `dest_path` so a partial write is never executed.
+///
+/// Explicit timeouts: this runs on every bootstrap, and a black-holed
+/// connection (captive portal, hung proxy) would otherwise hang forever
+/// instead of failing so the user can Retry.
 async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Result<()> {
     let url = format!(
         "https://raw.githubusercontent.com/NousResearch/hermes-agent/{}/scripts/{}",
@@ -208,7 +225,11 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
         format!("{ext}.tmp")
     });
 
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .context("building download client")?
         .get(&url)
         .header("User-Agent", "hermes-setup/0.0.1")
         .send()
@@ -228,6 +249,7 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
         .bytes()
         .await
         .with_context(|| format!("reading body of {url}"))?;
+    let bytes = prepare_cached_script_bytes(kind, &bytes);
 
     let mut file = tokio::fs::File::create(&tmp_path)
         .await
@@ -269,5 +291,35 @@ mod tests {
         assert_eq!(sanitize_ref("bb/gui"), "bb_gui");
         assert_eq!(sanitize_ref("main"), "main");
         assert_eq!(sanitize_ref("release/1.2.3"), "release_1.2.3");
+    }
+
+    #[test]
+    fn prepare_cached_ps1_prefixes_utf8_bom() {
+        let out = prepare_cached_script_bytes(ScriptKind::Ps1, b"Write-Host hi\n");
+        assert!(out.starts_with(UTF8_BOM), "cached .ps1 must start with UTF-8 BOM");
+        assert_eq!(&out[UTF8_BOM.len()..], b"Write-Host hi\n");
+    }
+
+    #[test]
+    fn prepare_cached_ps1_does_not_double_bom() {
+        let mut already = UTF8_BOM.to_vec();
+        already.extend_from_slice(b"x");
+        let out = prepare_cached_script_bytes(ScriptKind::Ps1, &already);
+        assert_eq!(out, already);
+        assert_eq!(out.windows(3).filter(|w| *w == UTF8_BOM).count(), 1);
+    }
+
+    #[test]
+    fn prepare_cached_sh_stays_bomless() {
+        let out = prepare_cached_script_bytes(ScriptKind::Sh, b"#!/usr/bin/env bash\n");
+        assert!(!out.starts_with(UTF8_BOM));
+        assert_eq!(out, b"#!/usr/bin/env bash\n");
+    }
+
+    #[test]
+    fn commit_pins_are_distinguished_from_branch_pins() {
+        assert!(is_valid_commit("02d26981d3d4ad50e142399b8476f59ad5953ff0"));
+        assert!(!is_valid_commit("main"));
+        assert!(!is_valid_commit("release/1.2.3"));
     }
 }

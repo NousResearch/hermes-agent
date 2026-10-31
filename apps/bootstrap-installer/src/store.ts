@@ -1,6 +1,6 @@
-import { atom, computed } from 'nanostores'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { atom, computed } from 'nanostores'
 
 /*
  * Bootstrap state store — single source of truth for installer screens.
@@ -31,6 +31,10 @@ export interface StageRecord {
   info: StageInfo
   state: StageState | null
   durationMs?: number
+  /** Wall-clock time the stage entered `running`, stamped client-side so the UI
+   * can tick a live elapsed timer for long steps. Preserved across repeated
+   * running events. */
+  startedAt?: number
   error?: string
 }
 
@@ -75,14 +79,48 @@ export const $hermesHome = atom<string | null>(null)
 
 export const $progress = computed($bootstrap, (b) => {
   const total = b.stageOrder.length
-  if (total === 0) return { done: 0, total: 0, fraction: 0 }
+
+  if (total === 0) {return { done: 0, total: 0, fraction: 0 }}
   let done = 0
+
   for (const name of b.stageOrder) {
     const s = b.stages[name]?.state
-    if (s === 'succeeded' || s === 'skipped' || s === 'failed') done += 1
+
+    if (s === 'succeeded' || s === 'skipped' || s === 'failed') {done += 1}
   }
+
   return { done, total, fraction: done / total }
 })
+
+/** Apply a stage transition: stamp `startedAt` on the running edge, track the
+ * active stage. Shared by the live Rust handler and the fake-boot preview so the
+ * two behave identically. */
+function withStageState(
+  cur: BootstrapStateModel,
+  name: string,
+  state: StageState,
+  durationMs?: number,
+  error?: string
+): BootstrapStateModel {
+  const existing = cur.stages[name]
+
+  if (!existing) {return cur}
+
+  return {
+    ...cur,
+    stages: {
+      ...cur.stages,
+      [name]: {
+        ...existing,
+        state,
+        startedAt: state === 'running' ? (existing.startedAt ?? Date.now()) : existing.startedAt,
+        durationMs,
+        error
+      }
+    },
+    currentStage: state === 'running' ? name : cur.currentStage
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Tauri event subscription
@@ -131,7 +169,23 @@ type BootstrapEvent =
 let unlisten: UnlistenFn | null = null
 
 export async function initialize(): Promise<void> {
-  if (unlisten) return
+  if (unlisten) {return}
+
+  // Dev-only isolated preview (see runFakeBoot): drive the screens in a plain
+  // browser, no Tauri backend, no real install.
+  const fake = fakeMode()
+
+  if (fake) {
+    unlisten = () => {}
+    $logPath.set('~/.hermes/logs/bootstrap-installer.log')
+    $hermesHome.set('~/.hermes')
+    $mode.set(fake === 'update' ? 'update' : 'install')
+
+    // Update auto-runs (it's a hand-off); install/failure wait for the welcome click.
+    if (fake === 'update') {void runFakeBoot('update')}
+
+    return
+  }
 
   // Pull static info on mount for the diagnostics footer.
   try {
@@ -140,6 +194,7 @@ export async function initialize(): Promise<void> {
       invoke<string>('get_hermes_home'),
       invoke<AppMode>('get_mode')
     ])
+
     $logPath.set(logPath)
     $hermesHome.set(hermesHome)
     $mode.set(mode)
@@ -150,14 +205,17 @@ export async function initialize(): Promise<void> {
   unlisten = await listen<BootstrapEvent>('bootstrap', (event) => {
     const payload = event.payload
     const cur = $bootstrap.get()
+
     switch (payload.type) {
       case 'manifest': {
         const stages: Record<string, StageRecord> = {}
         const order: string[] = []
+
         for (const s of payload.stages) {
           stages[s.name] = { info: s, state: null }
           order.push(s.name)
         }
+
         $bootstrap.set({
           ...cur,
           status: 'running',
@@ -170,36 +228,34 @@ export async function initialize(): Promise<void> {
           logs: []
         })
         $route.set('progress')
+
         break
       }
+
       case 'stage': {
-        const existing = cur.stages[payload.name]
-        if (!existing) {
+        if (!cur.stages[payload.name]) {
           console.warn('stage event for unknown stage', payload.name)
+
           break
         }
-        const next: StageRecord = {
-          ...existing,
-          state: payload.state,
-          durationMs: payload.durationMs,
-          error: payload.error
-        }
-        $bootstrap.set({
-          ...cur,
-          stages: { ...cur.stages, [payload.name]: next },
-          currentStage:
-            payload.state === 'running' ? payload.name : cur.currentStage
-        })
+
+        $bootstrap.set(
+          withStageState(cur, payload.name, payload.state, payload.durationMs, payload.error)
+        )
+
         break
       }
+
       case 'log': {
         const logs = [...cur.logs, { stage: payload.stage, line: payload.line, stream: payload.stream }]
         // Keep the rolling buffer bounded so the UI doesn't get OOM'd
         // during a long install (playwright chromium download is ~10k lines).
         const trimmed = logs.length > 2000 ? logs.slice(-2000) : logs
         $bootstrap.set({ ...cur, logs: trimmed })
+
         break
       }
+
       case 'complete':
         $bootstrap.set({
           ...cur,
@@ -207,6 +263,7 @@ export async function initialize(): Promise<void> {
           installRoot: payload.installRoot,
           currentStage: null
         })
+
         // Install: show the "launch Hermes" success screen. Update: this is a
         // hand-off — the installer relaunches the desktop and exits within a
         // few hundred ms, so routing to success just flashes that screen
@@ -214,7 +271,9 @@ export async function initialize(): Promise<void> {
         if ($mode.get() !== 'update') {
           $route.set('success')
         }
+
         break
+
       case 'failed':
         $bootstrap.set({
           ...cur,
@@ -223,6 +282,7 @@ export async function initialize(): Promise<void> {
           currentStage: null
         })
         $route.set('failure')
+
         break
     }
   })
@@ -240,6 +300,14 @@ export async function initialize(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export async function startInstall(opts?: { branch?: string }): Promise<void> {
+  const fake = fakeMode()
+
+  if (fake) {
+    void runFakeBoot(fake === 'failure' ? 'failure' : 'install')
+
+    return
+  }
+
   // Reset before kicking off so a retry from the failure screen clears
   // the previous run's state.
   $bootstrap.set(INITIAL)
@@ -255,6 +323,12 @@ export async function startInstall(opts?: { branch?: string }): Promise<void> {
 }
 
 export async function startUpdate(): Promise<void> {
+  if (fakeMode()) {
+    void runFakeBoot('update')
+
+    return
+  }
+
   // Update is driven by the desktop handing off (Hermes-Setup.exe --update);
   // there's no welcome click. Reset + jump straight to progress, then let the
   // Rust side stream the synthetic update manifest.
@@ -264,15 +338,147 @@ export async function startUpdate(): Promise<void> {
 }
 
 export async function cancelInstall(): Promise<void> {
+  if (fakeMode()) {
+    fakeCancelled = true
+
+    return
+  }
+
   await invoke('cancel_bootstrap')
 }
 
 export async function launchHermesDesktop(): Promise<void> {
+  if (fakeMode()) {throw new Error('Preview mode — launching is disabled.')}
   const installRoot = $bootstrap.get().installRoot
-  if (!installRoot) throw new Error('no install root')
+
+  if (!installRoot) {throw new Error('no install root')}
   await invoke('launch_hermes_desktop', { installRoot })
 }
 
 export async function openLogDir(): Promise<void> {
+  if (fakeMode()) {return}
   await invoke('open_log_dir')
+}
+
+// ---------------------------------------------------------------------------
+// Dev-only isolated preview ("fake boot")
+//
+// Synthesises the manifest + stage/log events Rust normally streams, so the
+// whole reskin can be reviewed in a plain browser (`npm run dev`):
+//   ?fake=install   welcome → [ INSTALL ] → success
+//   ?fake=update    auto-runs the granular update flow
+//   ?fake=failure   install that fails partway
+// Gated on import.meta.env.DEV → stripped from the shipped Tauri bundle.
+// ---------------------------------------------------------------------------
+
+type FakeMode = 'install' | 'update' | 'failure'
+
+function fakeMode(): FakeMode | null {
+  if (!import.meta.env.DEV || typeof window === 'undefined') {return null}
+  const v = new URLSearchParams(window.location.search).get('fake')
+
+  return v === 'install' || v === 'update' || v === 'failure' ? v : null
+}
+
+interface FakeStage {
+  name: string
+  title: string
+}
+
+const FAKE_INSTALL_STAGES: FakeStage[] = [
+  { name: 'system-packages', title: 'System packages' },
+  { name: 'uv', title: 'uv' },
+  { name: 'python', title: 'Python environment' },
+  { name: 'repo', title: 'Hermes repository' },
+  { name: 'dependencies', title: 'Python dependencies' },
+  { name: 'node', title: 'Node runtime' },
+  { name: 'desktop', title: 'Desktop app' }
+]
+
+const FAKE_UPDATE_STAGES: FakeStage[] = [
+  { name: 'handoff', title: 'Preparing to update' },
+  { name: 'update', title: 'Downloading the latest version' },
+  { name: 'rebuild', title: 'Rebuilding the desktop app' },
+  { name: 'install', title: 'Installing the update' }
+]
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+let fakeRunning = false
+let fakeCancelled = false
+
+const fakeStage = (name: string, state: StageState, durationMs?: number, error?: string) =>
+  $bootstrap.set(withStageState($bootstrap.get(), name, state, durationMs, error))
+
+const fakeLog = (stage: string, line: string) =>
+  $bootstrap.set({ ...$bootstrap.get(), logs: [...$bootstrap.get().logs, { stage, line, stream: 'stdout' }] })
+
+const fakeFail = (error: string) =>
+  $bootstrap.set({ ...$bootstrap.get(), status: 'failed', error, currentStage: null })
+
+async function runFakeBoot(kind: FakeMode): Promise<void> {
+  if (fakeRunning) {return}
+  fakeRunning = true
+  fakeCancelled = false
+
+  try {
+    const stages = kind === 'update' ? FAKE_UPDATE_STAGES : FAKE_INSTALL_STAGES
+
+    const cancelled = () => {
+      if (!fakeCancelled) {return false}
+      fakeFail(kind === 'update' ? 'Update cancelled.' : 'Install cancelled.')
+      $route.set('failure')
+
+      return true
+    }
+
+    $bootstrap.set({
+      ...INITIAL,
+      status: 'running',
+      stageOrder: stages.map((s) => s.name),
+      stages: Object.fromEntries(
+        stages.map((s): [string, StageRecord] => [
+          s.name,
+          { info: { ...s, category: kind, needs_user_input: false }, state: null }
+        ])
+      )
+    })
+    $route.set('progress')
+
+    // Blow up midway in the failure preview so the failure screen shows.
+    const failAt = kind === 'failure' ? stages[Math.floor(stages.length / 2)]?.name : null
+
+    for (const s of stages) {
+      if (cancelled()) {return}
+      fakeStage(s.name, 'running')
+
+      const durationMs = 700 + Math.floor(Math.random() * 2200)
+      const lines = Math.max(2, Math.round(durationMs / 450))
+
+      for (let l = 0; l < lines; l++) {
+        await sleep(durationMs / lines)
+
+        if (cancelled()) {return}
+        fakeLog(s.name, `[${s.name}] ${s.title.toLowerCase()} — step ${l + 1}/${lines}…`)
+      }
+
+      if (s.name === failAt) {
+        fakeStage(s.name, 'failed', durationMs, 'Simulated failure for preview.')
+        fakeFail('Simulated failure for preview (fake boot).')
+        $route.set('failure')
+
+        return
+      }
+
+      fakeStage(s.name, 'succeeded', durationMs)
+    }
+
+    $bootstrap.set({ ...$bootstrap.get(), status: 'completed', currentStage: null })
+
+    // Install lands on success; update stays on progress (the real updater
+    // relaunches the desktop and exits from there).
+    if (kind !== 'update') {$route.set('success')}
+  } finally {
+    fakeRunning = false
+  }
 }

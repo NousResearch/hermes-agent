@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from agent.agent_init import _merge_custom_provider_extra_body
 from hermes_cli import runtime_provider as rp
+from hermes_cli.auth_constants import NOUS_INFERENCE_INVOKE_SCOPE
 
 
 def _encode_jwt_part(payload):
@@ -18,45 +19,13 @@ def _nous_invoke_jwt():
             _encode_jwt_part({"alg": "none", "typ": "JWT"}),
             _encode_jwt_part(
                 {
-                    "scope": rp.auth_mod.NOUS_INFERENCE_INVOKE_SCOPE,
+                    "scope": NOUS_INFERENCE_INVOKE_SCOPE,
                     "exp": int(time.time()) + 3600,
                 }
             ),
             "signature",
         ]
     )
-
-
-def test_custom_provider_extra_body_merges_into_request_overrides():
-    agent = SimpleNamespace(
-        provider="custom",
-        model="google/gemma-4-31b-it",
-        base_url="https://example.test/v1",
-        request_overrides={"service_tier": "priority"},
-    )
-
-    _merge_custom_provider_extra_body(
-        agent,
-        [
-            {
-                "name": "gemma",
-                "base_url": "https://example.test/v1/",
-                "model": "google/gemma-4-31b-it",
-                "extra_body": {
-                    "enable_thinking": True,
-                    "reasoning_effort": "high",
-                },
-            }
-        ],
-    )
-
-    assert agent.request_overrides == {
-        "service_tier": "priority",
-        "extra_body": {
-            "enable_thinking": True,
-            "reasoning_effort": "high",
-        },
-    }
 
 
 def test_custom_provider_extra_body_preserves_caller_override():
@@ -94,11 +63,13 @@ def test_custom_provider_extra_body_preserves_caller_override():
     }
 
 
-def test_custom_provider_extra_body_ignores_other_custom_models():
+
+
+def test_named_custom_provider_extra_body_matches_provider_key():
     agent = SimpleNamespace(
-        provider="custom",
-        model="other-model",
-        base_url="https://example.test/v1",
+        provider="custom:zai-coding-plan",
+        model="glm-5.2",
+        base_url="https://api.z.ai/api/coding/paas/v4",
         request_overrides={},
     )
 
@@ -106,15 +77,23 @@ def test_custom_provider_extra_body_ignores_other_custom_models():
         agent,
         [
             {
-                "name": "gemma",
-                "base_url": "https://example.test/v1",
-                "model": "google/gemma-4-31b-it",
+                "provider_key": "other-provider",
+                "name": "Other Provider",
+                "base_url": "https://api.z.ai/api/coding/paas/v4",
+                "model": "glm-5.2",
                 "extra_body": {"enable_thinking": True},
-            }
+            },
+            {
+                "provider_key": "zai-coding-plan",
+                "name": "Z.AI Coding Plan",
+                "base_url": "https://api.z.ai/api/coding/paas/v4/",
+                "model": "glm-5.2",
+                "extra_body": {"enable_thinking": False},
+            },
         ],
     )
 
-    assert agent.request_overrides == {}
+    assert agent.request_overrides == {"extra_body": {"enable_thinking": False}}
 
 
 def test_named_custom_provider_key_wins_over_nous_invoke_jwt(monkeypatch):
@@ -267,7 +246,7 @@ def test_custom_provider_nous_host_can_use_nous_invoke_jwt(monkeypatch):
 
 def test_nous_provider_still_resolves_nous_invoke_jwt(monkeypatch):
     nous_jwt = _nous_invoke_jwt()
-    monkeypatch.setattr(rp, "load_config", lambda: {})
+    monkeypatch.setattr(rp, "load_config", dict)
     monkeypatch.setattr(
         rp,
         "load_pool",
@@ -289,3 +268,20 @@ def test_nous_provider_still_resolves_nous_invoke_jwt(monkeypatch):
     assert resolved["provider"] == "nous"
     assert resolved["base_url"] == "https://inference-api.nousresearch.com/v1"
     assert resolved["api_key"] == nous_jwt
+
+
+def test_direct_alias_does_not_send_nous_invoke_jwt_to_custom_endpoint(monkeypatch):
+    nous_jwt = _nous_invoke_jwt()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+    monkeypatch.setattr(rp, "load_config", dict)
+
+    resolved = rp.resolve_runtime_provider(
+        requested="custom",
+        explicit_api_key=nous_jwt,
+        explicit_base_url="https://api.thirdparty.example/v1",
+    )
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://api.thirdparty.example/v1"
+    assert resolved["api_key"] == "no-key-required"

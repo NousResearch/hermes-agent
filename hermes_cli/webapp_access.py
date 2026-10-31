@@ -1,0 +1,392 @@
+"""Remote access to the gateway-served Webapp, for Desktop's Web Access pane.
+
+The gateway serves the Webapp (``gateway.webapp_listener``) from the ``webapp:`` block of its home's
+``config.yaml``, read when it starts, so this writes that home's config and the caller restarts the
+gateway. Sign-in is the user's Nous account (a self-hosted portal client registered with the right
+callback); a gated bind without it would keep the Webapp off. Two shapes:
+
+- ``lan``: ``webapp.host: 0.0.0.0``, opened at ``http://<this machine's LAN address>:<port>``; the
+  wildcard bind engages the sign-in gate and the callback is rebuilt from each request.
+- ``public``: an HTTPS URL the user already runs that forwards to ``127.0.0.1:<port>``.
+  ``webapp.public_url`` engages the gate on the loopback bind and fixes the callback.
+
+Of the config it writes only the ``webapp:`` block; ``dashboard.public_url`` belongs to the standalone
+dashboard, which may sit behind its own tunnel or proxy. Nous sign-in uses a portal client of Web
+Access's own, never the dashboard's ``HERMES_DASHBOARD_OAUTH_CLIENT_ID``, so registering the Webapp's
+callback cannot change the redirect URI the dashboard's sign-in needs. Its id is kept in a user-only
+file under the gateway home, which the gateway reads when it serves the Webapp; ``.env`` is untouched.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import socket
+import threading
+from pathlib import Path
+from typing import Optional
+from urllib.parse import urlsplit
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+# Web Access's portal client: its id, the Portal it lives on and the callback last registered on it.
+_REGISTRATION_PATH = Path("webapp") / "sign-in-registration.json"
+
+
+class WebappAccessError(RuntimeError):
+    """Remote access cannot be set up as asked; ``str(exc)`` is the user-facing reason."""
+
+
+def lan_address() -> Optional[str]:
+    """This machine's primary LAN IPv4 address, or None. Connecting a UDP socket only asks the kernel
+    which interface routes to a non-local address; no packet is sent."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("10.255.255.255", 1))
+            address = probe.getsockname()[0]
+    except OSError:
+        return None
+    return None if address.startswith("127.") or address == "0.0.0.0" else address
+
+
+def _public_url(raw: Optional[str]) -> str:
+    """``https://host[:port][/prefix]`` without a trailing slash, or WebappAccessError: a
+    ``webapp.public_url`` the gateway reads (``gateway.webapp_listener._public_url``) that is also an
+    https address other devices reach."""
+    from gateway.webapp_listener import _public_url as read_public_url
+
+    value = (raw or "").strip()
+    url = read_public_url(value)
+    if url is None and any(c in value for c in "?#@"):
+        raise WebappAccessError("The public URL cannot carry credentials, a query or a fragment.")
+    parsed = urlsplit(url or "")
+    if parsed.scheme != "https" or parsed.hostname in _LOOPBACK_HOSTS:
+        raise WebappAccessError("The public URL must be an https:// address other devices use.")
+    return url
+
+
+def gateway_home() -> Path:
+    """The home whose gateway serves the current one; its config holds the Webapp's settings."""
+    from hermes_cli.webapp_launcher import _gateway_home
+    from hermes_constants import get_hermes_home
+
+    return _gateway_home(get_hermes_home())
+
+
+def nous_signed_in() -> bool:
+    """Whether this home holds a Nous account to register sign-in under (a free-tier guest has none).
+    Refresh-free: it reads the auth store and never spends a refresh token."""
+    from hermes_cli.auth_nous import get_nous_auth_status_local
+
+    status = get_nous_auth_status_local()
+    return bool(status.get("logged_in") and not status.get("free_tier"))
+
+
+def _registration(home: Path) -> dict:
+    """*home*'s registration record, or ``{}`` when there is none or it cannot be read."""
+    try:
+        record = json.loads((Path(home) / _REGISTRATION_PATH).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def sign_in_client(home) -> Optional[tuple[str, str]]:
+    """``(client_id, portal)`` of the portal client Web Access registered for *home*'s Webapp, or None.
+    A record from an earlier build of Web Access names the dashboard's client, which it registered on
+    then: that is not Web Access's own, so the Webapp keeps the configured client until the next Start
+    registers one."""
+    record = _registration(home)
+    client_id, portal = record.get("client_id"), record.get("portal")
+    if record.get("own_client") is not True or not isinstance(portal, str) or not portal:
+        return None
+    return (client_id, portal) if isinstance(client_id, str) and client_id.startswith("agent:") else None
+
+
+def registered_lan_origin(home: Path, port: int) -> Optional[str]:
+    """``http://<LAN address>:<port>`` when Web Access last registered Nous sign-in for *home*'s
+    Webapp on the LAN at that address and *port*, and the address is still this machine's; else None.
+    Sign-in returns only to the callback the Portal has, so ``hermes webapp`` opens this address."""
+    try:
+        parts = urlsplit(_registration(home)["callback"])
+        recorded_port = parts.port
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if (parts.scheme, parts.path, parts.query, parts.fragment) != ("http", "/auth/callback", "", ""):
+        return None
+    if parts.username is not None or recorded_port != port or parts.hostname != lan_address():
+        return None
+    return f"http://{parts.hostname}:{port}"
+
+
+def _register_nous_sign_in(callback_url: str) -> None:
+    """Register Web Access's own portal client with *callback_url*, or update it in place, as
+    ``hermes dashboard register --redirect-uri`` does for the dashboard's. It never sends the
+    dashboard's client id and writes nothing to ``.env``: the Portal may replace a client's redirect
+    URI on every registration. The same callback for the same client and Portal is never posted
+    twice, so a start with nothing changed asks the Portal nothing."""
+    from hermes_cli.auth import resolve_nous_access_token
+    from hermes_cli.dashboard_register import (
+        _generate_dashboard_name,
+        _register_self_hosted_client,
+        _resolve_portal_base_url,
+    )
+    from hermes_constants import get_hermes_home
+    from utils import atomic_write_text
+
+    home = get_hermes_home()
+    portal = _resolve_portal_base_url(os.environ.get("HERMES_DASHBOARD_PORTAL_URL"))
+    own = sign_in_client(home)
+    existing = own[0] if own and own[1] == portal else None
+    if existing and _registration(home).get("callback") == callback_url:
+        return
+    try:
+        result = _register_self_hosted_client(
+            access_token=resolve_nous_access_token(),
+            portal_base_url=portal,
+            name=None if existing else f"webapp_{_generate_dashboard_name()}",
+            custom_redirect_uri=callback_url, existing_client_id=existing)
+    except Exception as exc:
+        raise WebappAccessError(f"Couldn't register Nous sign-in: {exc}") from exc
+    path = home / _REGISTRATION_PATH
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    record = {"own_client": True, "portal": portal, "client_id": str(result["client_id"]), "callback": callback_url}
+    atomic_write_text(path, json.dumps(record) + "\n", mode=0o600)
+
+
+def plan(mode: str, public_url: Optional[str] = None) -> tuple[str, Optional[int], str, str]:
+    """Check that *mode* can be served and signed in to; returns ``(host, port, public_url, callback)``:
+    the bind host, the port to write (None to keep the config's, :func:`_port_to_serve`) and the URL to
+    pin for :func:`serve`, and the sign-in callback for :func:`register`. Changes nothing but the port
+    claim of a standalone profile that has none (:func:`_port_to_serve`), so Start runs it, in the
+    config write scope, before any slow or lasting step. A refusal before that claim writes nothing."""
+    if not nous_signed_in():
+        raise WebappAccessError("Sign in to your Nous account under Providers first.")
+    if mode == "lan":
+        address = lan_address()
+        if address is None:
+            raise WebappAccessError("This machine has no network address other devices can reach.")
+        host, pinned = "0.0.0.0", ""
+        serving, port = _port_to_serve(gateway_home(), host)
+        url = f"http://{address}:{serving}"
+    elif mode == "public":
+        host, url = "127.0.0.1", _public_url(public_url)
+        pinned = url
+        port = _port_to_serve(gateway_home(), host)[1]
+    else:
+        raise WebappAccessError(f"Unknown access mode {mode!r}.")
+    if not nous_signed_in():
+        raise WebappAccessError("Sign in to your Nous account under Providers first.")
+    return host, port, pinned, f"{url}/auth/callback"
+
+
+#: How many ports above the default Start tries for a standalone profile's Webapp.
+_PORT_SEARCH = 100
+#: Under the Hermes root every profile shares: one standalone profile's gateway at a time chooses and
+#: saves its Webapp port, so a Start in another gateway's process sees that claim before it chooses.
+_PORT_CLAIM_LOCK = Path("webapp") / "port-claim.lock"
+_PORT_CLAIM_HOLDER = threading.local()
+_PORT_CLAIM_TIMEOUT_SECONDS = 10.0
+
+
+def _port_to_serve(home: Path, host: str) -> tuple[int, Optional[int]]:
+    """``(port, port to write)`` for the Webapp of *home*'s gateway, bound on *host*.
+
+    A ``webapp.port`` in *home*'s config is the user's, and so is the default profile's gateway, which
+    serves the documented address (9120 unless set): both keep it, and Start writes no port. A standalone
+    profile's gateway with no ``webapp.port`` would find the default port taken by the default gateway's
+    Webapp, so it gets the first port above it that no other Hermes home on this machine claims and
+    nothing listens on now, and Start writes it to that profile's ``webapp.port``: the profile keeps that
+    address across restarts, and the gateway, the launcher and the sign-in callback all use it.
+
+    Each standalone profile's gateway has its own change lock, so the port is chosen and saved under a
+    lock every gateway on this machine shares, before the slow steps of Start: a Start that fails after
+    this keeps the port, which is that profile's from then on, as one a finished Start writes. *home* is
+    the home in scope, whose config :func:`save_config` writes (Start runs in its gateway's scope)."""
+    from gateway.webapp_listener import DEFAULT_PORT, webapp_settings
+    from hermes_cli.auth import _file_lock
+    from hermes_constants import named_profile_home
+
+    profile = named_profile_home(home)
+    if _own_port(home) is not None or profile is None:
+        return webapp_settings(home).port, None
+    lock = profile.parent.parent / _PORT_CLAIM_LOCK
+    _create_user_only(lock)
+    try:
+        with _file_lock(lock, _PORT_CLAIM_HOLDER, _PORT_CLAIM_TIMEOUT_SECONDS,
+                        "Timed out waiting for another Hermes profile to choose its Webapp port"):
+            claimed = _claimed_ports(home)
+            for port in range(DEFAULT_PORT + 1, DEFAULT_PORT + 1 + _PORT_SEARCH):
+                if port not in claimed and _port_free(host, port):
+                    _save_port(port)
+                    return port, port
+    except TimeoutError as exc:
+        raise WebappAccessError(f"{exc}. Start again in a moment.") from exc
+    raise WebappAccessError(f"No free port for the Webapp from {DEFAULT_PORT + 1} to {DEFAULT_PORT + _PORT_SEARCH}. "
+                            f"Set webapp.port in {home / 'config.yaml'} to a free port, then start again.")
+
+
+def _create_user_only(lock: Path) -> None:
+    """Create *lock* (0600) and its folder (0700) before :func:`_file_lock` opens it, which would create
+    both with the umask's mode: the folder also holds the Webapp's credentials. A folder other users can
+    reach is closed to them again, as the credential writers do (POSIX)."""
+    from gateway.webapp_listener import _close_to_other_users
+
+    lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _close_to_other_users(lock.parent)
+    os.close(os.open(lock, os.O_WRONLY | os.O_CREAT, 0o600))
+
+
+def _save_port(port: int) -> None:
+    """Claim *port* as the ``webapp.port`` of the home in scope, changing nothing else."""
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    webapp = cfg.get("webapp")
+    cfg["webapp"] = {**(webapp if isinstance(webapp, dict) else {}), "port": port}
+    save_config(cfg)
+
+
+def _own_port(home: Path) -> Optional[object]:
+    """The ``webapp.port`` *home*'s gateway is configured with, valid or not (the gateway reports an
+    invalid one by name), or None when neither *home*'s ``config.yaml`` nor the managed scope sets one.
+    The effective user config, as the gateway loads it (a managed port wins, and ``save_config`` never
+    writes over it), but without the defaults: they name a port for everyone."""
+    from hermes_cli.config_effective import load_user_config_effective
+
+    try:
+        document = load_user_config_effective(Path(home) / "config.yaml")
+    except OSError:  # the gateway reports an unreadable config itself
+        return None
+    block = document.get("webapp")
+    return block.get("port") if isinstance(block, dict) else None
+
+
+def _claimed_ports(home: Path) -> set[int]:
+    """The Webapp ports the other Hermes homes beside *home* claim: the default profile's (9120 unless
+    set) and every other profile's own ``webapp.port``, whether or not its gateway runs now. Only that
+    setting is read from their configs."""
+    from gateway.webapp_listener import DEFAULT_PORT
+    from hermes_constants import named_profile_home
+
+    profile = named_profile_home(home)
+    if profile is None:
+        return set()
+    root = profile.parent.parent
+    root_port = _own_port(root)
+    claimed = {root_port if isinstance(root_port, int) else DEFAULT_PORT}
+    for other in profile.parent.iterdir() if profile.parent.is_dir() else ():
+        port = _own_port(other) if other != profile and other.is_dir() else None
+        if isinstance(port, int) and not isinstance(port, bool):
+            claimed.add(port)
+    return claimed
+
+
+def _port_free(host: str, port: int) -> bool:
+    """Whether a listener could bind *host*:*port* now, as the gateway's does."""
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        if os.name != "nt":  # as the gateway's listener; on Windows the option would share a bound port
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def build_bundle() -> None:
+    """Build the Webapp bundle the gateway serves, with the function ``hermes webapp`` uses (it
+    reuses a current bundle), so Start never turns on a Webapp with nothing to serve."""
+    from hermes_cli.config import get_project_root
+    from hermes_cli.webapp import WebappBuildError, prepare_webapp_renderer
+
+    try:
+        prepare_webapp_renderer(get_project_root())
+    except WebappBuildError as exc:
+        raise WebappAccessError(
+            f"{str(exc).rstrip('.')}. Run hermes webapp --build-only to see the full output, then start again.") from exc
+
+
+def register(callback_url: str) -> None:
+    """Register Nous sign-in for *callback_url* on Web Access's own portal client, unless it already
+    carries that callback on this Portal, so the callback follows a changed LAN address or URL.
+    Writes no config: it waits on the portal, so callers do it before taking the config lock."""
+    _register_nous_sign_in(callback_url)
+
+
+def serve(host: str, public_url: str, port: Optional[int] = None) -> None:
+    """Serve the Webapp on *host* (and *port* when :func:`plan` chose one) from the gateway's next
+    start. Call :func:`register` first."""
+    _write_config(enabled=True, host=host, public_url=public_url, port=port)
+
+
+def turn_off() -> None:
+    """Stop serving the Webapp from the gateway's next start."""
+    _write_config(enabled=False)
+
+
+def _write_config(*, enabled: bool, host: str = "", public_url: str = "", port: Optional[int] = None) -> None:
+    """The ``webapp:`` block, and nothing outside it. Starting pins ``webapp.public_url`` for the
+    own-URL mode and drops it for LAN, where the callback follows each request; stopping changes
+    only ``enabled``, so the next start offers the same address. ``webapp.port`` is the user's; only a
+    standalone profile that has none gets the free one :func:`plan` chose, once."""
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    webapp = cfg.get("webapp") if isinstance(cfg.get("webapp"), dict) else {}
+    webapp.update(enabled=enabled, **({"host": host} if enabled else {}), **({"port": port} if port else {}))
+    if enabled and public_url:
+        webapp["public_url"] = public_url
+    elif enabled:
+        webapp.pop("public_url", None)
+    cfg["webapp"] = webapp
+    save_config(cfg)
+
+
+def _gateway_state(home: Path) -> dict:
+    """What *home*'s gateway serves now (``serving``, ``starting``, ``off``, ``unavailable`` with a
+    ``reason``, or ``stopped`` when none answers). It reads the config at start, so it can lag until a
+    restart; a gateway older than the Webapp serves none (``off``, with the restart as the reason)."""
+    from hermes_cli.webapp_launcher import OLDER_GATEWAY, GatewayUnreachable, _control, older_gateway
+
+    try:
+        response = _control(home, "webapp-status")
+    except GatewayUnreachable:
+        return {"state": "stopped", "url": None, "reason": None}
+    if older_gateway(response):
+        return {"state": "off", "url": None, "reason": OLDER_GATEWAY}
+    if not response.get("ok"):
+        return {"state": "unavailable", "url": None, "reason": str(response.get("error") or "")}
+    return dict(response["result"])
+
+
+def _mode(settings) -> Optional[str]:
+    """Who the configured Webapp serves: ``public`` (its own URL pins the callback and Host),
+    ``lan`` (a wildcard bind), ``local`` (a loopback bind, as ``hermes webapp`` sets it up), or None
+    when it is off."""
+    from gateway.webapp_listener import _is_wildcard
+
+    if not settings.enabled:
+        return None
+    if settings.public_url:
+        return "public"
+    return "lan" if _is_wildcard(settings.host) else "local"
+
+
+def access_status() -> dict:
+    """Everything the Web Access pane shows, read for the gateway home in scope. The ``webapp:``
+    block is read once, by the gateway's own reader, so the pane shows the address and port the
+    gateway will serve, and no public URL it would refuse."""
+    from gateway.webapp_listener import webapp_settings
+
+    home = gateway_home()
+    settings = webapp_settings(home)
+    return {
+        "enabled": settings.enabled,
+        "mode": _mode(settings),
+        "port": settings.port,
+        "gateway": _gateway_state(home),
+        "lan_address": lan_address(),
+        "public_url": settings.public_url,
+        "nous_signed_in": nous_signed_in(),
+    }

@@ -1,0 +1,437 @@
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+
+import { describe, expect, it, vi } from 'vitest'
+
+import {
+  createMediaProtocolHandler,
+  isStreamableMediaPath,
+  type MediaProtocolDependencies,
+  mediaProtocolDownloadName,
+  mediaRequestHeaders,
+  remoteMediaEndpoint
+} from './media-protocol'
+import { fetchLocalMedia } from './media-range'
+
+function dependencies(overrides: Partial<MediaProtocolDependencies> = {}) {
+  return {
+    ensureRemoteBearer: vi.fn(async (_baseUrl: string) => null),
+    fetchLocal: vi.fn(async (_resolvedPath: string, _headers: Headers) => new Response('local', { status: 206 })),
+    fetchRemote: vi.fn(async (_url: string, _headers: Headers) => new Response('remote', { status: 206 })),
+    fetchRemoteWithCookies: vi.fn(async (_url: string, _headers: Headers) => new Response('cookie', { status: 206 })),
+    resolveLocalFile: vi.fn(async (filePath: string) => filePath),
+    resolveRemoteConnection: vi.fn(async (_scope: { connectionId?: string; profile?: string }) => ({
+      authMode: 'token' as const,
+      baseUrl: 'https://gateway.test',
+      mode: 'remote' as const,
+      token: 'secret'
+    })),
+    ...overrides
+  }
+}
+
+function request(url: string, headers: Record<string, string> = {}, method = 'GET') {
+  return { headers: new Headers(headers), method, url }
+}
+
+describe('media protocol helpers', () => {
+  it('recognises only supported audio/video extensions case-insensitively', () => {
+    expect(isStreamableMediaPath('/tmp/render.MP4')).toBe(true)
+    expect(isStreamableMediaPath('/tmp/voice.flac')).toBe(true)
+    expect(isStreamableMediaPath('/tmp/secrets.txt')).toBe(false)
+    expect(isStreamableMediaPath('file:///tmp/render.MP4#t=30')).toBe(true)
+    expect(isStreamableMediaPath('file://nas/share/voice.flac?download=1')).toBe(true)
+    expect(isStreamableMediaPath('file:///tmp/secrets.txt?name=clip.mp4')).toBe(false)
+    expect(isStreamableMediaPath('file://%invalid/clip.mp4')).toBe(false)
+  })
+
+  // Decoding an encoded separator would add a path segment the URL never had.
+  it.each(['file:///tmp/..%2f..%2fetc/clip.mp4', 'file:///C:/media/..%5cclip.mp4', 'file://nas/share/..%5Cclip.mp4'])(
+    'refuses the encoded separator in %s',
+    async url => {
+      const deps = dependencies()
+
+      expect(isStreamableMediaPath(url)).toBe(false)
+      expect(() => remoteMediaEndpoint('https://gateway.test', url)).toThrow('Invalid media file URL')
+      expect(
+        (await createMediaProtocolHandler(deps)(request(`hermes-media://remote/${encodeURIComponent(url)}`))).status
+      ).toBe(415)
+      expect(deps.fetchRemote).not.toHaveBeenCalled()
+    }
+  )
+
+  // A file name may hold a `%` that starts no escape. Agents write such a file URL as is and the
+  // gateway reads it back as is, so it plays like any other name.
+  it.each([
+    ['file:///tmp/100%.mp4', '/tmp/100%.mp4'],
+    ['file:///tmp/50% off.mp4', '/tmp/50% off.mp4'],
+    ['file:///tmp/%zz%20mix.mp4', '/tmp/%zz mix.mp4'],
+    ['file:///C:/media/100%.mp4', 'file:///C:/media/100%.mp4']
+  ])('plays remote media whose name holds a bare %%: %s', async (url, expectedPath) => {
+    const deps = dependencies()
+
+    expect(isStreamableMediaPath(url)).toBe(true)
+
+    const response = await createMediaProtocolHandler(deps)(request(`hermes-media://remote/${encodeURIComponent(url)}`))
+
+    expect(response.status).toBe(206)
+    expect(deps.fetchRemote).toHaveBeenCalledOnce()
+    expect(new URL(vi.mocked(deps.fetchRemote).mock.calls[0][0]).searchParams.get('path')).toBe(expectedPath)
+  })
+
+  // Escaping a bare `%` must not let a separator through: one encoded beside it, once or twice,
+  // or spelled by the escape itself, is still refused.
+  it.each([
+    'file:///tmp/100%/..%2f..%2fetc/clip.mp4',
+    'file:///tmp/100%/..%252f..%252fetc/clip.mp4',
+    'file:///tmp/%%32%66etc/clip.mp4',
+    'file:///tmp/%2%66etc/clip.mp4',
+    'file:///C:/media/100%/..%5cclip.mp4',
+    'file://%invalid/clip.mp4'
+  ])('still refuses %s', async url => {
+    const deps = dependencies()
+
+    expect(isStreamableMediaPath(url)).toBe(false)
+    expect(
+      (await createMediaProtocolHandler(deps)(request(`hermes-media://remote/${encodeURIComponent(url)}`))).status
+    ).toBe(415)
+    expect(deps.fetchRemote).not.toHaveBeenCalled()
+  })
+
+  it('forwards range/cache negotiation headers but strips renderer credentials', () => {
+    const headers = mediaRequestHeaders(
+      new Headers({
+        Accept: 'video/mp4',
+        Authorization: 'Bearer renderer-secret',
+        Cookie: 'session=renderer-secret',
+        Host: 'attacker.test',
+        Range: 'bytes=10-20'
+      })
+    )
+
+    expect(Object.fromEntries(headers)).toEqual({ accept: 'video/mp4', range: 'bytes=10-20' })
+  })
+
+  it('preserves a configured gateway path prefix', () => {
+    const endpoint = new URL(remoteMediaEndpoint('https://gateway.test/hermes/', '/tmp/a b.mp4'))
+
+    expect(endpoint.pathname).toBe('/hermes/api/files/stream')
+    expect(endpoint.searchParams.get('path')).toBe('/tmp/a b.mp4')
+  })
+
+  it('names a native media save after the file, not the flattened path', () => {
+    const local = `hermes-media://stream/${encodeURIComponent('C:\\Users\\me\\Videos\\clip (cut).mp4')}`
+    const remote = `hermes-media://remote/${encodeURIComponent('/home/me/out/render.webm')}?profile=work`
+
+    expect(mediaProtocolDownloadName(local)).toBe('clip (cut).mp4')
+    expect(mediaProtocolDownloadName(remote)).toBe('render.webm')
+    expect(mediaProtocolDownloadName('https://example.test/a/clip.mp4')).toBeNull()
+    expect(mediaProtocolDownloadName('blob:https://x/123')).toBeNull()
+  })
+})
+
+describe('createMediaProtocolHandler', () => {
+  it('recovers native refresh outages through a live cookie without turning an empty jar into auth failure', async () => {
+    for (const cookieStatus of [206, 401, 403, 503]) {
+      const deps = dependencies({
+        ensureRemoteBearer: async () => {
+          throw new Error('refresh timed out')
+        },
+        resolveRemoteConnection: async () => ({ authMode: 'oauth', baseUrl: 'https://gw.test', mode: 'remote' }),
+        fetchRemoteWithCookies: async () => new Response('cookie', { status: cookieStatus })
+      })
+
+      const response = await createMediaProtocolHandler(deps)(request('hermes-media://remote/%2Ftmp%2Fclip.mp4'))
+      expect(response.status).toBe(cookieStatus === 401 || cookieStatus === 403 ? 502 : cookieStatus)
+    }
+  })
+
+  it('serves a 206 byte range through the production local fetch (seeking)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'media-protocol-range-'))
+    const file = path.join(dir, 'clip.mp4')
+    const bytes = Buffer.from(Array.from({ length: 100 }, (_, i) => i))
+
+    await writeFile(file, bytes)
+
+    const deps = dependencies({
+      fetchLocal: fetchLocalMedia,
+      resolveLocalFile: vi.fn(async () => file)
+    })
+
+    const response = await createMediaProtocolHandler(deps)(
+      request(`hermes-media://stream/${encodeURIComponent(file)}`, { Range: 'bytes=10-19' })
+    )
+
+    expect(response.status).toBe(206)
+    expect(response.headers.get('content-range')).toBe('bytes 10-19/100')
+    expect(response.headers.get('accept-ranges')).toBe('bytes')
+    expect(Buffer.from(await response.arrayBuffer()).equals(bytes.subarray(10, 20))).toBe(true)
+  })
+
+  it('streams local media through the resolved local-file dependency', async () => {
+    const deps = dependencies()
+
+    const response = await createMediaProtocolHandler(deps)(
+      request('hermes-media://stream/%2Ftmp%2Fclip.mp4', {
+        Authorization: 'Bearer renderer-secret',
+        Range: 'bytes=1-3'
+      })
+    )
+
+    expect(response.status).toBe(206)
+    expect(deps.resolveLocalFile).toHaveBeenCalledWith('/tmp/clip.mp4')
+    expect(deps.fetchLocal).toHaveBeenCalledOnce()
+    const [, headers] = vi.mocked(deps.fetchLocal).mock.calls[0]
+    expect(headers.get('range')).toBe('bytes=1-3')
+    expect(headers.get('authorization')).toBeNull()
+  })
+
+  it('preserves explicit HEAD requests through the local stream fetch', async () => {
+    const fetchLocal = vi.fn(async (..._args: unknown[]) => new Response(null, { status: 200 }))
+
+    const deps = dependencies({
+      fetchLocal: fetchLocal as MediaProtocolDependencies['fetchLocal']
+    })
+
+    const response = await createMediaProtocolHandler(deps)(
+      request('hermes-media://stream/%2Ftmp%2Fclip.mp4', {}, 'HEAD')
+    )
+
+    expect(response.status).toBe(200)
+    expect(fetchLocal).toHaveBeenCalledOnce()
+    expect(fetchLocal.mock.calls[0]?.[2]).toBe('HEAD')
+    expect(deps.resolveRemoteConnection).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['/root/outputs/render.mp4', '/root/outputs/render.mp4'],
+    ['file:///tmp/video%20clip.mp4', '/tmp/video clip.mp4'],
+    ['file://localhost/tmp/video%20clip.mp4#t=30', '/tmp/video clip.mp4'],
+    ['file:///tmp/video%20clip.mp4?download=1', '/tmp/video clip.mp4'],
+    ['file:///C:/Users/Alice/video%20clip.mp4', 'file:///C:/Users/Alice/video%20clip.mp4'],
+    ['file://nas/share/video%20clip.mp4', 'file://nas/share/video%20clip.mp4'],
+    ['file:///C:/Users/Alice/video%20clip.mp4#t=30', 'file:///C:/Users/Alice/video%20clip.mp4#t=30'],
+    ['file://nas/share/video%20clip.mp4?download=1', 'file://nas/share/video%20clip.mp4?download=1']
+  ])('keeps old POSIX gateways working and preserves drive/UNC information for %s', async (file, expectedPath) => {
+    const deps = dependencies({
+      resolveRemoteConnection: vi.fn(async () => ({
+        authMode: 'token' as const,
+        baseUrl: 'https://gateway.test/hermes',
+        mode: 'remote' as const,
+        token: 's e/cret'
+      }))
+    })
+
+    const response = await createMediaProtocolHandler(deps)(
+      request(`hermes-media://remote/${encodeURIComponent(file)}?connectionId=work-ssh&profile=reviewer`, {
+        Range: 'bytes=0-1023'
+      })
+    )
+
+    expect(response.status).toBe(206)
+    expect(deps.resolveRemoteConnection).toHaveBeenCalledWith({ connectionId: 'work-ssh', profile: 'reviewer' })
+    expect(deps.fetchRemote).toHaveBeenCalledOnce()
+    const [rawUrl, headers] = vi.mocked(deps.fetchRemote).mock.calls[0]
+    const url = new URL(rawUrl)
+    expect(url.pathname).toBe('/hermes/api/files/stream')
+    expect(url.searchParams.get('path')).toBe(expectedPath)
+    expect(url.searchParams.has('token')).toBe(false)
+    expect(headers.get('x-hermes-session-token')).toBe('s e/cret')
+    expect(headers.get('range')).toBe('bytes=0-1023')
+  })
+
+  it('sends the connection extra gateway headers on remote media without clobbering range negotiation', async () => {
+    const deps = dependencies({
+      resolveRemoteConnection: vi.fn(async () => ({
+        authMode: 'token' as const,
+        baseUrl: 'https://gateway.test',
+        headers: { 'CF-Access-Client-Id': 'client-id', Range: 'bytes=9-9' },
+        mode: 'remote' as const,
+        token: 'secret'
+      }))
+    })
+
+    await createMediaProtocolHandler(deps)(
+      request('hermes-media://remote/%2Ftmp%2Fclip.mp4', { Range: 'bytes=0-1023' })
+    )
+
+    const [, headers] = vi.mocked(deps.fetchRemote).mock.calls[0]
+    expect(headers.get('cf-access-client-id')).toBe('client-id')
+    expect(headers.get('range')).toBe('bytes=0-1023')
+    expect(headers.get('x-hermes-session-token')).toBe('secret')
+  })
+
+  it('sends the connection extra gateway headers on OAuth cookie-session remote media', async () => {
+    const deps = dependencies({
+      resolveRemoteConnection: vi.fn(async () => ({
+        authMode: 'oauth' as const,
+        baseUrl: 'https://gateway.test',
+        headers: { 'CF-Access-Client-Id': 'client-id' },
+        mode: 'remote' as const,
+        token: null
+      }))
+    })
+
+    await createMediaProtocolHandler(deps)(request('hermes-media://remote/%2Ftmp%2Fclip.mp4'))
+
+    const [, headers] = vi.mocked(deps.fetchRemoteWithCookies).mock.calls[0]
+    expect(headers.get('cf-access-client-id')).toBe('client-id')
+  })
+
+  it('adds profile scope when one registry backend serves multiple profiles', async () => {
+    const deps = dependencies({
+      resolveRemoteConnection: vi.fn(async () => ({
+        authMode: 'token' as const,
+        baseUrl: 'https://gateway.test',
+        mode: 'remote' as const,
+        sharedRemote: true,
+        token: 'secret'
+      }))
+    })
+
+    await createMediaProtocolHandler(deps)(
+      request('hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4?connectionId=cloud&profile=research')
+    )
+
+    const [rawUrl] = vi.mocked(deps.fetchRemote).mock.calls[0]
+    const url = new URL(rawUrl)
+
+    expect(url.searchParams.get('path')).toBe('/root/outputs/render.mp4')
+    expect(url.searchParams.get('profile')).toBe('research')
+  })
+
+  it('preserves explicit HEAD requests through the token-auth remote proxy', async () => {
+    const fetchRemote = vi.fn(async (..._args: unknown[]) => new Response(null, { status: 200 }))
+
+    const deps = dependencies({
+      fetchRemote: fetchRemote as MediaProtocolDependencies['fetchRemote']
+    })
+
+    const response = await createMediaProtocolHandler(deps)(
+      request('hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4', {}, 'HEAD')
+    )
+
+    expect(response.status).toBe(200)
+    expect(fetchRemote).toHaveBeenCalledOnce()
+    expect(fetchRemote.mock.calls[0]?.[2]).toBe('HEAD')
+  })
+
+  it('rejects protocol methods other than GET and HEAD', async () => {
+    const deps = dependencies()
+
+    const response = await createMediaProtocolHandler(deps)(
+      request('hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4', {}, 'POST')
+    )
+
+    expect(response.status).toBe(405)
+    expect(response.headers.get('allow')).toBe('GET, HEAD')
+    expect(deps.resolveRemoteConnection).not.toHaveBeenCalled()
+    expect(deps.fetchRemote).not.toHaveBeenCalled()
+  })
+
+  it('uses a refreshed native bearer for OAuth remote media when available', async () => {
+    const deps = dependencies({
+      ensureRemoteBearer: vi.fn(async () => 'native-access-token'),
+      resolveRemoteConnection: vi.fn(async () => ({
+        authMode: 'oauth' as const,
+        baseUrl: 'https://gateway.test',
+        mode: 'remote' as const,
+        token: null
+      }))
+    })
+
+    const response = await createMediaProtocolHandler(deps)(request('hermes-media://remote/%2Ftmp%2Fclip.mp4'))
+
+    expect(response.status).toBe(206)
+    expect(deps.fetchRemote).toHaveBeenCalledOnce()
+    expect(deps.fetchRemoteWithCookies).not.toHaveBeenCalled()
+    const [, headers] = vi.mocked(deps.fetchRemote).mock.calls[0]
+    expect(headers.get('authorization')).toBe('Bearer native-access-token')
+  })
+
+  it('preserves explicit HEAD requests through the native-bearer remote fetch', async () => {
+    const fetchRemote = vi.fn(async (..._args: unknown[]) => new Response(null, { status: 200 }))
+
+    const deps = dependencies({
+      ensureRemoteBearer: vi.fn(async () => 'native-access-token'),
+      fetchRemote: fetchRemote as MediaProtocolDependencies['fetchRemote'],
+      resolveRemoteConnection: vi.fn(async () => ({
+        authMode: 'oauth' as const,
+        baseUrl: 'https://gateway.test',
+        mode: 'remote' as const,
+        token: null
+      }))
+    })
+
+    const response = await createMediaProtocolHandler(deps)(
+      request('hermes-media://remote/%2Ftmp%2Fclip.mp4', {}, 'HEAD')
+    )
+
+    expect(response.status).toBe(200)
+    expect(fetchRemote).toHaveBeenCalledOnce()
+    expect((fetchRemote.mock.calls[0]?.[1] as Headers).get('authorization')).toBe('Bearer native-access-token')
+    expect(fetchRemote.mock.calls[0]?.[2]).toBe('HEAD')
+    expect(deps.fetchRemoteWithCookies).not.toHaveBeenCalled()
+  })
+
+  it('uses the isolated OAuth cookie session when no native bearer exists', async () => {
+    const deps = dependencies({
+      resolveRemoteConnection: vi.fn(async () => ({
+        authMode: 'oauth' as const,
+        baseUrl: 'https://gateway.test',
+        mode: 'remote' as const,
+        token: null
+      }))
+    })
+
+    const response = await createMediaProtocolHandler(deps)(request('hermes-media://remote/%2Ftmp%2Fclip.mp4'))
+
+    expect(response.status).toBe(206)
+    expect(deps.fetchRemote).not.toHaveBeenCalled()
+    expect(deps.fetchRemoteWithCookies).toHaveBeenCalledOnce()
+    const [, headers] = vi.mocked(deps.fetchRemoteWithCookies).mock.calls[0]
+    expect(headers.get('authorization')).toBeNull()
+  })
+
+  it('preserves explicit HEAD requests through the isolated-cookie remote fetch', async () => {
+    const fetchRemoteWithCookies = vi.fn(async (..._args: unknown[]) => new Response(null, { status: 200 }))
+
+    const deps = dependencies({
+      fetchRemoteWithCookies: fetchRemoteWithCookies as MediaProtocolDependencies['fetchRemoteWithCookies'],
+      resolveRemoteConnection: vi.fn(async () => ({
+        authMode: 'oauth' as const,
+        baseUrl: 'https://gateway.test',
+        mode: 'remote' as const,
+        token: null
+      }))
+    })
+
+    const response = await createMediaProtocolHandler(deps)(
+      request('hermes-media://remote/%2Ftmp%2Fclip.mp4', {}, 'HEAD')
+    )
+
+    expect(response.status).toBe(200)
+    expect(fetchRemoteWithCookies).toHaveBeenCalledOnce()
+    expect((fetchRemoteWithCookies.mock.calls[0]?.[1] as Headers).get('authorization')).toBeNull()
+    expect(fetchRemoteWithCookies.mock.calls[0]?.[2]).toBe('HEAD')
+    expect(deps.fetchRemote).not.toHaveBeenCalled()
+  })
+
+  it('fails closed for unsupported extensions and missing remote auth', async () => {
+    const deps = dependencies({
+      resolveRemoteConnection: vi.fn(async () => ({
+        authMode: 'token' as const,
+        baseUrl: 'https://gateway.test',
+        mode: 'remote' as const,
+        token: null
+      }))
+    })
+
+    const handler = createMediaProtocolHandler(deps)
+
+    expect((await handler(request('hermes-media://remote/%2Ftmp%2Fsecret.txt'))).status).toBe(415)
+    expect((await handler(request('hermes-media://remote/%2Ftmp%2Fclip.mp4'))).status).toBe(401)
+    expect(deps.fetchRemote).not.toHaveBeenCalled()
+  })
+})

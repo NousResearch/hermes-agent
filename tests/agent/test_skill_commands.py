@@ -307,31 +307,40 @@ class TestScanSkillCommands:
 
     # -- inter-skill slug collision dedup (#50304 / #63305) ------------------
 
-    def test_slug_collision_keeps_first_skill(self, tmp_path):
-        """Two skills whose names normalize to the same slug do not clobber.
+    def test_skill_names_and_telegram_menu_round_trip(self, tmp_path):
+        """Distinct skill slugs survive registration and menu aliases invoke their advertised body."""
+        from hermes_cli.commands_platforms import telegram_menu_commands
 
-        ``git_helper`` and ``git-helper`` are distinct frontmatter names but
-        both reduce to the ``/git-helper`` command. The first one scanned must
-        keep the command rather than being silently overwritten by the second.
-        """
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            # ``a-first`` sorts before ``z-second`` so the index walk visits the
-            # underscore-named skill first; that one must win the slash command.
-            first = tmp_path / "a-first"
-            first.mkdir()
-            (first / "SKILL.md").write_text(
-                "---\nname: git_helper\ndescription: First skill.\n---\n\nBody.\n"
+        names = ("git_helper", "git-helper", "__spec-driven", "spec-driven",
+                 "中文helper", "helper", "solo_helper", "my skill", "my-skill")
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+            patch("agent.skill_utils.get_disabled_skill_names", return_value=set()),
+        ):
+            for index, name in enumerate(names):
+                _make_skill(tmp_path, name, category=str(index), body=f"Body for {name}.")
+            commands = scan_skill_commands()
+            for name in names[:7]:
+                assert commands[f"/{name}"]["name"] == name
+            assert commands["/my-skill"]["name"] == "my skill"
+
+            menu, _hidden = telegram_menu_commands(max_commands=100)
+            winners = {"git_helper": "git-helper", "spec_driven": "__spec-driven",
+                       "helper": "helper", "my_skill": "my skill", "solo_helper": "solo_helper"}
+            assert sorted((token, desc) for token, desc in menu if token in winners) == sorted(
+                (token, f"Description for {name}.")
+                for token, name in winners.items()
             )
-            second = tmp_path / "z-second"
-            second.mkdir()
-            (second / "SKILL.md").write_text(
-                "---\nname: git-helper\ndescription: Second skill.\n---\n\nBody.\n"
-            )
-            result = scan_skill_commands()
-        assert "/git-helper" in result
-        # First-wins: the entry resolves to the first skill, not the shadowing one.
-        assert result["/git-helper"]["name"] == "git_helper"
-        assert result["/git-helper"]["skill_dir"] == str(first)
+            for token, name in winners.items():
+                key = resolve_skill_command_key(token)
+                assert key is not None and commands[key]["name"] == name
+                message = build_skill_invocation_message(key)
+                assert message is not None and f"Body for {name}." in message
+            assert resolve_skill_command_key("中文helper") == "/中文helper"
+            assert resolve_skill_command_key("__spec-driven") == "/__spec-driven"
+            assert resolve_skill_command_key("git-helper") == "/git-helper"
+            assert resolve_skill_command_key("__missing") is None
 
 
     # -- concurrent scans (#74574) ------------------------------------------
@@ -490,10 +499,7 @@ class TestScanSkillCommands:
 
 
 class TestResolveSkillCommandKey:
-    """Telegram bot-command names disallow hyphens, so the menu registers
-    skills with hyphens swapped for underscores. When Telegram autocomplete
-    sends the underscored form back, we need to find the hyphenated key.
-    """
+    """Resolve typed slash tokens to the canonical skill-command key."""
 
     def test_hyphenated_form_matches_directly(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

@@ -570,16 +570,13 @@ await self.handle_message(event)
 
 ### 9. 可选：平台提示
 
-**`agent/prompt_builder.py`** — 如果你的平台有特定渲染限制（不支持 markdown、消息长度限制等），在 `_PLATFORM_HINTS` 字典中添加条目。这会将平台专属指导注入系统 prompt：
+**`ctx.register_platform` 的 `platform_hint=`** — 如果你的平台有特定渲染限制（不支持 markdown、消息长度限制等），在其注册表条目上声明提示（文本可放在 `adapter_hint.py` 这类轻量同级模块中）。它会被注入系统 prompt；`agent/prompt_builder.py::PLATFORM_HINTS` 只保留核心界面：
 
 ```python
-_PLATFORM_HINTS = {
-    # ...
-    "newplat": (
-        "You are chatting via NewPlat. It supports markdown formatting "
-        "but has a 4000-character message limit."
-    ),
-}
+PLATFORM_HINT = (
+    "You are chatting via NewPlat. It supports markdown formatting "
+    "but has a 4000-character message limit."
+)
 ```
 
 并非所有平台都需要提示 — 仅在 agent 行为应有所不同时添加。

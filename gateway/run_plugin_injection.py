@@ -39,17 +39,27 @@ class GatewayPluginInjectionMixin:
     def _schedule_plugin_message_injection(
         self, *, content: str, plugin_id: str, session_key: Optional[str] = None,
         origin: Optional[Mapping[str, Any]] = None, plugin_home: Optional[Path] = None,
+        keyless: bool = False, calling_session_key: str = "",
     ) -> bool:
         """Schedule a plugin-triggered turn on the live gateway loop (thread-safe).
 
         With ``origin`` the profile, origin and adapter checks run here, synchronously, so the plugin
-        gets ``False`` for a chat it may not start; authorization is rechecked at dispatch."""
+        gets ``False`` for a chat it may not start; authorization is rechecked at dispatch. ``keyless``
+        (neither given) picks the target here too (``gateway/plugin_keyless_inject.py``)."""
         from gateway.run import safe_schedule_threadsafe
         loop = getattr(self, "_gateway_loop", None)
         if not getattr(self, "_running", False) or loop is None or loop.is_closed():
             return False
 
-        if origin is not None:
+        if keyless:
+            from gateway import plugin_keyless_inject
+            resolved = plugin_keyless_inject.resolve(self, plugin_home=plugin_home, plugin_id=plugin_id,
+                                                     calling_session_key=calling_session_key)
+            if resolved is None:
+                return False
+            target = f"session={resolved[1].route} (no key given)"
+            coro = plugin_keyless_inject.admit(self, *resolved, content=content, plugin_id=plugin_id)
+        elif origin is not None:
             source = self._plugin_origin_source(origin, plugin_home=plugin_home, plugin_id=plugin_id)
             if source is None or not self._plugin_origin_admissible(source, plugin_home=plugin_home,
                                                                     plugin_id=plugin_id):

@@ -212,7 +212,7 @@ The dispatch handle lists each unit (`units[].delegation_id`, `group`, `task_ind
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback. CLI and TUI completion notices use task-first titles such as `Subagent Task Completed: Review changes`; multi-task groups use the group name and task count. Unsuccessful or incomplete work gets a corresponding status label. These compact notices do not replace the full results delivered to the parent agent.
 - **Result ordering:** Within a unit, results are sorted by task index to match input order regardless of completion order; `TASK i/N` labels index the whole call
-- **Cancellation:** Follow-up messages do not cancel a top-level background batch. `/stop` (gateway `/stop`, CLI `/stop`, the Desktop/TUI Stop button, an ACP cancel) or closing/resetting the owning session ends its background children and every synchronous descendant beneath them; each stopped child still returns as a completion with `status="interrupted"` and its partial output
+- **Cancellation:** Follow-up messages and stopping the current turn (Ctrl+C, Esc, the Desktop/TUI Stop button, an ACP cancel) do not cancel a top-level background batch. The `/stop` command (gateway or CLI) or closing/resetting the owning session ends its background children and every synchronous descendant beneath them; each stopped child still returns as a completion with `status="interrupted"` and its partial output
 
 Synchronous single-task delegation from an orchestrator runs directly without thread pool overhead.
 
@@ -274,6 +274,8 @@ delegation:
 
 If omitted, subagents use the same model as the parent.
 
+In Desktop, set the same keys under **Settings → Model → Subagents** (see [Desktop](../desktop.md#subagent-models-and-limits)). The page edits the profile chosen under **Applies to**, affects subagents launched after you click **Apply**, and never changes the main model or a child that is already running.
+
 ### Cost strategy: frontier planner, inexpensive workers
 
 Decomposing a problem into well-specified subtasks takes frontier-level judgment; executing a subtask that already comes with a clear goal, full context, and an output contract usually doesn't. Meanwhile the children are where the tokens go — a parallel batch of subagents typically burns the large majority of a run's total tokens, so the worker model is where the cost actually lives. Pinning `delegation.model` to an inexpensive model while your main session stays on a frontier model keeps the planning quality where it matters and cuts spend where the volume is:
@@ -289,7 +291,51 @@ delegation:
 
 Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model. Setting `delegation.provider` alongside `delegation.base_url` keeps the explicit endpoint but carries that provider's request overrides and max output tokens into the child. An explicit `delegation.request_overrides` dict is honored on every branch and merges over those runtime-derived values (see [Configuration](#configuration) below).
 
-Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
+Note that the pin is global: with the default strategy `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session, use a delegation strategy plugin (below), or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
+
+### Delegation strategies (`delegation.backend`)
+
+`delegation.backend` selects how each task becomes a subagent. `default` (the default) is everything above. Strategy plugins can let the model choose per task, from options you define:
+
+- a **profile per subagent** (`profile_routes`): each child runs as one of your Hermes profiles, with that profile's model, credentials, skills and persona;
+- a **named model map** (`model_map`): you list titled options (`fast`, `deep`, ...) with a description and a provider/model each, and the model picks one per task.
+
+Both come from the official `advanced-delegation` plugin, which also adds `hermes delegation config` (create, edit and delete model routes, pick profiles) and the `/delegation` slash command. While `model_map` or `profile_routes` is active, `delegation.model` / `delegation.provider` are inactive: the routes decide.
+
+Each strategy's settings live under `delegation.backends.<backend name>`:
+
+```yaml
+delegation:
+  backend: model_map
+  backends:
+    model_map:
+      options:
+        - name: fast
+          description: Cheap and quick; lookups, summaries, simple edits.
+          provider: openrouter
+          model: google/gemini-3-flash-preview
+        - name: deep
+          description: Slow and careful; hard debugging and design work.
+          provider: anthropic
+          model: claude-opus-5
+          reasoning_effort: high
+          service_tier: fast            # optional; refused at spawn if this route has no fast tier
+      default: fast                     # optional: option for tasks that set none
+    profile_routes:                     # read when backend: profile_routes
+      profiles:
+        - name: coder
+          description: Writes and refactors code; runs tests.
+```
+
+The model only ever sees the names and descriptions you configured, never raw provider, model or key fields. Each result of a backend-routed task carries `route`: the backend, the option or profile name, and the provider, model, reasoning effort and speed tier the child actually ran on (`fallback_activated: true` when a fallback provider took over). Writing your own: [Delegation Provider Plugins](../../developer-guide/delegation-provider-plugin.md).
+
+**Failures are explicit, never a silent switch.** If the selected backend is missing (plugin not installed or disabled) or reports it cannot run, `delegate_task` returns a tool error naming the backend and the fix, and no subagent starts; it never quietly runs the children on the default route. Within a batch, a task its backend cannot route (an unknown option, a parameter the selected backend does not take, a profile that does not exist, a `service_tier` the route does not offer, an unknown `reasoning_effort`, missing credentials) is refused alone: its result entry has `status: "error"`, the reason, and `route.refused: true`, while the other tasks run. A model route without its own `fallback_providers` uses `delegation.fallback_providers`; `fallback_providers: []` on the route disables fallback for it. A profile route uses that profile's own fallback chain.
+
+**Switching back.** `/delegation default` (from the `advanced-delegation` plugin) saves `delegation.backend` to `config.yaml` and applies from the next session (`/new`): a running chat keeps routing on the backend it started with, because the per-task choices the model sees (option or profile names) are part of the cached tool list and the two switch together. A hand edit of `delegation.backend` behaves the same. `/delegation <backend> --now` also rebuilds the current chat's tools at its next turn, so it routes on and offers the new backend from there, at the cost of one prompt-cache miss (context compression, which rebuilds the tools anyway, picks up the saved backend too). A task that sends a parameter its chat's backend does not take is refused with a message naming the backend, the parameter and the fix (`/delegation <backend> --now`, or `/new`); it never runs on the backend's default route. Without the plugin, `hermes config set delegation.backend default` restores the default.
+
+:::note Profile routes share credentials
+Listing a profile in `delegation.backends.profile_routes` lets this profile's subagents use that profile's credentials, credential pool, `SOUL.md` and terminal policy. Only list profiles whose keys and terminal access you are happy for this profile's agent to use.
+:::
 
 ## The `/review` Command
 
@@ -302,7 +348,7 @@ Note that the pin is global: `delegate_task` has no per-task model parameter, so
 
 What happens:
 
-1. The last 10 user/assistant messages are snapshotted as the reviewer's starting evidence (tool output and system messages are excluded).
+1. The last 10 user/assistant messages are snapshotted as the reviewer's starting evidence (tool output and system messages are excluded). On the gateway they come from the session's stored transcript when its agent has been released (after `agent.agent_cache.idle_ttl_secs` of idling, one hour by default), so `/review` works on a session you left alone without sending a message first.
 2. A reviewer subagent is dispatched on the same background delegation rail as `delegate_task` — it gets the full normal subagent toolset (terminal, web, files, browser...), so it actually opens the PR, reads the diff, and runs code rather than judging from the excerpt.
 3. The reviewer inherits the primary agent's working context: any skills the primary agent had loaded (launch-preloaded or via `skill_view` during the session) are named in its briefing with an instruction to load them and judge the work against their conventions. Like every subagent, its system prompt also embeds the workspace's project context files (AGENTS.md / CLAUDE.md / .cursorrules) as binding conventions.
 4. When it finishes, its full review re-enters the same session as a normal background-subagent completion — your primary agent sees it and can act on it (fix the findings, push follow-ups, reply to you).
@@ -549,7 +595,7 @@ delegate_task(
 
 **Cost warning:** With `max_spawn_depth: 3` and `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. Each extra level multiplies spend — raise `max_spawn_depth` intentionally.
 
-**One-shot runs are capped separately.** `hermes chat -q` / `--oneshot` sessions may spawn at most `delegation.oneshot_max_children` subagents in total (default `2`, `0` = unlimited). A one-shot run has no later turn to receive results, and in benchmark trajectories most of its spawns were "independently review my own work" rather than parallel work — each such child re-pays a cold system prompt and re-reads the repo. Interactive and gateway sessions are unaffected.
+**One-shot runs are capped separately.** `hermes chat -q` / `--oneshot` sessions may spawn at most `delegation.oneshot_max_children` subagents in total (default `2`, `0` = unlimited). A one-shot run has no later turn to receive results, and in benchmark trajectories most of its spawns were "independently review my own work" rather than parallel work — each such child re-pays a cold system prompt and re-reads the repo. Interactive and gateway sessions are unaffected. Because a one-shot joins its children inside the `delegate_task` call, its schema leaves out the live-control parameters (`action` list/steer/stop, `subagent_id`, `message`).
 
 ## Finite chat runs
 
@@ -560,7 +606,8 @@ parent in the same turn. Batch children still run in parallel, subject to
 final response before the CLI exits.
 
 - **Automatic joining:** no opt-in or background-mode override is needed.
-  Interactive TTY chat and messaging sessions keep background delegation.
+  Interactive TTY chat keeps background delegation; messaging sessions follow
+  `delegation.gateway_mode` (see below).
 - **Per-input policy:** the CLI records finite consumption with the admitted prompt,
   including when resuming an interactive session. It does not change that session's
   creation policy, sibling viewers, or the daemon environment.
@@ -577,12 +624,67 @@ Closing the CLI detaches rather than terminating its gateway-owned turn. Child
 execution is still process-local to that owner: use a durable scheduler for work
 that must survive an owner restart.
 
+## Messaging chats without interim messages
+
+On a messaging platform, a background delegation tells the parent to send a one-line
+status and end its turn. When `display.interim_assistant_messages` is off for that
+platform, that status is the turn's final answer, so the chat would receive a "working
+on it" message and then the real answer as a second message. `delegation.gateway_mode`
+controls this:
+
+```yaml
+delegation:
+  gateway_mode: auto   # auto (default) | inline | background
+```
+
+- **`auto`:** a messaging chat whose resolved `display.interim_assistant_messages` is off
+  (global value, `display.platforms.<platform>` override or the platform's default) joins
+  its children inside the turn. The parent waits in the `delegate_task` call, gets the
+  results there, and sends one completed answer. Chats with interim messages on, the API
+  server, local sessions and webhooks keep background delegation.
+- **`inline`:** every gateway session joins its children inside the turn.
+- **`background`** (alias `async`): every gateway session keeps background delegation.
+
+An inline session's `delegate_task` says results return in the call and leaves out the
+live-control parameters (`action` list/steer/stop, `subagent_id`, `message`), the same
+schema as a one-shot run. While it waits, the typing indicator stays on and the turn
+behaves like any long tool call. `/stop` stops the children, and so does a follow-up
+message under the default `busy_input_mode: interrupt` (each child returns an interrupted
+result with its partial output); under `queue` the follow-up waits for the turn.
+Nested delegation is unchanged.
+
+Inline turns that run past `agent.gateway_notify_interval` (180 seconds by default) still
+get the periodic "still working" notice, which `display.long_running_notifications`
+controls separately and which is on by default for Telegram, Slack, Discord and WhatsApp.
+For a single message per turn, also set it to `off` for that platform (`generic` only
+changes the notice's wording):
+
+```yaml
+display:
+  interim_assistant_messages: false
+  platforms:
+    telegram:
+      long_running_notifications: false
+```
+
+The mode is part of a session's tool schema, which is pinned with the conversation. A
+change to `gateway_mode` or to `interim_assistant_messages` applies from the next session
+(`/new`). A running chat keeps the mode it started with across gateway restarts, agent
+cache evictions, context compaction and `/reload-mcp`. A scheduled heartbeat turn mutes
+interim messages only for itself and does not change the chat's mode. One exception: the
+first turn after a Hermes update rebuilds the session's tool definitions from the new
+code, so the chat adopts the current setting at that turn.
+
+Listing `delegate_task` in `tools.tool_search.defer` turns inline off for that session:
+the model loads the regular (background) `delegate_task` schema through `tool_describe`,
+and delegation follows the schema the model sees.
+
 ## Lifetime and Durability
 
 :::warning Background completion durability is not durable execution
 Top-level model-facing `delegate_task` calls run in the background automatically where the session supports later delivery. Hermes returns a handle immediately, and the result re-enters the conversation after the child or batch finishes. Orchestrator subagents wait for their workers in the current turn because they must synthesize those results before returning. Stateless request/response endpoints fall back to synchronous execution when they cannot deliver a detached result later.
 
-- Normal follow-up messages do not cancel background children. `/stop` on any surface (gateway `/stop` — also when the session is idle after the dispatching turn ended — CLI `/stop`, the Desktop/TUI Stop button, an ACP cancel) ends the session's running background delegations, and closing or resetting the owning session does the same.
+- Normal follow-up messages do not cancel background children, and neither does stopping the current turn: Ctrl+C, Esc, the Desktop/TUI Stop button and an ACP cancel end only the turn. The `/stop` command (gateway `/stop` — also when the session is idle after the dispatching turn ended — or CLI `/stop`) ends the session's running background delegations, and closing or resetting the owning session does the same.
 - Explicit session close/reset interrupts that session's background children. In the CLI and TUI, the gateway owns the session and the client only views it: when the last viewer exits or runs `/new` (a TUI resume switch counts too), the gateway interrupts that session's background children at once and refuses new ones for it until a viewer opens the session again. A plain detach cancels nothing: closing Desktop, a dropped connection, or exiting while another viewer is still attached leaves the work running. Background processes (`terminal(background=True)`) keep running either way.
 - A completion for a CLI or TUI session — a background child's result (including an interrupted one), or a `notify_on_complete` process exit or watch-pattern notice — that reaches the head of the session's queue while no viewer is attached does not start a turn. It is written into the session as a note, and the next turn reads it (for example after `hermes chat --resume`). If a viewer is attached by then, including one that came back after the completion arrived, the completion runs as a turn as before. Messaging chats have no viewers and are unchanged: their completions still start a turn.
 - A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened.
@@ -663,6 +765,7 @@ delegation:
   max_iterations: 250                       # Max turns per child (default: 250)
   # max_concurrent_children: 10             # Parallel children per batch (default: 10)
   # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
+  # gateway_mode: auto                      # auto | inline | background (see Messaging chats without interim messages)
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.

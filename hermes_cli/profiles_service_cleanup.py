@@ -11,16 +11,31 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 
 
-def remove_system_systemd_unit() -> bool:
+def owned_by_profile(definition: Path, profile_dir: Path) -> bool:
+    """False (one-line notice) when *definition* pins another HERMES_HOME. Unit names derive from the
+    profile name, and a scratch ``HOME``'s ``profiles/<name>`` resolves the ACCOUNT's real
+    ``hermes-gateway-<name>`` unit (the unit dir is account-anchored): delete/rename then disabled,
+    stopped and unlinked a live gateway of another install. Same owner rule as
+    ``gateway_service_owner.definition_belongs_to_home``."""
+    from hermes_cli.gateway_service_owner import _resolve, pinned_home
+    raw = pinned_home(definition)
+    if raw is None or _resolve(raw) == _resolve(profile_dir):
+        return True
+    print(f"↷ {definition} runs HERMES_HOME={raw}, not {profile_dir}: another install's service, left alone")
+    return False
+
+
+def remove_system_systemd_unit(profile_dir: Path) -> bool:
     """Remove ``/etc/systemd/system/hermes-gateway-<profile>.service`` when root; otherwise
     name the leftover and the exact command, because the profile dir the ``gateway uninstall
     --system`` verb would need to resolve the name from is about to vanish."""
     from hermes_cli import gateway
     svc_name = gateway.get_service_name()
     unit = gateway._SYSTEM_UNIT_DIR / f"{svc_name}.service"
-    if not unit.exists():
+    if not unit.exists() or not owned_by_profile(unit, profile_dir):
         return False
     if os.geteuid() != 0:  # windows-footgun: ok — called only from the Linux arm of profiles._cleanup_gateway_service
         print(f"⚠ System service {svc_name} remains at {unit}; it will restart the removed profile at boot.")

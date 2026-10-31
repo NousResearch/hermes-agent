@@ -29,8 +29,7 @@ def _launch(api, admitted, run_id='run_test'):
     api._run_streams[run_id] = queue
     api._run_statuses[run_id] = {}
     launch = _RunLaunch(api, run_id, queue, admitted[1].session_id, None, False, 'hello', [], False,
-                        agent_kwargs={}, request_profile=None, browser_control_principal=None,
-                        browser_control_transport_family=None, admission=admitted)
+                        agent_kwargs={}, request_profile=None, admission=admitted)
     return launch, queue
 
 
@@ -127,6 +126,16 @@ def _wrap(api, run_id, loop, sink):
     return callback
 
 
+def _wired_agent(turn):
+    """The agent's tool sinks as TurnRunner wires them for an API admission."""
+    from gateway.session_api_turn import wire_api_observers
+    agent = SimpleNamespace(tool_progress_callback=None, status_callback=None, interim_assistant_callback=None,
+                            tool_start_callback=turn.combined_tool_start_callback,
+                            tool_complete_callback=turn.combined_tool_complete_callback)
+    wire_api_observers(agent, turn._approval_owner, False)
+    return agent
+
+
 @pytest.mark.asyncio
 async def test_responses_streaming_projects_real_tool_arguments_and_results(api, owner):
     from gateway.session_api_turn import observe_api_turn
@@ -137,12 +146,77 @@ async def test_responses_streaming_projects_real_tool_arguments_and_results(api,
     async def handle(event):
         from gateway.session_results import execution_result
         turn = _turn_runner(owner, ref)
+        progress_cb = _wired_agent(turn).tool_progress_callback
+        if progress_cb:  # the executor fires it only when wired
+            progress_cb('tool.completed', 'read_file', None, None, is_error=False)
         turn.combined_tool_complete_callback('call-9', 'read_file', {'path': 'a.txt'}, 'file body')
         execution_result.get()['result'] = {'final_response': 'ok'}
         return 'ok'
     owner.runner._handle_message = handle
-    await observe_api_turn(admitted, tool_complete_callback=lambda *a: seen.append(a))
-    assert seen == [('call-9', 'read_file', {'path': 'a.txt'}, 'file body')]
+    progress = []  # Responses also passes a progress sink; it must not get the tools a second time
+    await observe_api_turn(admitted, tool_complete_callback=lambda *a: seen.append(a),
+                           tool_progress_callback=lambda *a, **kw: progress.append(a))
+    assert seen == [('call-9', 'read_file', {'path': 'a.txt'}, 'file body')] and progress == []
+
+
+async def _session_stream_tool_frames(api, owner, produce):
+    """POST /api/sessions/{id}/chat/stream under the authority -> its tool.* (event, data) frames."""
+    import json
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        produce(_turn_runner(owner, SimpleNamespace(session_id=event.source.chat_id)))
+        execution_result.get()['result'] = {'final_response': 'done', 'messages': []}
+        return 'done'
+    owner.runner._handle_message = handle
+    api._api_key = 'request-scope-key-long-enough'
+    owner.db.create_session('stream-tools', source='api_server')
+    app = web.Application()
+    app.router.add_post('/api/sessions/{session_id}/chat/stream', api._handle_session_chat_stream)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post('/api/sessions/stream-tools/chat/stream', json={'message': 'run tools'},
+                                     headers={'Authorization': 'Bearer ' + api._api_key})
+        text = await response.text()
+    assert 'event: run.completed' in text, text
+    frames = [dict(line.split(': ', 1) for line in block.splitlines() if ': ' in line) for block in text.split('\n\n')]
+    return [(f['event'], json.loads(f['data'])) for f in frames if f.get('event', '').startswith('tool.')]
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_carries_the_producers_tool_verdict_and_preview(api, owner):
+    """A Codex command that exits 1 with no output is tool.failed (its result text is only "[exit 1]"),
+    and the start frame keeps Codex's own 120-character preview, as the direct progress path does."""
+    from agent.codex_runtime import make_codex_app_server_event_bridge
+
+    def produce(turn):
+        bridge = make_codex_app_server_event_bridge(_wired_agent(turn))
+        for item in ({'type': 'commandExecution', 'id': 'x1', 'command': 'echo ' + 'x' * 500, 'exitCode': 1,
+                      'aggregatedOutput': ''},
+                     {'type': 'commandExecution', 'id': 'x2', 'command': 'true', 'exitCode': 0, 'aggregatedOutput': 'ok'}):
+            bridge({'method': 'item/started', 'params': {'item': item}})
+            bridge({'method': 'item/completed', 'params': {'item': item}})
+    frames = await _session_stream_tool_frames(api, owner, produce)
+    names, preview = [name for name, _ in frames], frames[0][1]['preview'] if frames else ''
+    assert (names, len(preview)) == (['tool.started', 'tool.failed', 'tool.started', 'tool.completed'], 120)
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_keeps_a_bounded_worker_failure(api, owner):
+    """A managed worker bounds a large failing terminal result into an envelope with no exit_code;
+    the stream reports the frame's own verdict, tool.failed."""
+    import json
+    from agent.managed_worker import tool_frame
+    from gateway.run_turn_progress import publish_worker_tool_event
+
+    def produce(turn):
+        authority, session_id, generation = turn._approval_owner
+        args, result = {'command': 'make'}, json.dumps({'output': 'x' * 70000, 'exit_code': 1})
+        publish_worker_tool_event(authority, session_id, generation, {'type': 'tool.start', **tool_frame('w1', 'terminal', args)})
+        publish_worker_tool_event(authority, session_id, generation,
+                                  {'type': 'tool.complete', **tool_frame('w1', 'terminal', args, result)})
+    frames = await _session_stream_tool_frames(api, owner, produce)
+    assert [name for name, _ in frames] == ['tool.started', 'tool.failed'], frames
+    assert frames[0][1]['preview'] == 'make', frames
 
 
 @pytest.mark.asyncio
@@ -327,54 +401,3 @@ async def test_canonical_sse_projects_the_turn_reasoning(api, owner, path, body,
         text = await response.text()
     assert response.status == 200, text
     assert marker in text and 'THINKING' in text, text
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('path', ['legacy', 'canonical'])
-async def test_api_turn_selects_the_requests_registered_browser_controller(api, owner, monkeypatch, path):
-    """The extension controller registered for the API session's server-derived principal is the
-    one the turn selects, on the legacy executor and under the authority alike."""
-    from gateway import browser_control_broker as broker_mod
-    from gateway.config import PlatformConfig
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionContext
-    from gateway.session_context import clear_session_vars
-    from tools.browser_extension_router import extension_controller_available
-    monkeypatch.setattr(broker_mod, 'browser_control_enabled', lambda *a: True)
-    adapter = api if path == 'canonical' else _api_server.APIServerAdapter(PlatformConfig(enabled=True))
-    adapter._api_key = 'controller-selection-key'
-    broker = broker_mod.get_browser_control_broker()
-    broker.attach(broker_mod.ControllerScope(
-        principal_id=adapter._derive_browser_control_principal('default'), profile_id='default',
-        session_id='browser-sel', controller_id='ext-1', transport_family='local-api',
-        capabilities=frozenset({'browser_navigate'})), lambda frame: None)
-    selected = []
-    if path == 'canonical':
-        async def handle(event):
-            from gateway.session_results import execution_result
-            context = SessionContext(source=event.source, connected_platforms=[], home_channels={},
-                                     session_key='k', session_id=event.source.chat_id)
-            tokens = GatewayRunner._set_session_env(owner.runner, context)
-            try:
-                selected.append(extension_controller_available('browser_navigate'))
-            finally:
-                clear_session_vars(tokens)
-            execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}
-            return 'ok'
-        owner.runner._handle_message = handle
-    else:
-        def run_conversation(**kwargs):
-            selected.append(extension_controller_available('browser_navigate'))
-            return {'final_response': 'ok', 'messages': []}
-        monkeypatch.setattr(adapter, '_create_agent', lambda **kw: SimpleNamespace(run_conversation=run_conversation))
-    app = web.Application(middlewares=[adapter._make_profile_prefix_middleware()])
-    app.router.add_post('/v1/chat/completions', adapter._handle_chat_completions)
-    try:
-        async with TestClient(TestServer(app)) as client:
-            response = await client.post('/v1/chat/completions', json={'messages': [{'role': 'user', 'content': 'hi'}]},
-                                         headers={'Authorization': 'Bearer controller-selection-key',
-                                                  'X-Hermes-Session-Id': 'browser-sel'})
-            assert response.status == 200, await response.text()
-    finally:
-        broker.reset()
-    assert selected == [True]

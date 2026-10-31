@@ -1,0 +1,30 @@
+# Catalog entry — office-3d
+#
+# Add this file at `plugin-catalog/office-3d.yaml` in a PR against
+# NousResearch/hermes-agent (one file, nothing else). The `sha` below is the
+# commit that already contains the catalog layout; re-check it matches the
+# pushed commit before opening the PR, and re-pin `version`/`image`/
+# `screenshots` whenever the sha moves.
+name: office-3d
+title: Office 3D
+repo: https://github.com/oslook/hermes-desktop-plugin-office-3d
+sha: "efe1b65e8aa8508dc5b799a389e5a12b69ef00af"
+description: "A live isometric office for Hermes Desktop: every profile is a person at a desk — a profile doing real work sits typing with a lit terminal screen, an online-but-idle one relaxes in the lounge with tea, an offline one leaves an empty desk with a dark monitor. Click a desk to inspect that profile (state, sessions, tokens, cost) and open its chat or latest session; a cost/tokens leaderboard ranks the profiles; plus a global Total/Working/Idle/Offline overview, a status-bar chip, a palette command with keybind, a settings page, and an office_status agent tool that reports the same status to the model. Disclosure — the backend and the tool read each profile's gateway_state.json and open its state.db read-only, running aggregate queries only (COUNT/SUM/MAX over the sessions table: counts, token totals, cost, last-activity); they never read message content, system prompts or titles, make no network calls, and need no credentials. Opening a profile's latest session asks the app's own session.list RPC for that session's id (metadata only) and then opens it through the app's own openSession; no message content is read. POSIX only (platforms: [linux, macos]) because the process-liveness check uses os.kill(pid, 0), which on Windows would terminate the target process."
+maintainer: oslook
+tier: community
+category: desktop
+requires_hermes: ">=0.21.4"
+version: "1.3.0"
+platforms: [linux, macos]
+docs_url: https://github.com/oslook/hermes-desktop-plugin-office-3d#readme
+image: "https://raw.githubusercontent.com/oslook/hermes-desktop-plugin-office-3d/efe1b65e8aa8508dc5b799a389e5a12b69ef00af/docs/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/oslook/hermes-desktop-plugin-office-3d/efe1b65e8aa8508dc5b799a389e5a12b69ef00af/docs/screenshot.jpeg"
+  - "https://raw.githubusercontent.com/oslook/hermes-desktop-plugin-office-3d/efe1b65e8aa8508dc5b799a389e5a12b69ef00af/docs/screenshot-2.jpeg"
+readme: true
+capabilities:
+  provides_tools:
+    - office_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

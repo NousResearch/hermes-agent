@@ -79,6 +79,16 @@ _RESPONSE_FRAME_RE = re.compile(
     rf"(?m)^{re.escape(_RESPONSE_FRAME)}(\d+)\n{re.escape(_RESPONSE_HEADING)}")
 
 
+def _job_doc_header(job_name: str, job_id: str, now_iso: str, mode: str) -> str:
+    """Common markdown header for the short-circuit run docs (no_agent / monitor)."""
+    return (
+        f"# Cron Job: {job_name}\n\n"
+        f"**Job ID:** {job_id}\n"
+        f"**Run Time:** {now_iso}\n"
+        f"**Mode:** {mode}\n"
+    )
+
+
 def _archive_answer(archive: str) -> str | None:
     """The reusable answer of a stored run, using its length frame when available.
 

@@ -59,8 +59,9 @@ async def turn_references(runner, event, source, session_key, text):
     """An inbound turn's text with the references of the text the model reads expanded; None when
     refused. The classic CLI's committed ``api_text`` replaces ``text`` at the turn
     (``TurnRunner._prepare_turn_message``), so ITS references are expanded and rebound for this
-    execution, and ``text`` stays the stored user row as typed. A refused local turn leaves its
-    refusal on ``event`` for the prepare step to answer with."""
+    execution, and the returned text, the stored user row, is ``text`` with the same attached
+    context, as a typed turn stores it: later turns still read the content. A refused local turn
+    leaves its refusal on ``event`` for the prepare step to answer with."""
     from gateway.session_cli_turn import cli_turn, rebind_api_text
     api_text = cli_turn(event.message_id).get('api_text')
     target = text if api_text is None else api_text
@@ -76,7 +77,10 @@ async def turn_references(runner, event, source, session_key, text):
     if api_text is None:
         return expanded
     rebind_api_text(event.message_id, expanded)
-    return text
+    # The expansion appends its context after the message, so that tail belongs to the stored row too.
+    head = api_text.lstrip()
+    tail = expanded[len(head):] if expanded.startswith(head) else ""
+    return f"{text}{tail}".strip() if tail else text
 
 
 async def managed_turn_text(authority, row, policy):

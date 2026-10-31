@@ -228,6 +228,22 @@ Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are se
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
 :::
 
+### ElevenLabs: agent-selected voices
+
+With `tts.provider: elevenlabs` and `ELEVENLABS_API_KEY` set, the agent can pick a different voice for each `text_to_speech` call, for example one voice per character in a script. The ElevenLabs version of `text_to_speech` has two extra fields that other providers never see (they keep the configured voice):
+
+- `voice_id` picks the voice for this call. Leaving it out uses `tts.elevenlabs.voice_id`; the config is never rewritten.
+- `find_voices` searches for voices instead of speaking. It returns 20 voices per page by default (up to 100), with `next_page` for the following page:
+  - `source: library` (default) searches the public Voice Library: thousands of community voices, most-used first. Library voices work directly by `voice_id` without saving them first; ElevenLabs only allows them over the API on paid plans, and a few carry a higher credit rate (shown as `credit_rate`).
+  - `source: account` lists the voices on your account: premade ones plus anything you saved, cloned or designed.
+  - Filters: free-text `query`, `gender`, `age`, `accent`, `language` (ISO code like `en`), and for the library `use_case` (e.g. `characters_animation`) and `sort` (`usage_character_count_1y`, `trending`, `cloned_by_count`, `created_date`).
+
+The library search matches words in voice names and descriptions literally. "orc" finds orc voices, but "dwarf" finds none, so the agent is told to fall back to describing the sound ("gravelly old" with `age: old` and `use_case: characters_animation`).
+
+The ElevenLabs API key needs the **Text to Speech** permission to speak and **Voices: Read** to search.
+
+The agent can't listen to voices. It chooses from each voice's labels and description, and every result carries a `preview_url` you can open to hear the voice before committing to it.
+
 ### xAI Custom Voices (voice cloning)
 
 xAI supports cloning your voice and using it with TTS. Create a custom voice in the [xAI Console](https://console.x.ai/team/default/voice/voice-library), then set the resulting `voice_id` in your config:
@@ -277,7 +293,7 @@ tts:
 Local engines (Piper, KittenTTS) load their model lazily, so without help the *first* spoken reply after you turn speech on pays the whole model load — and on a fresh install the voice download — as silence before the first word. Hermes treats the speech-output toggles as the signal that TTS is about to be needed:
 
 - **Desktop** — **Read replies aloud** is a desktop-local preference, independent of the gateway's `voice.auto_tts` setting in Settings → Voice. It migrates the shared value once, then later gateway configuration changes do not override the desktop toggle. If local storage is full or unavailable, the choice still lasts for this window; persistence across a reload remains best-effort. Turning on **Read replies aloud**, or starting a **voice conversation**, pre-loads the configured engine in the background right away. Turning both off again unloads the resident model (a Piper voice is tens of MB; KittenTTS up to ~80MB) so it isn't parked in RAM for nothing.
-- **CLI / TUI** — `/voice tts` (and `/voice on` when `voice.auto_tts` is set) do the same; `/voice off` releases.
+- **CLI / TUI** — `/voice tts` (and `/voice on` when `voice.auto_tts` is set) do the same; `/voice off` releases. A TUI attached to the shared gateway refuses `/voice tts`, because the gateway cannot play speech in that terminal.
 
 Each toggle holds a *lease* on the engine; the model is only unloaded when the last lease across surfaces is released, so switching off read-aloud in one Desktop window never pulls the voice out from under a conversation running in another. The unload waits `tts.keep_warm_seconds` (default `60`) after the last release, and any toggle turning speech back on within that window keeps the loaded model, so a wake-word loop or a quickly restarted voice conversation doesn't reload the voice each time. Set it to `0` to unload immediately. For cloud providers there is no model to hold — the toggle only makes sure a lazily-installed SDK (edge-tts, ElevenLabs, Mistral) is present. Warm-up is best-effort: if the engine can't load, the toggle still succeeds and the first reply falls back to loading on demand as before.
 

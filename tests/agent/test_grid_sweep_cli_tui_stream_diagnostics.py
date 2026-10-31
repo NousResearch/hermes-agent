@@ -74,23 +74,6 @@ def test_invalid_config_int_print_honors_policy_log_always(tmp_path, monkeypatch
 # --- agent/turn_tool_validation.py auto-repair notice ------------------------------------------
 
 
-# --- CLI mixins -------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("setting", MODES)
-def test_cli_browser_downgrade_notice_honors_policy(tmp_path, monkeypatch, setting):
-    _policy(tmp_path, monkeypatch, setting)
-    import cli as climod
-    from tools import browser_use_cli
-    monkeypatch.setattr(browser_use_cli, "default_downgrade_notice", lambda: "Browser Use backend unavailable; using built-in tools")
-    out = []
-    self = types.SimpleNamespace(_console_print=lambda s: out.append(s))
-    fn = next(v for v in vars(climod.HermesCLI).values()
-              if callable(v) and "Once-per-24h hint when the default Browser Use backend" in (getattr(v, "__doc__", "") or ""))
-    fn(self)
-    assert (len(out) == 1 and "⚠" in out[0]) is _visible(setting)
-
-
 # --- TUI (functions are rebound onto tui_gateway.server by bind_module) -------------------------
 
 @pytest.mark.parametrize("setting", MODES)

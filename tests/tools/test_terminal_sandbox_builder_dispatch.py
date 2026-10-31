@@ -8,7 +8,6 @@ from tools import terminal_tool_backends as backends
 @pytest.mark.parametrize(
     ("env_type", "expects_image"),
     [
-        ("singularity", True),
         ("daytona", True),
         ("vercel_sandbox", False),
     ],

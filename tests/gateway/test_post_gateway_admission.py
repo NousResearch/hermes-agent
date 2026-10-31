@@ -141,7 +141,7 @@ async def test_under_an_authority_the_hook_fires_once_at_ingress_never_at_execut
         admitted.append(event.text)
         return "admitted"
 
-    monkeypatch.setattr(authorities, "active_authority", lambda _runner: object())
+    monkeypatch.setattr(authorities, "active_authority", lambda _runner: SimpleNamespace(route_epoch=lambda _route: 0))
     monkeypatch.setattr(ingress, "admit_message", _admit)
 
     assert await runner._handle_message(_event("eat me")) == "consumed"

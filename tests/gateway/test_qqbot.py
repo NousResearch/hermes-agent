@@ -100,7 +100,8 @@ class TestVoiceAttachmentSSRFProtection:
 
 
     def test_connect_uses_redirect_guard_hook(self):
-        from plugins.platforms.qqbot.adapter import QQAdapter, _ssrf_redirect_guard
+        from gateway.platforms.base import ssrf_redirect_guard
+        from plugins.platforms.qqbot.adapter import QQAdapter
 
         client = mock.AsyncMock()
         with mock.patch("plugins.platforms.qqbot.adapter.httpx.AsyncClient", return_value=client) as async_client_cls:
@@ -113,7 +114,7 @@ class TestVoiceAttachmentSSRFProtection:
         assert async_client_cls.call_count == 1
         kwargs = async_client_cls.call_args.kwargs
         assert kwargs.get("follow_redirects") is True
-        assert kwargs.get("event_hooks", {}).get("response") == [_ssrf_redirect_guard]
+        assert kwargs.get("event_hooks", {}).get("response") == [ssrf_redirect_guard]
 
 
 # ---------------------------------------------------------------------------

@@ -38,7 +38,7 @@ def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
         session_id='owner-session', profile_id=str(tmp_path)))
     calls = []
 
-    async def submit(actor, submission):
+    async def submit(actor, submission, **kwargs):
         calls.append('submit')
         return SimpleNamespace(admission_id='a')
 

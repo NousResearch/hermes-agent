@@ -1,16 +1,26 @@
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
-import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
 import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
+import { esCronControl } from './es_cron_control'
+import { esErrorCodes } from './es_error_codes'
+import { esErrorLayers } from './es_error_layers'
 import { esFirstRun } from './es_first_run'
+import { esGatewayHost } from './es_gateway_host'
 import { esLocalModels } from './es_local_models'
+import { esMemoryLayers } from './es_memory_layers'
 import { esModelMenu } from './es_model_menu'
+import { esModelSettings } from './es_model_settings'
 import { esNotices } from './es_notices'
+import { esNotifications } from './es_notifications'
 import { esOnboarding } from './es_onboarding'
+import { esPluginPreviewAccess } from './es_plugin_preview_access'
+import { esPluginUpdate } from './es_plugin_update'
+import { esPreviewWeb } from './es_preview_web'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
 import { esThemePicker } from './es_theme_picker'
@@ -459,6 +469,8 @@ export const esOverrides = {
       microphoneConstraintsUnsupported: 'Este dispositivo no admite las restricciones del micrófono.',
       microphoneFailed: 'Falló el micrófono',
       microphoneInUse: 'El micrófono ya está en uso por otra app.',
+      microphoneNeedsHttps:
+        'El micrófono necesita una conexión segura. Abre la Webapp por HTTPS, o mediante un túnel SSH a 127.0.0.1, para usarlo.',
       microphonePermissionDenied: 'Se denegó el permiso del micrófono.',
       microphoneStartFailed: 'No se pudo iniciar la grabación del micrófono.',
       microphoneUnsupported: 'Este runtime no admite grabación de micrófono.',
@@ -496,14 +508,6 @@ export const esOverrides = {
     }
   },
   ...esNotices,
-  billingBlock: {
-    titleNous: 'Sin créditos de Nous',
-    titleProvider: provider => `Sin créditos — ${provider}`,
-    fallbackMessage: 'Tu cuenta se quedó sin créditos. Añade créditos para continuar.',
-    openBilling: 'Abrir facturación',
-    addCredits: 'Añadir créditos',
-    dismiss: 'Descartar'
-  },
   sendDiagnostics: {
     title: 'Enviar diagnóstico a Nous',
     privacyNotice:
@@ -683,6 +687,7 @@ export const esOverrides = {
     noResults: 'No se encontraron idiomas'
   },
   settings: {
+    memoryLayers: esMemoryLayers,
     subpages: {
       appearanceTheme: 'Tema',
       appearanceTypography: 'Tipografía',
@@ -842,6 +847,17 @@ export const esOverrides = {
         versionLabel: 'Versión',
         reviewedPin: sha => (sha ? `Pin revisado ${sha}` : 'Pin revisado'),
         latestCommit: 'Último commit',
+        sourceMoved: sha =>
+          sha
+            ? `El repositorio cambió desde que lo revisaste. Revisa la nueva versión (commit ${sha}) antes de instalarla.`
+            : 'El repositorio cambió desde que lo revisaste. Leyendo la nueva versión…',
+        legacyBackendConfirm:
+          'Este backend es más antiguo que esta aplicación y no puede garantizar que se instale la versión que revisaste: si el repositorio cambió desde entonces, se instala la versión más nueva. Actualiza el backend para tener esa garantía.',
+        installAnyway: 'Instalar de todos modos',
+        partialInstall: sha =>
+          sha
+            ? `El plugin solo se instaló en parte: la parte del agente está instalada en el commit ${sha}, pero la parte de escritorio no pudo seguirla porque el repositorio cambió desde que lo revisaste. Activa Forzar reinstalación en Avanzado para reemplazar ambas partes por la versión mostrada, o cancela para quedarte solo con la parte del agente.`
+            : 'El plugin solo se instaló en parte: la parte del agente está instalada, pero la parte de escritorio no pudo seguirla porque el repositorio cambió desde que lo revisaste. Activa Forzar reinstalación en Avanzado para reemplazar ambas partes por la versión mostrada, o cancela para quedarte solo con la parte del agente.',
         nothingToInstall: 'Este paquete no tiene nada que instalar aquí.'
       }
     },
@@ -931,53 +947,7 @@ export const esOverrides = {
         masterPasswordPlaceholder: 'Contraseña maestra'
       }
     },
-    notifications: {
-      title: 'Notificaciones',
-      intro: 'Notificaciones del sistema operativo (no avisos dentro de la app). Por dispositivo.',
-      enableAll: 'Activar notificaciones',
-      enableAllDesc: 'Desactivado silencia todas las notificaciones siguientes.',
-      focusedHint: 'Los avisos de finalización solo se activan cuando Hermes está en segundo plano.',
-      kinds: {
-        approval: {
-          label: 'Se necesita aprobación',
-          description: 'Un comando espera que lo apruebes o rechaces.'
-        },
-        input: {
-          label: 'Se necesita información',
-          description: 'Hermes hizo una pregunta o necesita una contraseña o un secreto.'
-        },
-        turnDone: {
-          label: 'Respuesta lista',
-          description: 'Terminó un turno mientras Hermes estaba en segundo plano.'
-        },
-        turnError: {
-          label: 'El turno falló',
-          description: 'Errores de turnos en segundo plano.'
-        },
-        backgroundDone: {
-          label: 'Tarea en segundo plano finalizada',
-          description: 'Se completó un comando de terminal en segundo plano.'
-        },
-        credits: {
-          label: 'Avisos de crédito',
-          description: 'El acceso a los créditos se pausa o se restablece.'
-        },
-        plugin: {
-          label: 'Notificaciones de complementos',
-          description: 'Un complemento de escritorio envió una notificación mientras Hermes estaba en segundo plano.'
-        }
-      },
-      test: 'Enviar notificación de prueba',
-      testTitle: 'Hermes',
-      testBody: 'Las notificaciones funcionan.',
-      testSent:
-        'Prueba enviada. Si no aparece nada, revisa los permisos de notificaciones del sistema operativo y el modo Concentración o No molestar.',
-      testUnsupported: 'Este sistema no admite notificaciones nativas.',
-      completionSoundTitle: 'Sonido de finalización',
-      completionSoundDesc:
-        'Reproduce un sonido cuando termina el turno de un agente. Elige un ajuste predefinido y pruébalo aquí.',
-      completionSoundPreview: 'Vista previa'
-    },
+    notifications: esNotifications,
     sections: {
       model: 'Modelo',
       chat: 'Chat',
@@ -1726,9 +1696,7 @@ export const esOverrides = {
     },
     gateway: {
       loading: 'Cargando ajustes del gateway...',
-      unavailableTitle: 'Ajustes del gateway no disponibles',
-      unavailableDesc:
-        'Los ajustes de conexión solo se pueden cambiar desde la app Hermes Desktop en el equipo que la ejecuta.',
+      ...esGatewayHost,
       title: 'Conexión del gateway',
       envOverride: 'anulación de entorno',
       intro:
@@ -1936,70 +1904,7 @@ export const esOverrides = {
       deepLinkErrorUrl: 'Solo se permiten URL de servidor http:// y https://.',
       deepLinkErrorTooLarge: 'La configuración supera el límite de 32 KB.'
     },
-    model: {
-      setupProviderFallback: 'proveedor',
-      setUpProvider: name => `Configurar ${name}`,
-      staleAuxBefore: (count, names) =>
-        count === 1
-          ? `${count} tarea auxiliar (${names}) todavía se ejecuta en `
-          : `${count} tareas auxiliares (${names}) todavía se ejecutan en `,
-      staleAuxAfter: ', no en tu modelo principal.',
-      staleAuxOtherProviders: 'otros proveedores',
-      moaEnabled: 'Activado',
-      moaSetDefault: 'Establecer como predeterminado',
-      moaNewPresetPlaceholder: 'nuevo preajuste',
-      moaAddPreset: 'Añadir preajuste',
-      customModel: 'Modelo personalizado…',
-      customModelPlaceholder: 'ID del modelo',
-      chooseFromList: 'Elegir de la lista',
-      moaDefault: 'Predeterminado:',
-      moaReferenceToggle: (enabled, index) => `${enabled ? 'Desactivar' : 'Activar'} la referencia ${index}`,
-      moaReferenceTitle: index => `Referencia ${index}`,
-      moaAddReference: 'Añadir modelo de referencia',
-      loading: 'Cargando configuración de modelo...',
-      appliesDesc:
-        'Se aplica a sesiones nuevas. Usa el selector de modelo en el compositor para cambiar el chat activo.',
-      provider: 'Proveedor',
-      model: 'Modelo',
-      applying: 'Aplicando...',
-      mainAppliedTitle: 'Modelo principal actualizado',
-      mainAppliedMessage: model => `Las sesiones nuevas usarán ${model}.`,
-      defaultsLabel: 'Valores predeterminados',
-      reasoning: 'Razonamiento',
-      reasoningOff: 'Desactivado',
-      speed: 'Velocidad',
-      speedStandard: 'Estándar',
-      defaultsFailed: 'No se pudieron guardar los valores predeterminados del modelo',
-      loadFailed: 'No se pudieron cargar los modelos',
-      restartRequired:
-        'Este backend ejecuta código antiguo tras una actualización. Reinícialo para cargar el código nuevo.',
-      restartBackend: 'Reiniciar backend',
-      restartingBackend: 'Reiniciando backend...',
-      restartFailed: 'No se pudo reiniciar el backend',
-      auxiliaryTitle: 'Modelos auxiliares',
-      resetAllToMain: 'Restablecer todos al principal',
-      staleAuxDismiss: 'No volver a mostrar',
-      auxiliaryDesc:
-        'Las tareas auxiliares usan el modelo principal de forma predeterminada. Asigna un modelo dedicado a cualquier tarea para anularlo.',
-      setToMain: 'Usar principal',
-      change: 'Cambiar',
-      autoUseMain: 'auto · usar modelo principal',
-      inheritMainEffort: 'heredar · esfuerzo del modelo principal',
-      inheritsFrom: task => `hereda de ${task}`,
-      followTask: task => `Seguir ${task}`,
-      providerDefault: '(predeterminado del proveedor)',
-      fallbackAdd: 'Añadir respaldo',
-      fallbackEmpty: 'No hay modelos de respaldo; se usa el modelo predeterminado salvo que falle.',
-      notInCatalog: 'no está en la lista de modelos de este proveedor; las llamadas pueden recurrir a un respaldo.',
-      moaTitle: 'Mixture of Agents',
-      moaPreset: 'Preajuste',
-      moaDescription:
-        'Configura preajustes con nombre que aparecen como modelos del proveedor Mixture of Agents. El agregador es el modelo que actúa: ejecuta cada paso del bucle de herramientas, y casi todo el coste de la ejecución se factura a su proveedor. Por defecto, las referencias solo asesoran una vez por turno del usuario.',
-      moaAggregator: 'Agregador',
-      moaAggregatorBilled: 'modelo que actúa · se factura por la ejecución',
-      moaReferenceHint: 'asesora una vez por turno por defecto',
-      tasks: esAuxTasks
-    },
+    model: esModelSettings,
     localModels: esLocalModels,
     billing: {
       perMonth: (amount: string) => `${amount}/mes`,
@@ -2102,6 +2007,15 @@ export const esOverrides = {
         effectScheduled: (targetName: string, effectiveAt: string, creditsDelta?: string) =>
           `Cambio a ${targetName}: entra en vigor ${effectiveAt}. No se cobra nada ahora; conservas tu plan actual hasta entonces.${creditsDelta ? ` Cambio de créditos mensuales: ${creditsDelta}.` : ''}`
       },
+      keepGoingOnCredits: {
+        title: 'Seguir con créditos',
+        description: 'Usa tus créditos cuando se agote el uso incluido. Desactivado: Hermes espera al reinicio.',
+        approveInBrowser: 'Aprueba Remote Spending en tu navegador para cambiar esto. Se aplica en cuanto lo apruebes.',
+        openAgain: 'Abrir de nuevo',
+        cancel: 'Cancelar',
+        approvedRetry: 'Remote Spending está aprobado, pero el cambio no se guardó.',
+        tryAgain: 'Reintentar'
+      },
       autoReload: {
         threshold: 'Umbral',
         thresholdAria: 'Umbral de recarga automática',
@@ -2181,6 +2095,20 @@ export const esOverrides = {
             captionDefault: 'Límite predeterminado',
             captionSpending: 'Gasto remoto mensual',
             valueUsed: (spent: string, limit: string) => `${spent} de ${limit} usados`
+          },
+          window: {
+            today: 'Hoy',
+            week: 'Esta semana',
+            month: 'Este mes',
+            topTier: 'Modelos grandes (mensual)',
+            barLabel: (title: string) => `${title}: uso incluido consumido`,
+            captionPaused: 'En pausa: falló el pago de la suscripción',
+            captionPausedOther: 'En pausa: consulta Facturación en el Portal',
+            captionTopTierUsedUp: 'Cuota mensual agotada, los créditos cubren el resto',
+            captionTopTierUsedUpKeepGoingOff: 'Cuota mensual agotada, los demás modelos incluidos siguen funcionando',
+            captionResetsIn: (duration: string) => `Se restablece en ${duration}`,
+            captionIncluded: 'Uso incluido',
+            valueUsed: (percent: string) => `${percent} usado`
           }
         },
         planCard: {
@@ -2332,8 +2260,8 @@ export const esOverrides = {
       defaultDirTitle: 'Directorio de proyecto predeterminado',
       defaultDirDesc:
         'Las sesiones nuevas empiezan en esta carpeta salvo que elijas otra. Déjala sin definir para usar tu directorio de inicio.',
-      defaultDirUpdated:
-        'Directorio de proyecto predeterminado actualizado; inicia un chat nuevo (Ctrl/⌘+N) para que el cambio surta efecto.',
+      defaultDirUpdated: shortcut =>
+        `Directorio de proyecto predeterminado actualizado; inicia un chat nuevo${shortcut ? ` (${shortcut})` : ''} para que el cambio surta efecto.`,
       defaultsTo: label => `Predeterminado: ${label}.`,
       change: 'Cambiar',
       choose: 'Elegir',
@@ -2570,25 +2498,14 @@ export const esOverrides = {
         unsupported_gpu: 'GPU no compatible',
         unknown: 'estado desconocido'
       },
-      catalogTitle: 'Catálogo de plugins',
-      catalogBrowse: 'Explorar',
-      catalogHide: 'Ocultar el explorador del catálogo',
-      catalogHint:
-        'Pulsa "+ Añadir a este agente" en cualquier plugin: las entradas revisadas se instalan en su commit fijado en el perfil seleccionado. Los plugins agente+escritorio incluidos ofrecen ambas mitades.',
       alreadyInstalled: (name: string) => `${name} ya está instalado en este perfil.`,
       catalogProvenance: (sha: string) =>
         `Instalado desde el catálogo de Hermes${sha ? ` en el commit fijado ${sha}` : ''}.`,
       pinnedProvenance: (sha: string) =>
         `Fijado al commit ${sha}. Las actualizaciones se rechazan hasta que se reinstale con un nuevo commit fijado.`,
       pinnedBadge: (sha: string) => `fijado @ ${sha}`,
-      updateToPin: (sha: string) => `Actualizar a ${sha}`,
-      updateFailed: (name: string) => `No se pudo actualizar ${name}`,
-      updated: (name: string) =>
-        `${name} se actualizó al commit fijado actual del catálogo. Reinicia el gateway para aplicarlo.`,
-      updateConsentTitle: (name: string) => `${name} pide más`,
-      updateConsentBody: (name: string, sha: string) =>
-        `El nuevo commit fijado de ${name} en el catálogo (${sha}) añade superficies que la versión instalada no tiene. Aplícalo solo si confías en ellas:`,
-      updateConsentConfirm: 'Aplicar actualización',
+      ...esPluginUpdate,
+      ...esPluginPreviewAccess,
       uninstall: 'Desinstalar',
       uninstallTip: (name: string, profile: string) => `Desinstalar ${name} de ${profile}`,
       uninstallConfirmTitle: (name: string) => `¿Desinstalar ${name}?`,
@@ -2948,9 +2865,6 @@ export const esOverrides = {
       resume: 'Reanudar',
       runNow: 'Ejecutar ahora',
       memoryData: 'Datos de memoria',
-      memoryDataDesc: 'Archivos de memoria integrados que se incluyen en cada sesión',
-      memoryProvider: name => `Proveedor activo: ${name}`,
-      builtinMemory: 'integrada',
       memoryFile: 'Memoria del agente (MEMORY.md)',
       userFile: 'Perfil de usuario (USER.md)',
       bytes: size => size,
@@ -3292,8 +3206,11 @@ export const esOverrides = {
     exported: 'Perfil exportado',
     failedImport: 'No se pudo importar el perfil',
     failedExport: 'No se pudo exportar el perfil',
+    exportNeedsHost: name =>
+      `El navegador no puede guardar un archivo de perfil. En el host de Hermes, ejecuta: hermes profile export ${name}`,
     allProfiles: 'Todos los perfiles',
     showAllProfiles: 'Mostrar todos los perfiles',
+    notServedHere: 'No se ofrece aquí',
     switchToProfile: name => `Cambiar a ${name}`,
     switchToConnection: name => `Cambiar a ${name}`,
     switchConnectionFailed: name => `No se pudo conectar a ${name}`,
@@ -3442,6 +3359,7 @@ export const esOverrides = {
     declined: 'Cambio de modelo cancelado: rechazaste el aviso del nivel con entrenamiento de datos.'
   },
   cron: {
+    control: esCronControl,
     close: 'Cerrar cron',
     title: 'Tareas programadas',
     count: count => `${count} ${count === 1 ? 'tarea' : 'tareas'}`,
@@ -3923,7 +3841,7 @@ export const esOverrides = {
       '/init': 'Generar o actualizar las instrucciones de proyecto AGENTS.md a partir de un análisis del repositorio',
       '/suggestions': 'Revisar las automatizaciones sugeridas (aceptar/descartar)',
       '/blueprint': 'Configurar una automatización a partir de una plantilla',
-      '/browser': 'Gestionar el navegador del agente [connect|disconnect|status|use]',
+      '/browser': 'Gestionar el navegador del agente [connect|disconnect|status]',
       '/palette': 'Abrir la paleta de comandos aproximada (también Ctrl+P)',
       '/usage':
         'Mostrar el uso de tokens y los límites de frecuencia; `reset` canjea un restablecimiento de límite de Codex acumulado',
@@ -4004,43 +3922,6 @@ export const esOverrides = {
     snippetsDesc: 'Elige un prompt inicial para insertarlo en el compositor.',
     dropFiles: 'Suelta archivos para adjuntarlos',
     dropSession: 'Suelta para enlazar este chat',
-    mcpSuggestions: {
-      label: server => `Añadir ${server}`,
-      tip: keyword => `Sugerido porque mencionaste "${keyword}" — haz clic para conectar`,
-      connecting: server => `Conectando ${server}…`,
-      cancelTip: 'Haz clic para cancelar',
-      added: server => `${server} añadido`,
-      addedTip: 'Conectado — sus herramientas están listas en este chat',
-      connectFailed: server => `No se pudo conectar ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Usar habilidad: ${skill}`,
-      tip: skill => `Mencionaste "${skill}" — haz clic para empezar con esa habilidad`,
-      done: skill => `Añadido /${skill}`,
-      doneTip: 'La habilidad se carga cuando envíes'
-    },
-    githubSuggestions: {
-      label: 'Configurar GitHub',
-      tip: 'GitHub funciona aquí mediante las skills de la CLI gh: haz clic para conectar tu cuenta',
-      done: 'Se añadió /github-auth',
-      doneTip: 'Envía el mensaje y el agente te guiará para iniciar sesión en GitHub'
-    },
-    repairSuggestions: {
-      label: server => `Reconectar ${server}`,
-      tip: server => `Una llamada a ${server} acaba de fallar con un error de conexión`,
-      working: server => `Reconectando ${server}…`,
-      workingTip: 'Haz clic para cancelar',
-      done: server => `${server} reconectado`,
-      doneTip: 'Las credenciales nuevas están activas en este chat',
-      failed: server => `No se pudo reconectar ${server}`
-    },
-    cronSuggestions: {
-      label: 'Programar esto',
-      tip: phrase => `"${phrase}" suena recurrente — ejecútalo con un horario en su lugar`,
-      prefix: 'Configúralo como tarea programada:',
-      done: 'Marcado para programar',
-      doneTip: 'Envíalo y el agente creará la tarea'
-    },
     snippets: {
       codeReview: {
         label: 'Revisión de código',
@@ -4237,6 +4118,8 @@ export const esOverrides = {
     versionDetailsBody:
       'Esta instalación se administra fuera de la app. Actualízala de la misma forma en que la instalaste.',
     versionDetailsVersion: 'Versión',
+    versionDetailsClient: 'Este dispositivo',
+    versionDetailsBackend: 'Backend conectado',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Origen de la compilación',
     versionDetailsDistribution: 'Distribución',
@@ -4473,29 +4356,25 @@ export const esOverrides = {
     signIn: 'Iniciar sesión',
     signInHeading: 'Inicia sesión con una cuenta de Nous para desbloquear más modelos y herramientas.',
     settingUp: 'Configurando la inferencia gratuita…',
-    codeBody: 'Introduce este código en tu navegador para terminar de iniciar sesión.',
-    copyLink: 'Copiar enlace',
+    finishInBrowser: 'Termina en tu navegador',
     doNotShare: 'No compartas este código.',
+    openPageAgain: 'Abrir la página de nuevo',
     waiting: 'Esperando el inicio de sesión…',
     finishingHeading: 'Terminando el inicio de sesión…',
     finishingBody: 'Aprobado en el navegador. Obteniendo los tokens de tu cuenta.',
-    signedInAs: (email: string) => `Sesión iniciada como ${email}`,
+    signedInAsLabel: 'Sesión iniciada como',
     signedIn: 'Sesión iniciada.',
     completedBody: 'Tu cuenta ya incluye inferencia y herramientas.',
+    reconnect: 'Reconectar',
+    openConnectors: 'Abrir Conectores',
     defaultModel: 'Modelo predeterminado',
     change: 'Cambiar',
     done: 'Listo',
     notNow: 'Ahora no',
     tryAgain: 'Reintentar',
-    startAgain: 'Empezar de nuevo',
     didNotComplete: 'No se completó el inicio de sesión',
-    rejectedBody: 'No pasa nada, sigues en el servicio gratuito de Nous. Inicia sesión cuando quieras.',
-    supersededBody:
-      'Un código de inicio de sesión más reciente sustituyó a este. Usa el más reciente o empieza de nuevo.',
     timedOutHeading: 'Ese enlace de inicio de sesión caducó',
     timedOutBody: 'Empieza de nuevo cuando quieras. Sigues en el servicio gratuito de Nous.',
-    retiredBody:
-      'Tu sesión terminó antes de completar el inicio de sesión. Hermes iniciará una nueva; luego vuelve a iniciar sesión cuando quieras.',
     errorBody: 'No se completó el inicio de sesión. Vuelve a intentarlo cuando quieras.',
     busyHeading: 'Ya casi está',
     busyBody: (wait: string) =>
@@ -4552,7 +4431,27 @@ export const esOverrides = {
     wasPrice: 'antes',
     customModel: 'Modelo personalizado',
     addCustomModelAction: 'Añadir modelo personalizado…',
-    customModelPlaceholder: 'Escribe un ID de modelo, p. ej., openai/gpt-5'
+    customModelPlaceholder: 'Escribe un ID de modelo, p. ej., openai/gpt-5',
+    today: 'Hoy',
+    week: 'Semana',
+    month: 'Mes',
+    topTier: 'Modelos grandes (mensual)',
+    included: 'Todos los modelos de abajo están incluidos',
+    pausedRenewal: 'en pausa: renovación impagada',
+    pausedOther: 'en pausa',
+    includedUsedUp: 'Uso incluido agotado',
+    limitReached: (name: string) => `Límite ${name} alcanzado`,
+    limitNames: { day: 'diario', month: 'mensual', top_tier: 'mensual de modelos grandes', week: 'semanal' },
+    limitThenCredits: 'los modelos de pago ahora usan tus créditos (pago por uso)',
+    limitThenCreditsLarge: 'los modelos grandes ahora usan tus créditos (pago por uso)',
+    limitThenWait: 'solo modelos gratuitos hasta entonces',
+    limitThenWaitLarge: 'modelos grandes en pausa hasta entonces',
+    percentUsed: (percent: string) => `${percent} usado`,
+    resetsIn: (duration: string) => `se restablece en ${duration}`,
+    usageLevels: { free: 'Gratis', top_tier: 'Grande' },
+    sectionRecommended: 'Recomendados',
+    sectionOther: 'Otros modelos',
+    largeFootnote: 'Los modelos grandes también cuentan para tu límite mensual de modelos grandes.'
   },
   modelVisibility: {
     title: 'Modelos',
@@ -4720,6 +4619,8 @@ export const esOverrides = {
     }
   },
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) =>
+      `Estos nombres no se pueden escribir de forma segura en ${shell}: ${paths}`,
     aria: 'Barra lateral derecha',
     panelsAria: 'Paneles de la barra lateral derecha',
     files: 'Sistema de archivos',
@@ -4821,62 +4722,7 @@ export const esOverrides = {
       sentMessage: count =>
         `${count} ${count === 1 ? 'entrada de registro añadida' : 'entradas de registro añadidas'} al compositor`
     },
-    web: {
-      appFailedToBoot: 'La app de vista previa no arrancó',
-      serverNotFound: 'Servidor no encontrado',
-      remoteLoopback:
-        'Esta dirección apunta al equipo que ejecuta tu agente, no a este. El panel del navegador carga las páginas localmente, así que un servidor de desarrollo remoto necesita un reenvío de puertos o un nombre de host accesible.',
-      failedToLoad: 'No se pudo cargar la vista previa',
-      tryAgain: 'Intentar de nuevo',
-      restarting: 'Hermes se está reiniciando...',
-      askRestart: 'Pedir a Hermes que reinicie el servidor',
-      lookingRestart: taskId => `Hermes está buscando un servidor de vista previa para reiniciar (${taskId})`,
-      restartingTitle: 'Reiniciando servidor de vista previa',
-      restartingMessage:
-        'Hermes está trabajando en segundo plano. Mira la consola de vista previa para ver el progreso.',
-      startRestartFailed: message => `No se pudo iniciar el reinicio del servidor: ${message}`,
-      restartFailed: 'Falló el reinicio del servidor',
-      hideConsole: 'Ocultar consola de vista previa',
-      showConsole: 'Mostrar consola de vista previa',
-      hideDevTools: 'Ocultar DevTools de vista previa',
-      openDevTools: 'Abrir DevTools de vista previa',
-      goBack: 'Atrás',
-      goForward: 'Adelante',
-      reload: 'Recargar página',
-      address: 'Dirección',
-      addressPlaceholder: 'Introduce una dirección',
-      blankPageBody: 'Escribe una dirección arriba para navegar o pide a Hermes que abra una página.',
-      finishedRestarting: message =>
-        `Hermes terminó de reiniciar el servidor de vista previa${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `Falló el reinicio del servidor: ${message}`,
-      unknownError: 'error desconocido',
-      restartedTitle: 'Servidor de vista previa reiniciado',
-      reloadingNow: 'Recargando la vista previa ahora.',
-      restartFailedTitle: 'Falló el reinicio de la vista previa',
-      restartFailedMessage: 'Hermes no pudo reiniciar el servidor.',
-      stillWorking:
-        'Hermes sigue trabajando, pero aún no llegó ningún resultado de reinicio. Puede que el comando del servidor siga en primer plano.',
-      workspaceReloading: 'El espacio de trabajo cambió, recargando vista previa',
-      fileChanged: url => `Archivo cambiado, recargando vista previa: ${url}`,
-      filesChanged: (count, url) => `${count} cambios de archivo, recargando vista previa: ${url}`,
-      watchFailed: message => `No se pudo vigilar el archivo de vista previa: ${message}`,
-      moduleMimeDescription:
-        'Los scripts de módulo se están sirviendo con el tipo MIME incorrecto. Normalmente significa que un servidor de archivos estáticos sirve una app Vite/React en lugar del dev server del proyecto.',
-      loadFailedConsole: (code, message) => `Carga fallida${code ? ` (${code})` : ''}: ${message}`,
-      unreachableDescription: 'No se pudo acceder a la página de vista previa.',
-      openTarget: url => `Abrir ${url}`,
-      fallbackTitle: 'Vista previa',
-      annotate: 'Anotar',
-      annotateOn: 'Dejar de anotar',
-      annotateNeedPage: 'Primero abre una página en el navegador integrado.',
-      annotateFailed: 'No se pudo iniciar el modo de anotación',
-      commenting: 'Comentando',
-      addComments: (count: number) => (count === 1 ? 'Añadir 1 comentario' : `Añadir ${count} comentarios`),
-      commentPlaceholder: 'Añade un comentario...',
-      commentTitle: (n: number) => `Comentario ${n}`,
-      saveComment: 'Guardar',
-      cancelComment: 'Cancelar comentario'
-    }
+    web: esPreviewWeb
   },
   interfaceMode: {
     title: 'Modo de interfaz',
@@ -4942,7 +4788,8 @@ export const esOverrides = {
     saveApply: 'Guardar y aplicar',
     notExpressible: 'esta disposición se entrelaza (en molinete) y aún no puede expresarse como divisiones anidadas',
     zoneCount: count => `${count} zonas`,
-    tabCount: count => `${count} pestañas`
+    tabCount: count => `${count} pestañas`,
+    tabActions: title => `Acciones de ${title}`
   },
   contextMenu: {
     link: {
@@ -4992,187 +4839,189 @@ export const esOverrides = {
       react: 'Reaccionar',
       dismissError: 'Descartar error',
       responseStopped: 'Respuesta detenida',
-      errorLayers: {
-        auth: 'Problema de inicio de sesión',
-        billing: 'Créditos agotados',
-        disk: 'Disco lleno',
-        endpoint: 'No se puede conectar con tu servidor de modelos',
-        gateway: 'Hermes tuvo un problema',
-        generic: 'Hermes no pudo terminar esta respuesta',
-        provider: 'El servicio de IA devolvió un error',
-        runtime: 'Hermes tuvo un problema',
-        streaming: 'La respuesta se cortó'
-      },
-      errorLayerBodies: {
-        auth: 'El servicio de IA rechazó tu inicio de sesión. Revisa las credenciales de este proveedor y vuelve a enviar el mensaje.',
-        billing: 'Tu cuenta no tiene créditos para este proveedor. Recarga o cambia de proveedor y vuelve a enviarlo.',
-        disk: 'Tu disco está lleno, así que Hermes no pudo guardar esta conversación. Libera espacio y reinténtalo.',
-        endpoint:
-          'Hermes no puede conectar con tu servidor de modelos personalizado. Comprueba que esté en ejecución y vuelve a enviar el mensaje.',
-        gateway:
-          'Hermes tuvo un problema interno al iniciar esta respuesta. Vuelve a enviar el mensaje; si sigue ocurriendo, envía un diagnóstico.',
-        generic: 'Algo salió mal mientras Hermes respondía. Reinténtalo o copia los detalles si sigue ocurriendo.',
-        provider:
-          'El servicio de IA no pudo completar esta solicitud. Reinténtalo en un momento o cambia de proveedor.',
-        runtime:
-          'Hermes tuvo un problema interno al iniciar esta respuesta. Vuelve a enviar el mensaje; si sigue ocurriendo, envía un diagnóstico.',
-        streaming: 'La conexión se cortó antes de que terminara la respuesta. Reinténtalo para enviarla de nuevo.'
-      },
+      ...esErrorLayers,
       errorCodes: {
+        ...esErrorCodes,
         auth: {
-          title: (provider: string) => `${provider} rechazó tu inicio de sesión`,
-          body: (provider: string) =>
-            `No se aceptaron las credenciales guardadas para ${provider}. Corrígelas en Configuración o cambia de proveedor y vuelve a enviar el mensaje.`
+          title: (provider: string) => `${provider} rechazó tu clave API`,
+          body: () => 'La clave guardada no es válida o se revocó. Actualízala y vuelve a enviar el mensaje.'
         },
         auth_permanent: {
-          title: (provider: string) => `${provider} rechazó tu inicio de sesión`,
-          body: (provider: string) =>
-            `Las credenciales guardadas para ${provider} no son válidas o se revocaron. Actualízalas o cambia de proveedor y vuelve a enviar el mensaje.`
+          title: (provider: string) => `${provider} rechazó tu clave API`,
+          body: () => 'La clave guardada no es válida o se revocó. Actualízala y vuelve a enviar el mensaje.'
         },
         billing: {
-          title: 'Sin créditos',
-          body: (provider: string) =>
-            `Tu cuenta de ${provider} no tiene créditos. Recarga o cambia de proveedor y vuelve a enviarlo.`
+          title: (provider: string) => `Sin créditos en ${provider}`,
+          body: (provider: string) => `Añade créditos para seguir usando modelos de pago en ${provider}.`
         },
         rate_limit: {
-          title: 'El servicio de IA está ocupado',
+          title: (provider: string) => `${provider} está ocupado ahora mismo`,
           body: (provider: string) =>
-            `${provider} está limitando las solicitudes ahora mismo. Espera un minuto y reinténtalo.`
+            `Alcanzaste el límite de solicitudes de ${provider}. Espera un momento y reinténtalo.`
         },
         upstream_rate_limit: {
-          title: 'El servicio de IA está ocupado',
-          body: (provider: string) =>
-            `${provider} está limitando las solicitudes ahora mismo. Espera un minuto y reinténtalo.`
+          title: (_provider: string, model: string) => `${model || 'Este modelo'} está ocupado ahora mismo`,
+          body: (provider: string, model: string) =>
+            `${model || 'Este modelo'} tiene un límite de solicitudes en el origen de ${provider}, no en tu cuenta. Reinténtalo en un momento.`
         },
         overloaded: {
-          title: 'El servicio de IA está sobrecargado',
+          title: (provider: string) => `${provider} está ocupado ahora mismo`,
           body: (provider: string) =>
-            `${provider} tiene problemas ahora mismo. Reinténtalo en un momento o cambia de proveedor.`
+            `${provider} está sobrecargado y no pudo atender esta solicitud. Reinténtalo en un momento.`
         },
         server_error: {
-          title: 'El servicio de IA tuvo un problema',
-          body: (provider: string) =>
-            `${provider} devolvió un error del servidor. Reinténtalo en un momento o cambia de proveedor.`
+          title: (provider: string) => `${provider} tiene problemas`,
+          body: (provider: string) => `${provider} devolvió un error del servidor. Reinténtalo en un momento.`
         },
         timeout: {
-          title: 'No se pudo conectar con el servicio de IA',
+          title: (provider: string) => `Sin conexión con ${provider}`,
           body: (provider: string) =>
-            `No se pudo conectar con ${provider} o no respondió a tiempo. Revisa tu conexión a internet y vuelve a intentarlo.`
+            `Hermes no pudo conectar con ${provider}. Revisa tu conexión y vuelve a intentarlo.`
         },
         no_reply: {
-          title: 'La respuesta no terminó',
-          body: 'Hermes terminó este turno sin respuesta. Reinténtalo para enviarla de nuevo.'
+          title: 'La respuesta no llegó',
+          body: 'Hermes terminó este turno, pero no llegó ninguna respuesta a esta ventana. Reinténtalo para enviarla de nuevo.'
         },
         stream_drop: {
           title: 'La respuesta se cortó',
           body: 'La conexión se cortó antes de que terminara la respuesta. Reinténtalo para enviarla de nuevo.'
         },
         upstream_blocked: {
-          title: 'Un firewall bloqueó la solicitud',
+          title: (provider: string) => `${provider} bloqueó esta solicitud`,
           body: (provider: string) =>
-            `Un firewall o CDN delante de ${provider} bloqueó la solicitud antes de que llegara al modelo; probablemente tu clave está bien. Define un encabezado User-Agent mediante los extra_headers del proveedor en Configuración o cambia de proveedor y vuelve a enviar el mensaje.`
+            `Un firewall delante de ${provider} la rechazó antes de que llegara al modelo. Cambia de proveedor o define un User-Agent personalizado para él.`
         },
         ssl_cert_verification: {
-          title: 'Falló la conexión segura',
+          title: (provider: string) => `Conexión con ${provider} no verificada`,
           body: (provider: string) =>
-            `Hermes no pudo verificar la conexión segura con ${provider}. Revisa la configuración de red o del proxy, o cambia de proveedor, y vuelve a enviar el mensaje.`
+            `Un proxy o un almacén de certificados desactualizado bloqueó la conexión segura con ${provider}. La guía de configuración explica cómo solucionarlo.`
         },
         context_overflow: {
-          title: 'Esta conversación es demasiado larga',
-          body: 'La conversación ya no cabe en el modelo. Comprímela o empieza un chat nuevo y vuelve a enviarlo.'
+          title: 'Este chat es demasiado largo',
+          body: (_provider: string, model: string) =>
+            `La conversación ya no cabe en la ventana de contexto de ${model || 'el modelo'}. Comprímela para continuar.`
         },
         payload_too_large: {
           title: 'Este mensaje es demasiado grande',
-          body: 'La solicitud era demasiado grande para el modelo. Comprime la conversación o empieza un chat nuevo y vuelve a enviarlo.'
+          body: (provider: string) =>
+            `La solicitud, con los adjuntos incluidos, supera el límite de tamaño de ${provider}. Comprime la conversación o quita adjuntos.`
         },
         model_not_found: {
-          title: 'Este modelo no está disponible',
-          body: (provider: string) =>
-            `${provider} no ofrece este modelo en tu cuenta. Elige otro modelo y vuelve a enviar el mensaje.`
+          title: (_provider: string, model: string) => `${model || 'Este modelo'} no está disponible`,
+          body: (provider: string, model: string) =>
+            `${provider} no ofrece ${model || 'este modelo'} en tu cuenta. Elige otro modelo.`
         },
         provider_policy_blocked: {
-          title: 'La configuración de tu cuenta bloquea este modelo',
+          title: (provider: string, model: string) =>
+            `Tu configuración de ${provider} bloquea ${model || 'este modelo'}`,
           body: (provider: string) =>
-            `${provider} no enrutaría esta solicitud con la configuración de datos o privacidad de tu cuenta. Elige otro modelo o cambia de proveedor.`
+            `Tu configuración de privacidad de ${provider} excluye todos los endpoints de este modelo. Cámbiala en ${provider} o elige otro modelo.`
         },
         content_policy_blocked: {
-          title: 'El servicio de IA rechazó esta solicitud',
-          body: (provider: string) => `${provider} no respondería a este mensaje. Edítalo y vuelve a enviarlo.`
+          title: (provider: string) => `${provider} rechazó este mensaje`,
+          body: (provider: string) =>
+            `El filtro de seguridad de ${provider} lo rechazó. Edita el mensaje y vuelve a enviarlo.`
         },
         format_error: {
-          title: 'El servicio de IA rechazó la solicitud',
+          title: (provider: string) => `${provider} rechazó esta solicitud`,
           body: (provider: string) =>
-            `${provider} no aceptó cómo se construyó esta solicitud. Cambia de proveedor o envía un diagnóstico para que lo revisemos.`
+            `${provider} no pudo aceptar cómo está estructurada esta conversación. Cambia de proveedor o empieza un chat nuevo si sigue ocurriendo.`
         },
         truncated: {
           title: 'La respuesta quedó incompleta',
-          body: 'El modelo se detuvo antes de terminar. Reinténtalo para obtener una respuesta completa.'
+          body: (_provider: string, model: string) =>
+            `${model || 'El modelo'} se detuvo antes de terminar su respuesta. Continúa para retomarlo donde se detuvo.`
         },
         invalid_response: {
-          title: 'El servicio de IA envió una respuesta ilegible',
-          body: (provider: string) => `${provider} devolvió algo que Hermes no pudo leer. Reinténtalo en un momento.`
+          title: 'No se pudo leer la respuesta',
+          body: (provider: string) => `${provider} devolvió una respuesta vacía o dañada. Reinténtalo en un momento.`
         },
         empty_response: {
-          title: 'El servicio de IA envió una respuesta vacía',
+          title: 'No se obtuvo respuesta',
           body: (provider: string) => `${provider} no devolvió nada para este mensaje. Reinténtalo en un momento.`
         },
         loop_error: {
-          title: 'Hermes se quedó atascado en un bucle',
-          body: 'La respuesta repetía los mismos pasos, así que Hermes la detuvo. Reinténtalo o empieza un chat nuevo si vuelve a ocurrir.'
+          title: 'Hermes no pudo terminar este paso',
+          body: 'Algo salió mal al procesar la respuesta. Reinténtalo; si vuelve a ocurrir, envía un diagnóstico desde los detalles.'
+        },
+        agent_init_failed: {
+          title: 'No se pudo iniciar este chat',
+          body: (provider: string) =>
+            `Hermes no pudo conectar con ${provider} para este chat. Reinténtalo; si sigue fallando, revisa el proveedor en Configuración.`
         },
         SESSION_NOT_OWNED: {
-          title: 'Este chat está abierto en otro sitio',
-          body: 'Este chat está abierto en otra ventana de Hermes o en un terminal. Ciérralo allí y vuelve a enviar el mensaje, o empieza un chat nuevo aquí.'
+          title: 'Chat abierto en otro sitio',
+          body: 'Este chat está abierto en otra ventana de Hermes o en un terminal. Empieza un chat nuevo aquí o ciérralo allí primero.'
         },
         disk_full: {
-          title: 'Disco lleno',
-          body: 'Tu disco está lleno, así que Hermes no pudo guardar esta conversación. Libera espacio y reinténtalo.'
+          title: 'Tu disco está lleno',
+          body: 'Hermes no pudo guardar esta conversación. Libera espacio y reinténtalo.'
         },
         free_tier_disabled: {
-          title: 'El uso de Hermes sin iniciar sesión está desactivado ahora mismo',
+          title: 'Inicia sesión para seguir chateando',
           body: 'Inicia sesión con una cuenta de Nous para seguir chateando; es gratis.'
         },
         free_tier_rate_limited: {
-          title: 'Agotaste el cupo para chatear sin iniciar sesión',
+          title: 'Cupo gratuito agotado',
           body: 'Se renueva en breve. Inicia sesión con una cuenta de Nous para tener un cupo mayor; es gratis.'
         },
         free_tier_at_capacity: {
-          title: 'Chatear sin iniciar sesión está muy solicitado ahora mismo',
+          title: 'El nivel gratuito está ocupado',
           body: 'Inicia sesión para saltarte la cola (es gratis) o vuelve a intentarlo dentro de un rato.'
         },
         free_tier_model_not_free: {
-          title: 'Ese modelo no está disponible sin iniciar sesión',
+          title: 'Este modelo requiere iniciar sesión',
           body: 'Por ahora Hermes usa el modelo gratuito. Inicia sesión con una cuenta de Nous para tener más modelos; es gratis.'
         },
         free_tier_route: {
-          title: 'Hermes no pudo llegar al modelo gratuito por esta ruta',
+          title: 'Sin acceso al modelo gratuito',
           body: 'Inicia sesión con una cuenta de Nous (es gratis) o revisa el ajuste NOUS_INFERENCE_BASE_URL.'
         },
         free_tier_outage: {
-          title: 'El modelo gratuito tiene problemas para responder ahora mismo',
+          title: 'El modelo gratuito tiene problemas',
           body: 'Vuelve a enviar el mensaje dentro de un minuto.'
         },
         free_tier_refused: {
-          title: 'Hermes no pudo enviarlo sin iniciar sesión',
+          title: 'Inicia sesión para seguir chateando',
           body: 'Iniciar sesión con una cuenta de Nous es gratis.'
+        },
+        usage_window: {
+          title: 'Uso incluido agotado',
+          body: 'El uso incluido de tu plan está agotado hasta el reinicio. Añade créditos en /topup para seguir.'
         }
       },
       errorAuthKinds: {
         api_key: {
           title: (provider: string) => `${provider} rechazó tu clave API`,
-          body: (provider: string) =>
-            `La clave guardada para ${provider} no es válida o se revocó. Actualízala y reinténtalo.`
+          body: () => 'La clave guardada no es válida o se revocó. Actualízala y vuelve a enviar el mensaje.'
         },
         oauth: {
-          title: (provider: string) => `Tu sesión de ${provider} caducó`
+          title: (provider: string) => `Vuelve a iniciar sesión en ${provider}`
         }
       },
-      errorDetails: 'Detalles',
+      errorDetails: 'Ver detalles del error',
+      errorHideDetails: 'Ocultar detalles del error',
+      errorDetailsCopy: 'Copiar detalles',
+      errorCopyRaw: 'Copiar error',
+      errorContinue: 'Continuar',
+      errorOpenProviderSettings: (provider: string) => `Abrir ajustes de ${provider}`,
+      errorOpenSetupGuide: 'Abrir guía de configuración',
+      errorSetupGuideLink: 'Guía de configuración',
+      errorOpenModelSettings: 'Abrir ajustes del modelo',
+      errorStartNewChatLink: 'Empezar un chat nuevo',
+      errorChooseModelLink: 'Elegir otro modelo',
+      errorRetryAtResetShort: (time: string) => `Reintentar a las ${time}`,
+      errorRateLimitResetBody: (provider: string, time: string) =>
+        `Alcanzaste el límite de solicitudes de ${provider}. Se restablece a las ${time}.`,
       errorGenericProvider: 'El servicio de IA',
       errorToastTitle: 'Hermes no pudo terminar la respuesta',
       errorRetry: 'Reintentar',
-      errorLimitResets: (time: string) => `El límite se restablece a las ${time}`,
-      errorRetryAtReset: (time: string) => `Reintentar cuando se restablezca el límite (${time})`,
+      errorSwitchToModel: (model, note) => (note ? `Cambiar a ${model} (${note})` : `Cambiar a ${model}`),
+      errorSwitchModelFailed: 'No se pudo cambiar de modelo',
+      errorUseCredits: 'Activar Seguir con créditos',
+      errorUseCreditsFailed: 'No se pudo activar Seguir con créditos',
+      errorAddCredits: 'Añadir créditos',
+      errorOpenBillingSettings: 'Abrir ajustes de facturación',
       errorRetryScheduled: (time: string, wait: string) => `Reintentando a las ${time}, dentro de ${wait}`,
       errorRetryScheduledCancel: 'Cancelar',
       errorStartNewSession: 'Iniciar sesión nueva',
@@ -5190,7 +5039,6 @@ export const esOverrides = {
       errorOpenLogs: 'Abrir registros',
       errorOpenLogsFailed: 'No se pudo abrir la carpeta de registros',
       errorOpenDesktopLogs: 'Abrir registros de Desktop',
-      errorCopyDiagnostics: 'Copiar detalles del error',
       errorSendDiagnostics: 'Enviar diagnóstico',
       filesChanged: count => (count === 1 ? '1 archivo cambiado' : `${count} archivos cambiados`),
       reviewChanges: 'Revisar',
@@ -5586,6 +5434,7 @@ export const esOverrides = {
     imageAttach: 'Adjuntar imagen',
     imageWriteFailed: 'No se pudo escribir la imagen en disco.',
     imageAttachFailed: 'No se pudo adjuntar la imagen',
+    attachFailed: 'No se pudo adjuntar',
     pastedContent: 'Contenido pegado',
     pasteAttachFailed: 'No se pudo adjuntar el texto pegado',
     attachImages: 'Adjuntar imágenes',
@@ -5593,6 +5442,7 @@ export const esOverrides = {
     noClipboardImage: 'No se encontró ninguna imagen en el portapapeles',
     clipboardPasteFailed: 'No se pudo pegar desde el portapapeles',
     dropFiles: 'Soltar archivos',
+    dropFilesMore: (count: number) => `y ${count} más`,
     handoff: {
       pickPlatform: 'Elige un destino',
       success: platform => `Transferido a ${platform}. Puedes reanudar aquí cuando quieras.`,

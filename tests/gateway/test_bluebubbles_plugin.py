@@ -620,6 +620,8 @@ class TestBlueBubblesPluginRegistration:
         from hermes_cli import gateway_setup_wizard as wiz
 
         assert Platform.BLUEBUBBLES not in _BUILTIN_ADAPTERS
-        assert "bluebubbles" not in smt._TEXT_SENDERS
+        # Text is not routed straight to a standalone sender (was: not a _TEXT_SENDERS row).
+        policy = smt._standalone_send_policy("bluebubbles")
+        assert policy is None or not policy.text_direct
         assert not hasattr(senders, "_send_bluebubbles")
         assert all(p["key"] != "bluebubbles" for p in wiz._PLATFORMS)

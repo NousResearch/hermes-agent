@@ -35,7 +35,7 @@ def secret_prompt_scope(turn, agent):
     authority, session_id, _generation = turn._approval_owner
 
     def callback(var_name, prompt, metadata=None):
-        from gateway.session_sudo_prompt import ask_viewer
+        from gateway.session_server_requests import ask_viewer
         live = authority.sessions.get(session_id)
         if live is None:
             return _skipped(var_name, "cancelled", "Secret setup was skipped.")

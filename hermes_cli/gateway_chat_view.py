@@ -23,13 +23,69 @@ def _pending_preview(text):
     line = " ".join("".join(ch if ch.isprintable() else " " for ch in strip_ansi(text)).split())
     if len(line) > _PREVIEW_CHARS:
         line = line[:_PREVIEW_CHARS - 1] + "…"
-    return f": {line}" if line else ""
+    return line
 
+
+def _quoted(row, fallback):
+    """A pending row's own line: its quoted, indented prompt (so it can never start with
+    ``/discard``), or ``fallback`` naming its id when it carries no text."""
+    preview = _pending_preview(row.get("text"))
+    return f'    "{preview}"' if preview else f"    ({fallback} {row['admission_id']})"
+
+
+_UNKNOWN_OUTCOME = ("Hermes couldn't confirm how this turn ended (usually because it restarted mid-turn). "
+                    "Resume this session and use the /discard <id> command it shows to drop the turn. "
+                    "Don't send the same message again until you've checked.")
 
 _BLOCKING_CONTROL_EVENTS = frozenset({
     "approval.request", "approval.settled", "clarify.request", "clarify.settled",
     "session.info",
 })
+
+
+def pending_lines(pending, *, interactive=True):
+    """The owner's pending admissions as shown on attach (the classic CLI shows them before a turn).
+    A lost turn is never replayed, so the person must be told what it was and the exact command
+    that drops it; a queued prompt is not in the transcript yet, so it is quoted too. A one-shot
+    (``interactive=False``) cannot take ``/discard``, so its caller names the remedy instead."""
+    lost = [row for row in pending if row["status"] == "unknown"]
+    queued = [row for row in pending if row["status"] == "queued"]
+    lines = []
+    if len(lost) == 1:
+        lines.append("⏸ This chat is paused. Hermes couldn't confirm how the last turn ended "
+                     "(usually because it restarted mid-turn):")
+        if _pending_preview(lost[0].get("text")):
+            lines.append(_quoted(lost[0], "lost turn"))
+        lines.append("  Hermes won't re-run it by itself, since it may already have done part of the work.")
+        if interactive:
+            lines += ["  To drop it and continue, type:", f"/discard {lost[0]['admission_id']}"]
+    elif lost:
+        lines.append(f"⏸ This chat is paused. Hermes couldn't confirm how {len(lost)} turns ended "
+                     "(usually because it restarted mid-turn):")
+        lines.append("  Hermes won't re-run them by itself, since they may already have done part of the work.")
+        if interactive:
+            lines.append("  To continue, drop each one with the /discard line under it:")
+        for row in lost:
+            lines.append(_quoted(row, "lost turn"))
+            if interactive:
+                lines.append(f"/discard {row['admission_id']}")
+    if queued:
+        count = "1 message is" if len(queued) == 1 else f"{len(queued)} messages are"
+        after = {0: "to run", 1: "and will run once that turn is dropped"}.get(
+            len(lost), "and will run once those turns are dropped")
+        lines.append(f"  {count} waiting {after}:")
+        lines.extend(_quoted(row, "queued message") for row in queued)
+    return lines
+
+
+def lost_admission(snapshot, admission_id):
+    """``/discard``'s row: the resume snapshot is the only source of the generation the authority
+    stamped on a turn lost across an owner restart."""
+    lost = next((row for row in snapshot.get("pending", [])
+                 if row["admission_id"] == admission_id and row["status"] == "unknown"), None)
+    if lost is None:
+        raise GatewayClientError("No unknown (lost) admission with that id; resume to refresh")
+    return lost
 
 
 class GatewayChatView:
@@ -53,6 +109,8 @@ class GatewayChatView:
         self._finite_events = []
         self.streams = {}
         self.completions = {}
+        # ``gateway_replay_gap``: admission -> the reply segment shown when a gap cut it; own unsettled turns.
+        self.cut, self.mine, self.gaps, self._attaching = {}, {}, 0, asyncio.Lock()
         self.changed = asyncio.Event()
         self.failure = None
         # Set once with ``failure``: the interactive composer races its line read against it so a
@@ -70,19 +128,8 @@ class GatewayChatView:
         return [row["admission_id"] for row in self.pending if row["status"] == "unknown"]
 
     def show_pending(self):
-        unknown = bool(self.unknown_admissions())
-        if unknown:
-            print("Execution outcome unknown after restart. Discard acknowledges the lost turn "
-                  "without replaying it; queued work may then continue.", file=sys.stderr)
-        for row in self.pending:
-            admission = row["admission_id"]
-            # A queued prompt is not in the transcript yet: show what is about to run (or was lost).
-            preview = _pending_preview(row.get("text"))
-            if row["status"] == "unknown":
-                print(f"Unknown admission: {admission}{preview}\n/discard {admission}", file=sys.stderr)
-            elif row["status"] == "queued":
-                context = "waiting behind unknown work" if unknown else "waiting to run"
-                print(f"Queued admission: {admission} ({context}){preview}", file=sys.stderr)
+        for line in pending_lines(self.pending, interactive=not self.finite):
+            print(line, file=sys.stderr)
 
     def show_prompt(self, prompt):
         print(f"\n{prompt.get('description') or prompt.get('question') or 'Approval required'}", file=sys.stderr)
@@ -103,8 +150,10 @@ class GatewayChatView:
             kind, payload = params.get("type"), params.get("payload", {})
             self.generation = params.get("execution_generation", self.generation)
             if kind == "session.replay_gap":
-                self._fail(GatewayClientError("session_replay_gap"))
-                return
+                await self._reattach()
+                if self.failure:
+                    return
+                continue
             admission = params.get("admission_id") or payload.get("admission_id")
             if self.finite and kind in _BLOCKING_CONTROL_EVENTS:
                 # Gates and unknown executions block the session FIFO, not merely one
@@ -128,6 +177,55 @@ class GatewayChatView:
         self.failure = error
         self.failed.set()
         self.changed.set()
+
+    async def _reattach(self):
+        """The owner retired this view's subscription; its turns run on. Re-attach (a refusal fails the
+        view as before), show the controls the hole hid, and recover the turns in admission order."""
+        sid = self.session_id
+        async with self._attaching:  # a submit acked meanwhile recovers against this snapshot, which covers it
+            self.gaps += 1
+            try:
+                snapshot = await self.client.rpc("session.resume", session_id=sid)
+            except Exception:  # health: allow BLE001 -- any failed re-attach ends the wait, never hangs it
+                if self.session_id == sid:
+                    self._fail(GatewayClientError("session_replay_gap"))
+                return
+            if self.session_id != sid:
+                return  # /new or /branch moved this view meanwhile
+            self.generation = snapshot.get("execution_generation", self.generation)
+            self.pending, prompts = snapshot.get("pending", self.pending), {p["prompt_id"]: p for p in snapshot.get("prompts", [])}
+            for prompt_id in prompts.keys() - self.prompts.keys() if not self.finite else ():
+                self.show_prompt(prompts[prompt_id])
+            self.prompts = prompts
+            for admission in dict.fromkeys([*self.streams, *self.mine]):  # the running turn first: one FIFO
+                await self._recover(admission, sid)
+            self.changed.set()  # after its own turn settled: a control it lists may end a one-shot's wait
+
+    async def _recover(self, admission, sid):
+        """Queued: it lost nothing. Running: cut until its live completion. Unknown: its completion was the
+        one lost, so an own turn settles as unknown now. Unlisted: it ended in the hole."""
+        from hermes_cli.gateway_replay_gap import pending_status, settled
+        status = pending_status(self.pending, admission)
+        if status == "unknown" and admission in self.mine:
+            self._complete(admission, {"outcome": "unknown", "text": _UNKNOWN_OUTCOME})
+            self.changed.set()
+        if not admission or status in ("queued", "unknown") or admission in self.completions:
+            return
+        self.cut.setdefault(admission, self.streams.pop(admission, ""))
+        if status or any(kind == "message.complete" and own == admission for kind, own, _ in self._finite_events):
+            return  # (its completion already arrived, held for the submit ack)
+        try:
+            receipt = await self.client.rpc("prompt.receipt", session_id=sid, admission_id=admission, include_result=True)
+        except Exception:  # health: allow BLE001 -- unreadable, like a receipt without its reply
+            receipt = {"status": "terminal"}
+        verdict = settled(receipt) if self.session_id == sid and admission not in self.completions else False
+        if verdict:
+            outcome = {"interrupted": "cancelled"}.get(receipt.get("outcome"), receipt.get("outcome"))
+            self._complete(admission, {"outcome": outcome, "_receipt": receipt,
+                                       "text": (receipt.get("result") or {}).get("final_response") or ""})
+            self.changed.set()
+        elif verdict is None and self.finite:  # unreadable: fails as before (interactive: the next gap retries)
+            self._fail(GatewayClientError("session_replay_gap"))
 
     async def _read_line(self, prompt, symbol):
         """The next composer line, or ``""`` once the event stream failed first (``self.failure``
@@ -171,6 +269,8 @@ class GatewayChatView:
     def _tool_start(self, admission, payload):
         # Deltas before a tool call are interim commentary the final reply does not repeat;
         # close that segment so `_complete` measures only the final's own stream.
+        if admission in self.cut:
+            self.cut[admission] = ""
         if self.streams.pop(admission, None) and not self.quiet:
             print(flush=True)
         if self.emitter is not None:
@@ -191,8 +291,8 @@ class GatewayChatView:
 
     def _delta(self, admission, payload):
         text = payload.get("text") or payload.get("delta") or payload.get("content") or ""
-        if not isinstance(text, str):
-            return
+        if not isinstance(text, str) or admission in self.cut:
+            return  # cut: live text stopped at the replay gap; the settlement shows the reply once
         if self.emitter is not None:
             self.emitter.on_text_delta(text)
         elif not self.quiet:
@@ -204,8 +304,14 @@ class GatewayChatView:
 
     def _complete(self, admission, payload):
         text = payload.get("text") or payload.get("content") or ""
-        streamed = self.streams.pop(admission, "")
-        if not self.quiet:
+        streamed, cut = self.streams.pop(admission, ""), self.cut.pop(admission, None)
+        self.mine.pop(admission, None)
+        if cut is not None:
+            from hermes_cli.gateway_replay_gap import owed_reply
+            payload = {**payload, "replay_gap": True}
+            if not self.quiet and text:
+                print(owed_reply(cut, text), flush=True)
+        elif not self.quiet:
             # The final's deltas carry the agent's segment break (leading blank lines after a
             # tool call) that the settled text has trimmed; a match modulo that edge whitespace
             # is the same reply already on screen.
@@ -217,6 +323,11 @@ class GatewayChatView:
                 print(flush=True)
             else:
                 print("\n" + text, flush=True)
+        # A turn the owner's restart/stop interrupted names that cause (#134889 F1); other
+        # message.complete warnings stay Ink/Desktop-only as before.
+        warning = payload.get("warning")
+        if payload.get("status") == "interrupted" and isinstance(warning, str) and warning.strip():
+            print(warning.strip(), file=sys.stderr, flush=True)
         self.completions[admission] = payload
 
     def _request(self, admission, payload):
@@ -231,10 +342,26 @@ class GatewayChatView:
 
     async def submit(self, text):
         self.mutations.retire(self.session_id)
-        return await self.client.rpc("prompt.submit", session_id=self.session_id,
-                                     input_id=uuid.uuid4().hex, text=text,
-                                     **({"finite": True} if self.finite else {}),
-                                     **({"unattended": True} if self.finite and self.unattended else {}))
+        sid, gaps = self.session_id, self.gaps
+        receipt = await self.client.rpc("prompt.submit", session_id=self.session_id,
+                                        input_id=uuid.uuid4().hex, text=text,
+                                        **({"finite": True} if self.finite else {}),
+                                        **({"unattended": True} if self.finite and self.unattended else {}))
+        if (receipt or {}).get("voice_stopped") is True:
+            # TUI-26: a bare stop phrase typed into this LOCAL session's voice chat (another viewer
+            # turned it on) ended the chat on the owner; nothing was admitted and no turn follows.
+            if not self.quiet:
+                from agent.i18n import t
+                print(t("cli.voice.stop_phrase_typed"), flush=True)
+            return receipt
+        admission = (receipt or {}).get("admission_id")
+        if admission and admission not in self.completions and self.session_id == sid:
+            self.mine[admission] = None
+            if self.gaps != gaps:  # a re-attach left after this submit: its snapshot covers it
+                async with self._attaching:
+                    if admission not in self.cut and not self.failure:
+                        await self._recover(admission, sid)
+        return receipt
 
     async def command(self, text):
         command, _, rest = text.partition(" ")
@@ -255,13 +382,8 @@ class GatewayChatView:
                 **({"choice": answer} if expected == "approval" else {"answer": answer}))
             return True
         if command == "/discard":
-            # Acknowledge a turn lost across an owner restart; the resume snapshot
-            # is the only source of the generation the authority stamped on it.
             snapshot = await self.client.rpc("session.resume", session_id=self.session_id)
-            lost = next((row for row in snapshot.get("pending", [])
-                         if row["admission_id"] == rest.strip() and row["status"] == "unknown"), None)
-            if lost is None:
-                raise GatewayClientError("No unknown (lost) admission with that id; resume to refresh")
+            lost = lost_admission(snapshot, rest.strip())
             await self.client.rpc("prompt.resolve_unknown", session_id=self.session_id,
                                   admission_id=lost["admission_id"], execution_generation=lost["execution_generation"])
             return True
@@ -353,14 +475,13 @@ class GatewayChatView:
         only a still-queued input behind someone else's unknown turn is retained and detached."""
         own = next((row["status"] for row in self.pending if row["admission_id"] == admission), None)
         if own == "unknown":
-            self.completions[admission] = {"outcome": "unknown", "text": (
-                "Execution outcome is unknown. Resume this session to inspect the lost turn "
-                "and /discard it; do not resend the input.")}
+            self.completions[admission] = {"outcome": "unknown", "text": _UNKNOWN_OUTCOME}
             return None
         if own == "queued" and self.unknown_admissions():
-            return ("Unknown execution blocks this session; your accepted input is retained. "
-                    "Resume interactively to resolve the lost turn; do not resend the input.")
-        if self.prompts:
+            return ("This chat is paused behind a turn whose ending Hermes couldn't confirm. "
+                    "Your message is saved and will run once you resume this session and /discard "
+                    "that turn; don't send it again.")
+        if self.prompts and (own or not self.gaps):  # a control blocks only a turn still pending
             return "Input required; detached without cancelling. Resume this session interactively."
         return None
 
@@ -398,6 +519,11 @@ class GatewayChatView:
         print(f"Turn interrupted{f' ({reason})' if isinstance(reason, str) and reason else ''}; "
               "it was not retried. Resume this session to continue.", file=sys.stderr)
 
+    def _report_no_reply(self, exit_code):
+        """`-z` exit 1 (a completed turn with no reply text): the in-process one-shot's stderr line."""
+        if self.unattended and exit_code == 1:
+            print("hermes -z: no final response was produced; treating the run as failed.", file=sys.stderr)
+
     def _write_usage_file(self, result, outcome):
         """``-z --usage-file``: the same JSON ledger the in-process one-shot wrote."""
         from hermes_cli.oneshot import _write_usage_file
@@ -414,20 +540,19 @@ class GatewayChatView:
         if oneshot and self.unknown_admissions():
             # A new admission would queue behind the unknown row and never run; refuse BEFORE
             # submitting so nothing is left queued for the next interactive resume to find.
-            lost = " ".join(self.unknown_admissions())
-            return self._detach("Unknown execution blocks this session; nothing was submitted. Resolve it "
-                                f"with `hermes sessions discard {self.session_id} --yes` (or /discard {lost} "
-                                "interactively; both are prompt.resolve_unknown), then retry.")
+            return self._detach(f"Your message was not sent. To continue, run `hermes sessions discard "
+                                f"{self.session_id} --yes`, or resume this session in an interactive chat "
+                                "and /discard the paused turn there; then send it again.")
         renderer = asyncio.create_task(self.render())
         try:
             receipt = await self.submit(query) if query else None
             if oneshot:
-                if receipt is None:
-                    raise GatewayClientError("One-shot requires a query")
-                admission = receipt["admission_id"]
+                admission = _oneshot_admission(receipt)
+                if admission is None:
+                    return 0  # the voice chat ended; no turn was admitted, so none is awaited
                 self.finite_admission = admission
                 for kind, event_admission, payload in self._finite_events:
-                    if event_admission == admission:
+                    if event_admission == admission and admission not in self.completions:
                         self._dispatch_event(kind, event_admission, payload)
                 self._finite_events.clear()
                 self.changed.set()
@@ -448,7 +573,8 @@ class GatewayChatView:
                 # in-process exit contracts: `-z` 0/2/130 (1 = no text), `chat -q`/`-Q` 0/1/130.
                 from hermes_cli.oneshot import _oneshot_exit_code
                 from hermes_cli.turn_exit import turn_exit_code
-                result = await self._settled_result(admission)
+                recovered = terminal.get("_receipt")
+                result = dict(recovered.get("result") or {}) if recovered else await self._settled_result(admission)
                 result.update(failed=bool(result.get("failed")) or outcome not in ("completed", "cancelled"),
                               interrupted=bool(result.get("interrupted")) or outcome == "cancelled")
                 exit_code = (_oneshot_exit_code(text, result) if self.unattended
@@ -456,10 +582,12 @@ class GatewayChatView:
                 if self.usage_file:
                     self._write_usage_file(result, outcome)
                 if self.emitter is not None:
-                    return self.emitter.emit_result({**result, "final_response": text},
+                    return self.emitter.emit_result({**result, "final_response": text,
+                                                     "replay_gap": bool(terminal.get("replay_gap"))},
                                                     session_id=self.session_id, exit_code=exit_code)
                 self._report_silent_interrupt(text, result)
                 print(text, flush=True)
+                self._report_no_reply(exit_code)
                 # Same stderr exit contract as the legacy -Q path: automation wrappers read the
                 # durable id from this line, and it names the physical row (a compaction may have
                 # advanced it past the row printed at start).
@@ -475,8 +603,7 @@ class GatewayChatView:
                                    bottom_toolbar=lambda: f" \u2624 {self.model} \u2502 {self.session_id} ")
             prompt_symbol = get_active_prompt_symbol("❯ ")
             self._composer = prompt if sys.stdin.isatty() else None
-            from hermes_cli.gateway_chat_inject import plugin_inject_slot
-            with patch_stdout(), plugin_inject_slot(self):
+            with patch_stdout():
                 while not self.failure:
                     try:
                         # Empty when the stream failed first: the loop guard then raises it.
@@ -502,6 +629,14 @@ class GatewayChatView:
             renderer.cancel()
             with suppress(asyncio.CancelledError):
                 await renderer
+
+
+def _oneshot_admission(receipt):
+    """The one-shot query's admission id; None when the owner admitted nothing because the query was a
+    bare stop phrase that ended the session's LOCAL voice chat (TUI-26 ``{voice_stopped: true}``)."""
+    if receipt is None:
+        raise GatewayClientError("One-shot requires a query")
+    return None if receipt.get("voice_stopped") is True else receipt["admission_id"]
 
 
 def resume_footer(session_id):

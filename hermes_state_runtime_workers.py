@@ -45,15 +45,63 @@ def discard_orphan_workers_on_reset(conn, session_ids):
 
 
 RETIRED_RECEIPT = {'retired': True}
+# A delegated child's execution id is its parent's plus this and a random suffix, so every
+# descendant of an execution is one prefix probe away (gateway/session_worker_child.py).
+CHILD_SEPARATOR = '/child:'
+
+
+def retire_child_executions(conn, execution_id):
+    """A child never outlives the execution that reserved it: every live descendant goes terminal
+    with it, its read receipts shrink and its open session row is ended. A late child write is
+    then refused ``stale_generation`` like any write after retirement."""
+    _retire_children(conn, conn.execute("SELECT execution_id,session_id FROM worker_executions "
+                                        "WHERE execution_id>=? AND execution_id<? AND status!='terminal'",
+                                        descendant_range(execution_id)).fetchall())
+
+
+def descendant_range(execution_id):
+    """``(low, high)`` bounds every descendant id of ``execution_id`` on the primary key index
+    (';' sorts right after the separator's ':'), so a no-child finish costs one index probe."""
+    return execution_id + CHILD_SEPARATOR, execution_id + CHILD_SEPARATOR[:-1] + ';'
+
+
+def retire_stale_children(conn, epoch):
+    """Owner restart: a child dies with its worker, which dies with its owner, so it is never
+    adoptable; only its root execution can be recovered as ``unknown``."""
+    _retire_children(conn, conn.execute("SELECT execution_id,session_id FROM worker_executions WHERE kind='child' "
+                                        "AND status!='terminal' AND owner_epoch!=?", (epoch,)).fetchall())
+
+
+def _retire_children(conn, rows):
+    for child, _session_id in rows:
+        conn.execute("UPDATE worker_executions SET status='terminal' WHERE execution_id=?", (child,))
+        _compact(conn, child)
+        _end_child_row(conn, child)
+
+
+def _end_child_row(conn, execution_id):
+    import time
+    conn.execute("UPDATE sessions SET ended_at=?,end_reason='agent_close' WHERE ended_at IS NULL "
+                 "AND id=(SELECT session_id FROM worker_executions WHERE execution_id=?)", (time.time(), execution_id))
 
 
 def compact_terminal_receipts(conn, execution_id):
-    """Once an execution is terminal its read receipts are dead weight: a ``compression.history``
+    """Every terminal transition calls this, so it also retires the execution's delegated children.
+    Once an execution is terminal its read receipts are dead weight: a ``compression.history``
     read stores the whole transcript and a context read a full session row, so keeping them leaves
     one full-history copy per managed turn and ``state.db`` grows quadratically. They shrink to a
     marker in the closing transaction (an exact late replay is refused ``stale_generation``, as
     after retirement); ``payload_digest`` stays, so a late duplicate with other content still
     conflicts. Mutation acknowledgements (counts, row annotations, assignments) stay replayable."""
+    retire_child_executions(conn, execution_id)
+    _compact(conn, execution_id)
+    if CHILD_SEPARATOR in execution_id:
+        # A child that finished itself (an early close: failed constructor, refused sibling) never
+        # reaches _retire_children, which only selects live children: its row ends here.
+        _end_child_row(conn, execution_id)
+
+
+def _compact(conn, execution_id):
     conn.execute("UPDATE worker_receipts SET result_json=? WHERE execution_id=? AND json_valid(result_json) "
                  "AND (json_type(result_json, '$.messages') IS NOT NULL "
                  "OR json_type(result_json, '$.session') IS NOT NULL)",

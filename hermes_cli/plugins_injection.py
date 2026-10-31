@@ -21,16 +21,13 @@ def inject_plugin_message(
         queue_ = cli._interrupt_queue if getattr(cli, "_agent_running", False) else cli._pending_input
         queue_.put(msg)
         return True
-    if not session_key and origin is None:
-        # Main queued key-less text into the classic CLI REPL. That session's turns now run in the
-        # gateway, so a hook or tool running for it targets the session itself.
-        from hermes_cli.plugin_session import session_key as calling_session_key, session_surface
-        if session_surface() == "cli":
-            session_key = calling_session_key() or None
     if session_key and origin is not None:
         logger.warning("inject_message: pass session_key or origin, not both")
         return False
-    if not session_key and origin is None:
+    # Neither: the live gateway picks the chat (gateway/plugin_keyless_inject.py) from the session this
+    # call works for, read here on the caller's own context; no gateway keeps main's refusal.
+    keyless = not session_key and origin is None
+    if keyless and not manager.has_gateway_message_injector:
         logger.warning("inject_message: gateway mode requires an existing session_key or an origin")
         return False
     if origin is not None and not isinstance(origin, Mapping):
@@ -58,8 +55,12 @@ def inject_plugin_message(
     # The manager's immutable home is the plugin's profile: the gateway creates an origin's session
     # there or nowhere, and a keyed local session must belong to it (never the ambient HERMES_HOME
     # of whatever thread called us).
-    if origin is None:
-        target: dict[str, Any] = {"session_key": session_key, "plugin_home": manager.home_path}
+    if keyless:
+        from gateway.session_context import bound_session_key
+        target: dict[str, Any] = {"keyless": True, "calling_session_key": bound_session_key(),
+                                  "plugin_home": manager.home_path}
+    elif origin is None:
+        target = {"session_key": session_key, "plugin_home": manager.home_path}
     else:
         target = {"origin": dict(origin), "plugin_home": manager.home_path}
     try:

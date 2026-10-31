@@ -1975,8 +1975,8 @@ class TestElementTokenAttachment:
        look up the matching token and attach it — but ONLY for tools that
        advertise `accessibility.element_tokens` (Surface 4 gate). Older
        drivers reject unknown args via additionalProperties=false.
-    3. cua-driver prefers token over index when both are supplied, so
-       sending both is safe and stale-detection becomes explicit.
+    3. Schema-driven drivers receive only properties their live schema
+       accepts; legacy capability-only drivers keep the index fallback.
     """
 
     def _backend_with_session(self, capabilities):
@@ -2018,10 +2018,12 @@ class TestElementTokenAttachment:
         The token must ride along from the live schema alone, or every element click is refused."""
         backend = self._backend_with_session({})  # no capabilities[] at all — the modern shape
         backend._session.supports_input_property = lambda tool, prop: (tool, prop) == ("click", "element_token")
+        backend._session._tool_schemas = {"click": {"properties": {"element_token": {}}}}
         backend._snapshot_tokens = {5: "s00000001:5"}
         backend.click(element=5, button="left")
         _, args = backend._session.call_tool.call_args.args
         assert args["element_token"] == "s00000001:5"
+        assert "element_index" not in args
 
 
     def test_capture_refreshes_snapshot_tokens(self):

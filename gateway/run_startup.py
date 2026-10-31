@@ -796,8 +796,9 @@ class GatewayStartupMixin:
             started = started_at.timestamp()  # aware UTC marker; a pre-upgrade naive one reads as local
             if started < cutoff:
                 continue
+            decision = await self.async_session_store.get_session_metadata(key, "room_silence_decision", {})
             text = self._crash_left_reply(await self.async_session_store.load_transcript(session_id),
-                                          started, origin)
+                                          started, origin, silence_decision=decision, active_token=token)
             if text is None or (text and not ledger_on):
                 continue  # no final reply to deliver: the turn resumes
             if text:
@@ -810,7 +811,9 @@ class GatewayStartupMixin:
                 ledgered += 1
         return ledgered
 
-    def _crash_left_reply(self, history: list, started: float, origin) -> Optional[str]:
+    def _crash_left_reply(
+        self, history: list, started: float, origin, *, silence_decision=None, active_token=None,
+    ) -> Optional[str]:
         """What a crash-left turn owes, judged as live delivery would have: ``None`` when it never
         persisted a final reply after *started*; ``""`` when nothing would have been presented (a
         silence marker on a machinery turn or on a turn the adapter reported as not addressed to the
@@ -819,6 +822,7 @@ class GatewayStartupMixin:
         from gateway.platforms.base import _strip_media_directives
         from gateway.response_filters import (
             is_intentional_silence_response, is_machinery_display_kind, silence_allowed,
+            strip_trailing_silence_marker,
         )
         from gateway.run import _sanitize_gateway_final_response
         from gateway.run_turn import _unexpected_silence_reply
@@ -840,10 +844,16 @@ class GatewayStartupMixin:
                 if diagnostic_turn_muted(prompt.get("display_metadata"), origin.platform):
                     return ""
         if is_intentional_silence_response(last["content"]):
+            decision = silence_decision or {}
+            proven_silent = (active_token is not None and decision.get("token") == active_token
+                             and decision.get("timestamp") == last.get("timestamp")
+                             and decision.get("silent") is True)
             silent_ok = silence_allowed(
-                prompt.get("display_kind"), (prompt.get("display_metadata") or {}).get("reply_expected"))
+                prompt.get("display_kind"), (prompt.get("display_metadata") or {}).get("reply_expected"),
+                allow_silence=proven_silent, agent_result={})
             return "" if silent_ok else _unexpected_silence_reply()
-        return _strip_media_directives(_sanitize_gateway_final_response(origin.platform, last["content"])).strip() or None
+        reply = strip_trailing_silence_marker(last["content"])
+        return _strip_media_directives(_sanitize_gateway_final_response(origin.platform, reply)).strip() or None
 
     @staticmethod
     def _start_hosted_room_worker_sync():

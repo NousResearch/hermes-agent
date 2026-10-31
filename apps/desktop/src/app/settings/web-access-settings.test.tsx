@@ -164,6 +164,52 @@ describe('WebAccessSettings', () => {
     expect(JSON.stringify(toast)).not.toMatch(/Refusing|interrupt|Couldn't change/)
   })
 
+  // `hermes config set webapp.*` (or another window) changes the status while the pane is open.
+  const EDITED_ELSEWHERE: WebAccessStatus = { ...OFF, enabled: true, mode: 'public', public_url: 'https://hermes.example.org' }
+
+  it('picks up a web access change saved elsewhere when the window regains focus', async () => {
+    renderPane(OFF)
+    expect(await screen.findByText('Stopped')).toBeTruthy()
+    mocked.getWebAccessStatus.mockResolvedValue(EDITED_ELSEWHERE)
+
+    fireEvent.focus(window)
+
+    expect(await screen.findByText('Restart needed')).toBeTruthy()
+    // The address choice follows the saved config, not the one the pane opened with.
+    expect(screen.getByDisplayValue('https://hermes.example.org')).toBeTruthy()
+  })
+
+  it('keeps an unsaved address choice through a refetch that changes nothing', async () => {
+    renderPane(OFF)
+    fireEvent.click(await screen.findByRole('button', { name: 'My own URL' }))
+    fireEvent.change(screen.getByPlaceholderText('https://hermes.example.com'), {
+      target: { value: 'https://typed.example.net' }
+    })
+    mocked.getWebAccessStatus.mockClear()
+
+    fireEvent.focus(window)
+
+    await waitFor(() => expect(mocked.getWebAccessStatus).toHaveBeenCalled())
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(screen.getByDisplayValue('https://typed.example.net')).toBeTruthy()
+  })
+
+  it('keeps reading the status while the pane stays open', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+
+    try {
+      renderPane(OFF)
+      expect(await screen.findByText('Stopped')).toBeTruthy()
+      mocked.getWebAccessStatus.mockResolvedValue(EDITED_ELSEWHERE)
+
+      vi.advanceTimersByTime(30_000)
+
+      expect(await screen.findByText('Restart needed')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows nothing and asks nothing where the settings nav hides it', async () => {
     // `?tab=web-access` in the Webapp: the nav has no Web Access entry there.
     platform.browserHosted = true

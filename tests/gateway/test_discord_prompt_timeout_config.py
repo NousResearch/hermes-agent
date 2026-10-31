@@ -114,3 +114,14 @@ async def test_all_prompt_types_use_owning_profile_discord_timeout(tmp_path):
                 view.stop()
         finally:
             reset_hermes_home_override(token)
+
+
+def test_configured_through_the_profiles_config_yaml(monkeypatch, tmp_path):
+    """The key is registered with its default and reaches the views from a real config.yaml."""
+    from hermes_cli.config import load_config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert load_config()["approvals"]["discord_prompt_timeout"] == _DISCORD_PROMPT_TIMEOUT_DEFAULT
+    (tmp_path / "config.yaml").write_text("approvals:\n  discord_prompt_timeout: 1800\n")
+    assert _read_discord_prompt_timeout() == 1800
+    assert load_config()["approvals"]["discord_prompt_timeout"] == 1800

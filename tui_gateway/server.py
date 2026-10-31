@@ -12,6 +12,7 @@ import logging
 import os
 import queue
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -30,6 +31,8 @@ from hermes_constants import (
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.config_backend import Changes, ConfigBackendUnavailable, config_exists, supports_file_tooling
 from hermes_cli.env_loader import load_hermes_dotenv
+# The slash-worker client (slash_worker_client.py) runs on these globals; tests patch them here.
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
 from utils import is_truthy_value
 from hermes_state_ids import new_session_id
@@ -235,145 +238,6 @@ _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
 # Detached websocket sessions use a drop sink instead of stdio: Desktop embeds the gateway in-process
 # and captures stdout into logs, so stale frames must not fall through while a session awaits resume/reap.
 _detached_ws_transport = _DropTransport()
-
-
-def _prepend_tool_paths(env: dict[str, str]) -> dict[str, str]:
-    """Prepend managed bin (managed-first policy for the Browser Use CLI), venv bin and
-    ~/.local/bin to PATH so slash_worker children resolve Hermes-managed CLIs under the Desktop's minimal PATH.
-    The PM store dirs go in front of all of them: a user's node/uv in ~/.local/bin never wins."""
-    managed_bin = ""
-    with contextlib.suppress(Exception):
-        managed_bin = str(Path(get_hermes_home()) / "bin")
-    venv_bin = str(Path(sys.executable).parent)  # <venv>/bin (POSIX) or <venv>/Scripts (Windows)
-    parts = [p for p in (managed_bin, venv_bin, str(Path.home() / ".local" / "bin"), env.get("PATH") or "") if p]
-    env["PATH"] = os.pathsep.join(parts)
-    with contextlib.suppress(Exception):
-        import pm
-
-        env["PATH"] = pm.store_first_path(env["PATH"])
-    return env
-
-
-class _SlashWorker:
-    """Persistent HermesCLI subprocess for slash commands."""
-
-    def __init__(self, session_key: str, model: str, profile_home: str | None = None,
-                 provider: str | None = None):
-        self._lock = threading.Lock()
-        self._seq = 0
-        self.stderr_tail: list[str] = []
-        self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
-        # ``--provider`` pins the child to the parent agent's virtual provider: without it the
-        # worker re-resolves provider from config, so a MoA session (provider=moa, model=<preset>)
-        # dispatched its preset NAME to the configured real provider and 402/503'd (#57283).
-        argv = [sys.executable, "-P", "-m", "tui_gateway.slash_worker", "--session-key", session_key,
-                "--parent-pid", str(os.getpid())] \
-            + (["--model", model] if model else []) \
-            + (["--provider", provider] if provider else [])
-        self._closed = False
-        from hermes_cli._subprocess_compat import windows_hide_flags
-        # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
-        # (gateway/GitHub/infra) are still stripped (#29157). Global-remote / multi-profile sessions: the
-        # worker must resolve config/skills/state against the session's profile home, not the gateway's
-        # launch HERMES_HOME (#40677).
-        from tools.environments.local import served_profile_child_env
-        from agent.secret_scope import is_multiplex_active
-
-        # The worker runs the agent → needs provider credentials; tier-1 secrets (gateway/GitHub/
-        # infra) are still stripped. A served profile's worker gets THAT profile's home + secrets and
-        # none of the launch profile's .env / TERMINAL_* residue, exactly what a standalone
-        # `hermes -p X` would load itself. The launch profile is a profile too: once the process hosts
-        # a second home (multiplex flipped), its worker must name its own home or the fail-closed
-        # no-target/no-scope path raises UnscopedSecretError (#115427).
-        env = _prepend_tool_paths(served_profile_child_env(
-            target_home=profile_home or (_hermes_home if is_multiplex_active() else None),
-            inherit_credentials=True))
-        # Internal slash workers must import the same checkout as their parent; -P keeps their cwd off sys.path.
-        module_root = str(Path(__file__).resolve().parent.parent)
-        env["PYTHONPATH"] = os.pathsep.join(
-            part for part in (module_root, env.get("PYTHONPATH", "")) if part
-        )
-        # start_new_session: otherwise the worker inherits the gateway's pgid and mcp_tool's orphan
-        # sweep, racing the spawn, killpg()s the TUI parent itself. errors="replace": bytes invalid
-        # in the system locale (GBK Windows) must not raise UnicodeDecodeError in the drain threads.
-        # Prepend the Hermes venv bin dir and the user-local bin dir to PATH so slash_worker child processes
-        # can resolve Hermes-managed CLIs (browser-use, uvx) even when the parent gateway was launched with
-        # a minimal PATH (e.g. by the Desktop/Dashboard app). See #83845.
-        self.proc = subprocess.Popen(
-            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            encoding="utf-8", errors="replace", bufsize=1, cwd=os.getcwd(), env=env,
-            creationflags=windows_hide_flags(), start_new_session=True)
-        threading.Thread(target=self._drain_stdout, daemon=True).start()
-        threading.Thread(target=self._drain_stderr, daemon=True).start()
-
-    def _drain_stdout(self):
-        for line in self.proc.stdout or []:
-            with contextlib.suppress(json.JSONDecodeError):
-                self.stdout_queue.put(json.loads(line))
-        self.stdout_queue.put(None)
-
-    def _drain_stderr(self):
-        for line in self.proc.stderr or []:
-            if text := line.rstrip("\n"):
-                self.stderr_tail = (self.stderr_tail + [text])[-80:]
-
-    def run(self, command: str) -> str:
-        """Run one command; return its output text.
-
-        A command like /prompt may also have parked a next-turn prompt (a "seed")
-        on the worker CLI; it rides back on the reply's ``seed`` field and is
-        retrieved separately via ``pop_seed()``.
-        """
-        if self.proc.poll() is not None:
-            raise RuntimeError("slash worker exited")
-        with self._lock:
-            self._seq += 1
-            rid = self._seq
-            self.proc.stdin.write(json.dumps({"id": rid, "command": command}) + "\n")
-            self.proc.stdin.flush()
-            while True:
-                try:
-                    msg = self.stdout_queue.get(timeout=_SLASH_WORKER_TIMEOUT_S)
-                except queue.Empty:
-                    raise RuntimeError("slash worker timed out")
-                if msg is None:
-                    break
-                if msg.get("id") != rid:
-                    continue
-                if not msg.get("ok"):
-                    raise RuntimeError(msg.get("error", "slash worker failed"))
-                self._last_seed = str(msg.get("seed", "") or "")
-                return str(msg.get("output", "")).rstrip()
-            raise RuntimeError(
-                f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}")
-
-    def pop_seed(self) -> str:
-        """Return and clear the seed from the last ``run()`` (empty when none)."""
-        seed, self._last_seed = getattr(self, "_last_seed", ""), ""
-        return seed
-
-    def close(self):
-        if getattr(self, "_closed", False):
-            return
-        self._closed = True
-        proc = self.proc
-        try:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=1)
-                except Exception:
-                    proc.kill()
-                    with contextlib.suppress(Exception):
-                        proc.wait(timeout=1)  # reap the zombie SIGKILL leaves behind
-        except Exception:
-            with contextlib.suppress(Exception):
-                proc.kill()
-                proc.wait(timeout=1)
-        finally:
-            for stream in (proc.stdin, proc.stdout, proc.stderr):
-                with contextlib.suppress(Exception):
-                    stream.close()
 
 
 def _display_cfg() -> dict:
@@ -2138,7 +2002,7 @@ from hermes_state import _BARE_BILLING_PROVIDERS
 
 from . import (
     session_registry as _session_registry, agent_factory as _agent_factory,
-    methods_voice as _methods_voice, methods_browser as _methods_browser, methods_slash as _methods_slash,
+    slash_worker_client as _slash_worker_client, methods_voice as _methods_voice, methods_browser as _methods_browser, methods_slash as _methods_slash,
     methods_complete_helpers as _methods_complete_helpers, session_auto_continue as _session_auto_continue,
     plugin_inject as _plugin_inject,
     rpc_dispatch as _rpc_dispatch,
@@ -2163,7 +2027,7 @@ from . import (
     methods_shared_metrics as _methods_shared_metrics, methods_plugin_catalog as _methods_plugin_catalog)
 
 for _m in (
-    _session_registry, _agent_factory,
+    _session_registry, _agent_factory, _slash_worker_client,
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,

@@ -252,6 +252,11 @@ export interface AgentPluginInstallResult {
   ok: boolean
   /** The client stopped waiting; the backend may still finish the install. */
   timedOut?: boolean
+  /** Refused: the source moved off the reviewed commit (`isSourceMovedRefusal`). */
+  sourceMoved?: boolean
+  /** Refused at admission by a backend that predates `inspected_sha`: nothing was installed, and an install
+   *  there cannot be held to the reviewed commit. Only the user may choose to install without it. */
+  inspectedShaUnsupported?: boolean
   pluginName?: string
   warnings?: string[]
   missingEnv?: string[]
@@ -286,6 +291,48 @@ const NO_LIVE: AgentPluginLiveNow = { mcpServers: [], skills: [] }
 // giving normal installs time to return their authoritative result.
 const PLUGIN_INSTALL_REQUEST_TIMEOUT_MS = 120_000
 
+interface InstallReply {
+  ok?: boolean
+  plugin_name?: string
+  warnings?: string[]
+  missing_env?: string[]
+  enabled?: boolean
+  activation?: {
+    live_now?: {
+      mcp_servers?: AgentPluginLiveServer[]
+      skills?: { name: string }[]
+    } | null
+    deferred?: Record<string, string[]>
+  } | null
+  error?: string
+}
+
+/** The message `tui_gateway/contracts/registry.py::validate_params` opens its admission refusal with. */
+const INSPECTED_SHA_ADMISSION_REFUSAL = 'invalid params for plugins.manage: inspected_sha: '
+
+/** A backend predating `inspected_sha` (native Desktop on an older SSH/URL/Cloud runtime) refuses the
+ *  whole install at admission (code 4000, handler never ran). Installing there without the field takes
+ *  whatever the source holds at that moment, so the dialog asks the user first; nothing resends on its
+ *  own. Only that refusal qualifies: the code AND a message that OPENS with the admission prefix. Any
+ *  other error (a 5026 install failure echoing a git server's text included) is an ordinary failure.
+ *  Delete once no supported backend predates the field. */
+function backendPredatesInspectedSha(params: Record<string, unknown>, error: unknown): boolean {
+  return (
+    'inspected_sha' in params &&
+    error instanceof JsonRpcGatewayError &&
+    error.code === 4000 &&
+    error.message.startsWith(INSPECTED_SHA_ADMISSION_REFUSAL)
+  )
+}
+
+/** The backend refused because the source is no longer at the commit the dialog reviewed
+ *  (`tui_gateway/methods_tools.py::_source_moved_data`): read it again, never resend that commit. */
+export function isSourceMovedRefusal(error: unknown): boolean {
+  const data = error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined) : undefined
+
+  return data?.reason === 'source_moved'
+}
+
 export async function installAgentPlugin(
   request: GatewayRequest,
   opts: {
@@ -297,40 +344,28 @@ export async function installAgentPlugin(
     catalogName?: string
     /** Pin a custom source to one full commit SHA (team-wide reproducible install). */
     ref?: string
+    /** The commit the install dialog inspected: a custom source with no `ref` whose branch moved since is
+     *  refused by the backend, never installed at the new tip. */
+    inspectedSha?: string
     /** Target profile's HERMES_HOME (null/undefined = backend launch profile). */
     profile?: string | null
   }
 ): Promise<AgentPluginInstallResult> {
+  const params = withProfile(
+    {
+      action: 'install',
+      identifier: opts.identifier,
+      force: Boolean(opts.force),
+      enable: opts.enable ?? true,
+      ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
+      ...(opts.ref ? { ref: opts.ref } : {}),
+      ...(!opts.ref && opts.inspectedSha ? { inspected_sha: opts.inspectedSha } : {})
+    },
+    opts.profile
+  )
+
   try {
-    const result = await request<{
-      ok?: boolean
-      plugin_name?: string
-      warnings?: string[]
-      missing_env?: string[]
-      enabled?: boolean
-      activation?: {
-        live_now?: {
-          mcp_servers?: AgentPluginLiveServer[]
-          skills?: { name: string }[]
-        } | null
-        deferred?: Record<string, string[]>
-      } | null
-      error?: string
-    }>(
-      'plugins.manage',
-      withProfile(
-        {
-          action: 'install',
-          identifier: opts.identifier,
-          force: Boolean(opts.force),
-          enable: opts.enable ?? true,
-          ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
-          ...(opts.ref ? { ref: opts.ref } : {})
-        },
-        opts.profile
-      ),
-      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
-    )
+    const result = await request<InstallReply>('plugins.manage', params, PLUGIN_INSTALL_REQUEST_TIMEOUT_MS)
 
     if (!result?.ok) {
       return { ok: false, error: result?.error || 'Install failed', live: NO_LIVE, nextChat: false }
@@ -358,6 +393,8 @@ export async function installAgentPlugin(
     return {
       ok: false,
       timedOut: /^request timed out after \d+s: plugins\.manage$/.test(message),
+      sourceMoved: isSourceMovedRefusal(e),
+      inspectedShaUnsupported: backendPredatesInspectedSha(params, e),
       error: message,
       live: NO_LIVE,
       nextChat: false
@@ -377,12 +414,16 @@ export interface AgentPluginInspection {
   insecure?: boolean
   /** The commit the backend read; absent when it reported none or not a full SHA. */
   sha?: string
+  /** Read at the catalog entry's pin, as a catalog install checks it out: `sha` is what that install must be. */
+  catalogPin?: boolean
   unavailable?: boolean
   error?: string
 }
 
 // `_run_action`'s unknown action, and JSON-RPC's unknown method.
 const INSPECT_UNSUPPORTED_CODES = new Set([4017, -32601])
+/** A backend that predates `install_desktop`: it answers the action as unknown (4017). */
+const INSTALL_DESKTOP_UNSUPPORTED_CODES = new Set([4017, -32601])
 
 /** Inspect a source through the backend (`plugins.manage inspect`): it clones into a temp folder and
  *  reports which halves ship, installing and running nothing. For a renderer with no Git of its own
@@ -427,7 +468,10 @@ export async function inspectAgentPlugin(
       desktopName: result?.desktop_name ?? null,
       warnings: result?.warnings ?? [],
       insecure: Boolean(result?.insecure),
-      ...(ok && typeof result.sha === 'string' && COMMIT_SHA_RE.test(result.sha) ? { sha: result.sha.toLowerCase() } : {}),
+      ...(ok && typeof result.sha === 'string' && COMMIT_SHA_RE.test(result.sha)
+        ? { sha: result.sha.toLowerCase() }
+        : {}),
+      ...(ok && opts.catalogName ? { catalogPin: true } : {}),
       ...(ok ? {} : { error: result?.error || 'Inspection failed' })
     }
   } catch (e) {
@@ -439,6 +483,86 @@ export async function inspectAgentPlugin(
       unavailable: e instanceof JsonRpcGatewayError && INSPECT_UNSUPPORTED_CODES.has(e.code ?? 0),
       error: e instanceof Error ? e.message : String(e)
     }
+  }
+}
+
+/** Install a repository's desktop half onto the host that serves this client (`plugins.manage
+ *  install_desktop`). Native Desktop clones one itself; a browser-hosted renderer has no disk of its
+ *  own, so it asks the backend that serves the tab and the plugin appears in the folder the Webapp
+ *  already loads. Never rejects. */
+export async function installDesktopPluginHalf(
+  request: GatewayRequest,
+  opts: { identifier: string; catalogName?: string; force?: boolean; profile?: string | null; ref?: string }
+): Promise<{
+  ok: boolean
+  pairedWithAgent?: boolean
+  pluginName?: string
+  /** The backend predates the action: no retry changes that (a build older than this one). */
+  unsupported?: boolean
+  /** Refused: the source moved off the reviewed commit (`isSourceMovedRefusal`). */
+  sourceMoved?: boolean
+  warnings: string[]
+  error?: string
+}> {
+  try {
+    const result = await request<{
+      ok?: boolean
+      plugin_name?: string
+      paired_with_agent?: boolean
+      warnings?: string[]
+      error?: string
+    }>(
+      'plugins.manage',
+      withProfile(
+        {
+          action: 'install_desktop',
+          identifier: opts.identifier,
+          force: Boolean(opts.force),
+          ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
+          ...(opts.ref ? { ref: opts.ref } : {})
+        },
+        opts.profile
+      ),
+      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
+    )
+
+    if (!result?.ok) {
+      return { ok: false, warnings: [], error: result?.error || 'Desktop plugin install failed' }
+    }
+
+    return {
+      ok: true,
+      pluginName: result.plugin_name,
+      pairedWithAgent: Boolean(result.paired_with_agent),
+      warnings: result.warnings ?? []
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      unsupported: e instanceof JsonRpcGatewayError && INSTALL_DESKTOP_UNSUPPORTED_CODES.has(e.code ?? 0),
+      sourceMoved: isSourceMovedRefusal(e),
+      warnings: [],
+      error: e instanceof Error ? e.message : String(e)
+    }
+  }
+}
+
+/** Remove one installed desktop plugin folder from the host that serves this client
+ *  (`plugins.manage remove_desktop`); a package's own half is refused by the backend unless forced.
+ *  Never rejects. */
+export async function removeDesktopPluginHalf(
+  request: GatewayRequest,
+  opts: { force?: boolean; name: string; profile?: string | null }
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const result = await request<{ ok?: boolean; error?: string }>(
+      'plugins.manage',
+      withProfile({ action: 'remove_desktop', name: opts.name, force: Boolean(opts.force) }, opts.profile)
+    )
+
+    return result?.ok ? { ok: true } : { ok: false, error: result?.error || 'Desktop plugin removal failed' }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
   }
 }
 

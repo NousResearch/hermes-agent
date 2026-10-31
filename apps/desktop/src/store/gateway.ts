@@ -17,8 +17,8 @@ import { translateNow } from '@/i18n'
 import { UnservedProfileError } from '@/lib/browser-served-profiles'
 import {
   decideLivenessForceClose,
-  LIVENESS_PROBE_TIMEOUT_MS,
-  LIVENESS_REPROBE_DELAY_MS
+  LIVENESS_REPROBE_DELAY_MS,
+  probeGatewayLiveness
 } from '@/lib/gateway-liveness-policy'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { traceIdentityChange } from '@/lib/identity-trace'
@@ -2049,7 +2049,7 @@ function clearSecondaryLivenessReprobe(entry: Secondary): void {
 // onState('closed') handler; a healthy-but-busy backend answers the ping and
 // keeps its socket (#94769 review).
 function probeSecondaryLiveness(entry: Secondary): void {
-  void entry.gateway.request('ping', {}, LIVENESS_PROBE_TIMEOUT_MS).then(
+  void probeGatewayLiveness(entry.gateway).then(
     () => {
       entry.livenessProbeFailures = 0
       clearSecondaryLivenessReprobe(entry)

@@ -21,6 +21,7 @@ from gateway import hosted_rooms
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh)
+from tui_gateway import hosted_room_prepare_stall as prepare_stall
 from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 from tui_gateway.hosted_room_peer_http import (
@@ -119,6 +120,7 @@ class HostedRoomService:
         self._peer_route_status: dict[tuple[str, str], str] = {}
         self.peer_routes: dict[tuple[str, str], PeerMemberRoute] = {}
         self.peer_clients: dict[tuple[str, str], Any] = {}
+        self._prepare_stalls = prepare_stall.PrepareStallTracker()
         try:
             self._load_stored_links()
         except Exception as exc:
@@ -132,7 +134,7 @@ class HostedRoomService:
         self.runtime = HostedRoomRuntime(
             db_path=self.db_path, rooms=self.bindings, rpc=self.rpc,
             transport_resolver=self._resolve_member_transport, turn_lock=self._turn_lock,
-            prepare_room=self.prepare_room, publish_terminal=self.publish_terminal,
+            prepare_room=self._prepare_tracked, publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action,
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
             active_poll_interval_seconds=_HOSTED_ROOM_ACTIVE_POLL_SECONDS,
@@ -511,8 +513,22 @@ class HostedRoomService:
             elif decision.status in {"settled", "bounded"}:
                 self._append_room_status(room, decision)
 
+    def _prepare_tracked(self, binding: HostedRoomBinding, *, retry_stalled: bool = False) -> None:
+        """``prepare_room`` with its failures counted per room: a stalled room is skipped (not retried)
+        until the next Send or Retry, and is reported once in the room (hosted_room_prepare_stall)."""
+        stalls = self._prepare_stalls
+        if stalls.stalled(binding.room_id) and not retry_stalled:
+            return
+        try:
+            self.prepare_room(binding)
+        except Exception as exc:
+            if stalls.failed(binding.room_id, exc):
+                prepare_stall.report_stall(self.db_path, binding.room_id, exc)
+            raise
+        stalls.clear(binding.room_id)
+
     def publish_terminal(self, binding: HostedRoomBinding, _task: Mapping[str, Any]) -> None:
-        self.prepare_room(binding)
+        self._prepare_tracked(binding)
         self.runtime.wakeup()
 
     def create_room(self, *, room_id: str, name: str, members: Any, admit: Any = None) -> dict[str, Any]:
@@ -536,10 +552,18 @@ class HostedRoomService:
         event = append_user_event(
             self, room_id=room_id, event_id=event_id, payload=normalized,
             gateway_id=gateway_id, epoch=epoch)
-        binding = next((b for b in self.bindings() if b.room_id == room_id), None)
-        if binding is None:
-            raise hosted_rooms.RoomNotFoundError("hosted room not found")
-        self.prepare_room(binding)
+        # The committed event is the Send's result: a failure from here on is the room driver's,
+        # which runs the same preparation on its next passes and, if it keeps failing, says so in
+        # the room once. Raising would tell the client a message it can already see in the room was
+        # not sent (#143239). A new message starts a fresh attempt streak for a stalled room.
+        self._prepare_stalls.clear(room_id)
+        try:
+            binding = next((b for b in self.bindings() if b.room_id == room_id), None)
+            if binding is not None:
+                self._prepare_tracked(binding)
+        except Exception:
+            logger.warning("hosted room %s: preparing the room after a stored Send failed; "
+                           "the room driver retries it", room_id, exc_info=True)
         self.runtime.wakeup()
         return event
 
@@ -569,6 +593,8 @@ class HostedRoomService:
         self, room_id: str, *, task_id: str, member_id: str | None = None,
         execution_generation: int | None = None) -> dict[str, Any]:
         """Retry one uncertain or deferred task only after explicit user action."""
+        if task_id.startswith(prepare_stall.RETRY_TASK_PREFIX):
+            return self._retry_preparation(room_id, task_id)
         candidates = self._list_tasks(room_id, _RETRYABLE_STATUSES)
         task = next((c for c in candidates if c["identity"].task_id == task_id
                      and member_id in (None, task_member_id(c))
@@ -577,6 +603,21 @@ class HostedRoomService:
             raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
         return self.runtime.retry_indeterminate(
             task["identity"], execution_generation=task["execution_generation"])
+
+    def _retry_preparation(self, room_id: str, task_id: str) -> dict[str, Any]:
+        """The stalled room's Retry: prepare once now; a failure stays stalled and is the RPC's error."""
+        binding = next((b for b in self.bindings() if b.room_id == room_id), None)
+        if (binding is None or task_id != f"{prepare_stall.RETRY_TASK_PREFIX}{room_id}"
+                or not self._prepare_stalls.stalled(room_id)):
+            raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
+        try:
+            self._prepare_tracked(binding, retry_stalled=True)
+        except Exception as exc:
+            self._prepare_stalls.stall(room_id, exc)
+            raise
+        self.runtime.wakeup()
+        return {"identity": driver.TaskIdentity(room_id=room_id, task_id=task_id, thread_id=task_id, turn_id=task_id),
+                "status": "prepared", "execution_generation": 1, "cancel_generation": 0}
 
     def approve_room_task(
         self, room_id: str, *, member_id: str, task_id: str, execution_generation: int,
@@ -626,6 +667,8 @@ class HostedRoomService:
         counts = Counter(str(task["status"]) for task in tasks)
         pending_actions = [
             attempt_action("retry", task) for task in tasks if task["status"] in _RETRYABLE_STATUSES]
+        if self._prepare_stalls.stalled(room_id):
+            pending_actions.append(prepare_stall.retry_action(room_id, self._room(room_id)))
         with self._policy_lock:
             pending_actions.extend(
                 dict(action) for (action_room_id, _member_id), action
@@ -640,6 +683,7 @@ class HostedRoomService:
             or bool(counts.get("indeterminate") or counts.get("stopping")),
             "counts": dict(counts), "pending_actions": pending_actions,
             "member_activity": member_activity,
+            "last_error": self._prepare_stalls.last_error(room_id),
             "peer_routes": self._route_statuses(room_id)}
 
 

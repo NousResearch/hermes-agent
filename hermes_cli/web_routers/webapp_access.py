@@ -115,8 +115,10 @@ async def _restart(gateway: Optional[str], what: str) -> dict:
 @router.get("/api/webapp-access/status")
 async def webapp_access_status(profile: Optional[str] = None):
     """``restart_failure``: the newest restart of this gateway exited without replacing it, and why;
-    the pane waiting on that restart stops and says so instead of timing out."""
-    return await _scoped(profile, lambda gateway: {
+    the pane waiting on that restart stops and says so instead of timing out. The pane polls this,
+    so the status (a control-socket round trip) runs outside the skills lock, as in ``_restart``."""
+    gateway = await _scoped(profile, lambda gateway: gateway)
+    return await _in_gateway_home(gateway, lambda: {
         **webapp_access.access_status(), "restart_failure": _gateway_restart_failure(gateway)})
 
 

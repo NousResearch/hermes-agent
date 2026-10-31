@@ -90,6 +90,14 @@ export const zhHantSettings = {
         versionLabel: '版本',
         reviewedPin: sha => (sha ? `已審核的固定提交 ${sha}` : '已審核的固定提交'),
         latestCommit: '最新提交',
+        sourceMoved: sha => (sha ? `自你審閱後儲存庫已變更。請先審閱新版本（提交 ${sha}）再安裝。` : '自你審閱後儲存庫已變更。正在讀取新版本…'),
+        legacyBackendConfirm:
+          '此後端比本應用程式舊，無法保證安裝的就是你審閱過的版本：如果儲存庫之後有變更，安裝的會是較新的版本。更新後端即可獲得這項保證。',
+        installAnyway: '仍要安裝',
+        partialInstall: sha =>
+          sha
+            ? `外掛只安裝了一部分：代理部分已安裝在提交 ${sha}，但由於儲存庫在你審閱後有變更，桌面部分未能隨之安裝。在「進階」中開啟強制重新安裝，可用顯示的版本取代兩部分；或取消，只保留代理部分。`
+            : '外掛只安裝了一部分：代理部分已安裝，但由於儲存庫在你審閱後有變更，桌面部分未能隨之安裝。在「進階」中開啟強制重新安裝，可用顯示的版本取代兩部分；或取消，只保留代理部分。',
         nothingToInstall: '此套件在這裡沒有可安裝的內容。'
       }
     },
@@ -234,6 +242,17 @@ export const zhHantSettings = {
         plugin: {
           label: '外掛通知',
           description: 'Hermes 在背景時，桌面外掛傳送了通知。'
+        }
+      },
+      browserPermission: {
+        title: '瀏覽器通知',
+        allow: '允許',
+        states: {
+          default: '分頁在背景時由此瀏覽器顯示提醒。在你允許之前，只有分頁標題會閃爍。',
+          granted: '已允許。此分頁在背景時會顯示提醒，分頁標題也會閃爍。',
+          denied: '已在此瀏覽器的網站設定中被封鎖。分頁標題仍會閃爍。',
+          insecure: '需要 HTTPS，例如 Tailscale serve。使用一般 HTTP 時只有分頁標題會閃爍。',
+          unsupported: '此瀏覽器無法顯示通知。分頁標題仍會閃爍。'
         }
       },
       test: '傳送測試通知',

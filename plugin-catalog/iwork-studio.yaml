@@ -1,0 +1,21 @@
+name: iwork-studio
+title: iWork Studio
+repo: https://github.com/Arkanji/iwork-studio
+sha: 551107ae937960c785d3bf8b180c573515b6d359
+subdir: hermes
+version: "2.6.1"
+description: "Create, edit, design and export Apple Numbers, Keynote and Pages files: designed Keynote decks from data and the user's brand kit, spreadsheet cells, formulas and formatting, Pages text and tables, exports to PDF, Excel, Word and PowerPoint. Every write is backed up, made on a copy, re-read and checked, then swapped in; any change can be undone in one call. Arabic and right-to-left text round-trip exactly. Agent Plugins v1 package (plugin.json + mcp.json + skills/): a local stdio MCP server (65 tools) and a workflow skill. macOS. Disclosure: first start downloads iwork-studio==2.6.1 and its Python dependencies from PyPI with uvx (about 60 MB; built from the v2.6.1 tag by the repo's release workflow through PyPI trusted publishing; the server code is that release, not the pinned tree); Pages, exports, render checks and Keynote slide operations drive Numbers, Keynote and Pages through osascript, and macOS asks once for Automation access; it reads and writes only the iWork files it is pointed at, inside IWORK_STUDIO_ROOTS when set, and keeps backups in ~/.iwork-studio/backups (last 10 per file) and saved design kits in ~/.iwork-studio/kits; no network calls after the download, no telemetry, no self-updates."
+maintainer: Arkanji
+tier: community
+category: tools
+docs_url: https://github.com/Arkanji/iwork-studio/tree/551107ae937960c785d3bf8b180c573515b6d359/hermes
+requires_hermes: ">=0.22.3"
+readme: true
+platforms: [macos]
+screenshots:
+  - https://raw.githubusercontent.com/Arkanji/iwork-studio/551107ae937960c785d3bf8b180c573515b6d359/assets/demo.gif
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

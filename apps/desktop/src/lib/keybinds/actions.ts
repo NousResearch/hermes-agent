@@ -423,6 +423,11 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   // selection half of the chord: the selected text (terminal text, preview
   // lines) goes into the composer as context.
   { id: 'view.selectionToComposer', category: 'view', keys: ['mod+l'] },
+  // ⌘C/Ctrl+C copies a plain text selection (transcript, code, a reply) —
+  // the half of the chord Chromium's own copy command cannot see while no
+  // editable holds focus. Fixed: the dispatcher answers it from the DOM
+  // selection (copy-selection.ts), so it is not rebindable.
+  { id: 'view.copySelection', category: 'view', keys: ['mod+c'] },
   // Terminal clipboard. ⌘C/⌘V on macOS, Ctrl+Shift+C/V elsewhere — matching VS
   // Code. Plain Ctrl+C also copies when text is selected (Windows Terminal /
   // Tabby behavior); with no selection it stays SIGINT, so it isn't listed.

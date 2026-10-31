@@ -276,6 +276,7 @@ export const ruOverrides = {
       'view.closeTerminal': 'Закрыть терминал',
       'view.selectionToComposer': 'Отправить выделенное из терминала в композер',
       'view.terminalCopy': 'Копировать выделенное из терминала',
+      'view.copySelection': 'Копировать выделение',
       'view.terminalPaste': 'Вставить в терминал',
       'view.closeTab': 'Закрыть вкладку',
       'view.reopenTab': 'Восстановить закрытую вкладку',

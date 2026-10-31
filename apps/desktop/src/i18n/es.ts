@@ -621,6 +621,7 @@ export const esOverrides = {
       'view.closeTerminal': 'Cerrar terminal',
       'view.selectionToComposer': 'Enviar la selección al compositor',
       'view.terminalCopy': 'Copiar selección de terminal',
+      'view.copySelection': 'Copiar selección',
       'view.terminalPaste': 'Pegar en terminal',
       'view.closeTab': 'Cerrar pestaña',
       'view.reopenTab': 'Reabrir pestaña cerrada',

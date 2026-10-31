@@ -102,7 +102,7 @@ async def prepare_model(authority, live, payload, prepared):
         from gateway.run import _load_gateway_config
         from gateway.session_policy import present_sections, profile_target
         live = await asyncio.to_thread(
-            lambda: _load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
+            lambda: _load_gateway_config(Path(str(authority.profile_id)) / 'config.yaml'))
         frozen['model']['selection_profile'] = list(profile_target(present_sections(live)))
     # A direct alias's own credential is part of the selection (never ``result.api_key``, which the
     # switch resolved for its probe): its env pointer is committed and re-read every turn; a literal
@@ -156,7 +156,7 @@ def _provider_resolution_config(authority, config, bypass=False):
     from gateway.session_local import load_profile_config
     if bypass:
         return config
-    current = load_profile_config(Path(authority.db.db_path).resolve().parent)
+    current = load_profile_config(Path(str(authority.profile_id)))
     if not isinstance(current, dict):
         return config
     resolved = dict(config)
@@ -259,7 +259,7 @@ def _alias_credential(authority, result):
     from gateway.run import _load_gateway_config
     from hermes_cli.config import _env_ref_var_name, read_user_config_raw
     name = result.resolved_via_alias if result.success else ''
-    path = Path(authority.db.db_path).resolve().parent / 'config.yaml'
+    path = Path(str(authority.profile_id)) / 'config.yaml'
     raw = read_user_config_raw(path) if name else {}
     for section in (('model_aliases',), ('model', 'aliases')):
         model = raw.get('model')  # `model: name` (a scalar) is valid config and declares no aliases

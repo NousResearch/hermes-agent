@@ -10,8 +10,11 @@ Hermes supports multiple gateway processes running concurrently — one per prof
 to platform APIs and delivers messages for its profile's subscribers.
 
 Task subscriptions also cover review feedback. A `changes_requested` review
-event is delivered as an actionable review-BLOCK notification. Subscriptions
-using `notify+wake` additionally wake the exact originating chat/thread/session
+event is delivered as an actionable review-BLOCK notification, and a
+`review_reopened` — the review flow sending the card back to its implementer —
+is delivered the same way, so a subscriber that saw "ready for review" also
+hears the reopen instead of the thread going silent. Subscriptions using
+`notify+wake` additionally wake the exact originating chat/thread/session
 so the controller inspects the existing card and current run; `notify` remains
 passive-only and `wake` remains wake-only. Review feedback never creates,
 unblocks, requeues, or otherwise mutates a task.

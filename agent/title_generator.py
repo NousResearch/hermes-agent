@@ -340,13 +340,25 @@ def is_titleable_user_message(user_message: str) -> bool:
             and not _attachment_only_opener(user_message))
 
 
+# Markdown code-fence delimiter: ``` or ~~~, optionally followed by an info
+# string (```json, ~~~python). A line that is only a fence carries no intent
+# worth titling — see derive_title.
+_FENCE_LINE_RE = re.compile(r"^\s*(?:`{3,}|~{3,})\s*[\w+.-]*\s*$")
+
+
+def _is_fence_line(line: str) -> bool:
+    """Return whether *line* is nothing but a markdown code-fence delimiter."""
+    return bool(_FENCE_LINE_RE.match(line or ""))
+
+
 def derive_title(user_message: str, title_preview: str | None = None) -> Optional[str]:
-    """Instant title: first meaningful line trimmed to a word boundary. No model, never fails."""
+    """Instant title: first meaningful line, Markdown syntax removed, trimmed to a word boundary.
+    No model, never fails."""
     # Attachment-only opener, no paste preview: a file drop has no topic —
     # refuse rather than name the session after the truncated path (#92068).
     if not title_preview and _attachment_only_opener(user_message):
         return None
-    line = " ".join(_first_line(build_title_input(user_message, title_preview)).split())
+    line = " ".join(_first_prose_line(build_title_input(user_message, title_preview)).split())
     if len(line) > MAX_DERIVED_TITLE_CHARS:
         cut = line[:MAX_DERIVED_TITLE_CHARS]
         space = cut.rfind(" ")
@@ -358,8 +370,51 @@ def _strip_title_prefix(text: str) -> str:
     return text[6:].strip() if text.lower().startswith("title:") else text
 
 
+# Markdown that is syntax, not topic. An opener that starts with an image, a heading or a list
+# marker would otherwise be titled after the markup — ``![](https://…/a.png)`` names the session
+# after a URL. Mirrors ``apps/desktop/src/lib/draft-title.ts::stripInlineMarkdown``.
+_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+_MD_CODE_RE = re.compile(r"`+([^`]+)`+")
+# A run of the same delimiter wrapping a word; a delimiter beside whitespace (``a * b``) is not
+# emphasis, and an underscore inside a word (``snake_case``) never is (CommonMark intraword rule).
+_MD_STAR_EMPHASIS_RE = re.compile(r"(\*{1,3}|~~)(?![\s*~])(.+?)(?<![\s*~])\1")
+_MD_UNDERSCORE_EMPHASIS_RE = re.compile(r"(?<!\w)(_{1,3})(?![\s_])(.+?)(?<![\s_])\1(?!\w)")
+_MD_LINE_PREFIX_RE = re.compile(r"^(?:#{1,6}\s+|>\s*|(?:[-*+]|\d{1,3}[.)])\s+(?:\[[ xX]\]\s+)?)+")
+
+
+def strip_inline_markdown(line: str) -> str:
+    """Plain text of one Markdown line: image → its alt text, link → its label, code → its content,
+    emphasis unwrapped, leading heading/quote/list markers dropped. Bare ``*``/``_`` that do not pair
+    around a word (``a * b``, ``snake_case``) are untouched."""
+    text = _MD_LINE_PREFIX_RE.sub("", line)
+    text = _MD_IMAGE_RE.sub(lambda m: m.group(1), text)
+    text = _MD_LINK_RE.sub(lambda m: m.group(1), text)
+    text = _MD_CODE_RE.sub(lambda m: m.group(1), text)
+    previous = None
+    while previous != text:  # nested emphasis (***bold italic***, **_both_**) unwraps one layer per pass
+        previous = text
+        text = _MD_UNDERSCORE_EMPHASIS_RE.sub(lambda m: m.group(2), _MD_STAR_EMPHASIS_RE.sub(lambda m: m.group(2), text))
+    return " ".join(text.split())
+
+
 def _first_line(text: str) -> str:
     return next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+
+
+def _first_prose_line(text: str) -> str:
+    """First line of the USER's message carrying real prose, Markdown syntax removed. A message that
+    opens with a code fence (```json, ~~~py) or a bare fence would otherwise be titled after the
+    delimiter itself — every such session collides on the same name and accumulates a "#N" suffix
+    from the lineage deduper — and a line that is only markup (an alt-less image) is skipped the same
+    way. The model's own title output keeps ``_first_line``: its *emphasis* is deliberate (#83903)."""
+    for raw in text.splitlines():
+        if not raw.strip() or _is_fence_line(raw):
+            continue
+        line = strip_inline_markdown(raw)
+        if line:
+            return line
+    return ""
 
 
 def _extract_json_title(raw: str) -> Optional[str]:

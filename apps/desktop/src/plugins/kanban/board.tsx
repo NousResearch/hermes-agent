@@ -222,6 +222,24 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
         </Tip>
       )}
       <div className="ml-auto flex min-w-0 shrink items-center gap-2">
+        {task.estimate?.ok && (
+          <Tip label={task.estimate.rationale || k.roughEstimate}>
+            <Meta icon="dashboard">
+              {task.estimate.complexity && (
+                <span
+                  aria-label={k.complexity[task.estimate.complexity]}
+                  className="shrink-0 rounded border border-(--ui-border) px-1 font-semibold"
+                  title={k.complexity[task.estimate.complexity]}
+                >
+                  {task.estimate.complexity}
+                </span>
+              )}
+              <span className="shrink-0">
+                ~{compactNumber(task.estimate.est_tokens)} {k.tokUnit}
+              </span>
+            </Meta>
+          </Tip>
+        )}
         {typeof task.priority === 'number' && task.priority > 0 && <PriorityGlyph priority={task.priority} />}
         {task.progress && task.progress.total > 0 && (
           <Meta icon="checklist">
@@ -235,24 +253,6 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
             <Codicon name="warning" size="0.7rem" />
             {task.warnings.count}
           </span>
-        )}
-        {task.estimate?.ok && (
-          <Tip label={task.estimate.rationale || k.roughEstimate}>
-            <Meta icon="dashboard">
-              {task.estimate.complexity && (
-                <span
-                  aria-label={k.complexity[task.estimate.complexity]}
-                  className="rounded border border-(--ui-border) px-1 font-semibold"
-                  title={k.complexity[task.estimate.complexity]}
-                >
-                  {task.estimate.complexity}
-                </span>
-              )}
-              <span>
-                ~{compactNumber(task.estimate.est_tokens)} {k.tokUnit}
-              </span>
-            </Meta>
-          </Tip>
         )}
         {created && !task.assignee && !unassignedReady ? (
           <span className="text-(--ui-text-quaternary)">{created}</span>

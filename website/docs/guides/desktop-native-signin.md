@@ -111,6 +111,15 @@ Passwords, etc.) autofill the form, something no embedded desktop webview can
 offer. Token-only credentials (e.g. drain) are not interactive sign-ins and do
 not advertise `native_pkce`.
 
+From the desktop app, the sign-in control on the Add-connection editor
+(**Sign in with `<provider>`**, or the generic **Sign in** on a password-only
+gateway) picks the flow by capability probe: a gateway that advertises
+`native_pkce` **and** offers a non-password provider runs this system-browser
+PKCE flow, while a password-only backend always signs in inside the app's
+embedded login window rendering the same `/login` form (native PKCE can never
+complete for that provider shape). See [Connecting to a remote
+backend](../user-guide/desktop.md#connecting-to-a-remote-backend).
+
 The relevant endpoints (all public, pre-auth bootstrap, same as the existing
 `/auth/*` OAuth routes):
 

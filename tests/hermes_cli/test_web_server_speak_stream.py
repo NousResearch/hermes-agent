@@ -158,6 +158,16 @@ def test_split_text_respects_cap_and_preserves_content():
         assert word in joined
 
 
+def test_split_text_speaks_words_in_order_across_an_over_cap_sentence():
+    """A short sentence buffered ahead of a run-on longer than the cap is spoken first, and the
+    run-on is cut between words — playing the pieces in order reproduces the text's words."""
+    run_on = " ".join(f"w{i}" for i in range(40))
+    text = f"Sure. {run_on}. Done here."
+    pieces = _web_server_gateway._split_text_for_speak_stream(text, 50)
+    assert all(len(piece) <= 50 for piece in pieces)
+    assert " ".join(pieces).split() == text.split()
+
+
 def test_edge_speak_stream_speaks_each_sentence_instead_of_whole_text_fallback(
     stream_client, monkeypatch, tmp_path
 ):

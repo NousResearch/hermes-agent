@@ -5,7 +5,8 @@ subdir: integrations/hermes
 version: "0.9.0"
 description: >-
   Local Markdown memory provider with multilingual lexical recall and profile-local
-  durable notes. Create-only writes are limited to primary agent contexts. Uses
+  durable notes. Writes are limited to primary agent contexts: create-only notes plus
+  preview-by-default archive and restore, which never delete files. Uses
   published birkin-mnemosyne 0.9.0 with compatible updates below 1.0;
   no API key, network service or telemetry.
   Session handoff capture is opt-in. Native Hermes memory files remain separate.

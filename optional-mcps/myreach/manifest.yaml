@@ -18,6 +18,11 @@ suggest:
   hosts:
     - myreach.top
 post_install: |
-  Connect your MyReach account when prompted and select the pages to authorize.
+  Read https://github.com/myreach-top/myreach-mcp/blob/main/review-guide.md for shared examples and review steps.
+  Try create_creator_page, create_business_page or create_agent_page through MCP prompts, or use the guide's plain-language requests.
+  The server also lists the MCP guide, Agent API guide and OpenAPI schema as public resources.
+  View-only fictional examples: https://myreach.top/youruser, https://myreach.top/yourbusiness and https://myreach.top/youragent.
+  Use your own page for editing; never edit protected demo pages. For account access, authorize only the pages needed.
+  Public discovery alone is not OAuth: if login reports no token, account access is not connected; MyReach does not require a client secret.
   New pages remain private for 24 hours until their verified owner claims and publishes them.
   Existing page changes require browser approval. No commerce or domain purchases.

@@ -344,7 +344,7 @@ including top-level one-shot launches. It does not become a process-wide option.
 A running gateway and an installed OS service are different things. `hermes gateway run`
 works without a service, including with no messaging platforms configured.
 
-`hermes setup`, quick setup, and `hermes gateway setup` ask interactive users once:
+`hermes setup` (Full Setup) and `hermes gateway setup` ask interactive users once (first-time Quick Setup leaves the question for later):
 
 > Install the gateway service so Hermes starts automatically at login and keeps scheduled jobs and messaging available?
 

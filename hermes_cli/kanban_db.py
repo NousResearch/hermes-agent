@@ -8629,6 +8629,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    route_notify_fn=None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -8663,6 +8664,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            route_notify_fn=route_notify_fn,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -8679,6 +8681,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            route_notify_fn=route_notify_fn,
         )
         # Still under the dispatch lock: opportunistically truncate the WAL
         # at a coarse interval so it cannot grow unbounded between restarts.
@@ -8699,6 +8702,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    route_notify_fn=None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -9014,6 +9018,11 @@ def _dispatch_once_locked(
                         "timezone": night_route.timezone,
                         "local_time": night_route.local_time,
                     }, run_id=claimed.current_run_id)
+                if callable(route_notify_fn):
+                    try:
+                        route_notify_fn(night_route)
+                    except Exception:
+                        _log.debug("route_notify_fn raised; ignoring", exc_info=True)
             # NOTE: we intentionally do NOT reset consecutive_failures
             # here. A successful spawn proves the worker can start but
             # doesn't prove the run will succeed. Under unified

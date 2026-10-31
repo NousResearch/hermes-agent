@@ -27,6 +27,7 @@ interface VoiceRecorderOptions {
  * across backends. `warmup` settles when that mic-open warm-up settled.
  */
 interface Dictation {
+  stopping?: boolean
   owner: ResolvedOwner
   warmup: Promise<void>
   /** Live STT session (stt.streaming): resolves to null when the host has no live wire. */
@@ -88,6 +89,9 @@ export function useVoiceRecorder({
   const stop = async () => {
     clearTimers()
     const dictation = dictationRef.current
+
+    if (!dictation || dictation.stopping) { return }
+    dictation.stopping = true
     const result = await handle.stop()
     const live = () => dictation !== null && dictationRef.current === dictation
 

@@ -218,6 +218,11 @@ $GAPI calendar create --summary "Review" --start 2026-03-01T14:00:00Z --end 2026
 
 # Delete event
 $GAPI calendar delete EVENT_ID
+
+# Free/busy for scheduling across people: one call, up to 50 emails/calendar IDs.
+# Returns only busy blocks per calendar (no titles); a calendar you cannot see
+# comes back with an "error" (e.g. notFound) — never read that as "free".
+$GAPI calendar freebusy --people "alice@co.com,bob@co.com,primary" --start 2026-03-02T09:00:00-06:00 --end 2026-03-02T17:00:00-06:00
 ```
 
 ### Drive
@@ -303,6 +308,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 - **Gmail send/reply**: `{status: "sent", id, threadId}`
 - **Calendar list**: `[{id, summary, start, end, location, description, htmlLink}]`
 - **Calendar create**: `{status: "created", id, summary, htmlLink}`
+- **Calendar freebusy**: `[{calendar, busy: [{start, end}], error?}]` (request order)
 - **Drive search**: `[{id, name, mimeType, modifiedTime, webViewLink}]`
 - **Drive get**: `{id, name, mimeType, modifiedTime, size, webViewLink, parents, owners}`
 - **Drive upload**: `{status: "uploaded", id, name, mimeType, webViewLink}`

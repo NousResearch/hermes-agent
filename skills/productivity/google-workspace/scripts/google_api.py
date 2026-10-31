@@ -12,6 +12,7 @@ Usage:
   python google_api.py gmail reply MESSAGE_ID --body "Thanks"
   python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
+  python google_api.py calendar freebusy --people a@x.com,b@y.com [--start DATE] [--end DATE]
   python google_api.py drive search "budget report" [--max 10]
   python google_api.py contacts list [--max 20]
   python google_api.py sheets get SHEET_ID RANGE
@@ -70,7 +71,7 @@ def _ensure_authenticated():
 
 def _stored_token_scopes() -> list[str]:
     try:
-        data = json.loads(TOKEN_PATH.read_text(encoding="utf-8"))
+        data = json.loads(TOKEN_PATH.read_text(encoding="utf-8-sig"))
     except Exception:
         return list(SCOPES)
     scopes = data.get("scopes")
@@ -624,6 +625,57 @@ def calendar_delete(args):
     service = build_service("calendar", "v3")
     service.events().delete(calendarId=args.calendar, eventId=args.event_id).execute()
     print(json.dumps({"status": "deleted", "eventId": args.event_id}))
+
+
+FREEBUSY_MAX_CALENDARS = 50  # Google's freeBusy calendarExpansionMax
+
+
+def _freebusy_rows(people: list[str], calendars: dict) -> list[dict]:
+    """One row per requested calendar, in request order.
+
+    Google keys the response by the id that was asked for; an id it could not
+    resolve comes back with ``errors`` or not at all, and either case must read
+    as an error rather than as a free calendar.
+    """
+    rows = []
+    for person in people:
+        entry = calendars.get(person)
+        row = {"calendar": person, "busy": [
+            {"start": b.get("start", ""), "end": b.get("end", "")}
+            for b in (entry or {}).get("busy", [])
+        ]}
+        if entry is None:
+            row["error"] = "notFound"
+        elif entry.get("errors"):
+            row["error"] = ", ".join(
+                e.get("reason") or e.get("domain") or "unknown" for e in entry["errors"]
+            )
+        rows.append(row)
+    return rows
+
+
+def calendar_freebusy(args):
+    people = list(dict.fromkeys(p.strip() for p in args.people.split(",") if p.strip()))
+    if not people:
+        print("ERROR: --people needs at least one email address or calendar ID", file=sys.stderr)
+        sys.exit(1)
+    if len(people) > FREEBUSY_MAX_CALENDARS:
+        print(f"ERROR: at most {FREEBUSY_MAX_CALENDARS} calendars per query; split the list", file=sys.stderr)
+        sys.exit(1)
+    now = datetime.now(UTC)
+    body = {
+        "timeMin": _datetime_with_timezone(args.start or now.isoformat()),
+        "timeMax": _datetime_with_timezone(args.end or (now + timedelta(days=7)).isoformat()),
+        "items": [{"id": p} for p in people],
+    }
+    if args.timezone:
+        body["timeZone"] = args.timezone
+
+    if _gws_binary():
+        result = _run_gws(["calendar", "freebusy", "query"], body=body)
+    else:
+        result = build_service("calendar", "v3").freebusy().query(body=body).execute()
+    print(json.dumps(_freebusy_rows(people, result.get("calendars", {})), indent=2, ensure_ascii=False))
 
 
 # =========================================================================
@@ -1212,6 +1264,13 @@ def main():
     p.add_argument("event_id")
     p.add_argument("--calendar", default="primary")
     p.set_defaults(func=calendar_delete)
+
+    p = cal_sub.add_parser("freebusy", help="Busy blocks for people/calendars (no event details)")
+    p.add_argument("--people", required=True, help="Comma-separated emails or calendar IDs (max 50; 'primary' = you)")
+    p.add_argument("--start", default="", help="Window start (ISO 8601, default now)")
+    p.add_argument("--end", default="", help="Window end (ISO 8601, default now + 7 days)")
+    p.add_argument("--timezone", default="", help="IANA zone for the returned times (e.g. America/New_York)")
+    p.set_defaults(func=calendar_freebusy)
 
     # --- Drive ---
     drv = sub.add_parser("drive")

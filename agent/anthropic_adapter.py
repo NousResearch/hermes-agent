@@ -12,6 +12,8 @@ import re
 import shutil
 import subprocess
 from contextlib import suppress
+from datetime import UTC
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from utils import normalize_proxy_env_vars
@@ -243,6 +245,13 @@ _OAUTH_ONLY_BETAS = ["claude-code-20250219", "oauth-2025-04-20"]
 _CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
 _claude_code_version_cache: Optional[str] = None
 
+# When no CLI is installed the version comes from npm instead of the constant above, which can
+# only move on a Hermes release and therefore drifts behind what Anthropic gates against.
+_CLAUDE_CODE_REGISTRY_PKG = "@anthropic-ai/claude-code"
+# npm ships a release every few days, so a day-old tag still beats Anthropic's gate while
+# keeping the cold-start fetch rare.
+_CLAUDE_CODE_REGISTRY_TTL_SECONDS = 24 * 60 * 60
+
 # Install prefixes probed in addition to PATH. GUI launches (the Electron desktop app, macOS
 # LaunchAgents) inherit the bare ``/usr/bin:/bin:/usr/sbin:/sbin``, which carries none of these,
 # so a PATH-only lookup finds nothing there even with the CLI installed — detection then returns
@@ -292,7 +301,13 @@ def find_claude_code_cli(command: str) -> Optional[str]:
 
 
 def _detect_claude_code_version() -> str:
-    """Installed Claude Code version (``claude --version``), else the static fallback."""
+    """Installed Claude Code version (``claude --version``), else a registry-backed version.
+
+    Order: installed CLI → the npm registry's current ``latest`` dist-tag (disk-cached for a
+    day) → the static fallback. The registry step exists because the fallback constant can
+    only be refreshed by a Hermes release, so between releases it drifts behind the CLI
+    Anthropic gates against.
+    """
     for cmd in _claude_code_candidates():
         with suppress(Exception):
             result = subprocess.run(
@@ -304,7 +319,63 @@ def _detect_claude_code_version() -> str:
                 version = result.stdout.strip().split()[0]  # "2.1.74 (Claude Code)" or "2.1.74"
                 if version and version[0].isdigit():
                     return version
-    return _CLAUDE_CODE_VERSION_FALLBACK
+    return _registry_claude_code_version() or _CLAUDE_CODE_VERSION_FALLBACK
+
+
+def _claude_code_version_cache_path() -> Path:
+    """Disk cache for the registry version probe, beside the other HTTP probe caches."""
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "claude_code_registry_version.json"
+
+
+def _registry_claude_code_version() -> str:
+    """Claude Code's current npm ``latest`` version, or "" when unreachable/unparseable.
+
+    Bounded at 5s with no retry ladder: this runs inline on the first OAuth request, so a
+    slow or down registry must not delay it. Every failure degrades to the caller's static
+    fallback, which is exactly what shipped before this existed.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+    from datetime import datetime
+
+    path = _claude_code_version_cache_path()
+    try:
+        cached = json.loads(path.read_text(encoding="utf-8-sig"))
+        age = datetime.now(UTC).timestamp() - float(cached.get("ts", 0))
+        if 0 <= age < _CLAUDE_CODE_REGISTRY_TTL_SECONDS:
+            return str(cached.get("version") or "")
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass  # missing, unreadable or corrupt cache: fall through to a live probe
+
+    from pm.index_config import npm_registry
+
+    url = f"{npm_registry(os.environ)}-/package/{_CLAUDE_CODE_REGISTRY_PKG}/dist-tags"
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "hermes-pm", "Accept": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            tags = json.load(resp)
+        version = str(tags.get("latest") or "").strip()
+        if not version or not version[0].isdigit():
+            return ""
+    except (OSError, urllib.error.URLError, ValueError) as exc:
+        logger.debug("Claude Code version registry probe failed: %s", exc)
+        return ""
+
+    # Persist only a good answer; a registry outage must never pin a stale one.
+    try:
+        from utils import atomic_json_write
+
+        atomic_json_write(
+            path, {"version": version, "ts": datetime.now(UTC).timestamp()}
+        )
+    except (OSError, ValueError, TypeError) as exc:
+        logger.debug("Failed to cache Claude Code registry version: %s", exc)
+    return version
 
 
 def _get_claude_code_version() -> str:

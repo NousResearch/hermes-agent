@@ -102,6 +102,18 @@ class TestSubdirectoryHintTracker:
         assert result is not None
         assert "Frontend rules" in result
 
+    def test_v4a_patch_headers_discover_every_edited_directory(self, project):
+        """A V4A multi-file patch names its files only in headers (empty `path`); each
+        edited directory's context file must still arrive, as for a replace-mode edit."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        v4a = (
+            "*** Begin Patch\n*** Add File: backend/src/util.py\n+x = 1\n"
+            "*** Update File: frontend/app.ts\n@@\n-a\n+b\n*** End Patch"
+        )
+        result = tracker.check_tool_call("patch", {"mode": "patch", "path": "", "patch": v4a})
+        assert result is not None
+        assert "Backend-specific instructions" in result and "Frontend rules" in result
+
 
 
 

@@ -145,6 +145,14 @@ def _is_repo_junk(root: str) -> bool:
     if not root:
         return True
     from hermes_constants import get_hermes_home
+    from tui_gateway.git_probe import path_may_block
+    if path_may_block(root):
+        # realpath on a Windows network path is an unbounded SMB stat — the stall #135644
+        # is about. A network root is junk only when HERMES_HOME itself is that network
+        # home; the non-workspace dirs are all host-local and can never match.
+        home = os.path.normcase(str(get_hermes_home()).rstrip("/\\"))
+        value = os.path.normcase(root.rstrip("/\\"))
+        return value == home or value.startswith(home + os.sep)
     real = os.path.realpath(root)
     hermes_home = os.path.realpath(str(get_hermes_home()))
     return (
@@ -159,6 +167,13 @@ def _is_session_cwd_junk(cwd: str) -> bool:
     if not cwd:
         return True
     from hermes_constants import get_hermes_home
+    from tui_gateway.git_probe import path_may_block
+    if path_may_block(cwd):
+        # Same unbounded-SMB-stat avoidance as _is_repo_junk (#135644): string compare
+        # only; the non-workspace dirs are host-local and can never match a network path.
+        home = os.path.normcase(str(get_hermes_home()).rstrip("/\\"))
+        value = os.path.normcase(cwd.rstrip("/\\"))
+        return value == home
     real = os.path.normcase(os.path.realpath(cwd))
     hermes_home = os.path.normcase(os.path.realpath(str(get_hermes_home())))
     return real in _non_workspace_dirs() or real == hermes_home
@@ -218,6 +233,7 @@ def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
     See #81723.
     """
     from hermes_cli import projects_db as pdb
+    from tui_gateway.git_probe import path_may_block
     roots = policy.get("roots") or []
     excludes = policy.get("exclude_paths") or []
     pairs: list[tuple[str, str | None]] = []
@@ -228,6 +244,12 @@ def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
         return any(
             path == ex or path.startswith(ex.rstrip("/\\") + os.sep) for ex in excludes if ex)
     for root in roots:
+        if path_may_block(root):
+            # A Windows network root can't be host-stat'ed in bounded time (#135644); skipping
+            # marks the scan non-authoritative, so the cache write MERGES instead of wiping.
+            authoritative = False
+            logger.debug("discover_repos scan root on a network path, skipping: %s", root)
+            continue
         if not os.path.isdir(root):
             # `os.walk` on a missing root yields nothing; an unmounted volume must not wipe.
             authoritative = False
@@ -374,7 +396,17 @@ _DIR_EXISTS_CACHE: dict[str, bool] = {}
 
 
 def _dir_exists_cached(path: str) -> bool:
-    """``os.path.isdir`` memoized per build — ``build_tree`` asks per SESSION, not per path."""
+    """``os.path.isdir`` memoized per build — ``build_tree`` asks per SESSION, not per path.
+
+    Windows network paths skip the host stat entirely: on a cold or dead SMB share the stat
+    blocks for tens of seconds with no userspace timeout (the bounded git probe answers the
+    same share in 0.05s), and one parked share in the session history stalled the whole
+    ``projects.tree`` RPC (#135644). ``True`` keeps the path eligible downstream — the same
+    always-True contract a remote backend's cwds already get.
+    """
+    from tui_gateway.git_probe import path_may_block
+    if path_may_block(path):
+        return True
     hit = _DIR_EXISTS_CACHE.get(path)
     if hit is None:
         hit = _DIR_EXISTS_CACHE[path] = os.path.isdir(path)

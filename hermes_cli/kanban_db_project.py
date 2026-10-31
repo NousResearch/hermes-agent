@@ -91,6 +91,16 @@ def resolve_project_link(
     """
     project_id = (str(project_id).strip() or None) if project_id is not None else None
     if not project_id:
+        # A project-less card is not exempt from the rule: its explicit worktree
+        # path overrides every default at dispatch, so a path that cannot host a
+        # worktree stranded the card at spawn. Same check, same place.
+        if workspace_kind == "worktree":
+            refusal = worktree_path_unavailable(workspace_path)
+            if refusal:
+                raise ValueError(
+                    f"{refusal}. Create the task with workspace_kind='scratch', or "
+                    "point workspace_path at a folder inside a git repo."
+                )
         return None, None, None, workspace_kind, None
     from hermes_cli import projects_db as _pdb
 

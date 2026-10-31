@@ -299,3 +299,76 @@ def test_source_task_fallback_stays_scratch_when_recovered_repo_is_gone(
     assert len(skipped) == 1
     assert skipped[0]["reason"] == "primary_path_not_a_git_repo"
     assert str(repo) in skipped[0]["message"]
+
+
+# --- project-less tasks -----------------------------------------------------
+# A card without a project is not exempt from the creation-time workspace rule:
+# ``resolve_project_link`` used to return before validating anything when
+# ``project_id`` was empty, so an explicit worktree path that dispatch could not
+# anchor was accepted here and only died at spawn. Creation applies the same
+# rule dispatch does, and still accepts every shape dispatch can resolve.
+
+
+def test_projectless_worktree_with_non_repo_explicit_path_raises_at_creation(kanban_conn, tmp_path):
+    """No project, explicit worktree path outside any repo: refuse at creation
+    with the path named instead of creating a card that cannot be dispatched."""
+    non_repo = tmp_path / "not-a-repo" / "sub"
+    non_repo.mkdir(parents=True)
+
+    with pytest.raises(ValueError) as excinfo:
+        kb.create_task(
+            kanban_conn, title="project-less stranded",
+            workspace_kind="worktree", workspace_path=str(non_repo),
+        )
+
+    message = str(excinfo.value)
+    assert str(non_repo) in message
+    assert "not inside a git repo" in message
+    assert "workspace_kind='scratch'" in message
+    # Refused before the insert: no half-created card is left behind.
+    assert kanban_conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_projectless_worktree_with_path_inside_a_repo_is_accepted(kanban_conn, tmp_path):
+    """Legitimate project-less case: dispatch materializes a not-yet-existing
+    path inside a repo, so the project-less check must keep accepting it."""
+    repo = _git_init(tmp_path / "mono")
+    target = repo / "wt" / "future"
+    assert not target.exists()
+
+    tid = kb.create_task(
+        kanban_conn, title="future wt", workspace_kind="worktree",
+        workspace_path=str(target),
+    )
+    task = kb.get_task(kanban_conn, tid)
+
+    assert task.workspace_kind == "worktree"
+    assert task.workspace_path == str(target)
+    assert task.project_id is None
+
+
+def test_projectless_worktree_without_a_path_is_accepted(kanban_conn):
+    """Dispatch owns the ``wt/<task-id>`` fallback, so there is no explicit path
+    to validate — pins against an over-refusal."""
+    tid = kb.create_task(kanban_conn, title="ad hoc", workspace_kind="worktree")
+    task = kb.get_task(kanban_conn, tid)
+
+    assert task.workspace_kind == "worktree"
+    assert task.workspace_path is None
+    assert task.project_id is None
+
+
+def test_projectless_dir_workspace_with_a_plain_directory_is_accepted(kanban_conn, tmp_path):
+    """Only ``worktree`` needs a git anchor: a ``dir`` workspace is untouched."""
+    plain = tmp_path / "plain-dir"
+    plain.mkdir()
+
+    tid = kb.create_task(
+        kanban_conn, title="dir task", workspace_kind="dir",
+        workspace_path=str(plain),
+    )
+    task = kb.get_task(kanban_conn, tid)
+
+    assert task.workspace_kind == "dir"
+    assert task.workspace_path == str(plain)
+    assert task.project_id is None

@@ -112,6 +112,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "rate_limited": res.rate_limited,
             "skipped_locked": res.skipped_locked,
+            "skipped_board_disabled": res.skipped_board_disabled,
             "memory_pressure": res.memory_pressure,
         }, ascii=True)
         return 0

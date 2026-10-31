@@ -1,6 +1,7 @@
 """Root-run Docker sandboxes hand their bind-mounted files back to the host user after the container
 stops and before it is removed; the next root container takes back exactly those files."""
 
+import gc
 import importlib
 import json
 import logging
@@ -15,6 +16,17 @@ from tools.environments import docker as docker_env
 
 _ROOT_OWNED = b"/root/.cache/x\0/workspace/out.txt\0"  # what a root walk of the sandbox finds
 _HOST_OWNED = b"/workspace/repo/HEAD\0"  # a no-symlink walk for host-owned entries finds only this
+
+
+@pytest.fixture(autouse=True)
+def _own_teardowns(monkeypatch):
+    """Every env this test dropped finishes its teardown while this test's fake docker is installed.
+
+    A dropped env's ``__del__`` starts a ``docker stop``/``rm -f`` worker thread; one that runs late
+    resolves ``subprocess.run`` to the NEXT case's fake and lands in its ordered call list."""
+    yield
+    gc.collect()
+    assert docker_env.DockerEnvironment.wait_for_all_teardowns(10)
 
 
 def _fake_docker(monkeypatch, security_options: str, fail: str = ""):

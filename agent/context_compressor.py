@@ -36,6 +36,7 @@ from agent.context_compressor_window import CompactionWindowMixin
 from agent.context_compressor_prune import ProactivePruneMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_retry import retryable_user_text
+from agent.compaction_files_section import FILES_HEADING, build_files_section, without_files_section
 from agent.context_compressor_tail import (
     demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule, tail_cut_progress_floor,
@@ -3588,17 +3589,16 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
     def _augment_summary_lean(self, summary: str, turns_to_summarize: list[dict[str, Any]]) -> str:
         """Append deterministic lean-mode sections to a summary; no-op in legacy mode."""
-        if getattr(self, "tail_mode", "lean") != "lean":
-            return summary
+        if getattr(self, "tail_mode", "lean") != "lean": return summary
+        summary = without_files_section(summary)
         for heading, build in (
+            (FILES_HEADING, lambda: _redact_compaction_text(build_files_section(turns_to_summarize))),
             (_LEAN_ANCHOR_HEADING, lambda: _redact_compaction_text(_build_anchor_index(turns_to_summarize))),
             (_LEAN_USER_MESSAGES_HEADING, lambda: _redact_compaction_text(_build_verbatim_user_section(turns_to_summarize))),
             (_LEAN_RECOVERY_HEADING, lambda: _build_recovery_footer(getattr(self, "_session_id", "") or "", len(turns_to_summarize))),
         ):
-            if heading not in summary:
-                summary += build()
+            if heading == FILES_HEADING or heading not in summary: summary += build()
         return summary
-
     @classmethod
     def _bound_summary_input(cls, content: str) -> str:
         """Cap total summarizer input, keeping head and tail and marking the omitted middle."""

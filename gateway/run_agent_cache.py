@@ -43,6 +43,42 @@ def _tuple_agent(entry: Any) -> Any:
     return entry[0] if isinstance(entry, tuple) and entry else None
 
 
+
+def _override_model_foreign_to_provider(override: Any, resolved_provider: Any) -> bool:
+    """True when a provider-less ``/model`` override names a model the turn's provider cannot serve.
+
+    Confirmation-only: answers True just when the provider's live catalog is known and does not list
+    the model, and neither the static tables nor a vendor-ownership check claim it. Unreadable or
+    empty catalogs, custom endpoints and switches that did name a provider keep today's behavior (the
+    provider gets the final say), so this can never block a legitimate pick.
+    """
+    model = str((override or {}).get("model") or "").strip()
+    provider = str(resolved_provider or "").strip().lower()
+    if not model or not provider or (override or {}).get("provider"):
+        return False
+    if provider.startswith("custom:"):
+        return False
+    try:
+        from hermes_cli.models import (
+            _model_in_provider_catalog, _provider_keys, cached_provider_model_ids, normalize_provider)
+        from hermes_cli.models_detect import current_provider_owns_vendor
+        if normalize_provider(provider) in {"custom", "auto"}:
+            return False
+        # A first-party provider plus its own vendor's id is a selection, never a mismatch — covers
+        # local aliases and early-access ids the live catalog has not listed yet.
+        if current_provider_owns_vendor(model, provider):
+            return False
+        wanted = model.lower()
+        catalog = [str(mid).lower() for mid in (cached_provider_model_ids(provider) or [])]
+        if not catalog:  # cold/unavailable catalog: cannot judge, keep the override
+            return False
+        if wanted in catalog or any("/" in mid and mid.split("/", 1)[1] == wanted for mid in catalog):
+            return False
+        return not _model_in_provider_catalog(wanted, _provider_keys(provider))
+    except Exception:
+        return False
+
+
 class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
 
@@ -201,6 +237,24 @@ class GatewayAgentCacheMixin:
         from gateway.run import _credential_pool_for_provider
         override = self._session_model_override(session_key)
         if not override:
+            return model, runtime_kwargs
+        if _override_model_foreign_to_provider(override, runtime_kwargs.get("provider")):
+            # A /model switch that recorded a model but NO provider leaves this turn on the default
+            # provider's key and endpoint. Posting a model that provider does not serve fails with a
+            # non-retryable 400 (e.g. a non-Codex model sent to the ChatGPT/Codex backend) and the
+            # failed runtime is then written back into the session row by _sync_session_model_from_agent,
+            # so every later turn repeats the same failure with no way out short of re-picking. Keep
+            # the session's configured model for this turn and say so instead.
+            attempted = f"{runtime_kwargs.get('provider') or 'default'}/{override.get('model')}"
+            actual = f"{runtime_kwargs.get('provider') or 'default'}/{model}"
+            logger.warning(
+                "Session /model override recorded model=%s without a provider and provider=%s does not "
+                "serve it; using %s for this turn", override.get("model"),
+                runtime_kwargs.get("provider") or "<default>", actual)
+            if not getattr(self, "_pre_agent_fallback_notice", None):
+                self._pre_agent_fallback_notice = (
+                    f"\u26a0\ufe0f Session model override: {attempted} is not served by that provider; "
+                    f"using {actual} for this response.")
             return model, runtime_kwargs
         model = override.get("model", model)
         for key in _OVERRIDE_APPLY_KEYS:

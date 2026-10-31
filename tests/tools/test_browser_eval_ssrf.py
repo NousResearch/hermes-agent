@@ -204,6 +204,66 @@ def test_raw_cdp_reads_the_host_after_userinfo(cdp_guard, local_backend):
 
 
 @pytest.mark.parametrize("local_backend", [False, True])
+def test_raw_cdp_reads_the_host_after_any_userinfo(cdp_guard, local_backend):
+    """Userinfo may also hold a quote, backtick, space or ``[``: the metadata host after the last ``@`` is
+    still read, and a raw ``url`` the parser rejects fails closed instead of passing as not metadata."""
+    for userinfo in ('1.1.1.1"', "1.1.1.1`", "1.1.1.1 x", "1.1.1.1[", "1.1.1.1'"):
+        quote = '"' if "'" in userinfo else "'"
+        call = {"functionDeclaration": f"() => fetch({quote}http://{userinfo}@169.254.169.254/latest/{quote})"}
+        assert "cloud metadata" in cdp_guard(method="Runtime.callFunctionOn", params=call), userinfo
+    raw = {"frameId": "F", "url": "http://a[@169.254.169.254/latest/", "options": {}}
+    assert "cloud metadata" in cdp_guard(method="Network.loadNetworkResource", params=raw)
+    broken = {"frameId": "F", "url": "http://[93.184.216.34/", "options": {}}
+    assert "cannot be parsed" in cdp_guard(method="Network.loadNetworkResource", params=broken)
+    # Past a quote, an @ is a mail address in the next string, not this URL's host.
+    mail = {"functionDeclaration": "() => send('https://93.184.216.34', 'me@127.0.0.1')"}
+    assert cdp_guard(method="Runtime.callFunctionOn", params=mail) is None
+
+
+@pytest.mark.parametrize("local_backend", [False, True])
+def test_metadata_floor_reads_the_last_at_from_every_url_head(cdp_guard, local_backend):
+    """An earlier ``@`` (``http://u@1.1.1.1"@host/``) or a quote or space right after the scheme
+    (``http://"@host/``) does not hide the metadata host a browser loads, in raw CDP or ``browser_exec``."""
+    for target in ('http://u@1.1.1.1"@169.254.169.254/', "http://u@1.1.1.1 x@169.254.169.254/",
+                   'http://"@169.254.169.254/', "http:// @169.254.169.254/", '//"@169.254.169.254/'):
+        call = {"functionDeclaration": f"() => location.href = '{target}'"}
+        assert "cloud metadata" in cdp_guard(method="Runtime.callFunctionOn", params=call), target
+        if target.startswith("http"):
+            verdict = browser_use_cli._code_url_verdict(f"new_tab('{target}')").blocked
+            # Guard on, the earlier ``u@1.1.1.1`` literal is refused first, as any userinfo URL is.
+            assert verdict and ("cloud metadata" in verdict or not local_backend), target
+    # Nor does a later mail address once the URL's string has closed, with no ``/`` after the host.
+    for target in ('http://"@169.254.169.254', "http:// @169.254.169.254", '//"@169.254.169.254'):
+        code = f"location.href = '{target}'; const email = 'x@93.184.216.34'"
+        assert "cloud metadata" in cdp_guard(method="Runtime.callFunctionOn", params={"functionDeclaration": code})
+        if target.startswith("http"):
+            assert "cloud metadata" in (browser_use_cli._code_url_verdict(code).blocked or ""), target
+    # Within one authority the last ``@`` wins; a public URL carrying another URL as query data is its host only.
+    for url in ("http://a@169.254.169.254@93.184.216.34/", "https://93.184.216.34/?next=http://u@93.184.216.34/"):
+        verdict = cdp_guard(method="Network.loadNetworkResource", params={"frameId": "F", "url": url, "options": {}})
+        assert verdict is None if local_backend else "cloud metadata" not in (verdict or ""), url
+    # Mail addresses after a bare scheme or an earlier URL are still not hosts.
+    mail = {"functionDeclaration": "() => send('https://93.184.216.34', 'see http:// docs', 'me@127.0.0.1')"}
+    assert cdp_guard(method="Runtime.callFunctionOn", params=mail) is None
+    assert browser_use_cli._code_url_verdict(mail["functionDeclaration"]).blocked is None
+
+
+@pytest.mark.parametrize("local_backend", [False, True])
+def test_browser_exec_reads_the_host_after_userinfo(monkeypatch, local_backend):
+    """``browser_exec`` reads the host after userinfo like raw CDP does; ``\\`` still ends a literal, as in
+    Python source it starts an escape."""
+    monkeypatch.setattr(browser_session_cloud, "is_local_backend", lambda: local_backend)
+    monkeypatch.setattr(browser_session_cloud, "allow_private_urls", lambda: False)
+    for code in ('new_tab("http://1.1.1.1)@169.254.169.254/latest/")', "new_tab('http://1.1.1.1\"@169.254.169.254/')"):
+        assert "cloud metadata" in (browser_use_cli._code_url_verdict(code).blocked or ""), code
+    assert browser_use_cli._code_url_verdict('print("opened http://93.184.216.34\\n")').blocked is None
+    # The host after userinfo is cut where the literal is: a \n escape is not part of it. With the guard on, any
+    # userinfo URL is refused as ambiguous (unchanged); off, nothing is refused.
+    verdict = browser_use_cli._code_url_verdict('print("https://u@93.184.216.34\\n")').blocked
+    assert verdict is None if local_backend else "private or internal" in verdict
+
+
+@pytest.mark.parametrize("local_backend", [False, True])
 def test_raw_cdp_scheme_relative_literals_cost_no_dns_lookup(cdp_guard, monkeypatch):
     """``//word`` comments are judged by their literal host: no resolver call per comment."""
     from tools import url_safety

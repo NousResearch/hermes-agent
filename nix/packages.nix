@@ -5,11 +5,9 @@
     {
       pkgs,
       lib,
-      inputs',
       ...
     }:
     let
-
       sandbox = pkgs.callPackage ./sandbox.nix { };
 
       # pm/lock.json translated into derivations — one per tool package
@@ -21,59 +19,19 @@
         pkgs.callPackage ./pm-packages.nix { }
       );
 
-      dirtyRevision = inputs.self.dirtyRev or null;
-      # inputs.self.sourceInfo is a string (store path) in current Nix, not a
-      # record. The metadata fields are available as top-level attributes on
-      # inputs.self directly. A flake URL's requested ref is intentionally not
-      # exposed as self.ref after Nix resolves it to an immutable source, so
-      # branch is normally null for remote flakes. Preserve null rather than
-      # inventing a sentinel that could be a real branch name.
-      rev =
-        inputs.self.rev or (if dirtyRevision != null then builtins.substring 0 40 dirtyRevision else null);
-      rawRef = inputs.self.ref or null;
-      branch = if rawRef != null then builtins.replaceStrings [ "refs/heads/" ] [ "" ] rawRef else null;
-      dirty = dirtyRevision != null;
-      lastModified = inputs.self.lastModified or null;
-      minimal = pkgs.callPackage ./hermes-agent.nix {
-        inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
-        # Passed explicitly so `override (prev: ...)` sees it: a function form that appends to
-        # `prev.extraDependencyGroups` worked before the shipped groups moved to
-        # defaultDependencyGroups, and an argument default never lands in `prev`.
-        extraDependencyGroups = [ ];
-        npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
-        inherit pmPackages;
-        inherit
-          rev
-          branch
-          dirty
-          lastModified
-          ;
-      };
+      # Every bit of input wiring — flake inputs, provenance of the source,
+      # pm/lock.json pins — lives in the builder, so this flake and any
+      # consumer of flake.lib.mkHermesAgent build the same derivation.
+      minimal = inputs.self.lib.mkHermesAgent { inherit pkgs; };
 
       # All platform-portable optional integrations pre-built. These are the
       # variant's own groups, not the user's extras, so an
-      # `.override { extraDependencyGroups = ...; }` adds to them.
+      # `.override { extraDependencyGroups = ...; }` adds to them. The list
+      # lives in `nix/exports.nix`; `overlays.default` resolves the same one
+      # against the consumer's pkgs, so neither variant can ship fewer groups
+      # than the other.
       full = minimal.override {
-        defaultDependencyGroups = [
-          "anthropic"
-          "azure-identity"
-          "bedrock"
-          "daytona"
-          "dingtalk"
-          "edge-tts"
-          "exa"
-          "fal"
-          "feishu"
-          "firecrawl"
-          "messaging"
-          "modal"
-          "parallel-web"
-          "tts-premium"
-          "vercel"
-          "voice"
-        ]
-        # matrix is Linux-only (oqs/liboqs lacks aarch64-darwin wheels).
-        ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ "matrix" ];
+        defaultDependencyGroups = inputs.self.lib.defaultDependencyGroups pkgs;
       };
     in
     {

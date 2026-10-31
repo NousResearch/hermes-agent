@@ -142,13 +142,16 @@ describe('the row delegates the open and claims no activation authority', () => 
     expect(openRosterBot.mock.calls).toEqual([[bot, { intent: 'in-place' }]])
   })
 
-  it.each([{ metaKey: true }, { ctrlKey: true }])('modifier click %j opens the Bot Chat as a stacked tab', modifiers => {
-    const bot = { connectionId: 'local', name: 'research' } as RosterRow
+  it.each([{ metaKey: true }, { ctrlKey: true }])(
+    'modifier click %j opens the Bot Chat as a stacked tab',
+    modifiers => {
+      const bot = { connectionId: 'local', name: 'research' } as RosterRow
 
-    fireEvent.click(renderRow(bot), modifiers)
+      fireEvent.click(renderRow(bot), modifiers)
 
-    expect(openRosterBot.mock.calls).toEqual([[bot, { intent: 'tab' }]])
-  })
+      expect(openRosterBot.mock.calls).toEqual([[bot, { intent: 'tab' }]])
+    }
+  )
 
   it('never resolves a remote default into the same-named local bot', async () => {
     const bot = {

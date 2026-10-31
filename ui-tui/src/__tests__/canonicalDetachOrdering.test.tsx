@@ -30,18 +30,33 @@ function fixture() {
       const token = subscriptions.get(sid) ?? `sub-${++nextToken}`
       subscriptions.set(sid, token)
 
-      const result = canonicalResult(method, { session_id: sid, stored_session_id: sid,
-        subscription_id: token, authority_epoch: 1, execution_generation: 0,
-        messages: [], pending: [], running: false, info: { model: 'test', tools: {}, skills: {} } })
+      const result = canonicalResult(method, {
+        session_id: sid,
+        stored_session_id: sid,
+        subscription_id: token,
+        authority_epoch: 1,
+        execution_generation: 0,
+        messages: [],
+        pending: [],
+        running: false,
+        info: { model: 'test', tools: {}, skills: {} }
+      })
 
-      return new Promise((resolve, reject) => pending.push({ resolve: () => resolve(result),
-        reject: () => reject(new Error('fixture response failed')), invalid: () => resolve(null) }))
+      return new Promise((resolve, reject) =>
+        pending.push({
+          resolve: () => resolve(result),
+          reject: () => reject(new Error('fixture response failed')),
+          invalid: () => resolve(null)
+        })
+      )
     }
 
     if (wire.method === 'session.detach') {
       const detached = subscriptions.get(sid) === wire.params.subscription_id
 
-      if (detached) {subscriptions.delete(sid)}
+      if (detached) {
+        subscriptions.delete(sid)
+      }
 
       return Promise.resolve({ ...wire.params, detached })
     }
@@ -52,19 +67,36 @@ function fixture() {
   let lifecycle!: ReturnType<typeof useSessionLifecycle>
 
   function Harness() {
-    lifecycle = useSessionLifecycle({ colsRef: { current: 80 }, composerActions: { setComposerTokens: vi.fn() },
-      gw: { isCanonical: true, request }, rpc: request, scrollRef: { current: null }, panel: vi.fn(), sys: vi.fn(),
-      setHistoryItems: vi.fn(), setLastUserMsg: vi.fn(), setSessionStartedAt: vi.fn(), setStickyPrompt: vi.fn(),
-      setVoiceProcessing: vi.fn(), setVoiceRecording: vi.fn() } as any)
+    lifecycle = useSessionLifecycle({
+      colsRef: { current: 80 },
+      composerActions: { setComposerTokens: vi.fn() },
+      gw: { isCanonical: true, request },
+      rpc: request,
+      scrollRef: { current: null },
+      panel: vi.fn(),
+      sys: vi.fn(),
+      setHistoryItems: vi.fn(),
+      setLastUserMsg: vi.fn(),
+      setSessionStartedAt: vi.fn(),
+      setStickyPrompt: vi.fn(),
+      setVoiceProcessing: vi.fn(),
+      setVoiceRecording: vi.fn()
+    } as any)
 
     return <Text>viewer ordering</Text>
   }
 
-  const instance = renderSync(<Harness />, { stdin: new PassThrough() as any,
+  const instance = renderSync(<Harness />, {
+    stdin: new PassThrough() as any,
     stdout: Object.assign(new PassThrough(), { columns: 80, rows: 20, isTTY: false }) as any,
-    stderr: new PassThrough() as any, patchConsole: false })
+    stderr: new PassThrough() as any,
+    patchConsole: false
+  })
 
-  return { subscriptions, pending, request,
+  return {
+    subscriptions,
+    pending,
+    request,
     attach: (method: AttachmentAction, sid: string) => lifecycle[method](sid),
     async initial() {
       lifecycle.resumeById('x')
@@ -77,7 +109,8 @@ function fixture() {
       resetUiState()
       vi.unstubAllEnvs()
       rmSync(home, { recursive: true, force: true })
-    } }
+    }
+  }
 }
 
 // One row per attach-path pairing; the stale reply lands first in half of them so both
@@ -87,57 +120,53 @@ it.each<{ first: AttachmentAction; second: AttachmentAction; staleFirst: boolean
   { first: 'activateLiveSession', second: 'activateLiveSession', staleFirst: false },
   { first: 'resumeById', second: 'activateLiveSession', staleFirst: true },
   { first: 'activateLiveSession', second: 'resumeById', staleFirst: false }
-])(
-  'keeps the winning token for $first -> $second, staleFirst=$staleFirst', async ({ first, second, staleFirst }) => {
-    const f = fixture()
+])('keeps the winning token for $first -> $second, staleFirst=$staleFirst', async ({ first, second, staleFirst }) => {
+  const f = fixture()
 
-    try {
-      await f.initial()
-      f.attach(first, 'a')
-      await vi.waitFor(() => expect(f.pending).toHaveLength(1))
-      f.attach(second, 'a')
-      await vi.waitFor(() => expect(f.pending).toHaveLength(2))
-      const [older, newer] = f.pending.splice(0)
-      const token = f.subscriptions.get('a')
+  try {
+    await f.initial()
+    f.attach(first, 'a')
+    await vi.waitFor(() => expect(f.pending).toHaveLength(1))
+    f.attach(second, 'a')
+    await vi.waitFor(() => expect(f.pending).toHaveLength(2))
+    const [older, newer] = f.pending.splice(0)
+    const token = f.subscriptions.get('a')
 
-      for (const response of staleFirst ? [older, newer] : [newer, older]) {
-        response.resolve()
-        await new Promise(resolve => setImmediate(resolve))
-      }
-
-      await vi.waitFor(() => expect(getUiState().sid).toBe('a'))
-      expect(f.subscriptions.get('a')).toBe(token)
-      expect(f.subscriptions.has('x')).toBe(false)
-      expect(f.request).not.toHaveBeenCalledWith('session.detach', { session_id: 'a', subscription_id: token })
-    } finally {
-      f.cleanup()
+    for (const response of staleFirst ? [older, newer] : [newer, older]) {
+      response.resolve()
+      await new Promise(resolve => setImmediate(resolve))
     }
+
+    await vi.waitFor(() => expect(getUiState().sid).toBe('a'))
+    expect(f.subscriptions.get('a')).toBe(token)
+    expect(f.subscriptions.has('x')).toBe(false)
+    expect(f.request).not.toHaveBeenCalledWith('session.detach', { session_id: 'a', subscription_id: token })
+  } finally {
+    f.cleanup()
   }
-)
+})
 
 it.each<{ method: AttachmentAction; outcome: 'reject' | 'invalid' }>([
   { method: 'resumeById', outcome: 'reject' },
   { method: 'activateLiveSession', outcome: 'invalid' }
-])(
-  'disposes deferred unadopted tokens when newer $method returns $outcome', async ({ method, outcome }) => {
-    const f = fixture()
+])('disposes deferred unadopted tokens when newer $method returns $outcome', async ({ method, outcome }) => {
+  const f = fixture()
 
-    try {
-      await f.initial()
-      f.attach(method, 'a')
-      await vi.waitFor(() => expect(f.pending).toHaveLength(1))
-      f.attach(method, 'a')
-      await vi.waitFor(() => expect(f.pending).toHaveLength(2))
-      const [older, newer] = f.pending.splice(0)
-      older.resolve()
-      await new Promise(resolve => setImmediate(resolve))
-      expect(f.subscriptions.has('a')).toBe(true)
-      newer[outcome]()
-      await vi.waitFor(() => expect(f.subscriptions.has('a')).toBe(false))
-      expect(getUiState().sid).toBe('x')
-      expect(f.subscriptions.has('x')).toBe(true)
-    } finally {
-      f.cleanup()
-    }
+  try {
+    await f.initial()
+    f.attach(method, 'a')
+    await vi.waitFor(() => expect(f.pending).toHaveLength(1))
+    f.attach(method, 'a')
+    await vi.waitFor(() => expect(f.pending).toHaveLength(2))
+    const [older, newer] = f.pending.splice(0)
+    older.resolve()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(f.subscriptions.has('a')).toBe(true)
+    newer[outcome]()
+    await vi.waitFor(() => expect(f.subscriptions.has('a')).toBe(false))
+    expect(getUiState().sid).toBe('x')
+    expect(f.subscriptions.has('x')).toBe(true)
+  } finally {
+    f.cleanup()
   }
-)
+})

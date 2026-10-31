@@ -411,6 +411,8 @@ def _build_skill_message(
     if runtime_note:
         parts += ["", f"[Runtime note: {runtime_note}]"]
     message = "\n".join(parts)
+    from tools.skills_tool_dedup import register_inline_skill_block
+    register_inline_skill_block(message, loaded_skill, content)
     if stable_prefix is not None and message.startswith(stable_prefix) and len(message) > len(stable_prefix):
         register_stable_prefix(stable_prefix)
     return message

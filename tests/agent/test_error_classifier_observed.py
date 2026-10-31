@@ -38,6 +38,8 @@ AFFORD_402 = {"error": {"message": (
     "code": 402}}
 NOT_MULTIMODAL_400 = {"error": {"message": "glm-5.2-fp8 is not a multimodal model", "type": "BadRequestError",
                                 "param": None, "code": 400}}
+ORCAROUTER_SIZE_MSG = ("This prompt is longer than the free tier allows for a single request. "
+                       "Shorten it, or add credits to use this model without the free-tier cap")
 
 # (id, provider, exception, expected reason, retryable, should_fallback)
 OBSERVED = [
@@ -69,6 +71,18 @@ OBSERVED = [
     ("router-no-workers", "custom", _status(openai.InternalServerError, 500, {"error": {
         "message": "No available workers (all circuits open or unhealthy)"}}),
      FailoverReason.server_error, True, False),
+    # OrcaRouter free tier's per-request SIZE refusal; the raised error carries no
+    # parseable status, so the message list is the only lever (#142230). The "add
+    # credits" tail must not pull it into billing: a quota refusal never carries
+    # the size phrase.
+    ("orcarouter-free-tier-size", "custom", openai.APIError(
+        ORCAROUTER_SIZE_MSG, request=_REQUEST, body={"error": {"message": ORCAROUTER_SIZE_MSG}}),
+     FailoverReason.context_overflow, True, False),
+    # The same body when the 400 survives on the raised error: the sibling path shares
+    # the one pattern list and must compress too.
+    ("orcarouter-free-tier-size-400", "custom", _status(openai.BadRequestError, 400, {
+        "error": {"message": ORCAROUTER_SIZE_MSG}}),
+     FailoverReason.context_overflow, True, False),
 ]
 
 

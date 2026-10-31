@@ -11,6 +11,7 @@ import { zhErrorCodes } from './zh_error_codes'
 import { zhErrorLayers } from './zh_error_layers'
 import { zhFirstRun } from './zh_first_run'
 import { zhGatewayHost } from './zh_gateway_host'
+import { zhGatewayRelay } from './zh_gateway_relay'
 import { zhLocalModels } from './zh_local_models'
 import { zhMemoryLayers } from './zh_memory_layers'
 import { zhModelMenu } from './zh_model_menu'
@@ -1400,6 +1401,7 @@ export const zhOverrides = {
     gateway: {
       loading: '正在加载网关设置...',
       ...zhGatewayHost,
+      relay: zhGatewayRelay,
       title: '网关连接',
       envOverride: '环境变量覆盖',
       intro:

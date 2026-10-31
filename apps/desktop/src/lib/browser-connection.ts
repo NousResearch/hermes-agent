@@ -2,6 +2,7 @@ import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 
 import type { HermesApiRequest, HermesConnection } from '@/global'
 import { webappSignInRequired } from '@/lib/browser-launch-session'
+import type { BrowserRelays } from '@/lib/browser-relay'
 import { createServedProfiles, SERVED_SET_READ_TIMEOUT_MS, UnservedProfileError } from '@/lib/browser-served-profiles'
 import {
   type AudioSocketPath,
@@ -83,10 +84,19 @@ function browserConnectionConfig(bootstrap: BrowserBootstrap, profile?: null | s
 interface BrowserConnectionOptions {
   api: <T>(request: HermesApiRequest) => Promise<T>
   bootstrap: BrowserBootstrap
+  /** The gateways the serving one relays to, when its relay is on (`browser-relay.ts`). */
+  relays?: BrowserRelays | null
 }
 
+const relayed = (relays: BrowserRelays | null | undefined, connectionId?: null | string) =>
+  relays && connectionId && connectionId !== LOCAL_CONNECTION_ID ? relays : null
+
 /** Connection, gateway socket, roster and sign-in members, all bound to the serving origin. */
-export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnectionOptions): Pick<
+export function createBrowserConnectionBridge({
+  api,
+  bootstrap,
+  relays
+}: BrowserConnectionOptions): Pick<
   Window['hermesDesktop'],
   | 'getAgentRoster'
   | 'getAudioWsUrl'
@@ -169,30 +179,75 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
     }
   }
 
+  // Every relayed gateway's profiles, read through the relay; one that cannot answer is listed
+  // unreachable rather than failing the roster.
+  const relayedRoster = async () => {
+    if (!relays) {
+      return { agents: [], sources: [] }
+    }
+
+    const rows = await relays.gateways().catch(() => [])
+
+    const read = await Promise.all(
+      rows.map(async row => {
+        try {
+          return { agents: await relays.rosterAgents(row.id), row }
+        } catch (error) {
+          return { agents: [], error: error instanceof Error ? error.message : String(error), row }
+        }
+      })
+    )
+
+    return {
+      agents: read.flatMap(entry => entry.agents),
+      sources: read.map(entry => ({
+        connectionId: entry.row.id,
+        kind: 'remote' as const,
+        label: entry.row.label,
+        reachable: !('error' in entry),
+        ...('error' in entry ? { error: entry.error } : {})
+      }))
+    }
+  }
+
+  const getRelayedWsUrl = async (connectionId: string, profile?: null | string) => {
+    try {
+      return { ok: true as const, wsUrl: await relays!.socketUrl(connectionId, '/api/ws', profile) }
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error), ok: false as const }
+    }
+  }
+
   return {
     getAgentRoster: async () => {
-      const profiles = await installedProfiles()
+      const [profiles, remote] = await Promise.all([installedProfiles(), relayedRoster()])
       const connectionLabel = window.location.host
 
       return {
-        agents: profiles.map(profile => ({
-          connectionId: LOCAL_CONNECTION_ID,
-          connectionKind: 'local' as const,
-          connectionLabel,
-          // A real 'hermes' profile keeps @hermes; the default answers to @default then.
-          handle: profile === 'default' && !profiles.includes('hermes') ? 'hermes' : profile,
-          profile,
-          targetProfile: profile,
-          // Installed here, so listed, but served elsewhere or nowhere.
-          ...(reachesSocket(profile) ? {} : { reachable: false as const })
-        })),
+        agents: [
+          ...profiles.map(profile => ({
+            connectionId: LOCAL_CONNECTION_ID,
+            connectionKind: 'local' as const,
+            connectionLabel,
+            // A real 'hermes' profile keeps @hermes; the default answers to @default then.
+            handle: profile === 'default' && !profiles.includes('hermes') ? 'hermes' : profile,
+            profile,
+            targetProfile: profile,
+            // Installed here, so listed, but served elsewhere or nowhere.
+            ...(reachesSocket(profile) ? {} : { reachable: false as const })
+          })),
+          ...remote.agents
+        ],
         primaryConnectionId: LOCAL_CONNECTION_ID,
-        sources: [{
-          connectionId: LOCAL_CONNECTION_ID,
-          kind: 'local' as const,
-          label: connectionLabel,
-          reachable: true
-        }]
+        sources: [
+          {
+            connectionId: LOCAL_CONNECTION_ID,
+            kind: 'local' as const,
+            label: connectionLabel,
+            reachable: true
+          },
+          ...remote.sources
+        ]
       }
     },
     // Each voice stream dial mints its own ticket: the gateway's opens only `/api/ws`.
@@ -201,6 +256,10 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
       path: AudioSocketPath
       profile?: null | string
     }) => {
+      if (relayed(relays, payload.connectionId)) {
+        return relays!.socketUrl(payload.connectionId!, payload.path, payload.profile)
+      }
+
       requireBrowserConnection(payload.connectionId)
 
       return ticketedWebsocketUrl(bootstrap, payload.path, payload.profile)
@@ -215,6 +274,14 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
     }),
     getConnectionConfig: async (profile?: null | string) => browserConnectionConfig(bootstrap, profile),
     getConnectionFor: async (payload: { connectionId?: null | string; profile?: null | string }) => {
+      if (relayed(relays, payload.connectionId)) {
+        if (!relays!.gateway(payload.connectionId)) {
+          await relays!.gateways()
+        }
+
+        return relays!.connection(payload.connectionId!, payload.profile)
+      }
+
       requireBrowserConnection(payload.connectionId)
 
       return {
@@ -227,6 +294,10 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
     },
     getGatewayWsUrl,
     getGatewayWsUrlFor: async (payload: { connectionId?: null | string; profile?: null | string }) => {
+      if (relayed(relays, payload.connectionId)) {
+        return getRelayedWsUrl(payload.connectionId!, payload.profile)
+      }
+
       requireBrowserConnection(payload.connectionId)
 
       return getGatewayWsUrl(payload.profile)

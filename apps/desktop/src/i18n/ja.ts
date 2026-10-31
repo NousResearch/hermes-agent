@@ -12,6 +12,7 @@ import { jaErrorCodes } from './ja_error_codes'
 import { jaErrorLayers } from './ja_error_layers'
 import { jaFirstRun } from './ja_first_run'
 import { jaGatewayHost } from './ja_gateway_host'
+import { jaGatewayRelay } from './ja_gateway_relay'
 import { jaLocalModels } from './ja_local_models'
 import { jaMemoryLayers } from './ja_memory_layers'
 import { jaModelMenu } from './ja_model_menu'
@@ -992,6 +993,7 @@ export const jaOverrides = {
     gateway: {
       loading: 'ゲートウェイ設定を読み込み中...',
       ...jaGatewayHost,
+      relay: jaGatewayRelay,
       title: 'ゲートウェイ接続',
       envOverride: 'env オーバーライド',
       intro:

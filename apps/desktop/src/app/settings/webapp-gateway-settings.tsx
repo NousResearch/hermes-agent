@@ -6,6 +6,7 @@ import { Check, Loader2 } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { ListRow, Pill, SettingsContent } from './primitives'
+import { WebappGatewayRelaySettings } from './webapp-gateway-relay-settings'
 
 interface ServingHost {
   signedIn: boolean
@@ -79,6 +80,7 @@ export function WebappGatewaySettings({ embedded }: { embedded: boolean }) {
       <p className="mt-2 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
         {g.webappHostDesc}
       </p>
+      <WebappGatewayRelaySettings />
     </SettingsContent>
   )
 }

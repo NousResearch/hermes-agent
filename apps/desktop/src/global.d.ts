@@ -87,6 +87,15 @@ declare global {
       // set when its cached answer does not serve that profile. Bounded, and
       // never rejects: on a timeout or failure the cached set stands.
       refreshServedProfile?: (profile: string) => Promise<void>
+      // Browser host only, with the serving gateway's relay on: the other
+      // gateways it was paired with (shown as registry connections), pairing
+      // with another one, and the grants this gateway issued to others.
+      gatewayRelay?: {
+        gateways: () => Promise<GatewayRelayGateway[]>
+        startPairing: (url: string, label: string) => Promise<string>
+        grants: () => Promise<GatewayRelayGrant[]>
+        revokeGrant: (grantId: string) => Promise<void>
+      }
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
       // with an error code when the sessionId is empty/invalid. `watch` opens
@@ -1080,6 +1089,24 @@ export interface DesktopPluginProfileRoute {
   primary?: true
   profile: string
   targetProfile: string
+}
+
+/** A gateway the Webapp's serving gateway relays to (`hermes_cli/webapp_relay.py`). */
+export interface GatewayRelayGateway {
+  added_at: number
+  id: string
+  label: string
+  scopes: string[]
+  url: string
+}
+
+/** A grant this gateway issued to another one that relays here. */
+export interface GatewayRelayGrant {
+  created_at: number
+  hub_name: string
+  hub_origin: string
+  id: string
+  scopes: string[]
 }
 
 export interface HermesConnection {

@@ -10,6 +10,7 @@ import { deErrorCodes } from './de_error_codes'
 import { deErrorLayers } from './de_error_layers'
 import { deFirstRun } from './de_first_run'
 import { deGatewayHost } from './de_gateway_host'
+import { deGatewayRelay } from './de_gateway_relay'
 import { deLocalModels } from './de_local_models'
 import { deMemoryLayers } from './de_memory_layers'
 import { deModelMenu } from './de_model_menu'
@@ -1699,6 +1700,7 @@ export const deOverrides = {
     gateway: {
       loading: 'Gateway-Einstellungen werden geladen…',
       ...deGatewayHost,
+      relay: deGatewayRelay,
       title: 'Gateway-Verbindung',
       envOverride: 'ENV-Überschreibung',
       intro:

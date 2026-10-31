@@ -189,6 +189,9 @@ def mount_spa(application: FastAPI):
         # Only a host that records its surface (the gateway's Webapp) names it to the page.
         surface = getattr(application.state, "ui_surface", None)
         surface_js = "" if surface is None else f"window.__HERMES_UI_SURFACE__={json.dumps(surface)};"
+        # The gateway relay (hermes_cli.webapp_relay): the page offers the gateways it reaches.
+        from hermes_cli.webapp_relay import relay_enabled
+        relay_js = "window.__HERMES_GATEWAY_RELAY__=true;" if relay_enabled(application.state) else ""
         # Webapp grants host files and shell.exec as well as PTYs: its existing
         # session token must come from the operator, never anonymous HTML. The
         # gateway-hosted listener (gateway/run_api.py) never publishes it either:
@@ -214,6 +217,7 @@ def mount_spa(application: FastAPI):
             f"window.__HERMES_AUTH_REQUIRED__={'true' if gated else 'false'};"
             f"window.__HERMES_INITIAL_PROFILE__={initial_profile_js};"
             f"{surface_js}"
+            f"{relay_js}"
             f"window.__HERMES_DASHBOARD_PROFILE__={serving_profile_js};"
             f"</script>"
         )

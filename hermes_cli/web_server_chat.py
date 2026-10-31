@@ -402,6 +402,13 @@ def _consume_ws_ticket(ws: WebSocket, reject, socket: Optional[str] = None, *,
         # to a screen viewer); it must not double as a login here.
         reject("display ticket presented as a gateway login")
         return "ticket_invalid", "ticket"
+    if info.get("relay_grant"):
+        # Minted for a hub's relayed request: the grant must still stand and reach this socket, and
+        # revoking it closes this.
+        from hermes_cli.webapp_relay_grants import admit_relayed_socket
+        if (refused := admit_relayed_socket(ws, info["relay_grant"])) is not None:
+            reject(refused)
+            return "ticket_invalid", "ticket"
     # Only identity fields are carried; bookkeeping such as ``minted_at`` is not part of it.
     ws._hermes_auth_identity = {"user_id": info.get("user_id"), "provider": info.get("provider")}
     if info.get("issuer"):

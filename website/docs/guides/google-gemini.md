@@ -146,7 +146,7 @@ to `~/.hermes/.env` (or set `base_url` on the provider) once and restart.
 
 ## Available Models
 
-The `hermes model` picker shows Gemini models maintained in Hermes' provider registry. Common choices include:
+With a Gemini API key, the `hermes model` picker lists the Gemini chat models your key can use, taken from Google's model catalog. Media, TTS, embedding and other special-purpose models are left out. If the catalog can't be reached, the picker falls back to Hermes' curated list. Common choices include:
 
 | Model | ID | Notes |
 |-------|----|-------|

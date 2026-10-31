@@ -123,6 +123,13 @@ When interrupted (user sends new message, `/stop` command, or signal):
 - The agent can process the new input or shut down cleanly
 - No partial response is injected into conversation history
 
+The cross-turn stale-call circuit breaker lives in `agent/chat_completion_stale.py`;
+internal callers import its helpers directly. When `StaleGiveupError` reaches
+`agent/turn_recovery.py`, its `agent/turn_recovery_stale.py` handler attempts
+compaction once if the request exceeds the compressor threshold.
+It retries only when compaction shortens the transcript;
+otherwise the failure message explains how to resume.
+
 ## Tool Execution
 
 ### Sequential vs Concurrent

@@ -264,7 +264,9 @@ class CLIStreamMixin:
         an interrupt) would otherwise draw a reasoning box inside the response box.
         """
         from cli import _DIM, _RST, _cprint
-        if not text:
+        # Whitespace-only reasoning (some providers emit "\n\n") must not open a box: it would
+        # render as an empty "Reasoning" panel. Skip it so the box only appears for real text.
+        if not text or not text.strip():
             return
         self._reasoning_shown_this_turn = True
         if getattr(self, "_stream_box_opened", False):

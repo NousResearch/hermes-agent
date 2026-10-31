@@ -364,8 +364,8 @@ def _plugin_terminal_backend_rows() -> list[dict[str, str]]:
     return rows
 
 
-# Token / cost analytics helpers.
-_AUX_COUNTERS = ("input_tokens", "output_tokens", "estimated_cost", "api_calls")
+# Token / cost analytics helpers. Spend is ``estimated_cost`` + ``actual_cost`` (disjoint calls).
+_AUX_COUNTERS = ("input_tokens", "output_tokens", "estimated_cost", "actual_cost", "api_calls")
 
 
 def _token_volume(row: dict[str, Any]) -> Any:
@@ -377,10 +377,12 @@ def _aux_usage_rows(db, cutoff: float) -> list[dict[str, Any]]:
     (task != '') record_auxiliary_usage writes into session_model_usage. [] when the
     table predates the task column (older DB opened read-only by newer code).
 
-    See #23270.
+    See #23270. Cost sums read a non-finite stored value as 0 (``finite_cost_sql``).
     """
+    from hermes_state_usage import finite_cost_sql
+
     try:
-        cur = db._conn.execute("""
+        cur = db._conn.execute(f"""
             SELECT u.model,
                    u.task,
                    u.billing_provider,
@@ -388,7 +390,8 @@ def _aux_usage_rows(db, cutoff: float) -> list[dict[str, Any]]:
                    SUM(u.output_tokens) as output_tokens,
                    SUM(u.cache_read_tokens) as cache_read_tokens,
                    SUM(u.reasoning_tokens) as reasoning_tokens,
-                   COALESCE(SUM(u.estimated_cost_usd), 0) as estimated_cost,
+                   COALESCE(SUM({finite_cost_sql("u.estimated_cost_usd")}), 0) as estimated_cost,
+                   COALESCE(SUM({finite_cost_sql("u.actual_cost_usd")}), 0) as actual_cost,
                    COUNT(DISTINCT u.session_id) as sessions,
                    SUM(COALESCE(u.api_call_count, 0)) as api_calls,
                    MAX(u.last_seen) as last_used_at
@@ -414,7 +417,7 @@ def _merge_aux_into_by_model(
     for aux in aux_rows:
         model = aux.get("model") or "unknown"
         target = merged.setdefault(model, {"model": model, "input_tokens": 0, "output_tokens": 0,
-                                           "estimated_cost": 0, "sessions": 0, "api_calls": 0})
+                                           "estimated_cost": 0, "actual_cost": 0, "sessions": 0, "api_calls": 0})
         for key in _AUX_COUNTERS:
             target[key] = (target.get(key) or 0) + (aux.get(key) or 0)
         target.setdefault("aux_tasks", []).append(
@@ -428,7 +431,7 @@ def _aux_task_summary(aux_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for aux in aux_rows:
         task = aux.get("task") or ""
         d = by_task.setdefault(task, {"task": task, "input_tokens": 0, "output_tokens": 0,
-                                      "estimated_cost": 0, "api_calls": 0, "models": []})
+                                      "estimated_cost": 0, "actual_cost": 0, "api_calls": 0, "models": []})
         for key in _AUX_COUNTERS:
             d[key] += aux.get(key) or 0
         model = aux.get("model") or "unknown"

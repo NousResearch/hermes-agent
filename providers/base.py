@@ -279,6 +279,8 @@ class ProviderProfile:
     setup_reasoning_efforts: Callable[[str], Any] | None = None
 
     # ── Hooks (override in subclass for complex providers) ───
+    # ``get_usage_cost``: core stores an ``actual`` amount in ``actual_cost_usd`` and any other amount
+    # in ``estimated_cost_usd``; spend readers add the two.
 
     def fetch_account_usage(
         self, *, base_url: str | None = None, api_key: str | None = None

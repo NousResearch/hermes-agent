@@ -217,7 +217,7 @@ export const uk: Translations = {
 
   models: {
     modelsUsed: "Використано моделей",
-    estimatedCost: "Орієнт. вартість",
+    cost: "Вартість",
     tokens: "токени",
     sessions: "сесії",
     avgPerSession: "сер./сесію",

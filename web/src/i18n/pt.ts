@@ -217,7 +217,7 @@ export const pt: Translations = {
 
   models: {
     modelsUsed: "Modelos utilizados",
-    estimatedCost: "Custo est.",
+    cost: "Custo",
     tokens: "tokens",
     sessions: "sessões",
     avgPerSession: "média/sessão",

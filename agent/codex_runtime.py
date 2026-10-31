@@ -207,13 +207,18 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
     if cost_usd is not None:
         agent.session_estimated_cost_usd += cost_usd
     agent.session_cost_status, agent.session_cost_source = cost_result.status, cost_result.source
-    cost_fields = {"estimated_cost_usd": cost_usd, "cost_status": cost_result.status, "cost_source": cost_result.source}
+    from agent.usage_cost_columns import note_reported_cost, split_cost_columns
+    note_reported_cost(agent, cost_result.status, cost_usd)
+    cost_fields = {**split_cost_columns(cost_usd, cost_result.status), "cost_status": cost_result.status,
+                   "cost_source": cost_result.source}
     _queue_token_counts(
         agent, "Codex app-server token persistence failed (session=%s, tokens=%d): %s", total_tokens,
         counts=lambda: billing(**token_counts, **cost_fields,
                                billing_mode="subscription_included" if cost_result.status == "included" else None),
     )
-    return {**usage_dict, "last_prompt_tokens": prompt_tokens, **cost_fields}
+    # The turn result keeps today's shape: the call's cost as ``estimated_cost_usd`` (the session total key).
+    return {**usage_dict, "last_prompt_tokens": prompt_tokens, "estimated_cost_usd": cost_usd,
+            "cost_status": cost_result.status, "cost_source": cost_result.source}
 
 
 def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | None = None, force: bool = False) -> bool:

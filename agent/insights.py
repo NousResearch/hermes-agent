@@ -52,6 +52,18 @@ def _short_model(model: Optional[str]) -> str:
     return (model or "unknown").split("/")[-1]
 
 
+def _finite_costs(rows: list[dict]) -> list[dict]:
+    """Stored cost columns as finite floats (an inf written before the sinks checked reads as 0), so the
+    report's sums, labels and JSON never carry inf. NULL stays NULL (it means "no stored split")."""
+    from hermes_state_usage import finite_cost
+
+    for row in rows:
+        for col in ("estimated_cost_usd", "actual_cost_usd"):
+            if row.get(col) is not None:
+                row[col] = finite_cost(row[col])
+    return rows
+
+
 def _parse_json(raw: Any, kind: type) -> Any:
     """JSON-decode *raw* when it is a string; the value if it is a *kind*, else None."""
     try:
@@ -236,7 +248,7 @@ class InsightsEngine:
         for row in rows:
             for col in ("started_at", "ended_at"):
                 row[col] = coerce_epoch(row.get(col), session_id=row.get("id"), field=col)
-        return rows
+        return _finite_costs(rows)
 
     def _get_tool_usage(self, cutoff: float, source: str | None = None) -> list[dict]:
         """Tool call counts from two sources: ``tool_name`` on 'tool' rows (set
@@ -285,7 +297,7 @@ class InsightsEngine:
     def _get_model_usage(self, cutoff: float, source: str | None = None) -> list[dict]:
         """Per-model usage rows; [] when the table is missing (older DB) so the caller falls back to the per-session aggregate."""
         try:
-            return [dict(row) for row in self._query("_GET_MODEL_USAGE", cutoff, source)]
+            return _finite_costs([dict(row) for row in self._query("_GET_MODEL_USAGE", cutoff, source)])
         except sqlite3.OperationalError:
             return []
 
@@ -313,6 +325,8 @@ class InsightsEngine:
             (models_with_pricing if known else models_without_pricing).add(_short_model(model))
         if models:
             total_cost = sum(float(m.get("cost") or 0.0) for m in models)
+            # Per-model rows include auxiliary calls, whose provider-reported spend the sessions row lacks.
+            actual_cost = sum(float(m.get("actual_cost") or 0.0) for m in models)
         # Guard against negative durations from clock drift.
         durations = [s["ended_at"] - s["started_at"] for s in sessions
                      if s.get("started_at") and s.get("ended_at") and s["ended_at"] > s["started_at"]]
@@ -485,11 +499,14 @@ class InsightsEngine:
 
     @staticmethod
     def _cost_lines(o: dict, templates: tuple) -> list[str]:
-        """One formatted line per non-zero cost bucket (estimated, included, unknown)."""
-        # Cost breakdown — surface the three buckets so subscription-included and unknown-cost sessions are
-        # visible instead of silently collapsing to $0. See #77223.
-        est_cost = o.get("estimated_cost", 0.0)
-        values = (_fmt_est_cost(est_cost) if est_cost > 0 else "", o.get("included_cost_sessions", 0), o.get("unknown_cost_sessions", 0))
+        """One formatted line per non-zero cost bucket (reported, estimated, included, unknown)."""
+        # Cost breakdown — surface the buckets so subscription-included and unknown-cost sessions are
+        # visible instead of silently collapsing to $0. See #77223. Reported (provider-billed) and
+        # estimated spend are disjoint calls, so both lines show and they add up.
+        est_cost, actual_cost = o.get("estimated_cost", 0.0), o.get("actual_cost", 0.0) or 0.0
+        values = (format_cost_label(Decimal(str(actual_cost))).lstrip("~") if actual_cost > 0 else "",
+                  _fmt_est_cost(est_cost) if est_cost > 0 else "",
+                  o.get("included_cost_sessions", 0), o.get("unknown_cost_sessions", 0))
         return [tpl.format(v) for tpl, v in zip(templates, values) if v]
 
     def format_terminal(self, report: dict) -> str:
@@ -525,7 +542,8 @@ class InsightsEngine:
             lines.append(f"  Active time:       ~{format_duration_compact(o['total_hours'] * 3600):<11}  Avg session:     ~{format_duration_compact(o['avg_session_duration'])}")
         lines += [f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}", ""]
         # Cost buckets: show included/unknown sessions instead of collapsing to $0.
-        cost_lines = self._cost_lines(o, ("  Estimated:          {}", "  Included:           {} session(s) (subscription — no provider invoice)",
+        cost_lines = self._cost_lines(o, ("  Reported:           {} (billed by the provider)", "  Estimated:          {}",
+                                          "  Included:           {} session(s) (subscription — no provider invoice)",
                                           "  Unknown:            {} session(s) (no pricing data)"))
         if cost_lines:
             lines += self._section("💰 Cost") + cost_lines + [""]
@@ -584,7 +602,7 @@ class InsightsEngine:
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{format_duration_compact(o['total_hours'] * 3600)} | **Avg session:** ~{format_duration_compact(o['avg_session_duration'])}")
         lines.append("")
-        cost_parts = self._cost_lines(o, ("{} estimated", "{} included (subscription)", "{} unknown"))
+        cost_parts = self._cost_lines(o, ("{} reported", "{} estimated", "{} included (subscription)", "{} unknown"))
         if cost_parts:
             lines += [f"**Cost:** {' | '.join(cost_parts)}", ""]
         if report["models"]:

@@ -7537,6 +7537,7 @@ def heartbeat_worker(
     expected_run_id: Optional[int] = None,
     session_id: Optional[str] = None,
     worker_home: Optional[str] = None,
+    claim_lock: Optional[str] = None,
 ) -> bool:
     """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
 
@@ -7555,6 +7556,48 @@ def heartbeat_worker(
     """
     now = int(time.time())
     with write_txn(conn):
+        run_id = (
+            int(expected_run_id)
+            if expected_run_id is not None
+            else _current_run_id(conn, task_id)
+        )
+        if run_id is not None:
+            run_row = conn.execute(
+                "SELECT claim_lock FROM task_runs WHERE id = ? AND task_id = ?",
+                (run_id, task_id),
+            ).fetchone()
+            if run_row is None:
+                return False
+            if claim_lock is not None and run_row["claim_lock"] != claim_lock:
+                _log.warning(
+                    "kanban heartbeat ignored: claim identity mismatch task=%s run=%s",
+                    task_id, run_id,
+                )
+                return False
+            identity_row = conn.execute(
+                """
+                SELECT payload FROM task_events
+                 WHERE task_id = ? AND run_id = ? AND kind = 'heartbeat'
+                 ORDER BY created_at ASC, id ASC LIMIT 1
+                """,
+                (task_id, run_id),
+            ).fetchone()
+            if identity_row and identity_row["payload"]:
+                try:
+                    identity = json.loads(identity_row["payload"])
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    identity = {}
+                if (
+                    (identity.get("session_id") is not None
+                     and session_id != identity.get("session_id"))
+                    or (identity.get("worker_home") is not None
+                        and worker_home != identity.get("worker_home"))
+                ):
+                    _log.warning(
+                        "kanban heartbeat ignored: session/home identity mismatch task=%s run=%s",
+                        task_id, run_id,
+                    )
+                    return False
         if expected_run_id is None:
             cur = conn.execute(
                 "UPDATE tasks SET last_heartbeat_at = ? "
@@ -7569,11 +7612,6 @@ def heartbeat_worker(
             )
         if cur.rowcount != 1:
             return False
-        run_id = (
-            int(expected_run_id)
-            if expected_run_id is not None
-            else _current_run_id(conn, task_id)
-        )
         if run_id is not None:
             conn.execute(
                 "UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?",

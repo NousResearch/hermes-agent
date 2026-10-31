@@ -142,7 +142,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     out. Shared by the terminal command guard, the execute_code guard, the plugin
     escalation gate, and MCP elicitation. Returns ``{"resolved", "choice",
     "reason"}`` or ``{"resolved": False, "choice": None, "notify_failed": True}``
-    when the notify callback raised. Persisting the choice and building the
+    when the notify callback raises before a decision commits. A committed choice
+    survives a later notification failure. Persisting the choice and building the
     tool-facing result stay with the caller.
 
     Identical concurrent approvals (same command text + pattern-key set) are
@@ -217,7 +218,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             # ``request.cancel`` carries a RequestCancelReason: a choice committed from another surface is
             # ``resolved``; a withdrawn entry (woken with no choice — session torn down, turn ended, client
             # cannot answer) is ``session_closed``; never the raw poll-state token "set".
-            if state == "timeout" and choice is not None:
+            if state in ("timeout", "notify_failed") and choice is not None:
                 reason = "resolved"
             elif state == "set":
                 reason = "resolved" if choice is not None else "session_closed"
@@ -239,8 +240,14 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             notify_cb(dict(entry.data))
             approval_published()
         except Exception as exc:
+            # Notification can fail after another surface committed the answer.
+            # Read and remove under the resolver's lock so projection is not a veto.
+            choice = _drop_entry("notify_failed")
+            if choice is not None:
+                logger.debug("Approval projection failed after committed decision: %s", exc)
+                human.outcome = _hook_choice(True, choice, {})
+                return _finish(payload, True, choice, entry.reason)
             logger.warning("Gateway approval notify failed: %s", exc)
-            _drop_entry("notify_failed")
             _ctx._fire_approval_hook("post_approval_response", **payload, choice="notify_failed")
             human.outcome = "notify_failed"
             return {"resolved": False, "choice": None, "notify_failed": True}

@@ -56,6 +56,12 @@ for Windows archive in Hermes' tool store. It does not replace your system Git.
 See [installation methods](https://hermes-agent.nousresearch.com/docs/getting-started/installation)
 for the separate MSIX/App Installer package and its update ownership.
 
+#### Windows Desktop launcher
+
+After building the packaged Desktop app, run `hermes desktop install` in PowerShell to create per-user shortcuts in both the Desktop and Start Menu. Hermes asks Windows for its Known Folders rather than assuming `%USERPROFILE%\Desktop`, so redirected, OneDrive-managed, and localized corporate profiles resolve to the real user destinations. The Start Menu shortcut uses the canonical `com.nousresearch.hermes` AppUserModel ID for consistent Windows identity and launch behavior.
+
+This is user-level only: it does not request elevation or write machine-wide locations. The command requires an existing packaged app (`hermes desktop --build-only`); shortcut repair after an app update and non-Windows desktop entries remain outside this command. Focused verification covers redirected/localized paths, unavailable Known Folder APIs, shortcut properties, and canonical identity with `python -m pytest -q tests/hermes_cli/test_windows_desktop_shortcuts.py` (5 passed on the development host). Runtime shell/API validation still requires a Windows desktop session.
+
 > **Android / Termux:** A signed APT repository is available for aarch64 devices, with a `stable` channel (tagged releases) and a prerelease `canary` channel. The package includes Python, Node.js, and the TUI. Use the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux), not the desktop/server installer script.
 >
 > **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.

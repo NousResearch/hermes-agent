@@ -676,8 +676,11 @@ def interactive_setup() -> None:
     save_env_value("MATTERMOST_TOKEN", token)
     print_success("Mattermost token saved")
     print()
-    info("🔒 Security: Restrict who can use your bot", "   To find your user ID: click your avatar → Profile",
-         "   or use the API: GET /api/v4/users/me")
+    info("🔒 Security: Restrict who can use your bot",
+         "   The profile dialog does not show your user ID.",
+         "   System Console → User Management → Users → open your user,",
+         "   or GET /api/v4/users/username/<your-username>.",
+         "   /api/v4/users/me with the bot token is the bot's id, not yours.")
     print()
     allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
     if allowed_users:

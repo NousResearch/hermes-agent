@@ -2124,6 +2124,53 @@ class TestCronDeliveryMirror:
         assert args[2].startswith("[Cron delivery: Morning Brief]")
         assert "Market movers today" in args[2]
 
+
+    def test_fresh_session_skips_user_mirror(self):
+        """fresh_session jobs must not fake-user into an existing DM transcript."""
+        from cron.scheduler_delivery import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
+            _maybe_mirror_cron_delivery(
+                {"id": "j1", "name": "Morning Brief", "fresh_session": True},
+                "phone", "phone", "Evening options", enabled=True,
+            )
+        m.assert_not_called()
+
+
+    def test_fresh_session_seeds_assistant_role_unlabeled(self):
+        """fresh_session seed: NEW session, bootstrap user then assistant brief (Anthropic-safe)."""
+        from cron.scheduler_delivery import _seed_cron_fresh_session
+
+        entry = MagicMock()
+        entry.session_id = "sess-fresh-1"
+        store = MagicMock()
+        store.get_or_create_session.return_value = entry
+        adapter = MagicMock()
+        adapter._session_store = store
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m, \
+             patch("cron.scheduler_delivery._title_cron_seed_session") as title:
+            ok = _seed_cron_fresh_session(
+                {"id": "j1", "name": "Evening Check-in"},
+                adapter, "phone", "cron-evening-j1-20261011_193500",
+                "1) dishes  2) bed  3) more",
+            )
+        assert ok is True
+        store.get_or_create_session.assert_called_once()
+        assert store.get_or_create_session.call_args.kwargs.get("force_new") is True
+        assert m.call_count == 2
+        boot_args, boot_kwargs = m.call_args_list[0]
+        brief_args, brief_kwargs = m.call_args_list[1]
+        assert boot_kwargs.get("role") == "user"
+        assert boot_kwargs.get("session_id") == "sess-fresh-1"
+        assert boot_args[2] == "[scheduled check-in]"
+        assert brief_kwargs.get("role") == "assistant"
+        assert brief_kwargs.get("session_id") == "sess-fresh-1"
+        assert brief_args[2] == "1) dishes  2) bed  3) more"
+        assert not brief_args[2].startswith("[Cron delivery:")
+        title.assert_called_once()
+
+
     def test_delivery_mirrors_clean_content_not_wrapped(self):
         """When enabled, the mirror receives the CLEAN agent output, not the
         cron header/footer-wrapped delivery text."""

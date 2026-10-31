@@ -562,6 +562,21 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.should_rotate_credential is True
 
+    def test_429_usage_limit_with_absolute_reset_at_stays_rate_limit(self):
+        # Z.AI/Zhipu word their periodic-quota 429 with an absolute reset
+        # instant: "Usage limit reached for 5 hour. Your limit will reset at
+        # <date time>." "reset at" was NOT a transient signal, so this read as
+        # terminal billing and killed kanban workers with rc=75 instead of
+        # falling back (credit: kanban t_8f8dd1f2, log t_0dbeb040).
+        e = MockAPIError(
+            "HTTP 429: Usage limit reached for 5 hour. Your limit will reset at 2026-09-23 20:06:41",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="zai", model="glm-5.3")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_fallback is True
+
     def test_429_with_structured_terminal_quota_code_is_billing(self):
         """LiteLLM stamps ``terminal_quota_exhausted`` on a hard-cap 429. The
         429 handler always returns a verdict, so the structured billing code

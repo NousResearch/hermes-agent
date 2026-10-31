@@ -10,6 +10,7 @@ in 1-2 sentences; pure function, no I/O or config reads.
 from __future__ import annotations
 
 import re
+import shlex
 from typing import Callable, Optional
 
 _SCAN_CHARS = 4000
@@ -53,6 +54,8 @@ _OUTPUT_HINTS: list[Callable[[str, str], Optional[str]]] = [
                 "Git merge conflict. Do not retry this command. Resolve the conflicted files "
                 "listed above (edit, then `git add`), then continue (`git rebase --continue` / "
                 "commit the merge) — or abort with `--abort`.", re.MULTILINE),
+    _regex_hint(r"(?m)^zsh:(?:\d+:)? command not found: ([\w.+/-]+)\s*$",
+                _missing_command_hint),
     _regex_hint(r"(?:bash: line \d+: |bash: |sh: \d*:? ?)?([\w.+-]+): command not found",
                 _missing_command_hint),
     # Almost always a venv-activation slip, not a missing dependency.
@@ -69,6 +72,17 @@ _OUTPUT_HINTS: list[Callable[[str, str], Optional[str]]] = [
     _regex_hint(r"Permission denied|EACCES",
                 "Permission denied. Check ownership/mode of the target path (`ls -la`); prefer a "
                 "user-writable location. Only escalate to sudo if the task genuinely requires it."),
+    _regex_hint(r"(?m)^[\w.]*APIError: Invalid (?:search )?query\s*$",
+                "The API rejected the query syntax. Check this service's documented search grammar "
+                "and start with a minimal valid query; retrying the same query or changing VPN/"
+                "privileges will not repair its syntax."),
+    _regex_hint(r"(?m)^(?:json\.decoder\.)?JSONDecodeError: Expecting value.*$",
+                "The response was empty or was not valid JSON. Inspect the upstream HTTP status, "
+                "content type and response body before parsing again; a JSON parse failure alone "
+                "does not establish an authentication or network failure."),
+    _regex_hint(r"(?m)^(?:[\w./-]+: )?(?:unrecognized|unknown|illegal|invalid) option\b.*$",
+                "This tool rejected an option. Read the installed version's --help (or man page) "
+                "and use its supported syntax before retrying."),
 ]
 
 # Exit-code-only hints for codes the terminal_tool semantics table does not
@@ -136,12 +150,58 @@ def _first_token(command: str) -> str:
     return ""
 
 
+_MISSING_EXECUTABLE_DIAGNOSTIC = re.compile(
+    r"(?m)^(?:(?:\S*/)?(?:ba|da|a)?sh: (?:line \d+: )?(?:\d+: )?"
+    r"([\w./+-]+): (?:command not found|not found)|"
+    r"zsh:(?:\d+:)? command not found: ([\w./+-]+))\s*$")
+
+
+def _has_sequenced_execution(command: str) -> bool:
+    """Find shell control, including inside at most three explicit shell carriers.
+
+    Quoted separators in ordinary arguments are inert. The shared scanner and
+    Bash option parser avoid a second shell grammar in the hints layer.
+    """
+    from tools.approval_detection import _bash_exec_payload, _scan_shell
+
+    for _ in range(3):
+        if any(kind == "subst" or (kind == "char" and quote is None and command[i] in ";&|\n")
+               for kind, i, _j, quote in _scan_shell(command, subst="uq", comments=True)):
+            return True
+        try:
+            words = shlex.split(command, comments=True)
+        except ValueError:
+            return False
+        while words and re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", words[0]):
+            words.pop(0)
+        if not words or words[0].rsplit("/", 1)[-1] not in {"bash", "sh", "dash", "ash", "zsh"}:
+            return False
+        found, payload = _bash_exec_payload(words[1:])
+        if not found or payload is None:
+            return False
+        command = payload
+    return False
+
+
 def annotate_masked_success(command: str, output: str) -> Optional[str]:
     """Warning note when an exit-0 result likely masks a failure (caller gates on exit 0)."""
     cmd = command or ""
     window = (output or "")[:_SCAN_CHARS]
-    if (not cmd or not window or _first_token(cmd) in _READONLY_HEADS
-            or not _FAILURE_SHAPES.search(window)):
+    if not cmd or not window or _first_token(cmd) in _READONLY_HEADS:
+        return None
+    if _first_token(cmd) == "nmap" and re.search(r'(?m)^Failed to resolve ".*"\.$', window):
+        return ("Nmap reported a target-resolution failure despite exit code 0. Those targets "
+                "were not successfully resolved; this does not establish that the hosts are down. "
+                "Check the target syntax in the installed version's help; supply separate host "
+                "arguments rather than a comma-joined list of hostnames.")
+    missing = _MISSING_EXECUTABLE_DIAGNOSTIC.search(window)
+    if missing and _has_sequenced_execution(cmd):
+        name = missing.group(1) or missing.group(2)
+        return (f"The output contains a shell diagnostic that `{name}` was not found. "
+                "Exit code 0 can come from a later command or fallback; it does not establish "
+                "that every command ran. Inspect that diagnostic before claiming the objective "
+                "succeeded. " + _missing_command_hint(name))
+    if not _FAILURE_SHAPES.search(window):
         return None
     return next((note for rx, note in _MASKING_SHAPES if rx.search(cmd)), None)
 

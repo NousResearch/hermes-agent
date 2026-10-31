@@ -41,6 +41,10 @@ DEFAULT_LOOP_WATCHDOG_TIMEOUT_S = 10.0
 # the loop it monitors) is fixed at the root by the off-loop heartbeat write + two-witness probe (#90502),
 # so the default stays tight for genuine wedges.
 DEFAULT_LOOP_WATCHDOG_MAX_STRIKES = 3
+# Bounds for the terminal task snapshot: enough to name the task that refuses cancellation, small
+# enough that a wedged loop's task registry is not walked for long from the watchdog thread.
+LOOP_TASK_SNAPSHOT_MAX_TASKS = 40
+LOOP_TASK_SNAPSHOT_MAX_FRAMES = 6
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
 _WATCHDOG_DUMP_RELATIVE = ("logs", "gateway-shutdown-watchdog.log")
 
@@ -84,6 +88,53 @@ def _arm_loop_floor_timer(
     return _LoopFloorTimerHandle(loop, iv if iv > 0 else DEFAULT_LOOP_FLOOR_TIMER_INTERVAL_S)
 
 
+def _task_frame_locations(task: Any, max_frames: int) -> list[str]:
+    """``file:line:function`` for a task's current coroutine chain — locations, never locals."""
+    locations: list[str] = []
+    coro = task.get_coro() if hasattr(task, "get_coro") else None
+    frame = getattr(coro, "cr_frame", None)
+    while frame is not None and len(locations) < max_frames:
+        code = frame.f_code
+        locations.append(f"{os.path.basename(code.co_filename)}:{frame.f_lineno}:{code.co_name}")
+        frame = frame.f_back
+    return locations
+
+
+def _describe_task(task: Any, max_frames: int) -> dict[str, Any]:
+    described: dict[str, Any] = {}
+    with contextlib.suppress(Exception):
+        described["name"] = task.get_name()
+    with contextlib.suppress(Exception):
+        described["cancelling"] = task.cancelling()
+    with contextlib.suppress(Exception):
+        described["done"] = task.done()
+    with contextlib.suppress(Exception):
+        described["frames"] = _task_frame_locations(task, max_frames)
+    return described
+
+
+def _describe_loop_tasks(
+    loop: asyncio.AbstractEventLoop, *, max_tasks: int = LOOP_TASK_SNAPSHOT_MAX_TASKS,
+    max_frames: int = LOOP_TASK_SNAPSHOT_MAX_FRAMES,
+) -> dict[str, Any]:
+    """Best-effort snapshot of a wedged loop's task state, read from the watchdog thread.
+
+    Thread stacks cannot see coroutine state, so a faulthandler dump alone cannot name the task that
+    refuses cancellation (#137838). Names, cancellation counts and frame locations answer that
+    without capturing locals or coroutine arguments (secrets). Enumeration is neither atomic nor
+    constant-time — the loop is wedged and the reader is another thread — so every read is
+    individually suppressed and the result is advisory only.
+    """
+    snapshot: dict[str, Any] = {}
+    with contextlib.suppress(Exception):
+        snapshot["ready_queue_len"] = len(loop._ready)
+    with contextlib.suppress(Exception):
+        tasks = list(asyncio.all_tasks(loop))
+        snapshot["task_count"] = len(tasks)
+        snapshot["tasks"] = [_describe_task(task, max_frames) for task in tasks[:max_tasks]]
+    return snapshot
+
+
 def start_loop_liveness_watchdog(
     loop: asyncio.AbstractEventLoop, *, probe_interval: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
     probe_timeout: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
@@ -106,7 +157,8 @@ def start_loop_liveness_watchdog(
             except Exception:
                 logger.debug("Failed to schedule gateway loop liveness probe", exc_info=True)
                 return
-            deadline = time.monotonic() + probe_timeout
+            miss_started = time.monotonic()
+            deadline = miss_started + probe_timeout
             while not stop_event.is_set():  # poll so a stop() mid-wait is honoured within ~50ms
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or probe_event.wait(timeout=min(remaining, 0.05)):
@@ -120,9 +172,20 @@ def start_loop_liveness_watchdog(
                 return
             strikes += 1
             if strikes < max_strikes:
+                # Bounded (at most max_strikes lines per death) and names the strike plus how long
+                # the probe actually waited, so how long the loop was starved is measurable from the
+                # log alone; before #137838 only the terminal strike was logged. Never raises into
+                # the ladder.
+                with contextlib.suppress(Exception):
+                    logger.warning(
+                        "Gateway event loop missed liveness probe %d/%d after %.1fs "
+                        "(probe timeout %.1fs); the supervisor restart follows at %d misses.",
+                        strikes, max_strikes, time.monotonic() - miss_started,
+                        probe_timeout, max_strikes)
                 continue
             if stop_event.is_set():
                 return
+            waited = time.monotonic() - miss_started
             with contextlib.suppress(Exception):
                 logger.critical(
                     "Gateway event loop missed %d consecutive liveness probes; dumping all thread "
@@ -130,9 +193,15 @@ def start_loop_liveness_watchdog(
                     strikes, exit_code)
             # File + stderr: a console-less launcher (Windows .vbs login item) discards stderr, so a
             # liveness death used to leave no stack anywhere (#120356, #91097).
+            dump_snapshot: dict[str, Any] = {
+                "strikes": strikes, "probe_interval_s": probe_interval,
+                "probe_timeout_s": probe_timeout, "missed_probe_wait_s": round(waited, 3),
+            }
+            with contextlib.suppress(Exception):  # diagnostics must never prevent the exit
+                dump_snapshot["loop_tasks"] = _describe_loop_tasks(loop)
             _write_watchdog_dump(
                 get_shutdown_watchdog_dump_path(), delay_s=probe_timeout * strikes,
-                snapshot={"strikes": strikes, "probe_interval_s": probe_interval},
+                snapshot=dump_snapshot,
                 event="loop_liveness_watchdog_fired")
             if stop_event.is_set():
                 return

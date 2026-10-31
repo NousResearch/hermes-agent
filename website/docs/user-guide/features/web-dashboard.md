@@ -1243,13 +1243,28 @@ Instead of the in-app setting, you can point the desktop at a backend with an en
 
 ## CORS
 
-The web server restricts CORS to localhost origins only:
+The web server grants CORS, and accepts browser WebSocket upgrades, only for its own origin: a
+loopback origin (`localhost`, `127.0.0.1`, `[::1]`) on the port the server is bound to. That is
+`http://127.0.0.1:9119` for a default `hermes dashboard`, the `--port` you chose, or the ephemeral
+port a Desktop backend binds. The packaged desktop app loads from `file://` and is not affected.
 
-- `http://localhost:9119` / `http://127.0.0.1:9119` (production)
-- `http://localhost:3000` / `http://127.0.0.1:3000`
-- `http://localhost:5173` / `http://127.0.0.1:5173` (Vite dev server)
+A backend spawned by a desktop dev build also trusts that build's own renderer (the loopback
+`HERMES_DESKTOP_DEV_SERVER` it inherits, such as an [`hgui` slot](../../developer-guide/worktree-ui-dev.md#hgui--desktop-app-from-the-worktree)
+on `5174+N`). No fixed dev-server port is trusted: pages served from any other local port, including
+Vite apps on `5173` or `5174`, get no CORS headers and their WebSocket upgrades are refused, so they
+cannot read the session token or open the terminal.
 
-If you run the server on a custom port, that origin is added automatically.
+Reached through a port forward (`ssh -L 8000:localhost:9119`, `docker -p 8080:9119`), the
+dashboard's own page still opens its WebSocket upgrades: an Origin that names exactly the host and
+port the upgrade was sent to is that page.
+
+A desktop dev build passes the variable to the backends it starts over SSH, and replaces a backend
+it started earlier for a different renderer URL. The sockets Desktop opens to a gateway on the same
+machine are one-use, ticketed native dials that carry no Origin, so a dev build can use a local
+gateway that is already running without restarting it. Only a connection that presents the dev
+renderer's Origin to a backend Desktop did not start (for example a remote backend you start
+yourself and reach directly) needs that backend started with `HERMES_DESKTOP_DEV_SERVER` set to the
+build's renderer URL.
 
 ## Development
 
@@ -1265,7 +1280,7 @@ npm install
 npm run dev
 ```
 
-The Vite dev server at `http://localhost:5173` proxies `/api` requests to the FastAPI backend at `http://127.0.0.1:9119`.
+The Vite dev server at `http://localhost:5173` proxies `/api` requests, WebSockets included, to the FastAPI backend at `http://127.0.0.1:9119` (set `HERMES_DASHBOARD_URL` to use another backend). It reads the session token from the backend server-side. It forwards WebSocket upgrades with their `Host` and `Origin` unchanged, so the page's Origin names the host and port it dialled and the backend admits it as same-origin without trusting port `5173`. This holds when `HERMES_DASHBOARD_URL` points at a port forward to the backend (for example `http://127.0.0.1:8000` through `ssh -L 8000:localhost:9119`). Vite's own CORS is turned off, so other local pages cannot read the token from the dev server either.
 
 The frontend is built with React 19, TypeScript, Tailwind CSS v4, and shadcn/ui-style components. Production builds output to `hermes_cli/web_dist/` which the FastAPI server serves as a static SPA.
 

@@ -9560,8 +9560,7 @@ async function reachablePreviewUrl(webContentsId: number, rawUrl: string): Promi
   }
 
   if (!target || target === 'pending') {
-    // No SSH transport behind this renderer's gateway. Another window's
-    // forward must never be reused for this preview.
+    // No SSH transport behind this renderer's gateway. Another window's forward must never be reused for this preview.
     await resetPreviewReach(webContentsId)
 
     return rawUrl
@@ -9790,6 +9789,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       probeReuseProof: sshProbeReuseProof,
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
+      devServer: DEV_SERVER,
       signal: lease.signal
     })
   } catch (error: any) {

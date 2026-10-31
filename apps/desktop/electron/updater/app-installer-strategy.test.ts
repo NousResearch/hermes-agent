@@ -148,6 +148,31 @@ describe('AppInstallerStrategy.apply', () => {
     expect(calls).not.toContain('open')
   })
 
+  it('reports the pinned package download as fetch progress and keeps restart for the hand-off', async (): Promise<void> => {
+    const stages: string[] = []
+
+    const { deps, calls } = makeDeps({
+      feed: {
+        url: 'https://updates.example/releases/channel-builds/abc/win32/update.appinstaller',
+        version: '0.0.2.0',
+        verifyPrepared: async (_file, onBytes): Promise<void> => {
+          calls.push('verify')
+          onBytes?.(1024, 4096)
+          onBytes?.(4096, 4096)
+        }
+      },
+      appVersion: '0.0.1.0',
+      feedBaseUrl: 'https://updates.example',
+      emitUpdateProgress: event => {
+        stages.push(`${event.stage}:${event.percent}`)
+      }
+    })
+
+    await new AppInstallerStrategy(deps).apply()
+    expect(stages).toEqual(['restart:100', 'fetch:25', 'fetch:100', 'restart:100'])
+    expect(calls).toEqual(['prepare', 'verify', 'relaunch-marker', 'teardown', 'open', 'quit'])
+  })
+
   it('no feed URL → manual card, no teardown, no quit', async () => {
     const { deps, calls } = makeDeps({ feedBaseUrl: '' })
     const result = await new AppInstallerStrategy(deps).apply()

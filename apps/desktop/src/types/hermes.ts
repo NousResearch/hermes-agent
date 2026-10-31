@@ -1618,6 +1618,10 @@ export interface UpdateReceiptSummary {
   user_action?: { step: string; reason: string } | null
   /** Dashboard action that wrote the receipt; null for a CLI-run update. */
   action_id?: string | null
+  /** Last finished pipeline stage of a running (or finished) run and when it
+   *  ended; refreshed at every stage boundary. Absent from older backends. */
+  stage?: string | null
+  stage_at?: string | null
 }
 
 export interface ActionStatusResponse {

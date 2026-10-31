@@ -942,10 +942,10 @@ Projects are human-named workspaces that can span multiple folders / repos. They
 ## `hermes webhook`
 
 ```bash
-hermes webhook <subscribe|list|remove|test>
+hermes webhook <subscribe|list|remove|test|history>
 ```
 
-Manage dynamic webhook subscriptions for event-driven agent activation. Requires the webhook platform to be enabled in config — if not configured, prints setup instructions.
+Manage dynamic webhook subscriptions for event-driven agent activation. Requires the webhook platform to be enabled in config — if not configured, prints setup instructions (`history` works either way).
 
 | Subcommand | Description |
 |------------|-------------|
@@ -953,6 +953,7 @@ Manage dynamic webhook subscriptions for event-driven agent activation. Requires
 | `list` / `ls` | Show all agent-created subscriptions. |
 | `remove` / `rm` | Delete a dynamic subscription. Static routes from config.yaml are not affected. |
 | `test` | Send a test POST to verify a subscription is working. |
+| `history` | Show recent deliveries, newest first: `accepted` (with the run it started), `duplicate`, `ignored` (with why: event type, `filter`, `script`) or `failed` (with the reason). `--route <name>` keeps one route, `--limit N` (default 20). See [Delivery history](../user-guide/messaging/webhooks.md#delivery-history). |
 
 ### `hermes webhook subscribe`
 

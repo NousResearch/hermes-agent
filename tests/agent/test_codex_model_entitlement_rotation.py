@@ -116,3 +116,26 @@ def test_a_plan_limit_benches_only_the_refused_model_until_its_reset(pool):
     assert first.last_status is None
     assert set(first.model_cooldowns) == {MODEL} and abs(first.model_cooldowns[MODEL] - reset) < 2
     assert pool.select(model=OTHER_MODEL).id == "cred-0"
+
+
+def test_opencode_go_policy_400_marks_session_unavailable():
+    from agent.fallback_cooldown import _is_entitlement_rejected, _mark_entitlement_rejected_model
+
+    class _Err(Exception):
+        def __init__(self, msg, status_code):
+            super().__init__(msg)
+            self.status_code = status_code
+            self.message = msg
+
+    agent = types.SimpleNamespace(
+        provider="opencode-go",
+        model="muse-spark-1.3-contributor",
+        _credential_pool=None,
+        _buffer_diagnostic_status=lambda *_a, **_k: None,
+    )
+    err = _Err(
+        "This Go model trains on request data. Allow paid endpoints that train on request data.",
+        400,
+    )
+    assert _mark_entitlement_rejected_model(agent, err) is True
+    assert _is_entitlement_rejected(agent, "opencode-go", "muse-spark-1.3-contributor")

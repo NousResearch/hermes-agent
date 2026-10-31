@@ -122,9 +122,13 @@ class GatewayConfigLoadersMixin:
         from gateway.run import _get_channel_override, _load_gateway_config
         from gateway.session_identity import identity_of
         config = getattr(self, "config", None)
+        identity = identity_of(source)
+        runtime = identity.runtime_profile if identity is not None else (source.profile or None)
+        # ``self.config`` (including a ``gateway --config`` file) serves the primary profile; only a
+        # turn routed to another profile reads that profile's config.yaml.
+        routed = bool(runtime) and runtime != (getattr(self, "_primary_profile_name", None) or "default")
         try:
-            if (identity_of(source) is not None or source.profile
-                    or getattr(config, "multiplex_profiles", False) or config is None):
+            if config is None or routed:
                 raw = _load_gateway_config(self._resolve_profile_home_for_source(source) / "config.yaml")
                 # The loader's own two steps: merge every nested platform block, then the overrides of
                 # the block platform_section picks (a top-level ``<platform>:`` block first) win.

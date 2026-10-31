@@ -276,3 +276,19 @@ async def test_unrecordable_silence_receipt_does_not_raise_into_delivery(monkeyp
         "lane", {"final_response": "NO_REPLY"}, True, display_kind=None, reply_expected=True)
 
     runner.session_store.lookup_by_session_key.assert_called_once_with("lane")
+
+
+@pytest.mark.parametrize("runtime,expected", [("primary", True), ("served", False)])
+def test_primary_profile_keeps_the_supplied_config(monkeypatch, tmp_path, runtime, expected):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._primary_profile_name = "primary"
+    # A ``gateway --config`` file (runner.config) opts the room in; the profile home's file does not.
+    runner.config = GatewayConfig.from_dict({"platforms": {"telegram": {
+        "channel_overrides": {"-1001": {"allow_silence": True}}}}})
+    home = tmp_path / runtime
+    home.mkdir()
+    (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    source = _source()
+    source._identity = RoutingIdentity("primary", runtime, tmp_path, home, multiplexed=False)
+
+    assert runner._room_allow_silence(source) is (True if expected else None)

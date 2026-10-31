@@ -1229,6 +1229,7 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
     sync_rewritten_tool_rows(agent, batch, contents_before)
     record_tool_batch(agent, batch, contents_before)
     agent._apply_pending_steer_to_tool_results(messages, num_tools)
+    getattr(agent, "_apply_pending_kanban_note_to_tool_results", lambda *_args: None)(messages, num_tools)
 
 
 def _tool_progress_enabled(agent) -> bool:

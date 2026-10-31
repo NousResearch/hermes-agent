@@ -1,6 +1,7 @@
 """SSH remote execution environment with ControlMaster connection persistence."""
 
 import contextlib
+import functools
 import hashlib
 import logging
 import os
@@ -16,7 +17,8 @@ from tools.environments.base_output import _popen_bash
 from tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
 from tools.environments.remote_common import (
-    bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
+    bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture,
+    ssh_connect_timeout)
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +109,11 @@ class SSHEnvironment(BaseEnvironment):
         siblings = sorted(plain.parent.glob(f"{plain.stem[:8]}*.sock")) if plain.parent.is_dir() else []
         return [plain, *(s for s in siblings if s != plain)]
 
+    @functools.cached_property
+    def _connect_budget(self) -> tuple[list, int]:
+        """ConnectTimeout opts + effective seconds; the user's ssh_config value wins (see helper)."""
+        return ssh_connect_timeout(self._target_flags("-p") + [f"{self.user}@{self.host}"])
+
     def _target_flags(self, port_flag: str) -> list:
         """Port/key flags shared by ssh (``-p``) and scp (``-P``)."""
         flags = [port_flag, str(self.port)] if self.port != 22 else []
@@ -118,7 +125,7 @@ class SSHEnvironment(BaseEnvironment):
         if _SSH_MULTIPLEX:
             cmd.extend(["-o", f"ControlPath={self._control_socket_for(send_env)}",
                         "-o", "ControlMaster=auto", "-o", "ControlPersist=300"])
-        cmd.extend(["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10"])
+        cmd.extend(["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", *self._connect_budget[0]])
         # Names only; values ride the ssh client's own environment (never the remote command text).
         cmd.extend(arg for name in send_env for arg in ("-o", f"SendEnv={name}"))
         cmd.extend(self._target_flags("-p"))
@@ -137,7 +144,8 @@ class SSHEnvironment(BaseEnvironment):
 
     def _establish_connection(self):
         try:
-            result = self._run_ssh("echo 'SSH connection established'", timeout=15)
+            # Past ssh's own budget so the user sees its message, not our bare timeout.
+            result = self._run_ssh("echo 'SSH connection established'", timeout=self._connect_budget[1] + 15)
         except subprocess.TimeoutExpired:
             raise EnvironmentConnectionError(
                 f"SSH connection to {self.user}@{self.host} timed out",

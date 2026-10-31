@@ -83,6 +83,29 @@ def run_capture(cmd: list[str], *, timeout: float, check: bool = False, env: dic
         timeout=timeout, check=check, stdin=subprocess.DEVNULL, env=env)
 
 
+# OpenSSH's ConnectTimeout also bounds the banner exchange, which behind a ProxyJump/ProxyCommand
+# hop includes logging in to the bastion: 5-10 s timed out reachable hosts.
+DEFAULT_SSH_CONNECT_TIMEOUT = 30
+
+
+def ssh_connect_timeout(target_args: list[str], default: int = DEFAULT_SSH_CONNECT_TIMEOUT,
+                        ) -> tuple[list[str], int]:
+    """``(-o ConnectTimeout opts, effective seconds)`` for an ssh target (``[-p N] [-i K] user@host``).
+
+    A ``-o`` on the command line beats ssh_config, so passing ours unconditionally made a
+    ``ConnectTimeout`` the user set for a slow host unreachable. ``ssh -G`` resolves their config
+    locally (no network): when it sets one, pass nothing and size our deadlines from theirs."""
+    try:
+        out = run_capture(["ssh", "-G", *target_args], timeout=10).stdout or ""
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    for line in out.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "connecttimeout" and value.strip().isdigit():
+            return [], int(value)
+    return ["-o", f"ConnectTimeout={default}"], default
+
+
 def bash_argv(cmd_string: str, login: bool = False) -> list[str]:
     """``bash [-l] -c <cmd>`` argv tail used by every spawn-per-call backend."""
     return ["bash", "-l", "-c", cmd_string] if login else ["bash", "-c", cmd_string]

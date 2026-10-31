@@ -10489,6 +10489,17 @@
             ],
             "default": null,
             "title": "Open Requests"
+          },
+          "pending_clarify": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingClarify"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -25463,6 +25474,113 @@
         "title": "PendingApproval",
         "type": "object"
       },
+      "PendingClarify": {
+        "additionalProperties": true,
+        "description": "A waiting clarify in the legacy shape clients built before ``prompts`` restore a card from.\n\n``session.resume`` publishes a blocked turn's question canonically in ``prompts``; a client whose\nparser reads ``clarify_id``/``request_id`` (Hermes Mobile) needs this map as well, or a question\nasked while it was detached is a card it never shows. Keys are owned by\n``gateway/session_pending_clarify.py::pending_clarify_payload``.",
+        "properties": {
+          "clarify_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Clarify Id"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Request Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Question"
+          },
+          "choices": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Choices"
+          },
+          "multi_select": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Multi Select"
+          },
+          "execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Execution Generation"
+          },
+          "timeout_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timeout S"
+          }
+        },
+        "title": "PendingClarify",
+        "type": "object"
+      },
       "PersistedTurn": {
         "additionalProperties": false,
         "description": "Committed SQLite row addresses for the agent's current-turn suffix. Missing ids are\nunproven, never negative acknowledgements. ``complete`` permits retiring the whole local\nturn only when the original turn boundary, every row and final body are still accounted\nfor; compaction, redirects and partial writes conservatively leave it false. Row ids are\nscoped to the owning profile's store, as in ``SessionMessage.row_id``.",
@@ -35033,6 +35151,17 @@
             ],
             "default": null
           },
+          "pending_clarify": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingClarify"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "open_requests": {
             "anyOf": [
               {
@@ -38482,6 +38611,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/PendingApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "pending_clarify": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingClarify"
               },
               {
                 "type": "null"

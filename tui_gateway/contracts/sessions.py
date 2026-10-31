@@ -26,6 +26,25 @@ class OpenRequestEntry(Result):
     params: dict[str, JsonValue]
 
 
+class PendingClarify(OpenModel):
+    """A waiting clarify in the legacy shape clients built before ``prompts`` restore a card from.
+
+    ``session.resume`` publishes a blocked turn's question canonically in ``prompts``; a client whose
+    parser reads ``clarify_id``/``request_id`` (Hermes Mobile) needs this map as well, or a question
+    asked while it was detached is a card it never shows. Keys are owned by
+    ``gateway/session_pending_clarify.py::pending_clarify_payload``.
+    """
+
+    clarify_id: str | None = None
+    request_id: str | None = None
+    session_id: str | None = None
+    question: str | None = None
+    choices: list[str] | None = None
+    multi_select: bool | None = None
+    execution_generation: int | None = None
+    timeout_s: float | None = None
+
+
 class InflightTurn(Result):
     """``session_auto_continue._inflight_snapshot``: the live (or retained failed) turn a reconnecting
     client rebuilds its bubbles from."""
@@ -90,6 +109,9 @@ class LiveSessionSnapshot(Result):
     inflight: InflightTurn | None = None
     queued: QueuedPrompt | None = None
     pending_approval: PendingApproval | None = None
+    # A waiting question in the legacy map shape (``session_pending_clarify.pending_clarify_payload``):
+    # the canonical form is ``prompts``, which a client built before it never reads.
+    pending_clarify: PendingClarify | None = None
     open_requests: list[OpenRequestEntry] | None = None
     # The open connection operation (``tools/connectors/live.current``) as its ``connection.request``
     # payload: the card restores with the server's deadline after a reconnect or restart.

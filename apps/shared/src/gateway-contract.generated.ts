@@ -3183,6 +3183,7 @@ export interface SessionResumeResult {
   inflight?: InflightTurn | null
   queued?: QueuedPrompt | null
   pending_approval?: PendingApproval | null
+  pending_clarify?: PendingClarify | null
   open_requests?: OpenRequestEntry[] | null
   pending_connection?: ConnectionRequestPayload | null
   todo_state?: TodoState | null
@@ -3204,6 +3205,18 @@ export interface InflightTurn {
 }
 export interface QueuedPrompt {
   user: string
+}
+/** A waiting clarify in the legacy shape clients built before ``prompts`` restore a card from. ``session.resume`` publishes a blocked turn's question canonically in ``prompts``; a client whose parser reads ``clarify_id``/``request_id`` (Hermes Mobile) needs this map as well, or a question asked while it was detached is a card it never shows. Keys are owned by ``gateway/session_pending_clarify.py::pending_clarify_payload``. */
+export interface PendingClarify {
+  clarify_id?: string | null
+  request_id?: string | null
+  session_id?: string | null
+  question?: string | null
+  choices?: string[] | null
+  multi_select?: boolean | null
+  execution_generation?: number | null
+  timeout_s?: number | null
+  [key: string]: unknown
 }
 /** One unanswered server→client request (``server_requests.Request.snapshot``); the reconnecting client re-delivers it to its request handlers. */
 export interface OpenRequestEntry {
@@ -3258,6 +3271,7 @@ export interface SessionActivateResult {
   inflight?: InflightTurn | null
   queued?: QueuedPrompt | null
   pending_approval?: PendingApproval | null
+  pending_clarify?: PendingClarify | null
   open_requests?: OpenRequestEntry[] | null
   pending_connection?: ConnectionRequestPayload | null
   todo_state?: TodoState | null
@@ -5008,6 +5022,7 @@ export interface CanonicalSnapshot {
   pending_connection?: ConnectionRequestPayload | null
   todo_state?: TodoState | null
   open_requests?: OpenRequestEntry[] | null
+  pending_clarify?: PendingClarify | null
 }
 export interface CanonicalPendingAdmission {
   admission_id: string

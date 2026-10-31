@@ -29,6 +29,7 @@ import {
   setVisibleModels
 } from '@/store/model-visibility'
 import { $defaultReasoningEffort } from '@/store/session'
+import { stubVisibleMenuAnchors } from '@/test/jsdom'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
 import { ModelCatalogMenu, ModelMenuCloseContext, type ModelMenuController } from './model-catalog-menu'
@@ -85,6 +86,7 @@ afterEach(() => {
   // disappears so an in-flight app-level poll cannot schedule another tick.
   queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [])
   $defaultReasoningEffort.set('')
+  vi.restoreAllMocks()
   vi.clearAllMocks()
 })
 
@@ -607,6 +609,7 @@ describe('the per-row options submenu is discoverable', () => {
   })
 
   it('opens the highlighted row with ArrowRight, so effort is reachable without a mouse', async () => {
+    stubVisibleMenuAnchors()
     renderMenu()
     await screen.findByText(/Gemini 3\.1 Pro/i)
 

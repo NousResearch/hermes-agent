@@ -9,31 +9,70 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { en } = await import('@/i18n/en')
   const { Textarea } = await import('@/components/ui/textarea')
 
-  return { Textarea, atom: (await import('nanostores')).atom, host: { requestProfile: request }, randomUuid: (await import('@hermes/shared')).randomUuid,
+  return {
+    Textarea,
+    atom: (await import('nanostores')).atom,
+    host: { requestProfile: request },
+    randomUuid: (await import('@hermes/shared')).randomUuid,
     useI18n: () => ({ locale: 'en', t: en }),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
     MessageTextContent: ({ text }: { text: string }) => <div data-testid="markdown">{text}</div>,
     Streamdown: ({ children }: { children: ReactNode }) => <div data-testid="markdown">{children}</div>,
-    Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
+    Codicon: () => <span />,
+    Tip: ({ children }: { children: ReactNode }) => <>{children}</>
+  }
 })
 // The @ picker reads Bot Mode stores this hosted-room fixture does not mock.
 vi.mock('./group-chat-parts', () => ({
-  GroupMentionInput: ({ onChange, ...props }: Omit<ComponentProps<'textarea'>, 'onChange'> & { onChange: (value: string) => void }) =>
-    <textarea aria-label={props['aria-label']} disabled={props.disabled} onChange={event => onChange(event.target.value)} value={props.value} />
+  GroupMentionInput: ({
+    onChange,
+    ...props
+  }: Omit<ComponentProps<'textarea'>, 'onChange'> & { onChange: (value: string) => void }) => (
+    <textarea
+      aria-label={props['aria-label']}
+      disabled={props.disabled}
+      onChange={event => onChange(event.target.value)}
+      value={props.value}
+    />
+  )
 }))
 vi.mock('./canonical-group-labels', async () => {
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
 
-  return { useCanonicalGroupLabels: () => ({ ...CANONICAL_GROUP_LOCALES.en, back: 'Back', refresh: 'Refresh', retry: 'Retry',
-    send: 'Send', stop: 'Stop', download: 'Download', discard: 'Discard', cancel: 'Cancel' }) }
+  return {
+    useCanonicalGroupLabels: () => ({
+      ...CANONICAL_GROUP_LOCALES.en,
+      back: 'Back',
+      refresh: 'Refresh',
+      retry: 'Retry',
+      send: 'Send',
+      stop: 'Stop',
+      download: 'Download',
+      discard: 'Discard',
+      cancel: 'Cancel'
+    })
+  }
 })
 
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 
 const binding = { connectionId: 'original-owner', profile: 'reviewer', roomId: 'room-one' }
-const manifest = { attachment_id: 'att_00000000000000000000000000000001', kind: 'file', name: 'notes.txt', mime: 'text/plain', size: 1 }
+const manifest = {
+  attachment_id: 'att_00000000000000000000000000000001',
+  kind: 'file',
+  name: 'notes.txt',
+  mime: 'text/plain',
+  size: 1
+}
 const originalDesktop = window.hermesDesktop
-afterEach(() => { cleanup(); request.mockReset(); vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clear(); window.hermesDesktop = originalDesktop })
+afterEach(() => {
+  cleanup()
+  request.mockReset()
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+  localStorage.clear()
+  window.hermesDesktop = originalDesktop
+})
 
 it('keeps a committed file downloadable in history after Send clears the composer (F31)', async () => {
   const observed = observeDownloads()
@@ -41,23 +80,47 @@ it('keeps a committed file downloadable in history after Send clears the compose
   window.hermesDesktop = { saveImageBuffer: save } as unknown as typeof window.hermesDesktop
   let sent = false
   request.mockImplementation(async (_route, method, params) => {
-    if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: {} }}
+    if (method === 'groups.state') {
+      return { room: { name: 'Room' }, driver_status: {} }
+    }
 
-    if (method === 'groups.log') {return { events: sent ? [{ seq: 1, room_id: binding.roomId, event_id: 'committed-user-event',
-      kind: 'message.user', payload: { text: 'Review these notes', attachments: [manifest] } }] : [] }}
+    if (method === 'groups.log') {
+      return {
+        events: sent
+          ? [
+              {
+                seq: 1,
+                room_id: binding.roomId,
+                event_id: 'committed-user-event',
+                kind: 'message.user',
+                payload: { text: 'Review these notes', attachments: [manifest] }
+              }
+            ]
+          : []
+      }
+    }
 
-    if (method === 'groups.attachment.upload') {return { ...manifest, sha256: 'receipt-only' }}
+    if (method === 'groups.attachment.upload') {
+      return { ...manifest, sha256: 'receipt-only' }
+    }
 
-    if (method === 'groups.send') {expect(params.payload.attachments).toEqual([manifest]); sent = true;
+    if (method === 'groups.send') {
+      expect(params.payload.attachments).toEqual([manifest])
+      sent = true
 
- return { accepted: true }}
+      return { accepted: true }
+    }
 
-    if (method === 'groups.attachment.download') {return { ...manifest, event_id: params.event_id, data_base64: 'QQ==' }}
+    if (method === 'groups.attachment.download') {
+      return { ...manifest, event_id: params.event_id, data_base64: 'QQ==' }
+    }
     throw new Error(`Unexpected method ${method}`)
   })
   const view = render(<CanonicalGroupWorkspace binding={binding} />)
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
-  fireEvent.change(view.container.querySelector('input[type=file]')!, { target: { files: [new File(['A'], manifest.name, { type: manifest.mime })] } })
+  fireEvent.change(view.container.querySelector('input[type=file]')!, {
+    target: { files: [new File(['A'], manifest.name, { type: manifest.mime })] }
+  })
   await waitFor(() => expect(screen.getByText(manifest.name)).toBeTruthy())
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Review these notes' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
@@ -73,8 +136,12 @@ it('keeps a committed file downloadable in history after Send clears the compose
   expect(save).not.toHaveBeenCalled()
   const call = request.mock.calls.find(call => call[1] === 'groups.attachment.download')!
   expect(call[0]).toMatchObject({ connectionId: binding.connectionId, targetProfile: binding.profile })
-  expect(call[2]).toEqual({ profile: binding.profile, room_id: binding.roomId,
-    event_id: 'committed-user-event', attachment_id: manifest.attachment_id })
+  expect(call[2]).toEqual({
+    profile: binding.profile,
+    room_id: binding.roomId,
+    event_id: 'committed-user-event',
+    attachment_id: manifest.attachment_id
+  })
   expect(request.mock.calls.some(call => call[1] === 'groups.attachment.list')).toBe(false)
 })
 
@@ -85,17 +152,29 @@ it('binds user/member history downloads to their real event and refuses missing 
 
   const events = [
     { seq: 1, room_id: binding.roomId, event_id: 'user-event', kind: 'message.user' },
-    { seq: 2, room_id: binding.roomId, event_id: 'member-event', kind: 'message.member', actor: { kind: 'member', id: 'helper' } },
+    {
+      seq: 2,
+      room_id: binding.roomId,
+      event_id: 'member-event',
+      kind: 'message.member',
+      actor: { kind: 'member', id: 'helper' }
+    },
     { seq: 3, room_id: binding.roomId, kind: 'message.user' },
     { seq: 4, room_id: 'other-room', event_id: 'foreign-event', kind: 'message.member' }
   ].map(event => ({ ...event, payload: { attachments: [{ ...manifest, event_id: 'not-the-event' }] } }))
 
   request.mockImplementation(async (_route, method, params) => {
-    if (method === 'groups.state') {return { room: { name: 'Room' } }}
+    if (method === 'groups.state') {
+      return { room: { name: 'Room' } }
+    }
 
-    if (method === 'groups.log') {return { events }}
+    if (method === 'groups.log') {
+      return { events }
+    }
 
-    if (method === 'groups.attachment.download') {return { ...manifest, event_id: params.event_id, data_base64: 'QQ==' }}
+    if (method === 'groups.attachment.download') {
+      return { ...manifest, event_id: params.event_id, data_base64: 'QQ==' }
+    }
     throw new Error(`Unexpected method ${method}`)
   })
   render(<CanonicalGroupWorkspace binding={binding} />)
@@ -116,13 +195,26 @@ it('binds user/member history downloads to their real event and refuses missing 
 
 it('renders only room messages with their author and markdown presentation', async () => {
   request.mockImplementation(async (_route, method) => {
-    if (method === 'groups.state') {return { room: { name: 'Room', members: [{ member_id: 'helper', handle: 'helper', profile: 'helper' }] }, driver_status: {} }}
+    if (method === 'groups.state') {
+      return {
+        room: { name: 'Room', members: [{ member_id: 'helper', handle: 'helper', profile: 'helper' }] },
+        driver_status: {}
+      }
+    }
 
     if (method === 'groups.log') {
-      return { events: [
-        { seq: 1, room_id: binding.roomId, kind: 'message.member', actor: { kind: 'member', id: 'helper' }, payload: { text: '**Done**' } },
-        { seq: 2, room_id: binding.roomId, kind: 'turn.settled', payload: {} }
-      ] }
+      return {
+        events: [
+          {
+            seq: 1,
+            room_id: binding.roomId,
+            kind: 'message.member',
+            actor: { kind: 'member', id: 'helper' },
+            payload: { text: '**Done**' }
+          },
+          { seq: 2, room_id: binding.roomId, kind: 'turn.settled', payload: {} }
+        ]
+      }
     }
 
     throw new Error(`Unexpected method ${method}`)

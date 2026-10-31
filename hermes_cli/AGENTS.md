@@ -1,10 +1,7 @@
 # hermes_cli/ + cli.py — CLI, slash commands, config, skins, updater, profiles
 
-Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide/cli-internals.md`.
-
-Observation reads use native auth/profile resolution and read-only SessionDB;
-`sessions attention` fences indicators, not mutation permission. Contract:
-`website/docs/developer-guide/conversation-observations.md`.
+Inherits root `AGENTS.md`. Long-form in `website/docs/developer-guide/`:
+`cli-internals.md`, `conversation-observations.md`.
 
 ## CLI architecture
 

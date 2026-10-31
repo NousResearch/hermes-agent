@@ -247,3 +247,72 @@ class TestRequestToolApproval:
         )
         res = request_tool_approval("computer_use", "click", rule_key="cua")
         assert res == {"approved": True, "message": None}
+
+
+class TestDenialIsNotABan:
+    """A denial is one call the user refused, not consent gone for the session.
+
+    ``request_tool_approval`` documents the plugin path as the SAME human gate as a
+    Tier-2 dangerous command, but the action gate's denial never carried the closing
+    sentence the command gate has ("stop the current workflow and wait for the user
+    to respond"), so the text told the model the user could not decide again and a
+    later explicit request was answered with a refusal and no new prompt.
+    """
+
+    def test_cli_denial_tells_the_model_the_user_can_still_decide(self, monkeypatch):
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(tools_approval_context, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *a, **k: "deny")
+        monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", lambda *a, **k: "deny")
+        res = request_tool_approval(
+            "example_write_tool", "creates an order", rule_key="example_write_tool"
+        )
+        assert res["approved"] is False
+        assert "wait for the user to respond" in res["message"]
+
+    def test_gateway_denial_closes_like_a_command_denial(self):
+        action = approval._ACTION_GATE.gateway_refused.format(
+            reason="denied by user", reason_addendum="", timeout_addendum="", breaker=""
+        )
+        command = approval._COMMAND_GATE.gateway_refused.format(
+            reason="denied by user", reason_addendum="", timeout_addendum="", breaker=""
+        )
+        closing = "Stop the current workflow and wait for the user to respond"
+        assert action.startswith("BLOCKED: Action denied by user.")
+        assert closing in command
+        assert closing in action
+
+    def test_every_human_denial_surface_carries_the_closing_sentence(self):
+        """The execute_code gate denies the same way a command does.
+
+        Its ``cli_denied`` read "Do NOT retry — the user has explicitly
+        rejected it." and stopped, so a single refusal of one script read as
+        consent gone: the model would not call ``execute_code`` again even
+        when the user asked for it. Its ``gateway_refused`` and both
+        ``transport_denied`` templates carried the same omission.
+        """
+        closing = "Stop the current workflow and wait for the user to respond"
+        rendered = {
+            "command/cli_denied": approval._COMMAND_GATE.cli_denied.format(
+                description="rm -rf build", breaker=""),
+            "command/transport_denied": approval._COMMAND_GATE.transport_denied.format(breaker=""),
+            "execute_code/cli_denied": approval._EXECUTE_CODE_GATE.cli_denied.format(
+                description="script", breaker=""),
+            "execute_code/transport_denied": approval._EXECUTE_CODE_GATE.transport_denied.format(breaker=""),
+            "execute_code/gateway_refused": approval._EXECUTE_CODE_GATE.gateway_refused.format(
+                reason="denied by user", reason_addendum="", timeout_addendum="", breaker=""),
+            "action/cli_denied": approval._ACTION_GATE.cli_denied.format(
+                description="write", breaker=""),
+            "action/gateway_refused": approval._ACTION_GATE.gateway_refused.format(
+                reason="denied by user", reason_addendum="", timeout_addendum="", breaker=""),
+        }
+        assert [name for name, text in rendered.items() if closing not in text] == []
+        assert [name for name, text in rendered.items() if text.count(closing) != 1] == []
+
+    def test_execute_code_cli_denial_keeps_its_own_wording(self):
+        """One sentence, one place: the append does not restate the refusal twice."""
+        rendered = approval._EXECUTE_CODE_GATE.cli_denied.format(description="script", breaker="")
+        assert rendered.startswith("BLOCKED: User denied execute_code script execution")
+        assert rendered.count("Do NOT retry") == 1
+        assert rendered.count("The user has NOT consented") == 0

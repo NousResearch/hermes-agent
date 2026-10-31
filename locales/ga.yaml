@@ -679,6 +679,7 @@ gateway:
     session_storage_unavailable: "⚠️ Ní raibh stóráil na seisiún ar fáil go sealadach, mar sin stopadh an seal seo chun stair do chomhrá a chosaint. Ba chóir go bhfuil do theachtaireacht sábháilte cheana — seol í arís i gceann nóiméid le do thoil."
     generic_failed: "⚠️ Chuaigh rud éigin amú agus níorbh fhéidir liom an freagra seo a chríochnú. Úsáid /retry le triail eile a bhaint as, nó /new chun comhrá úr a thosú. Tá na sonraí teicniúla i log an gateway (`hermes logs`)."
     interrupted_before_start: "⚠️ Cuireadh isteach ar do theachtaireacht roimh thosú na próiseála (is dócha le /stop le déanaí). Seol í arís le do thoil."
+    interrupted_by_system: "⚠️ Stop an córas an seal seo ({issuer}), ní tusa. D'fhéadfadh an obair a bhí ar siúl a bheith neamhiomlán. Seol teachtaireacht chun leanúint ar aghaidh."
     processing_incomplete: "próiseáil neamhiomlán"
     stopped_before_finishing: "⚠️ B'éigean dom stopadh roimh chríochnú{reason}. Úsáid /retry le triail eile a bhaint as, nó /compress má tá an comhrá seo éirithe an-fhada."
     no_response: "⚠️ Críochnaíodh an phróiseáil ach níor gineadh aon fhreagra. Seans gur earráid neamhbhuan í seo — bain triail as do theachtaireacht a sheoladh arís."

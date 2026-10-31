@@ -679,6 +679,7 @@ gateway:
     session_storage_unavailable: "⚠️ 会话存储暂时不可用，为保护你的对话历史，本回合已停止。你的消息应已保存——请稍后重新发送。"
     generic_failed: "⚠️ 出了点问题，我无法完成这条回复。使用 /retry 重试，或用 /new 开始新对话。技术细节见网关日志（`hermes logs`）。"
     interrupted_before_start: "⚠️ 你的消息在开始处理前被中断（可能是最近的 /stop 所致）。请重新发送。"
+    interrupted_by_system: "⚠️ 本轮被系统停止（{issuer}），不是你停止的。正在进行的操作可能未完成。发送一条消息即可继续。"
     processing_incomplete: "处理未完成"
     stopped_before_finishing: "⚠️ 我不得不在完成前停止{reason}。使用 /retry 重试；如果这段对话已经很长，请使用 /compress。"
     no_response: "⚠️ 处理已完成，但未生成响应。这可能是暂时性错误——请重新发送消息试试。"

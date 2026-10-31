@@ -168,6 +168,43 @@ API hooks describe provider attempts inside the agent loop:
 The sanitized `request`, `response`, and `error` fields are the canonical
 observer inputs for new consumers.
 
+### Resolved file write policy
+
+Python plugins may register `pre_file_write` to check `write_file` and both
+`patch` modes after native guards, path resolution and locking, immediately
+before the backend operation. This hook is a policy gate, with fail-closed
+callback errors/timeouts. It receives:
+
+- `tool_name`, `args`: selected tool and the content arguments used by it;
+- `targets`: records with `operation` and resolved `path`; operations are
+  `write`, `add`, `update`, `delete`, `move_source`, `move_destination`;
+- `namespace="host"`, `task_id`, `session_id` and a unique `write_id` for this
+  file operation (it is not a tool-call ID).
+
+Update/Add/write paths follow symlinks; Delete/Move keep the last directory
+entry itself. Every V4A header and both move endpoints are included. The
+original V4A text is in `args.patch`; `targets` names the actual rewritten
+paths. The file tool retains those paths, content and backend across the
+check: changing callback arguments, the task cwd, or backend selection does
+not redirect the operation. Callback payloads are detached copies.
+
+Return `None` or `{"action": "allow"}` to proceed, or
+`{"action": "block", "message": "reason"}` to veto. Any veto wins over an
+`approve` directive before prompting. Malformed directives block. An
+`approve` uses the native tool approval gate; `approval_policy="mandatory"`
+requires the host to advertise that policy and otherwise blocks. With that
+policy the native approval gate sees the detached operation snapshot,
+including resolved targets; missing support never falls back to ordinary
+approval. The host owns the UI and transport.
+
+When a policy is registered, unresolved targets and non-host filesystem
+namespaces block explicitly. With no policy registered, existing backend
+behavior is preserved. Remote/container policy support is not implemented.
+This hook covers these native file tools, not arbitrary shell/code writes.
+It does not provide OS-level atomic protection from another process changing
+filesystem entries during a human confirmation. The payload may contain
+private content; policy callbacks must handle it accordingly.
+
 ### Tool Lifecycle
 
 Tool hooks describe individual tool calls:

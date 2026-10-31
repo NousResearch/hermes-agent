@@ -19,6 +19,9 @@ export const deGatewayRelay: GatewayRelayTranslations = {
   removeConfirm: label =>
     `${label} entfernen? Dieses Gateway erreicht es dann nicht mehr, und seine Freigabe dort wird widerrufen.`,
   removeFailed: 'Dieses Gateway konnte nicht entfernt werden',
+  removeHere: 'Nur hier entfernen',
+  removeUnconfirmed: label =>
+    `${label} nur hier entfernen? Seine Freigabe dort bleibt gültig, bis du sie auf ${label} widerrufst.`,
   test: 'Testen',
   reachable: 'Erreichbar',
   unreachable: error => `Nicht erreichbar: ${error}`,

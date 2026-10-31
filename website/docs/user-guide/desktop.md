@@ -212,7 +212,10 @@ cannot redirect outside that gateway.
 To end a grant, use either of these:
 
 - **Settings → Gateways → Gateways that reach this one → Revoke** on the gateway being reached.
-- **Remove** on the relaying gateway, which also revokes the grant there.
+- **Remove** on the relaying gateway, which also revokes the grant there. If the other gateway is
+  offline or does not confirm the revocation, the gateway stays listed and Settings says why. You
+  can try again, or choose **Remove here only**. That leaves the grant working until you revoke it
+  on the other gateway.
 
 `hermes webapp --sign-out` on the gateway being reached ends every grant it issued, along with
 every browser login. Either way, the relayed connections close at once. After that, the relaying

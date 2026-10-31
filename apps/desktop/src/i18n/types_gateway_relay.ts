@@ -17,6 +17,9 @@ export interface GatewayRelayTranslations {
   remove: string
   removeConfirm: (label: string) => string
   removeFailed: string
+  /** The confirm button that forgets a gateway here when it did not confirm the revocation. */
+  removeHere: string
+  removeUnconfirmed: (label: string) => string
   test: string
   reachable: string
   unreachable: (error: string) => string

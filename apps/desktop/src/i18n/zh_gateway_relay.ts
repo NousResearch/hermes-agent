@@ -18,6 +18,8 @@ export const zhGatewayRelay: GatewayRelayTranslations = {
   remove: '移除',
   removeConfirm: label => `移除 ${label}？此网关将无法再访问它，它在对方那里的授权也会被撤销。`,
   removeFailed: '无法移除该网关',
+  removeHere: '仅在此处移除',
+  removeUnconfirmed: label => `仅在此处移除 ${label}？它在对方那里的授权仍然有效，直到你在 ${label} 上撤销。`,
   test: '测试',
   reachable: '可访问',
   unreachable: error => `无法访问：${error}`,

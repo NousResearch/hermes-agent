@@ -3562,6 +3562,8 @@
     "settings.gateway.relay.remove",
     "settings.gateway.relay.removeConfirm",
     "settings.gateway.relay.removeFailed",
+    "settings.gateway.relay.removeHere",
+    "settings.gateway.relay.removeUnconfirmed",
     "settings.gateway.relay.revoke",
     "settings.gateway.relay.revokeConfirm",
     "settings.gateway.relay.revokeFailed",

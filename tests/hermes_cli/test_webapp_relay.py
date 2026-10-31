@@ -224,7 +224,12 @@ def test_revoking_the_grant_ends_the_relay(relay_app):
     assert ended.status_code == 409 and ended.json()["error"] == "relay_reconnect"
     # A grant also stands only under the browser credential it was approved under: signing the spoke
     # out (hermes webapp --sign-out) ends every grant with every browser login.
-    browser.delete(f"/api/webapp/relay/gateways/{row['id']}", headers=ORIGIN)
+    # Removing it here cannot confirm a revocation the spoke no longer recognises, so it stays until
+    # the user removes it here only.
+    removing = browser.delete(f"/api/webapp/relay/gateways/{row['id']}", headers=ORIGIN).json()
+    assert removing["removed"] is False and "may already be revoked" in removing["detail"], removing
+    forgot = browser.delete(f"/api/webapp/relay/gateways/{row['id']}?forget=1", headers=ORIGIN)
+    assert forgot.json() == {"removed": True, "revoked": False}
     _pair(browser)
     standing = webapp_relay_grants.list_grants(relay_app.home, {"user_id": "stub-user-1", "provider": "stub"})
     assert len(standing) == 1

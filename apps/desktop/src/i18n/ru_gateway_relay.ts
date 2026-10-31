@@ -19,6 +19,9 @@ export const ruGatewayRelay: GatewayRelayTranslations = {
   removeConfirm: label =>
     `Удалить ${label}? Этот шлюз больше не сможет до него достучаться, а его разрешение там будет отозвано.`,
   removeFailed: 'Не удалось удалить этот шлюз',
+  removeHere: 'Удалить только здесь',
+  removeUnconfirmed: label =>
+    `Удалить ${label} только здесь? Его разрешение там продолжит действовать, пока вы не отзовёте его на ${label}.`,
   test: 'Проверить',
   reachable: 'Доступен',
   unreachable: error => `Недоступен: ${error}`,

@@ -93,6 +93,8 @@ declare global {
       gatewayRelay?: {
         gateways: () => Promise<GatewayRelayGateway[]>
         startPairing: (url: string, label: string) => Promise<string>
+        // Revoke the gateway's grant there, then forget it here; `forget` forgets it here only.
+        removeGateway: (id: string, options?: { forget?: boolean }) => Promise<GatewayRelayRemoval>
         grants: () => Promise<GatewayRelayGrant[]>
         revokeGrant: (grantId: string) => Promise<void>
       }
@@ -1137,6 +1139,9 @@ export interface GatewayRelayGateway {
   scopes: string[]
   url: string
 }
+
+/** Removing a relayed gateway: kept, with why, while it has not confirmed it revoked the grant. */
+export type GatewayRelayRemoval = { removed: true; revoked: boolean } | { detail: string; removed: false }
 
 /** A grant this gateway issued to another one that relays here. */
 export interface GatewayRelayGrant {

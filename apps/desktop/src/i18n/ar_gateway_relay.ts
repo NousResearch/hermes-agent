@@ -18,6 +18,8 @@ export const arGatewayRelay: GatewayRelayTranslations = {
   remove: 'إزالة',
   removeConfirm: label => `إزالة ${label}؟ لن تصل إليها هذه البوابة بعد الآن، وسيُلغى إذنها هناك.`,
   removeFailed: 'تعذّرت إزالة تلك البوابة',
+  removeHere: 'إزالة من هنا فقط',
+  removeUnconfirmed: label => `إزالة ${label} من هنا فقط؟ يبقى إذنها هناك سارياً حتى تلغيه على ${label}.`,
   test: 'اختبار',
   reachable: 'يمكن الوصول إليها',
   unreachable: error => `لا يمكن الوصول إليها: ${error}`,

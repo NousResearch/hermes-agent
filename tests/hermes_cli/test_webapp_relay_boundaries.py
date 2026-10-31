@@ -30,17 +30,23 @@ EVIL = "http://evil.spoke:8000"
 
 
 class _ByHost(httpx.AsyncBaseTransport):
-    def __init__(self, routes):
-        self.routes = routes
+    def __init__(self, routes, down=frozenset()):
+        self.routes, self.down = routes, down
 
     async def handle_async_request(self, request):
+        if request.url.host in self.down:
+            raise httpx.ConnectError("unreachable", request=request)
         return await self.routes[request.url.host].handle_async_request(request)
 
 
 def _evil_gateway(gateway_a, seen: dict) -> Starlette:
     async def token(_request: Request):
-        return JSONResponse({"grant_id": seen["grant_id"], "subject": "stub-user-1", "provider": "stub",
-                             "issuer": "", "scopes": []})
+        return JSONResponse({"grant_id": seen["grant_id"], "subject": seen.get("subject", "stub-user-1"),
+                             "provider": "stub", "issuer": "", "scopes": []})
+
+    async def revoke(_request: Request):
+        seen["revoke_calls"] = seen.get("revoke_calls", 0) + 1
+        return JSONResponse({}, status_code=seen.get("revoke_status", 200))
 
     async def redirect(request: Request):
         return Response(status_code=307, headers={"Location": request.query_params["to"]})
@@ -69,25 +75,28 @@ def _evil_gateway(gateway_a, seen: dict) -> Starlette:
     return Starlette(routes=[
         Route("/api/webapp/relay/token", token, methods=["POST"]), Route("/page", page),
         Route("/offsite", offsite), Route("/onsite", onsite), Route("/redirect", redirect, methods=["GET", "POST"]),
+        Route("/api/webapp/relay/grants/{grant_id}", revoke, methods=["DELETE"]),
         Route("/api/profiles/{name}/soul", soul, methods=["PUT"])])
 
 
-def _with_evil(relay_app, monkeypatch, browser, grant_id="evil-grant") -> tuple[dict, dict]:
-    """Pair *browser*'s hub with the evil gateway as well; returns its row and what it saw."""
+def _with_evil(relay_app, monkeypatch, browser, grant_id="evil-grant", **seen) -> tuple[dict, dict]:
+    """Pair *browser*'s hub with the evil gateway as well; returns its row (None when the pairing
+    failed, with the callback's redirect in ``seen["back"]``) and what it saw."""
     from hermes_cli.web_routers import webapp_relay_proxy
 
-    seen = {"grant_id": grant_id}
+    seen["grant_id"] = grant_id
+    seen["down"] = set()  # hosts that stop answering
     app = relay_app.server.app
     transport = _ByHost({"hermes.lan": httpx.ASGITransport(app=app),
-                         "evil.spoke": httpx.ASGITransport(app=_evil_gateway(app, seen))})
+                         "evil.spoke": httpx.ASGITransport(app=_evil_gateway(app, seen))}, seen["down"])
     monkeypatch.setattr(webapp_relay_proxy, "relay_client",
                         lambda _state: httpx.AsyncClient(transport=transport, follow_redirects=False))
     started = browser.post("/api/webapp/relay/gateways", json={"url": EVIL, "label": "Evil"}, headers=ORIGIN)
     assert started.status_code == 200, started.text
     state = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(started.json()["authorize_url"]).query))["state"]
     back = browser.get(f"/webapp/relay/callback?state={state}&code=anything", follow_redirects=False)
-    assert "relay=connected" in back.headers["location"], back.headers["location"]
-    row = next(r for r in browser.get("/api/webapp/relay/gateways").json()["gateways"] if r["url"] == EVIL)
+    seen["back"] = back.headers["location"]
+    row = next((r for r in browser.get("/api/webapp/relay/gateways").json()["gateways"] if r["url"] == EVIL), None)
     return row, seen
 
 
@@ -124,7 +133,8 @@ def test_a_socket_ticket_request_names_one_socket(relay_app):
 def test_a_paired_gateway_cannot_run_content_or_redirect_on_this_origin(relay_app, monkeypatch):
     browser = relay_app.browser()
     _sign_in(browser)
-    row, _seen = _with_evil(relay_app, monkeypatch, browser)
+    row, seen = _with_evil(relay_app, monkeypatch, browser)
+    assert row is not None, seen["back"]
     base = f"/api/relay/{row['id']}"
     page = browser.get(f"{base}/page")
     assert page.status_code == 200 and page.headers["content-type"].startswith("text/html")
@@ -150,6 +160,7 @@ def test_one_paired_gateway_cannot_replay_the_hubs_requests_at_another(relay_app
     # The evil gateway names the other gateway's grant as its own, so the hub signs for that grant.
     grant_a = webapp_relay_grants.list_grants(relay_app.home, {"user_id": "stub-user-1", "provider": "stub"})[0]["id"]
     evil, seen = _with_evil(relay_app, monkeypatch, browser, grant_id=grant_a)
+    assert evil is not None, seen["back"]
     sent = browser.put(f"/api/relay/{evil['id']}/api/profiles/default/soul", json={"content": "meant for Evil"},
                        headers=ORIGIN)
     assert sent.status_code == 200
@@ -170,7 +181,8 @@ def test_a_paired_gateway_redirect_cannot_climb_out_of_its_relay(relay_app, monk
     # /api/gateway/restart. Resolved against the gateway instead, they name its route, through the relay.
     browser = relay_app.browser()
     _sign_in(browser)
-    row, _seen = _with_evil(relay_app, monkeypatch, browser)
+    row, seen = _with_evil(relay_app, monkeypatch, browser)
+    assert row is not None, seen["back"]
     base = f"/api/relay/{row['id']}"
     sent = browser.post(f"{base}/redirect", params={"to": escape}, headers=ORIGIN, follow_redirects=False)
     assert (sent.status_code, sent.headers.get("location")) == (307, f"{base}/api/gateway/restart"), escape
@@ -184,7 +196,8 @@ def test_a_paired_gateway_redirect_a_browser_would_reparse_is_refused(relay_app,
     # with a tab or newline, as an unreachable gateway; the hub refuses the rest.)
     browser = relay_app.browser()
     _sign_in(browser)
-    row, _seen = _with_evil(relay_app, monkeypatch, browser)
+    row, seen = _with_evil(relay_app, monkeypatch, browser)
+    assert row is not None, seen["back"]
     sent = browser.post(f"/api/relay/{row['id']}/redirect", params={"to": hidden}, headers=ORIGIN,
                         follow_redirects=False)
     assert sent.status_code == 502 and "location" not in sent.headers, (hidden, sent.status_code, sent.headers)
@@ -193,11 +206,59 @@ def test_a_paired_gateway_redirect_a_browser_would_reparse_is_refused(relay_app,
 def test_a_paired_gateway_redirect_within_itself_resolves_under_its_relay(relay_app, monkeypatch):
     browser = relay_app.browser()
     _sign_in(browser)
-    row, _seen = _with_evil(relay_app, monkeypatch, browser)
+    row, seen = _with_evil(relay_app, monkeypatch, browser)
+    assert row is not None, seen["back"]
     base = f"/api/relay/{row['id']}"
     for to, expected in (("/a/../b?x=1", f"{base}/b?x=1"), ("/a/%2E/b/.", f"{base}/a/b/"), ("/a/b/..", f"{base}/a/")):
         sent = browser.get(f"{base}/redirect", params={"to": to}, follow_redirects=False)
         assert sent.status_code == 307 and sent.headers["location"] == expected, (to, sent.status_code, sent.headers)
+
+
+def test_a_pairing_approved_as_someone_else_says_when_its_grant_was_not_revoked(relay_app, monkeypatch):
+    browser = relay_app.browser()
+    _sign_in(browser)
+    row, seen = _with_evil(relay_app, monkeypatch, browser, subject="someone-else", revoke_status=503)
+    assert row is None and "relay=failed" in seen["back"]
+    detail = dict(urllib.parse.parse_qsl(seen["back"].split("?", 1)[1]))["relay_detail"]
+    assert seen.get("revoke_calls") == 1
+    assert "could not be revoked" in detail and "503" in detail, detail
+
+
+def _listed(browser) -> list[str]:
+    return [row["id"] for row in browser.get("/api/webapp/relay/gateways").json()["gateways"]]
+
+
+def test_removing_a_gateway_keeps_it_until_the_other_gateway_confirms_the_revocation(relay_app, monkeypatch):
+    browser = relay_app.browser()
+    _sign_in(browser)
+    row, seen = _with_evil(relay_app, monkeypatch, browser)
+    assert row is not None, seen["back"]
+    remove = f"/api/webapp/relay/gateways/{row['id']}"
+    for failure in ({"down": True}, {"revoke_status": 503}, {"revoke_status": 401}):
+        seen["down"].clear()
+        seen["down"].update({"evil.spoke"} if failure.get("down") else set())
+        seen["revoke_status"] = failure.get("revoke_status", 200)
+        sent = browser.delete(remove, headers=ORIGIN)
+        assert sent.status_code == 200 and sent.json()["removed"] is False, (failure, sent.text)
+        assert sent.json()["detail"].startswith("Evil did not confirm"), sent.json()
+        assert _listed(browser) == [row["id"]], failure  # kept, so Remove can run again
+    seen["down"].clear()
+    seen["revoke_status"] = 200
+    calls = seen["revoke_calls"]
+    sent = browser.delete(remove, headers=ORIGIN)
+    assert sent.json() == {"removed": True, "revoked": True}
+    assert seen["revoke_calls"] == calls + 1 and _listed(browser) == []
+
+
+def test_forgetting_a_gateway_here_only_says_its_grant_was_not_revoked(relay_app, monkeypatch):
+    browser = relay_app.browser()
+    _sign_in(browser)
+    row, seen = _with_evil(relay_app, monkeypatch, browser)
+    assert row is not None, seen["back"]
+    seen["down"].add("evil.spoke")
+    sent = browser.delete(f"/api/webapp/relay/gateways/{row['id']}?forget=1", headers=ORIGIN)
+    assert sent.json() == {"removed": True, "revoked": False}
+    assert "revoke_calls" not in seen and _listed(browser) == []
 
 
 @pytest.fixture

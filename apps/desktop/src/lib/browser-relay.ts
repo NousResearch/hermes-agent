@@ -7,6 +7,7 @@ import type {
   DesktopRosterAgent,
   GatewayRelayGateway,
   GatewayRelayGrant,
+  GatewayRelayRemoval,
   HermesApiRequest,
   HermesConnection
 } from '@/global'
@@ -206,6 +207,20 @@ export function createBrowserRelays({ api, bootstrap }: { api: Api; bootstrap: B
     listeners.forEach(listener => listener({ connectionId, reason }))
   }
 
+  const removeGateway = async (id: string, { forget = false } = {}): Promise<GatewayRelayRemoval> => {
+    const result = await api<GatewayRelayRemoval>({
+      method: 'DELETE',
+      path: `/api/webapp/relay/gateways/${encodeURIComponent(id)}${forget ? '?forget=1' : ''}`
+    })
+
+    if (result.removed) {
+      await gateways()
+      changed(id, 'removed')
+    }
+
+    return result
+  }
+
   const unsupported = async (): Promise<never> => {
     throw new Error('Connect other gateways from Settings → Gateways in the Webapp')
   }
@@ -222,9 +237,11 @@ export function createBrowserRelays({ api, bootstrap }: { api: Api; bootstrap: B
       return () => void listeners.delete(callback)
     },
     remove: async (id: string) => {
-      await api({ method: 'DELETE', path: `/api/webapp/relay/gateways/${encodeURIComponent(id)}` })
-      await gateways()
-      changed(id, 'removed')
+      const result = await removeGateway(id)
+
+      if (!result.removed) {
+        throw new Error(result.detail)
+      }
 
       return { ok: true, registry: registry() }
     },
@@ -259,6 +276,7 @@ export function createBrowserRelays({ api, bootstrap }: { api: Api; bootstrap: B
     gateways,
     grants: async () =>
       (await api<{ grants?: GatewayRelayGrant[] }>({ path: '/api/webapp/relay/grants' }))?.grants ?? [],
+    removeGateway,
     revokeGrant: async (grantId: string) => {
       await api({ method: 'DELETE', path: `/api/webapp/relay/grants/${encodeURIComponent(grantId)}` })
     },

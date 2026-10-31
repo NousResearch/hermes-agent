@@ -15,12 +15,13 @@ import logging
 import mimetypes
 import os
 import re
+import time
 from pathlib import Path
 from urllib.parse import unquote as _unquote
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, bounded_put
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
@@ -105,6 +106,7 @@ class MattermostAdapter(BasePlatformAdapter):
     """Gateway adapter for Mattermost (self-hosted or cloud)."""
 
     splits_long_messages = True  # send() chunks via truncate_message(MAX_POST_LENGTH)
+    _group_policy = "open"  # only per-channel sender lists grant access
     serial_receive_loop = True  # the WebSocket loop awaits each event before reading the next
 
     def __init__(self, config: PlatformConfig):
@@ -123,6 +125,15 @@ class MattermostAdapter(BasePlatformAdapter):
         self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
         self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
+        self._mention_users: dict[str, tuple[Optional[bool], float]] = {}
+        self._groups = config.extra.get("groups") if isinstance(config.extra.get("groups"), dict) else {}
+        dm_policy = str(config.extra.get("dm_policy") or "").strip().lower()
+        self._dm_policy = "disabled" if dm_policy == "allowlist" else dm_policy
+
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        # Only configured group sender lists grant access; other chats keep gateway authorization.
+        return True
 
     # --- HTTP helpers ---
 
@@ -435,6 +446,72 @@ class MattermostAdapter(BasePlatformAdapter):
 
     # --- WebSocket ---
 
+    def _channel_sender_allowed(self, channel_id: str, sender_id: str) -> bool:
+        """Match channel keys like WeCom; sender IDs remain exact."""
+        groups = self._groups
+        group = groups.get(channel_id)
+        if not isinstance(group, dict):
+            group = next((v for k, v in groups.items()
+                          if isinstance(k, str) and k.lower() == channel_id.lower() and isinstance(v, dict)),
+                         groups.get("*", {}))
+        if not isinstance(group, dict):
+            return True
+        raw = group.get("allow_from") or group.get("allowFrom")
+        if not raw:
+            return True
+        allowed = _channel_id_set(raw)
+        return "*" in allowed or sender_id in allowed
+
+    async def _peer_bot_mention_length(self, name: str, budget: list[int]) -> int:
+        """Resolve exact accounts before suffix fallback; unknown/error verdicts preserve text."""
+        while name and name not in {"channel", "here", "all"}:
+            bot, expiry = self._mention_users.get(name, (None, 0))
+            if expiry <= time.monotonic():
+                if not budget[0]:
+                    return 0
+                budget[0] -= 1
+                try:
+                    user = await self._api_get(f"users/username/{name}")
+                except Exception:  # optional cleanup must not prevent delivery; cancellation propagates
+                    logger.debug("mattermost: peer-bot lookup for %s failed", name, exc_info=True)
+                    user = None
+                username = user.get("username") if isinstance(user, dict) else None
+                bot = (isinstance(username, str) and username.lower() == name and user.get("is_bot") is True
+                       if user != {} else None)
+                bounded_put(self._mention_users, name, (bot, time.monotonic() + 60), 512)
+            if bot is not None:
+                return len(name) if bot else 0
+            if name[-1] not in ".-_":
+                return 0
+            name = name[:-1]
+        return 0
+
+    async def _strip_peer_bot_mentions(self, text: str) -> str:
+        """Authorized-only cleanup: four lookups, two seconds total, 60s verdict TTL."""
+        protected = [m.span() for m in re.finditer(
+            r"(?P<ticks>`+)[\s\S]*?(?P=ticks)|(?P<fence>~{3,})[\s\S]*?(?P=fence)"
+            r"|\]\([^\n)]*\)|\b[A-Za-z][A-Za-z0-9+.-]*://[^\s<>]+", text)]
+        matches = [m for m in re.finditer(r"(?<![\w.@-])@([A-Za-z0-9._-]{1,64})(?![\w.-])", text)
+                   if not any(start <= m.start() < end for start, end in protected)]
+        names = list(dict.fromkeys(m.group(1).lower() for m in matches))
+        budget = [4]
+        try:
+            lengths = await asyncio.wait_for(asyncio.gather(
+                *(self._peer_bot_mention_length(n, budget) for n in names)), timeout=2)
+        except TimeoutError:
+            lengths = [0 for _ in names]
+            for name in names:
+                bounded_put(self._mention_users, name, (False, time.monotonic() + 60), 512)
+        resolved = dict(zip(names, lengths))
+        spans = [(m.start(), m.start(1) + resolved[m.group(1).lower()]) for m in matches
+                 if resolved[m.group(1).lower()]]
+        for start, end in reversed(spans):
+            before, after = text[:start], text[end:]
+            if before[-1:] in {" ", "\t"} and after[:1] in {" ", "\t"}:
+                before, after = before.rstrip(" \t"), " " + after.lstrip(" \t")
+            text = before + after
+        return text.strip() if spans else text
+
     async def _ws_loop(self) -> None:
         """Connect to the WebSocket and listen for events, reconnecting on failure."""
         import aiohttp
@@ -563,9 +640,14 @@ class MattermostAdapter(BasePlatformAdapter):
         channel_id, is_dm = post.get("channel_id", ""), data.get("channel_type", "O") == "D"
         message_text = post.get("message", "")
         if not is_dm:  # DMs need no gating; channels are mention-gated.
+            if not self._channel_sender_allowed(channel_id, sender_id):
+                return
             message_text = self._apply_channel_gating(channel_id, message_text)
             if message_text is None:
                 return
+            if self._is_sender_authorized(sender_id, _CHANNEL_TYPE_MAP.get(data.get("channel_type", "O"), "channel"),
+                                          channel_id) is True:
+                message_text = await self._strip_peer_bot_mentions(message_text)
         # Thread support: replies use root_id; in thread mode a top-level channel post is itself a valid root.
         thread_id = post.get("root_id") or None
         if not thread_id and self._reply_mode == "thread" and not is_dm and post_id:

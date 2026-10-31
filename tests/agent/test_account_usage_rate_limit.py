@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -466,3 +467,197 @@ class TestFetchAccountUsagePublicContract:
         text = "\n".join(account_usage.render_account_usage_lines(snap))
         assert "429" in text
         assert "secret response body" not in text
+
+
+# ---------------------------------------------------------------------------
+# Cross-process 429 suppression — subprocess replication test
+# ---------------------------------------------------------------------------
+
+class TestCrossProcess429Suppression:
+    """Verify that a 429 marker written by process A suppresses upstream calls
+    in an independent process B sharing the same HERMES_HOME.
+
+    This is the only test that exercises the real cross-process file-cache
+    contract; same-process tests cannot cover it because in-process state
+    (``_RATE_LIMIT_UNTIL``) always exists in the writer's address space.
+    """
+
+    PROVIDER = "anthropic"
+    FP = "sha256:fp-crossproc"
+    TOKEN = "token-crossproc"
+
+    # Python script run by the child process (process B).
+    # It imports account_usage in a fresh interpreter, reads the RL marker
+    # written by this test (process A), and asserts fetch is NOT called.
+    _CHILD_SCRIPT = """\
+import json, os, sys, time
+from unittest.mock import patch
+
+# Inject project root onto path so imports work from a tmp worktree.
+sys.path.insert(0, sys.argv[1])
+
+import agent.account_usage as au
+
+PROVIDER = sys.argv[2]
+FP = sys.argv[3]
+TOKEN = sys.argv[4]
+
+call_count = [0]
+
+def fake_fetch(provider, *, api_key=None, base_url=None):
+    call_count[0] += 1
+    # Return a valid (non-429) snapshot to distinguish "was called" clearly.
+    return au.AccountUsageSnapshot(
+        provider=provider, source="oauth_usage_api",
+        fetched_at=au._utc_now(),
+        windows=(au.AccountUsageWindow(label="Session", used_percent=0.0),),
+    )
+
+# Replace the upstream function so we can count calls.
+au.fetch_account_usage = fake_fetch
+
+snap = au._fetch_pool_snapshot(PROVIDER, TOKEN, FP)
+result = {
+    "call_count": call_count[0],
+    "available": snap.available if snap else None,
+    "unavailable_reason": snap.unavailable_reason if snap else None,
+}
+print(json.dumps(result))
+"""
+
+    def test_subprocess_respects_rl_marker(self, tmp_path, monkeypatch):
+        """Process A writes a 429 marker; process B must see 0 upstream calls."""
+        import subprocess
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(account_usage, "_file_cache_ttl_resolved", None)
+
+        # --- Process A (this test): write the marker via _fetch_pool_snapshot ---
+        _clear_caches(self.FP, self.PROVIDER)
+
+        def fake_fetch_a(provider, *, api_key=None, base_url=None):
+            return _rate_limited_snapshot(provider, retry_after=3600.0)
+
+        # Monkey-patch fetch_account_usage in this process to produce a 429.
+        original = account_usage.fetch_account_usage
+        account_usage.fetch_account_usage = fake_fetch_a
+        try:
+            account_usage._fetch_pool_snapshot(self.PROVIDER, self.TOKEN, self.FP)
+        finally:
+            account_usage.fetch_account_usage = original
+
+        # Verify the marker file was written.
+        from agent.account_usage import _rate_limit_cache_path
+        marker_path = _rate_limit_cache_path(self.PROVIDER, self.FP)
+        assert marker_path is not None and marker_path.exists(), \
+            "Rate-limit marker file must exist after a 429"
+
+        # --- Process B: fresh Python interpreter, same HERMES_HOME ---
+        import sys
+        import textwrap
+
+        script = textwrap.dedent(self._CHILD_SCRIPT)
+        project_root = str(
+            Path(__file__).parent.parent.parent
+        )  # .worktrees/<id>/tests/agent/../.. → repo root
+
+        result = subprocess.run(
+            [sys.executable, "-c", script, project_root, self.PROVIDER, self.FP, self.TOKEN],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "HERMES_HOME": str(tmp_path)},
+        )
+        assert result.returncode == 0, (
+            f"Child process failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+        data = json.loads(result.stdout.strip())
+        assert data["call_count"] == 0, (
+            f"Child process called fetch_account_usage {data['call_count']} time(s) "
+            "despite an active cross-process 429 marker"
+        )
+        assert data["available"] is False, "Blocked snapshot must be unavailable"
+        assert "rate_limited_until" in (data.get("unavailable_reason") or ""), \
+            "Unavailable reason must mention rate_limited_until"
+
+    def test_subprocess_allows_fetch_after_marker_expires(self, tmp_path, monkeypatch):
+        """An expired marker must not block the child process."""
+        import subprocess, sys, os, textwrap
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(account_usage, "_file_cache_ttl_resolved", None)
+
+        _clear_caches(self.FP, self.PROVIDER)
+
+        # Write an already-expired marker directly (deadline 2 seconds ago).
+        from agent.account_usage import _rate_limit_cache_path, _rate_limit_cache_write
+        import time as _time
+        _rate_limit_cache_write(self.PROVIDER, self.FP, _time.time() - 2.0)
+        marker_path = _rate_limit_cache_path(self.PROVIDER, self.FP)
+        assert marker_path is not None and marker_path.exists()
+
+        script = textwrap.dedent(self._CHILD_SCRIPT)
+        project_root = str(Path(__file__).parent.parent.parent)
+
+        result = subprocess.run(
+            [sys.executable, "-c", script, project_root, self.PROVIDER, self.FP, self.TOKEN],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "HERMES_HOME": str(tmp_path)},
+        )
+        assert result.returncode == 0, (
+            f"Child process failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        data = json.loads(result.stdout.strip())
+        # Expired marker → child must have attempted a fresh fetch (call_count >= 1).
+        assert data["call_count"] >= 1, (
+            "Expired marker must not block a fresh upstream call in child process"
+        )
+
+    def test_rl_marker_file_contains_no_token(self, tmp_path, monkeypatch):
+        """The .rl.json marker file must never contain the raw token or JWT."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(account_usage, "_file_cache_ttl_resolved", None)
+
+        _clear_caches(self.FP, self.PROVIDER)
+
+        def fake_fetch(provider, *, api_key=None, base_url=None):
+            return _rate_limited_snapshot(provider, retry_after=3600.0)
+
+        monkeypatch.setattr(account_usage, "fetch_account_usage", fake_fetch)
+        account_usage._fetch_pool_snapshot(self.PROVIDER, self.TOKEN, self.FP)
+
+        from agent.account_usage import _rate_limit_cache_path
+        marker_path = _rate_limit_cache_path(self.PROVIDER, self.FP)
+        assert marker_path is not None and marker_path.exists()
+
+        raw = marker_path.read_text()
+        assert self.TOKEN not in raw, "Raw token must not appear in the rate-limit marker"
+        assert "Bearer" not in raw
+        # Only safe fields: type, provider, fingerprint, deadline_unix, status.
+        data = json.loads(raw)
+        assert set(data.keys()) <= {"type", "provider", "fingerprint", "deadline_unix", "status"}
+
+    def test_rl_marker_file_permissions_are_0600(self, tmp_path, monkeypatch):
+        """The .rl.json marker file must be written with 0600 permissions."""
+        import stat
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(account_usage, "_file_cache_ttl_resolved", None)
+
+        _clear_caches(self.FP, self.PROVIDER)
+
+        def fake_fetch(provider, *, api_key=None, base_url=None):
+            return _rate_limited_snapshot(provider, retry_after=3600.0)
+
+        monkeypatch.setattr(account_usage, "fetch_account_usage", fake_fetch)
+        account_usage._fetch_pool_snapshot(self.PROVIDER, self.TOKEN, self.FP)
+
+        from agent.account_usage import _rate_limit_cache_path
+        marker_path = _rate_limit_cache_path(self.PROVIDER, self.FP)
+        assert marker_path is not None and marker_path.exists()
+        mode = stat.S_IMODE(marker_path.stat().st_mode)
+        assert mode == 0o600, f"Expected 0600, got {oct(mode)}"
+

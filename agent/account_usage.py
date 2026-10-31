@@ -255,6 +255,85 @@ def _file_cache_write(provider: str, fingerprint: str, snapshot: AccountUsageSna
         logger.debug("account_usage: file cache write failed (non-fatal)", exc_info=True)
 
 
+# ---------------------------------------------------------------------------
+# Cross-process 429 rate-limit marker (separate .rl.json file per fingerprint)
+#
+# Concurrency contract: no fcntl.flock — os.replace is atomic on POSIX; two
+# concurrent writers produce the same deadline (both just saw the same 429),
+# so last-writer-wins is safe. Two concurrent readers both miss at most once
+# (one extra HTTP call per simultaneous miss), which is "best-effort, ≤N
+# duplicate calls where N = number of concurrent processes seeing the first
+# 429". Once written, any reader on the same HERMES_HOME respects the marker.
+# ---------------------------------------------------------------------------
+
+
+def _rate_limit_cache_path(provider: str, fingerprint: str) -> Optional[Path]:
+    """Return the Path for the per-fingerprint rate-limit marker file (.rl.json)."""
+    path = _file_cache_path(provider, fingerprint)
+    if path is None:
+        return None
+    # Sibling file alongside the success-cache JSON; distinct suffix avoids
+    # any accidental collision with success-cache read/write paths.
+    return path.with_suffix(".rl.json")
+
+
+def _rate_limit_cache_write(provider: str, fingerprint: str, deadline_unix: float) -> None:
+    """Atomically record a rate-limit deadline in the cross-process marker file (0600).
+
+    Stored fields: type, provider, fingerprint (already a one-way short hash —
+    no token / email / JWT ever stored here), deadline_unix, status.
+    """
+    path = _rate_limit_cache_path(provider, fingerprint)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({
+            "type": "rate_limit_marker",
+            "provider": provider,
+            # fingerprint is already sha256:<16 hex chars> — one-way, safe to store.
+            "fingerprint": fingerprint,
+            "deadline_unix": deadline_unix,
+            "status": "rate_limited",
+        })
+        tmp = path.with_suffix(".rltmp")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.chmod(0o600)
+        os.replace(tmp, path)
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+    except Exception:
+        logger.debug("account_usage: rate-limit marker write failed (non-fatal)", exc_info=True)
+
+
+def _rate_limit_cache_read(provider: str, fingerprint: str) -> Optional[float]:
+    """Read the cross-process rate-limit deadline (wall-clock epoch seconds).
+
+    Returns None when the marker is absent, expired, or corrupt — fail-safe.
+    Expired markers are deleted opportunistically (non-fatal on failure).
+    """
+    path = _rate_limit_cache_path(provider, fingerprint)
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("type") != "rate_limit_marker":
+            return None
+        deadline = float(data.get("deadline_unix", 0))
+        if time.time() >= deadline:
+            # Expired — clean up opportunistically, ignore errors.
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+        return deadline
+    except Exception:
+        return None  # corrupt / missing — fail-safe: allow fresh fetch
+
+
 
 def _usage_credential_fingerprint(token: Optional[str], entry: Optional[dict] = None) -> str:
     # The live token is the source of truth for the cache key: two pool
@@ -321,7 +400,26 @@ def _fetch_pool_snapshot(provider: str, token: Optional[str], fingerprint: str) 
             if cached and now - cached[1] < _POOL_USAGE_CACHE_TTL:
                 return cached[0]
 
-        # 3. Cross-process file cache (read outside lock — I/O should not block
+        # 3a. Cross-process rate-limit marker (checked outside lock — I/O must not
+        #     block the lock).  When another process already wrote a 429 marker, we
+        #     honour it and populate the in-process negative cache to avoid repeated
+        #     file reads on subsequent same-process calls.
+        if token and fingerprint:
+            rl_deadline = _rate_limit_cache_read(provider, fingerprint)
+            if rl_deadline is not None:
+                remaining_s = rl_deadline - time.time()
+                if remaining_s > 0:
+                    with _POOL_USAGE_CACHE_LOCK:
+                        _RATE_LIMIT_UNTIL[key] = now + remaining_s
+                    unblocks_at = datetime.fromtimestamp(rl_deadline, tz=timezone.utc)
+                    return AccountUsageSnapshot(
+                        provider=provider,
+                        source="oauth_usage_api",
+                        fetched_at=_utc_now(),
+                        unavailable_reason=f"rate_limited_until {unblocks_at.isoformat()}",
+                    )
+
+        # 3b. Cross-process file cache (read outside lock — I/O should not block
         #    the lock; worst case two threads both miss and make one extra HTTP call).
         file_snap = _file_cache_read(provider, fingerprint)
         if file_snap is not None:
@@ -337,10 +435,14 @@ def _fetch_pool_snapshot(provider: str, token: Optional[str], fingerprint: str) 
         # other processes via the file cache) avoid hammering the endpoint.
         retry_after = exc.retry_after_seconds
         blocked_until_mono = now + retry_after
-        unblocks_at = datetime.fromtimestamp(time.time() + retry_after, tz=timezone.utc)
+        deadline_unix = time.time() + retry_after
+        unblocks_at = datetime.fromtimestamp(deadline_unix, tz=timezone.utc)
         if token and fingerprint:
             with _POOL_USAGE_CACHE_LOCK:
                 _RATE_LIMIT_UNTIL[(provider, fingerprint)] = blocked_until_mono
+            # Persist to file so other processes on the same HERMES_HOME also
+            # suppress upstream calls for this (provider, fingerprint) pair.
+            _rate_limit_cache_write(provider, fingerprint, deadline_unix)
         return AccountUsageSnapshot(
             provider=provider,
             source="oauth_usage_api",
@@ -354,10 +456,14 @@ def _fetch_pool_snapshot(provider: str, token: Optional[str], fingerprint: str) 
         # is not re-requested until the window expires.
         retry_after = float(getattr(snapshot, "retry_after_seconds"))
         blocked_until_mono = now + retry_after
-        unblocks_at = datetime.fromtimestamp(time.time() + retry_after, tz=timezone.utc)
+        deadline_unix = time.time() + retry_after
+        unblocks_at = datetime.fromtimestamp(deadline_unix, tz=timezone.utc)
         if token and fingerprint:
             with _POOL_USAGE_CACHE_LOCK:
                 _RATE_LIMIT_UNTIL[(provider, fingerprint)] = blocked_until_mono
+            # Persist to file so other processes on the same HERMES_HOME also
+            # suppress upstream calls for this (provider, fingerprint) pair.
+            _rate_limit_cache_write(provider, fingerprint, deadline_unix)
         # Return a richer reason that surface the unblock time.
         return AccountUsageSnapshot(
             provider=provider,

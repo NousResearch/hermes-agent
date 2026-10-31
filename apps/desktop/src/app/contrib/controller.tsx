@@ -7,6 +7,7 @@ import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
+import { enterShareChatMode, getShareChatCopy } from '@/components/assistant-ui/thread/share-chat-image'
 import { IdleMount } from '@/components/idle-mount'
 import { $layoutEditMode, toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { allPaneIds } from '@/components/pane-shell/tree/model'
@@ -436,6 +437,17 @@ registry.registerMany([
       icon: Download,
       keywords: ['profile', 'import', 'share', 'bundle', 'archive', 'restore'],
       run: () => void runImportProfileFlow()
+    } satisfies PaletteContribution
+  },
+  {
+    id: 'conversation.shareImage',
+    area: PALETTE_AREA,
+    data: {
+      id: 'conversation.shareImage',
+      label: getShareChatCopy().shareTip,
+      icon: Upload,
+      keywords: ['share', 'image', 'screenshot', 'export', 'conversation', 'chat', '分享', '长图', '截图'],
+      run: () => enterShareChatMode(null)
     } satisfies PaletteContribution
   }
 ])

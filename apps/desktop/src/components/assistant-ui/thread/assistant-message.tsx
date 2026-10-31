@@ -28,6 +28,7 @@ import { MessageHoverTime } from '@/components/assistant-ui/thread/message-hover
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { ResponseMessageIds } from '@/components/assistant-ui/thread/response-group'
+import { enterShareChatMode, getShareChatCopy } from '@/components/assistant-ui/thread/share-chat-image'
 import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
 import { threadMessageIndex } from '@/components/assistant-ui/thread/thread-message-index'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
@@ -79,6 +80,7 @@ import { sessionApprovalRequest } from '@/store/prompts'
 import { requestSendDiagnostics } from '@/store/send-diagnostics'
 import { $connection, $currentModel, setModelPickerOpen } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
+import { useForcedTextDirection } from '@/store/text-direction'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { $voicePlayback } from '@/store/voice-playback'
 
@@ -1151,6 +1153,8 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
 }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
+  const textDirection = useForcedTextDirection()
+  const alignRight = textDirection === 'rtl'
 
   const [pickerOpen, setPickerOpen] = useState(false)
   const { enabled: reactionsEnabled, react, reactions: shownReactions } = useMessageReactions(messageId, 'assistant')
@@ -1164,10 +1168,18 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
   )
 
   return (
-    <div className="relative flex w-full shrink-0 items-center justify-end gap-1.5">
+    <div
+      className={cn(
+        'relative flex w-full shrink-0 items-center gap-1.5',
+        alignRight ? 'justify-end' : 'justify-start'
+      )}
+    >
       {durationS !== undefined && (
         <span
-          className="mr-auto select-none px-0.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground"
+          className={cn(
+            'select-none px-0.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground',
+            alignRight ? 'mr-auto' : 'mr-1'
+          )}
           data-slot="aui_turn-duration"
           title={t.assistant.thread.turnDuration(formatElapsed(durationS))}
         >
@@ -1175,7 +1187,7 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
         </span>
       )}
       <ActionBarPrimitive.Root
-        className={
+        className={cn(
           // NOTE: intentionally NOT `hideWhenRunning`. That prop unmounts the
           // bar while the thread streams, which collapses every completed
           // assistant message's footer by this bar's height and shifts the
@@ -1183,8 +1195,9 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
           // invisible by default (opacity-0 + pointer-events-none, reveals on
           // hover), so keeping it mounted reserves stable layout height with
           // no visual change during streaming.
-          'relative flex flex-row items-center justify-end gap-1.5 py-1.5 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100'
-        }
+          'relative flex flex-row items-center gap-1.5 py-1.5 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100',
+          alignRight ? 'justify-end' : 'justify-start'
+        )}
         data-slot="aui_msg-actions"
       >
         <MessageHoverTime className="mr-1 px-0.5" />
@@ -1215,6 +1228,19 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
           getText={getMessageText}
           messageId={messageId}
         />
+        <TooltipIconButton
+          data-share-chat-btn="true"
+          onClick={event => {
+            triggerHaptic('selection')
+            const target = event.currentTarget
+            const responseGroup = target.closest('[data-slot="aui_response-group"]')
+            const msgRoot = target.closest('[data-slot="aui_assistant-message-root"]')
+            enterShareChatMode(responseGroup ?? msgRoot)
+          }}
+          tooltip={getShareChatCopy().shareTip}
+        >
+          <Upload className="size-3.5" />
+        </TooltipIconButton>
         <ActionBarPrimitive.Reload asChild>
           <TooltipIconButton
             onClick={() => {
@@ -1332,8 +1358,16 @@ const ReadAloudButton: FC<{
 }
 
 const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ durationS, ...props }) => {
+  const textDirection = useForcedTextDirection()
+  const alignRight = textDirection === 'rtl'
+
   return (
-    <div className="flex min-h-6 flex-col items-end gap-1 pr-(--message-text-indent) pl-(--message-text-indent)">
+    <div
+      className={cn(
+        'flex min-h-6 flex-col gap-1 pr-(--message-text-indent) pl-(--message-text-indent)',
+        alignRight ? 'items-end' : 'items-start'
+      )}
+    >
       <BranchPickerPrimitive.Root
         className="inline-flex h-6 items-center gap-1 text-xs text-muted-foreground"
         hideWhenSingleBranch

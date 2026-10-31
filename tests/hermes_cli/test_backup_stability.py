@@ -130,7 +130,11 @@ def test_quick_snapshot_listing_ignores_partial_directories(tmp_path) -> None:
 def test_failed_automatic_backup_preserves_previous_archive(tmp_path, monkeypatch) -> None:
     home = tmp_path / ".hermes"
     home.mkdir()
-    (home / "state.db").write_bytes(b"not-a-database")
+    # A real SQLite header keeps this on the snapshot path (#146016 downgraded readable
+    # non-SQLite *.db files to plain-file entries); the mocked _safe_copy_db is the
+    # failure injection this contract tests.
+    with sqlite3.connect(home / "state.db") as conn:
+        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
     archive = tmp_path / "automatic.zip"
     archive.write_bytes(b"previous-valid-backup")
 

@@ -67,10 +67,18 @@ def test_every_gateway_room_method_reaches_the_owning_gateway(home, monkeypatch)
         return {"methods": list(GROUP_METHODS)} if method == "groups.capabilities" else {}
     monkeypatch.setattr(owner_forward, "forward_rpc", forward_rpc)
 
-    for method in GROUP_METHODS:
-        assert method in METHODS, f"{method}: no contract on the standalone wire"
-        reply = srv._methods[method](1, {"room_id": "room-desk"})
-        assert "error" not in reply, (method, reply)
+    from tui_gateway.transport import bind_transport, reset_transport
+    token = bind_transport(SimpleNamespace(auth_identity={'user_id': 'owner', 'provider': 'basic'}))
+    try:
+        for method in GROUP_METHODS:
+            assert method in METHODS, f"{method}: no contract on the standalone wire"
+            params = {"room_id": "room-desk"}
+            if method == 'groups.preview':
+                params['text'] = 'draft'
+            reply = srv._methods[method](1, params)
+            assert "error" not in reply, (method, reply)
+    finally:
+        reset_transport(token)
     capabilities = srv._methods["groups.capabilities"](2, {})["result"]
 
     assert reached[:len(GROUP_METHODS)] == list(GROUP_METHODS)

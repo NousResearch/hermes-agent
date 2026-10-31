@@ -94,22 +94,42 @@ def owner_endpoint(home):
         time.sleep(_READY_POLL_S)
 
 
-def _standalone_holder(room_id: str) -> str | None:
+def _standalone_holder(room_id: str, *, read_only: bool = False) -> str | None:
     """Where the standalone store says ``room_id`` lives: ``"gateway"`` (handed to the root
     gateway's store), ``"local"`` (any other room it holds: only this backend drives or mirrors
     it) or ``None`` (not a standalone room)."""
     from contextlib import closing
-    from gateway.hosted_rooms import _read_connection, default_db_path
+    from gateway.hosted_rooms import _read_connection, _store_ready, default_db_path
     from gateway.hosted_rooms_gateway_import import handoff_gateway_id
     source = default_db_path()
     if not source.is_file():
         return None
-    with closing(_read_connection(source)) as conn:
+    if read_only:
+        import sqlite3
+        try:
+            conn = sqlite3.connect(source.resolve().as_uri() + '?mode=ro', uri=True)
+            if not _store_ready(conn, source):
+                conn.close()
+                raise _OwnerBusy('room_store_unready')
+        except sqlite3.Error as exc:
+            raise _OwnerBusy('room_store_unavailable') from exc
+    else:
+        conn = _read_connection(source)
+    with closing(conn):
         row = conn.execute("SELECT authority_gateway_id FROM hosted_rooms WHERE room_id=?",
                            (room_id,)).fetchone()
     if row is None:
         return None
-    return "gateway" if str(row[0]) == handoff_gateway_id() else "local"
+    if read_only:
+        from hermes_cli.install_identity import _read_existing
+        from hermes_constants import get_default_hermes_root
+        install_id, _ = _read_existing(get_default_hermes_root() / 'install_id')
+        if not install_id:
+            raise _OwnerBusy('install_identity_unavailable')
+        handoff = f'install:{install_id}:gateway-store'
+    else:
+        handoff = handoff_gateway_id()
+    return "gateway" if str(row[0]) == handoff else "local"
 
 
 def _standalone_rooms(params: dict | None = None) -> list[dict]:
@@ -127,9 +147,14 @@ def _call(server, rid, home, endpoint, method: str, params: dict) -> dict:
     try:
         result = owner_forward.forward_rpc(home, endpoint, method, params)
     except GatewayRPCError as exc:
+        if method == 'groups.preview':
+            return server._err(rid, exc.code if isinstance(exc.code, int) else 5000, 'preview unavailable')
         return server._err(rid, exc.code if isinstance(exc.code, int) else 5000, str(exc), exc.data or None)
     except Exception as exc:  # health: allow BLE001 -- transport boundary: any dial/IO failure is one refusal
-        logger.warning("Group Chat %s: the gateway that owns it did not answer: %s", method, exc)
+        if method == 'groups.preview':
+            logger.warning("Group Chat preview: the gateway that owns it did not answer")
+        else:
+            logger.warning("Group Chat %s: the gateway that owns it did not answer: %s", method, exc)
         return server._err(rid, OWNER_LOST_CODE, "The Hermes gateway did not answer. Try again.")
     result = result if isinstance(result, dict) else {}
     if method == "groups.capabilities" and isinstance(result.get("methods"), list):
@@ -152,7 +177,8 @@ def forward(server, rid, method: str, params: dict) -> dict | None:
     try:
         home = _home(server, params)
         room_id = str(params.get("room_id") or "")
-        holder = _standalone_holder(room_id) if room_id else None
+        holder = _standalone_holder(room_id, read_only=True) if room_id and method == 'groups.preview' else (
+            _standalone_holder(room_id) if room_id else None)
         if holder == "local":
             return None  # only this backend holds it: never ask a gateway that cannot have it
         if holder == "gateway":

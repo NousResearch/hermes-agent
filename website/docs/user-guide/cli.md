@@ -544,6 +544,23 @@ display:
 
 This is useful on narrow terminals or when tool arguments contain very long file paths.
 
+### Inline Images
+
+Images show up right in the transcript: the ones you attach (`/paste`, `/image`, drag-and-drop) under your message, and the local image a tool produced or looked at (`vision_analyze`, a browser screenshot, `read_file` on a PNG) under that tool's line. The same setting drives the [TUI](./tui.md).
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  inline_images: auto   # auto | kitty | unicode | off
+```
+
+- **`auto`** draws full-resolution images in kitty and Ghostty (kitty graphics protocol, Unicode placeholders) and truecolor half-blocks everywhere else, including inside tmux and VS Code.
+- **`kitty`** forces the kitty protocol, for example inside a tmux with `set -g allow-passthrough on`.
+- **`unicode`** always uses half-blocks.
+- **`off`** shows file paths only, as before.
+
+Only local files are drawn; remote image URLs are not fetched. iTerm2, WezTerm and sixel terminals get half-blocks, because their image protocols paint over rows the transcript can't measure.
+
 ## Session Management
 
 ### Resuming Sessions

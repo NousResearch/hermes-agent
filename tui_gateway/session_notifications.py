@@ -209,25 +209,47 @@ def _notif_loop_status(sid: str, text: str) -> None:
 def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) -> None:
     """Slash-command /loop wakeup: route through the slash pipeline, not the model. No model reply to evaluate, so the
     tick completes immediately — unless the command resolves to a prompt (skill command etc.), which runs as a normal
-    turn whose post-turn hook completes the tick."""
+    turn whose post-turn hook completes the tick. A tick whose command shows nothing (unknown command, dispatch
+    failure) is surfaced as a status line and counts toward the no-op streak that pauses the loop, so a broken
+    slash prompt can't burn the whole tick budget silently."""
     _notif_release_turn(session)
     try:
         parts = wakeup.lstrip()[1:].split(None, 1)
         resp = _methods["command.dispatch"](
             rid, {"name": parts[0] if parts else "", "arg": parts[1] if len(parts) > 1 else "", "session_id": sid})
+        err = (resp or {}).get("error")
         payload = (resp or {}).get("result") or {}
-        if out := str(payload.get("output") or "").strip():
+        out = str(payload.get("output") or "").strip()
+        # Skill commands dispatch back type 'skill' with a message (methods_tools.py); treat it like 'send'.
+        send = payload.get("type") in ("send", "skill") and payload.get("message")
+        if out:
             _notif_loop_status(sid, out)
-        if payload.get("type") == "send" and payload.get("message"):
+        if err or not (out or send):
+            why = str((err or {}).get("message") if isinstance(err, dict) else err) if err \
+                else "command produced no output"
+            _notif_loop_status(sid, f"! /loop slash tick: {why}")
+            noop = mgr.record_slash_noop(progressed=False)
+            if noop.get("message"):
+                _notif_loop_status(sid, noop["message"])
+                _publish_session_control_snapshot(sid, session)  # paused: clients drop the countdown
+                return
+        else:
+            mgr.record_slash_noop(progressed=True)
+        if send:
             if not _notif_claim_turn(session):
                 mgr.abandon_tick()
                 _publish_session_control_snapshot(sid, session)  # back to the countdown, not "running now"
                 return
-            # Releases the claim on failure: the swallow below would otherwise leave the session busy for good.
+            # Releases the claim on failure; the raise then records the tick as a no-op below.
             _notif_submit(rid, sid, session, payload["message"], "loop wakeup send failed")
             return
-    except Exception:
-        pass
+    except Exception as exc:
+        _notif_loop_status(sid, f"! /loop slash tick: dispatch failed: {type(exc).__name__}: {exc}")
+        noop = mgr.record_slash_noop(progressed=False)
+        if noop.get("message"):
+            _notif_loop_status(sid, noop["message"])
+            _publish_session_control_snapshot(sid, session)
+            return
     decision = mgr.complete_tick("")
     if decision.get("message"):
         _notif_loop_status(sid, decision["message"])

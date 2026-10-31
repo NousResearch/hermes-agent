@@ -1,6 +1,7 @@
 import type { MessageCompletePayload, SubagentEventPayload, ToolLabel } from '@hermes/shared/gateway-events'
 
 import {
+  MAX_STREAM_FLUSH_GAP_MS,
   REASONING_PULSE_MS,
   STREAM_BATCH_MS,
   STREAM_IDLE_BATCH_MS,
@@ -57,6 +58,23 @@ function toolTrailLines(
 const INTERRUPT_COOLDOWN_MS = 1500
 const ACTIVITY_LIMIT = 8
 const TRAIL_LIMIT = 8
+
+// ── Adaptive flush ──────────────────────────────────────────────────
+// TUI runs on Node.js (no requestAnimationFrame), so we measure the actual
+// cost of patchTurnState with performance.now() and use it to pace the next
+// flush. This mirrors Desktop's adaptiveFloor formula:
+//   min(max(STREAM_BATCH_MS, lastFlushCost * 3), MAX_STREAM_FLUSH_GAP_MS)
+// Under load the gap stretches so the main thread stays responsive to input;
+// the cap guarantees streaming text still visibly updates ~4x/second.
+const FLUSH_COST_MULTIPLIER = 3
+let lastFlushCost = 0
+
+function adaptiveFloor(): number {
+  return Math.min(
+    Math.max(STREAM_BATCH_MS, lastFlushCost * FLUSH_COST_MULTIPLIER),
+    MAX_STREAM_FLUSH_GAP_MS
+  )
+}
 
 // Extracts the raw patch from a diff-only segment produced by
 // pushInlineDiffSegment. Used at message.complete to dedupe against final
@@ -352,6 +370,7 @@ class TurnController {
     this.bufRef = ''
     // `keepTurnArchive`: the turn-over signal arrived before the final; the sealed segments
     // and finished tool rows wait for `recordMessageComplete` to archive them.
+
     if (!opts.keepTurnArchive) {
       this.pendingSegmentTools = []
       this.segmentMessages = []
@@ -1027,6 +1046,7 @@ class TurnController {
     // Session boundary: drop notice state so session A's sticky can't bleed
     // into session B (R3-H5). reset()/fullReset() CLEAR — they never flush.
     this.clearNoticeState()
+    lastFlushCost = 0
     patchTurnState({ activity: [], outcome: '' })
   }
 
@@ -1042,11 +1062,13 @@ class TurnController {
 
     this.reasoningTimer = setTimeout(() => {
       this.reasoningTimer = null
+      const start = performance.now()
       patchTurnState({
         reasoning: this.reasoningText,
         reasoningTokens: estimateTokensRough(this.reasoningText)
       })
-    }, STREAM_BATCH_MS)
+      lastFlushCost = performance.now() - start
+    }, adaptiveFloor())
   }
 
   scheduleStreaming() {
@@ -1056,10 +1078,12 @@ class TurnController {
 
     this.streamTimer = setTimeout(() => {
       this.streamTimer = null
+      const start = performance.now()
       const raw = this.bufRef.trimStart()
       const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
       patchTurnState({ streaming: boundedLiveRenderText(visible) })
-    }, this.streamDelay)
+      lastFlushCost = performance.now() - start
+    }, Math.max(this.streamDelay, adaptiveFloor()))
   }
 
   hydrateStreamingText(text: string) {

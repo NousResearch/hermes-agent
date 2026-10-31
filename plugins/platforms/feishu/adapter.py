@@ -3787,8 +3787,22 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
         if thread_id:
-            # reply→create fallback inside a topic: thread_id as receive_id keeps it in the topic.
-            receive_id, receive_id_type = thread_id, "thread_id"
+            # Feishu's message-create API rejects receive_id_type="thread_id" (99992402 field
+            # validation failed), so a topic target without a reply anchor cannot be addressed by
+            # create. Reply into the topic via its last message instead — the same trick the audio
+            # path uses — and only fall back to a flat chat message when the topic has no message.
+            anchor_msg_id = await self._fetch_last_message_in_thread(thread_id)
+            if anchor_msg_id:
+                body = self._build_reply_message_body(
+                    content=payload, msg_type=msg_type, reply_in_thread=True, uuid_value=str(uuid.uuid4()),
+                )
+                request = self._build_reply_message_request(anchor_msg_id, body)
+                return await self._run_blocking(self._client.im.v1.message.reply, request)
+            logger.warning(
+                "[Feishu] Topic %s has no message to anchor a reply; sending flat to chat %s",
+                thread_id, chat_id,
+            )
+            receive_id, receive_id_type = chat_id, "chat_id"
         elif chat_id.startswith("feishu_user_id:"):
             receive_id, receive_id_type = chat_id.split(":", 1)[1], "user_id"
         else:

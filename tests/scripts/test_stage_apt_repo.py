@@ -149,7 +149,7 @@ def test_the_candidate_workflow_stages_each_claim_into_its_channel(tmp_path, cla
     derive = next(step for step in steps if step.get("name") == "Derive the channel from the tag")
     assert 'deb_version.py --channel "$TAG"' in derive["run"]
     assert '--suite "hermes-$CHANNEL"' in stage_step["run"]
-    assert 'stage_args+=(--pool-subdir "$RELEASE_CLAIM_TAG")' in stage_step["run"]
+    assert '--pool-subdir "$RELEASE_CLAIM_TAG")' in stage_step["run"]
     assert stage_step["env"]["RELEASE_CLAIM_TAG"] == "${{ inputs.claim-tag }}"
     payload = "v0.21.5" if claim.startswith("rc.") else claim
     pool = tmp_path / "pool-in"

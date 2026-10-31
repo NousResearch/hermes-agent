@@ -23,8 +23,7 @@ from pathlib import Path
 import pytest
 
 from tests.ci.desktop_release_roles import (
-    DOWNLOADABLE_DISPATCHES, DRY_DISPATCH, SHA, admitted, credential_gate, evaluate, gate,
-    native_builds, needs_of,
+    DOWNLOADABLE_DISPATCHES, SHA, admitted, credential_gate, evaluate, gate, native_builds, needs_of,
 )
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -290,10 +289,12 @@ def test_downloadable_native_builds_refuse_to_ship_unsigned(tmp_path: Path):
         assert builds and steps.index(step) < builds[0], f"{name} checks credentials after building"
         for dispatch, inputs in DOWNLOADABLE_DISPATCHES.items():
             assert gate(step["if"], inputs, {}, job_if=False), (name, dispatch)
-        assert not gate(step["if"], DRY_DISPATCH, {}, job_if=False), name
+        # The publish phase reuses accepted bytes; it never builds, so it needs no signer.
+        publish = {**DOWNLOADABLE_DISPATCHES["stable"], "release-phase": "publish"}
+        assert not gate(step["if"], publish, {}, job_if=False), name
 
     windows = {credential_gate(jobs[name])["run"]: credential_gate(jobs[name])
-               for (target, _), name in legs.items() if target.startswith("win32-")}
+               for target, name in legs.items() if target.startswith("win32-")}
     assert windows, "walk broken: no Windows build legs"
     for step in windows.values():
         names = list(step["env"])
@@ -311,3 +312,10 @@ def test_downloadable_native_builds_refuse_to_ship_unsigned(tmp_path: Path):
         assert run(**{name: "x" for name in names}).returncode == 0
         partial = run(**{name: "x" for name in names if name != "AZURE_CLIENT_ID"})
         assert partial.returncode != 0 and "AZURE_CLIENT_ID" in partial.stdout
+
+
+def test_one_failed_arch_never_cancels_its_siblings():
+    # A candidate's verdict, page and smokes judge every leg that was allowed to finish.
+    jobs = _workflow()["jobs"]
+    for name in native_builds(jobs).values():
+        assert jobs[name]["strategy"]["fail-fast"] is False, name

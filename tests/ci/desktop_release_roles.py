@@ -1,8 +1,8 @@
 """Find desktop release workflow jobs by what they do, not by their ids.
 
 Job ids in desktop-bundled-release.yml change whenever the build graph is
-reshaped (one ``build-win32-commit`` job became four per-arch legs). Tests that
-index ``jobs['build-win32-x64-commit']`` break on every such rename while the
+reshaped (the per-arch legs once had release and commit twins). Tests that
+index ``jobs['build-win32-x64']`` break on every such rename while the
 property they protect still holds. These lookups key each role on a stable
 structural fact: the action a job uses, the receipt it stages, the jobs it
 needs. A lookup that finds no match or more than one fails loudly, so a real
@@ -25,12 +25,11 @@ BUILD_CACHE_ACTION = "./.github/actions/desktop-build-cache"
 SHA = "a" * 40
 CANARY_TAG = "canary.20260818T101010Z-v0.28.0"
 CHANNEL_TAG = "channel.20260818T101010Z-v0.28.0"
+COMMIT_TAG = "commit.20260818T101010Z-v0.28.0"
+STABLE_TAG = "rc.1-v0.28.0"
 PLATFORMS = ("darwin", "win32")
 ARCHES = ("arm64", "x64")
 NATIVE_TARGETS = tuple(f"{platform}-{arch}" for platform in PLATFORMS for arch in ARCHES)
-# These names identify the shared claim legs and retained legacy dispatch legs,
-# not claim policy: commit/channel claims use write-mode legs with saves skipped.
-_MODE_BY_CACHE = {"write": "release", "read": "commit"}
 
 
 def load(path: Path = WORKFLOW) -> dict:
@@ -47,30 +46,17 @@ def _only(matches: list[str], role: str) -> str:
     return matches[0]
 
 
-def native_builds(jobs: dict) -> dict[tuple[str, str], str]:
-    """``(target, "release" | "commit")`` -> id of that native build leg."""
-    legs: dict[tuple[str, str], str] = {}
+def native_builds(jobs: dict) -> dict[str, str]:
+    """target -> id of that native build leg (one per target: every caller is a claim)."""
+    legs: dict[str, str] = {}
     for name, job in jobs.items():
         if not any(step.get("uses") == BUILD_CACHE_ACTION for step in job.get("steps", [])):
             continue
         (target,) = [row["label"] for row in job["strategy"]["matrix"]["target"]]
-        key = (target, _MODE_BY_CACHE[job["cache-mode"]])
-        assert key not in legs, f"{name} and {legs[key]} both build {key}"
-        legs[key] = name
-    assert {target for target, _ in legs} == set(NATIVE_TARGETS), legs
-    assert len(legs) == 2 * len(NATIVE_TARGETS), legs
+        assert target not in legs, f"{name} and {legs[target]} both build {target}"
+        legs[target] = name
+    assert set(legs) == set(NATIVE_TARGETS), legs
     return legs
-
-
-def selection_gates(jobs: dict) -> dict[str, str]:
-    """target -> the job that turns "one trust branch ran" into one result."""
-    legs = native_builds(jobs)
-    gates = {}
-    for target in NATIVE_TARGETS:
-        pair = {legs[(target, "release")], legs[(target, "commit")]}
-        gates[target] = _only([name for name, job in jobs.items() if pair <= set(needs_of(job))],
-                              f"{target} selection gate")
-    return gates
 
 
 def smoke_callers(jobs: dict) -> dict[str, str]:
@@ -100,38 +86,6 @@ def termux_builder(jobs: dict) -> str:
     return _only([name for name, job in jobs.items() if _stages(job, "termux")], "termux deb")
 
 
-def updater_publishers(jobs: dict) -> dict[str, str]:
-    """platform -> the job that publishes that platform's updater feed.
-
-    It is the job gated on exactly that platform's smokes; channel publication
-    and summaries need every platform's smoke.
-    """
-    smokes = smoke_callers(jobs)
-    publishers = {}
-    for platform in PLATFORMS:
-        own = {smokes[f"{platform}-{arch}"] for arch in ARCHES}
-        publishers[platform] = _only(
-            [name for name, job in jobs.items() if set(needs_of(job)) & set(smokes.values()) == own],
-            f"{platform} updater publisher")
-    return publishers
-
-
-def _renders(job: dict, flag: str) -> bool:
-    return any("render-builds-table.py" in step.get("run", "") and flag in step["run"]
-               for step in job.get("steps", []))
-
-
-def commit_summary(jobs: dict) -> str:
-    return _only([name for name, job in jobs.items() if _renders(job, "--summary-commit")],
-                 "commit build summary")
-
-
-def tag_summary(jobs: dict) -> str:
-    """The tag build table (the final one, not the pending placeholder posted before the builds)."""
-    return _only([name for name, job in jobs.items()
-                  if _renders(job, "--tag") and not _renders(job, "--pending-run-url")], "tag build summary")
-
-
 def phase_result(jobs: dict) -> str:
     """The stable-phase verdict: the job that judges every phase job's result."""
     return _only([name for name, job in jobs.items()
@@ -140,9 +94,8 @@ def phase_result(jobs: dict) -> str:
 
 
 def stage_step(job: dict) -> dict:
-    """The step that stages this job's receipt under its tag, claim or commit archive."""
-    (step,) = [step for step in job["steps"]
-               if "scripts.releases.handoff stage" in step.get("run", "") and "--commit-build" in step["run"]]
+    """The step that stages this job's receipt under its claim archive."""
+    (step,) = [step for step in job["steps"] if "scripts.releases.handoff stage" in step.get("run", "")]
     return step
 
 
@@ -153,22 +106,15 @@ def credential_gate(job: dict) -> dict:
     return step
 
 
-# Dispatch shapes that produce downloadable artifacts, keyed by trust branch.
+# Stable Release's candidate calls, keyed by claim kind: every run that builds downloadable artifacts.
+_CANDIDATE = {"release-phase": "candidate", "jobs": ",".join(JOB_GROUPS)}
 DOWNLOADABLE_DISPATCHES = {
-    "tag": {"tag": CANARY_TAG, "upload_release": True, "build_commit": "",
-            "release-phase": "", "jobs": ",".join(JOB_GROUPS)},
-    "candidate": {"tag": "v0.28.0", "upload_release": False, "build_commit": "",
-                  "release-phase": "candidate", "jobs": ",".join(JOB_GROUPS)},
-    "commit": {"tag": "", "upload_release": False, "build_commit": SHA,
-               "release-phase": "", "jobs": ",".join(JOB_GROUPS)},
+    "stable": {"tag": STABLE_TAG, **_CANDIDATE},
+    "canary": {"tag": CANARY_TAG, **_CANDIDATE},
+    "commit": {"tag": COMMIT_TAG, **_CANDIDATE},
     # A channel claim's candidate: Stable Release passes the request it admitted.
-    "channel": {"tag": CHANNEL_TAG, "upload_release": False, "build_commit": "",
-                "release-phase": "candidate", "jobs": ",".join(JOB_GROUPS),
-                "channel_build": "b" * 32, "channel_request_sha256": "c" * 64},
+    "channel": {"tag": CHANNEL_TAG, **_CANDIDATE, "channel_build": "b" * 32, "channel_request_sha256": "c" * 64},
 }
-# A dry build: nothing leaves the runner.
-DRY_DISPATCH = {"tag": "v0.28.0", "upload_release": False, "build_commit": "",
-                "release-phase": "", "jobs": ",".join(JOB_GROUPS)}
 
 
 def admitted(names, *, channel=False):
@@ -185,7 +131,7 @@ def evaluate(expression, inputs, needs, *, cancelled=False, failed=False, job_if
 
     This is not a scheduler simulation; native Actions still owns cancellation
     and skipped-ancestor propagation. Requiring a status function prevents an
-    implicit success() from suppressing consumers of the skipped trust branch.
+    implicit success() from suppressing consumers of a skipped job.
     ``job_if`` judges implicit success by the needs' results; a step ``if``
     (``job_if=False``) judges it by whether an earlier step ``failed``.
     """

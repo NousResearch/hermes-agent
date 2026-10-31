@@ -55,70 +55,60 @@ and push notification configs (inline or via
 memory — and the reply is returned over A2A. Completed tasks stay queryable
 via `tasks/get`.
 
-### Connections and completion
+### Send, retrieve, and continue tasks
 
-`SendMessage` waits for a terminal or interrupted outcome by default. Set
-`configuration.returnImmediately: true` to receive the live Task promptly and
-retrieve the result later with `GetTask`. `SendStreamingMessage` starts with a
-Task containing its `id` and `contextId`, then sends updates and keepalives until
-completion or an interrupted outcome such as `TASK_STATE_INPUT_REQUIRED`.
-Disconnecting an SSE client releases only that observer: accepted work continues.
-`SubscribeToTask` starts with the current Task snapshot and observes the same result.
-The existing terminal-task subscription replay is retained for compatibility;
-this differs from the v1.0 rule rejecting terminal subscriptions.
+Send a task and receive its ID immediately:
 
-Completion callbacks store the redacted result before waking request waiters.
-Results remain queryable in memory while the process lives; conversation logs
-do not provide task restart/resumption. Cancellation
-wins at most once against completion and does not abort the underlying turn.
-Clarification replies end the current observation. To continue that logical task,
-send the answer with `message.taskId` set to its ID and a fresh `messageId`.
-`contextId` may be omitted (inherited from the task); if supplied it must match
-literally. This works for `INPUT_REQUIRED` and `AUTH_REQUIRED`. A context-only
-message creates a new task; it never implicitly resumes an interrupted task.
-Unknown or purged task IDs return TaskNotFound; terminal tasks reject messages
-with UnsupportedOperation. Task IDs cannot be chosen by callers.
+```bash
+curl http://localhost:9900/ -H 'Content-Type: application/json' -d '{
+  "jsonrpc": "2.0", "id": 1, "method": "SendMessage",
+  "params": {
+    "message": {"role": "ROLE_USER", "messageId": "request-1", "parts": [{"text": "Research this topic"}]},
+    "configuration": {"returnImmediately": true}
+  }
+}'
+```
 
-Each continuation gets an independent internal execution identity. Old sends,
-cleanup callbacks and HTTP observers cannot complete or observe the next attempt.
-Repeating a continuation's message ID while the task is nonterminal observes that
-accepted attempt without executing again. After the task becomes terminal, even
-that resend is rejected; retrieve its result with `GetTask`. Continuations count
-toward the context's anti-loop cap; retry observations do not. Push configuration
-remains attached across clarification and is captured separately for each outcome.
+Save `result.task.id` and `result.task.contextId`. Use the returned task ID to
+check progress or retrieve the result:
 
-Local tasks in one context execute in sequence so gateway input coalescing cannot
-merge accepted tasks. Cancellation of a queued task skips its execution.
+```bash
+curl http://localhost:9900/ -H 'Content-Type: application/json' -d '{
+  "jsonrpc": "2.0", "id": 2, "method": "GetTask",
+  "params": {"id": "<task-id>"}
+}'
+```
 
-Audit and conversation writes use a separate single worker, drained on ordinary
-shutdown. Admission reserves recording capacity (512 executions or outstanding
-recordings); a recorded clarification releases its slot. A resumed attempt
-reserves a distinct slot even if its preceding write is still queued. Exhaustion
-refuses new execution explicitly. Cancellation of an idle interrupted task needs
-a recording slot: overload returns a retryable capacity error without canceling
-or losing its record. Expiry retries on the next watchdog sweep or task read.
-Webhooks
-use two workers with at most 128 outstanding jobs. Saturation or shutdown may
-drop optional pushes, never local records or stored results. Shutdown releases
-request waiters and joins running I/O (webhook requests have a 10s timeout).
-`extra.input_wait_timeout_seconds` expires input/auth waits into `CANCELED` with an
-explicit reason, measured from entering the interrupted state. Polling does not
-renew this deadline. `extra.task_retention_seconds` purges terminal results by
-terminal-transition age. Both default to 86400 seconds (24 hours), require positive
-finite values, and are Hermes policies rather than A2A mandates. The 500-terminal
-count cap can evict results sooner. Owned execution has no age deadline; genuine
-unowned work still uses the separate orphan grace. Tasks are in-memory and do not
-resume after process restart. Full conversations remain in the persistence log;
-the Task response does not advertise a complete wire `history`.
+If the task asks for input (`TASK_STATE_INPUT_REQUIRED` or
+`TASK_STATE_AUTH_REQUIRED`), answer with its `taskId` and a fresh `messageId`:
 
-**Forwarded-owner link limitation:** inbound HTTP disconnect safety does not
-guarantee recovery when the adapter's separate link to a forwarded profile owner
-times out or fails. Accepted owner work may continue while the adapter's public
-task becomes `FAILED`; same-task continuation cannot recover that terminal facade.
-The existing context-only resend with the same stable `messageId` can reread the
-owner admission through a new public task. This is distinct from same-task
-continuation and is not complete end-to-end recovery. No full A2A conformance is
-claimed.
+```bash
+curl http://localhost:9900/ -H 'Content-Type: application/json' -d '{
+  "jsonrpc": "2.0", "id": 3, "method": "SendMessage",
+  "params": {"message": {
+    "role": "ROLE_USER", "messageId": "request-2", "taskId": "<task-id>",
+    "parts": [{"text": "Focus on the Python implementation"}]
+  }}
+}'
+```
+
+- Without `returnImmediately`, `SendMessage` waits for a result or request for input.
+- Use `SendStreamingMessage` for live updates; save the IDs from its first Task event.
+  A disconnected client does not cancel accepted work. Reconnect with
+  `SubscribeToTask` or retrieve the result with `GetTask`.
+- A `taskId` continues that interrupted task; `contextId` alone starts a new task
+  in the conversation. If both are sent, they must match. Finished tasks cannot restart.
+- Use `CancelTask` with `params.id` to cancel a task; this does not guarantee that
+  already-running tools stop. Retry requests refused for temporary capacity limits.
+- `extra.input_wait_timeout_seconds` cancels unanswered input/auth waits (default
+  24 hours). Polling does not extend this deadline.
+- `extra.task_retention_seconds` removes terminal results after 24 hours by default;
+  the 500-terminal-task cap may remove them sooner. Task IDs do not survive a Hermes restart.
+  Neither setting limits healthy running work.
+
+For authenticated servers, add `-H 'Authorization: Bearer <token>'` to each request.
+Forwarding to another Hermes profile has additional recovery limits; see
+[DESIGN.md](DESIGN.md#forwarded-owner-link-failure-limitation).
 
 ## Security
 
@@ -156,8 +146,8 @@ claimed.
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authed peer (dev only). |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity. |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20). |
-| `A2A_REPLY_TIMEOUT` | `300` | Legacy orphan-record grace in seconds, clamped to 300–86400s and swept every 60s. Only records without an execution owner can expire; live accepted/queued local work remains protected until completion callbacks or shutdown, regardless of connected observers. No HTTP observation or local execution deadline. Also the default forwarded-profile transport timeout; an unverified owner reply does not cancel accepted owner work. |
+| `A2A_REPLY_TIMEOUT` | `300` | Grace period before orphaned work is marked failed (seconds, clamped to 300–86400); also the default forwarded-profile reply timeout. Does not limit healthy local execution or HTTP waits. |
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push signing. |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict skills on the Agent Card. |
 
-See `DESIGN.md` for architecture and the requirement-tracing table.
+See [DESIGN.md](DESIGN.md) for architecture, lifecycle internals, and protocol compatibility notes.

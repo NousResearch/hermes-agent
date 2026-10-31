@@ -126,7 +126,8 @@ results measured from the terminal transition. Both default to **86400 seconds
 (24 hours)** and require positive finite values. These are Hermes policy defaults,
 not A2A requirements. Retention is also capped at 500 terminal tasks, so count
 eviction may remove results sooner. Healthy owned execution survives age and
-disconnection; the separate legacy orphan grace applies only to unowned work.
+disconnection; `A2A_REPLY_TIMEOUT` applies to orphaned work without an execution
+owner and also supplies the default forwarded-profile reply timeout.
 
 Interoperability is verified against the official Python `a2a-sdk` (card resolution, `SendMessage`, streaming).
 
@@ -195,7 +196,7 @@ Secure by default; every widening step is explicit:
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authenticated peer (dev only) |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20) |
-| `A2A_REPLY_TIMEOUT` | `300` | Legacy orphan-record grace, clamped to 300–86400 seconds and swept every 60s. Only records without an execution owner expire; accepted/queued local work remains protected until completion callbacks or shutdown, even after disconnect. No HTTP observation or local execution deadline. Also the default forwarded-profile transport timeout (accepted owner work is not canceled on an unverified reply) |
+| `A2A_REPLY_TIMEOUT` | `300` | Grace period before orphaned work is marked failed (seconds, clamped to 300–86400); terminal-result retention removes its record later. Also the default forwarded-profile reply timeout. Does not limit healthy local execution or HTTP waits. |
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push-notification signing |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict which skills appear on the Agent Card |
 

@@ -5,6 +5,8 @@ import subprocess
 
 import pytest
 
+from tests.scripts.install._linux_host import linux_uname_path
+
 INSTALL_SH = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "install.sh"
 
 
@@ -23,7 +25,7 @@ def test_termux_host_is_refused_before_any_stage_with_apt_hint(tmp_path, marker)
 def test_plain_linux_host_passes_platform_check(tmp_path):
     env = {k: v for k, v in os.environ.items() if k not in ("TERMUX_VERSION", "PREFIX")}
     env.update(HOME=tmp_path.as_posix(), HERMES_HOME=(tmp_path / "home").as_posix(),
-               HERMES_INSTALL_DIR=(tmp_path / "install").as_posix())
+               HERMES_INSTALL_DIR=(tmp_path / "install").as_posix(), PATH=linux_uname_path(tmp_path, env["PATH"]))
     result = subprocess.run(["bash", INSTALL_SH.as_posix(), "--stage", "prerequisites"],
                             env=env, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr

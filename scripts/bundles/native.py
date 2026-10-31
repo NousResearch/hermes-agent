@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
+from pm.filesystem import remove_tree
 from pm.install import _lockfile
 from pm.lock import Facts
 from pm.registry import get_package, walk
@@ -91,7 +92,8 @@ def stage_pm_runtime(root: Path, python: Path, repo: Path, *, offline: bool = Fa
 
     destination = root / "pm-runtime"
     if destination.exists():
-        shutil.rmtree(destination)
+        # Baked bytecode is read-only; Windows refuses to unlink it.
+        remove_tree(destination)
     stage_manager_runtime(python=python, destination=destination, project=repo / "pm", offline=offline, cache=cache)
     seal_pm_runtime(root, python)
 
@@ -233,7 +235,7 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     # must point at the payload's own tree, not this checkout.
     venv_dir = out / "venv"
     if venv_dir.exists():
-        shutil.rmtree(venv_dir)
+        remove_tree(venv_dir)  # holds read-only baked bytecode
     env = dict(build_env)
     from pm import build_environment
 

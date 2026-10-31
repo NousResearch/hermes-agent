@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tarfile
@@ -38,11 +37,19 @@ def snapshot(repo: Path, ref: str, destination: Path, exclude: tuple[str, ...] =
     with tempfile.TemporaryDirectory(prefix="hermes-archive-") as temp:
         archive = Path(temp) / "source.tar"
         pathspecs = [f":(exclude){name}" for name in exclude]
+        # git archive applies checkout eol conversion. Git for Windows sets
+        # core.autocrlf=true system-wide, which would rewrite every text file
+        # lacking an eol attribute to CRLF: the payload must carry the
+        # revision's bytes (plus .gitattributes rules), not builder config.
         subprocess.run(
-            ["git", "archive", "--format=tar", "--output", str(archive), ref, "--", *pathspecs],
+            ["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+             "archive", "--format=tar", "--output", str(archive), ref, "--", *pathspecs],
             cwd=repo, check=True)
         if destination.exists():
-            shutil.rmtree(destination)
+            # A rebuilt payload holds baked bytecode chmodded read-only, which
+            # Windows refuses to unlink.
+            from pm.filesystem import remove_tree
+            remove_tree(destination)
         destination.mkdir(parents=True)
         with tarfile.open(archive) as source:
             source.extractall(destination, filter="data")

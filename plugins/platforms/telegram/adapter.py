@@ -3731,15 +3731,41 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         requested_thread_id = self._message_thread_id_for_send(thread_id)
         used_thread_fallback = False
         prior = len(delivered)
-        for chunk in chunks:
-            outcome = await self._send_chunk_with_retries(
-                chat_id, chunk, len(delivered), reply_to, metadata, thread_id, used_thread_fallback, error_types)
+        deferred_timeout: Optional[Exception] = None
+        for index, chunk in enumerate(chunks):
+            try:
+                outcome = await self._send_chunk_with_retries(
+                    chat_id, chunk, prior + index, reply_to, metadata, thread_id, used_thread_fallback, error_types)
+            except Exception as send_err:
+                timed_out = error_types[2]
+                if not (
+                    timed_out and isinstance(send_err, timed_out)
+                    and not self._looks_like_connect_timeout(send_err)
+                    and not self._looks_like_pool_timeout(send_err)
+                ):
+                    if deferred_timeout is not None:
+                        # Raise outside this handler: chaining a later ConnectTimeout/PoolTimeout
+                        # would make the original uncertain timeout look safe to retry.
+                        break
+                    raise
+                if deferred_timeout is None:
+                    deferred_timeout = send_err
+                logger.warning(
+                    "[%s] TimedOut on chunk %d/%d; delivery is uncertain, "
+                    "not retrying this chunk and continuing the response: %s",
+                    self.name, index + 1, len(chunks), _redact_telegram_error_text(send_err))
+                continue
             if isinstance(outcome, SendResult):
+                # A later refusal must not expose the earlier uncertain chunk as a resumable tail.
+                if deferred_timeout is not None:
+                    break
                 # Every SendResult returned here is a DEFINITE non-delivery (flood cap, DM-topic refusal);
                 # ambiguous timeouts raise instead, so the remainder is safe to resume from.
                 return self._with_partial_send(outcome, chunks[len(delivered) - prior:], delivered)
             msg, used_thread_fallback = outcome
             delivered.append(str(msg.message_id))
+        if deferred_timeout is not None:
+            raise deferred_timeout
         await self._retrigger_typing(chat_id, metadata)
         return SendResult(
             success=True, message_id=delivered[0] if delivered else None,

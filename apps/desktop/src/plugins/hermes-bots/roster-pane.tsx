@@ -50,7 +50,7 @@ import { rosterSectionRenderers } from './roster-pane-sections'
 import { renderRosterToolbar } from './roster-pane-toolbar'
 import { botNeedsHandleLabel, rosterGatewayOptions } from './roster-sections'
 import { botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
-import { activeBots, useTurnBusy } from './row-helpers'
+import { activeBots, useTurnBusy, useWorkingSessionIds } from './row-helpers'
 import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
 import {
   $botSections,
@@ -315,9 +315,12 @@ export function BotsPane() {
   const initialRosterLoading = !data && !error && roster.length === 0
 
   const groupKeys = useValue($activeGroupMemberKeys)
+  const workingSessionIds = useWorkingSessionIds()
 
   const activeRosterKeys = new Set(
-    activeBots(roster, workingOwner, turnBusy, Date.now(), activeConnectionId, groupKeys).map(botRosterKey)
+    activeBots(roster, workingOwner, turnBusy, Date.now(), activeConnectionId, groupKeys, workingSessionIds).map(
+      botRosterKey
+    )
   )
 
   const gatewayOptions = rosterGatewayOptions(sourceSnapshot, roster)

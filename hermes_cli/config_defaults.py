@@ -5,18 +5,14 @@ docs of config.yaml.
 """
 
 from hermes_cli.config_defaults_auxiliary import _aux
-
-#: Image every container terminal backend (docker/modal/daytona, the singularity plugin) uses unless the
-#: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
-#: (the 3.14 pin shipped between the two without a migration); a saved config still holding one
-#: is the template copied, and the config migration unsets it, never a user's own pin.
-DEFAULT_SANDBOX_IMAGE = "nousresearch/hermes-sandbox:desktop"
-LEGACY_SANDBOX_IMAGES = ("nikolaik/python-nodejs:python3.11-nodejs20", "nikolaik/python-nodejs:python3.14-nodejs22")
-LEGACY_SANDBOX_IMAGE = LEGACY_SANDBOX_IMAGES[0]
-# Vercel Sandbox managed image (Vercel deprecated its `runtime` presets in Aug 2026).
-DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
-LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
-
+from hermes_cli.config_defaults_sandbox import (
+    DEFAULT_SANDBOX_IMAGE,
+    DEFAULT_VERCEL_IMAGE,
+    LEGACY_SANDBOX_IMAGE,
+    LEGACY_SANDBOX_IMAGES,
+    LEGACY_VERCEL_RUNTIME,
+)
+from hermes_cli.config_defaults_session_search import SESSION_SEARCH_DEFAULT, SESSION_SEARCH_ENV
 
 DEFAULT_CONFIG = {
     "model": "",
@@ -1968,6 +1964,7 @@ DEFAULT_CONFIG = {
         "kernel_idle_timeout": 1800,
         "max_session_kernels": 4,
     },
+    "session_search": SESSION_SEARCH_DEFAULT,
     # Tool Search replaces deferred tools in the model-facing array with the
     # tool_search / tool_describe / tool_call bridges and surfaces them on demand.
     # Working-set core tools stay eager, while the explicit ``defer`` list below
@@ -2729,6 +2726,7 @@ OPTIONAL_ENV_VARS = OptionalEnvVars({
     "OPENROUTER_API_KEY": _env("OpenRouter API key (for vision, web scraping helpers, and MoA)",
         "OpenRouter API key", url="https://openrouter.ai/keys", password=True, tools=["vision_analyze"],
         category="provider", advanced=True),
+    **SESSION_SEARCH_ENV,
     "GOOGLE_API_KEY": _prov("Google AI Studio API key (also recognized as GEMINI_API_KEY)",
         "Google AI Studio API key", "https://aistudio.google.com/app/apikey"),
     "GEMINI_API_KEY": _prov("Google AI Studio API key (alias for GOOGLE_API_KEY)", "Gemini API key",

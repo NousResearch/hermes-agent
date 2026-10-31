@@ -38,7 +38,11 @@ export const SIDEBAR_MAX_WIDTH = 360
 // want a narrow tree.
 export const FILE_BROWSER_DEFAULT_WIDTH = `${SIDEBAR_DEFAULT_WIDTH}px`
 export const FILE_BROWSER_MIN_WIDTH = '10rem'
+// Still the cap for the Git review pane; only the Files pane drags wider.
 export const FILE_BROWSER_MAX_WIDTH = '20rem'
+// Files is the primary navigation surface for deep paths, so its resize
+// handle goes well past the shared cap (#41100).
+export const FILES_PANE_MAX_WIDTH = '40rem'
 
 export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 // How deep the list reaches once a filter is on. A filter that only searches

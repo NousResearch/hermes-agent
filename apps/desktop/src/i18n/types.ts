@@ -2885,7 +2885,9 @@ export interface Translations extends NoticeTranslations {
     }
     statusDivider: {
       working: string
-      done: string
+      blocked: string
+      ready: string
+      inactive: string
     }
     markAllRead: string
   }

@@ -1,0 +1,54 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: pinnwire
+description: 'PinnWire: live and prematch Pinnacle odds, price drops, no-vig fair prices.'
+source: https://pinnwire.com/sports-odds-mcp-server.html
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Streamable HTTP, stateless JSON-RPC; read-only
+# tools. Verified live: initialize + tools/list + tools/call succeed with
+# `Authorization: Bearer <key>`.
+transport:
+  type: http
+  url: https://pinnwire.com/mcp
+
+# API key, prefilled with `demo-hermes`: a public demo key reserved for Hermes
+# installs (10 req/min, 50 req/day, its own quota separate from PinnWire's
+# general `demo` key), so the entry works with zero signup. Users paste their
+# own free key (100 req/day, no card) to replace it. The default is needed:
+# a blank value leaves ${MCP_PINNWIRE_API_KEY} unresolved and the connection
+# fails.
+auth:
+  type: api_key
+  env:
+    - name: MCP_PINNWIRE_API_KEY
+      prompt: 'PinnWire API key (pk_...). Keep "demo-hermes" for the free demo, or paste your free key from pinnwire.com'
+      required: false
+      secret: true
+      default: demo-hermes
+
+# No tool filter: 7 small read-only tools (~1.2K tokens of schema total):
+# get_live_odds, get_prematch_odds, get_event, get_prematch_lines, get_drops,
+# get_health, list_sports.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - pinnwire
+    - pinnacle odds
+    - dropping odds
+    - no-vig
+  hosts:
+    - pinnwire.com
+
+post_install: |
+  Works right away on the shared Hermes demo key (10 requests/min,
+  50/day across all Hermes demo users) — restart the session so the
+  tools load.
+
+  For your own quota, get a free key (100 requests/day, no card) at
+  https://pinnwire.com, replace the MCP_PINNWIRE_API_KEY value in
+  ~/.hermes/.env (your profile's .env), and restart. Reinstalling keeps
+  the existing value.

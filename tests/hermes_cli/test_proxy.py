@@ -429,6 +429,49 @@ def test_loopback_proxy_serves_only_local_non_browser_requests(bound, headers, a
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("headers,allowed", [
+    ({}, True),                                                    # no Host override: still local
+    ({"Host": "host.docker.internal:{port}"}, True),               # the admitted Docker name
+    ({"Host": "Host.Docker.Internal.:{port}"}, True),              # canonicalised (case, root dot)
+    ({"Host": "other.example:{port}"}, False),                     # allowlist widened, not opened
+    ({"Host": "host.docker.internal:{port}",                       # the admitted name is now one of
+     "Origin": "http://host.docker.internal:{port}"}, True),       # the proxy's own origins
+    ({"Host": "host.docker.internal:{port}",                       # any other origin is still a
+     "Origin": "https://site.example"}, False),                    # cross-site browser request
+    ({"Host": "host.docker.internal:{port}",                       # cross-site browser GET
+     "Sec-Fetch-Site": "cross-site"}, False),
+])
+def test_extra_allowed_host_admits_only_named_non_browser_clients(headers, allowed):
+    """#136961: ``--allow-host`` names are added to the Host allowlist so a containerised client
+    (``host.docker.internal`` on a loopback bind) gets through without a wildcard LAN bind — while
+    every browser refusal (foreign Origin, cross-site Sec-Fetch-Site) and every unnamed Host stays
+    exactly as refused as before."""
+    async def run():
+        captured: dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        proxy_runner, proxy_base = await _start_runner(
+            create_app(
+                FakeAdapter(f"{upstream_base}/v1"),
+                bound_host="127.0.0.1",
+                extra_hosts=["host.docker.internal"],
+            )
+        )
+        port = proxy_base.removeprefix("http://").rsplit(":", 1)[1]
+        sent = {k: v.format(port=port) for k, v in headers.items()}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(f"{proxy_base}/v1/chat/completions", json={}, headers=sent) as resp:
+                    await resp.read()
+                    status = resp.status
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+        assert status == (200 if allowed else 403)
+        assert len(captured["requests"]) == int(allowed)
+
+    asyncio.run(run())
+
+
 def _build_sse_upstream(
     frames: list[bytes],
     *,

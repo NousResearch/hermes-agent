@@ -11,7 +11,7 @@ import asyncio
 import ipaddress
 import logging
 import signal
-from typing import Optional
+from typing import Iterable, Optional
 from urllib.parse import urlsplit
 
 try:
@@ -191,7 +191,11 @@ async def _stream_back(request: web.Request, session, upstream_resp) -> web.Stre
     return resp
 
 
-def create_app(adapter: UpstreamAdapter, bound_host: str = DEFAULT_HOST) -> web.Application:
+def create_app(
+    adapter: UpstreamAdapter,
+    bound_host: str = DEFAULT_HOST,
+    extra_hosts: Iterable[str] = (),
+) -> web.Application:
     """Build the aiohttp application bound to a specific upstream adapter.
 
     Every adapter method is synchronous and blocking (the Nous adapter takes the 15s cross-process
@@ -203,7 +207,11 @@ def create_app(adapter: UpstreamAdapter, bound_host: str = DEFAULT_HOST) -> web.
     # The bind address is fixed for the app's lifetime, so derive the Host policy once.
     bound = _canonical_host(bound_host.strip("[]"))
     wildcard = _is_wildcard(bound)
-    allowed_hosts = _LOOPBACK_HOSTS | {bound}
+    # Operator-named Hosts (``--allow-host``) widen the Host allowlist only; the Origin and
+    # Sec-Fetch-Site refusals below still apply, so a DNS-rebound page is as refused as before.
+    allowed_hosts = _LOOPBACK_HOSTS | {bound} | {
+        _canonical_host(h.strip("[]")) for h in extra_hosts if h and h.strip()
+    }
 
     @web.middleware
     async def local_only(request: web.Request, handler):
@@ -215,11 +223,10 @@ def create_app(adapter: UpstreamAdapter, bound_host: str = DEFAULT_HOST) -> web.
             allowed_hosts=allowed_hosts,
         )
         if refusal:
-            return _json_error(
-                403,
-                "Request refused: browser requests and foreign Host names are not accepted by this proxy.",
-                code=refusal,
-            )
+            message = "Request refused: browser requests and foreign Host names are not accepted by this proxy."
+            if refusal == "host_not_allowed":
+                message += " Start with `--allow-host <name>` to admit a known Host name."
+            return _json_error(403, message, code=refusal)
         return await handler(request)
 
     app = web.Application(client_max_size=MAX_REQUEST_BYTES, middlewares=[local_only])
@@ -276,10 +283,11 @@ async def run_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     shutdown_event: Optional[asyncio.Event] = None,
+    extra_hosts: Iterable[str] = (),
 ) -> None:
     """Run the proxy in the current event loop until shutdown_event is set."""
     _require_aiohttp()
-    app = create_app(adapter, bound_host=host)
+    app = create_app(adapter, bound_host=host, extra_hosts=extra_hosts)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host=host, port=port)

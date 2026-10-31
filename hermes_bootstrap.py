@@ -502,6 +502,69 @@ def _legacy_post_swap_invocation(argv: list[str]) -> tuple[Path, list[str]] | No
     return Path(argv[marker + 1]), argv[1:marker]
 
 
+def _launched_as_entry_point() -> bool:
+    """True only while an entry point is LAUNCHED, not imported.
+
+    Entry points (``hermes``, ``hermes_cli/main.py``, ``-m hermes_cli.main``) import this
+    module from their own ``__main__`` execution; a test that does ``import hermes_cli.main``
+    imports it from the test module's frame. ``__name__`` of THIS module cannot be used: it is
+    ``hermes_bootstrap`` for both. Look at the importer's frame instead.
+
+    A launch is one of:
+
+    * the module that imports this one IS the program — ``python main.py``,
+      ``python -m hermes_cli.main``, ``runpy`` with ``run_name="__main__"``; or
+    * the module that imports this one was itself imported by the program — the console
+      script's ``from hermes_cli.main import main``, and ``python -c "import <launcher>"``.
+
+    Anything deeper is a library caller sitting inside a longer-running process (a test
+    module under pytest), and must neither finish an update nor re-exec.
+
+    Deliberately NOT gated on ``PYTEST_CURRENT_TEST``: a test that launches the CLI in a
+    child process (``-m hermes_cli.main`` / a script that runs as ``__main__``) IS a launch
+    and must keep the tail, while a test that merely imports the module in-process is not.
+    The importer's frame separates those two; an ambient ``PYTEST_CURRENT_TEST`` cannot, and
+    gating on it withheld the tail from the real launch paths
+    `tests/pm/test_source_update_launch.py` exercises (4 tests red, measured).
+    """
+    importer = _next_app_frame(sys._getframe(1))
+    if importer is None:
+        return False
+    if importer.f_globals.get("__name__", "") == "__main__":
+        return True
+    caller = _next_app_frame(importer.f_back)
+    return caller is not None and caller.f_globals.get("__name__", "") == "__main__"
+
+
+def _next_app_frame(frame):
+    """The first frame above ``frame`` that is neither import machinery nor this module."""
+    while frame is not None:
+        name = frame.f_globals.get("__name__", "")
+        if name not in ("", __name__) and not (
+            name == "importlib" or name.startswith("importlib.") or
+            name == "_frozen_importlib" or name.startswith("_frozen_importlib.")
+        ):
+            return frame
+        frame = frame.f_back
+    return None
+
+
+def _pending_source_update() -> bool:
+    """True when an update left completion state for a launched CLI to finish.
+
+    Only ever consulted on the WITHHELD path (an import), where it turns a silent
+    skip into a single actionable line.
+    """
+    try:
+        from hermes_cli.venv_sync import completion_pending_path
+    except Exception:
+        return False
+    try:
+        return completion_pending_path(_root).is_file()
+    except Exception:
+        return False
+
+
 # Everything below imports Hermes packages, so the root goes on sys.path first. A venv
 # editable-installed from a pre-PM tree maps only the top-level packages it knew then:
 # without this, ``pm`` is unimportable and the launch silently skips PM adoption.
@@ -558,7 +621,7 @@ def _pin_launcher_home() -> None:
 _pin_launcher_home()
 
 _legacy_post_swap = _legacy_post_swap_invocation(sys.argv[1:])
-if _legacy_post_swap is not None:
+if _legacy_post_swap is not None and _launched_as_entry_point():
     # This continuation exists precisely because the replacement tree may not
     # run under the old release's dependency graph. Take it over before PM
     # activation, launch preparation, or argparse imports any of that graph.
@@ -582,31 +645,37 @@ from hermes_cli._parser import command_argv
 # Repair needs only stdlib. Do not activate the damaged tree to reach it.
 _pm_repair = command_argv(sys.argv[1:])[:2] == ["pm", "repair"]
 if not _pm_repair:
-    from hermes_cli.venv_sync import prepare_launch, relaunch_command
+    if _launched_as_entry_point():
+        from hermes_cli.venv_sync import prepare_launch, relaunch_command
 
-    try:
-        _launch_python = prepare_launch(_root, sys.argv[1:])
-        if _launch_python is not None:
-            _main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
-            _command = relaunch_command(
-                _launch_python, _root, sys.argv, sys.orig_argv,
-                getattr(_main_spec, "name", None),
-            )
-            if os.name == "nt":
-                import subprocess
+        try:
+            _launch_python = prepare_launch(_root, sys.argv[1:])
+            if _launch_python is not None:
+                _main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+                _command = relaunch_command(
+                    _launch_python, _root, sys.argv, sys.orig_argv,
+                    getattr(_main_spec, "name", None),
+                )
+                if os.name == "nt":
+                    import subprocess
 
-                raise RelaunchExit(subprocess.call(_command))
-            os.execv(str(_launch_python), _command)
-    except Exception as exc:
-        if isinstance(exc, PermissionError) and (message := install_state_permission_message(_root, exc)):
-            print(f"hermes: {message}", file=sys.stderr)
-            raise SystemExit(1) from None
-        # Degrade, never brick the CLI: the previous dependency generation is still selected
-        # (a failed sync commits nothing), so an offline or half-finished update leaves a
-        # usable Hermes plus a warning. Activation below is the real gate — a tree whose
-        # dependencies cannot load still exits with the repair remedy.
-        print(f"hermes: source-update completion failed: {exc}; "
-              "running with the previous dependencies — run `hermes update` to finish it",
+                    raise RelaunchExit(subprocess.call(_command))
+                os.execv(str(_launch_python), _command)
+        except Exception as exc:
+            if isinstance(exc, PermissionError) and (message := install_state_permission_message(_root, exc)):
+                print(f"hermes: {message}", file=sys.stderr)
+                raise SystemExit(1) from None
+            # Degrade, never brick the CLI: the previous dependency generation is still selected
+            # (a failed sync commits nothing), so an offline or half-finished update leaves a
+            # usable Hermes plus a warning. Activation below is the real gate — a tree whose
+            # dependencies cannot load still exits with the repair remedy.
+            print(f"hermes: source-update completion failed: {exc}; "
+                  "running with the previous dependencies — run `hermes update` to finish it",
+                  file=sys.stderr)
+    elif "PYTEST_CURRENT_TEST" not in os.environ and _pending_source_update():
+        # A plain IMPORT must never finish an update or re-exec the process, but
+        # staying silent about armed completion state would strand that update.
+        print("hermes: a source update is pending — run `hermes update` to finish it",
               file=sys.stderr)
     try:
         recover_if_needed(_root)

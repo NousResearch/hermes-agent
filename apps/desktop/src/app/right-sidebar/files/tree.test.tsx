@@ -1,7 +1,9 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { TreeApi } from 'react-arborist'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { $revealInTreeRequest, revealFileInTree } from '@/store/layout'
 
 import { ProjectTree } from './tree'
 import type { TreeNode } from './use-project-tree'
@@ -61,6 +63,7 @@ describe('ProjectTree context-menu clicks', () => {
 
   afterEach(() => {
     cleanup()
+    $revealInTreeRequest.set(null)
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
@@ -112,5 +115,88 @@ describe('ProjectTree context-menu clicks', () => {
     fireEvent.doubleClick(screen.getByText('a.ts'))
 
     expect(onPreviewFile).toHaveBeenCalledWith('/w/a.ts')
+  })
+
+  it.each([
+    ['/w', '/w-evil/src/main.ts'],
+    ['/w', '/elsewhere/main.ts'],
+    ['/w', '/W/main.ts'],
+    ['/w', '/w/../outside/main.ts'],
+    ['/w', '/w/src/../../outside/main.ts'],
+    ['/w', 'src/main.ts'],
+    ['C:/Work', 'c:\\work-evil\\src\\main.ts'],
+    ['C:/Work', 'C:\\Work\\..\\outside\\main.ts'],
+    ['C:/Work', 'D:/Work/main.ts'],
+    ['//server/share/work', '\\\\server\\share\\work-evil\\main.ts'],
+    ['//server/share/work', '//other/share/work/main.ts']
+  ])('ignores out-of-workspace or ambiguous reveal %s → %s', async (cwd, path) => {
+    const onNodeOpenChange = vi.fn()
+    const onLoadChildren = vi.fn()
+    const select = vi.spyOn(TreeApi.prototype, 'select')
+    const scroll = vi.spyOn(TreeApi.prototype, 'scrollTo')
+    renderTree({ cwd, onLoadChildren, onNodeOpenChange })
+    await screen.findByText('a.ts')
+    select.mockClear()
+    scroll.mockClear()
+
+    await act(async () => {
+      revealFileInTree(path)
+
+      for (let i = 0; i < 4; i += 1) {
+        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+      }
+    })
+
+    expect(onLoadChildren).not.toHaveBeenCalled()
+    expect(onNodeOpenChange).not.toHaveBeenCalled()
+    expect(select).not.toHaveBeenCalled()
+    expect(scroll).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['/w/', '/w/a.ts', '/w/a.ts'],
+    ['/', '/a.ts', '/a.ts'],
+    ['C:/Work', 'c:\\work\\a.ts', 'C:/Work/a.ts'],
+    ['C:/', 'c:\\a.ts', 'C:/a.ts'],
+    ['//server/share/work', '\\\\SERVER\\SHARE\\WORK\\a.ts', '//server/share/work/a.ts']
+  ])('selects an in-workspace file %s → %s', async (cwd, path, expected) => {
+    const select = vi.spyOn(TreeApi.prototype, 'select')
+    const scroll = vi.spyOn(TreeApi.prototype, 'scrollTo')
+    renderTree({ cwd, data: [{ id: expected, isDirectory: false, name: 'a.ts' }] })
+    await screen.findByText('a.ts')
+    select.mockClear()
+    scroll.mockClear()
+
+    await act(async () => {
+      revealFileInTree(path)
+    })
+
+    expect(select).toHaveBeenCalledWith(expected)
+    expect(scroll).toHaveBeenCalledWith(expected, 'start')
+    expect(screen.getByText('a.ts').closest('[aria-selected]')?.getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('still expands an ancestor and selects its nested file', async () => {
+    const onNodeOpenChange = vi.fn()
+    const onLoadChildren = vi.fn()
+    renderTree({
+      data: [{ id: '/w/src', isDirectory: true, name: 'src', children: [
+        { id: '/w/src/a.ts', isDirectory: false, name: 'a.ts' }
+      ] }],
+      onLoadChildren,
+      onNodeOpenChange,
+      openState: { '/w/src': false }
+    })
+    await screen.findByText('src')
+    expect(screen.queryByText('a.ts')).toBeNull()
+
+    await act(async () => {
+      revealFileInTree('/w/src/a.ts')
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+    })
+
+    expect(onNodeOpenChange).toHaveBeenCalledWith('/w/src', true)
+    expect(onLoadChildren).not.toHaveBeenCalled()
+    expect(screen.getByText('a.ts').closest('[aria-selected]')?.getAttribute('aria-selected')).toBe('true')
   })
 })

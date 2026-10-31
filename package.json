@@ -5,6 +5,7 @@
   "private": true,
   "workspaces": [
     "apps/*",
+    "!apps/mobile",
     "ui-tui",
     "ui-tui/packages/*",
     "web",

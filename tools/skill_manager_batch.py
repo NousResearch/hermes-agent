@@ -10,6 +10,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from utils import file_identity, unlink_if_unchanged
+
 logger = logging.getLogger("tools.skill_manager_tool")
 
 _BATCH_OP_ACTIONS = {"create", "patch", "write_file", "remove_file"}
@@ -155,29 +157,44 @@ def _snapshot_skills(names, snap_root, find_skill, create_targets):
     return snapshots, None
 
 
-def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False, written=()) -> None:
-    post_exists = post_dir is not None and post_dir.is_dir()
-    if snap is None:
-        if not post_exists:
-            return
-        if not dir_pre_existed:  # Batch created this skill: remove the partial result.
-            shutil.rmtree(post_dir)
-            return
-        # The dir predates the batch (adopted empty leftover): unlink exactly the files the
-        # batch wrote there, then rmdir() the now-empty dirs up to and including the skill dir.
-        # rmdir() fails on anything left, so a file that landed out-of-band survives.
-        for rel in ("SKILL.md", *written):
-            target = post_dir / rel
-            with suppress(OSError):
-                target.unlink()
-            for parent in target.parents:
-                if parent == post_dir or not parent.is_relative_to(post_dir):
-                    break
-                with suppress(OSError):
-                    parent.rmdir()
+def _undo_created(post_dir, files, dir_pre_existed) -> tuple[list[str], list[str]]:
+    """Undo a skill the batch created (or adopted as an empty leftover dir) -> ``(problems, kept)``.
+
+    Only files the batch itself wrote are removed, and only while each is still byte-for-byte what the
+    batch left there (``unlink_if_unchanged``): another writer's SKILL.md, notes or edits are NEVER deleted
+    (no ``rmtree``), because the per-skill lock binds only cooperative callers. Directories go only while
+    empty. ``problems`` are batch files that could not be removed (rollback incomplete); ``kept`` is
+    other people's data left in place (reported, not an error). The adopted dir of ``dir_pre_existed``
+    follows the same rules: it goes only once empty, so it is never removed with foreign content in it.
+    """
+    problems, kept = [], []
+    for rel, identity in files.items():
+        target = post_dir / rel
+        removal = unlink_if_unchanged(target, identity)
+        if removal.status == "failed":
+            problems.append(f"could not remove '{target}' ({removal.error})"
+                            + (f"; left as '{removal.preserved_at}'" if removal.preserved_at else ""))
+        elif removal.status == "changed":
+            kept.append(f"'{target}' (changed by another writer)"
+                        + (f", kept as '{removal.preserved_at}'" if removal.preserved_at else ""))
+    inner = {parent for rel in files for parent in (post_dir / rel).parents
+             if parent != post_dir and parent.is_relative_to(post_dir)}
+    for directory in sorted(inner, key=lambda d: len(d.parts), reverse=True):
         with suppress(OSError):
-            post_dir.rmdir()
-        return
+            directory.rmdir()  # rmdir, never rmtree: only an empty dir goes
+    with suppress(OSError):
+        post_dir.rmdir()
+    if post_dir.exists():
+        with suppress(OSError):
+            leftovers = sorted(entry.name for entry in post_dir.iterdir())
+            if leftovers:
+                kept.append(f"'{post_dir}' (holds files this batch did not write: {', '.join(leftovers)})")
+    return problems, kept
+
+
+def _restore_snapshot(pre_dir, snap, post_dir) -> None:
+    """Put a pre-existing skill back from its snapshot."""
+    post_exists = post_dir is not None and post_dir.is_dir()
     if not post_exists:
         shutil.copytree(snap, pre_dir)
         return
@@ -196,21 +213,48 @@ def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False, written=()
     shutil.rmtree(aside, ignore_errors=True)
 
 
-def _rollback(snapshots, find_skill, results):
-    """Restore every snapshot. ``results`` are the ops applied so far (their name/file_path
-    tell an adopted dir's rollback which files were the batch's). Returns (note, failed)."""
-    notes = []
+def _record_written(written, snapshots, create_targets, nm, op) -> None:
+    """After a successful op on a skill the batch is creating: remember the exact file it left behind."""
+    pre_dir, snap, _ = snapshots[nm]
+    skill_dir = create_targets.get(nm)
+    if snap is not None or pre_dir is not None or skill_dir is None:
+        return  # an existing skill is restored from its snapshot instead
+    action, file_path = op["action"], (op.get("file_path") or "").strip()
+    files = written.setdefault(nm, {})
+    if action == "create" or (action == "patch" and (op.get("content") or not file_path)):
+        rel = "SKILL.md"
+    else:
+        rel = posixpath.normpath(file_path.lstrip("/"))
+    if action == "remove_file":
+        files.pop(rel, None)
+    elif (identity := file_identity(skill_dir / rel)) is not None:
+        files[rel] = identity
+
+
+def _rollback(snapshots, find_skill, written, create_targets):
+    """Undo every touched skill. ``written`` maps a batch-created skill to the files the batch left in it
+    (:func:`_record_written`). Returns ``(note, failed)``: ``failed`` only when something the batch wrote
+    could not be undone; other writers' files that were kept are reported in the note, not as a failure."""
+    problems, kept = [], []
     for nm, (pre_dir, snap, dir_pre_existed) in snapshots.items():
-        written = [posixpath.normpath(r["file_path"].lstrip("/")) for r in results
-                   if r["name"] == nm and r["action"] == "write_file" and r["file_path"]]
         try:
+            if snap is None:
+                post_dir = create_targets.get(nm)
+                if post_dir is not None and post_dir.is_dir():
+                    skill_problems, skill_kept = _undo_created(post_dir, written.get(nm, {}), dir_pre_existed)
+                    problems += [f"ROLLBACK INCOMPLETE for '{nm}': {text}" for text in skill_problems]
+                    kept += skill_kept
+                continue
             post = find_skill(nm)
-            _restore_snapshot(pre_dir, snap, Path(post["path"]) if post else None,
-                              dir_pre_existed, written)
+            _restore_snapshot(pre_dir, snap, Path(post["path"]) if post else None)
         except Exception as exc:
-            notes.append(f"ROLLBACK FAILED for '{nm}' ({exc})"
-                         + (f"; snapshot preserved at '{snap}'" if snap is not None else ""))
-    return ("; ".join(notes) if notes else "all touched skills rolled back"), bool(notes)
+            problems.append(f"ROLLBACK FAILED for '{nm}' ({exc})"
+                            + (f"; snapshot preserved at '{snap}'" if snap is not None else ""))
+    notes = list(problems)
+    if kept:
+        notes.append("rolled back everything this batch wrote; preserved other writers' data untouched: "
+                     + "; ".join(kept))
+    return ("; ".join(notes) if notes else "all touched skills rolled back"), bool(problems)
 
 
 _ADVISORY_KEYS = ("lint_warnings", "lint_hint")
@@ -218,8 +262,11 @@ _ADVISORY_KEYS = ("lint_warnings", "lint_hint")
 
 def _skill_manage_batch(operations, default_name: str | None = None, task_id: str | None = None,
                         session_id: str | None = None) -> str:
-    """Apply operations atomically: every touched skill is snapshotted first and any
-    failure rolls ALL of them back (batch-created skills are removed). ``delete`` is
+    """Apply operations as a batch: every touched skill is snapshotted first and any
+    failure rolls ALL of them back (batch-created skills are removed). The rollback is best
+    effort against writers that do not take the skill lock: it never deletes data it did not
+    write itself, and reports what it kept or could not undo instead of claiming a clean
+    rollback. ``delete`` is
     only legal as the SOLE op (its recoverable-archive path doesn't compose with
     rollback) and routes to the single-op handler. ``default_name`` is the legacy
     top-level ``name`` fallback (staged replay)."""
@@ -263,18 +310,24 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
             return tool_error(snap_err, success=False)
         # Single-op path with the gate bypassed (the batch already cleared/staged it).
         results = []
+        written = {}  # batch-created skill -> {relative path: FileIdentity} of what the batch left in it
         rollback_failed = False
         token = _smt._skill_gate_bypass.set(True)
         try:
             for i, op in enumerate(operations):
-                raw = _smt._skill_manage_from({**op, "name": names[i], "operations": None},
-                                              task_id=task_id, session_id=session_id)
+                try:
+                    raw = _smt._skill_manage_from({**op, "name": names[i], "operations": None},
+                                                  task_id=task_id, session_id=session_id)
+                except Exception as exc:  # a raising op is a failed op: roll back, never strand partial state
+                    logger.warning("skill_manage batch op %d (%s on '%s') raised", i, op["action"], names[i],
+                                   exc_info=True)
+                    raw = json.dumps({"success": False, "error": f"{type(exc).__name__}: {exc}"})
                 try:
                     parsed = json.loads(raw)
                 except Exception:
                     parsed = {"success": False, "error": "unparseable op result"}
                 if not parsed.get("success"):
-                    note, rollback_failed = _rollback(snapshots, _smt._find_skill, results)
+                    note, rollback_failed = _rollback(snapshots, _smt._find_skill, written, create_targets)
                     fail = {  # key order is wire-visible
                         "success": False,
                         "error": (f"operations[{i}] ({op['action']} on '{names[i]}') failed: "
@@ -286,6 +339,7 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
                         if k not in ("success", "error") and v is not None:
                             fail.setdefault(k, v)
                     return json.dumps(fail, ensure_ascii=False)
+                _record_written(written, snapshots, create_targets, names[i], op)
                 entry = {"name": names[i], "action": op["action"],
                          "file_path": op.get("file_path"), "success": True}
                 # Advisory payloads (linter findings, org-sharing note) ride on the op result; the
@@ -294,10 +348,10 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
                 results.append(entry)
         finally:
             _smt._skill_gate_bypass.reset(token)
-            if rollback_failed:
+            if rollback_failed and any(snap is not None for _, snap, _ in snapshots.values()):
                 # Keep the snapshots so the operator can still recover by hand.
                 logger.warning("skill_manage batch rollback failed, snapshots kept at %s", snap_root)
-            else:
+            else:  # nothing to recover from the snapshot area (an incomplete undo of NEW skills is in the error)
                 shutil.rmtree(snap_root, ignore_errors=True)
     # utf-8-sig + errors="replace": SKILL.md files are user-authored and sometimes carry a Notepad BOM or
     # stray non-UTF-8 bytes. Pinning UTF-8 with replacement keeps skill_view deterministic across platforms

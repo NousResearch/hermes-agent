@@ -14,7 +14,7 @@ import threading
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, NamedTuple, Union
 from urllib.parse import urlparse
 
 import hermes_yaml as yaml
@@ -445,34 +445,213 @@ def atomic_write_text(path: str | Path, content: str, *, encoding: str = "utf-8"
 _NO_HARDLINK_ERRNOS = frozenset({errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS, errno.EMLINK, errno.EINVAL})
 _NO_HARDLINK_WINERRORS = frozenset({1, 50})  # ERROR_INVALID_FUNCTION, ERROR_NOT_SUPPORTED
 
+# Directory descriptors (``dir_fd``) + ``O_NOFOLLOW`` let a create/cleanup pin ITS parent directory once, so a
+# symlink swapped into the parent's place afterwards is never followed. Where they are missing (Windows) the
+# same code runs on paths, guarded by a symlink check only: a narrower, check-then-use protection.
+_PINNED_DIRS = (hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY") and os.link in os.supports_follow_symlinks
+                and {os.open, os.link, os.rename, os.unlink, os.stat} <= os.supports_dir_fd)
+_OPEN_FLAGS = getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
-def _file_signature(fd: int) -> tuple[int, int, int, int]:
+
+class FileIdentity(NamedTuple):
+    """The file :func:`atomic_create_text` published: ``(st_dev, st_ino, st_size, st_mtime_ns)`` plus the SHA-256 of
+    its bytes. Size and mtime can be forged by an in-place edit; the digest cannot."""
+    dev: int
+    ino: int
+    size: int
+    mtime_ns: int
+    sha256: str
+
+
+class RemovalResult(NamedTuple):
+    """Outcome of :func:`unlink_if_unchanged`; truthy only when the file was removed.
+
+    ``status``: ``removed``; ``absent`` (nothing to remove); ``changed`` (what is there is not the file we
+    published, so it was KEPT — ``preserved_at`` names where, when it could not go back under its own name);
+    ``failed`` (could not remove it; ``error`` says why, ``preserved_at`` names a leftover aside copy if any).
+    """
+    status: str
+    preserved_at: str | None = None
+    error: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.status == "removed"
+
+
+class _ParentDir:
+    """The directory a create/cleanup works in, pinned by descriptor where the platform allows it."""
+
+    def __init__(self, path: Path):
+        self.path, self.fd = Path(path), None
+        if _PINNED_DIRS:
+            try:
+                self.fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | _OPEN_FLAGS)
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR) and self.path.is_symlink():
+                    raise OSError(errno.ELOOP, f"refusing to write through {self.path}: it is a symbolic link, "
+                                               "not a real directory") from exc
+                raise
+        elif self.path.is_symlink():
+            raise OSError(errno.ELOOP, f"refusing to write through {self.path}: it is a symbolic link, "
+                                       "not a real directory")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
+    def close(self) -> None:
+        if self.fd is not None:
+            with suppress(OSError):
+                os.close(self.fd)
+            self.fd = None
+
+    def open(self, name: str, flags: int, mode: int = 0o600) -> int:
+        flags |= _OPEN_FLAGS
+        if self.fd is None:
+            return os.open(self.path / name, flags, mode)
+        return os.open(name, flags, mode, dir_fd=self.fd)
+
+    def lstat(self, name: str) -> os.stat_result:
+        if self.fd is None:
+            return os.lstat(self.path / name)
+        return os.stat(name, dir_fd=self.fd, follow_symlinks=False)
+
+    def link(self, src: str, dst: str) -> None:
+        if self.fd is None:
+            os.link(self.path / src, self.path / dst)
+        else:  # never follow a symlink that replaced ``src``: link the name itself
+            os.link(src, dst, src_dir_fd=self.fd, dst_dir_fd=self.fd, follow_symlinks=False)
+
+    def rename(self, src: str, dst: str) -> None:
+        if self.fd is None:
+            os.rename(self.path / src, self.path / dst)
+        else:
+            os.rename(src, dst, src_dir_fd=self.fd, dst_dir_fd=self.fd)
+
+    def unlink(self, name: str) -> None:
+        if self.fd is None:
+            os.unlink(self.path / name)
+        else:
+            os.unlink(name, dir_fd=self.fd)
+
+    def private_temp(self, prefix: str) -> tuple[str, int]:
+        """A new 0600 file (``O_EXCL``, never an existing name) beside the target; ``(name, fd)``."""
+        for _ in range(100):
+            name = f"{prefix}{os.urandom(6).hex()}.tmp"
+            try:
+                return name, self.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                continue
+        raise FileExistsError(errno.EEXIST, f"no free temp name beside {self.path}")
+
+
+def _read_all(fd: int) -> bytes:
+    chunks = []
+    while chunk := os.read(fd, 1 << 16):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _identity_of_fd(fd: int) -> FileIdentity:
     st = os.fstat(fd)
-    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+    os.lseek(fd, 0, os.SEEK_SET)
+    return FileIdentity(st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, hashlib.sha256(_read_all(fd)).hexdigest())
 
 
-def _create_text_in_place(path: Path, content: str, *, encoding: str, mode: int | None) -> tuple[int, int, int, int]:
-    """``O_EXCL`` create-and-write for filesystems without hard links: still exclusive, not crash-atomic."""
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)  # FileExistsError for anything there
-    created = os.fstat(fd)  # identity of the file this call made, still usable once the fd is closed
+def _identity_matches(identity: FileIdentity, st: os.stat_result, data: bytes) -> bool:
+    return ((st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) == tuple(identity[:4])
+            and hashlib.sha256(data).hexdigest() == identity[4])
+
+
+def _remove_if(parent: _ParentDir, name: str, matches) -> RemovalResult:
+    """Remove ``name`` from ``parent`` only if ``matches(stat, bytes)`` accepts the file that is really there.
+
+    Check-then-unlink cannot be made atomic (POSIX has no compare-and-delete), and a writer that swaps in
+    its own file between the two steps would lose it. So the file is first renamed — atomically — to a
+    private random name, and THAT inode is verified (inode, size, mtime and content hash): only a verified
+    file is deleted; anything else is hard-linked back under its name (``link`` never overwrites, so a
+    third writer that claimed the name meanwhile is not clobbered) and otherwise stays under the private
+    name, reported through ``preserved_at``. Residual risk, unavoidable without kernel support: a process
+    that already holds the file open can still write into it while it is being deleted; and the name is
+    briefly absent while the file sits under the private name.
+    """
     try:
-        with os.fdopen(fd, "w", encoding=encoding) as f:
+        st = parent.lstat(name)
+    except FileNotFoundError:
+        return RemovalResult("absent")
+    except OSError as exc:
+        return RemovalResult("failed", error=str(exc))
+    if not stat.S_ISREG(st.st_mode):
+        return RemovalResult("changed")  # a symlink or directory there was never ours
+    aside = f".{name}.removing-{os.urandom(8).hex()}"
+    try:
+        parent.rename(name, aside)
+    except FileNotFoundError:
+        return RemovalResult("absent")
+    except OSError as exc:
+        return RemovalResult("failed", error=str(exc))
+    aside_path = str(parent.path / aside)
+    try:
+        fd = parent.open(aside, os.O_RDONLY)
+        try:
+            aside_stat, data = os.fstat(fd), _read_all(fd)
+        finally:
+            os.close(fd)
+        verified = stat.S_ISREG(aside_stat.st_mode) and matches(aside_stat, data)
+    except OSError as exc:  # cannot prove it is ours: keep it
+        verified, verify_error = False, str(exc)
+    else:
+        verify_error = None
+    if verified:
+        try:
+            parent.unlink(aside)
+        except OSError as exc:
+            return RemovalResult("failed", preserved_at=aside_path, error=str(exc))
+        return RemovalResult("removed")
+    try:
+        parent.link(aside, name)  # exclusive: fails if anything took the name in the meantime
+    except OSError:
+        return RemovalResult("changed", preserved_at=aside_path, error=verify_error)
+    with suppress(OSError):
+        parent.unlink(aside)
+    return RemovalResult("changed", error=verify_error)
+
+
+def _create_text_in_place(parent: _ParentDir, name: str, content: str, *, encoding: str,
+                          mode: int | None) -> FileIdentity:
+    """``O_EXCL`` create-and-write for filesystems without hard links: exclusive, but not crash-atomic."""
+    fd = parent.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)  # FileExistsError for anything there
+    created = os.fstat(fd)
+    try:
+        with os.fdopen(fd, "w+", encoding=encoding) as f:
             if mode is not None and hasattr(os, "fchmod"):
-                with suppress(OSError):
-                    os.fchmod(f.fileno(), mode)
+                os.fchmod(f.fileno(), mode)  # an error here is an error: never report the wrong mode as success
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
-            return _file_signature(f.fileno())
-    except BaseException:
-        with suppress(OSError):  # a partial file of ours must not outlive the failure (never a foreign one)
-            if os.path.samestat(os.lstat(path), created):
-                os.unlink(path)
+            return _identity_of_fd(f.fileno())
+    except BaseException as exc:
+        expected = content.encode(encoding)
+
+        def is_our_unfinished_file(st: os.stat_result, data: bytes) -> bool:
+            # Same inode we created AND only bytes we could have written (a prefix of our content). A person
+            # who saved over it in place leaves other bytes, and that file is theirs.
+            written = data.replace(b"\r\n", b"\n") if os.linesep != "\n" else data
+            return (st.st_dev, st.st_ino) == (created.st_dev, created.st_ino) and expected.startswith(written)
+
+        removal = _remove_if(parent, name, is_our_unfinished_file)  # never raises over the original error
+        if removal.status in ("changed", "failed"):
+            where = removal.preserved_at or str(parent.path / name)
+            logger.warning("atomic_create_text: kept %s after a failed in-place create (%s)", where,
+                           removal.error or removal.status)
+            exc.add_note(f"a file that is not this call's unfinished file was kept, not deleted: {where}")
         raise
 
 
 def atomic_create_text(path: str | Path, content: str, *, encoding: str = "utf-8", tmp_prefix: str = ".tmp_",
-                       mode: int | None = None) -> tuple[int, int, int, int]:
+                       mode: int | None = None) -> FileIdentity:
     """Create *path* holding *content* — and never replace anything that is already there.
 
     Unlike :func:`atomic_write_text` (``os.replace`` overwrites whatever is at *path*, so a file another
@@ -480,57 +659,80 @@ def atomic_create_text(path: str | Path, content: str, *, encoding: str = "utf-8
     beside *path* and published with ``os.link``, which fails with ``FileExistsError`` when *path*
     exists in ANY form: regular file, directory, or symlink (live or dangling — it is never followed).
     The parent directory must already exist; nothing is created or removed except this call's temp file.
+    The parent is opened once without following a symlink and every step runs relative to that
+    descriptor, so a symlink swapped into its place afterwards is not written through (without descriptor
+    support — Windows — only a symlink check beforehand protects). A parent that IS a symlink is refused.
     *mode* is applied before publication, so *path* never shows a looser or tighter mode than asked;
     ``None`` gives what ``open(path, "w")`` would (process umask).
 
     On a filesystem that cannot hard-link, the fallback is an ``O_EXCL`` create-and-write at *path*:
-    still exclusive, but a reader can briefly see a partial file and a crash can leave one.
+    still exclusive, but a reader can briefly see a partial file and a crash can leave one. Its failure
+    cleanup removes only an unfinished file this call made; a file somebody else wrote into it is kept.
 
-    Returns ``(st_dev, st_ino, st_size, st_mtime_ns)`` of the file published, for :func:`unlink_if_unchanged`.
+    Returns the :class:`FileIdentity` of the file published, for :func:`unlink_if_unchanged`.
     """
     path = Path(path)
     if mode is None:
         mode = default_new_file_mode()
-    fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=tmp_prefix, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding=encoding) as f:
-            if mode is not None and hasattr(os, "fchmod"):
-                os.fchmod(f.fileno(), mode)
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-            signature = _file_signature(f.fileno())
-        if mode is not None and not hasattr(os, "fchmod"):
-            os.chmod(tmp_path, mode)
+    with _ParentDir(path.parent) as parent:
+        tmp_name, fd = parent.private_temp(tmp_prefix)
         try:
-            os.link(tmp_path, path)
-        except OSError as exc:
-            if isinstance(exc, FileExistsError) or not (
-                    exc.errno in _NO_HARDLINK_ERRNOS or getattr(exc, "winerror", None) in _NO_HARDLINK_WINERRORS):
-                raise
-            logger.debug("atomic_create_text: no hard links for %s (%s); exclusive in-place create", path, exc)
-            return _create_text_in_place(path, content, encoding=encoding, mode=mode)
-        return signature
-    finally:
-        with suppress(OSError):
-            os.unlink(tmp_path)
+            with os.fdopen(fd, "w+", encoding=encoding) as f:
+                if mode is not None and hasattr(os, "fchmod"):
+                    os.fchmod(f.fileno(), mode)
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+                identity = _identity_of_fd(f.fileno())
+            if mode is not None and not hasattr(os, "fchmod"):
+                os.chmod(parent.path / tmp_name, mode)
+            try:
+                parent.link(tmp_name, path.name)
+            except OSError as exc:
+                if isinstance(exc, FileExistsError) or not (
+                        exc.errno in _NO_HARDLINK_ERRNOS or getattr(exc, "winerror", None) in _NO_HARDLINK_WINERRORS):
+                    raise
+                logger.debug("atomic_create_text: no hard links for %s (%s); exclusive in-place create", path, exc)
+                return _create_text_in_place(parent, path.name, content, encoding=encoding, mode=mode)
+            return identity
+        finally:
+            with suppress(OSError):
+                parent.unlink(tmp_name)
 
 
-def unlink_if_unchanged(path: str | Path, signature: tuple[int, int, int, int]) -> bool:
-    """Remove *path* only if it still is the file :func:`atomic_create_text` returned *signature* for.
-
-    A different file at *path* (another writer replaced ours) is left alone. The stat and the unlink are
-    two steps, so a replacement landing between them can still be lost; the guard closes the window of a
-    whole scan or review, not that last instant. Returns whether *path* was removed.
-    """
+def file_identity(path: str | Path) -> FileIdentity | None:
+    """:class:`FileIdentity` of the regular file at *path* now (symlinks never followed), or ``None``."""
+    path = Path(path)
     try:
-        st = os.lstat(path)
-        if not stat.S_ISREG(st.st_mode) or (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) != tuple(signature):
-            return False
-        os.unlink(path)
+        with _ParentDir(path.parent) as parent:
+            fd = parent.open(path.name, os.O_RDONLY)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    return None
+                return _identity_of_fd(fd)
+            finally:
+                os.close(fd)
     except OSError:
-        return False
-    return True
+        return None
+
+
+def unlink_if_unchanged(path: str | Path, identity: FileIdentity | tuple) -> RemovalResult:
+    """Remove *path* only if it still is the file :func:`atomic_create_text` returned *identity* for.
+
+    A different file at *path* (another writer replaced ours, or edited it in place — even keeping size and
+    mtime) is KEPT and reported as ``changed``; a removal that cannot be done is reported as ``failed``.
+    Nothing here raises for an OS error: the caller decides what an incomplete cleanup means. See
+    :func:`_remove_if` for how the check-then-delete race is closed and what remains.
+    """
+    path = Path(path)
+    try:
+        parent = _ParentDir(path.parent)
+    except FileNotFoundError:
+        return RemovalResult("absent")
+    except OSError as exc:
+        return RemovalResult("failed", error=str(exc))
+    with parent:
+        return _remove_if(parent, path.name, lambda st, data: _identity_matches(identity, st, data))
 
 
 def atomic_write_bytes(path: str | Path, content: bytes, *, tmp_prefix: str = ".tmp_",

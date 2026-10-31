@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import hermes_yaml as yaml
 
 from hermes_constants import get_hermes_home
-from utils import atomic_create_text, atomic_write_text, is_truthy_value, unlink_if_unchanged
+from utils import atomic_create_text, atomic_write_text, file_identity, is_truthy_value, unlink_if_unchanged
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
     extract_skill_description,
@@ -412,7 +412,11 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
 
     ``create`` publishes EXCLUSIVELY: the per-skill lock does not bind an independent writer, so a
     SKILL.md that appears between the caller's mkdir and this publish is never replaced (nor followed,
-    if it is a symlink); the caller gets an error and that writer's bytes stay.
+    if it is a symlink); the caller gets an error and that writer's bytes stay. The same holds after the
+    publish: the blocked-scan cleanup removes the file only while it is still exactly what this call
+    wrote (anything else is kept and reported), a cleanup that cannot finish is reported as
+    ``cleanup_incomplete`` instead of being dropped, and a SKILL.md another writer changed during the
+    scan is not reported as a successful create.
     """
     exclusive = action == "create"
     original = None
@@ -432,13 +436,32 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
             return _err(f"Cannot create skill '{name}': {label} already exists at {target} (another writer "
                         "created it while this create was in progress). Nothing was overwritten; review that "
                         "file, or choose another name.")
+        except OSError as exc:  # permissions, a swapped/symlinked directory, a full disk, ...
+            return _err(f"Cannot create skill '{name}': {label} was not published at {target} ({exc}). "
+                        f"Nothing was overwritten; check {target.parent}, then retry.")
     else:
         atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir)
     if not scan_error:
+        if published is not None and file_identity(target) != published:
+            return _err(f"Cannot create skill '{name}': {label} at {target} was changed by another writer while "
+                        "this create was in progress, so what was validated is not what is on disk. It was "
+                        "left untouched; review it before relying on this skill.")
         return None
-    if published is not None:  # only OUR file goes: a writer's replacement during the scan stays
-        unlink_if_unchanged(target, published)
+    if published is not None:  # only OUR file goes: a writer's replacement or edit during the scan stays
+        removal = unlink_if_unchanged(target, published)
+        if removal.status == "changed":
+            return _err(f"{scan_error}\n\nCLEANUP INCOMPLETE: {label} at {target} was changed by another writer "
+                        "after it was created, so it was NOT removed"
+                        + (f" (kept as {removal.preserved_at})" if removal.preserved_at else "")
+                        + ". The scan blocked this skill: review that file and remove it if it is unsafe.",
+                        cleanup_incomplete=True, path=str(target))
+        if removal.status == "failed":
+            return _err(f"{scan_error}\n\nCLEANUP INCOMPLETE: could not remove the blocked {label} at {target} "
+                        f"({removal.error})"
+                        + (f"; it was left as {removal.preserved_at}" if removal.preserved_at else "")
+                        + ". The blocked content may still be loadable as a skill: remove it manually.",
+                        cleanup_incomplete=True, path=str(target))
     elif original is not None:
         atomic_write_text(target, original, preserve_mode=True)
     else:
@@ -506,7 +529,13 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
             return _err(f"Cannot create skill '{name}': {skill_dir} already exists (not an empty "
                         "directory, or unreadable). Choose another name, or move/remove that path and retry.")
     skill_md = skill_dir / "SKILL.md"
-    if guard := _guarded_write(name, skill_dir, skill_md, "create", "SKILL.md", content):
+    try:
+        guard = _guarded_write(name, skill_dir, skill_md, "create", "SKILL.md", content)
+    except BaseException:  # still an error for the caller, but never leave our empty dir behind
+        with suppress(OSError):
+            skill_dir.rmdir()
+        raise
+    if guard:
         with suppress(OSError):  # rmdir, not rmtree: only an empty dir goes, anything foreign stays
             skill_dir.rmdir()
         return guard

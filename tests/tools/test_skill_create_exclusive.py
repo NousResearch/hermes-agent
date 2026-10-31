@@ -251,7 +251,7 @@ def test_unlocked_concurrent_creators_yield_exactly_one_success(skills, monkeypa
     assert not any(t.is_alive() for t in threads)
     winners = [i for i, r in enumerate(results) if r["success"]]
     assert len(winners) == 1, [r.get("error") or "ok" for r in results]
-    assert (skill_dir / "SKILL.md").read_text(encoding="utf-8") == contents[winners[0]]
+    assert (skill_dir / "SKILL.md").read_text(encoding="utf-8-sig") == contents[winners[0]]
     assert all("already" in r["error"] for i, r in enumerate(results) if i not in winners)
     assert sorted(p.name for p in skill_dir.iterdir()) == ["SKILL.md"]
 
@@ -316,7 +316,7 @@ def test_duplicate_create_is_still_refused_and_edit_still_overwrites(skills):
     assert sm._create_skill(NAME, ROBOT)["success"] is True
     again = sm._create_skill(NAME, ROBOT.replace("robot wrote this", "second"))
     assert again["success"] is False and "already exists" in again["error"]
-    assert "robot wrote this" in (skills / NAME / "SKILL.md").read_text(encoding="utf-8")
+    assert "robot wrote this" in (skills / NAME / "SKILL.md").read_text(encoding="utf-8-sig")
     edited = sm._edit_skill(NAME, ROBOT.replace("robot wrote this", "edited"))
     assert edited["success"] is True
-    assert "edited" in (skills / NAME / "SKILL.md").read_text(encoding="utf-8")
+    assert "edited" in (skills / NAME / "SKILL.md").read_text(encoding="utf-8-sig")

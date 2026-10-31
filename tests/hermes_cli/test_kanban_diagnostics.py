@@ -111,6 +111,56 @@ def test_stuck_in_blocked_fires_past_threshold():
     assert d.data["age_hours"] >= 48
 
 
+def test_ignored_automation_comment_keeps_real_blocked_card_visible(kanban_home, monkeypatch):
+    """The author in the persisted event and the nested runtime config reach the rule (#140663)."""
+    from hermes_cli.config_effective import load_user_config_effective
+
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  diagnostics:\n    blocked_ignore_comment_authors: [cron-bot]\n",
+        encoding="utf-8",
+    )
+    config = kd.config_from_runtime_config(load_user_config_effective(kanban_home / "config.yaml"))
+    conn = kbc.connect()
+    try:
+        blocked_at = 1_700_000_000
+        monkeypatch.setattr(kb.time, "time", lambda: blocked_at)
+        task_id = kb.create_task(conn, title="Needs a decision", assignee="worker")
+        assert kb.block_task(conn, task_id, reason="needs approval", kind="needs_input")
+        monkeypatch.setattr(kb.time, "time", lambda: blocked_at + 3600)
+        kb.add_comment(conn, task_id, " cron-bot ", "Still waiting for a human")
+        task = kb.get_task(conn, task_id)
+        events = list(conn.execute("SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)))
+        now = blocked_at + 48 * 3600
+        assert not any(d.kind == "stuck_in_blocked" for d in kd.compute_task_diagnostics(task, events, [], now=now))
+        diags = kd.compute_task_diagnostics(task, events, [], now=now, config=config)
+        assert any(d.kind == "stuck_in_blocked" and d.first_seen_at == blocked_at for d in diags)
+        kb.add_comment(conn, task_id, "operator", "Approval is in progress")
+        events = list(conn.execute("SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)))
+        assert not any(d.kind == "stuck_in_blocked" for d in kd.compute_task_diagnostics(task, events, [], now=now, config=config))
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("kind,author,ignored,stale", [
+    ("commented", "cron-bot", ["cron-bot"], True),
+    ("commented", "cron-bot", [], False),
+    ("commented", "operator", ["cron-bot"], False),
+    ("commented", "cron", ["cron-bot"], False),
+    ("commented", None, ["cron-bot"], False),
+    ("commented", ["cron-bot"], ["cron-bot"], False),
+    ("commented", "cron-bot", "cron-bot", False),
+    ("commented", "cron-bot", [None, {"author": "cron-bot"}], False),
+    ("unblocked", "cron-bot", ["cron-bot"], False),
+])
+def test_blocked_comment_filter_only_ignores_named_authors(kind, author, ignored, stale):
+    events = [_event("blocked", ts=100), _event(kind, ts=200, author=author)]
+    diags = kd.compute_task_diagnostics(
+        _task(status="blocked"), events, [], now=100 + 48 * 3600,
+        config={"blocked_ignore_comment_authors": ignored},
+    )
+    assert any(d.kind == "stuck_in_blocked" for d in diags) is stale
+
+
 
 
 

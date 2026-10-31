@@ -1824,7 +1824,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
     # ── Phase 3 interactive: prompt + react ──────────────────────────────
 
     def _mint_prompt(
-        self, kind: str, state: dict[str, Any], timeout_s: float = 3600.0
+        self, kind: str, state: dict[str, Any], timeout_s: Optional[float] = None
     ) -> str:
         """Register a pending prompt and return its id (``<owner nonce>.<8 hex>``).
         Expiry is enforced gateway-side on consumption (_pop_prompt); the wire's
@@ -1832,7 +1832,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         gateway receiving the fanned-out answer stays quiet. Both segments use the
         connector codec's alphabet ([A-Za-z0-9_.-], <=32)."""
         prompt_id = f"{self._prompt_owner_nonce}.{secrets.token_hex(4)}"
-        self._pending_prompts[prompt_id] = {**state, "kind": kind, "expires_at": time.time() + timeout_s}
+        ttl = 3600.0 if timeout_s is None else timeout_s  # untimed prompts: an hour
+        self._pending_prompts[prompt_id] = {**state, "kind": kind, "expires_at": time.time() + ttl}
         # Opportunistic sweep so abandoned prompts can't accumulate.
         now = time.time()
         for stale in [k for k, v in self._pending_prompts.items() if v.get("expires_at", 0) < now]:
@@ -1902,21 +1903,15 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         return SendResult(success=True, message_id=result.get("message_id"), raw_response=result)
 
     async def _mint_and_send_prompt(
-        self,
-        kind: str,
-        state: dict[str, Any],
-        chat_id: str,
-        *,
-        prompt_kind: str,
-        text: str,
-        options: list,
-        metadata: Optional[dict[str, Any]],
+        self, kind: str, state: dict[str, Any], chat_id: str, *, prompt_kind: str, text: str,
+        options: list, metadata: Optional[dict[str, Any]], timeout_s: Optional[int] = None,
     ) -> Optional[SendResult]:
-        """Register + egress a prompt; unregisters and returns None when the lane is unavailable."""
-        prompt_id = self._mint_prompt(kind, {**state, "chat_id": str(chat_id)})
+        """Register + egress a prompt; unregisters and returns None when the lane is unavailable.
+        ``timeout_s`` is the caller's real wait: it sets the local expiry and rides the wire."""
+        prompt_id = self._mint_prompt(kind, {**state, "chat_id": str(chat_id)}, timeout_s)
         result = await self._send_prompt(
             chat_id, prompt_kind=prompt_kind, text=text, prompt_id=prompt_id, options=options,
-            metadata=metadata,
+            metadata=metadata, timeout_s=timeout_s,
         )
         if result is None or not getattr(result, "success", False):
             # P5(b): a DECLINE now returns a failed SendResult rather than
@@ -1954,6 +1949,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
     ) -> SendResult:
         """Three-button slash-command confirmation over the relay (resolves via
         tools.slash_confirm.resolve; success=False falls back to text-intercept)."""
+        from tools.slash_confirm import DEFAULT_TIMEOUT_SECONDS
         options = [
             {"id": "once", "label": t("platform.relay.confirm_approve_once"), "style": "primary"},
             {"id": "always", "label": t("platform.relay.confirm_always_approve")},
@@ -1962,7 +1958,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         result = await self._mint_and_send_prompt(
             "slash_confirm", {"session_key": session_key, "confirm_id": confirm_id}, chat_id,
             prompt_kind="approval", text=f"**{title}**\n\n{message}" if title else message,
-            options=options, metadata=metadata,
+            # A connector may close an untimed prompt when the turn ends; the confirm waits longer.
+            options=options, metadata=metadata, timeout_s=DEFAULT_TIMEOUT_SECONDS,
         )
         return result if result is not None else self._PROMPT_UNAVAILABLE
 

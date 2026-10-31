@@ -122,6 +122,12 @@ def test_format_token_flow_bad_input_is_empty():
     assert format_token_flow("lots") == ""
 
 
+def test_format_token_flow_promotes_unit_when_rounding_carries():
+    # 999_960 / 1000 rounds to 1000.0 — that reads as a four-digit count, so it must promote to M.
+    assert format_token_flow(999_960) == "↓ 1.0M tok"
+    assert format_token_flow(999_949) == "↓ 999.9k tok"
+
+
 # ── gating: quiet mode / config false / non-interactive ────────────────────
 
 

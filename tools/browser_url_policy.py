@@ -44,10 +44,18 @@ _JS_URL_LITERAL_RE = re.compile(r"https?://" + _URL_BODY, re.IGNORECASE)
 _URL_OR_SCHEME_RELATIVE_RE = re.compile(r"""(?:https?://|(?<![\w:/\\])[/\\]{2,}(?=[^/\\\s]))""" + _URL_BODY,
                                         re.IGNORECASE)
 _URL_BODY_RE = re.compile(_URL_BODY)
-# ``)``, ``]``, ``<`` and ``>`` are legal in userinfo, so a literal cut at one inside its authority may be
-# ``http://x)@host``: the rest of the authority (up to ``/ ? # \``) through its last ``@``.
-_USERINFO_TAIL_RE = re.compile(r"""[^\s'"`/?#\\]*@""")
+# A literal's authority as a browser reads it: up to the first ``/ ? # \``. Userinfo may hold any other
+# character, so ``http://x)@host``, ``http://x[@host`` and ``'http://x"@host'`` all load ``host``. The
+# narrow reading also stops at a quote or whitespace; the wide one crosses them too.
+_AUTHORITY_RE = re.compile(r"""[^\s'"`/?#\\]*""")
+_WIDE_AUTHORITY_RE = re.compile(r"[^/?#\\]*")
 _LITERAL_HEAD_RE = re.compile(r"(?:https?:)?[/\\]+", re.IGNORECASE)
+# Where a URL starts, whatever follows: ``'http://"@host/'`` and ``'http:// @host/'`` load ``host`` too.
+_HTTP_HEAD_RE = re.compile(r"https?://[/\\]*", re.IGNORECASE)
+_HEAD_RE = re.compile(r"https?://[/\\]*|(?<![\w:/\\])[/\\]{2,}", re.IGNORECASE)
+# The host after an ``@`` in a wide authority, kept when it ends at a quote, whitespace or the authority's
+# end: the last ``@`` always, and an earlier one whose string closes (``'http://"@host'; m = 'a@b'``).
+_AT_HOST_RE = re.compile(r"""@([^\s'"`@]*)(?=[\s'"`]|$)""")
 _NUMERIC_HOST_RE = re.compile(r"[0-9a-fx.]+")  # _url_hostname lowercases
 
 
@@ -155,23 +163,43 @@ def url_blocked(url: str) -> bool:
     return is_always_blocked_url(url) or not is_safe_url(url)
 
 
-def url_literals(text: str, *, protocol_relative: bool = False) -> list[str]:
+def _host_after_userinfo(text: str, start: int) -> Optional[str]:
+    """The host (and the rest of the literal) after the last ``@`` of the narrow authority at ``start``."""
+    at = _AUTHORITY_RE.match(text, start).group().rfind("@")
+    host = _URL_BODY_RE.match(text, start + at + 1) if at >= 0 else None
+    return host.group() if host else None
+
+
+def url_literals(text: str, *, protocol_relative: bool = False, pattern: Optional[re.Pattern] = None) -> list[str]:
     """Every ``http(s)://`` literal in free text (a JS expression, an HTML snippet, a CDP param); with
-    ``protocol_relative``, each scheme-relative ``//host/...`` literal too, kept scheme-less. A literal cut
-    inside its authority with an ``@`` ahead is also returned as the host a browser reads after that ``@``
-    (``http://x)@host/`` -> ``http://host/``), next to the literal as cut."""
+    ``protocol_relative``, each scheme-relative ``//host/...`` literal too, kept scheme-less (``pattern``
+    replaces both). A literal whose authority has an ``@`` is also returned as the host a browser reads
+    after the last one (``http://x)@host/`` -> ``http://host/``), next to the literal as cut. Past a quote
+    or whitespace, where an ``@`` is as likely a mail address in the next string, the host after the last
+    ``@`` is returned only when it names cloud metadata by its literal (no DNS lookup); that reading starts
+    at every URL head, so an earlier ``@`` or a quote right after ``http://`` does not hide it, and also
+    keeps an earlier ``@`` whose host ends at a quote or whitespace, so a later mail address does not."""
     if not isinstance(text, str):
         return []
     found = []
-    for m in (_URL_OR_SCHEME_RELATIVE_RE if protocol_relative else _JS_URL_LITERAL_RE).finditer(text):
+    active = pattern or (_URL_OR_SCHEME_RELATIVE_RE if protocol_relative else _JS_URL_LITERAL_RE)
+    for m in active.finditer(text):
         found.append(m.group())
         head = _LITERAL_HEAD_RE.match(m.group()).group()
-        if any(c in "/?#\\" for c in m.group()[len(head):]):
-            continue  # the authority ended inside the literal: its host is fixed
-        tail = _USERINFO_TAIL_RE.match(text, m.end())
-        host = tail and _URL_BODY_RE.match(text, tail.end())
-        if host:
-            found.append(head + host.group())
+        host = _host_after_userinfo(text, m.start() + len(head))
+        lit = active.match(head + host) if host else None  # cut where the scanning pattern cuts
+        if lit:
+            found.append(lit.group())
+    heads = list((_HEAD_RE if protocol_relative and pattern is None else _HTTP_HEAD_RE).finditer(text))
+    ends = [h.start() for h in heads[1:]] + [len(text)]
+    for h, end in zip(heads, ends):  # each read stops at the next head: linear in len(text)
+        stop = _WIDE_AUTHORITY_RE.match(text, h.end(), end).end()
+        for at in _AT_HOST_RE.finditer(text, h.end(), stop):
+            host = _URL_BODY_RE.match(text, at.start(1), at.end(1))
+            if host and literal_targets_metadata("//" + host.group()):
+                lit = active.match(h.group() + _URL_BODY_RE.match(text, at.start(1), end).group())
+                if lit:
+                    found.append(lit.group())
     return [m.rstrip(".,;") for m in found]
 
 

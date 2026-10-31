@@ -72,3 +72,22 @@ def test_tickets_minted_outside_a_request_open_a_private_webapp_but_a_forwarded_
         auth_required = True
 
     assert private_launch(Plain()) is False, "an ordinary gated listener is unchanged"
+
+
+def test_a_request_that_looks_local_still_needs_the_private_webapps_own_credential(monkeypatch):
+    """Even a proxy that hid every forwarding header and rewrote Host to 127.0.0.1 (nginx's default
+    proxy_pass) lands on the private listener, which still requires the browser session token on every
+    /api/ route: the page never publishes it, and only the owner-only loopback ticket routes hand it out."""
+    from fastapi.testclient import TestClient
+
+    from hermes_cli import web_server
+
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+    for key, value in (("bound_host", "127.0.0.1"), ("bound_port", 9120), ("auth_required", PublicUrlGate()),
+                       ("trusted_public_hosts", frozenset({"box.tailnet.ts.net"})),
+                       ("listener_public_url", "https://box.tailnet.ts.net")):
+        monkeypatch.setattr(web_server.app.state, key, value, raising=False)
+    client = TestClient(MarkDirectLocal(web_server.app), base_url="http://127.0.0.1:9120", client=("127.0.0.1", 50000))
+    assert client.get("/api/status").json().get("auth_required") is False, "direct: the private listener"
+    for path in ("/api/profiles", "/api/sessions", "/api/config"):
+        assert client.get(path).status_code == 401, path

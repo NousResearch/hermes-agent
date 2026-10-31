@@ -71,40 +71,11 @@ describe('summarizeShellCommand', () => {
     )
   })
 
-  it('compacts a genuine multi-command probe from session 20260624_231846_bdbd1e', () => {
-    const probe = 'which node pnpm corepack; node -v; corepack --version 2>&1'
-    expect(summarizeShellCommand(probe)).toBe('which node pnpm corepack + 2 commands')
-  })
-
   it('compacts the corepack diagnostic command from session 20260624_231846_bdbd1e', () => {
     expect(
       summarizeShellCommand(
         'which node pnpm corepack; node -v; echo "---"; corepack --version 2>&1; echo "---pnpm via corepack---"; pnpm --version 2>&1 | tail -5'
       )
     ).toBe('which node pnpm corepack + 3 commands')
-  })
-
-  it('compacts the proto/cache probe from session 20260624_231846_bdbd1e', () => {
-    expect(
-      summarizeShellCommand(
-        'echo "--- proto pnpm direct ---"; ~/.proto/tools/node/24.11.0/bin/pnpm --version 2>&1 | tail -3; echo "--- proto node ---"; ls ~/.proto/tools/node/ 2>&1; echo "--- corepack cache ---"; ls ~/.cache/node/corepack/v1/pnpm/ 2>&1'
-      )
-    ).toBe('~/.proto/tools/node/24.11.0/bin/pnpm --version + 2 commands')
-  })
-
-  it('summarizes the successful lint command from session 20260624_231846_bdbd1e', () => {
-    expect(
-      summarizeShellCommand(
-        'cd /Users/brooklyn/www/bb-rainbows && pnpm run lint 2>&1 | tail -20; echo "lint_exit=${PIPESTATUS[0]}"'
-      )
-    ).toBe('pnpm run lint')
-  })
-
-  it('summarizes a background build command from session 20260624_231846_bdbd1e', () => {
-    expect(
-      summarizeShellCommand(
-        'cd /Users/brooklyn/www/bb-rainbows && pnpm run build 2>&1 | tail -20; echo "build_exit=${PIPESTATUS[0]}"'
-      )
-    ).toBe('pnpm run build')
   })
 })

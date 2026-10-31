@@ -30,7 +30,7 @@ async def test_watches_read_and_admit_in_each_owner_profile(tmp_path, monkeypatc
             rows.append((event.source.profile, str(get_hermes_home()), event.text))
             self._active_sessions[event.metadata['gateway_session_key']] = True
 
-    runner._adapter_for_source = lambda source: Adapter()
+    runner._delivery_adapter_for = lambda source: Adapter()
     watch = {}
     for name in ('alpha', 'beta'):
         home = tmp_path / '.hermes' / 'profiles' / name
@@ -64,7 +64,7 @@ async def test_watch_tracks_rotated_route_owner_without_reviving_parent():
             events.append(event)
             self._active_sessions['route'] = True
 
-    runner._adapter_for_source = lambda source: Adapter()
+    runner._delivery_adapter_for = lambda source: Adapter()
     await runner._warm_goals_session_db('test')
     save_heartbeat('parent', HeartbeatState(prompt='follow rotation', interval_seconds=60, created_at=1))
     assert migrate_heartbeat_to_session('parent', 'child')

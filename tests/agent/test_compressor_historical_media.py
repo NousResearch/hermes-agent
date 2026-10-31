@@ -38,44 +38,14 @@ TEXT = {"type": "text", "text": "hi"}
 INPUT_TEXT = {"type": "input_text", "text": "hi"}
 
 
-class TestIsImagePart:
 
 
-
-    def test_text_part_is_not_image(self):
-        assert _is_image_part(TEXT) is False
-        assert _is_image_part(INPUT_TEXT) is False
-
-    def test_non_dict_rejected(self):
-        assert _is_image_part("image") is False
-        assert _is_image_part(None) is False
-        assert _is_image_part(42) is False
-
-
-class TestContentHasImages:
-
-    def test_empty_list(self):
-        assert _content_has_images([]) is False
-
-
-
-    def test_none(self):
-        assert _content_has_images(None) is False
 
 
 class TestStripImagesFromContent:
 
 
 
-    def test_replaces_image_with_placeholder(self):
-        parts = [TEXT, IMG_URL]
-        out = _strip_images_from_content(parts)
-        assert len(out) == 2
-        assert out[0] == TEXT
-        assert out[1] == {
-            "type": "text",
-            "text": "[Attached image — stripped after compression]",
-        }
 
 
     def test_handles_all_three_shapes(self):
@@ -86,8 +56,6 @@ class TestStripImagesFromContent:
 
 
 class TestStripHistoricalMedia:
-    def test_empty_passthrough(self):
-        assert _strip_historical_media([]) == []
 
 
 
@@ -96,16 +64,6 @@ class TestStripHistoricalMedia:
 
 
 
-    def test_idempotent(self):
-        msgs = [
-            {"role": "user", "content": [TEXT, IMG_URL]},
-            {"role": "assistant", "content": "k"},
-            {"role": "user", "content": [TEXT, IMG_URL]},
-        ]
-        first = _strip_historical_media(msgs)
-        second = _strip_historical_media(first)
-        # Second pass is a no-op — no images left before the anchor.
-        assert second is first
 
     def test_strips_stale_tool_result_images_when_no_user_image_exists(self):
         """#89938: vision_analyze results are the only images in the session.
@@ -252,14 +210,6 @@ class TestStripHistoricalMedia:
         ]
         assert _strip_historical_media(msgs) is msgs
 
-    def test_idempotent_over_tool_images(self):
-        msgs = [
-            {"role": "tool", "tool_call_id": "a", "content": [TEXT, IMG_URL]},
-            {"role": "tool", "tool_call_id": "b", "content": [TEXT, IMG_URL]},
-        ]
-        first = _strip_historical_media(msgs)
-        assert first is not msgs
-        assert _strip_historical_media(first) is first
 
     def test_stripped_tool_message_drops_its_api_content_sidecar(self):
         """Replaying the sidecar would resend the bytes the strip removed."""

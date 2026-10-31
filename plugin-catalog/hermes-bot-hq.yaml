@@ -1,0 +1,16 @@
+name: hermes-bot-hq
+repo: https://github.com/RohanRJ389/hermes-bot-hq
+sha: b2ef8204974677154a20cd3fe31ffdcc9f90f994
+description: "Desktop fleet page plus a per-bot Home (status, metrics, alerts, tasks, routines, buttons) published by the bot as JSON. Disclosure — reads each local profile's home files, can run a declared cron routine from the UI on that bot's profile and credentials, and opens chat, a path, or a URL the bot declared; send_prompt buttons send the shown prompt into the bot's Bot Chat. Bot-declared run_action buttons run a script from the bot's home/actions/ folder: a script runs only after the user approves that exact file (SHA-256), is re-approved if it changes, and is limited to 30s and to that folder, but it runs as your user with the Hermes backend's full environment, including provider keys loaded for the profile Hermes was launched with. Approvals are kept under the Hermes root in bot-hq/approvals/. The `hermes hermes-bot-hq setup` command (asks first unless --yes) links the plugin into every profile's plugins folder and enables it there. No database, signup, or telemetry."
+maintainer: RohanRJ389
+tier: community
+category: desktop
+version: "0.4.2"
+title: Bot HQ
+image: https://raw.githubusercontent.com/RohanRJ389/hermes-bot-hq/b2ef8204974677154a20cd3fe31ffdcc9f90f994/docs/bot-hq-infographic.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

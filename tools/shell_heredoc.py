@@ -2,9 +2,9 @@
 cron lifecycle_guard) that false-positive on heredoc *bodies*. Stripping every body is unsafe the
 other way (a fake ``<<`` in quotes can swallow an operator; unquoted bodies expand; ``bash <<'EOF'``
 executes), so a body is masked ONLY when every delimiter is quoted, every heredoc has an exact
-terminator line, the opener is a single command (no ``;|&``, ``$(...)``, backticks, process
-substitution) and the consumer is an allowlisted non-shell interpreter. Otherwise the command is
-returned untouched: a false positive is acceptable, hiding shell syntax from a guard is not.
+terminator line, the owning simple command is an allowlisted non-shell interpreter, and no list
+operator follows the heredoc. Otherwise the command is returned untouched: a false positive is
+acceptable, hiding shell syntax from a guard is not.
 Masked bodies keep their newline count (re.MULTILINE)."""
 
 from __future__ import annotations
@@ -101,15 +101,27 @@ def _parse_heredoc_operator(command: str, index: int):
     return cursor, "".join(delimiter), strip_tabs, quoted
 
 
+def _is_fd_redirect_ampersand(command: str, index: int) -> bool:
+    """Return whether ``&`` at ``index`` belongs to ``>&``/``<&``/``&>`` redirection."""
+    before = command[index - 1] if index else ""
+    after = command[index + 1] if index + 1 < len(command) else ""
+    return before in "<>" or after == ">"
+
+
 def _scan_heredoc_command_unit(command: str, start: int):
-    """Scan one logical command -> ``(end, specs, unknown_operator, has_list_operator)``: an
-    unparseable ``<<`` (caller must fail closed) / an unquoted ``;|&`` on the opener line."""
+    """Scan one logical command.
+
+    Return ``(end, specs, unknown_operator, post_heredoc_list_operator, owner_start)``.
+    List operators before the first heredoc select the simple command that owns it. A list
+    operator after a heredoc keeps the body visible because another command may consume it.
+    """
     cursor = start
     quote = None
     comment = False
     specs = []
     unknown_operator = False
-    has_list_operator = False
+    post_heredoc_list_operator = False
+    owner_start = start
     while cursor < len(command):
         char = command[cursor]
         if char == "\n" and (comment or quote is None):
@@ -138,9 +150,15 @@ def _scan_heredoc_command_unit(command: str, start: int):
                 cursor, delimiter, strip_tabs, quoted = parsed
                 specs.append((delimiter, strip_tabs, quoted))
         else:
-            has_list_operator = has_list_operator or char in ";|&"
+            if char in ";|&" and not (
+                char == "&" and _is_fd_redirect_ampersand(command, cursor)
+            ):
+                if specs:
+                    post_heredoc_list_operator = True
+                else:
+                    owner_start = cursor + 1
             cursor += 1
-    return cursor, specs, unknown_operator, has_list_operator
+    return cursor, specs, unknown_operator, post_heredoc_list_operator, owner_start
 
 
 def _find_heredoc_close(
@@ -168,8 +186,13 @@ def strip_inert_heredoc_bodies(command: str) -> str:
     ranges: list[tuple[int, int]] = []
     command_start = 0
     while command_start <= last_opener_index:
-        command_end, specs, unknown_operator, has_list_operator = (
-            _scan_heredoc_command_unit(command, command_start))
+        (
+            command_end,
+            specs,
+            unknown_operator,
+            post_heredoc_list_operator,
+            owner_start,
+        ) = _scan_heredoc_command_unit(command, command_start)
         if unknown_operator:
             return command
         if not specs:
@@ -187,10 +210,16 @@ def strip_inert_heredoc_bodies(command: str) -> str:
                 return command  # unterminated
             body_ranges.append((body_cursor, close_end))
             body_cursor = close_end
-        if all(quoted for _delimiter, _strip_tabs, quoted in specs) and not has_list_operator:
+        if (
+            all(quoted for _delimiter, _strip_tabs, quoted in specs)
+            and not post_heredoc_list_operator
+        ):
             masked_opener = _mask_simple_quotes(command[command_start:command_end])
-            if (not any(m in masked_opener for m in ("$(", "`", "<(", ">("))
-                    and _INERT_HEREDOC_CONSUMER_RE.search(masked_opener)):
+            masked_owner = _mask_simple_quotes(command[owner_start:command_end])
+            if not any(
+                marker in masked_opener
+                for marker in ("$(", "`", "<(", ">(", "(", ")", "{", "}")
+            ) and _INERT_HEREDOC_CONSUMER_RE.search(masked_owner):
                 ranges.extend(body_ranges)
         command_start = body_cursor
     # Single-pass rebuild (ranges are sorted and non-overlapping), bodies -> their newlines only.

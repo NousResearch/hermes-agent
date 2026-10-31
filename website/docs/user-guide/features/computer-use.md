@@ -370,7 +370,7 @@ magic-byte sniffing.
 
 Hermes applies multi-layer guardrails:
 
-- Destructive actions (click, type, drag, scroll, key, focus_app)
+- Destructive actions (click, type, drag, scroll, key, focus_app, launch)
   require approval through the same gate as dangerous shell commands —
   interactively via the CLI dialog or the messaging-platform approval
   buttons. Once/session/always grants are keyed

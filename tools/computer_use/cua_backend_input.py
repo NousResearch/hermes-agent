@@ -13,6 +13,8 @@ _BTF_UNSUPPORTED_MSG = "The connected cua-driver does not advertise the standalo
 _FOREGROUND_UNSUPPORTED_MSG = ("The connected cua-driver action schema does not accept delivery_mode, so foreground "
                                "delivery is unavailable. Use another verified rung without assuming the reported "
                                "package version describes the live schema.")
+_DESKTOP_SCOPE_UNSUPPORTED_MSG = ("The connected cua-driver key schema does not accept scope, so desktop-scoped "
+                                  "shortcuts are unavailable. Capture the target window and send the key to it.")
 # (what, extra args) pointer addressing form; ``extra`` is None when the caller did not supply that form and
 # may be a callable when computing it has side effects (capability probes) that must follow the refusal checks.
 _Variant = tuple[str, None | dict[str, Any] | Callable[[], dict[str, Any]]]
@@ -137,7 +139,8 @@ class _InputMixin:
         # coordinates when the driver advertises support; otherwise it scrolls the targeted window
         # (window_id is still sent for routing).
         xy = lambda: ({"x": x, "y": y}
-                      if self._session.supports_capability("input.scroll.coordinates", tool="scroll") else {})
+                      if (self._session.supports_capability("input.scroll.coordinates", tool="scroll")
+                          or self._session.supports_input_property("scroll", "x")) else {})
         refusal = self._pointer_args("scroll", args, (
             ("element scroll", {"element_index": element}
              if element is not None and self._active_window_id is not None else None),
@@ -150,16 +153,28 @@ class _InputMixin:
         return refusal if refusal is not None else self._run_input_action("type_text", {**args, "text": text},
                                                                           delivery_mode, bring_to_front)
 
-    def key(self, keys: str, *, delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
-        refusal, args = self._target_args("key", need_window=True)
+    def key(self, keys: str, *, scope: Optional[str] = None, delivery_mode: Optional[str] = None,
+            bring_to_front: bool = False) -> ActionResult:
+        """Press *keys* on the sticky target. ``scope="desktop"`` is the only way to send an OS-level shortcut
+        with no target window: a missing or invalidated target (failed capture, transport reset) refuses."""
+        key_name, modifiers = _parse_key_combo(keys)
+        tool = "hotkey" if modifiers else "press_key"  # hotkey requires at least one modifier + one key
+        refusal, args = self._key_scope_args(tool, scope)
         if refusal is not None:
             return refusal
-        key_name, modifiers = _parse_key_combo(keys)
         if not key_name:
             return _refuse("key", f"Could not parse key from '{keys}'.")
-        if modifiers:  # hotkey requires at least one modifier + one key
-            return self._run_input_action("hotkey", {**args, "keys": modifiers + [key_name]}, delivery_mode, bring_to_front)
-        return self._run_input_action("press_key", {**args, "key": key_name}, delivery_mode, bring_to_front)
+        payload = {"keys": modifiers + [key_name]} if modifiers else {"key": key_name}
+        return self._run_input_action(tool, {**args, **payload}, delivery_mode, bring_to_front)
+
+    def _key_scope_args(self, tool: str, scope: Optional[str]) -> tuple[Optional[ActionResult], dict[str, Any]]:
+        if scope in (None, "window"):
+            return self._target_args("key", need_window=True)
+        if scope != "desktop":
+            return _refuse("key", f"unknown scope {scope!r} — use window|desktop.", code="bad_scope"), {}
+        if not self._session.supports_input_property(tool, "scope"):
+            return _refuse("key", _DESKTOP_SCOPE_UNSUPPORTED_MSG, code="desktop_scope_unsupported"), {}
+        return None, {"scope": "desktop"}
 
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
         """Set a value on an element. Handles AXPopUpButton selects natively."""

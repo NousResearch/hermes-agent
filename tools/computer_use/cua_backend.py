@@ -26,7 +26,7 @@ from tools.computer_use.cua_backend_driver import (
     _CUA_DRIVER_CMD_ENV, cua_driver_binary_available, cua_driver_runtime_contract_status,
     resolve_cua_driver_cmd)
 from tools.computer_use.cua_backend_input import _InputMixin
-from tools.computer_use.cua_backend_parse import _action_result_from
+from tools.computer_use.cua_backend_parse import _action_result_from, _launch_target_args, _positive_int
 from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
 
 logger = logging.getLogger(__name__)
@@ -365,19 +365,38 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
 
-    def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,
+    def launch_app(self, app: Optional[str] = None, *, bundle_id: Optional[str] = None, name: Optional[str] = None,
                    urls: Optional[list[str]] = None, additional_arguments: Optional[list[str]] = None,
-                   creates_new_application_instance: bool = False) -> dict[str, Any]:
-        """Idempotent launch returning ``{pid, bundle_id, name, windows[]}``. ``creates_new_application_instance=True``
-        forces a fresh instance so concurrent runs touching the same app get isolated windows."""
-        if not bundle_id and not name:
+                   creates_new_application_instance: bool = False) -> ActionResult:
+        """Launch *app* (free-form, see ``_launch_target_args``). Not idempotent for every app: a second launch of
+        a UWP app such as Calculator opens another window. ``creates_new_application_instance=True`` forces a
+        fresh instance so concurrent runs touching the same app get isolated windows."""
+        target = _launch_target_args(app.strip(), sys.platform) if app and app.strip() else {}
+        if not target and not bundle_id and not name:
             raise ValueError("launch_app requires either bundle_id or name")
-        args: dict[str, Any] = {"session": self._session_id, **{k: v for k, v in (
+        args: dict[str, Any] = {**target, **{k: v for k, v in (
             ("bundle_id", bundle_id), ("name", name), ("urls", urls and list(urls)),
             ("additional_arguments", additional_arguments and list(additional_arguments)),
             ("creates_new_application_instance", creates_new_application_instance or None)) if v}}
-        out = self._session.call_tool("launch_app", args)
-        return out["structuredContent"] or {"data": out["data"]}
+        result = self._action("launch_app", args)
+        if result.ok:
+            launched = str(result.meta.get("name") or next(iter(target.values()), None) or name or bundle_id)
+            self._adopt_launched_app(result.meta, launched)
+            result.message = result.message or f"Launched {launched!r}."
+        return result
+
+    def _adopt_launched_app(self, meta: dict[str, Any], app_name: str) -> None:
+        """Retarget after a launch in one transition. An exact launched window becomes the whole target; anything
+        less clears the previous window, snapshot tokens and follow-up target, keeping only the app name for the
+        next capture to resolve. A partial update would mix the old window and tokens with the new pid."""
+        windows = meta.get("windows")
+        first = windows[0] if isinstance(windows, list) and windows and isinstance(windows[0], dict) else {}
+        pid, window_id = _positive_int(meta.get("pid")), _positive_int(first.get("window_id"))
+        if pid is not None and window_id is not None:
+            self._set_active_target({"pid": pid, "window_id": window_id})
+        else:
+            self._clear_active_target()
+        self._last_app = app_name
 
     def bring_to_front(self, *, pid: int, window_id: Optional[int] = None) -> ActionResult:
         """Activate a window so subsequent foreground-dispatched input lands on it."""

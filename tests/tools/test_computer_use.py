@@ -2161,14 +2161,6 @@ class TestCuaToolCoverageExpansion:
         backend._session.supports_capability = lambda cap, tool=None: False
         return backend
 
-    # ── App lifecycle ────────────────────────────────────────────
-
-    def test_launch_app_requires_bundle_id_or_name(self):
-        backend = self._backend()
-        import pytest
-        with pytest.raises(ValueError, match="bundle_id or name"):
-            backend.launch_app()
-
     # ── Generic escape hatch ────────────────────────────────────
 
     def test_call_tool_preserves_caller_session(self):

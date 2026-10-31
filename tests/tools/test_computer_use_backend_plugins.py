@@ -90,6 +90,17 @@ def test_selected_plugin_receives_tool_calls_and_unselected_stays_dormant(tmp_pa
         reset_hermes_home_override(tok)
 
 
+def test_plugin_backend_without_launch_refuses_launch(tmp_path, grant_computer_use_approvals):
+    home = _home(tmp_path / "home", ("cu-alpha",), "cu-alpha")
+    tok = set_hermes_home_override(str(home))
+    try:
+        from tools.computer_use.tool import handle_computer_use
+        out = json.loads(handle_computer_use({"action": "launch", "app": "Notepad"}, session_id="s1"))
+        assert (out.get("ok"), out.get("code")) == (False, "unsupported"), out
+    finally:
+        reset_hermes_home_override(tok)
+
+
 def test_unknown_backend_errors_naming_configured_and_available(tmp_path):
     home = _home(tmp_path / "home", (), "nope")
     tok = set_hermes_home_override(str(home))

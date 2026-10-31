@@ -357,6 +357,7 @@ from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
 from hermes_cli.subcommands.pause import build_pause_parser
+from hermes_cli.main_forward import _forward_command
 from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
@@ -383,6 +384,7 @@ from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
 from hermes_cli.subcommands.usage import build_usage_parser
 from hermes_cli.subcommands.monitoring import build_monitoring_parser
+from hermes_cli.subcommands.tts import build_tts_parser
 from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
@@ -1804,25 +1806,6 @@ def cmd_proxy(args):
         raise SystemExit(rc)
 
 
-def _forward_command(name: str, module: str, attr: str, *, forward_return: bool = False, doc: str = ""):
-    """A ``hermes <cmd>`` handler that hands ``args`` to ``<module>.<attr>``.
-
-    Imports at CALL time so fast paths never pay for it and
-    ``patch("<module>.<attr>")`` keeps intercepting. ``forward_return``
-    surfaces the return code to ``main()`` (kanban/project/mcp propagate).
-    """
-
-    def _cmd(args):
-        import importlib
-
-        result = getattr(importlib.import_module(module), attr)(args)
-        return result if forward_return else None
-
-    _cmd.__name__ = _cmd.__qualname__ = name
-    _cmd.__doc__ = doc or None
-    return _cmd
-
-
 cmd_setup = _forward_command("cmd_setup", "hermes_cli.setup", "run_setup_wizard", doc='Interactive setup wizard.')
 cmd_login = _forward_command("cmd_login", "hermes_cli.auth", "login_command", doc='Authenticate Hermes CLI with a provider.')
 cmd_logout = _forward_command("cmd_logout", "hermes_cli.auth", "logout_command", doc='Clear provider authentication.')
@@ -1845,6 +1828,7 @@ cmd_prompt_size = _forward_command("cmd_prompt_size", "hermes_cli.prompt_size", 
 cmd_pairing = _forward_command("cmd_pairing", "hermes_cli.pairing", "pairing_command")
 cmd_plugins = _forward_command("cmd_plugins", "hermes_cli.plugins_cmd", "plugins_command")
 cmd_mcp = _forward_command("cmd_mcp", "hermes_cli.mcp_config", "mcp_command", forward_return=True)
+cmd_tts = _forward_command("cmd_tts", "hermes_cli.tts_cli", "cmd_tts", forward_return=True)
 
 
 def cmd_model(args):
@@ -2769,7 +2753,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "prompt-size",
         "resume",
         "send", "sessions", "setup",
-        "skin", "skills", "slack", "status", "tools", "uninstall", "update",
+        "skin", "skills", "slack", "status", "tools", "tts", "uninstall", "update",
         "usage", "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
@@ -3366,6 +3350,7 @@ def _build_cli_parser():
     build_pets_parser(subparsers)
     build_journey_parser(subparsers)
     build_memory_parser(subparsers, cmd_memory=cmd_memory)
+    build_tts_parser(subparsers, cmd_tts=cmd_tts)
     build_tools_parser(subparsers, cmd_tools=cmd_tools)
     build_computer_use_parser(subparsers)
     build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)

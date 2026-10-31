@@ -5,6 +5,7 @@ for a wedged inline call) and the shared "no visible text was delivered" check
 (``_forget_invisible_deltas``) used by the error and abandon paths.
 """
 
+import contextlib
 import logging
 import time
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from agent import chat_completion_wait_notice as wn
 from agent.model_metadata import is_local_endpoint
 from agent.proxy_bypass import is_loopback_host
 from agent.sleep_clock import SleepWatch
+from agent.stream_max_lifetime import StreamLifetime, resolve_stream_max_lifetime
 logger = logging.getLogger(__name__)
 
 # Kills of one dispatched attempt whose worker never unwinds before the monitor gives up on it.
@@ -29,6 +31,7 @@ class StreamingWaitMonitor:
     # Inline call wedged past the limit: the stale-timer re-arm time after which activity touches
     # are withheld (None = claim liveness as usual). A real chunk after it lifts the hold.
     _liveness_withheld_at = None
+    _lifetime = StreamLifetime(0.0)  # opt-in agent.stream_max_lifetime; real clock set when the monitor starts
 
     def _claims_liveness(self) -> bool:
         since = self._liveness_withheld_at
@@ -186,6 +189,32 @@ class StreamingWaitMonitor:
             # Chunks are flowing — keep the tracker fresh, leave the display alone.
             self.agent._touch_activity(f"waiting for stream response ({waiting_secs}s, no chunks yet)")
 
+    def _check_stream_lifetime(self) -> None:
+        """Opt-in ``agent.stream_max_lifetime``: a stream that keeps sending chunks but never
+        finishes never trips the stale check. Kill it like a stale kill (cancel the attempt,
+        abort the request-local client, count it in the cross-turn breaker) so the retry loop
+        or the partial-delivery continuation takes over."""
+        if not self._lifetime.cap:  # off (the default): no per-tick work
+            return
+        with self.stream_attempt_lock:
+            attempt = int(self.stream_attempt_state["current"])
+        elapsed = self._lifetime.exceeded(attempt) if attempt else None
+        if elapsed is None:
+            return
+        model = self.api_kwargs.get("model", "unknown")
+        logger.warning("Stream still running after %.0fs (stream_max_lifetime %.0fs) — killing connection. "
+                       "model=%s", elapsed, self._lifetime.cap, model)
+        self.agent._buffer_diagnostic_status(
+            f"⚠️ Response still streaming after {int(elapsed)}s (stream_max_lifetime "
+            f"{int(self._lifetime.cap)}s, model: {model}). Aborting...")
+        killed = self._attempt_stream_response
+        with contextlib.suppress(Exception):
+            self._cancel_current_stream_attempt("stream_max_lifetime_kill")
+            self.clients.close_once("stream_max_lifetime_kill")
+        self._shutdown_stale_attempt_socket(killed)
+        self._count_stale_attempt()
+        self.last_chunk_time["t"] = time.time()  # the stale timer restarts with the kill
+
     def _monitor_loop(self) -> None:
         _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
         self._mon = SimpleNamespace(
@@ -197,6 +226,7 @@ class StreamingWaitMonitor:
         # Only a server on this machine sleeps with it; a remote one kept working (or died).
         sleep_watch = (SleepWatch(interval=0.3) if self.agent.base_url
                        and is_loopback_host(urlsplit(self.agent.base_url).hostname) else None)
+        self._lifetime = StreamLifetime(resolve_stream_max_lifetime(self._stream_stale_timeout))
         while not self._call_done.is_set():
             self._call_done.wait(timeout=0.3)
             if sleep_watch is not None:
@@ -219,6 +249,7 @@ class StreamingWaitMonitor:
                 self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
                 self._mon.wait_notice.reset()
                 self._kill_stale_stream(_stale_elapsed)
+            self._check_stream_lifetime()
             if self.agent._interrupt_requested:
                 self._abort_for_interrupt(_stale_elapsed)
                 return

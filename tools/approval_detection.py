@@ -1075,14 +1075,34 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
         i = j
 
 
+@functools.lru_cache(maxsize=64)
+def _dollar_paren_end_memo(command: str) -> dict[int, int | None]:
+    """Per-command memo of ``$(`` offset -> end offset (None = unbalanced)."""
+    return {}
+
+
 def _scan_dollar_paren_end(command: str, start: int) -> int | None:
-    """Return the offset after a balanced ``$(...)`` command substitution."""
-    depth = 1
+    """Return the offset after a balanced ``$(...)`` command substitution.
+
+    A scan starting at a ``$(`` nested inside this one walks exactly the same characters with the
+    same quote/escape state from there on, so one pass records the end of every nested ``$(`` it
+    meets (a stack of open offsets) and later calls answer from the memo. Rescanning to the end at
+    every level made nested ``$(`` quadratic per word read and cubic per detection (depth 200,
+    ~600 B, took 22 s)."""
+    memo = _dollar_paren_end_memo(command)
+    if start in memo:
+        return memo[start]
+    open_offsets = [start]
     for kind, i, _, quote in _scan_shell(command, start + 2):
         if kind == "char" and not quote:
-            depth += command.startswith("$(", i) - (command[i] == ")")
-            if depth == 0:
-                return i + 1
+            if command.startswith("$(", i):
+                open_offsets.append(i)
+            elif command[i] == ")":
+                memo[open_offsets.pop()] = i + 1
+                if not open_offsets:
+                    return i + 1
+    for offset in open_offsets:
+        memo[offset] = None
     return None
 
 
@@ -1123,15 +1143,44 @@ def _literal_command_substitution_output(script: str) -> str | None:
     return None
 
 
+# Every character a body can contain for _literal_command_substitution_output to resolve it:
+# _SIMPLE_SHELL_LITERAL_RE's set plus the shlex whitespace, quotes and backslash it strips.
+# "$", "(", ")" and "`" are not in it.
+_LITERAL_SUBSTITUTION_BODY_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_./:@%+=,- \t\r\n'\"\\"
+)
+
+
+def _resolve_literal_substitution(word: str, i: int, opener: int) -> tuple[str, int] | None:
+    """Resolve the substitution opened at *i* -> ``(output, end)``, or None.
+
+    A body that resolves holds only _LITERAL_SUBSTITUTION_BODY_CHARS, so it has no closer of its
+    own and ends at the first character outside that set, which must be the closer. Only that run
+    is tokenised; a success is then confirmed with the balanced scanner, so the result is exactly
+    what tokenising the whole balanced body gives. Tokenising the whole body at every ``$(``
+    re-read the rest of the word per nesting level (depth 200, ~600 B, took 22 s per detection)."""
+    closer = ")" if opener == 2 else "`"
+    run_end = body_start = i + opener
+    while run_end < len(word) and word[run_end] in _LITERAL_SUBSTITUTION_BODY_CHARS:
+        run_end += 1
+    if run_end >= len(word) or word[run_end] != closer:
+        return None
+    replacement = _literal_command_substitution_output(word[body_start:run_end])
+    # A quote left open in the run means the balanced scanner reads past this closer; then the true
+    # body contains a closer and cannot resolve.
+    scan_end = _scan_dollar_paren_end if opener == 2 else _scan_backtick_end
+    if replacement is None or scan_end(word, i) != run_end + 1:
+        return None
+    return replacement, run_end + 1
+
+
 def _replace_simple_command_substitutions(word: str) -> str:
     chars: list[str] = []
     i = 0
     while i < len(word):
         opener = 2 if word.startswith("$(", i) else 1 if word[i] == "`" else 0
-        end = (_scan_dollar_paren_end if opener == 2 else _scan_backtick_end)(word, i) if opener else None
-        replacement = _literal_command_substitution_output(word[i + opener:end - 1]) if end is not None else None
-        if replacement is None:
-            replacement, end = word[i], i + 1
+        resolved = _resolve_literal_substitution(word, i, opener) if opener else None
+        replacement, end = resolved or (word[i], i + 1)
         chars.append(replacement)
         i = end
     return "".join(chars)
@@ -1169,28 +1218,38 @@ def _is_shell_comment_start(command: str, index: int) -> bool:
 def _iter_shell_command_starts(command: str):
     starts = [0]
 
-    def scan(start: int, end: int) -> None:
-        skip = -1
-        for kind, i, j, quote in _scan_shell(command, start, end, subst="uq", stop_unterminated=True,
-                                            comments=True):
-            if kind == "subst":
-                # Record a nested $(...)/backtick command start and scan its body.
-                inner = i + (1 if command[i] == "`" else 2)
-                starts.append(inner)
-                scan(inner, end if j is None else j - 1)
-            elif kind == "char" and quote is None and i != skip:
-                # `{` opens a brace group only as its own word (after whitespace or a separator): `${IFS}`
-                # is a parameter expansion and `-{delete,print}` a brace-expansion word, and a start
-                # marked inside either splits the word the flat patterns need to see intact.
-                if command[i] in "(;\n" or (command[i] == "{" and (i == 0 or command[i - 1].isspace()
-                                                                   or command[i - 1] in "(;&|)")):
-                    starts.append(i + 1)
-                elif command[i] in "&|":
-                    repeated = i + 1 < end and command[i + 1] == command[i]
-                    skip = i + 1 if repeated else skip
-                    starts.append(i + 1 + repeated)
+    def steps(start: int, end: int):
+        return _scan_shell(command, start, end, subst="uq", stop_unterminated=True, comments=True)
 
-    scan(0, len(command))
+    # Depth-first over nested substitution bodies with an explicit stack of [steps, end, skip]
+    # frames: recursing per nesting level raised RecursionError on ~1000 unbalanced ``$(``.
+    stack = [[steps(0, len(command)), len(command), -1]]
+    while stack:
+        frame = stack[-1]
+        step = next(frame[0], None)
+        if step is None:
+            stack.pop()
+            continue
+        kind, i, j, quote = step
+        end = frame[1]
+        if kind == "subst":
+            # Record a nested $(...)/backtick command start and scan its body.
+            inner = i + (1 if command[i] == "`" else 2)
+            starts.append(inner)
+            inner_end = end if j is None else j - 1
+            stack.append([steps(inner, inner_end), inner_end, -1])
+        elif kind == "char" and quote is None and i != frame[2]:
+            # `{` opens a brace group only as its own word (after whitespace or a separator): `${IFS}`
+            # is a parameter expansion and `-{delete,print}` a brace-expansion word, and a start
+            # marked inside either splits the word the flat patterns need to see intact.
+            if command[i] in "(;\n" or (command[i] == "{" and (i == 0 or command[i - 1].isspace()
+                                                               or command[i - 1] in "(;&|)")):
+                starts.append(i + 1)
+            elif command[i] in "&|":
+                repeated = i + 1 < end and command[i + 1] == command[i]
+                frame[2] = i + 1 if repeated else frame[2]
+                starts.append(i + 1 + repeated)
+
     seen = set()
     for start in starts:
         start = _skip_shell_whitespace(command, start)

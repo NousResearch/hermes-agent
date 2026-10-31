@@ -58,6 +58,9 @@ _RESPONSE_POLICY = {"Content-Security-Policy": "sandbox", "X-Content-Type-Option
 _METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 #: The most a relayed frame may carry: what the gateway's own socket accepts (file.attach data URLs).
 _MAX_FRAME = 384 * 1024 * 1024
+#: What a URL parser reads as the "." and ".." path segments (WHATWG URL, any letter case).
+_DOT = frozenset({".", "%2e"})
+_DOT_DOT = frozenset({"..", ".%2e", "%2e.", "%2e%2e"})
 
 
 # ---- Shared client ----------------------------------------------------------------------------
@@ -118,13 +121,36 @@ def _identity(request: Request) -> dict[str, str]:
     return identity_of(session)
 
 
+def _without_dot_segments(path: str) -> str:
+    """Absolute *path* with its "." and ".." segments resolved the way a browser resolves them."""
+    segments, kept = path.split("/")[1:], []
+    for index, segment in enumerate(segments):
+        lowered = segment.lower()
+        if lowered in _DOT_DOT:
+            if kept:
+                kept.pop()
+        elif lowered not in _DOT:
+            kept.append(segment)
+            continue
+        if index == len(segments) - 1:
+            kept.append("")  # a trailing "." or ".." leaves a directory path
+    return "/" + "/".join(kept)
+
+
 def _relayed_location(value: str, row: dict[str, Any], base: str) -> Optional[str]:
-    """Where a gateway's redirect points, under this relay; None when it leaves the gateway."""
+    """Where a gateway's redirect points, under this relay; None when it leaves the gateway.
+
+    The browser resolves the Location against this hub, so its dot segments are resolved here first,
+    against the gateway: ``/../api/gateway/restart`` names the gateway's route, never this hub's.
+    A browser drops tabs and newlines from a URL and reads a backslash as a slash, so a Location
+    with those (or any whitespace or control character) is refused rather than reparsed."""
     if value.startswith(f"{row['url']}/") or value == row["url"]:
         value = value[len(row["url"]):] or "/"
-    if value.startswith("/") and not value.startswith("//") and "\\" not in value:
-        return f"{base}{value}"
-    return None
+    if (not value.startswith("/") or value.startswith("//") or "\\" in value
+            or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value)):
+        return None
+    end = min((i for i in (value.find("?"), value.find("#")) if i >= 0), default=len(value))
+    return f"{base}{_without_dot_segments(value[:end])}{value[end:]}"
 
 
 @router.api_route(_PREFIX + "{gateway_id}/{path:path}", methods=_METHODS)

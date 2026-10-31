@@ -72,6 +72,30 @@ async def test_a_label_that_is_not_a_known_alias_still_refuses_the_source_field(
     authority.db.close()
 
 
+@pytest.mark.asyncio
+async def test_a_blank_or_absent_label_creates_the_gui_surface(tmp_path, monkeypatch):
+    """A client that leaves the creation label blank means the surface it is on.
+
+    ``{"source": ""}`` (and an explicit ``null``) used to reach the policy as an unknown surface —
+    ``not a surface: ''`` — so a create that named no label was refused with a ``4001`` the client
+    could not act on. Both spellings now land on the ``gui`` surface, the same one ``desktop``
+    aliases, while an unknown NON-empty label still refuses.
+    """
+    authority, _store = await _authority(tmp_path, monkeypatch)
+    conn = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'owner'})
+    reference = await _create(conn, authority, 'gui', 'reference')
+    for index, label in enumerate(('', None)):
+        created = await conn.dispatch({'id': f'blank-{index}', 'method': 'session.create', 'params': {
+            'request_id': f'blank-{index}', 'source': label,
+            'cwd': str(Path(authority.db.db_path).parent)}})
+        assert 'result' in created, created
+        sid = created['result']['stored_session_id']
+        assert authority.db.get_session(sid)['source'] == authority.db.get_session(reference)['source']
+        assert authority.sessions[sid].source.platform == authority.sessions[reference].source.platform
+    await conn.close()
+    authority.db.close()
+
+
 def test_build_policy_normalizes_the_alias_into_the_gui_launch(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     from gateway.session_policy import build_policy

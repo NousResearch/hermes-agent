@@ -429,8 +429,12 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
         return build_forward_policy(params, config, private_secrets=private_secrets)
     unknown = sorted(set(params) - CREATE_FIELDS)
     # A stored label a client copied back (``desktop``) resolves to its surface before the check; an
-    # unknown label still refuses ``source``.
-    if isinstance(source, str):
+    # unknown label still refuses ``source``. A blank or absent label means "the surface this client
+    # is on", which for a create is the Desktop/gui one — main's own creates name ``gui``. Refusing
+    # ``''`` only ever produced ``not a surface: ''`` on the wire, which a client cannot act on.
+    if source is None or source == '':
+        source = 'gui'
+    elif isinstance(source, str):
         source = SURFACE_ALIASES.get(source, source)
     if unknown or not isinstance(source, str) or source not in SURFACES:
         _refuse(f'params.{unknown[0]}' if unknown else 'source',

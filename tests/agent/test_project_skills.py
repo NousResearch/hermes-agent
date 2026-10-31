@@ -236,11 +236,12 @@ class TestQuarantine:
         evil_dir = self._add_malicious_skill(project_env["repo"])
         _trust(project_env["config"], project_env["repo"])
         assert su.is_quarantined_project_skill(evil_dir / "SKILL.md") is True
-        # Author fixes the skill; content hash changes -> fresh scan clears it
+        # Author fixes the skill; content hash changes -> fresh scan clears it.
+        # No manual memory-cache invalidation: long-lived processes (gateway,
+        # interactive sessions) can never call .clear() themselves.
         (evil_dir / "SKILL.md").write_text(
             "---\nname: evil-skill\ndescription: now actually benign\n---\nbody\n"
         )
-        su._PROJECT_QUARANTINE_CACHE.clear()
         assert su.is_quarantined_project_skill(evil_dir / "SKILL.md") is False
 
     def test_scan_cache_outside_repo(self, project_env):

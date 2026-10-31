@@ -352,6 +352,7 @@ class GatewayTurnProgressMixin:
     @dataclasses.dataclass
     class _TaskCardState:
         """Task-card rail state for ``_send_native_task_card_progress``."""
+        _WINDOW_SIZE = 8
         adapter: Any
         tasks: dict[str, dict[str, str]] = dataclasses.field(default_factory=dict)
         task_order: list[str] = dataclasses.field(default_factory=list)
@@ -365,6 +366,7 @@ class GatewayTurnProgressMixin:
         # dynamically so the state is visible where it lives.
         publication_suppressed: bool = False
         anonymous_seq: int = 0
+        unpublished_ids: set[str] = dataclasses.field(default_factory=set)
 
         @staticmethod
         def _compact(value: Any, limit: int = 120) -> str:
@@ -372,7 +374,16 @@ class GatewayTurnProgressMixin:
             return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
 
         def visible_tasks(self) -> list[dict[str, str]]:
-            return [self.tasks[task_id] for task_id in self.task_order[-8:]]
+            return [self.tasks[task_id] for task_id in self.task_order[-self._WINDOW_SIZE:]]
+
+        def tasks_to_publish(self) -> list[dict[str, str]]:
+            # The card shows the newest tasks, but a change to an older one must still reach it
+            # once, or that task keeps its stale status on the card.
+            older = self.task_order[:-self._WINDOW_SIZE]
+            return [self.tasks[task_id] for task_id in older if task_id in self.unpublished_ids] + self.visible_tasks()
+
+        def mark_published(self) -> None:
+            self.unpublished_ids.clear()
 
         def fallback_text(self) -> str:
             labels = {"in_progress": t("gateway.progress.task_status_running"),
@@ -397,6 +408,7 @@ class GatewayTurnProgressMixin:
                 self.anonymous_seq += 1
                 call_id = f"anonymous_{self.anonymous_seq}"
             tool_name = str(raw.get("tool_name") or "tool")
+            self.unpublished_ids.add(call_id)
             if event_type == "tool.started":
                 preview = self._compact(raw.get("preview"), 64)
                 self._upsert(call_id, f"{tool_name} - {preview}" if preview else tool_name)
@@ -457,10 +469,11 @@ class GatewayTurnProgressMixin:
                 return
         if not st.native_failed:
             result = await st.adapter.send_native_task_card_progress(
-                chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title=t("gateway.progress.task_card_title"),
+                chat_id=ctx.source.chat_id, tasks=st.tasks_to_publish(), title=t("gateway.progress.task_card_title"),
                 reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata, fallback_text=st.fallback_text(),
             )
             if getattr(result, "success", False):
+                st.mark_published()
                 return
             # P5(b): an AUTHORIZATION decline is not a broken card lane. The
             # fallback below sends the same task text to the same chat, which

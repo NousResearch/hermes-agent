@@ -341,7 +341,8 @@ def _approval_body(cmd: str, desc: str, *, always: bool = False) -> list:
     body = []
     if cmd or always:
         body.append(TextBlock(text=f"⚠️ {t('gateway.exec_approval.header')}", wrap=True, weight="Bolder"))
-        body.append(TextBlock(text=f"```\n{cmd}\n```", wrap=True))
+        from gateway.stream_consumer_fences import escape_code_fences_for_display
+        body.append(TextBlock(text=f"```\n{escape_code_fences_for_display(cmd)}\n```", wrap=True))
     if desc or always:
         body.append(TextBlock(text=f"{t('gateway.exec_approval.reason_label')}: {desc}", wrap=True, isSubtle=True))
     return body

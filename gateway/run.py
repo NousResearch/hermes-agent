@@ -591,12 +591,12 @@ def _redact_approval_command(cmd: str | None) -> str:
 def _format_exec_approval_fallback(
     command: str, description: str, command_prefix: str, *, allow_permanent: bool = True,
     allow_session: bool = True, smart_denied: bool = False) -> str:
-    """Render the text fallback from approval capabilities, not platform names. Same words as
-    the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
-    steps a surface without buttons needs."""
+    """Text fallback from approval capabilities, not platform names: the button card's words
+    (``BasePlatformAdapter._format_exec_approval``) plus the typed ``/approve`` steps."""
     from gateway.platforms.base_exec_approval import (
         approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line)
-    cmd_preview = BasePlatformAdapter._truncate_preview(command, BasePlatformAdapter._EA_CMD_BUDGET)  # as on a card
+    from gateway.stream_consumer_fences import escape_code_fences_for_display as _esc  # cmd can't close its fence
+    cmd_preview = _esc(BasePlatformAdapter._truncate_preview(command, BasePlatformAdapter._EA_CMD_BUDGET))  # as on a card
     heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
                else f"⚠️ **{ea_header_text()}**")
 

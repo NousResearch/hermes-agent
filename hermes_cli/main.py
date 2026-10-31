@@ -828,7 +828,7 @@ from hermes_cli.main_dashboard import (  # frozen updater surface: update_cmd*.p
 from hermes_cli.main_provider_setup import (
     _GENERIC_API_KEY_PROVIDERS,
     _aux_config_menu,
-    _build_provider_picker_rows,
+    _adopt_detected_pick, _build_provider_picker_rows,
     _clear_stale_openai_base_url,
     _is_profile_api_key_provider,
     _model_choice_save_count,
@@ -1968,7 +1968,7 @@ def _pick_provider(config, active, provider_labels, custom_provider_map):
         return None
     selected_key, group_label, selected_members = ordered[provider_idx]
     if not selected_members:
-        return selected_key
+        return _adopt_detected_pick(selected_key)
     # Default to the active member when it lives in this group. The group row
     # carries the descriptive text, so member rows show only their short label.
     member_idx = _prompt_provider_choice(

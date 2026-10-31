@@ -37,6 +37,8 @@ def create_overrides(params: dict) -> tuple:
 
     model = str(params.get("model") or "").strip()
     model_override = {"model": model, "provider": str(params.get("provider") or "").strip() or None} if model else None
+    if model_override and model_override["provider"]:
+        _adopt_detected_pick(model_override["provider"], params)
     reasoning_override = None
     if effort := str(params.get("reasoning_effort") or "").strip():
         with contextlib.suppress(Exception):
@@ -49,3 +51,20 @@ def create_overrides(params: dict) -> tuple:
     elif "fast" in params:
         service_tier_override = "priority" if is_truthy_value(params.get("fast")) else ""
     return model_override, reasoning_override, service_tier_override
+
+
+def _adopt_detected_pick(provider: str, params: dict) -> None:
+    """A composer pick of a ``Detected:`` local server row (``local-lmstudio``) is pinned on the new
+    chat without a ``/model`` switch, so nothing saved the server and the first turn died on an
+    unknown provider. Save it into the OWNING profile's ``providers:`` before the session builds,
+    the same entry ``switch_model`` writes; any other provider is left untouched."""
+    from hermes_cli.models_local_detect import PROVIDER_KEY_PREFIX, adopt_detected_provider
+
+    if not provider.lower().removeprefix("custom:").startswith(PROVIDER_KEY_PREFIX):
+        return
+    from hermes_cli.config import load_config
+
+    from .server import _profile_build_scope, _profile_home
+
+    with _profile_build_scope(_profile_home(str(params.get("profile") or "").strip() or None)):
+        adopt_detected_provider(provider, load_config().get("providers"))

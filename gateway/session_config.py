@@ -211,7 +211,7 @@ def _project(params, policy, cfg):
 
 
 async def model_options(connection, ref, params):
-    flags = {'explicit_only', 'include_unconfigured', 'refresh'}
+    flags = {'detect_local', 'explicit_only', 'include_unconfigured', 'refresh'}
     if (set(params) - flags - {'profile', 'session_id'}
             or any(type(params[k]) is not bool for k in flags & params.keys())):
         raise RuntimeStoreError('invalid_params')

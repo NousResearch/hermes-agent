@@ -24442,6 +24442,11 @@
             "default": false,
             "title": "Refresh",
             "type": "boolean"
+          },
+          "detect_local": {
+            "default": false,
+            "title": "Detect Local",
+            "type": "boolean"
           }
         },
         "title": "ModelOptionsParams",

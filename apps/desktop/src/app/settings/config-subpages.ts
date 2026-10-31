@@ -54,7 +54,7 @@ const CONFIG_SUBPAGE_DEFINITIONS: Record<string, ConfigSubpageDefinition[]> = {
     { id: 'checkpoints', labelKey: 'safetyCheckpoints', prefixes: ['checkpoints.'] }
   ],
   browser: [
-    { id: 'profile', labelKey: 'browserProfile', fields: ['browser.use_real_profile'] },
+    { id: 'profile', labelKey: 'browserProfile', fields: ['browser.use_real_profile', 'browser.real_profile_browser'] },
     {
       id: 'network',
       labelKey: 'browserNetwork',

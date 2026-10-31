@@ -2029,6 +2029,10 @@ export const en: Translations = {
         disabledTitle: 'Real-profile browsing off',
         disabledMessage: 'The profile snapshot will be deleted; new sessions use a clean browser.',
         failedSave: 'Could not save the real-profile setting',
+        browserLabel: 'Browser to copy from',
+        browserDescription: 'Which installed Chromium browser\'s profile is snapshotted. System default uses your OS default browser.',
+        browserSavedTitle: 'Real-profile browser saved',
+        browserSavedMessage: 'New sessions will snapshot this browser\'s profile.',
         prompt: {
           title: 'Stay signed in to your sites',
           body: 'Let Hermes browse with a snapshot of your default browser profile, so sites open already signed in.',

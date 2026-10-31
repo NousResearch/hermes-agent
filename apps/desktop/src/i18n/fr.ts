@@ -1204,7 +1204,8 @@ export const frOverrides = {
       browser: {
         allowPrivateUrls: 'Adresses web privées du navigateur',
         autoLocalForPrivateUrls: 'Navigateur local pour les adresses web privées',
-        useRealProfile: 'Utiliser mon vrai profil de navigateur'
+        useRealProfile: 'Utiliser mon vrai profil de navigateur',
+        realProfileBrowser: 'Navigateur du profil réel'
       },
       checkpoints: {
         enabled: 'Points de contrôle de fichiers',
@@ -1344,7 +1345,9 @@ export const frOverrides = {
       timezone: 'Identifiant de fuseau horaire IANA. Si vide, utilise le fuseau horaire du système.',
       browser: {
         useRealProfile:
-          'La navigation locale utilise vos vraies connexions. Hermes copie le profil de votre navigateur par défaut (cookies, connexions, préférences) dans un instantané géré et le pilote avec son Chromium intégré — votre profil actif n’est jamais ouvert directement, et la copie est actualisée à chaque exécution. Permet aussi à l’agent d’ouvrir sur demande une session locale avec votre vrai profil, même si un backend de navigateur cloud est configuré. Seuls les navigateurs Chromium (Chrome, Edge, Brave, Brave Origin, Chromium) sont pris en charge ; un navigateur par défaut non Chromium échoue avec un message clair. Désactivé par défaut.'
+          'La navigation locale utilise vos vraies connexions. Hermes copie le profil de votre navigateur par défaut (cookies, connexions, préférences) dans un instantané géré et le pilote avec son Chromium intégré — votre profil actif n’est jamais ouvert directement, et la copie est actualisée à chaque exécution. Permet aussi à l’agent d’ouvrir sur demande une session locale avec votre vrai profil, même si un backend de navigateur cloud est configuré. Seuls les navigateurs Chromium (Chrome, Edge, Brave, Brave Origin, Chromium) sont pris en charge ; un navigateur par défaut non Chromium échoue avec un message clair. Désactivé par défaut.',
+        realProfileBrowser:
+          'Navigateur Chromium installé dont le profil réel est copié. Vide utilise le navigateur par défaut du système.'
       },
       agent: {
         imageInputMode: 'Contrôle la façon dont les pièces jointes image sont envoyées au modèle.',
@@ -2398,6 +2401,10 @@ export const frOverrides = {
         disabledMessage:
           "L'instantané du profil sera supprimé ; les nouvelles sessions utiliseront un navigateur vierge.",
         failedSave: "Impossible d'enregistrer le paramètre du profil réel",
+        browserLabel: 'Navigateur source',
+        browserDescription: 'Le navigateur Chromium installé dont le profil est copié. Par défaut du système utilise le navigateur par défaut de votre OS.',
+        browserSavedTitle: 'Navigateur du profil réel enregistré',
+        browserSavedMessage: 'Les nouvelles sessions copieront le profil de ce navigateur.',
         prompt: {
           title: 'Restez connecté à vos sites',
           body: "Autorisez Hermes à naviguer avec un instantané de votre profil de navigateur par défaut afin que les sites s'ouvrent avec vos sessions déjà connectées.",

@@ -229,6 +229,16 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
   }
 ]
 
+// Product names for `browser.real_profile_browser` keys (hermes_cli/browser_connect.py::_BROWSERS).
+// Brand names stay untranslated; '' (system default) is labelled via i18n.
+export const REAL_PROFILE_BROWSER_LABELS: Record<string, string> = {
+  chrome: 'Google Chrome',
+  chromium: 'Chromium',
+  brave: 'Brave',
+  'brave-origin': 'Brave Origin',
+  edge: 'Microsoft Edge'
+}
+
 // Schema-side select overrides for desktop-relevant enum fields whose
 // backend schema only declares a string type.
 export const ENUM_OPTIONS: Record<string, string[]> = {
@@ -243,6 +253,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // per-request in web_server._schema_with_dynamic_provider_options), so
   // config-field consumes schema.options directly — a static list here would
   // shadow that and hide user-installed/pip providers (#49513).
+  // browser.real_profile_browser is likewise schema-served: the backend lists
+  // only the Chromium browsers installed on this machine (plus the saved value).
   // Terminal execution backends — kept in sync with the dispatch ladder in
   // tools/terminal_tool.py::_create_environment (local/docker/singularity/
   // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).
@@ -472,7 +484,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   browser: {
     allowPrivateUrls: 'Browser Private URLs',
     autoLocalForPrivateUrls: 'Local Browser For Private URLs',
-    useRealProfile: 'Use My Real Browser Profile'
+    useRealProfile: 'Use My Real Browser Profile',
+    realProfileBrowser: 'Real Profile Browser'
   },
   checkpoints: {
     enabled: 'File Checkpoints',
@@ -621,7 +634,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   timezone: 'IANA timezone identifier. Blank uses the system timezone.',
   browser: {
     useRealProfile:
-      "Local browsing uses your real logins. Hermes copies your default browser's profile (cookies, logins, preferences) into a managed snapshot and drives it with its packaged Chromium — your live profile is never opened directly, and the copy is refreshed from it on each run. Also lets the agent open a local real-profile session on request even when a cloud browser backend is configured. Only Chromium browsers (Chrome, Edge, Brave, Brave Origin, Chromium) are supported; a non-Chromium default fails with a clear message. Off by default."
+      "Local browsing uses your real logins. Hermes copies your default browser's profile (cookies, logins, preferences) into a managed snapshot and drives it with its packaged Chromium — your live profile is never opened directly, and the copy is refreshed from it on each run. Also lets the agent open a local real-profile session on request even when a cloud browser backend is configured. Only Chromium browsers (Chrome, Edge, Brave, Brave Origin, Chromium) are supported; a non-Chromium default fails with a clear message. Off by default.",
+    realProfileBrowser:
+      'Which installed Chromium browser the real profile is copied from. Blank uses your OS default browser, so you can keep a non-Chromium default (e.g. Firefox) and still copy Chrome.'
   },
   agent: {
     imageInputMode: 'Controls how image attachments are sent to the model.',
@@ -768,7 +783,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'browser',
     label: 'Browser',
     icon: Globe,
-    keys: ['browser.use_real_profile', 'browser.allow_private_urls', 'browser.auto_local_for_private_urls']
+    keys: ['browser.use_real_profile', 'browser.real_profile_browser', 'browser.allow_private_urls', 'browser.auto_local_for_private_urls']
   },
   {
     id: 'memory',

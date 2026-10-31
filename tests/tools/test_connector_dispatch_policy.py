@@ -19,17 +19,24 @@ def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blo
     rewritten = "connectors__slack__POST_MESSAGE"
     calls = [{"name": name, "arguments": {"body": "original"}} for name in (denied, rewritten)]
     events = []
+    post_events = []
+    gateway_key = "agent:default:discord:dm:fixture"
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: name == "post_tool_call")
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook",
+                        lambda name, **kw: post_events.append(kw) or [])
     wire = []
 
     def request(**kw):
         events.append(("request", kw["tool_name"]))
         assert kw["args"] == {"body": "original"}
+        assert kw["gateway_session_key"] == gateway_key
         assert kw["session_id"] == "policy-session"
         return {"args": {"body": "request-rewrite"}, "source": "test-policy"}
 
     def hook(name, args, **kw):
         events.append(("hook", name))
         assert args == {"body": "request-rewrite"}
+        assert kw["gateway_session_key"] == gateway_key
         assert kw["middleware_trace"] == [{"source": "test-policy"}]
         assert kw["tool_call_id"] == f"policy-call#{[denied, rewritten].index(name)}"  # each entry is its own call
         if name == denied and blocked_by == "hook":
@@ -40,6 +47,7 @@ def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blo
         events.append(("execution", kw["tool_name"]))
         assert kw["args"] == {"body": "hook-rewrite"}
         assert kw["original_args"] == {"body": "original"}
+        assert kw["gateway_session_key"] == gateway_key
         assert kw["session_id"] == "policy-session"
         if kw["tool_name"] == denied:
             return json.dumps({"error": {"code": "POLICY_DENIED", "message": "execution denied", "policy": "no-mail"}})
@@ -55,7 +63,7 @@ def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blo
             return [{"data": "remote-ok", "error": None} for _ in planned]
 
     monkeypatch.setattr(bridge, "_default_client_factory", lambda call=None: Client())
-    kwargs = dict(enabled_toolsets=["connections"], session_id="policy-session", tool_call_id="policy-call",
+    kwargs = dict(gateway_session_key=gateway_key, enabled_toolsets=["connections"], session_id="policy-session", tool_call_id="policy-call",
                   skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
                   skip_tool_execution_middleware=True)
     result = json.loads(model_tools.handle_function_call("tool_call", {"calls": calls}, **kwargs))
@@ -71,9 +79,16 @@ def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blo
     assert events == expected_denied + [(phase, rewritten) for phase in ("request", "hook", "execution")]
     assert result["total_count"] == 2 and result["success_count"] == result["error_count"] == 1
 
+    assert [kw["tool_name"] for kw in post_events] == [denied, rewritten, "tool_call"]
+    assert all(kw["gateway_session_key"] == gateway_key and kw["session_id"] == "policy-session"
+               and kw["tool_call_id"] == call_id
+               for kw, call_id in zip(post_events, ["policy-call#0", "policy-call#1", "policy-call"]))
+    post_events.clear()
     wire.clear()
     result = json.loads(model_tools.handle_function_call("tool_call", {"calls": calls[:1]}, **kwargs))
     assert result["error_count"] == 1
+    assert [kw["tool_name"] for kw in post_events] == [denied, "tool_call"]
+    assert all(kw["gateway_session_key"] == gateway_key for kw in post_events)
     assert not wire  # An entirely blocked batch never constructs/sends an execute request.
 
 

@@ -77,6 +77,12 @@ FAL_FAMILIES: dict[str, dict[str, Any]] = {
     "flux-3": _family("FLUX 3 (via FAL)", "~60-120s", "premium", "Black Forest Labs frontier video. Native audio, 5-20s, 8 aspect ratios.",
                       "blackforestlabs/flux-3/text-to-video", "blackforestlabs/flux-3/image-to-video", duration_int=True,  # enum "auto" | 5..20 ints
                       aspect_ratios=("21:9", "2:1", "16:9", "4:3", "1:1", "3:4", "9:16"), resolutions=("720p", "1080p"), durations=(5, 20), audio=True),
+    # fal's post-train of FLUX 3: plain integer duration enum 5..20 (no "auto"), declares `seed` on both endpoints (base FLUX 3
+    # doesn't), i2v keeps aspect_ratio. reasoning_level (prompt expansion, default "high") and i2v end_image_url stay endpoint-default.
+    "flux-3-max": _family("FLUX 3 Max (fal post-train)", "~30-90s", "premium", "fal's post-trained FLUX 3. Stronger prompt adherence and "
+                          "visuals at lower latency, native audio, 5-20s, 720p/1080p.", "blackforestlabs/flux-3-max/text-to-video",
+                          "blackforestlabs/flux-3-max/image-to-video", duration_int=True, aspect_ratios=("21:9", "2:1", "16:9", "4:3", "1:1", "3:4", "9:16"),
+                          resolutions=("720p", "1080p"), durations=(5, 20), audio=True, seed=True),
     "grok-imagine-1.5": _family("Grok Imagine 1.5 (via FAL)", "~30-90s", "premium", "xAI. Fast stylized video with audio, 1-15s, cheap per second.",
                                 "xai/grok-imagine-video/v1.5/text-to-video", "xai/grok-imagine-video/v1.5/image-to-video", duration_int=True,
                                 image_drop_keys=("aspect_ratio",), aspect_ratios=("16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16"),  # aspect is t2v-only

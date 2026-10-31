@@ -1,11 +1,9 @@
 # Local catalog entry (not Nous-reviewed — added for this installation only).
 # Wraps the Ozon Seller API (api-seller.ozon.ru) and Performance API
-# (api-performance.ozon.ru) as MCP tools: 222 documented endpoints across
-# 18 categories (products, prices/stocks, analytics, finance, reviews,
-# rating, seller info, FBS/FBO postings, FBP, carriage, returns, orders,
-# delivery, documents, polygon, digital postings, ads). Business-logic
-# guidance for which API/report to use lives separately in the ozon-*
-# Hermes skills (unchanged by this connector).
+# (api-performance.ozon.ru) as 222 MCP tools, one per documented endpoint
+# (31 real, 191 explicit not_implemented stubs -- see server/README.md).
+# Business-logic guidance for which API/report to use lives separately in
+# the ozon-* Hermes skills (unchanged by this connector).
 manifest_version: 1
 
 name: ozon
@@ -53,9 +51,10 @@ post_install: |
   Performance API credentials: Реклама (Performance) cabinet -> API section.
   All four are prompted above and saved to .env; no separate login step.
 
-  Call ozon_list_endpoints() first to see the 18 categories, then
-  ozon_list_endpoints(category) for exact paths before calling
-  ozon_seller_call / ozon_performance_call.
+  222 tools, one per endpoint, prefixed "ozon_<version>_<path>" (e.g.
+  ozon_v3_product_list). 31 are real; the other 191 return
+  {"status": "not_implemented"} immediately -- their request schema isn't
+  confirmed yet, see server/README.md before trying to use one.
 
   Business-scope guidance (which API/report fits a task) is in the ozon-*
   Hermes skills; call this connector's tools directly once installed.

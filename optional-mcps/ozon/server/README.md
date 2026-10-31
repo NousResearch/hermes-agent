@@ -6,38 +6,43 @@ Catalog metadata is in `../manifest.yaml`.
 
 Business-logic guidance for which Ozon API/report covers what stays in the
 existing `ozon-*` Hermes skills (category `ozon`) — **unchanged by this
-connector**. This server is pure transport: auth + whitelisted HTTP calls.
+connector**. This server is pure transport: auth + HTTP calls.
 
-## Design: category tools, not one tool per endpoint
+## Design: one tool per documented endpoint (222 tools)
 
-The Seller + Performance APIs span **222 documented endpoints across 18
-categories** (products, prices/stocks, analytics, finance, reviews, rating,
-seller info, FBS postings, FBO postings, FBP, carriage, returns, orders,
-delivery, documents, polygon, digital postings, ads). Hand-writing one
-Python function per endpoint would be unmaintainable, so each category gets
-one generic tool instead:
+Matches the industry pattern for large API surfaces instead of a few wide
+generic "call" tools — e.g. Cloudflare's official MCP catalog entry ships
+~3,300 one-tool-per-OpenAPI-operation tools. Named, individually typed tools
+beat a generic `call(endpoint, body)` wrapper because the model's tool-call
+validation happens per-function (real parameter names/types in the schema)
+instead of on a free-form dict it has to assemble correctly by hand.
 
-- `ozon_list_endpoints(category?)` — discover exact paths + descriptions
-  before calling (never guess a path).
-- `ozon_seller_call(category, endpoint, body?, params?)` — call any
-  Seller API endpoint; `endpoint` is checked against a whitelist built from
-  the real documentation, an unknown path is rejected rather than attempted.
-- `ozon_performance_call(endpoint, body?, params?)` — same, for the
-  Performance (ads) API.
+Of the 222 endpoints:
 
-The endpoint registry (paths, methods, descriptions, "write" flags) was
-built from:
-- `ozon-api-overview/references/api.md` (190 misc Seller API methods:
-  FBS/FBO postings, returns, carriage, FBP, documents, polygon, orders)
-- `ozon-seller-skill/references/{products,finance,analytics,reviews,
-  sellerrating,sellerinfo,practice}.md` (the already-proven, body-shape-
-  confirmed subset used by that skill's `scripts/*.py`)
-- `ozon-ads-performance/references/` and its working scripts (Performance
-  API campaigns/budget/stats)
+- **31 are REAL implementations** with typed, named parameters, built from a
+  confirmed request schema: `ozon-seller-skill/references/{products,finance,
+  analytics,reviews,sellerrating,sellerinfo,practice}.md` + its proven
+  `scripts/*.py`, and `ozon-ads-performance`'s working scripts.
+- **191 are explicit `not_implemented` stubs.** Their path/method/
+  description are real (from `ozon-api-overview/references/api.md`'s 190
+  misc Seller API methods — FBS/FBO postings, returns, carriage, FBP,
+  documents, polygon, orders), but no confirmed request body/params schema
+  exists yet. Calling one returns `{"status": "not_implemented", ...}`
+  **immediately, with no HTTP request sent** — the agent sees the tool
+  exists in `tools/list`, learns from the result that it can't be used yet,
+  and stops retrying with guessed fields instead of silently failing
+  against the real API (or worse, firing a malformed write at a destructive
+  endpoint like `carriage/cancel` or `return/giveout/barcode-reset`).
 
-Every path in the registry is real and documented — nothing invented.
-Extend `REGISTRY` in `ozon_mcp_server.py` only against a confirmed doc or
-script, never a guess.
+## Upgrading a stub to real
+
+Confirm the exact request schema against Ozon's official docs
+(`docs.ozon.ru/api/seller`) or a newly-tested script, then replace that one
+function body in `ozon_mcp_server.py` — never guess a field name into an
+existing stub. The function name already matches the endpoint
+(`method`+`path` → `ozon_<version>_<path_segments>`, with a `_get`/`_put`
+suffix only where two methods share one path, e.g.
+`ozon_api_client_campaign_id_get` / `_put`).
 
 ## Setup
 
@@ -57,21 +62,22 @@ directory. If you move the venv, update the manifest's `command` path.
 
 - **Seller API**: `Client-Id` + `Api-Key` headers, from
   `OZON_API_KEY` / `OZON_CLIENT_ID` (Seller personal account → Settings →
-  API keys). No login tool needed — every `ozon_seller_call` just sends the
-  headers.
+  API keys). No login tool needed — every Seller tool just sends the headers.
 - **Performance API**: OAuth2 `client_credentials`, from
   `OZON_PERFORMANCE_CLIENT_ID` / `OZON_PERFORMANCE_CLIENT_SECRET` (Реклама →
   API). Token is fetched and cached in-process (~30 min TTL) automatically
-  on first `ozon_performance_call` — no separate login tool.
+  on first ads-tool call — no separate login tool.
 
 The catalog install flow prompts for all four values and saves them to
 `~/.hermes/.env`.
 
-## Write endpoints
+## Write tools
 
-A handful of endpoints change live data (`/v3/product/import`,
-`/v2/review/change-status`, `PUT /api/client/campaign/{id}`) and are marked
-`"note": "write"` in the registry. Per the shop's standing rule (see
+A handful of real (non-stub) tools change live data — `ozon_v3_product_import`,
+`ozon_v2_review_change_status`, `ozon_api_client_campaign_id_put` — and are
+marked **WRITE** in their docstring. Per the shop's standing rule (see
 `ozon-api-overview`): show the current/proposed value and wait for explicit
 confirmation before calling one — this connector does not enforce that
-itself, it's the calling agent's responsibility.
+itself, it's the calling agent's responsibility. A number of the 191 stubs
+are also destructive writes (cancel, delete, create) once implemented — the
+same rule will apply to them.

@@ -200,8 +200,14 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
             if booked is not None:
                 booked.append(charge)
         return None
-    logger.info("MCP trust gate: user %s '%s' on %s server '%s'", "cancelled" if answer == "cancel" else "denied",
+    logger.info("MCP trust gate: approval %s for '%s' on %s server '%s'", "unanswered" if answer == "cancel" else "denied",
                 tool_name, "untrusted" if gated else "spend-limited", server_name)
+    if answer == "cancel":
+        budget = f" {charge.refusal(spent)}" if over and charge is not None else ""
+        return tool_error(f"MCP tool '{tool_name}' on server '{server_name}' was NOT run: no approval answer "
+                          "was received. The prompt could not be delivered, had no client able to answer, "
+                          "or ended unanswered; this is not a user refusal. Ask the user to use an interactive "
+                          f"approval surface. Do not retry without explicit user direction.{budget}")
     if over and charge is not None:
         return tool_error(charge.refusal(spent))
     return tool_error(f"The user did not approve running write-capable MCP tool '{tool_name}' on untrusted server "

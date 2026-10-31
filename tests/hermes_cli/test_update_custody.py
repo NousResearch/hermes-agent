@@ -749,3 +749,70 @@ def test_the_windows_build_launcher_returns_at_once_when_nothing_was_left(monkey
     events = _run_join_launcher(monkeypatch, stray_polls=0)
     assert [e[0] for e in events if e[0] == "QueryInformationJobObject"] == ["QueryInformationJobObject"]
     assert events[-1] == ("exit", 3), events
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass  # runs the custody launcher against a tmp_path checkout, never a real one
+def test_a_sigquit_reaching_the_launcher_is_relayed_like_sigterm(repo, tmp_path, monkeypatch):
+    """#137413: the custodian is a fork() child that never exec's, so a SIGQUIT left at its
+    default disposition kills it in place — and on macOS that death ("child side of fork
+    pre-exec") makes CrashReporter file a report per kill. The stand-in must relay SIGQUIT to
+    the custodian, which forwards it to the command and settles the tree: the launcher stays
+    alive until the custody is done and passes the command's signal exit code through."""
+    import signal
+    import threading
+
+    from hermes_cli.source_build import run_source_script
+
+    quit_sig = signal.SIGQUIT  # windows-footgun: ok - POSIX-only test
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    node = bin_dir / "node"
+    node.write_text("#!/bin/sh\nexec sleep 60\n", encoding="utf-8")
+    node.chmod(0o755)
+    lock = ul.UpdateLock(path=tmp_path / "marker", install_root=repo)
+    assert lock.acquire(), "the checkout lock the custody launcher donates must be held"
+
+    def quit_the_launcher() -> None:
+        import psutil
+
+        from tests.waiting import wait_until
+
+        confirmed: list[int] = []
+
+        def the_ready_launcher():
+            try:
+                children = psutil.Process().children()
+            except Exception:
+                return None
+            for child in children:
+                try:
+                    cmdline = child.cmdline()
+                except Exception:
+                    continue
+                # the custodian has forked and spawned the monitored command; a second
+                # matching poll covers the statements between that spawn and its forwarders
+                if "-I" in cmdline and "-S" in cmdline and child.children():
+                    if confirmed and confirmed[0] == child.pid:
+                        return child
+                    confirmed[:] = [child.pid]
+            return None
+
+        launcher = wait_until(the_ready_launcher, timeout=15,
+                              what="the custody launcher and its forked custodian")
+        try:
+            launcher.send_signal(quit_sig)
+        except Exception:
+            pass
+
+    sender = threading.Thread(target=quit_the_launcher, daemon=True)
+    sender.start()
+    try:
+        with pytest.raises(subprocess.CalledProcessError) as finished:
+            run_source_script(repo, "build.mjs",
+                              env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
+                              label="probe")
+    finally:
+        lock.release()
+    assert finished.value.returncode == 128 + quit_sig, \
+        "the launcher itself died of the SIGQUIT instead of relaying it to the command"

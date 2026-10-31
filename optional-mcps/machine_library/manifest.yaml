@@ -22,14 +22,13 @@ auth:
   # metadata advertise the single `search` scope. The MCP SDK selects that
   # discovered scope automatically, so no provider-specific override is needed.
 
-# Enable the four composable retrieval tools so Hermes can search, fetch, and
+# Enable the three composable retrieval tools so Hermes can search, fetch, and
 # inspect source material directly. The higher-level machinelibrary_research
 # agent remains available through `hermes mcp configure machine_library`, but
 # is intentionally not enabled by default.
 tools:
   default_enabled:
-    - machinelibrary_search_documents
-    - machinelibrary_search_social
+    - machinelibrary_search
     - machinelibrary_fetch_document
     - machinelibrary_search_in_document
 
@@ -55,8 +54,9 @@ post_install: |
   (or run `hermes mcp login machine_library`). Approve access, then restart the
   session so the selected tools load.
 
-  The four retrieval tools are enabled by default: scholarly document search,
-  social search, bounded full-text fetch, and in-document passage search. They
+  The three retrieval tools are enabled by default: one search over papers,
+  books, patents, Wikipedia and Reddit, Telegram and Discord discussion, a
+  bounded full-text fetch, and in-document passage search. They
   return compact results and canonical source URIs so Hermes can inspect and
   cite the underlying material directly. Usage consumes prepaid API credits;
   create or fund an account at https://machinelibrary.ai.

@@ -27,6 +27,19 @@ class TestHandleFunctionCall:
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
 
+    def test_parent_agent_reaches_registry_dispatch(self):
+        """The plugin contract documents ``parent_agent`` as an injectable handler
+        kwarg (registry.dispatch filters it by signature), so the model-driven
+        path has to forward it instead of dropping it."""
+        agent = object()
+        with patch("model_tools.registry.dispatch", return_value='{"ok":true}') as mock_dispatch:
+            handle_function_call("web_search", {"q": "test"}, task_id="t1", parent_agent=agent)
+            handle_function_call("web_search", {"q": "test"}, task_id="t1")
+
+        with_agent, without_agent = (c.kwargs for c in mock_dispatch.call_args_list)
+        assert with_agent["parent_agent"] is agent
+        assert "parent_agent" not in without_agent
+
 
 
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):
@@ -509,6 +522,17 @@ class TestBridgeDispatch:
             out = handle_function_call("tool_call", {"name": "mcp_x"}, task_id="t")
         assert json.loads(out) == {"ok": True}
         assert disp.call_args.args[0] == "mcp_x" and disp.call_args.args[1] == {"a": 1}
+
+    def test_tool_call_bridge_forwards_parent_agent_to_underlying_dispatch(self):
+        import tools.tool_search as ts
+        agent = object()
+        with patch("model_tools.get_tool_definitions", return_value=[]), \
+             patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
+             patch.object(ts, "scoped_deferrable_names", return_value=frozenset({"mcp_x"})), \
+             patch.object(ts, "validate_deferred_call_args", return_value=None), \
+             patch("model_tools.registry.dispatch", return_value='{"ok": true}') as disp:
+            handle_function_call("tool_call", {"name": "mcp_x"}, task_id="t", parent_agent=agent)
+        assert disp.call_args.kwargs["parent_agent"] is agent
 
 
 # ==================================================================

@@ -94,8 +94,9 @@ _monitor_stop = threading.Event()
 _LIVE_STATES = {"running", "stalling", "finalizing"}
 _ACTIVE_STATES = ("running", "stalling")
 # Routing origin persisted at dispatch so a restart-recovered completion can
-# reconstruct a full SessionSource (scope_id drives relay tenant egress).
-_ROUTING_KEYS = ("scope_id", "user_id", "user_name")
+# reconstruct a full SessionSource (scope_id drives relay tenant egress,
+# parent_chat_id the Discord thread's parent channel).
+_ROUTING_KEYS = ("scope_id", "parent_chat_id", "user_id", "user_name")
 # Structured stall metadata — additive, present only on stall finalizations.
 _STALL_META_KEYS = ("stalled_after_quiet_seconds", "stall_threshold_seconds", "stall_phase", "stall_grace_seconds")
 # Private stall bookkeeping on the record -> public field in list_async_delegations().

@@ -550,6 +550,10 @@ def test_active_pr_guard_holds_through_same_profile_reassign_and_unassign(
 
     monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
     monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {})
+    monkeypatch.setattr(
+        "hermes_cli.kanban_pr_acceptance.referenced_pr_is_active",
+        lambda _url: None,
+    )
     pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="same assign", assignee="dev")

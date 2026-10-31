@@ -4,8 +4,10 @@ import { useCallback } from 'react'
 import { refChipLabel } from '@/components/assistant-ui/directive-text'
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { HermesGateway } from '@/hermes'
+import { sessionTitle } from '@/lib/chat-runtime'
 import { cachedPathCompletion, hasCachedPathCompletion } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
+import { $sessions } from '@/store/session'
 
 import type { ComposerAtCompletionSource } from '../contrib'
 import { COMPOSER_AREAS } from '../contrib'
@@ -14,10 +16,11 @@ import { completionOwner, completionOwnerKey, requestCompletion } from './comple
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
 import { useLiveCompletionAdapter } from './use-live-completion-adapter'
 
-const KIND_RE = /^@(file|folder|url|image|tool|git):(.*)$/
-const REF_STARTERS = new Set(['file', 'folder', 'url', 'image', 'tool', 'git'])
+const KIND_RE = /^@(file|folder|url|image|tool|git|session):(.*)$/
+const REF_STARTERS = new Set(['file', 'folder', 'url', 'image', 'tool', 'git', 'session'])
 // These bare tokens are context actions, not profile handles.
 const SIMPLE_CONTEXT_REFS = new Set(['@diff', '@staged'])
+const SESSION_COMPLETION_LIMIT = 15
 
 const STARTER_META: Record<string, string> = {
   file: 'Attach a file reference',
@@ -25,7 +28,66 @@ const STARTER_META: Record<string, string> = {
   url: 'Attach a URL reference',
   image: 'Attach an image reference',
   tool: 'Attach a tool reference',
-  git: 'Attach git context'
+  git: 'Attach git context',
+  session: 'reference session'
+}
+
+function sessionCompletionEntries(query: string, activeSessionId: string | null): CompletionEntry[] {
+  const q = normalize(query)
+
+  if (!q) {
+    return [{ text: '@session:', display: '@session:', meta: STARTER_META.session }]
+  }
+
+  const scoped = q.startsWith('session:')
+  const starterMatch = !scoped && 'session'.startsWith(q)
+  const needle = scoped ? q.slice('session:'.length).trim() : q.startsWith('session') ? q.slice('session'.length).trim() : ''
+
+  if (!scoped && !starterMatch) {
+    return []
+  }
+
+  const out: CompletionEntry[] = []
+
+  if (starterMatch && !scoped) {
+    out.push({ text: '@session:', display: '@session:', meta: STARTER_META.session })
+  }
+
+  if (scoped || q === 'session') {
+    const sessions = $sessions.get().filter(s => s.id && s.id !== activeSessionId)
+
+    const matches = (
+      needle
+        ? sessions.filter(s => {
+            const title = sessionTitle(s).toLowerCase()
+            const preview = (s.preview ?? '').toLowerCase()
+            const id = s.id.toLowerCase()
+            const profile = (s.profile ?? 'default').toLowerCase()
+
+            return (
+              title.includes(needle) ||
+              preview.includes(needle) ||
+              id.includes(needle) ||
+              `${profile}/${id}`.includes(needle)
+            )
+          })
+        : sessions
+    ).slice(0, SESSION_COMPLETION_LIMIT)
+
+    for (const s of matches) {
+      const profile = (s.profile ?? '').trim() || 'default'
+      const title = sessionTitle(s)
+      const preview = (s.preview ?? '').trim()
+
+      out.push({
+        text: `@session:${profile}/${s.id}`,
+        display: title,
+        meta: preview && preview !== title ? preview : `${profile}/${s.id.slice(0, 12)}`
+      })
+    }
+  }
+
+  return out
 }
 
 function starterEntries(query: string): CompletionEntry[] {
@@ -46,9 +108,16 @@ function mergeCompletionEntries(
   claimedHandles?: Set<string>
 ): CompletionEntry[] {
   const seenHandles = new Set<string>()
+  const seenExact = new Set<string>()
 
   return [...preferred, ...fallback].filter(entry => {
     const key = normalize(entry.text)
+
+    if (seenExact.has(key)) {
+      return false
+    }
+
+    seenExact.add(key)
 
     if (!/^@[^:\s]+$/.test(key) || SIMPLE_CONTEXT_REFS.has(key)) {
       return true
@@ -108,7 +177,11 @@ function classify(entry: CompletionEntry): {
       // invariant is held by deriving both ends from refChipLabel. Without
       // this the list said `desktop/`, the editor said `apps/desktop/`, and
       // the chip said `desktop` — three names for one folder.
-      display: rest ? refChipLabel(kind, rest) : textValue(entry.display, `@${kind}:`),
+      display: rest
+        ? kind === 'session' && typeof entry.display === 'string' && entry.display
+          ? entry.display
+          : refChipLabel(kind, rest)
+        : textValue(entry.display, `@${kind}:`),
       meta: textValue(entry.meta)
     }
   }
@@ -207,9 +280,15 @@ export function useAtCompletions(options: {
     async (query: string): Promise<CompletionPayload> => {
       const starters = starterEntries(query)
       const { entries: extras, claimedHandles } = contributedEntries(query)
+      const sessionRows = sessionCompletionEntries(query, sessionId)
+      const q = normalize(query)
+
+      if (q.startsWith('session:')) {
+        return { items: mergeCompletionEntries([...extras, ...sessionRows], [], claimedHandles), query }
+      }
 
       if (!gateway) {
-        return { items: mergeCompletionEntries(extras, starters, claimedHandles), query }
+        return { items: mergeCompletionEntries([...extras, ...sessionRows], starters, claimedHandles), query }
       }
 
       const word = REF_STARTERS.has(query) ? `@${query}:` : `@${query}`
@@ -236,9 +315,12 @@ export function useAtCompletions(options: {
         const items = result.items ?? []
         const base = items.length > 0 ? items : starters
 
-        return { items: mergeCompletionEntries(extras, base, claimedHandles), query }
+        return {
+          items: q ? mergeCompletionEntries([...extras, ...sessionRows], base, claimedHandles) : mergeCompletionEntries(extras, [...base, ...sessionRows], claimedHandles),
+          query
+        }
       } catch {
-        return { items: mergeCompletionEntries(extras, starters, claimedHandles), query }
+        return { items: mergeCompletionEntries([...extras, ...sessionRows], starters, claimedHandles), query }
       }
     },
     [cacheKey, contributedEntries, gateway, sessionId, cwd]
@@ -270,7 +352,10 @@ export function useAtCompletions(options: {
   // This is what makes walking a tree feel instant rather than merely fast:
   // the 60ms debounce exists to avoid a request per keystroke, and it buys
   // nothing when the answer is already in hand.
-  const isCached = useCallback((query: string) => hasCachedPathCompletion(cacheKey(query)), [cacheKey])
+  const isCached = useCallback(
+    (query: string) => normalize(query).startsWith('session:') || hasCachedPathCompletion(cacheKey(query)),
+    [cacheKey]
+  )
 
   return useLiveCompletionAdapter({ enabled, fetcher, isCached, toItem })
 }

@@ -22,7 +22,7 @@ We cover three backends:
 |---------|---------|---------|--------|
 | **llama.cpp** | `brew install llama.cpp` | Fastest time-to-first-token, quantized KV cache for low memory | GGUF |
 | **omlx** | [omlx.ai](https://omlx.ai) | Fastest token generation, native Metal optimization | MLX (safetensors) |
-| **vllm-metal** | [Installation guide](https://docs.vllm.ai/projects/vllm-metal/en/latest/installation/) | vLLM's serving API on Apple Silicon | MLX (safetensors) |
+| **vllm-metal** | [Installation guide](https://docs.vllm.ai/projects/vllm-metal/en/latest/installation/) | vLLM's serving API on Apple Silicon | MLX (safetensors), [GGUF](https://docs.vllm.ai/projects/vllm-metal/en/latest/gguf/) |
 
 All three expose an OpenAI-compatible `/v1/chat/completions` endpoint. Hermes works with any of them — just point it at `http://localhost:8080` or `http://localhost:8000`.
 

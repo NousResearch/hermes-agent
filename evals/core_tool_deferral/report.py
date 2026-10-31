@@ -27,13 +27,14 @@ for model in models:
     if not recs:
         continue
     tasks = sorted({r["task"] for r in recs})
-    print(f"\n{'='*100}\nMODEL: {model}   (runs: {len(recs)})\n{'='*100}")
+    arms = sorted({r["arm"] for r in recs})
+    print(f"\n{'='*100}\nMODEL: {model}   (runs: {len(recs)}, arms: {','.join(arms)})\n{'='*100}")
     hdr = f"{'task':<28} | {'arm':<4} | {'n':>1} | {'score':>10} | {'turns':>6} | {'tok(k)':>7} | {'wall':>6} | {'bridge':>6} | {'err':>3}"
     print(hdr)
     print("-" * len(hdr))
-    agg = {"base": {"s": [], "t": [], "k": [], "w": []}, "pr": {"s": [], "t": [], "k": [], "w": []}}
+    agg = {arm: {"s": [], "t": [], "k": [], "w": []} for arm in arms}
     for task in tasks:
-        for arm in ("base", "pr"):
+        for arm in arms:
             rs = [r for r in recs if r["task"] == task and r["arm"] == arm]
             if not rs:
                 continue
@@ -56,7 +57,7 @@ for model in models:
             if toks: agg[arm]["k"].append(statistics.mean(toks))
             if walls: agg[arm]["w"].append(statistics.mean(walls))
     print("-" * len(hdr))
-    for arm in ("base", "pr"):
+    for arm in arms:
         a = agg[arm]
         if a["s"]:
             print(f"{'MEAN-OF-TASK-MEANS':<28} | {arm:<4} |   | {statistics.mean(a['s']):>10.3f} | "

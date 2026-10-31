@@ -772,6 +772,7 @@ from hermes_cli.web_routers import (
     files as _files_routes,
     git as _git_routes,
     local_models as _local_models_routes,
+    omlx as _omlx_routes,
     status as _status_routes,
     actions as _actions_routes,
     audio as _audio_routes,
@@ -810,6 +811,7 @@ app.include_router(_upload_routes.router, dependencies=[_Depends(_route_on("brow
 app.include_router(_desktop_plugin_routes.router, dependencies=[_Depends(_route_on("desktop_plugins"))])
 app.include_router(_git_routes.router)
 app.include_router(_local_models_routes.router)
+app.include_router(_omlx_routes.router)
 app.include_router(_status_routes.router)
 app.include_router(_actions_routes.router)
 app.include_router(_audio_routes.router)

@@ -1,6 +1,21 @@
 import type { Translations } from './types'
 
 export const enLocalModels: Translations['settings']['localModels'] = {
+  engineChoice: 'Inference engine',
+  engineChoiceDetail: 'Choose an engine, then use a model below to make it the default for new chats.',
+  engineSwitchFailed: 'Could not switch inference engine',
+  engineStatusFailed: 'Could not load engine choices. Update the connected Hermes runtime and try again.',
+  omlxUnsupported: 'oMLX requires an Apple Silicon Mac.',
+  omlxInstalled: 'oMLX runtime installed',
+  omlxInstall: 'Install oMLX',
+  omlxDetail: 'Hermes installs and manages oMLX locally. It uses MLX models, not llama.cpp GGUF files.',
+  omlxActionFailed: 'oMLX action failed',
+  omlxNoModels: 'Download an MLX model to get started.',
+  omlxRepoLabel: 'Hugging Face model repository',
+  omlxRepoHint:
+    'Enter an MLX-format repository. Model files download to the managed oMLX folder; existing GGUF files stay untouched.',
+  omlxDownload: 'Download model',
+
   connectionChanged: 'Local models connection changed',
   title: 'Local Models',
   runtimeTitle: 'Local runtime',

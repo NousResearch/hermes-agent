@@ -3,6 +3,20 @@ import type { TranslationOverride } from '@hermes/shared/i18n'
 import type { Translations } from './types'
 
 export const zhLocalModels: TranslationOverride<Translations['settings']['localModels']> = {
+  engineChoice: '推理引擎',
+  engineChoiceDetail: '选择引擎，再将下方的模型设为新对话的默认模型。',
+  engineSwitchFailed: '无法切换推理引擎',
+  engineStatusFailed: '无法加载引擎选项。请更新所连接的 Hermes 运行时后重试。',
+  omlxUnsupported: 'oMLX 需要搭载 Apple Silicon 的 Mac。',
+  omlxInstalled: '已安装 oMLX 运行时',
+  omlxInstall: '安装 oMLX',
+  omlxDetail: 'Hermes 在本机安装并管理 oMLX。它使用 MLX 模型，而非 llama.cpp 的 GGUF 文件。',
+  omlxActionFailed: 'oMLX 操作失败',
+  omlxNoModels: '请先下载一个 MLX 模型。',
+  omlxRepoLabel: 'Hugging Face 模型仓库',
+  omlxRepoHint: '输入 MLX 格式的仓库。模型文件将下载到托管的 oMLX 文件夹，现有 GGUF 文件保持不变。',
+  omlxDownload: '下载模型',
+
   connectionChanged: '本地模型连接已更改',
   title: '本地模型',
   runtimeTitle: '本地运行时',

@@ -652,8 +652,13 @@ test('pathForRegistryBackendRequest uses the resolved registry backend scope', (
 test('a /api/profiles/<name>/… path already names its profile: no ambient scope is appended (#140791)', () => {
   for (const backend of [{ mode: 'local' }, { sharedPrimary: true }, { sharedRemote: true }]) {
     for (const ambient of ['default', '__all__', 'beta']) {
-      for (const path of ['/api/profiles/p2/soul', '/api/profiles/p2', '/api/profiles/p2/model',
-        '/api/profiles/projects/soul', '/api/profiles/sessions/soul']) {
+      for (const path of [
+        '/api/profiles/p2/soul',
+        '/api/profiles/p2',
+        '/api/profiles/p2/model',
+        '/api/profiles/projects/soul',
+        '/api/profiles/sessions/soul'
+      ]) {
         assert.equal(pathForRegistryBackendRequest(path, ambient, backend), path)
       }
 
@@ -666,13 +671,18 @@ test('a /api/profiles/<name>/… path already names its profile: no ambient scop
 
   assert.equal(pathWithProfileScope('/api/profiles/p2/soul', 'default'), '/api/profiles/p2/soul')
   // Method-aware: PATCH/DELETE of a profile NAMED active/import/sessions names that profile.
-  for (const [path, method] of [['/api/profiles/active', 'PATCH'], ['/api/profiles/import', 'DELETE'],
-    ['/api/profiles/sessions', 'DELETE']]) {
+  for (const [path, method] of [
+    ['/api/profiles/active', 'PATCH'],
+    ['/api/profiles/import', 'DELETE'],
+    ['/api/profiles/sessions', 'DELETE']
+  ]) {
     assert.equal(pathForRegistryBackendRequest(path, 'beta', { mode: 'local' }, method), path)
   }
 
-  assert.equal(pathForRegistryBackendRequest('/api/profiles/active', 'beta', { mode: 'local' }, 'GET'),
-    '/api/profiles/active?profile=beta')
+  assert.equal(
+    pathForRegistryBackendRequest('/api/profiles/active', 'beta', { mode: 'local' }, 'GET'),
+    '/api/profiles/active?profile=beta'
+  )
 })
 
 test('registry model reads and writes retain each profile on a shared local backend', () => {
@@ -951,6 +961,41 @@ test('resolveProfileApiRequest scopes destructive profile-owned routes to the sh
         requestMethod: method
       }),
       { backendProfile: null, requestPath: `${path}?profile=iris` }
+    )
+  }
+})
+
+test('oMLX profile controls share the host backend with explicit profile scope', () => {
+  for (const [method, action] of [
+    ['GET', 'status'],
+    ['POST', 'select'],
+    ['POST', 'server'],
+    ['POST', 'activate']
+  ]) {
+    const path = `/api/local-models/omlx/${action}`
+    for (const profile of ['default', 'iris']) {
+      assert.deepEqual(
+        resolveProfileApiRequest(profile, path, {
+          globalRemote: false,
+          profileRemoteOverride: false,
+          requestMethod: method
+        }),
+        { backendProfile: null, requestPath: `${path}?profile=${profile}` }
+      )
+    }
+  }
+})
+
+test('oMLX machine jobs start on the backend that owns job polling', () => {
+  for (const action of ['install', 'download']) {
+    const path = `/api/local-models/omlx/${action}`
+    assert.deepEqual(
+      resolveProfileApiRequest('iris', path, {
+        globalRemote: false,
+        profileRemoteOverride: false,
+        requestMethod: 'POST'
+      }),
+      { backendProfile: null, requestPath: path }
     )
   }
 })

@@ -1328,6 +1328,19 @@ export interface Translations extends NoticeTranslations {
     }
     model: ModelSettingsTranslations
     localModels: {
+      engineChoice: string
+      engineChoiceDetail: string
+      engineSwitchFailed: string
+      engineStatusFailed: string
+      omlxUnsupported: string
+      omlxInstalled: string
+      omlxInstall: string
+      omlxDetail: string
+      omlxActionFailed: string
+      omlxNoModels: string
+      omlxRepoLabel: string
+      omlxRepoHint: string
+      omlxDownload: string
       connectionChanged: string
       title: string
       runtimeTitle: string

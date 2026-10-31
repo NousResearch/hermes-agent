@@ -709,6 +709,10 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   'GET /api/portal',
   'GET /api/hermes/update/check',
   'POST /api/local-models/activate',
+  'GET /api/local-models/omlx/status',
+  'POST /api/local-models/omlx/select',
+  'POST /api/local-models/omlx/server',
+  'POST /api/local-models/omlx/activate',
   'GET /api/dashboard/themes',
   'PUT /api/dashboard/theme',
   'GET /api/dashboard/font',
@@ -740,6 +744,14 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
 
   if (LOCAL_PRIMARY_SCOPED_ROUTES.has(`${method} ${pathname}`)) {
     return true
+  }
+
+  // Machine-wide installs/downloads share the host's in-memory job registry.
+  if (
+    method === 'POST' &&
+    (pathname === '/api/local-models/omlx/install' || pathname === '/api/local-models/omlx/download')
+  ) {
+    return false
   }
 
   // Action-status polls MUST land on the same backend as the endpoints that
@@ -1043,8 +1055,10 @@ function pathWithProfileScope(path, profile, method?: string) {
 
   // A path that already names its profile never also carries the ambient one: the two disagree
   // whenever the sidebar is on another profile or "All profiles", and the gateway refuses the pair.
-  if (parsed.searchParams.has('profile')
-      || (profileRouteSuffix(parsed.pathname) && !profileCollectionRoute(parsed.pathname, method))) {
+  if (
+    parsed.searchParams.has('profile') ||
+    (profileRouteSuffix(parsed.pathname) && !profileCollectionRoute(parsed.pathname, method))
+  ) {
     return path
   }
 

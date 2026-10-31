@@ -40,6 +40,14 @@ Requests and handles may also arrive as mappings, including plugin-host wire rec
 Pass a handle back to `status`, `wait`, `cancel`, `steer`, `result`, or `reconnect`; malformed
 or forged handles return `UNKNOWN`/`UNKNOWN_HANDLE` and cannot access a child.
 
+Handle ownership follows the originating conversation across session-ID rotation: the original
+live parent object remains authorized, and a rebuilt parent can resolve the same durable session
+lineage through its `SessionDB`. This also applies to terminal result retrieval after the child
+object has been released. Handle fields and the capability are unchanged; callers must not rewrite
+the stored `parent_session_id`. A bound parent is still required. Branch/reset conversations,
+unrelated sessions and forged capabilities do not gain access. A parent without a durable session
+ID can use its handles only through its original live identity.
+
 `steer(handle, text)` queues text for the child's next iteration boundary and
 returns `True` while the child accepts steering. It returns `False` for empty
 text, unknown or forged handles, handles owned by another parent session, or a

@@ -248,6 +248,7 @@ display:
                              #   buttons — adds 1002 for terminal-side drag selection
                              #   all     — adds 1003 for hover (scrollbar paginate-on-hover,
                              #             link mouseenter, etc.)
+  inline_images: auto        # auto | kitty | unicode | off — see the CLI guide's "Inline Images"
 ```
 
 Runtime toggles:

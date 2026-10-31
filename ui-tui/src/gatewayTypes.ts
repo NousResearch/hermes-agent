@@ -211,6 +211,18 @@ export interface SetupStatusResponse {
   provider_configured?: boolean
 }
 
+// `image.render`: `kitty` → write `transmit` once, paint `placeholder` in
+// `color`; `unicode` → paint `cells`; `off` → nothing to show.
+export interface ImageRenderResponse {
+  cells?: number[][][]
+  color?: string
+  cols?: number
+  mode: 'kitty' | 'off' | 'unicode'
+  placeholder?: string[]
+  rows?: number
+  transmit?: string
+}
+
 export interface SystemBatteryResponse {
   available?: boolean
   category?: string

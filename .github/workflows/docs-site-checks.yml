@@ -66,3 +66,6 @@ jobs:
         # Same pattern Docusaurus uses internally (build:fast --locale en).
         run: npm run build:fast
         working-directory: website
+
+      - name: Check social card tags in the built HTML
+        run: python3 website/scripts/check_social_card.py website/build

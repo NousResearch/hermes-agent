@@ -441,6 +441,98 @@ def atomic_write_text(path: str | Path, content: str, *, encoding: str = "utf-8"
                   preserve_owner=preserve_mode, fsync_dir=fsync_dir)
 
 
+# errno values meaning "this filesystem cannot hard-link" (FAT/exFAT, some SMB/FUSE mounts) — not "the name is taken".
+_NO_HARDLINK_ERRNOS = frozenset({errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS, errno.EMLINK, errno.EINVAL})
+_NO_HARDLINK_WINERRORS = frozenset({1, 50})  # ERROR_INVALID_FUNCTION, ERROR_NOT_SUPPORTED
+
+
+def _file_signature(fd: int) -> tuple[int, int, int, int]:
+    st = os.fstat(fd)
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _create_text_in_place(path: Path, content: str, *, encoding: str, mode: int | None) -> tuple[int, int, int, int]:
+    """``O_EXCL`` create-and-write for filesystems without hard links: still exclusive, not crash-atomic."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)  # FileExistsError for anything there
+    created = os.fstat(fd)  # identity of the file this call made, still usable once the fd is closed
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as f:
+            if mode is not None and hasattr(os, "fchmod"):
+                with suppress(OSError):
+                    os.fchmod(f.fileno(), mode)
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+            return _file_signature(f.fileno())
+    except BaseException:
+        with suppress(OSError):  # a partial file of ours must not outlive the failure (never a foreign one)
+            if os.path.samestat(os.lstat(path), created):
+                os.unlink(path)
+        raise
+
+
+def atomic_create_text(path: str | Path, content: str, *, encoding: str = "utf-8", tmp_prefix: str = ".tmp_",
+                       mode: int | None = None) -> tuple[int, int, int, int]:
+    """Create *path* holding *content* — and never replace anything that is already there.
+
+    Unlike :func:`atomic_write_text` (``os.replace`` overwrites whatever is at *path*, so a file another
+    writer created a moment earlier is silently lost), the content is staged in a private temp file
+    beside *path* and published with ``os.link``, which fails with ``FileExistsError`` when *path*
+    exists in ANY form: regular file, directory, or symlink (live or dangling — it is never followed).
+    The parent directory must already exist; nothing is created or removed except this call's temp file.
+    *mode* is applied before publication, so *path* never shows a looser or tighter mode than asked;
+    ``None`` gives what ``open(path, "w")`` would (process umask).
+
+    On a filesystem that cannot hard-link, the fallback is an ``O_EXCL`` create-and-write at *path*:
+    still exclusive, but a reader can briefly see a partial file and a crash can leave one.
+
+    Returns ``(st_dev, st_ino, st_size, st_mtime_ns)`` of the file published, for :func:`unlink_if_unchanged`.
+    """
+    path = Path(path)
+    if mode is None:
+        mode = default_new_file_mode()
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=tmp_prefix, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as f:
+            if mode is not None and hasattr(os, "fchmod"):
+                os.fchmod(f.fileno(), mode)
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+            signature = _file_signature(f.fileno())
+        if mode is not None and not hasattr(os, "fchmod"):
+            os.chmod(tmp_path, mode)
+        try:
+            os.link(tmp_path, path)
+        except OSError as exc:
+            if isinstance(exc, FileExistsError) or not (
+                    exc.errno in _NO_HARDLINK_ERRNOS or getattr(exc, "winerror", None) in _NO_HARDLINK_WINERRORS):
+                raise
+            logger.debug("atomic_create_text: no hard links for %s (%s); exclusive in-place create", path, exc)
+            return _create_text_in_place(path, content, encoding=encoding, mode=mode)
+        return signature
+    finally:
+        with suppress(OSError):
+            os.unlink(tmp_path)
+
+
+def unlink_if_unchanged(path: str | Path, signature: tuple[int, int, int, int]) -> bool:
+    """Remove *path* only if it still is the file :func:`atomic_create_text` returned *signature* for.
+
+    A different file at *path* (another writer replaced ours) is left alone. The stat and the unlink are
+    two steps, so a replacement landing between them can still be lost; the guard closes the window of a
+    whole scan or review, not that last instant. Returns whether *path* was removed.
+    """
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) != tuple(signature):
+            return False
+        os.unlink(path)
+    except OSError:
+        return False
+    return True
+
+
 def atomic_write_bytes(path: str | Path, content: bytes, *, tmp_prefix: str = ".tmp_",
                        mode: int | None = None, fsync_dir: bool = False) -> None:
     """Bytes variant of :func:`atomic_write_text` (encrypted blobs, key material)."""

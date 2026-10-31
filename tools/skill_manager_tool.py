@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import hermes_yaml as yaml
 
 from hermes_constants import get_hermes_home
-from utils import atomic_write_text, is_truthy_value
+from utils import atomic_create_text, atomic_write_text, is_truthy_value, unlink_if_unchanged
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
     extract_skill_description,
@@ -408,9 +408,15 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
                    content: str) -> Optional[dict[str, Any]]:
     """Read-before-write guard (existing targets only), the description budget for the root SKILL.md
     (whichever action and file_path reach it), atomic write, then the security scan; a blocked scan
-    restores the original (or unlinks a new file). Error dict or None."""
+    restores the original (or unlinks a new file). Error dict or None.
+
+    ``create`` publishes EXCLUSIVELY: the per-skill lock does not bind an independent writer, so a
+    SKILL.md that appears between the caller's mkdir and this publish is never replaced (nor followed,
+    if it is a symlink); the caller gets an error and that writer's bytes stay.
+    """
+    exclusive = action == "create"
     original = None
-    if target.exists():
+    if target.exists() and not exclusive:
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
         original = target.read_text(encoding="utf-8-sig")
@@ -418,11 +424,22 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         return _err(err)
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
-    atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
+    published = None
+    if exclusive:
+        try:
+            published = atomic_create_text(target, content, mode=0o644)
+        except FileExistsError:
+            return _err(f"Cannot create skill '{name}': {label} already exists at {target} (another writer "
+                        "created it while this create was in progress). Nothing was overwritten; review that "
+                        "file, or choose another name.")
+    else:
+        atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir)
     if not scan_error:
         return None
-    if original is not None:
+    if published is not None:  # only OUR file goes: a writer's replacement during the scan stays
+        unlink_if_unchanged(target, published)
+    elif original is not None:
         atomic_write_text(target, original, preserve_mode=True)
     else:
         target.unlink(missing_ok=True)

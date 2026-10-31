@@ -21,7 +21,7 @@ Hermes Agent 内置两个可供模型调用的网页工具，由多个提供商�
 
 | 提供商 | 环境变量 | 搜索 | 提取 | 免费层级 |
 |----------|---------|--------|---------|-----------|
-| **Firecrawl**（默认） | `FIRECRAWL_API_KEY` | ✔ | ✔ | 500 积分/月 |
+| **Firecrawl**（默认） | `FIRECRAWL_API_KEY` | ✔ | ✔ | 1 000 积分/月 |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | ✔ 免费（自托管） |
 | **Brave Search（免费层级）** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 2 000 次查询/月 |
 | **DDGS (DuckDuckGo)** | —（无需密钥） | ✔ | — | ✔ 免费 |
@@ -79,7 +79,7 @@ hermes tools
 FIRECRAWL_API_KEY=fc-your-key-here
 ```
 
-在 [firecrawl.dev](https://firecrawl.dev) 获取密钥。免费层级包含每月 500 积分。
+在 [firecrawl.dev](https://firecrawl.dev) 获取密钥。免费层级包含[每月 1 000 积分](https://www.firecrawl.dev/pricing)。
 
 **自托管 Firecrawl：** 指向您自己的实例而非云端 API：
 

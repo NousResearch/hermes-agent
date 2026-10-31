@@ -8,7 +8,7 @@ import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/s
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
-import { $sidebarMessagingOpenIds, setSidebarAgentsGrouped, setSidebarGrouping } from '@/store/layout'
+import { $sidebarMessagingOpenIds, $sidebarShowArchived, setSidebarAgentsGrouped, setSidebarGrouping } from '@/store/layout'
 import { $activeGatewayProfile, $profiles, setShowAllProfiles } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import { $projectTree } from '@/store/projects'
@@ -197,6 +197,25 @@ describe('ChatSidebar navigation activity', () => {
 
     act(() => dispose())
     expect(screen.getByRole('button', { name: 'Kanban' })).toBeTruthy()
+  })
+
+  it('shows session import only in the flat Sessions header', () => {
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByRole('button', { name: 'Import session' })).toBeTruthy()
+
+    cleanup()
+    setSidebarGrouping('project')
+    renderSidebar('/', 'chat')
+
+    expect(screen.queryByRole('button', { name: 'Import session' })).toBeNull()
+
+    cleanup()
+    setSidebarGrouping('date')
+    $sidebarShowArchived.set(true)
+    renderSidebar('/', 'chat')
+
+    expect(screen.queryByRole('button', { name: 'Import session' })).toBeNull()
   })
 })
 

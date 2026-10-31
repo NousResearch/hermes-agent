@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
 import queue
 import re
@@ -101,6 +102,17 @@ def publish_worker_tool_event(authority, session_id, generation, frame) -> bool:
     return True
 
 
+def tool_log_line(ts: str, tool_name: str, preview: str | None) -> str:
+    """One ``tool_progress: log`` line: ``<ts>  <tool>: "<preview>"``.
+
+    The preview is JSON-encoded so an embedded ``"`` (a nested shell command, a Windows
+    path) cannot break the log's column structure, and a tool with no preview gets no
+    dangling ``:``.
+    """
+    line = f"{ts}  {tool_name}"
+    return f"{line}: {json.dumps(preview, ensure_ascii=False)}" if preview else line
+
+
 class GatewayTurnProgressMixin:
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
@@ -164,8 +176,7 @@ class GatewayTurnProgressMixin:
         # the progress_queue guard because log mode runs without a chat progress queue.
         if ctx.log_queue is not None and event_type == "tool.started" and tool_name and tool_name != "_thinking":
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            preview_str = f' "{preview}"' if preview else ""
-            ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
+            ctx.log_queue.put(tool_log_line(ts, tool_name, preview))
         if not ctx.progress_queue or not ctx._run_still_current():
             return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:

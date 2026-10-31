@@ -195,6 +195,7 @@ display:
     render_mode: auto      # auto | kitty | iterm | sixel | unicode | off
     scale: 0.33           # master size knob (relative to native 192x208 frames)
     unicode_cols: 0       # hard override for terminal width (0 = derive from scale)
+    margin_right: 1       # TUI right margin in columns (integer, clamped to 0-10)
 ```
 
 - **`scale`** is the single master size knob. One number shrinks every surface:
@@ -206,6 +207,10 @@ display:
 - **`render_mode: auto`** detects kitty/iTerm2/sixel and falls back to unicode
   half-blocks. Set it explicitly to force a protocol or `off` to disable
   terminal rendering while keeping the pet on the desktop.
+- **`margin_right`** sets the TUI mascot's right margin in terminal columns.
+  Defaults to `1`; `0` places it against the right edge. Integers are clamped
+  to `0–10`; invalid values (including booleans and fractions) use `1`.
+  Changes apply live, including the transcript's reserved footprint.
 - **`unicode_cols`** pins the terminal column width independently of `scale`;
   leave it at `0` to derive width from `scale`.
 

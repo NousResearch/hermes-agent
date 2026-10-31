@@ -5,6 +5,7 @@ import { stripAnsi } from '@hermes/shared/ansi'
 import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $petBox } from '../app/petFlashStore.js'
 import { usePet } from '../app/usePet.js'
 import { PetPane } from '../components/appLayout.js'
 
@@ -59,7 +60,8 @@ describe('PetPane', () => {
         [opaqueCell, opaqueCell],
         [opaqueCell, opaqueCell]
       ],
-      kitty: null
+      kitty: null,
+      marginRight: 1
     })
 
     const lines = renderFrame(
@@ -76,8 +78,35 @@ describe('PetPane', () => {
     expect(cols[0]).toBeGreaterThan(columns / 2)
   })
 
+  it.each([0, 1, 6])('positions the sprite with a %i-column margin', marginRight => {
+    vi.mocked(usePet).mockReturnValue({
+      enabled: true,
+      grid: [[opaqueCell, opaqueCell]],
+      kitty: null,
+      marginRight
+    })
+
+    const footprints: number[] = []
+
+    const unsubscribe = $petBox.listen(box => {
+      if (box) {
+        footprints.push(box.width)
+      }
+    })
+
+    const lines = renderFrame(
+      <Box height={8} position="relative" width={40}>
+        <PetPane />
+      </Box>
+    )
+
+    unsubscribe()
+    expect(footprints).toContain(2 + 2 + marginRight + 1)
+    expect(lines.map(firstGlyphCol).find(col => col >= 0)).toBe(40 - 2 - marginRight)
+  })
+
   it('renders nothing when disabled', () => {
-    vi.mocked(usePet).mockReturnValue({ enabled: false, grid: null, kitty: null })
+    vi.mocked(usePet).mockReturnValue({ enabled: false, grid: null, kitty: null, marginRight: 1 })
 
     const lines = renderFrame(
       <Box flexDirection="column" height={8} position="relative" width={40}>

@@ -5,6 +5,7 @@ The host pass treats a Windows junction as the link it is, as Electron's ``lstat
 ``Path.is_symlink()`` is False for a junction, and a junction needs no privilege to make on Windows,
 so a check that only asks ``is_symlink()`` publishes whatever folder a junction points at. The
 real-junction tests run on the Windows lane; the stubbed ones run the same contract on every host.
+On macOS and Windows a ``Desktop/`` folder answers for ``desktop/``; that half must publish.
 """
 
 import json
@@ -125,3 +126,16 @@ def test_a_plain_folder_the_host_reports_as_a_junction_at_the_target_is_left_alo
 
     assert reconcile_desktop_halves_report(root, app_root) == {"touched": [], "refused": []}
     assert (app_root / "media" / "mine.txt").read_text(encoding="utf-8") == "mine"
+
+
+@pytest.mark.platforms("macos", "windows")
+def test_a_desktop_folder_spelled_with_a_capital_publishes_on_a_case_insensitive_volume(tmp_path):
+    root, app_root = tmp_path / "hermes", tmp_path / "hermes" / "desktop-plugins"
+    package = root / "plugins" / "media"
+    (package / "Desktop").mkdir(parents=True)
+    (package / "Desktop" / "plugin.js").write_text("export default {}", encoding="utf-8")
+    if not (package / "desktop" / "plugin.js").is_file():
+        pytest.skip("this temporary folder is on a case-sensitive volume")
+
+    assert reconcile_desktop_halves_report(root, app_root) == {"touched": [str(app_root / "media")], "refused": []}
+    assert (app_root / "media" / "plugin.js").read_text(encoding="utf-8") == "export default {}"

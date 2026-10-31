@@ -1,0 +1,27 @@
+name: olympus
+repo: https://github.com/AIEngineerX/Olympus
+sha: fbf7a8c1114f62a6dbc7e378045b17bc86e515f3
+title: Olympus
+description: "Manage your Hermes agents from one dashboard tab: every agent (profile) on one list with its status, current task and tool, helpers and a week of runs; one Needs-you queue of questions waiting on your answer, failed or overdue cron jobs, stalled or failing Kanban workers, blocked or unassigned tasks, offline gateways and looping or expensive runs, each with its action; an inspector per agent; and a Performance view of run success, run time, tool failures and cost per agent, each compared with the days before. Controls (pause, resume or run a cron job; answer, retry, reclaim or reassign a Kanban task) are confirmed, logged and executed by Hermes' own dashboard and Kanban endpoints; `dashboard.olympus.controls: false` turns them off. Opt-in alerts run as a Hermes no-agent cron job. Disclosure — reads Hermes' own stores read-only across every profile under HERMES_HOME (sessions and messages in state.db, cron jobs and run output, the Kanban database, gateway state, config.yaml, skills and the cron ledger) and writes only to plugin-data/olympus/; no network calls to third-party services, no shell commands, no background processes, no stored credentials and no self-updater; never opens a profile's .env (configured gateways come from Hermes' own helper, a private import the validator warns on); local labels, task titles and questions stay hidden unless `dashboard.olympus.expose_local_labels: true`; the Desktop page uses the plugin SDK only."
+maintainer: AIEngineerX
+tier: community
+category: desktop
+version: "2.0.1"
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/AIEngineerX/Olympus/tree/fbf7a8c1114f62a6dbc7e378045b17bc86e515f3
+screenshots:
+  - https://raw.githubusercontent.com/AIEngineerX/Olympus/fbf7a8c1114f62a6dbc7e378045b17bc86e515f3/screenshots/agents.png
+  - https://raw.githubusercontent.com/AIEngineerX/Olympus/fbf7a8c1114f62a6dbc7e378045b17bc86e515f3/screenshots/inspector.png
+  - https://raw.githubusercontent.com/AIEngineerX/Olympus/fbf7a8c1114f62a6dbc7e378045b17bc86e515f3/screenshots/performance.png
+  - https://raw.githubusercontent.com/AIEngineerX/Olympus/fbf7a8c1114f62a6dbc7e378045b17bc86e515f3/screenshots/agents-390.png
+readme: true
+platforms: []
+known_issues:
+  - "A Kanban worker that has finished can read as Working for up to ten minutes, because Hermes leaves the worker's session open after the task run ends."
+  - "While a worker runs, Now shows its task but not the tool it is using."
+  - "At 390 px the confirm popup for a control can overflow its row by a pixel."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

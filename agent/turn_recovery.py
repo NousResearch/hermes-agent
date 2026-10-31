@@ -1706,6 +1706,9 @@ _RATE_LIMIT_REASONS = frozenset({
     FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit,
 })
 _TRANSPORT_FAILURE_REASONS = frozenset({FailoverReason.timeout, FailoverReason.overloaded})
+# 500/502 classify as server_error, not overloaded. Same persistent-failure
+# gate as transport: one primary retry, then the fallback chain (#68771).
+_RETRYABLE_5XX_REASONS = frozenset({FailoverReason.server_error})
 
 
 _LONG_CONTEXT_TIER_CAP = 200000
@@ -1749,6 +1752,8 @@ def _eager_fallback_status(classified: Any, is_upstream: bool, is_transport_fail
                 "— switching to fallback provider..."
             )
         return "⚠️ Billing or credits exhausted — switching to fallback provider..."
+    if classified.reason == FailoverReason.server_error:
+        return "⚠️ Provider server error — switching to fallback provider..."
     if is_transport_failure:
         return "⚠️ Provider unreachable — switching to fallback provider..."
     return "⚠️ Rate limited — switching to fallback provider..."
@@ -1820,7 +1825,7 @@ def route_classified_error(
     """Ordered (load-bearing) recovery steps between classification and overflow handling:
     compaction-disabled overflow → terminal error (output-cap errors exempt); Anthropic
     long-context tier 429 → cap at 200k and compress; eager fallback for rate-limit/billing
-    (immediately) and transport failures (after 1 retry) unless credential-pool rotation may
+    (immediately) and transport failures plus retryable 5xx (after 1 retry) unless credential-pool rotation may
     still recover (upstream-aggregator 429s always fall back); persistent 401/403 → fallback
     chain once; genuine Nous 429 → cross-session breaker + re-enter the loop exactly once."""
     from agent.conversation_compression import conversation_history_after_compression
@@ -1928,14 +1933,17 @@ def route_classified_error(
         if classified.reason == FailoverReason.rate_limit else None
     )
     _is_transport_failure = classified.reason in _TRANSPORT_FAILURE_REASONS
+    _is_retryable_5xx = classified.reason in _RETRYABLE_5XX_REASONS
     # Z.AI overload 429s classify `overloaded`, which `is_rate_limited` excludes. Detect
     # directly so the long backoff runs, and raise the ceiling to reach it.
     _is_zai_coding_overload = is_zai_coding_overload_error(base_url=str(base_url), model=model, error=api_error)
     if _is_zai_coding_overload:
         max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+    # retry_count is incremented before this gate, so >= 2 is one completed
+    # primary retry, not an immediate failover on the first 5xx (#68771).
     _should_fallback = (
         (is_rate_limited and _wrapped_output_cap_budget is None)
-        or (_is_transport_failure and retry_count >= 2)
+        or ((_is_transport_failure or _is_retryable_5xx) and retry_count >= 2)
     ) and not (getattr(classified, "error_context", None) or {}).get("usage_window")  # never switch models on a plan limit
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
         # No eager fallback while credential pool rotation may recover. Exception: an

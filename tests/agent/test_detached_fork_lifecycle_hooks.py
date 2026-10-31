@@ -102,4 +102,6 @@ def test_persisted_agent_still_fires_session_and_turn_lifecycle_hooks():
         "pre_llm_call",
     ]
     assert context == "plugin context"
+    pre_llm_kwargs = lifecycle_hook.call_args_list[1].kwargs
+    assert pre_llm_kwargs["system_prompt"] == "system prompt"
     assert output_calls == ["transform_llm_output", "post_llm_call"]

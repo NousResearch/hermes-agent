@@ -188,8 +188,23 @@ def test_p1_mandatory_uses_the_bound_snapshot_and_survives_yolo_off(policy, monk
         seen.append((json.loads(command), kwargs))
         return choice
     monkeypatch.setattr(approval, "prompt_dangerous_approval", prompt)
-    policy.ctx.register_hook("pre_file_write", lambda **kw: {"action": "approve", "approval_policy": "mandatory"})
-    for _ in range(2):call("write")
+    policy.ctx.register_hook("pre_file_write", lambda **kw: {"action": "approve", "approval_policy": "mandatory", "message": "policy finding"})
+    for _ in range(2):
+        result = call("write")
+        if choice == "deny":
+            assert "policy finding" in result["error"]
     assert len(seen) == 2 and len(policy.reached) == (2 if choice == "once" else 0)
     assert all(item[0]["args"]["targets"][0]["path"] == str(policy.root / "notes.txt") for item in seen)
     assert all(not item[1]["allow_session"] and not item[1]["allow_permanent"] for item in seen)
+
+
+def test_dispatch_identity_cannot_be_forged_in_tool_arguments(policy):
+    import model_tools
+    seen = []
+    policy.ctx.register_hook("pre_file_write", lambda **kw: seen.append(kw) or {"action": "block", "message": "veto"})
+    result = json.loads(model_tools.handle_function_call(
+        "write_file", {"path": "notes.txt", "content": "new", "turn_id": "forged"},
+        task_id="task", session_id="real-session", turn_id="real-turn", tool_call_id="real-call"))
+    assert "veto" in result["error"] and not policy.reached
+    assert seen[0]["session_id"] == "real-session" and seen[0]["turn_id"] == "real-turn"
+    assert seen[0]["tool_call_id"] == "real-call" and seen[0]["targets"][0]["raw_path"] == "notes.txt"

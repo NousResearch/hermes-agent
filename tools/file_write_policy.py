@@ -9,13 +9,13 @@ def _targets(tool_name, args, resolved, entries):
     from tools.file_tools import _V4A_SINGLE_HEADER_RE, _V4A_MOVE_HEADER_RE
 
     if tool_name == "write_file" or args.get("mode", "replace") == "replace":
-        return [{"operation": "write", "path": resolved.get(args.get("path"))}]
+        return [{"operation": "write", "raw_path": args.get("path"), "path": resolved.get(args.get("path"))}]
     targets = []
     for match in _V4A_SINGLE_HEADER_RE.finditer(args.get("patch") or ""):
         op, raw = match.group(2).lower(), match.group(3).strip()
-        targets.append({"operation": op, "path": (entries if op == "delete" else resolved).get(raw)})
+        targets.append({"operation": op, "raw_path": raw, "path": (entries if op == "delete" else resolved).get(raw)})
     for match in _V4A_MOVE_HEADER_RE.finditer(args.get("patch") or ""):
-        targets.extend({"operation": op, "path": entries.get(raw.strip())}
+        targets.extend({"operation": op, "raw_path": raw.strip(), "path": entries.get(raw.strip())}
                        for op, raw in zip(("move_source", "move_destination"), match.group(2, 3)))
     return targets
 
@@ -29,6 +29,7 @@ def check_file_write_policy(tool_name, args, *, task_id, session_id, file_ops, r
     """
     from hermes_cli import plugins
     from tools.file_tools import _file_ops_uses_host_paths
+    from tools import approval_context
 
     try:
         if not plugins.has_hook("pre_file_write"):
@@ -39,7 +40,10 @@ def check_file_write_policy(tool_name, args, *, task_id, session_id, file_ops, r
         if not targets or any(not t["path"] for t in targets):
             return "BLOCKED: file write policy requires resolved targets"
         snapshot = {"tool_name": tool_name, "args": copy.deepcopy(args), "targets": targets,
-                    "namespace": "host", "task_id": task_id, "session_id": session_id,
+                    "namespace": "host", "task_id": task_id,
+                    "session_id": approval_context._approval_session_id.get() or session_id,
+                    "turn_id": approval_context._approval_turn_id.get(),
+                    "tool_call_id": approval_context._approval_tool_call_id.get(),
                     "write_id": uuid.uuid4().hex}
         # Keep the execution/approval snapshot private from callback mutation.
         results = plugins.invoke_hook("pre_file_write", **copy.deepcopy(snapshot))
@@ -66,7 +70,10 @@ def check_file_write_policy(tool_name, args, *, task_id, session_id, file_ops, r
                 kwargs.update(approval_policy=approval["approval_policy"], effective_args=snapshot)
             decision = request_tool_approval(tool_name, approval.get("message") or "File write policy", **kwargs)
             if not decision.get("approved"):
-                return str(decision.get("message") or "BLOCKED: file write approval denied")
+                refusal = str(decision.get("message") or "BLOCKED: file write approval denied")
+                if approval.get("approval_policy") == "mandatory" and approval.get("message"):
+                    return str(approval["message"]) + "\n" + refusal
+                return refusal
     except Exception:  # health: allow BLE001 -- a failed policy cannot authorize a write
         return "BLOCKED: file write policy failed"
     return None

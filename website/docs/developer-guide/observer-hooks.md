@@ -176,9 +176,9 @@ before the backend operation. This hook is a policy gate, with fail-closed
 callback errors/timeouts. It receives:
 
 - `tool_name`, `args`: selected tool and the content arguments used by it;
-- `targets`: records with `operation` and resolved `path`; operations are
+- `targets`: records with `operation`, `raw_path` and resolved `path`; operations are
   `write`, `add`, `update`, `delete`, `move_source`, `move_destination`;
-- `namespace="host"`, `task_id`, `session_id` and a unique `write_id` for this
+- `namespace="host"`, `task_id`, `session_id`, `turn_id`, `tool_call_id` and a unique `write_id` for this
   file operation (it is not a tool-call ID).
 
 Update/Add/write paths follow symlinks; Delete/Move keep the last directory
@@ -195,7 +195,7 @@ Return `None` or `{"action": "allow"}` to proceed, or
 requires the host to advertise that policy and otherwise blocks. With that
 policy the native approval gate sees the detached operation snapshot,
 including resolved targets; missing support never falls back to ordinary
-approval. The host owns the UI and transport.
+approval. A mandatory denial preserves the policy reason in the tool result. The host owns the UI and transport.
 
 When a policy is registered, unresolved targets and non-host filesystem
 namespaces block explicitly. With no policy registered, existing backend
@@ -203,7 +203,11 @@ behavior is preserved. Remote/container policy support is not implemented.
 This hook covers these native file tools, not arbitrary shell/code writes.
 It does not provide OS-level atomic protection from another process changing
 filesystem entries during a human confirmation. The payload may contain
-private content; policy callbacks must handle it accordingly.
+private content; policy callbacks must handle it accordingly. Turn/tool-call IDs
+come from the dispatch context, never from model-supplied arguments; they are
+empty for a direct call outside that context. Policies requiring a turn must
+reject an empty identity rather than guess. `raw_path` preserves lexical
+addresses such as a secret-file symlink while `path` names the actual effect.
 
 ### Tool Lifecycle
 

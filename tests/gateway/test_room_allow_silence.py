@@ -231,3 +231,37 @@ async def test_recovery_keeps_guard_without_exact_completed_decision(tmp_path, m
         assert sweep_recoverable(deliverable_platforms={"telegram"})
     finally:
         _close_store_db(store)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ({"platforms": {"telegram": {"channel_overrides": {"-1001": {"allow_silence": True}}}}}, True),
+    ({"telegram": {"channel_overrides": {"-1001": {"allow_silence": True}}}}, True),
+    ({"telegram": {"channel_overrides": {"-1001": {"allow_silence": False}}},
+      "platforms": {"telegram": {"channel_overrides": {"-1001": {"allow_silence": True}}}}}, False),
+    ({"telegram": {"require_mention": True},
+      "platforms": {"telegram": {"channel_overrides": {"-1001": {"allow_silence": True}}}}}, True),
+], ids=["nested", "top-level", "top-level-wins", "top-level-without-overrides"])
+def test_served_profile_lookup_reads_every_platform_block_layout(monkeypatch, tmp_path, raw, expected):
+    runner = _runner(monkeypatch, tmp_path)
+    home = tmp_path / "served"
+    home.mkdir()
+    (home / "config.yaml").write_text(json.dumps(raw), encoding="utf-8")
+    source = _source()
+    source._identity = RoutingIdentity("default", "served", tmp_path, home)
+
+    assert runner._room_allow_silence(source) is expected
+
+
+def test_failed_room_lookup_keeps_the_reply_rule(monkeypatch, tmp_path):
+    from gateway.profile_routing import ProfileRouteRejected
+    runner = _runner(monkeypatch, tmp_path)
+    source = _source()
+    source.profile = "gone"
+
+    def _reject(_source):
+        raise ProfileRouteRejected("gone")
+
+    monkeypatch.setattr(runner, "_resolve_profile_home_for_source", _reject)
+
+    assert runner._room_allow_silence(source) is None
+    assert runner._silence_allowed_for_source(source, None, True, {"final_response": "NO_REPLY"}) is False

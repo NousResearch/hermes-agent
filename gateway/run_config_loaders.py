@@ -118,16 +118,33 @@ class GatewayConfigLoadersMixin:
     def _room_allow_silence(self, source: SessionSource) -> Optional[bool]:
         """Resolve the room policy in the serving profile, never the launch snapshot for a route."""
         from gateway.config import GatewayConfig
+        from gateway.config_loader import merge_platform_sections, platform_section
         from gateway.run import _get_channel_override, _load_gateway_config
         from gateway.session_identity import identity_of
         config = getattr(self, "config", None)
-        if (identity_of(source) is not None or source.profile
-                or getattr(config, "multiplex_profiles", False) or config is None):
-            home = self._resolve_profile_home_for_source(source)
-            config = GatewayConfig.from_dict(_load_gateway_config(home / "config.yaml"))
-        override = _get_channel_override(
-            config, source.platform, source.chat_id,
-            thread_id=source.thread_id, parent_id=source.parent_chat_id)
+        try:
+            if (identity_of(source) is not None or source.profile
+                    or getattr(config, "multiplex_profiles", False) or config is None):
+                raw = _load_gateway_config(self._resolve_profile_home_for_source(source) / "config.yaml")
+                # The loader's own two steps: merge every nested platform block, then the overrides of
+                # the block platform_section picks (a top-level ``<platform>:`` block first) win.
+                # ``GatewayConfig.from_dict(raw)`` alone reads only the nested ``platforms`` form.
+                name, gateway_section = source.platform.value, raw.get("gateway")
+                overrides = (merge_platform_sections(raw, gateway_section, {}).get(name) or {}).get("channel_overrides")
+                section, _ = platform_section(raw, name, (
+                    gateway_section.get("platforms") if isinstance(gateway_section, dict) else None))
+                if isinstance(section, dict) and isinstance(section.get("channel_overrides"), dict):
+                    overrides = section["channel_overrides"]
+                config = GatewayConfig.from_dict({"platforms": {name: {
+                    "channel_overrides": overrides if isinstance(overrides, dict) else {}}}})
+            override = _get_channel_override(
+                config, source.platform, source.chat_id,
+                thread_id=source.thread_id, parent_id=source.parent_chat_id)
+        except Exception:
+            # No permission means the default reply rule; a lookup failure must not become an error reply.
+            logger.warning("Room allow_silence lookup failed for %s; keeping the reply rule",
+                           source.chat_id, exc_info=True)
+            return None
         return override.allow_silence if override is not None else None
 
     def _resolve_model_for_channel(

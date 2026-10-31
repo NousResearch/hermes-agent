@@ -1196,7 +1196,8 @@ def _cmd_repair_prompts(db, args):
 
     Automatic repair requires positive tools[] evidence. Rows with missing/malformed pins are
     reported as unverifiable and never changed by a scan. An explicit session_id remains the
-    operator escape hatch and clears that row regardless of detector evidence.
+    operator escape hatch and clears that conversation's live row (its compression tip)
+    regardless of detector evidence.
     """
     findings = []
     unverifiable = []
@@ -1206,6 +1207,8 @@ def _cmd_repair_prompts(db, args):
         if not session_id:
             print(f"No session matches {target!r}.")
             return 1
+        # A compressed conversation continues on its tip; clearing the ended root repairs nothing.
+        session_id = db.get_compression_tip(session_id) or session_id
         row = db.get_session(session_id)
         if row and row.get("system_prompt"):
             findings.append({

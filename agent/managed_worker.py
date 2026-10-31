@@ -331,6 +331,28 @@ def execute(frame, channel):
     # The owner RPC below imports gateway/config modules (hermes_cli.config, providers,
     # hermes_cli.plugins) transitively; the policy must already be frozen when they load.
     bind_worker_policy(frame)
+    # 20261031 wedge probe v2 (v3 trap autopsy): pre-import numpy single-threaded
+    # AND log the outcome to HERMES_HOME/logs/wedge_probe_20261031.log — the
+    # worker hangs at import numpy mid-bootstrap (holographic embeddings);
+    # standalone+same-venv+same-env+same-cwd imports in 0.1s, so this log tells
+    # whether the early import fast-fails (swallowed) or hangs.
+    import time as _tw
+    _w0 = _tw.time()
+    try:
+        import numpy  # noqa: F401
+        _wmsg = 'pre-import OK %.2fs' % (_tw.time() - _w0)
+    except BaseException as _ne:  # noqa: BLE001 — diagnostic surface
+        _wmsg = 'pre-import FAIL %.2fs: %r' % (_tw.time() - _w0, _ne)
+    try:
+        import pathlib as _pl
+        import os as _os
+        _lp = _pl.Path(_os.environ.get('HERMES_HOME', '.'))
+        _lp = _pl.Path(str(_lp)) if not _lp.is_absolute() else _lp
+        (_lp / 'logs').mkdir(parents=True, exist_ok=True)
+        with open(_lp / 'logs' / 'wedge_probe_20261031.log', 'a', encoding='utf-8') as _f:
+            _f.write(_tw.strftime('%H:%M:%S') + ' ' + _wmsg + chr(10))
+    except Exception:
+        pass
     from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
     scope = dict(frame['scope'])
     rpc = WorkerRPC(frame['home'])

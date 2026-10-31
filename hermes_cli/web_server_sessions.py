@@ -272,6 +272,16 @@ _MUTATION_REFUSAL_STATUS = {'permission_denied': 403, 'profile_mismatch': 403, '
                             'invalid_params': 400, 'runtime_draining': 503, 'storage_unavailable': 503}
 
 
+def _is_mobile_unfenced_client(request) -> bool:
+    """True when an Android/OkHttp mobile client (adrianlaborda/hermes-mobile) calls a REST
+    session mutation route without the 0.22.3+ Desktop revision-fence fields (CF-46)."""
+    headers = getattr(request, 'headers', None) or {}
+    if (headers.get('x-hermes-session-token') or '').strip():
+        return True
+    ua = (headers.get('user-agent') or '').strip().lower()
+    return ua.startswith('okhttp/')
+
+
 async def _mutate_session_request(request, profile, session_id, *, request_id,
                                   expected_revision, operation, payload, expected_generation=None):
     """Resolve the authenticated principal and owner; never open a second writer."""
@@ -288,6 +298,22 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         _, errors = authority.db._validate_import_payload(payload['sessions'])
         if errors:
             raise HTTPException(status_code=400, detail={'errors': errors})
+    if (request_id is None and expected_revision is None and expected_generation is None
+            and operation in {'sidebar', 'delete'} and _is_mobile_unfenced_client(request)):
+        import uuid
+
+        def _read_row():
+            db = _open_session_db_for_profile(profile, read_only=True)
+            try:
+                return db.get_session(session_id)
+            finally:
+                db.close()
+
+        row = await asyncio.to_thread(_read_row) if authority is None else authority.db.get_session(session_id)
+        request_id = f'mobile-{uuid.uuid4().hex}'
+        expected_revision = row['runtime_revision'] if row and row['runtime_revision'] is not None else 0
+        if operation == 'delete':
+            expected_generation = row['runtime_generation'] if row and row['runtime_generation'] is not None else 0
     if request_id is None and expected_revision is None and expected_generation is None:
         # A pre-fence client (Desktop <= 0.22.2) sends none of the identity. The owner never
         # commits an unfenced write, so name the upgrade; the wording is what those builds'

@@ -57,3 +57,30 @@ async def test_identityless_legacy_writes_get_a_renderable_upgrade_refusal(tmp_p
         row = db.get_session('old-desktop')
         assert row is not None and row['title'] is None and not row.get('archived')
         assert row['runtime_revision'] == 0
+
+
+@pytest.mark.asyncio
+async def test_mobile_client_unfenced_sidebar_and_delete_succeed(tmp_path, monkeypatch):
+    """adrianlaborda/hermes-mobile (v0.3.0-beta.15) sends PATCH/DELETE /api/sessions/{id}
+    with X-Hermes-Session-Token or OkHttp User-Agent and no request_id/expected_revision (CF-46)."""
+    app = _app(tmp_path, monkeypatch)
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        db.create_session('mobile-chat', source='mobile')
+        mobile_headers = {'X-Hermes-Session-Token': 'legacy-token', 'User-Agent': 'okhttp/4.12.0'}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost',
+                                     headers=mobile_headers) as client:
+            patch_resp = await client.patch('/api/sessions/mobile-chat',
+                                            json={'title': 'Renamed from mobile', 'pinned': True, 'unread': False})
+            assert patch_resp.status_code == 200, patch_resp.text
+            assert patch_resp.json()['ok'] is True
+            row = db.get_session('mobile-chat')
+            assert row is not None and row['title'] == 'Renamed from mobile' and bool(row['pinned']) is True
+
+        okhttp_cookie_headers = {'Authorization': 'Bearer legacy-token', 'User-Agent': 'okhttp/4.12.0'}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost',
+                                     headers=okhttp_cookie_headers) as client:
+            del_resp = await client.delete('/api/sessions/mobile-chat')
+            assert del_resp.status_code == 200, del_resp.text
+            assert del_resp.json()['ok'] is True
+            assert db.get_session('mobile-chat') is None
+

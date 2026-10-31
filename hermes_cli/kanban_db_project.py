@@ -69,6 +69,41 @@ def worktree_path_unavailable(workspace_path: Optional[str]) -> Optional[str]:
     )
 
 
+def board_workspace_path(
+    board: Optional[str], workspace_kind: str, workspace_path: Optional[str],
+    project_repo: Optional[str],
+) -> Optional[str]:
+    """``workspace_path`` a new card starts with, board ``default_workdir`` included.
+
+    Only persistent kinds inherit the board default — a scratch task inheriting
+    it would point cleanup at the user's source tree — and only when nothing
+    more specific was supplied. A ``worktree`` default must be able to host a
+    worktree at dispatch, or the card is accepted here and dies at spawn.
+    """
+    if workspace_path is not None or project_repo is not None:
+        return workspace_path
+    if workspace_kind not in {"dir", "worktree"}:
+        return workspace_path
+    from hermes_cli import kanban_db as _kb
+
+    board_slug = board if board else _kb.get_current_board()
+    board_default = (
+        _kb.read_board_metadata(board_slug).get("default_workdir") or ""
+    ).strip()
+    if not board_default:
+        return workspace_path
+    if workspace_kind == "worktree":
+        refusal = worktree_path_unavailable(board_default)
+        if refusal:
+            raise ValueError(
+                f"board {board_slug!r} default_workdir cannot host a worktree: "
+                f"{refusal}. Point the board's default workdir at a folder inside "
+                "a git repo, or create the task with an explicit workspace_path "
+                "inside one."
+            )
+    return board_default
+
+
 def resolve_project_link(
     conn: sqlite3.Connection, project_id: Optional[str], project_source_task_id: Optional[str],
     workspace_kind: str, workspace_path: Optional[str],
@@ -87,20 +122,25 @@ def resolve_project_link(
     a card whose worker dies at spawn. An explicit ``workspace_kind="worktree"``
     on such a project raises here instead — same gap, closed at the same place —
     and so does an explicit ``workspace_path`` that dispatch could not anchor a
-    worktree on.
+    worktree on. That path check runs *before* the project lookup: a
+    project-less card, an unresolvable id/slug and a project-backed card all
+    reach dispatch with the same literal path, so the same rule must refuse it
+    whichever way the lookup goes.
     """
+    if workspace_kind == "worktree":
+        # An explicit worktree path overrides every default at dispatch, so it
+        # is validated before any project resolution: whichever way the lookup
+        # below goes (no project, unresolvable id/slug, project that cannot
+        # anchor), the card reaches dispatch with this literal path.
+        refusal = worktree_path_unavailable(workspace_path)
+        if refusal:
+            raise ValueError(
+                f"{refusal}. Create the task with workspace_kind='scratch', point "
+                "workspace_path at a folder inside a git repo, or omit it and let a "
+                "project anchor the worktree."
+            )
     project_id = (str(project_id).strip() or None) if project_id is not None else None
     if not project_id:
-        # A project-less card is not exempt from the rule: its explicit worktree
-        # path overrides every default at dispatch, so a path that cannot host a
-        # worktree stranded the card at spawn. Same check, same place.
-        if workspace_kind == "worktree":
-            refusal = worktree_path_unavailable(workspace_path)
-            if refusal:
-                raise ValueError(
-                    f"{refusal}. Create the task with workspace_kind='scratch', or "
-                    "point workspace_path at a folder inside a git repo."
-                )
         return None, None, None, workspace_kind, None
     from hermes_cli import projects_db as _pdb
 
@@ -143,17 +183,6 @@ def resolve_project_link(
             "workspace_kind='scratch', point the project at a folder inside a git repo, "
             "or pass an explicit workspace_path inside a git repo."
         )
-    if workspace_kind == "worktree" and workspace_path is not None:
-        # An explicit path is not a default either: it overrides the project
-        # anchor at dispatch, so a path that cannot host a worktree strands the
-        # card exactly the same way — refuse it now, naming the path.
-        refusal = worktree_path_unavailable(workspace_path)
-        if refusal:
-            raise ValueError(
-                f"{refusal}. Create the task with workspace_kind='scratch', point "
-                "workspace_path at a folder inside a git repo, or omit it and let the "
-                "project anchor the worktree."
-            )
     if workspace_kind == "worktree" and workspace_path is None and project_obj.primary_path:
         # Concrete path is deferred to the insert loop: a fresh
         # ``<repo>/.worktrees/<task-id>`` keyed on the new task id.

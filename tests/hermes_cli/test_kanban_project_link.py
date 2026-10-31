@@ -372,3 +372,83 @@ def test_projectless_dir_workspace_with_a_plain_directory_is_accepted(kanban_con
     assert task.workspace_kind == "dir"
     assert task.workspace_path == str(plain)
     assert task.project_id is None
+
+
+# --- unresolvable project id with an explicit worktree path -----------------
+# ``resolve_project_link`` validated an explicit worktree path only *after* the
+# project lookup, and the unresolvable-id branch returned before it: a ghost
+# ``project_id`` plus a path dispatch could not anchor was accepted here and
+# died at spawn. The rule now runs before the lookup, so every lookup outcome
+# is covered by the same refusal — and every path dispatch can resolve is
+# still accepted.
+
+
+def test_unresolvable_project_worktree_with_non_repo_path_raises_at_creation(
+    kanban_conn, tmp_path,
+):
+    """A ghost project id must not smuggle a non-anchorable worktree path past
+    creation: the path, not the project lookup, decides."""
+    non_repo = tmp_path / "not-a-repo" / "sub"
+    non_repo.mkdir(parents=True)
+
+    with pytest.raises(ValueError) as excinfo:
+        kb.create_task(
+            kanban_conn, title="ghost project", project_id="ghost-project",
+            workspace_kind="worktree", workspace_path=str(non_repo),
+        )
+
+    message = str(excinfo.value)
+    assert str(non_repo) in message
+    assert "not inside a git repo" in message
+    assert "workspace_kind='scratch'" in message
+    # Refused before the insert: no half-created card is left behind.
+    assert kanban_conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_unresolvable_project_worktree_with_relative_path_raises_at_creation(
+    kanban_conn, tmp_path,
+):
+    """Dispatch requires an absolute worktree path; a ghost project id does not
+    exempt the card from that rule."""
+    with pytest.raises(ValueError) as excinfo:
+        kb.create_task(
+            kanban_conn, title="ghost relative", project_id="ghost-project",
+            workspace_kind="worktree", workspace_path=".worktrees/rel",
+        )
+
+    assert "is not absolute" in str(excinfo.value)
+    assert kanban_conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_unresolvable_project_worktree_with_path_inside_a_repo_is_accepted(
+    kanban_conn, tmp_path,
+):
+    """Legitimate case: the ghost id drops the link, and the explicit path inside
+    a repo is what dispatch will use — keep accepting it."""
+    repo = _git_init(tmp_path / "mono")
+    target = repo / "wt" / "future"
+    assert not target.exists()
+
+    tid = kb.create_task(
+        kanban_conn, title="ghost in repo", project_id="ghost-project",
+        workspace_kind="worktree", workspace_path=str(target),
+    )
+    task = kb.get_task(kanban_conn, tid)
+
+    assert task.project_id is None
+    assert task.workspace_kind == "worktree"
+    assert task.workspace_path == str(target)
+
+
+def test_unresolvable_project_worktree_without_a_path_is_accepted(kanban_conn):
+    """No explicit path, no project: dispatch owns the ``wt/<task-id>``
+    fallback, so there is nothing for creation to validate."""
+    tid = kb.create_task(
+        kanban_conn, title="ghost no path", project_id="ghost-project",
+        workspace_kind="worktree",
+    )
+    task = kb.get_task(kanban_conn, tid)
+
+    assert task.project_id is None
+    assert task.workspace_kind == "worktree"
+    assert task.workspace_path is None

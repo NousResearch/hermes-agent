@@ -1102,7 +1102,9 @@ def create_task(
     ``project_worktree_skipped`` event instead of dying at spawn.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
-    from hermes_cli.kanban_db_project import record_worktree_skip, resolve_project_link
+    from hermes_cli.kanban_db_project import (
+        board_workspace_path, record_worktree_skip, resolve_project_link,
+    )
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
     completion_contract = validate_contract(completion_contract)
@@ -1153,12 +1155,9 @@ def create_task(
 
     now = int(time.time())
 
-    # Only persistent kinds inherit the board ``default_workdir``: a scratch
-    # task inheriting it would point cleanup at the user's source tree.
-    if workspace_path is None and project_repo is None and workspace_kind in {"dir", "worktree"}:
-        board_default = _board_meta_for(board).get("default_workdir")
-        if board_default:
-            workspace_path = str(board_default)
+    # Board default_workdir, validated for worktree (see kanban_db_project).
+    workspace_path = board_workspace_path(
+        board, workspace_kind, workspace_path, project_repo)
 
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):

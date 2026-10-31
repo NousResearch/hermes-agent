@@ -202,9 +202,27 @@ def _platform_enablement(
     return enabled, configured, home_channel
 
 
+def _relay_disabled_platform_ids(scoped: bool) -> frozenset[str]:
+    """Platforms the GATEWAY_RELAY_URL relay-exclusive rule switches off at gateway load
+    (#141175), read from the same load_gateway_config() the unscoped enablement arm uses, so the
+    page can say "Team Gateway" instead of a bare "Disabled" that reverts every restart.
+    Unscoped arm only: profile-scoped status is judged per profile (``_platform_enablement``)."""
+    if scoped:
+        return frozenset()
+    try:
+        from gateway.config import load_gateway_config
+
+        platforms = load_gateway_config().platforms
+        return frozenset(p.value for p, cfg in platforms.items() if cfg.disabled_by_relay)
+    except Exception:  # health: allow BLE001 -- advisory label; an unreadable config keeps the plain state
+        _log.debug("relay-disabled platform lookup failed", exc_info=True)
+        return frozenset()
+
+
 def _messaging_platform_payload(
     entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None,
     scoped: bool = False, profile_home: Optional[Path] = None, source_keys: Collection[str] = (),
+    relay_disabled: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     rt = runtime if isinstance(runtime, dict) else {}
@@ -275,6 +293,7 @@ def _messaging_platform_payload(
         "gateway_running": gateway_running, "state": state, "error_code": error_code,
         "error_message": error_message, "updated_at": runtime_platform.get("updated_at"),
         "home_channel": home_channel, "env_vars": env_vars,
+        "disabled_by_relay": not enabled and platform_id in relay_disabled,
         # Multiplex secondary served on the default's shared listener: the vendor callback URL.
         "ingress_url": runtime_platform.get("ingress_url") if gateway_running else None,
     }
@@ -303,10 +322,12 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     runtime = served_profile_runtime(own_home, runtime) or runtime
     # Credentials a secret manager supplies have no .env line; only values the profile's enabled
     # sources resolved (into its secret scope, by ``_profile_scope``) count, and an empty one is unset.
-    source_values = get_secret_source_values(scoped_dir) if scoped_dir is not None else {}
+    scoped = scoped_dir is not None
+    source_values = get_secret_source_values(scoped_dir) if scoped else {}
     source_keys = frozenset(key for key, value in source_values.items() if str(value).strip())
-    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None,
-                                        profile_home=scoped_dir, source_keys=source_keys)
+    relay_disabled = _relay_disabled_platform_ids(scoped)
+    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped, profile_home=scoped_dir,
+                                        source_keys=source_keys, relay_disabled=relay_disabled)
             for entry in entries]
 
 

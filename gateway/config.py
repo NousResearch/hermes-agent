@@ -419,6 +419,9 @@ class PlatformConfig:
     typing_status_text: Optional[str] = None
     channel_overrides: dict[str, ChannelOverride] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)  # Platform-specific settings
+    # Runtime-only, never serialized: set when the GATEWAY_RELAY_URL relay-exclusive rule
+    # (config_env._relay) switched an enabled platform off, so surfaces can say why (#141175).
+    disabled_by_relay: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         result = {

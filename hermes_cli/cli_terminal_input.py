@@ -342,6 +342,12 @@ _KITTY_KEYBOARD_PUSH_SEQ = "\x1b[>1u"
 _MODIFY_OTHER_KEYS_SEQ = "\x1b[>4;2m"
 
 
+_FOCUS_REPORTING_ENABLE_SEQ = "\x1b[?1004h"
+
+
+_FOCUS_REPORTING_DISABLE_SEQ = "\x1b[?1004l"
+
+
 _EXTENDED_ENTER_KEYS_SEQ = _KITTY_KEYBOARD_PUSH_SEQ + _MODIFY_OTHER_KEYS_SEQ
 
 
@@ -373,6 +379,49 @@ def _terminal_supports_extended_enter_keys(env: Optional[Mapping[str, str]] = No
         or term == "xterm-ghostty"
         or term.startswith("tmux") or term_program.lower() == "tmux"
     )
+
+
+def _set_focus_reporting(output, enabled: bool) -> bool:
+    """Set DEC focus reporting on VT/ANSI input backends, best-effort.
+
+    prompt_toolkit's native Windows input path does not consume CSI focus
+    reports through the VT100 parser, so enabling DEC 1004 there can leak
+    ``[I``/``[O`` into the composer instead of producing ``Keys.Ignore``.
+    """
+    if sys.platform == "win32":
+        return False
+
+    from cli import _FOCUS_REPORTING_DISABLE_SEQ, _FOCUS_REPORTING_ENABLE_SEQ
+
+    seq = _FOCUS_REPORTING_ENABLE_SEQ if enabled else _FOCUS_REPORTING_DISABLE_SEQ
+    try:
+        if output is not None and hasattr(output, "write_raw"):
+            output.write_raw(seq)
+            output.flush()
+            return True
+        if sys.stdout is not None and sys.stdout.isatty():
+            sys.stdout.write(seq)
+            sys.stdout.flush()
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _enable_focus_reporting(output=None) -> bool:
+    """Ask the terminal to emit focus-in/out reports (DECSET 1004).
+
+    The classic CLI already consumes CSI I / CSI O and uses focus-in to repair
+    stale prompt state, but prompt_toolkit does not enable this mode for us.
+    Unsupported terminals ignore the private mode. Cleanup sends the matching
+    DECRST 1004 through _TERMINAL_INPUT_MODE_RESET_SEQ.
+    """
+    return _set_focus_reporting(output, True)
+
+
+def _disable_focus_reporting(output=None) -> bool:
+    """Suspend focus reports while another program owns the terminal."""
+    return _set_focus_reporting(output, False)
 
 
 def _enable_extended_enter_keys(output=None, env: Optional[Mapping[str, str]] = None) -> bool:

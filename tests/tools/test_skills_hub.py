@@ -874,10 +874,11 @@ class TestConvertToSkillMd:
             },
         }
         result = LobeHubSource._convert_to_skill_md(agent_data)
-        assert "---" in result
-        assert "name: test-agent" in result
-        assert "description: A test agent." in result
-        assert "tags: [testing, demo]" in result
+        from tools.skills_hub_models import _parse_frontmatter
+        metadata = _parse_frontmatter(result)
+        assert metadata["name"] == agent_data["identifier"]
+        assert metadata["description"] == agent_data["meta"]["description"]
+        assert metadata["metadata"]["hermes"]["tags"] == agent_data["meta"]["tags"]
         assert "# Test Agent" in result
         assert "You are a helpful test agent." in result
 

@@ -561,9 +561,12 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return
       }
 
+      // The launch prompt bypasses the composer; record it like a typed prompt so Up recalls it
+      // instead of skipping to an older session's history entry.
+      composerActions.pushHistory(value)
       send(value, true, value, v => v, { skipDetectDrop: true, attachments })
     },
-    [send]
+    [composerActions, send]
   )
 
   return { dispatchSubmission, send, sendQueued, submit, submitLiteral }

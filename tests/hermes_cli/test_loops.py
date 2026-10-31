@@ -529,8 +529,10 @@ class TestControls:
         mgr.pause()
         assert mgr.is_active() is False
         assert mgr.is_due() is False
+        state.slash_noop_streak = 3  # a pause earned by no-op ticks must not survive resume
         mgr.resume()
         assert mgr.is_active() is True
+        assert mgr.state.slash_noop_streak == 0
 
     def test_paused_mid_tick_clears_awaiting(self, hermes_home):
         from hermes_cli.loops import LoopManager

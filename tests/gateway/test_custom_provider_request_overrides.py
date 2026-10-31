@@ -87,7 +87,7 @@ def _make_source() -> SessionSource:
 def test_resolve_runtime_agent_kwargs_preserves_request_overrides(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda: {
+        lambda **_kw: {
             "api_key": "***",
             "base_url": "https://example.test/v1",
             "provider": "custom",
@@ -171,9 +171,7 @@ def test_turn_route_merges_fast_mode_with_provider_request_overrides():
 
 @pytest.mark.asyncio
 async def test_run_agent_preserves_provider_request_overrides_on_gateway_path(monkeypatch):
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
-    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
-    monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
     monkeypatch.setattr(
         gateway_run,
@@ -190,7 +188,7 @@ async def test_run_agent_preserves_provider_request_overrides_on_gateway_path(mo
     )
     _install_fake_agent(monkeypatch)
 
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
 
     monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
 
@@ -228,9 +226,7 @@ async def test_reused_agent_turn_merges_request_overrides_not_overwrite(monkeypa
     service_tier ON TOP, and the following normal turn drops only the stale
     fast-mode key while the provider extra_body survives.
     """
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
-    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
-    monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
     monkeypatch.setattr(
         gateway_run,
@@ -247,7 +243,7 @@ async def test_reused_agent_turn_merges_request_overrides_not_overwrite(monkeypa
     )
     _install_fake_agent(monkeypatch)
 
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
 
     monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
 

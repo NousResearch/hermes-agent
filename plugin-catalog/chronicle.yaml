@@ -1,0 +1,22 @@
+name: chronicle
+repo: https://github.com/indigokarasu/chronicle-agent-context-and-memory
+sha: 92e4351a852117a11542210d06e8e5bfb61c3f1a
+version: "5.8.35"
+description: "Local-first long-term memory and memory-aware context compression for Hermes — SQLite, no account, API key or hosted service required. Captures every turn durably, extracts beliefs with provenance, answers from memory (raw-tier fallback and abstention), derives scoped conclusions, and compresses the context window losslessly with a restorable record. Registers the memory-provider AND context-engine slots from one shared core, and ships the Tapestry dashboard. Disclosure — off-host embedding endpoints are refused by default (RFC1918/ULA/CGNAT and https peers); sending memory excerpts off the host requires opting in via embeddings.allow_remote. Disclosure — the git mirror (engine/gitmirror.py) is on by default and writes plaintext JSONL copies of memory into a local git repo at ~/.hermes/commons/db/chronicle/git; it pushes only when git_remote is configured, and its 'encryption' option is a repeating-key XOR obfuscation, not cryptographic encryption."
+maintainer: indigokarasu
+tier: community
+category: memory
+requires_hermes: ">=0.19"
+docs_url: https://github.com/indigokarasu/chronicle-agent-context-and-memory#readme
+image: https://raw.githubusercontent.com/indigokarasu/chronicle-agent-context-and-memory/92e4351a852117a11542210d06e8e5bfb61c3f1a/assets/readme/hero.jpg
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - subagent_start
+    - subagent_stop
+    - on_session_reset
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

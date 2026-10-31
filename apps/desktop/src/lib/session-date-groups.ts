@@ -97,12 +97,14 @@ function headRunCutoffMs(entries: readonly SidebarSessionEntry[], nowMs: number,
 export function groupEntriesByRecency(
   entries: readonly SidebarSessionEntry[],
   nowMs = Date.now(),
-  weekStartsOn = localeWeekStartDay()
+  weekStartsOn = localeWeekStartDay(),
+  maxGroups = Number.POSITIVE_INFINITY
 ): SidebarListRow[] {
   const rows: SidebarListRow[] = []
   const emitted = new Set<string>()
   const cutoff = headRunCutoffMs(entries, nowMs, weekStartsOn)
   let lastKey: null | string = null
+  let groups = 1
 
   for (const entry of entries) {
     // Nested branch rows travel with their parent cluster; they never open a new
@@ -136,6 +138,11 @@ export function groupEntriesByRecency(
       // A divider only ever separates two groups — never label the very first
       // rendered row, whatever group it belongs to.
       if (rows.length > 0 && !alreadyEmitted) {
+        if (groups >= maxGroups) {
+          break
+        }
+
+        groups++
         rows.push({ bucket, key: bucket.key, kind: 'divider' })
       }
     }
@@ -178,4 +185,31 @@ export function groupEntriesByStatus(
 // the same `SidebarListRow[]` shape as the grouped one.
 export function toSessionRows(entries: readonly SidebarSessionEntry[]): SidebarListRow[] {
   return entries.map(entry => ({ entry, kind: 'session' }))
+}
+
+/** Drop session rows that sit under a closed divider. The divider itself stays
+ *  so the group can be opened again. Sessions above the first divider (the
+ *  unlabelled head) are never gated. Returns the input array when nothing is
+ *  hidden so callers keep a stable reference. */
+export function hideCollapsedGroupRows(
+  rows: readonly SidebarListRow[],
+  isOpen: (key: string) => boolean
+): SidebarListRow[] {
+  const out: SidebarListRow[] = []
+  let hiding = false
+
+  for (const row of rows) {
+    if (row.kind === 'divider') {
+      hiding = !isOpen(row.key)
+      out.push(row)
+
+      continue
+    }
+
+    if (!hiding) {
+      out.push(row)
+    }
+  }
+
+  return out.length === rows.length ? (rows as SidebarListRow[]) : out
 }

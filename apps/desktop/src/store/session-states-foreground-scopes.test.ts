@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $selectedStoredSessionId,
+  $sessions,
   _resetSessionOwnerHintsForTests,
   setActiveSessionId,
   setSessionOwnerHint
 } from '@/store/session'
 
+import { stampSecondaryProfileOwner } from './session-event-provenance'
 import {
   $sessionOwnerHoldRevision,
   $sessionTiles,
@@ -26,6 +28,7 @@ import {
 
 afterEach(() => {
   $sessionTiles.set([])
+  $sessions.set([])
   setActiveSessionId(null)
   $selectedStoredSessionId.set(null)
   _resetSessionOwnerHoldsForTests()
@@ -65,6 +68,25 @@ describe('foregroundSessionScopes: owner hold across the create → foreground g
     $sessionTiles.set([{ ownerRoute: { connectionId: 'homelab', profile: 'bot' }, storedSessionId: 'stored-tile' }])
     // Covered by the tile's own route rung now; the hold retired.
     expect(foregroundSessionScopes()).toEqual(new Set(['conn:homelab::bot']))
+    $sessionTiles.set([])
+    expect(foregroundSessionScopes()).toEqual(new Set())
+  })
+
+  it('does not retire a hold for a tile that carries neither the route nor a scoped runtime', () => {
+    const pandora = { connectionId: '100-125-133-71-9119', mode: 'remote' as const, profile: 'default' }
+
+    holdSessionOwnerUntilForeground('stored-branch', pandora)
+    // The pre-fix branch path: openSessionTile with no workspaceScope mints a
+    // route-less tile. It pins nothing, so its mere existence must not retire
+    // the hold — that reopened the create→foreground gap and the pruner closed
+    // the owner socket under the draft runtime (resume→reclaim loop, #93892).
+    $sessionTiles.set([{ storedSessionId: 'stored-branch' }])
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:100-125-133-71-9119::default']))
+
+    // Once the tile actually names the owner (persisted route), it covers the
+    // hold and the hold retires for good.
+    $sessionTiles.set([{ ownerRoute: pandora, storedSessionId: 'stored-branch' }])
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:100-125-133-71-9119::default']))
     $sessionTiles.set([])
     expect(foregroundSessionScopes()).toEqual(new Set())
   })
@@ -111,5 +133,40 @@ describe('foregroundSessionScopes: owner hold across the create → foreground g
     holdSessionOwnerUntilForeground('stored-legacy', 'research')
 
     expect(foregroundSessionScopes()).toEqual(new Set(['research']))
+  })
+
+  it('names the local secondary profile when a foreground session is active on it (#121865)', () => {
+    const event = stampSecondaryProfileOwner({ session_id: 'rt-jody' } as never, 'jody')
+    recordSessionEventScope(event)
+    setActiveSessionId('rt-jody')
+
+    expect(foregroundSessionScopes()).toEqual(new Set(['jody']))
+  })
+
+  it('names the local secondary profile for an active session whose owner is known before events arrive (#121865)', () => {
+    $sessions.set([{ id: 'stored-jody', profile: 'jody' }] as never)
+    $selectedStoredSessionId.set('stored-jody')
+    setActiveSessionId('rt-jody-idle')
+
+    expect(foregroundSessionScopes()).toEqual(new Set(['jody']))
+  })
+
+  it('names the local secondary profile for an active session whose hint was stamped at open (#121865)', () => {
+    setSessionOwnerHint('stored-hinted', { connectionId: 'local', mode: 'local' as const, profile: 'jody' })
+    $selectedStoredSessionId.set('stored-hinted')
+    setActiveSessionId('rt-hinted-idle')
+
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:local::jody']))
+  })
+
+  it('does not name unrelated secondary profiles when another session is active (#121865)', () => {
+    $sessions.set([
+      { id: 'stored-jody', profile: 'jody' },
+      { id: 'stored-other', profile: 'unrelated' }
+    ] as never)
+    $selectedStoredSessionId.set('stored-jody')
+    setActiveSessionId('rt-jody')
+
+    expect(foregroundSessionScopes()).toEqual(new Set(['jody']))
   })
 })

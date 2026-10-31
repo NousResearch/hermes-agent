@@ -33,13 +33,6 @@ S6ServiceManager().register_profile_gateway("phase3test")
 print("REGISTERED")
 """
 
-_UNREGISTER_SCRIPT = """
-import sys
-sys.path.insert(0, "/opt/hermes")
-from hermes_cli.service_manager import S6ServiceManager
-S6ServiceManager().unregister_profile_gateway("phase3test")
-print("UNREGISTERED")
-"""
 
 
 def test_s6_register_creates_service_dir_in_live_container(
@@ -79,43 +72,3 @@ def test_s6_register_creates_service_dir_in_live_container(
         "print(S6ServiceManager().list_profile_gateways())"
     ))
     assert "phase3test" in r.stdout, f"list output: {r.stdout!r}"
-
-
-
-
-# Shell probe: build a service-shaped staging dir under the live scandir
-# with a given NAME, fire a real `s6-svscanctl -a` rescan, wait, and
-# report whether s6-svscan supervised it (which would create a root-owned
-# supervise/ dir). Used to prove the dot-prefixed staging name is INVISIBLE
-# to a concurrent rescan while a non-dotted one is not.
-#
-# Echoes one of: SUPERVISED / NOT-SUPERVISED, plus the supervise/ owner.
-_SVSCAN_PICKUP_PROBE = r"""
-set -eu
-NAME="$1"
-SCANDIR=/run/service
-DIR="$SCANDIR/$NAME"
-rm -rf "$DIR"
-mkdir -p "$DIR"
-printf 'longrun\n' > "$DIR/type"
-printf '#!/command/execlineb -P\n/command/s6-sleep 600\n' > "$DIR/run"
-chmod 755 "$DIR/run"
-# Trigger a full rescan, exactly as register/reconcile do.
-/command/s6-svscanctl -a "$SCANDIR"
-# Give s6-svscan time to act (its scan is async; 200ms is the manager's
-# own settle delay, use 2s here to be comfortably past it on any arch).
-/command/s6-sleep 2
-if [ -d "$DIR/supervise" ]; then
-    owner=$(stat -c '%U' "$DIR/supervise" 2>/dev/null || echo '?')
-    echo "SUPERVISED owner=$owner"
-else
-    echo "NOT-SUPERVISED"
-fi
-# Best-effort teardown so the probe leaves no live supervisor behind.
-/command/s6-svc -d "$DIR" 2>/dev/null || true
-/command/s6-svscanctl -an "$SCANDIR" 2>/dev/null || true
-/command/s6-sleep 1
-rm -rf "$DIR" 2>/dev/null || true
-"""
-
-

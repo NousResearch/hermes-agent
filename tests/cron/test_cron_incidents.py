@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import cron.incidents as incidents
+from cron import incidents
 import cron.jobs as cron_jobs
 import cron.scheduler as sched
+from hermes_time import now as _hermes_now
 
 
 def _point_db(monkeypatch, tmp_path):
@@ -30,8 +32,8 @@ def _job(**overrides):
         "enabled": True,
         "state": "scheduled",
         "schedule": {"kind": "interval", "minutes": 5, "display": "every 5m"},
-        "deliver": "local",
-        "model": None,
+        "deliver": "slack:alerts",
+        "model": "test-model",
         "provider": None,
         "provider_snapshot": "openrouter",
         "base_url": None,
@@ -40,23 +42,29 @@ def _job(**overrides):
     return job
 
 
-def _tick_failing(job, tmp_path, deliveries, error="boom unrelated"):
+def _tick_failing(job, tmp_path, deliveries, error="boom unrelated", *, settle=False):
     """Run one run_one_job tick whose agent raises ``error`` (the failure
-    path that composes the per-run failure ping). Mirrors the drift-alert-once
-    harness so the incident gating is exercised through the real scheduler."""
-    fake_db = MagicMock()
+    path that composes the per-run failure ping). Mirrors the preflight alert-once
+    harness so the incident gating is exercised through the real scheduler.
+    ``settle=True`` emulates the durable queue's drain, which marks the incident
+    alerted once the ping has left the process (``drain_delivery_queue.send``)."""
 
-    def fake_deliver(jb, content, adapters=None, loop=None):
+    (tmp_path / "config.yaml").write_text(
+        "platforms:\n  slack:\n    enabled: true\n    token: xoxb-test\n"
+    )
+
+    def fake_deliver(execution_id, jb, content, **kwargs):
         deliveries.append(content)
-        return None
+        if settle and kwargs.get("for_failure"):
+            sched._mark_incident_alerted(jb.get("_failure_incident_id"))
+        return {"status": "pending"}
 
     with cron_jobs.use_cron_store(tmp_path), \
          patch("cron.scheduler._hermes_home", tmp_path), \
-         patch("cron.scheduler._resolve_origin", return_value=None), \
+         patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-         patch("hermes_state.SessionDB", return_value=fake_db), \
-         patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+         patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                return_value={
                    "api_key": "test-key",
@@ -64,12 +72,13 @@ def _tick_failing(job, tmp_path, deliveries, error="boom unrelated"):
                    "provider": "openrouter",
                    "api_mode": "chat_completions",
                }), \
-         patch.object(sched, "_deliver_result", side_effect=fake_deliver), \
+         patch("cron.delivery_queue.enqueue", side_effect=fake_deliver), \
          patch("run_agent.AIAgent") as mock_agent_cls:
         mock_agent = MagicMock()
         mock_agent.run_conversation.side_effect = RuntimeError(error)
         mock_agent_cls.return_value = mock_agent
         sched.run_one_job(dict(job))
+        assert mock_agent.run_conversation.called
     return mock_agent_cls.called
 
 
@@ -90,6 +99,25 @@ def test_new_failure_creates_incident_and_is_new(monkeypatch, tmp_path):
     assert row["failure_type"] == "timeout"
     assert row["first_seen_at"] == row["last_seen_at"]
     assert inc.count_incidents() == 1
+
+
+def test_incidents_list_newest_instant_first_across_dst_fall_back(monkeypatch, tmp_path):
+    """01:10-05:00 is 20 minutes after 01:50-04:00 but sorts first as text."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    inc = _point_db(monkeypatch, tmp_path)
+    new_york = ZoneInfo("America/New_York")
+    monkeypatch.setattr(
+        inc, "_hermes_now", lambda: datetime(2026, 11, 1, 1, 50, tzinfo=new_york, fold=0)
+    )
+    earlier, _ = inc.upsert_incident("job-1", "first failure")
+    monkeypatch.setattr(
+        inc, "_hermes_now", lambda: datetime(2026, 11, 1, 1, 10, tzinfo=new_york, fold=1)
+    )
+    later, _ = inc.upsert_incident("job-2", "second failure")
+
+    assert [row["id"] for row in inc.list_incidents()] == [later, earlier]
 
 
 def test_same_signature_dedups_same_incident(monkeypatch, tmp_path):
@@ -121,6 +149,14 @@ def test_error_change_mints_new_incident(monkeypatch, tmp_path):
 
 
 def test_redaction_applied_to_incident_error(monkeypatch, tmp_path):
+    # agent.redact snapshots _REDACT_ENABLED from HERMES_REDACT_SECRETS at
+    # module-import time. When another collected test module imports the
+    # gateway/scheduler chain (e.g. test_codex_execution_paths.py), that
+    # import happens at COLLECTION time — before the conftest env scrub —
+    # so a developer shell exporting HERMES_REDACT_SECRETS=false freezes
+    # redaction off and this test fails only in full-directory runs.
+    # Pin the flag explicitly, matching the repo-wide pattern.
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True, raising=False)
     inc = _point_db(monkeypatch, tmp_path)
     secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
 
@@ -214,22 +250,40 @@ def test_missing_db_no_crash(monkeypatch, tmp_path):
 # ── Scheduler gating ───────────────────────────────────────────────────────
 
 
-def test_unacked_failure_still_alerts(monkeypatch, tmp_path):
+def test_repeat_failure_alerts_once_then_reminds_after_cooldown(monkeypatch, tmp_path, cron_owner):
+    """Same job + same error: the first failing run delivers, the repeat is withheld (but still
+    recorded as a run), one reminder goes out once ``cron.failure_repeat_alert_hours`` has
+    elapsed, and a green run re-arms the signature so the same error alerts again."""
     inc = _point_db(monkeypatch, tmp_path)
     deliveries = []
+    # A real (non-local) lane: the ping leaves the process, so the incident is marked alerted.
     job = _job()
     with cron_jobs.use_cron_store(tmp_path):
         cron_jobs.save_jobs([job])
-        _tick_failing(job, tmp_path, deliveries, error="unacked boom")
-        _tick_failing(job, tmp_path, deliveries, error="unacked boom")
+        _tick_failing(job, tmp_path, deliveries, error="repeat boom", settle=True)
+        _tick_failing(job, tmp_path, deliveries, error="repeat boom", settle=True)
+        assert len(deliveries) == 1, "an alerted signature must not re-ping on every run"
+        rows = inc.list_incidents()
+        assert len(rows) == 1 and rows[0]["state"] == "alerted" and rows[0]["alerted_at"]
+        stored = next(j for j in cron_jobs.load_jobs() if j["id"] == job["id"])
+        assert stored["last_status"] == "error", "the withheld run is still recorded"
 
-    assert len(deliveries) == 2, "unacked failures must keep alerting per run"
-    rows = inc.list_incidents()
-    assert len(rows) == 1
-    assert rows[0]["state"] == "detected"
+        # Cooldown elapsed: exactly one reminder, then silent again.
+        stale = (_hermes_now() - timedelta(hours=7)).isoformat()
+        with inc._transaction() as conn:
+            conn.execute("UPDATE cron_incidents SET alerted_at=?", (stale,))
+        _tick_failing(job, tmp_path, deliveries, error="repeat boom", settle=True)
+        _tick_failing(job, tmp_path, deliveries, error="repeat boom", settle=True)
+        assert len(deliveries) == 2, "one reminder after the cooldown, not one per run"
+
+        # Recovery re-arms: the same error after a green run alerts immediately.
+        sched._resolve_incidents_for_recovered_job(job)
+        _tick_failing(job, tmp_path, deliveries, error="repeat boom", settle=True)
+        assert len(deliveries) == 3
+        assert inc.count_incidents() == 1
 
 
-def test_ack_suppresses_alert_until_signature_changes(monkeypatch, tmp_path):
+def test_ack_suppresses_alert_until_signature_changes(monkeypatch, tmp_path, cron_owner):
     inc = _point_db(monkeypatch, tmp_path)
     deliveries = []
     job = _job()
@@ -254,6 +308,26 @@ def test_ack_suppresses_alert_until_signature_changes(monkeypatch, tmp_path):
         _tick_failing(job, tmp_path, deliveries, error="boom signature B")
         assert len(deliveries) == 2, "changed signature must re-alert"
         assert inc.count_incidents() == 2
+
+
+def test_ack_holds_when_only_a_measured_duration_differs(monkeypatch, tmp_path, cron_owner):
+    """The inactivity watchdog polls every few seconds, so the same stall reports a slightly
+    different idle time each run. That is the same failure: the ack must keep it silent."""
+    inc = _point_db(monkeypatch, tmp_path)
+    deliveries = []
+    job = _job()
+    stall = "Cron job 'x' idle for {}s (limit 600s) — last activity: waiting for tool"
+    with cron_jobs.use_cron_store(tmp_path):
+        cron_jobs.save_jobs([job])
+        _tick_failing(job, tmp_path, deliveries, error=stall.format(601))
+        assert len(deliveries) == 1
+        (first,) = inc.list_incidents()
+        assert inc.ack_incident(first["id"]) is True
+
+        _tick_failing(job, tmp_path, deliveries, error=stall.format(604))
+
+        assert len(deliveries) == 1, "acked stall must not re-ping on a new idle reading"
+        assert [row["id"] for row in inc.list_incidents()] == [first["id"]]
 
 
 def test_mark_incident_alerted_sets_state_never_resurrects(monkeypatch, tmp_path):
@@ -327,3 +401,32 @@ def test_cli_list_and_ack(monkeypatch, tmp_path, capsys):
         incident_action="ack", state=None, incident_id=None
     )
     assert cron_incidents(missing_args) == 1
+def test_alerted_gate_honours_cooldown_opt_out_and_legacy_rows(monkeypatch, tmp_path):
+    """Unit level: ``alerted`` withholds only inside the cooldown; ``0`` restores per-run
+    alerts; a pre-migration row (state alerted, no ``alerted_at``) delivers rather than
+    swallowing the alert; ``closed`` still wins regardless of the cooldown."""
+    inc = _point_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(sched, "_failure_repeat_alert_hours", lambda: 6.0)
+    job = _job()
+    withheld, inc_id = sched._upsert_incident_for_failure(job, "repeat boom")
+    assert withheld is False and inc_id is not None
+    sched._mark_incident_alerted(inc_id)
+    assert inc.get_incident(inc_id)["state"] == "alerted"
+    assert sched._upsert_incident_for_failure(job, "repeat boom") == (True, inc_id)
+
+    monkeypatch.setattr(sched, "_failure_repeat_alert_hours", lambda: 0)
+    assert sched._upsert_incident_for_failure(job, "repeat boom") == (False, inc_id)
+
+    monkeypatch.setattr(sched, "_failure_repeat_alert_hours", lambda: 6.0)
+    with inc._transaction() as conn:
+        conn.execute("UPDATE cron_incidents SET alerted_at=NULL WHERE id=?", (inc_id,))
+    assert sched._upsert_incident_for_failure(job, "repeat boom") == (False, inc_id)
+
+    # Re-alerting restarts the window (the reminder stamps alerted_at again).
+    sched._mark_incident_alerted(inc_id)
+    assert inc.get_incident(inc_id)["alerted_at"]
+    assert sched._upsert_incident_for_failure(job, "repeat boom") == (True, inc_id)
+
+    assert inc.ack_incident(inc_id) is True
+    monkeypatch.setattr(sched, "_failure_repeat_alert_hours", lambda: 0)
+    assert sched._upsert_incident_for_failure(job, "repeat boom") == (True, inc_id)

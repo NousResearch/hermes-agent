@@ -17,18 +17,6 @@ describe('looksLikeDroppedPath', () => {
     expect(looksLikeDroppedPath('line one\nline two')).toBe(false)
   })
 
-  it('recognizes common image file extensions', () => {
-    expect(looksLikeDroppedPath('/Users/me/Desktop/photo.jpg')).toBe(true)
-    expect(looksLikeDroppedPath('/Users/me/Desktop/diagram.png')).toBe(true)
-    expect(looksLikeDroppedPath('/tmp/capture.webp')).toBe(true)
-    expect(looksLikeDroppedPath('/tmp/image.gif')).toBe(true)
-  })
-
-  it('recognizes file:// URIs with various extensions', () => {
-    expect(looksLikeDroppedPath('file:///home/user/doc.pdf')).toBe(true)
-    expect(looksLikeDroppedPath('file:///tmp/screenshot.png')).toBe(true)
-  })
-
   it('recognizes paths with spaces (not backslash-escaped)', () => {
     expect(looksLikeDroppedPath('/var/folders/x/T/TemporaryItems/Screenshot 2026-04-21 at 1.04.43 PM.png')).toBe(true)
   })

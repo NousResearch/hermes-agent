@@ -955,10 +955,14 @@ def handle_function_call(
                 enabled_tools=enabled_tools, middleware_trace=trace,
                 enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
             ), duration_ms=_elapsed_ms(start))
+        # The caller's skip_* flags describe the WRAPPER call it already policed, never the
+        # underlying tool: forwarding them left the real tool with no pre_tool_call hook,
+        # no request middleware and no execution middleware at all. Same rule as the
+        # connector batch re-dispatch (tools/connectors/dispatch.py).
         return handle_function_call(
             *underlying, **asdict(ids), user_task=user_task, enabled_tools=enabled_tools,
-            skip_pre_tool_call_hook=skip_pre_tool_call_hook, skip_tool_request_middleware=skip_tool_request_middleware,
-            skip_tool_execution_middleware=skip_tool_execution_middleware, tool_request_middleware_trace=list(trace),
+            skip_pre_tool_call_hook=False, skip_tool_request_middleware=False,
+            skip_tool_execution_middleware=False, tool_request_middleware_trace=list(trace),
             enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
         )
 

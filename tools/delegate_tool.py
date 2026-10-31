@@ -694,7 +694,7 @@ _DELIVERY_INDEPENDENT, _DELIVERY_JOINED = "each ungrouped task / `group` returns
 
 _DESCRIPTION_DELIVERY = (
     "Sessions without a later-result consumer (including one-shot CLI and cron) join parallel children "
-    "and return results in this tool call. "
+    "and return results in this tool call. ACP hosts hold their turn open for children and do the same. "
     "Otherwise runs in the background: dispatch returns live transcript paths and results re-enter "
     "as a new message when subagents finish ({delivery}). Background results are delivered only "
     "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "

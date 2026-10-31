@@ -2468,6 +2468,28 @@ Signal is listed as a valid platform key because the setting can be saved per pl
 
 `show_commentary` (default `true`) controls Codex Responses models' commentary channel — the polished progress narration these models produce alongside their private reasoning. When enabled, each completed commentary message is delivered as a visible mid-turn update (on the gateway this also requires `interim_assistant_messages`). Set it to `false` if the extra narration annoys you: commentary then falls back to the reasoning channel and is only shown when `show_reasoning` is enabled.
 
+## Pricing Overrides
+
+Hermes derives per-turn dollar costs (the `display.show_cost` status bar, `/usage`, `hermes insights`) from token counts × per-model pricing. Pricing comes from a bundled snapshot of vendor price pages and from provider model APIs. A custom gateway, relay or self-hosted endpoint usually publishes neither, so its turns report the cost as unknown. The root-level `pricing_overrides:` list declares rates yourself; a matching entry wins over every other source, so it also corrects a bundled rate that went stale:
+
+```yaml
+pricing_overrides:
+  - provider: custom:fireworks   # optional; omit it to match the model on every provider
+    model: kimi-k2p6             # full model id or its last path segment
+    input_per_million: 0.95      # required, USD per 1M input tokens
+    output_per_million: 4.00     # required, USD per 1M output tokens
+    cache_read_per_million: 0.16 # optional
+    cache_write_per_million: 0   # optional, 5-minute (default) cache writes
+    cache_write_1h_per_million: 0  # optional, 1-hour cache writes; defaults to cache_write_per_million
+    request_cost: 0              # optional, flat USD per request
+    source_url: https://docs.fireworks.ai/serverless/pricing  # optional, free-form
+    pricing_version: fireworks-2026-05                        # optional, free-form
+```
+
+`provider` is the provider Hermes runs the model on: `custom` for a bare `model.base_url` endpoint, `custom:<name>` for a named custom provider (the bare `<name>` matches too). Entries missing either required rate are skipped, so a malformed item never masks a later valid one. Costs resolved this way carry the source `user_override`. Subscription routes (for example the Codex subscription) stay `included` and ignore overrides.
+
+Anthropic reports how many cache-write tokens used the 1-hour TTL (`prompt_caching.cache_ttl`). Hermes bills those at the 1-hour rate (2x base input) and the rest at the 5-minute rate (1.25x), for the bundled Claude rates and for overrides that set `cache_write_1h_per_million`.
+
 ## Privacy
 
 ```yaml

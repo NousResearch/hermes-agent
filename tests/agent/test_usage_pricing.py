@@ -967,6 +967,22 @@ def test_junk_reported_cost_falls_back_to_the_normal_route(usage):
     assert result.source != "provider_cost_api"
 
 
+def test_the_shared_reader_accepts_a_mapping_and_an_object():
+    # Two call sites read the same table: ``estimate_usage_cost`` passes ``usage.raw_usage`` (a
+    # mapping) and ``agent.turn_usage`` passes the provider's response/usage object (attributes).
+    from agent.usage_pricing import _provider_reported_cost, provider_reported_cost
+
+    assert provider_reported_cost({"cost_in_usd_ticks": 1_000_000_000}) == Decimal("0.1")
+
+    class _ResponseUsage:
+        cost_in_usd_ticks = 2_000_000_000
+
+    assert provider_reported_cost(_ResponseUsage()) == Decimal("0.2")
+    assert provider_reported_cost(None) is None
+    # ... and the canonical path is exactly that reader applied to ``raw_usage``.
+    assert _provider_reported_cost(CanonicalUsage(raw_usage={"cost": 1.5})) == provider_reported_cost({"cost": 1.5})
+
+
 def test_a_reported_charge_wins_over_the_price_table():
     # A provider that bills the exact request is more accurate than a table estimate, so the
     # reported figure is used even for a model the tables DO have a row for (here Astra's whole-

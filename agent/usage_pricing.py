@@ -683,20 +683,29 @@ def _unknown_cost(source: CostSource, *notes: str) -> CostResult:
     return CostResult(amount_usd=None, status="unknown", source=source, label="n/a", notes=notes)
 
 
-def _provider_reported_cost(usage: Any) -> Optional[Decimal]:
+# The fields a provider may report its own charge in, with the unit of each. One table for every
+# reader: ``estimate_usage_cost`` (canonical usage buckets) and ``agent.turn_usage`` (the raw
+# response, whose field the streamed codex path drops from those buckets). Read apart, the two
+# sites classify the same response differently as soon as one of them learns a new key.
+PROVIDER_COST_FIELDS: tuple[tuple[str, Decimal], ...] = (
+    ("cost_in_usd_ticks", Decimal("1e-10")),  # xAI: 1e-10 USD units
+    ("cost", Decimal(1)),
+    ("total_cost", Decimal(1)),
+)
+
+
+def provider_reported_cost(source: Any) -> Optional[Decimal]:
     """Cost the provider itself charged for this response, when it says so.
 
-    xAI returns ``usage.cost_in_usd_ticks`` (1e-10 USD units) on every completion;
-    OpenAI-compatible relays often return ``usage.cost``/``total_cost``. A
-    provider-reported figure beats any price table, so it must be recorded as
-    actual spend rather than an estimate.
+    *source* is either a mapping (``usage.raw_usage``) or an object whose attributes carry the same
+    keys (a provider response/usage object), so both accounting call sites can share this read. A
+    boolean, a negative figure, a string or a non-numeric value is skipped: a reported charge beats
+    any price table, and a wrong one is worse than a table estimate.
     """
-    raw = getattr(usage, "raw_usage", None)
-    if not isinstance(raw, dict):
+    if source is None:
         return None
-    for key, scale in (("cost_in_usd_ticks", Decimal("1e-10")),
-                       ("cost", Decimal(1)), ("total_cost", Decimal(1))):
-        value = raw.get(key)
+    for key, scale in PROVIDER_COST_FIELDS:
+        value = source.get(key) if isinstance(source, dict) else getattr(source, key, None)
         if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
             continue
         try:
@@ -706,6 +715,11 @@ def _provider_reported_cost(usage: Any) -> Optional[Decimal]:
         if amount >= 0:
             return amount
     return None
+
+
+def _provider_reported_cost(usage: Any) -> Optional[Decimal]:
+    """The reported charge carried by a ``CanonicalUsage``'s ``raw_usage`` bucket."""
+    return provider_reported_cost(getattr(usage, "raw_usage", None))
 
 
 def estimate_usage_cost(

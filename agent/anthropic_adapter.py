@@ -757,10 +757,21 @@ def buffer_anthropic_tool_input(api_kwargs: dict[str, Any], base_url: str | None
 
 
 class _UsageNormalizingStream:
-    """Raw SSE iterator proxy that fills ``usage: null`` before the SDK accumulates it (#60683)."""
+    """Raw SSE iterator proxy that fills ``usage: null`` before the SDK accumulates it (#60683).
+
+    Also captures ``output_tokens_details`` from the message_delta event. Anthropic-compatible
+    providers (MiniMax) report hidden thinking there, under ``thinking_tokens``; the SDK's
+    accumulate_event() copies only the flat counters onto the accumulated snapshot, so the
+    bucket is dropped and the model reports zero reasoning tokens despite thinking on every
+    turn. The value IS present on the delta event's own usage object (the SDK models it as an
+    extra field) — only the final snapshot loses it.
+    """
 
     def __init__(self, inner):
         self._inner = inner
+        # Captured from the message_delta event; re-attached to the final usage by
+        # _attach_output_tokens_details (see normalize_stream_usage).
+        self.output_tokens_details: Optional[dict[str, Any]] = None
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
@@ -778,10 +789,16 @@ class _UsageNormalizingStream:
                     message.usage = Usage(input_tokens=0, output_tokens=0)
                 elif usage is not None:
                     output_tokens = getattr(usage, "output_tokens", 0) or 0
-            elif etype == "message_delta" and getattr(event, "usage", None) is None:
-                # accumulate_event() assigns delta output_tokens unconditionally; carry
-                # message_start's count forward instead of clobbering it with 0.
-                event.usage = MessageDeltaUsage(output_tokens=output_tokens)
+            elif etype == "message_delta":
+                delta_usage = getattr(event, "usage", None)
+                if delta_usage is None:
+                    # accumulate_event() assigns delta output_tokens unconditionally; carry
+                    # message_start's count forward instead of clobbering it with 0.
+                    event.usage = MessageDeltaUsage(output_tokens=output_tokens)
+                else:
+                    details = getattr(delta_usage, "output_tokens_details", None)
+                    if details:
+                        self.output_tokens_details = details
             yield event
 
 
@@ -790,12 +807,47 @@ def normalize_stream_usage(message_stream: Any) -> Any:
 
     Anthropic-compatible providers (MiniMax) send ``usage: null`` on message_start and/or
     message_delta; the SDK's accumulate_event() then dies on ``usage.output_tokens`` mid-
-    iteration (#60683). Wraps ``MessageStream._raw_stream`` in place; no-op for other shapes."""
+    iteration (#60683). Wraps ``MessageStream._raw_stream`` in place; no-op for other shapes.
+
+    Also re-attaches the delta's ``output_tokens_details`` to the accumulated final usage, so
+    a provider that reports hidden thinking there (MiniMax: ``thinking_tokens``) is not
+    recorded as zero reasoning tokens.
+    """
     raw = getattr(message_stream, "_raw_stream", None)
     if raw is None or not hasattr(raw, "__iter__"):
         return message_stream
-    message_stream._raw_stream = _UsageNormalizingStream(raw)
+    proxy = _UsageNormalizingStream(raw)
+    message_stream._raw_stream = proxy
+    _attach_output_tokens_details(message_stream, proxy)
     return message_stream
+
+
+def _attach_output_tokens_details(message_stream: Any, proxy: "_UsageNormalizingStream") -> None:
+    """Wrap ``get_final_message`` so the delta's ``output_tokens_details`` survives onto the
+    accumulated usage. The SDK's snapshot copies only the flat counters, and this is the last
+    point where the hidden-thinking count can be recovered."""
+    original = getattr(message_stream, "get_final_message", None)
+    if not callable(original):
+        return
+
+    def get_final_message(*args, **kwargs):
+        message = original(*args, **kwargs)
+        details = getattr(proxy, "output_tokens_details", None)
+        usage = getattr(message, "usage", None)
+        if details and usage is not None and not getattr(usage, "output_tokens_details", None):
+            try:
+                usage.output_tokens_details = details
+            except (AttributeError, TypeError, ValueError) as exc:
+                # A strict/frozen usage model: skip rather than break the turn.
+                logger.debug("could not attach output_tokens_details to usage: %s", exc)
+        return message
+
+    try:
+        message_stream.get_final_message = get_final_message
+    except (AttributeError, TypeError) as exc:
+        # Some SDK stream objects forbid attribute assignment — usage accounting degrades to
+        # zero instead of the turn failing.
+        logger.debug("could not wrap get_final_message for usage details: %s", exc)
 
 
 def _is_stream_unavailable_error(exc: Exception) -> bool:

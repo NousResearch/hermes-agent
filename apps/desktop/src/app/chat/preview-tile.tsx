@@ -34,6 +34,7 @@ import {
   $visiblePreviewTabs,
   adoptPersistedBrowserTab,
   type BrowserPage,
+  canPopOutBrowserTab,
   closeRightRailTab,
   forgetBrowserPage,
   markBrowserTabPopped,
@@ -44,7 +45,6 @@ import {
   setPreviewTabPinned
 } from '@/store/preview'
 import { explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
-import { canOpenBrowserWindow } from '@/store/windows'
 
 import { paneMirror } from './pane-mirror'
 import { PreviewTilePane } from './right-rail/preview'
@@ -81,7 +81,7 @@ function browserTabMenuPrefix(tabId: string) {
 
   return (kit: MenuKit) => (
     <>
-      {canOpenBrowserWindow()
+      {canPopOutBrowserTab(tabId)
         ? renderActionItem(kit, {
             icon: 'empty-window',
             key: 'pop-out',

@@ -16,6 +16,8 @@ export const arCapabilities = {
   skills: {
     plugins: {
       ...arPluginPreviewAccess,
+      enabledRestartRequired: (name: string) =>
+        `تم تفعيل ${name}. ثُبّتت تبعيات Python الخاصة بها للتشغيل التالي، لذا أعد تشغيل Hermes لتحميلها.`,
       pageBlurb: 'يمكن للإضافة توسيع هذا التطبيق أو الوكيل أو كليهما — ولكل جزء مفتاح تشغيل مستقل.',
       folderAccess: {
         title: 'الوصول إلى المجلدات',

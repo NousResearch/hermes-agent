@@ -13,6 +13,8 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { RowButton } from '@/components/ui/row-button'
 import { OverflowTip, Tip } from '@/components/ui/tooltip'
+import { SESSION_AREAS } from '@/contrib/session'
+import { SessionContributions } from '@/contrib/session-contributions'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
@@ -51,6 +53,7 @@ import {
 } from './chrome'
 import { shellOwnsPress } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { SidebarSessionActivity } from './session-activity'
 import { sessionRowDetails } from './session-row-details'
 import { resolveSessionRowClick } from './session-row-gesture'
 import { SessionRowSlot } from './session-row-slots'
@@ -125,6 +128,17 @@ function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   return unit === 'second' ? r.ageNow : `${value}${r[AGE_KEY[unit]]}`
 }
 
+function sessionRowFigures(rowMeta: readonly string[], totalTokens: number, cost: number): string[] {
+  // Tokens, cost and age share one figure rather than each claiming a column:
+  // several switched on read as one number, not as a widening gutter.
+  return [
+    rowMeta.includes('tokens') && totalTokens > 0 ? compactNumber(totalTokens) : null,
+    // Sub-cent spend rounds to "$0.00", which reads as a bug rather than as a
+    // cheap session — below a cent the row says nothing at all.
+    rowMeta.includes('cost') && cost >= 0.01 ? `$${cost.toFixed(2)}` : null
+  ].filter(Boolean) as string[]
+}
+
 function SidebarSessionRowImpl({
   session,
   branchStem,
@@ -187,14 +201,7 @@ function SidebarSessionRowImpl({
   const totalTokens = session.input_tokens + session.output_tokens
   const cost = sessionCostUsd(session)
 
-  // Tokens, cost and age share one figure rather than each claiming a column:
-  // several switched on read as one number, not as a widening gutter.
-  const figures = [
-    rowMeta.includes('tokens') && totalTokens > 0 ? compactNumber(totalTokens) : null,
-    // Sub-cent spend rounds to "$0.00", which reads as a bug rather than as a
-    // cheap session — below a cent the row says nothing at all.
-    rowMeta.includes('cost') && cost >= 0.01 ? `$${cost.toFixed(2)}` : null
-  ].filter(Boolean) as string[]
+  const figures = sessionRowFigures(rowMeta, totalTokens, cost)
 
   // Everything the Show menu puts after the title shares ONE right-aligned
   // slot, in reading order: identity chips, then the figures. The kebab covers
@@ -316,6 +323,9 @@ function SidebarSessionRowImpl({
       onClick={event => event.stopPropagation()}
       onPointerDown={event => event.stopPropagation()}
     >
+      {/* Activity owns a small inline slot before metadata. Keep it outside
+          the tail swap so the age/PR/kebab retain their existing behavior. */}
+      {!session.archived && <SidebarSessionActivity sessionId={session.id} />}
       {trailing.map(({ key, node }, index) => (
         <span
           className={
@@ -550,6 +560,7 @@ function SidebarSessionRowImpl({
                   <SessionRowSlot area={SESSION_ROW_AREAS.leading} sessionId={sessionPinId(session)} />
                   {handoffBadge}
                   {continuationBadge}
+                  <SessionContributions area={SESSION_AREAS.listBadge} row={session} storedSessionId={session.id} />
                   <span className="min-w-0 flex-1 self-center">
                     {/* The row's primary action (#38072 finding 3): the title
                         is the session row's real button — the grabber and ⋯
@@ -619,6 +630,7 @@ function SidebarSessionRowImpl({
                   </span>
                   {handoffBadge}
                   {continuationBadge}
+                  <SessionContributions area={SESSION_AREAS.listBadge} row={session} storedSessionId={session.id} />
                   <SessionRowSlot area={SESSION_ROW_AREAS.trailing} sessionId={sessionPinId(session)} />
                   {actionsNode}
                 </div>

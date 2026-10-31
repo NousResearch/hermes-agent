@@ -918,8 +918,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if flag in ("0", "false", "no", "off"):
             return False
         # Same "are these the host's files" test the LSP path uses; an attribute read
-        # and self.env is never rebound, so nothing to memoize.
-        return sys.platform != "win32" and self._lsp_local_only()
+        # and self.env is never rebound, so nothing to memoize. Context-bound local environments
+        # still require their backend's command prefix and environment routing; native I/O would
+        # bypass both.
+        return (sys.platform != "win32" and self._lsp_local_only()
+                and getattr(self.env, "execution_context", None) is None)
 
     def _native_path(self, path: str) -> str:
         """``path`` resolved the way the shell resolves it: against the live backend cwd."""

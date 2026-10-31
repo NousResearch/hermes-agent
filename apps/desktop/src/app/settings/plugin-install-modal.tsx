@@ -283,10 +283,12 @@ interface InstallFooterProps {
   onInstall: () => void
   onInstallAnyway: () => void
   onRetry: () => void
+  onReviewSetup?: () => void
   retryable: boolean
 }
 
-/** Cancel, then Install (one loader while it runs) or, after a failure, Retry — unless retrying cannot help. */
+/** Cancel, then Install (one loader while it runs) or, after a failure, Retry — unless retrying cannot help.
+ *  Files that landed but whose setup needs review offer the Plugins page instead of a retry (no reclone). */
 function InstallFooter({
   canInstall,
   confirmUnreviewed,
@@ -295,6 +297,7 @@ function InstallFooter({
   onInstall,
   onInstallAnyway,
   onRetry,
+  onReviewSetup,
   retryable
 }: InstallFooterProps) {
   const { t } = useI18n()
@@ -302,12 +305,17 @@ function InstallFooter({
 
   return (
     <DialogFooter>
+      {onReviewSetup && (
+        <Button disabled={installing} onClick={onReviewSetup} variant="secondary">
+          {t.settings.plugins.agent.reviewSetup}
+        </Button>
+      )}
       <Button disabled={installing} onClick={closePluginInstallRequest} variant="outline">
         {t.common.cancel}
       </Button>
       {confirmUnreviewed && !installing ? (
         <Button onClick={onInstallAnyway}>{m.installAnyway}</Button>
-      ) : failed ? (
+      ) : failed && !onReviewSetup ? (
         retryable && <Button onClick={onRetry}>{t.common.retry}</Button>
       ) : (
         <Button disabled={!canInstall} onClick={onInstall}>
@@ -459,6 +467,7 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
   const [pinRef, setPinRef] = useState('')
   const [installError, setInstallError] = useState<null | string>(null)
   const [installUncertain, setInstallUncertain] = useState(false)
+  const [installedPlugin, setInstalledPlugin] = useState<null | string>(null)
   // The source moved past the commit on screen: the dialog read it again and shows the new one for review.
   const [sourceMoved, setSourceMoved] = useState(false)
   // The backend predates `inspected_sha` and installed nothing: Install waits for an explicit "Install anyway".
@@ -535,6 +544,12 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
           reviewAgain(detected)
         },
         needsConfirm: () => setConfirmUnreviewed(true),
+        // The files landed but native setup needs review: offer the Plugins page, never a reclone.
+        setup: () => {
+          const { error, plugin } = outcome as Extract<InstallOutcome, { status: 'setup' }>
+          setInstalledPlugin(plugin)
+          setInstallError(`${t.settings.plugins.agent.setupInstalled} ${error}`)
+        },
         failed: () => setInstallError((outcome as Extract<InstallOutcome, { status: 'failed' }>).error)
       }
 
@@ -552,16 +567,26 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
     }
   }
 
-  const canInstall = installEnabled({
-    force,
-    installing,
-    partial,
-    pinInvalid,
-    probe,
-    rereview,
-    uncertain: installUncertain,
-    verified
-  })
+  // A setup review pending on landed files blocks another Install (it would reclone them).
+  const canInstall =
+    installedPlugin === null &&
+    installEnabled({
+      force,
+      installing,
+      partial,
+      pinInvalid,
+      probe,
+      rereview,
+      uncertain: installUncertain,
+      verified
+    })
+
+  const reviewSetup = installedPlugin
+    ? () => {
+        closePluginInstallRequest()
+        navigate(`/capabilities?tab=plugins&plugin=${encodeURIComponent(installedPlugin)}`)
+      }
+    : undefined
 
   return (
     <>
@@ -613,6 +638,7 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
         onInstall={() => void install()}
         onInstallAnyway={() => void install(true)}
         onRetry={retry}
+        onReviewSetup={reviewSetup}
         retryable={retryable}
       />
     </>

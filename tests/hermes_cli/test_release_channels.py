@@ -37,7 +37,7 @@ def test_resolve_verifies_exact_manifest_and_preserves_retirement_constraints():
         pub = publisher(url)
         for name in ("old-preview", "next-preview"):
             pub.create(name)
-        request = pub.allocate("next-preview", "a" * 40, "1.2.3")
+        request = pub.allocate("next-preview", "a" * 40, "1.2.3", release_tag="channel.20261028T120000Z-v1.2.3")
         request.update(version="1.2.3", windowsVersion="1.2.3.0", releaseTag="v1.2.3")
         manifest, record = seed_manifest(pub, request, objects)
         record["policy"] = "stable-release"
@@ -170,7 +170,7 @@ def test_reader_rejects_cycles_identity_substitution_and_cross_authority():
     with object_server() as (url, objects, _headers, _requests, _faults):
         pub = publisher(url)
         pub.create("alpha")
-        request = pub.allocate("alpha", "a" * 40, "1.2.3")
+        request = pub.allocate("alpha", "a" * 40, "1.2.3", release_tag="channel.20261028T120000Z-v1.2.3")
         manifest, record = seed_manifest(pub, request, objects)
         reader = ChannelReader(url + "/bucket", repository="example/hermes-agent")
         substituted = deepcopy(manifest)
@@ -199,7 +199,7 @@ def test_legacy_bootstrap_uses_real_archive_keys_and_source_main_has_no_bundle()
     with object_server() as (url, objects, _headers, _requests, _faults):
         pub = publisher(url, verify_build=lambda request, manifest: True)
         preview = pub.create("temporary")
-        request = pub.allocate("temporary", "a" * 40, "2.0.0")
+        request = pub.allocate("temporary", "a" * 40, "2.0.0", release_tag="channel.20261028T120000Z-v2.0.0")
         manifest, _ = seed_manifest(pub, request, objects)
         from hermes_cli.update_channel import release_version
 
@@ -227,25 +227,31 @@ def test_legacy_bootstrap_uses_real_archive_keys_and_source_main_has_no_bundle()
             with pytest.raises(ChannelError, match="Protected"):
                 pub.promote(legacy["request"]["buildId"])
             with pytest.raises(ChannelError, match="Protected"):
-                pub.allocate(name, "a" * 40, "2.0.0")
+                pub.allocate(name, "a" * 40, "2.0.0", release_tag="channel.20261028T120000Z-v2.0.0")
 
 
-@pytest.mark.parametrize("sequence", [1, 65535, 65536, 2**32 - 1])
-def test_sequence_versions_remain_monotonic_at_native_rollover(sequence):
-    from hermes_cli.release_channels import package_versions
-    version, windows = package_versions(sequence)
-    assert version == f"0.0.{sequence}"
-    quad = tuple(map(int, windows.split(".")))
-    assert quad[1] * 65536 + quad[2] == sequence and max(quad) <= 65535
-    if sequence > 1:
-        assert quad > tuple(map(int, package_versions(sequence - 1)[1].split(".")))
+@pytest.mark.parametrize("stamps", [
+    ("20261028T120000Z", "20261028T120001Z"),   # a second
+    ("20261028T125959Z", "20261028T130000Z"),   # an hour
+    ("20261031T235959Z", "20261101T000000Z"),   # a month
+    ("20261231T235959Z", "20270101T000000Z"),   # a year
+])
+def test_claim_versions_remain_monotonic_at_native_rollover(stamps):
+    # A preview package carries its channel claim's version and stamped quad; the sequence only
+    # orders the channel head.
+    from hermes_cli.update_channel import release_version, stamped_windows_version
+    earlier, later = (f"channel.{stamp}-v1.2.3" for stamp in stamps)
+    assert release_version(later) == "1.2.3+channel." + stamps[1]
+    quads = [tuple(map(int, stamped_windows_version(tag).split("."))) for tag in (earlier, later)]
+    assert all(0 <= part <= 65535 for part in quads[1]) and quads[0] < quads[1]
 
 
-@pytest.mark.parametrize("sequence", [0, -1, True, 2**32, "1"])
-def test_sequence_exhaustion_never_wraps(sequence):
-    from hermes_cli.release_channels import package_versions, ChannelError
-    with pytest.raises(ChannelError):
-        package_versions(sequence)
+@pytest.mark.parametrize("tag", ["v1.2.3", "rc.1-v1.2.3", "channel.20261028T120000Z", "channel.20261328T120000Z-v1.2.3",
+                                 "channel.20261028T246000Z-v1.2.3", True])
+def test_only_a_valid_stamped_claim_has_a_package_quad(tag):
+    from hermes_cli.update_channel import stamped_windows_version
+    with pytest.raises(ValueError):
+        stamped_windows_version(tag)
 
 
 def test_malformed_record_and_unqualified_retirement_never_resolve():
@@ -261,7 +267,7 @@ def test_malformed_record_and_unqualified_retirement_never_resolve():
             pub.reader.resolve("preview")
         objects["releases/channels/preview.json"] = canonical_json(record)
         pub.create("destination")
-        request = pub.allocate("destination", "a" * 40, "1.0.0")
+        request = pub.allocate("destination", "a" * 40, "1.0.0", release_tag="channel.20261028T120000Z-v1.0.0")
         request.update(version="1.0.0", windowsVersion="1.0.0.0", releaseTag="v1.0.0")
         _, target = seed_manifest(pub, request, objects)
         target["policy"] = "stable-release"

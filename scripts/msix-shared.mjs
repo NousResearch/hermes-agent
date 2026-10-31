@@ -16,7 +16,10 @@ export function channelBuildRequest(env = process.env) {
   if (!env._HERMES_CHANNEL_REQUEST_JSON) return null
   const value = JSON.parse(env._HERMES_CHANNEL_REQUEST_JSON)
   if (env.HERMES_DESKTOP_VARIANT !== 'bundled') throw new Error('Channel builds support only bundled packaging')
-  if (env.HERMES_BUILD_COMMIT || env.HERMES_PAYLOAD_TAG) throw new Error('Channel request conflicts with commit or tag identity')
+  // A channel build carries no commit identity and no tag but its own claim (the request's releaseTag).
+  if (env.HERMES_BUILD_COMMIT || (env.HERMES_PAYLOAD_TAG && (env.HERMES_PAYLOAD_TAG !== value.releaseTag || !CHANNEL_TAG_RE.test(env.HERMES_PAYLOAD_TAG)))) {
+    throw new Error('Channel request conflicts with commit or tag identity')
+  }
   // The bundled toolchain already supplies Python. Reuse the authoritative
   // validator rather than maintaining a third protocol decoder for packaging.
   const validator = [
@@ -79,6 +82,10 @@ const VERSION_CORE = '(?:0|[1-9]\\d{0,2})\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)'
 export const CANARY_TAG_RE = new RegExp(`^canary\\.(20\\d{6}T\\d{6}Z)-v(${VERSION_CORE})$`)
 // commit.<stamp>-v<core> (update_channel._COMMIT_TAG_RE): a commit build's claim tag, same groups.
 export const COMMIT_TAG_RE = new RegExp(`^commit\\.(20\\d{6}T\\d{6}Z)-v(${VERSION_CORE})$`)
+// channel.<stamp>-v<core> (update_channel._CHANNEL_TAG_RE): a channel build's claim tag. Desktop packages
+// use the admitted request's identity and the claim's <core>+channel.<stamp> version. Native Windows
+// versions derive from the claim timestamp, not the channel allocation sequence.
+export const CHANNEL_TAG_RE = new RegExp(`^channel\\.(20\\d{6}T\\d{6}Z)-v(${VERSION_CORE})$`)
 export const STABLE_TAG_RE = new RegExp(`^v${VERSION_CORE}$`)
 
 /** The version a release identity tag carries (update_channel.release_version): X.Y.Z, or
@@ -92,7 +99,9 @@ export function releaseVersion(tag) {
   const canary = CANARY_TAG_RE.exec(value)
   if (canary) return `${canary[2]}+canary.${canary[1]}`
   const commit = COMMIT_TAG_RE.exec(value)
-  return commit ? `${commit[2]}+commit.${commit[1]}` : null
+  if (commit) return `${commit[2]}+commit.${commit[1]}`
+  const channel = CHANNEL_TAG_RE.exec(value)
+  return channel ? `${channel[2]}+channel.${channel[1]}` : null
 }
 
 /** releaseVersion for a tag already admitted as a release tag; throws on anything else.
@@ -273,7 +282,7 @@ export function appIdentity(desktopDir, tag = process.env.HERMES_PAYLOAD_TAG || 
   const repoRoot = path.resolve(desktopDir, '..', '..')
   const request = channelBuildRequest()
   if (request) {
-    if (tag) throw new Error('Channel builds must not select a release tag')
+    if (tag && tag !== request.releaseTag) throw new Error('Channel builds carry only their own claim tag')
     return { identity, version: request.windowsVersion, fileVersion: request.version, name: identity.artifactNamePascal }
   }
   // Commit artifacts retain app semver but do not advance an update channel. A commit build that

@@ -48,7 +48,7 @@ from scripts.releases.r2 import (
     stale_feed_bundle_keys,
 )
 
-from scripts.releases.r2_scope import R2Scope, channel_public_base
+from scripts.releases.r2_scope import channel_public_base
 
 AKID = "AKIDEXAMPLE"
 SECRET = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
@@ -63,21 +63,17 @@ def _auth(**kwargs):
     return auth_header(**kwargs)
 
 
-def test_disposable_scope_streams_lists_and_never_touches_production(r2_server, tmp_path, monkeypatch):
-    monkeypatch.setenv("R2_DISPOSABLE_RUN", "98765")
-    monkeypatch.setenv("GITHUB_REPOSITORY_ID", "12345")
-    scope = R2Scope.configured()
+def test_objects_stream_list_and_read_back_signed_and_public(r2_server, tmp_path, monkeypatch):
     root = f"http://127.0.0.1:{r2_server.server_port}/hermes-releases"
     monkeypatch.setenv("CLOUDFLARE_R2_PUBLIC_URL", root)
     key = "releases/channel-builds/" + "a" * 32 + "/payload.bin"
-    r2_server.store[key] = (b"production sentinel", '"production"')
     path = tmp_path / "payload.bin"
     payload = b"x" * (5 * 1024 * 1024 + 1)
     path.write_bytes(payload)
     creds, base, bucket = r2.credentials()
     r2.put_object(creds, base, bucket, key, path, NOW, "application/octet-stream",
                   {"If-None-Match": "*"}, multipart_part_size=5 * 1024 * 1024)
-    # Same immutable bytes are reusable, but only inside this run's prefix.
+    # The same immutable bytes are reusable.
     r2.put_object(creds, base, bucket, key, path, NOW, None, {"If-None-Match": "*"})
     assert r2.get_object(creds, base, bucket, key, NOW) == payload.decode()
     digest = hashlib.sha256(payload).hexdigest()
@@ -87,15 +83,13 @@ def test_disposable_scope_streams_lists_and_never_touches_production(r2_server, 
                               expected_size=len(payload), expected_sha256=digest)
     assert (tmp_path / "signed").read_bytes() == (tmp_path / "public").read_bytes() == payload
     assert r2.list_objects(prefix="releases/")["keys"] == [key]
-    assert r2_server.store[key][0] == b"production sentinel"
-    assert r2_server.store[scope.key(key)][0] == payload
     for method, url, headers in r2_server.requests:
         parsed = urlsplit(url)
         if parsed.query and "list-type" in parsed.query:
             assert parsed.path == "/hermes-releases"
-            assert parse_qs(parsed.query)["prefix"] == [scope.prefix + "releases/"]
+            assert parse_qs(parsed.query)["prefix"] == ["releases/"]
         else:
-            assert parsed.path.startswith("/hermes-releases/" + scope.prefix)
+            assert parsed.path.startswith("/hermes-releases/releases/")
         if method != "GET" or headers.get("authorization"):
             assert headers["authorization"].startswith("AWS4-HMAC-SHA256 ")
     before = list(r2_server.requests)
@@ -103,26 +97,18 @@ def test_disposable_scope_streams_lists_and_never_touches_production(r2_server, 
         with pytest.raises(ValueError):
             r2.put_object(creds, base, bucket, bad, b"x", NOW, None)
     with pytest.raises(ValueError, match="bucket"):
-        r2.list_objects(creds=creds, base=base, bucket=bucket + "/ci-disposable")
-    with pytest.raises(ValueError, match="escaped"):
-        scope.logical_key("releases/channels/stable.json")
-    for bad in (root, "https://elsewhere.example", root + "/ci-disposable/999/98765-1"):
+        r2.list_objects(creds=creds, base=base, bucket=bucket + "/elsewhere")
+    for bad in ("ftp://elsewhere.example", root + "/../x", root + "?q"):
         with pytest.raises(ValueError, match="authority"):
             channel_public_base(bad)
-    monkeypatch.setenv("R2_DISPOSABLE_RUN", "../production")
-    with pytest.raises(ValueError):
-        r2.put_object(creds, base, bucket, key, b"x", NOW, None)
-    monkeypatch.delenv("R2_DISPOSABLE_RUN")
-    # Scoping is opt-in via R2_DISPOSABLE_RUN alone: there is no fork isolation
-    # to assert after the fork-conditional dispatch was dropped.
     assert r2_server.requests == before
-    from scripts.releases.channel_disposable import probe
-    from scripts.releases.channels import ChannelPublisher, R2ChannelStore
-    unscoped = ChannelPublisher(R2ChannelStore(creds, base, bucket), "fixture/fork", root,
-                                authorize=lambda *_: None)
-    with pytest.raises(ValueError, match="disposable"):
-        probe(unscoped, "a" * 40, "1.2.3", "b" * 40)
-    assert r2_server.requests == before
+
+
+def test_channel_claims_keep_the_window_except_every_channel_head():
+    old_head, old, fresh = ("channel.20260101T000000Z-v1.2.3", "channel.20260102T000000Z-v1.2.3",
+                            "channel.20261027T000000Z-v1.2.4")
+    keys = [f"releases/tag/{tag}/Hermes.zip" for tag in (old_head, old, fresh)]
+    assert r2.channel_doomed_keys(keys, "20261014", {old_head}) == [f"releases/tag/{old}/Hermes.zip"]
 
 
 # ── SigV4 vectors ───────────────────────────────────────────────────────────
@@ -228,7 +214,6 @@ def test_channel_public_base_defaults_to_production(monkeypatch):
     # origin the commit-build path falls back to; the public URL is not a
     # secret, so a local command should not have to hand-set it.
     monkeypatch.delenv("CLOUDFLARE_R2_PUBLIC_URL", raising=False)
-    monkeypatch.delenv("R2_DISPOSABLE_RUN", raising=False)
     assert channel_public_base() == "https://hermes-assets.nousresearch.com"
     monkeypatch.setenv("CLOUDFLARE_R2_PUBLIC_URL", "https://cdn.example.com")
     assert channel_public_base() == "https://cdn.example.com"

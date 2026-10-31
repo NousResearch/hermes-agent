@@ -4,7 +4,6 @@ import json
 import pytest
 
 from scripts.releases import r2, upload_summary
-from scripts.releases.r2_scope import R2Scope
 
 
 BASE = "https://hermes-assets.nousresearch.com"
@@ -21,7 +20,6 @@ def clear_notes():
 
 def test_render_uses_the_public_asset_host(monkeypatch):
     monkeypatch.delenv("CLOUDFLARE_R2_PUBLIC_URL", raising=False)
-    monkeypatch.delenv("R2_DISPOSABLE_RUN", raising=False)
     text = upload_summary.render([KEY])
     assert f"[download]({BASE}/{KEY})" in text
     assert text.startswith("\n### R2 uploads\n")
@@ -41,7 +39,6 @@ def test_note_dedupes_and_flush_appends_once(tmp_path, monkeypatch):
     summary.write_text("existing\n", encoding="utf-8")
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     monkeypatch.delenv("CLOUDFLARE_R2_PUBLIC_URL", raising=False)
-    monkeypatch.delenv("R2_DISPOSABLE_RUN", raising=False)
     upload_summary.note(KEY)
     upload_summary.note(KEY)
     upload_summary.flush()
@@ -71,7 +68,6 @@ def test_put_object_records_only_after_the_size_check(monkeypatch):
             return ""
 
     monkeypatch.setattr(r2, "signed_request", lambda *args, **kwargs: Response())
-    monkeypatch.setattr(r2, "R2Scope", type("Scope", (), {"configured": staticmethod(lambda: R2Scope())}))
     with pytest.raises(r2.R2RequestError):
         r2.put_object({"access_key_id": "k", "secret_key": "s"}, "https://example.r2.cloudflarestorage.com",
                        "bucket", KEY, b"payload-bytes", "20000101T000000Z", "application/octet-stream", fetcher=None)

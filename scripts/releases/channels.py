@@ -9,10 +9,11 @@ import uuid
 
 from hermes_cli.release_channels import (
     ChannelError, ChannelNotFound, ChannelReader, artifact_key, build_prefix,
-    canonical_json, channel_key, decode_json, package_versions, public_base as validate_public_base,
+    canonical_json, channel_key, decode_json, public_base as validate_public_base,
     validate_name, validate_record, validate_repository, validate_request, validate_manifest, require_sha256,
 )
 from scripts.releases import r2
+from scripts.releases.r2_scope import bucket_url, object_url
 
 
 BRANDINGS = ("preview", "stable")
@@ -27,13 +28,11 @@ class PublicVisibilityError(ChannelError):
 
 
 class R2ChannelStore:
-    def __init__(self, creds: dict, base: str, bucket: str, *, scope=None):
-        from scripts.releases.r2_scope import R2Scope
+    def __init__(self, creds: dict, base: str, bucket: str):
         self.creds, self.base, self.bucket = creds, base.rstrip("/"), bucket
-        self.scope = R2Scope.configured() if scope is None else scope
 
     def get(self, key: str) -> tuple[bytes, str] | None:
-        url = self.scope.object_url(self.base, self.bucket, artifact_key(key))
+        url = object_url(self.base, self.bucket, artifact_key(key))
         try:
             response = r2.signed_request("GET", url, creds=self.creds, now=r2.amz_timestamp())
         except r2.R2RequestError as exc:
@@ -49,7 +48,7 @@ class R2ChannelStore:
         return body, etag
 
     def put(self, key: str, body: bytes, etag: str | None = None) -> None:
-        url = self.scope.object_url(self.base, self.bucket, artifact_key(key))
+        url = object_url(self.base, self.bucket, artifact_key(key))
         condition = {"If-Match": etag} if etag is not None else {"If-None-Match": "*"}
         condition["Cache-Control"] = r2.cache_control_for(key) or "no-store"
         try:
@@ -61,7 +60,7 @@ class R2ChannelStore:
             current = self.get(key)
             if current is not None and current[0] == body:
                 from scripts.releases.upload_summary import note
-                note(self.scope.key(key))
+                note(key)
                 return
             if isinstance(exc, r2.R2RequestError) and exc.status == 412:
                 raise ChannelConflict(f"Channel write conflict: {key}") from exc
@@ -70,20 +69,19 @@ class R2ChannelStore:
         if current is None or current[0] != body:
             raise ChannelConflict(f"Channel changed before authenticated readback: {key}")
         from scripts.releases.upload_summary import note
-        note(self.scope.key(key))
+        note(key)
 
     def keys(self, prefix: str) -> list[str]:
         keys, seen = [], set()
-        prefix = self.scope.listing_prefix(prefix)
         token = None
         while True:
             params = {"list-type": "2", "max-keys": "1000", "prefix": prefix}
             if token is not None:
                 params["continuation-token"] = token
-            url = f"{self.scope.bucket_url(self.base, self.bucket)}?{r2.canonical_query(params)}"
+            url = f"{bucket_url(self.base, self.bucket)}?{r2.canonical_query(params)}"
             response = r2.signed_request("GET", url, creds=self.creds, now=r2.amz_timestamp())
             page = r2.parse_list_xml(response.text())
-            keys.extend(self.scope.logical_key(key) for key in page["keys"])
+            keys.extend(page["keys"])
             if not page["truncated"]:
                 return keys
             token = page["nextToken"]
@@ -210,7 +208,12 @@ class ChannelPublisher:
         return record
 
     def allocate(self, name: str, commit: str, source_version: str,
-                 bundle_env: dict | None = None, controller_commit: str | None = None) -> dict:
+                 bundle_env: dict | None = None, controller_commit: str | None = None, *,
+                 release_tag: str) -> dict:
+        """Reserve the next sequence for one build of ``release_tag``: the channel claim
+        (channel.<stamp>-vX.Y.Z) whose version and stamped Windows quad its packages carry, and
+        whose tag archive holds them. Prefer allocate_claim, which allocates once per claim."""
+        from hermes_cli.update_channel import release_version, stamped_windows_version
         from scripts.releases.bundle_env import validate
         bundle_env = validate({} if bundle_env is None else bundle_env)
         for _ in range(16):
@@ -220,10 +223,11 @@ class ChannelPublisher:
             record, etag = current
             self._preview("allocate", record)
             sequence = record["nextSequence"]
-            version, windows_version = package_versions(sequence)
             request = {"schema": 1, "buildId": uuid.uuid4().hex, "channel": name,
                        "sequence": sequence, "repository": self.repository, "commit": commit,
-                       "sourceVersion": source_version, "version": version, "windowsVersion": windows_version,
+                       "sourceVersion": source_version, "releaseTag": release_tag,
+                       "version": release_version(release_tag),
+                       "windowsVersion": stamped_windows_version(release_tag),
                        "identity": deepcopy(record["identity"]), "bundleEnv": bundle_env,
                        "publicBase": self.public_base}
             if controller_commit is not None:
@@ -241,6 +245,49 @@ class ChannelPublisher:
             self._write(build_prefix(request["buildId"]) + "request.json", request)
             return request
         raise ChannelConflict("Channel allocation remained contended")
+
+    def allocate_claim(self, name: str, release_tag: str, commit: str, source_version: str,
+                       bundle_env: dict | None = None, controller_commit: str | None = None) -> dict:
+        """The one request of a channel claim: allocated on first admission, then found again.
+
+        Admission reruns (a re-run of failed jobs, a retried workflow) must build the same request,
+        so the claim archive holds a write-once pointer, ``releases/tag/<claim>/channel-request.json``.
+        A pointer naming a request for anything but exactly this claim is refused."""
+        from hermes_cli.update_channel import is_channel_tag
+        from scripts.releases.bundle_env import validate
+
+        if not is_channel_tag(release_tag):
+            raise ChannelError(f"Not a channel build claim: {release_tag!r}")
+        bundle_env = validate({} if bundle_env is None else bundle_env)
+        pointer = f"releases/tag/{release_tag}/channel-request.json"
+
+        def matching(found: tuple[bytes, str]) -> dict:
+            value = decode_json(found[0])
+            if not isinstance(value, dict) or set(value) != {"schema", "buildId", "sha256"} or value["schema"] != 1:
+                raise ChannelError("Invalid channel claim request pointer")
+            request = self.request(value["buildId"], value["sha256"])
+            if (request["releaseTag"], request["channel"], request["commit"], request["sourceVersion"],
+                    request["bundleEnv"]) != (release_tag, name, commit, source_version, bundle_env):
+                raise ChannelError("Channel claim already names a different request")
+            return request
+
+        existing = self.store.get(pointer)
+        if existing is not None:
+            return matching(existing)
+        request = self.allocate(name, commit, source_version, bundle_env, controller_commit,
+                                release_tag=release_tag)
+        body = {"schema": 1, "buildId": request["buildId"],
+                "sha256": hashlib.sha256(canonical_json(request)).hexdigest()}
+        try:
+            self.store.put(pointer, canonical_json(body))
+        except ChannelConflict:
+            # A concurrent admission of the same claim won; build its request (this sequence is
+            # simply never published).
+            raced = self.store.get(pointer)
+            if raced is None:
+                raise
+            return matching(raced)
+        return request
 
     def _protected(self, action: str, record: dict, request: dict, policy: str, release_gate) -> None:
         if policy not in {"stable-release", "canary-release"} or record["policy"] != policy:
@@ -392,28 +439,8 @@ class ChannelPublisher:
                     self.reader.read_bytes(key, head["sha256"])
                     return record
                 raise ChannelError("A newer build is published; stale completion refused")
-            if policy is not None and record["head"] is not None:
-                from scripts.releases.semver import compare
-                from scripts.releases.stable import windows_version
-                from hermes_cli.update_channel import published_canary_timestamp as canary_timestamp
-                previous_head = record["head"]
-                previous = self.store.get(previous_head["manifestKey"])
-                if previous is None or hashlib.sha256(previous[0]).hexdigest() != previous_head["sha256"]:
-                    raise ChannelError("Previous protected manifest is unavailable or changed")
-                previous_request = validate_manifest(decode_json(previous[0]), record, self.public_base)["request"]
-                if policy == "canary-release":
-                    current_stamp = canary_timestamp(request["releaseTag"])
-                    previous_stamp = canary_timestamp(previous_request["releaseTag"])
-                    source_increases = (
-                        current_stamp is not None
-                        and previous_stamp is not None
-                        and current_stamp > previous_stamp
-                    )
-                else:
-                    source_increases = compare(request["version"], previous_request["version"]) > 0
-                if (not source_increases
-                        or windows_version(request["windowsVersion"]) <= windows_version(previous_request["windowsVersion"])):
-                    raise ChannelError("Protected native versions must increase; stale completion refused")
+            if record["head"] is not None:
+                self._require_increasing_versions(record, request, policy)
             if self.verify_build is None or self.verify_build(request, manifest) is not True:
                 raise ChannelError("Publication requires complete native build qualification")
             self.reader.read_bytes(key, head["sha256"])
@@ -423,6 +450,29 @@ class ChannelPublisher:
                 continue
             return candidate
         raise ChannelConflict("Channel promotion remained contended")
+
+    def _require_increasing_versions(self, record: dict, request: dict, policy: str | None) -> None:
+        from scripts.releases.semver import compare
+        from scripts.releases.stable import windows_version
+        from hermes_cli.update_channel import channel_timestamp, published_canary_timestamp
+
+        previous_head = record["head"]
+        previous = self.store.get(previous_head["manifestKey"])
+        label = "Preview" if policy is None else "Protected"
+        if previous is None or hashlib.sha256(previous[0]).hexdigest() != previous_head["sha256"]:
+            raise ChannelError(f"Previous {label.lower()} manifest is unavailable or changed")
+        previous_request = validate_manifest(decode_json(previous[0]), record, self.public_base)["request"]
+        if policy == "stable-release":
+            source_increases = compare(request["version"], previous_request["version"]) > 0
+        else:
+            # Preview source trees may move backwards; native identity is ordered by claim time.
+            timestamp = channel_timestamp if policy is None else published_canary_timestamp
+            current_stamp = timestamp(request["releaseTag"])
+            previous_stamp = timestamp(previous_request["releaseTag"])
+            source_increases = current_stamp is not None and previous_stamp is not None and current_stamp > previous_stamp
+        if (not source_increases
+                or windows_version(request["windowsVersion"]) <= windows_version(previous_request["windowsVersion"])):
+            raise ChannelError(f"{label} native versions must increase; stale completion refused")
 
     def retire(self, name: str, destination: str, minimum_version: str,
                *, publish: bool = True) -> dict:

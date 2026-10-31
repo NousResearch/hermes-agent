@@ -48,9 +48,6 @@ on:
       controller-sha:
         default: ''
         type: string
-      disposable-run:
-        default: ''
-        type: string
       public-root:
         default: ''
         type: string
@@ -94,7 +91,6 @@ jobs:
       CHANNEL_REQUEST_SHA256: ${{ inputs.channel-request-sha256 }}
       PUBLIC_BASE: ${{ inputs.public-base }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ inputs.public-root }}
-      R2_DISPOSABLE_RUN: ${{ inputs.disposable-run }}
       PLATFORM: ${{ inputs.platform }}
       ARCH: ${{ inputs.arch }}
       FORMAT: ${{ inputs.format }}
@@ -132,8 +128,9 @@ jobs:
           mkdir -p "$SMOKE_ROOT/out"
           product=HermesBundled
           if [ -n "${CHANNEL_BUILD:-}" ]; then
+            # A channel claim's candidate: fetched from the claim's tag archive like any candidate;
+            # the request supplies only its identity.
             test "$COMMIT_BUILD" = false
-            test -z "$RELEASE_TAG"
             python -m scripts.releases.channel_publish request --build-id "$CHANNEL_BUILD" \
               --request-sha256 "$CHANNEL_REQUEST_SHA256" --public-base "$PUBLIC_BASE" \
               --out "$SMOKE_ROOT/request.json"
@@ -153,7 +150,6 @@ jobs:
             test -z "$RELEASE_TAG"
             args=(--commit-build "$RELEASE_COMMIT")
           fi
-          if [ -n "${CHANNEL_BUILD:-}" ]; then args=(--channel-request "$SMOKE_ROOT/request.json"); fi
           python -m scripts.releases.handoff fetch --public-base "$PUBLIC_BASE" "${args[@]}" \
             --name "$name" --root "$SMOKE_ROOT/download" --include "$pattern" 2>&1 | tee "$SMOKE_ROOT/out/fetch.log"
           python - "$name" "$pattern" <<'PY'
@@ -207,7 +203,7 @@ jobs:
         run: |
           $tagArgs = @()
           if ($env:RELEASE_TAG) { $tagArgs = @('-Tag', $env:RELEASE_TAG) }
-          if ($env:CHANNEL_BUILD) { $tagArgs = @('-ChannelRequest', "$env:SMOKE_ROOT/request.json") }
+          if ($env:CHANNEL_BUILD) { $tagArgs += @('-ChannelRequest', "$env:SMOKE_ROOT/request.json") }
           powershell -NoProfile -ExecutionPolicy Bypass -File tests/install/windows-bundle-smoke.ps1 -Artifact $env:ARTIFACT -Arch $env:ARCH -Commit $env:RELEASE_COMMIT @tagArgs -Work "$env:SMOKE_ROOT/work" -Out "$env:SMOKE_ROOT/out"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

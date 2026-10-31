@@ -59,8 +59,10 @@ async function fixture(): Promise<{
     repository: 'example/hermes-agent',
     commit: 'b'.repeat(40),
     sourceVersion: '1.2.3',
-    version: '0.0.1',
-    windowsVersion: '0.0.1.0',
+    // A preview build's packages carry its channel claim's version and stamped quad.
+    releaseTag: 'channel.20261028T120000Z-v1.2.3',
+    version: '1.2.3+channel.20261028T120000Z',
+    windowsVersion: '26.1028.12.0',
     publicBase: `http://127.0.0.1:${address.port}`,
     bundleEnv: {},
     identity: {
@@ -75,7 +77,14 @@ async function fixture(): Promise<{
     }
   }
 
-  const next = { ...build, buildId: 'c'.repeat(32), sequence: 2, version: '0.0.2', windowsVersion: '0.0.2.0' }
+  const next = {
+    ...build,
+    buildId: 'c'.repeat(32),
+    sequence: 2,
+    releaseTag: 'channel.20261028T120100Z-v1.2.3',
+    version: '1.2.3+channel.20261028T120100Z',
+    windowsVersion: '26.1028.12.100'
+  }
   const prefix = `releases/channel-builds/${next.buildId}/`
 
   const manifest: ChannelManifest = {
@@ -645,7 +654,7 @@ test('Windows resolves its numeric native version, publisher and immutable descr
       platform: 'win32',
       arch: 'x64',
       variant: 'bundled',
-      version: '0.0.2.0',
+      version: f.manifest.request.windowsVersion,
       identity: f.build.identity.msixAppIdWithOrg,
       publisher: 'CN=Nous Research',
       artifact: {
@@ -674,7 +683,7 @@ test('Windows resolves its numeric native version, publisher and immutable descr
     throw new Error('Expected active')
   }
 
-  expect(result.target.package.version).toBe('0.0.2.0')
+  expect(result.target.package.version).toBe('26.1028.12.100')
   expect(result.target.feedUrl).toContain('/win32/stable.appinstaller')
 })
 

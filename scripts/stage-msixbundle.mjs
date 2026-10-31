@@ -21,8 +21,10 @@ const { values } = parseArgs({ options: {
   variant: { type: 'string' }, 'no-upload': { type: 'boolean' }, candidate: { type: 'boolean' },
   'channel-request': { type: 'string' },
 } })
+// A channel claim's candidate passes its request (identity) and its claim as --tag (archive, version).
 const channelRequest = values['channel-request']
   ? channelBuildRequest({ ...process.env, HERMES_DESKTOP_VARIANT: values.variant || 'bundled',
+    HERMES_PAYLOAD_TAG: values.tag || process.env.HERMES_PAYLOAD_TAG || '',
     _HERMES_CHANNEL_REQUEST_JSON: fs.readFileSync(values['channel-request'], 'utf8') }) : null
 const tag = values.tag
 const commitBuild = values.commit || ''
@@ -31,9 +33,10 @@ const noUpload = values['no-upload'] === true
 const candidate = values.candidate === true
 const variant = values.variant || process.env.HERMES_DESKTOP_VARIANT || 'bundled'
 
-if (channelRequest && (tag || commitBuild || values.version || candidate || variant !== 'bundled'
-    || process.env.HERMES_PAYLOAD_TAG || process.env.HERMES_BUILD_COMMIT)) {
-  throw new Error('Channel requests cannot select tag, commit, Store or candidate inputs')
+if (channelRequest && ((tag && tag !== channelRequest.releaseTag) || commitBuild || values.version || variant !== 'bundled'
+    || (process.env.HERMES_PAYLOAD_TAG && process.env.HERMES_PAYLOAD_TAG !== channelRequest.releaseTag)
+    || process.env.HERMES_BUILD_COMMIT)) {
+  throw new Error('Channel requests carry only their own claim tag and no commit or Store inputs')
 }
 if (commitBuild && (tag || process.env.HERMES_PAYLOAD_TAG || candidate)) {
   throw new Error('Commit builds cannot select a release tag or candidate mode')

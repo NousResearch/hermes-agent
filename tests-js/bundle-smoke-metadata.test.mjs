@@ -49,17 +49,20 @@ test('identity uses the production bundled variant and exact input tokens, not i
 test('channel smoke binds the complete admitted request, not a commit-build identity or display version', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'channel-smoke-'))
   const token = randomBytes(8).toString('hex'), sequence = 65537
+  // A channel build is its claim's candidate: the request names the claim, whose version and stamped
+  // quad its packages carry, and the smoke runs with that claim as its tag.
+  const claim = 'channel.20261028T120000Z-v1.2.3'
   const request = { schema: 1, buildId: randomBytes(16).toString('hex'), channel: `smoke-${token}`,
     repository: 'NousResearch/hermes-agent', publicBase: 'https://releases.example.test', commit,
-    sourceVersion: '1.2.3', sequence, version: `0.0.${sequence}`,
-    windowsVersion: `0.${Math.floor(sequence / 65536)}.${sequence % 65536}.0`, bundleEnv: {},
+    sourceVersion: '1.2.3', sequence, releaseTag: claim, version: '1.2.3+channel.20261028T120000Z',
+    windowsVersion: '26.1028.12.0', bundleEnv: {},
     identity: { token, displayName: 'Smoke Channel', appId: `com.example.preview-${token}`,
       appNamePascal: `Smoke${token}`, artifactNamePascal: `Artifact${token}`,
       msixAppIdWithOrg: `Example.Smoke${token}`, cliName: `smoke-${token}`, windowsExecutableName: `smoke-${token}` } }
   const cli = path.resolve(import.meta.dirname, '../tests/install/e2e-assets/bundle-smoke-metadata.mjs')
   const requestPath = path.join(temp, 'request.json'), stampPath = path.join(temp, 'stamp.json')
-  const run = (command, args = []) => spawnSync(process.execPath,
-    [cli, command, '--commit', commit, '--channel-request', requestPath, ...args], { encoding: 'utf8' })
+  const run = (command, args = [], tag = claim) => spawnSync(process.execPath,
+    [cli, command, '--commit', commit, '--tag', tag, '--channel-request', requestPath, ...args], { encoding: 'utf8' })
   try {
     fs.writeFileSync(requestPath, JSON.stringify(request))
     const identity = run('identity')
@@ -68,7 +71,7 @@ test('channel smoke binds the complete admitted request, not a commit-build iden
       msixIdentity: request.identity.msixAppIdWithOrg, applicationId: request.identity.appNamePascal,
       windowsVersion: request.windowsVersion })
     const env = { ...process.env, HERMES_DESKTOP_VARIANT: 'bundled', HERMES_BUILD_COMMIT: '',
-      HERMES_PAYLOAD_TAG: '', HERMES_PAYLOAD_VERSION: '', _HERMES_CHANNEL_REQUEST_JSON: JSON.stringify(request) }
+      HERMES_PAYLOAD_TAG: claim, HERMES_PAYLOAD_VERSION: '', _HERMES_CHANNEL_REQUEST_JSON: JSON.stringify(request) }
     for (const platform of ['darwin', 'win32']) {
       const stamp = buildStampPayload({ commit, dirty: false }, env, platform,
         { runtime: { commands: { hermes: 'bin/hermes' } } })
@@ -76,7 +79,7 @@ test('channel smoke binds the complete admitted request, not a commit-build iden
       const result = run('stamp', ['--platform', platform, '--stamp', stampPath])
       expect(result.status, result.stderr).toBe(0)
       expect(JSON.parse(result.stdout)).toBe(platform === 'darwin' ? request.version : request.windowsVersion)
-      const options = { commit, platform, channelRequest: request }
+      const options = { commit, platform, tag: claim, channelRequest: request }
       for (const key of Object.keys(request)) {
         const changed = { ...stamp, channelBuild: { ...request, [key]: null } }
         expect(() => verifyBundleStamp(changed, options), key).toThrow('channelBuild')
@@ -86,6 +89,7 @@ test('channel smoke binds the complete admitted request, not a commit-build iden
         expect(() => verifyBundleStamp({ ...stamp, [key]: value }, options), key).toThrow(key)
       }
       expect(() => verifyBundleStamp(stamp, { commit, platform })).toThrow()
+      expect(() => verifyBundleStamp(stamp, { commit, platform, channelRequest: request })).toThrow()
       if (platform === 'darwin') {
         const plist = { CFBundleIdentifier: request.identity.appId, CFBundleShortVersionString: request.version,
           CFBundleVersion: request.version, CFBundleExecutable: request.identity.displayName }
@@ -93,13 +97,14 @@ test('channel smoke binds the complete admitted request, not a commit-build iden
         for (const key of ['CFBundleIdentifier', 'CFBundleShortVersionString', 'CFBundleVersion']) {
           expect(() => verifyMacMetadata({ ...plist, [key]: 'wrong' }, stamp, options)).toThrow(key)
         }
-        expect(stampAssertions(stamp, { commit, tag: null, channelRequest: request })).toEqual([])
-        expect(stampAssertions(stamp, { commit, tag: null }).join(';')).toContain('channelBuild')
+        expect(stampAssertions(stamp, { commit, tag: claim, channelRequest: request })).toEqual([])
+        expect(stampAssertions(stamp, { commit, tag: claim }).join(';')).toContain('channelBuild')
         expect(stampAssertions({ ...stamp, channelBuild: { ...request, bundleEnv: { HERMES_MODEL: 'other' } } },
-          { commit, tag: null, channelRequest: request }).join(';')).toContain('channelBuild')
+          { commit, tag: claim, channelRequest: request }).join(';')).toContain('channelBuild')
       }
     }
-    expect(run('identity', ['--tag', 'v1.2.3']).status).not.toBe(0)
+    expect(run('identity', [], 'v1.2.3').status).not.toBe(0)
+    expect(run('identity', [], 'channel.20261028T120001Z-v1.2.3').status).not.toBe(0)
     for (const raw of ['', JSON.stringify(request).replace('{', '{"channel":"duplicate",')]) {
       fs.writeFileSync(requestPath, raw)
       expect(run('identity').status).not.toBe(0)

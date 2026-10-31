@@ -40,7 +40,7 @@ def test_admitted_failure_publishes_tag_info_without_promoting_channel(tmp_path,
     assert not observes(tag, result="failure")
     assert not observes(tag, outputs={"all-jobs": "true", "sha": ""})
     for rejected in ({"build_commit": "a" * 40}, {"upload_release": False}, {"release-phase": "candidate"},
-                     {"release-phase": "publish"}, {"channel": "preview"}):
+                     {"release-phase": "publish"}):
         assert not observes({**tag, **rejected}), rejected
     render = next(step for step in job["steps"] if step.get("name") == "Render")
     assert render["env"]["RELEASE_NEEDS"] == "${{ toJSON(needs) }}"

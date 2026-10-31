@@ -328,11 +328,11 @@ creation to organization administrators and the release integration and blocks
 update and deletion. The ruleset is not applied yet; until an admin applies it,
 these locks are honor-system — anyone with push access can delete a marker ref
 or move a receipt tag. Attempt refs, marker refs, and final tags are immutable.
-Channel builds write annotated post-build receipts such as
-`v0.0.7+channel.<YYYYMMDDTHHMMSSZ>.<run-id>` only after publication succeeds.
-Receipt tags do not create GitHub releases and do not trigger workflows. A
-commit build writes no receipt: its claim tag, made before the build, is its
-identity (see below).
+Commit and channel builds write no post-build receipt: each one's claim tag
+(`commit.<stamp>-v<version>` or `channel.<stamp>-v<version>`), made before the
+build, is its identity. Older channel builds wrote receipts such as
+`v0.0.7+channel.<YYYYMMDDTHHMMSSZ>.<run-id>`. Those tags remain, but nothing
+writes new ones.
 
 A canary tag is `canary.<YYYYMMDDTHHMMSSZ>-v<stable>`, the same claim shape as
 a stable `rc.N-v<stable>`, so nothing that lists `v*` release tags mistakes it for
@@ -446,24 +446,46 @@ packages must not be submitted under that identity.
 ## Dynamic channels in R2
 
 Channel names are R2 objects, not a repository registry. A preview channel owns
-one native application identity across exact-commit builds. The immutable build
-request records its source commit, bundle defaults, channel sequence and package
-versions separately. The existing native build and smoke jobs must all pass
-before the channel head advances.
+one native application identity across exact-commit builds.
 
-Preview a custom build, then explicitly dispatch it. Repository identity does
-not select behavior: the same direct dispatch runs from any GitHub remote, but
-`--channel` performs no R2 access locally — it resolves the exact pushed commit
-and dispatches the default-branch workflow, whose privileged allocation step
-creates the channel and mints the immutable build request in CI. The local
-command needs only a `gh` token with write, maintain or admin permission on the
-selected repository; no R2 credentials are required.
+A channel build is a run of the Stable Release pipeline on a channel claim.
+`--channel NAME --build-commit REV` resolves the exact pushed commit and
+creates the annotated `channel.<YYYYMMDDTHHMMSSZ>-v<version>` claim on it (its
+message records the channel, branding, lanes, `requireGreen` and bundle
+defaults). With `--publish` it pushes the claim and dispatches Stable Release
+from the default branch. Like a commit build, it takes `--only`, `--with` and
+`--without` (starting from the stable default minus `upgrade` and
+`windows-store`; `install-e2e` runs, since channel installs update), plus
+`--[no-]require-green`, `--bundle-env`/`--bundle-unset` and
+`--channel-specific-data-dirs`. The local command needs only a `gh` token with
+write, maintain or admin permission on the selected repository. It needs no R2
+credentials.
 
 ```sh
 python scripts/release.py --channel pm-preview --build-commit my-branch --remote origin
 python scripts/release.py --channel pm-preview --build-commit my-branch --remote origin --publish
 python scripts/release.py --channels --remote origin
 ```
+
+Admission runs in `release-signing` and allocates the claim's one request in
+the channel CAS, creating the channel on first use. The request records the
+source commit, bundle defaults and channel sequence. Its `releaseTag` is the
+claim, so its packages carry the claim's version (`X.Y.Z+channel.<stamp>`) and
+stamped Windows quad, and they live in the claim archive
+(`releases/tag/<claim>/`) like a canary's. A write-once pointer,
+`releases/tag/<claim>/channel-request.json`, makes reruns find the same
+request. Admission's allocation doubles as the CAS/CDN probe: R2 must refuse
+the stale record under its old ETag, and the public origin must show the
+allocation. Every candidate leg builds that request beside its claim tag. Once
+the candidate is accepted (with `--require-green`, once every suite is green),
+`publish-channel` writes the build's feeds and manifest under
+`releases/channel-builds/BUILD_ID/` from the accepted candidate's receipts.
+It then advances `releases/channels/NAME.json`, and never a stable or canary
+head, feed, Docker tag, GitHub release or Store listing. The claim archive's
+`index.html` is the build's page. Its Termux packages are
+`X.Y.Z~channel.<stamp>-1` in the `hermes-channel` APT suite. The Docker push and
+Store submission refuse a channel tag, but the image is still built and tested.
+Each channel claim runs in its own concurrency group.
 
 By default a preview channel installs as its own side-by-side app (`Hermes
 NAME`, its own package ID). To test an exact commit as the regular app instead,
@@ -478,23 +500,13 @@ build always carries its `Hermes Agent <sha>` identity.
 python scripts/release.py --channel my-commit --branding stable --build-commit SHA --remote origin --publish
 ```
 
-Disposable R2 scoping is opt-in, for test runs only. Dispatch the desktop
-workflow with `disposable_channel` and `build_commit` to allocate a namespace
-under `ci-disposable/<repository-id>/<run-id>/`, then use the exact scoped build
-command from its summary. For local administration of that allocation, carry
-its `R2_DISPOSABLE_RUN` and `GITHUB_REPOSITORY_ID` in the command environment,
-with the configured public URL still at the unscoped root. These are test-run
-inputs, not persistent application settings; the repository ID is checked
-against the selected remote before credentials are read, so a scoped namespace
-still belongs to exactly one repository.
-
-The first publishing invocation creates the channel (during CI allocation), and
-later invocations retain its identity. Requests and artifacts live under
-`releases/channel-builds/BUILD_ID/`; the mutable pointer is
-`releases/channels/NAME.json`. A failed build leaves its previous head intact.
-Conditional writes reject stale publication and permanently retired channels.
-Retrying re-dispatches `--channel NAME --build-commit SHA --publish`, which
-allocates a fresh sequence slot in CI; there is no separate resume command.
+A failed build leaves the previous head intact. Conditional writes reject stale
+publication and permanently retired channels. Rerunning the Stable Release run
+reuses the claim's request. A new `--channel NAME --build-commit SHA --publish`
+makes a new claim and a new sequence slot. Channel claims and their archives
+are pruned after 14 days, except the claim each channel head names, which
+installed builds update from. `--prune-canaries` deletes old channel claim tags
+only when it holds the R2 credentials, because it reads every head.
 
 Retirement pins the current official stable build as the first receiver:
 

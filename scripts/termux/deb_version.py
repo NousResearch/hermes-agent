@@ -23,7 +23,7 @@ import re
 import sys
 
 _TAG_RE = re.compile(
-    r"^(?:(?P<kind>canary|commit)\.(?P<ts>20\d{6}T\d{6}Z)-)?"
+    r"^(?:(?P<kind>canary|commit|channel)\.(?P<ts>20\d{6}T\d{6}Z)-)?"
     r"v(?P<major>0|[1-9]\d{0,2})\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$"
 )
 
@@ -33,7 +33,7 @@ def _match_tag(tag: str) -> re.Match[str]:
     if m is None:
         raise ValueError(
             f"malformed release tag {tag!r}: expected v<MAJOR>.<MINOR>.<PATCH> "
-            "or canary|commit.<UTC timestamp>-v<MAJOR>.<MINOR>.<PATCH>"
+            "or canary|commit|channel.<UTC timestamp>-v<MAJOR>.<MINOR>.<PATCH>"
         )
     return m
 
@@ -49,7 +49,7 @@ def deb_version_for_tag(tag: str) -> str:
 
 
 def release_version_for_tag(tag: str) -> str:
-    """The version a release tag carries: ``X.Y.Z``, ``X.Y.Z+canary.<stamp>`` or ``X.Y.Z+commit.<stamp>``.
+    """The version a release tag carries: ``X.Y.Z`` or ``X.Y.Z+<canary|commit|channel>.<stamp>``.
 
     The same value as hermes_cli.update_channel.release_version; build_deb.sh stamps it as the
     package's base version and cannot import the application package.
@@ -60,12 +60,12 @@ def release_version_for_tag(tag: str) -> str:
 
 
 def channel_for_tag(tag: str) -> str:
-    """Map a release tag to its channel: 'stable', 'canary' or 'commit'.
+    """Map a release tag to its channel: 'stable', 'canary', 'commit' or 'channel'.
 
     Derived from the same _TAG_RE as deb_version_for_tag, so the two can never
     drift: a tag that yields a '~canary' deb version is canary, and the
-    malformed-tag rejection is identical. A commit build's 'commit' channel names
-    only its archived APT suite; it is never published to a feed.
+    malformed-tag rejection is identical. A commit or channel build's 'commit'/'channel'
+    names only its archived APT suite; neither is published to a feed.
     """
     m = _match_tag(tag)
     return m.group("kind") or "stable"

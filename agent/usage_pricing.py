@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, fields, replace
-from datetime import datetime, timezone, UTC
+from datetime import date, datetime, timezone, UTC
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
@@ -138,6 +138,75 @@ _INCLUDED_ENTRY = PricingEntry(
     input_cost_per_million=_ZERO, output_cost_per_million=_ZERO, cache_read_cost_per_million=_ZERO,
     cache_write_cost_per_million=_ZERO, source="none", pricing_version="included-route",
 )
+
+# ── DeepSeek peak/off-peak billing ──────────────────────────────────────
+# Official rate card: https://api-docs.deepseek.com/quick_start/pricing
+# Peak/off-peak billing starts at this instant. The snapshot row holds the
+# OFF-PEAK rates and peak hours bill 2x them; before this instant DeepSeek
+# billed a flat card with no time-of-day tier, so nothing is scaled.
+_DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC = datetime(2026, 8, 16, 16, 0, tzinfo=UTC)
+
+# Peak windows are 01:00–04:00 and 06:00–10:00 UTC (all other hours are
+# off-peak), Monday through Friday. Read as half-open intervals:
+# hours 1, 2, 3 and 6, 7, 8, 9.  ISO weekday 1–5 = Mon–Fri.
+_DEEPSEEK_PEAK_HOURS = frozenset({1, 2, 3, 6, 7, 8, 9})
+_DEEPSEEK_PEAK_DAYS = frozenset({1, 2, 3, 4, 5})
+# The weekday is read in UTC, but DeepSeek's "Monday through Friday" is
+# Beijing time.  This is safe because both peak windows (01:00–04:00 and
+# 06:00–10:00 UTC) fall entirely inside the region where UTC and Beijing
+# dates agree (Beijing is UTC+8; the dates disagree only at 16:00–24:00
+# UTC).  If DeepSeek ever moves a peak hour to 16:00+ UTC, the weekday
+# must be read in Asia/Shanghai instead.
+#
+# Chinese public holidays are off-peak in full, whatever the weekday
+# (https://api-docs.deepseek.com/quick_start/pricing — "excluding Chinese
+# public holidays ... including weekends and Chinese public holidays in
+# full").  Makeup work days (调休) move a weekend into the work week, but
+# DeepSeek bills weekends off-peak regardless, and every 调休 day in the
+# State Council calendar is a Saturday or Sunday — so the weekday gate
+# already prices them correctly and they need no entry here.  The set omits
+# weekend holiday days too: they are unreachable, the gate rejects them
+# first.
+#
+# Only weekday dates can shift a bill — 19 of the 33 holiday days in 2026.
+# The whole published list is carried so the table stays a faithful
+# transcription of the State Council notice; which of those dates can reach
+# the peak tier at all is the switchover gate above, not this set.
+_DEEPSEEK_CN_HOLIDAYS_2026 = frozenset({
+    date(2026, 1, 1), date(2026, 1, 2),                                    # New Year
+    *(date(2026, 2, day) for day in range(16, 21)), date(2026, 2, 23),      # Spring Festival
+    date(2026, 4, 6),                                                      # Qingming
+    date(2026, 5, 1), date(2026, 5, 4), date(2026, 5, 5),                  # Labour Day
+    date(2026, 6, 19),                                                     # Dragon Boat
+    date(2026, 9, 25),                                                     # Mid-Autumn
+    *(date(2026, 10, day) for day in (1, 2, 5, 6, 7)),                     # National Day
+})
+# (billed from, holiday dates).  A date past every row bills normally: the
+# table is a dated external fact like the rate cards above, so a newer sheet
+# replaces the row instead of the lookup guessing.  Keyed by Beijing date —
+# the same window that leaves the UTC hour read safe (see above).
+_DEEPSEEK_HOLIDAY_CALENDARS: tuple[tuple[datetime, frozenset[date]], ...] = (
+    (datetime(2026, 1, 1, tzinfo=UTC), _DEEPSEEK_CN_HOLIDAYS_2026),
+)
+
+def _deepseek_holiday_set(now: datetime) -> frozenset[date]:
+    """The Chinese holiday calendar in force at ``now`` (empty before 2026)."""
+    for start, holidays in reversed(_DEEPSEEK_HOLIDAY_CALENDARS):
+        if now >= start:
+            return holidays
+    return frozenset()
+
+
+def _deepseek_peak_hour(now: datetime) -> bool:
+    """Whether ``now`` falls in a DeepSeek peak window: from the 2026-08-16T16:00Z
+    switchover, 01:00-04:00 and 06:00-10:00 UTC on Mon-Fri, excluding Chinese
+    public holidays (off-peak in full)."""
+    return (
+        now >= _DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC
+        and now.isoweekday() in _DEEPSEEK_PEAK_DAYS
+        and now.hour in _DEEPSEEK_PEAK_HOURS
+        and now.date() not in _deepseek_holiday_set(now)
+    )
 
 
 def _snap(
@@ -683,10 +752,44 @@ def _unknown_cost(source: CostSource, *notes: str) -> CostResult:
     return CostResult(amount_usd=None, status="unknown", source=source, label="n/a", notes=notes)
 
 
+def _route_notes(provider: str, deepseek_peak_hour: bool) -> list[str]:
+    """Route/time-of-day caveats that ride along with an estimate."""
+    notes: list[str] = []
+    if provider == "openrouter":
+        notes.append("OpenRouter cost is estimated from the models API until reconciled.")
+    if deepseek_peak_hour:
+        notes.append(
+            "DeepSeek peak-hour rate applied (2x off-peak; peak 01:00-04:00 / 06:00-10:00 UTC, Mon-Fri)."
+        )
+    return notes
+
+
 def estimate_usage_cost(
     model_name: str, usage: CanonicalUsage, *, provider: Optional[str] = None,
     base_url: Optional[str] = None, api_key: Optional[str] = None,
+    billing_time: Optional[datetime] = None,
 ) -> CostResult:
+    """Estimate the USD cost of a usage record for a model+route.
+
+    A provider profile that reports its own cost wins: when
+    ``profile.get_usage_cost()`` returns a result it is returned directly
+    and the rate cards below are not consulted.
+
+    ``billing_time`` prices a historical moment instead of the call time —
+    used by insights re-estimation of past sessions so DeepSeek's
+    peak/off-peak rate is selected by when the tokens were consumed. It
+    must be timezone-aware (naive datetimes raise ValueError) and is
+    normalized to UTC before hour selection. Default (None) prices at
+    call time via ``_UTC_NOW()``, which is correct for live callers.
+    """
+    # Validated up front so the contract holds for every route: a naive
+    # datetime is a caller error, not something to silently ignore when the
+    # route happens to have no time-of-day pricing.
+    if billing_time is not None:
+        if billing_time.tzinfo is None:
+            raise ValueError("billing_time must be timezone-aware")
+        billing_time = billing_time.astimezone(UTC)
+
     from providers import get_provider_profile
     profile = get_provider_profile(provider or '')
     reported = profile.get_usage_cost(model_name, usage) if profile else None
@@ -711,9 +814,22 @@ def estimate_usage_cost(
     if not entry:
         return _unknown_cost("none")
 
+    # Since 2026-08-16T16:00Z the snapshot's off-peak rates bill at 2x during
+    # peak hours (01:00-04:00 and 06:00-10:00 UTC, Monday through Friday,
+    # excluding Chinese public holidays).  The rate is selected at call time
+    # (post-request), matching DeepSeek's per-request timestamp billing; pass
+    # billing_time to price a historical moment instead (insights re-estimation
+    # of past sessions).  Resolved before the context-tier read so ``above`` is
+    # measured against the card that actually bills the request.
+    deepseek_peak_hour = False
+    if route.provider == "deepseek":
+        now = billing_time if billing_time is not None else _UTC_NOW()
+        deepseek_peak_hour = _deepseek_peak_hour(now)
+
     # Whole-request context tier (e.g. Gemini Pro >200k prompts): above the
     # threshold the *_above rates apply to the entire request; None falls back.
     above = entry.tier_threshold_tokens is not None and usage.prompt_tokens > entry.tier_threshold_tokens
+
     amount = _ZERO
     for tokens, rate, rate_above, note in (
         (usage.input_tokens, entry.input_cost_per_million, entry.input_cost_per_million_above, ()),
@@ -734,6 +850,13 @@ def estimate_usage_cost(
         amount += Decimal(usage.request_count) * entry.request_cost
 
     notes: list[str] = []
+
+    # DeepSeek's peak rate is exactly 2x the off-peak card on every billing
+    # item (cache-hit input, cache-miss input, output). DeepSeek has no
+    # per-request fee today; if one appears, this scaling must be revisited.
+    if deepseek_peak_hour:
+        amount *= Decimal(2)
+
     status: CostStatus = "estimated"
     label = format_cost_label(amount)
     if entry.source == "none" and amount == _ZERO:
@@ -741,8 +864,7 @@ def estimate_usage_cost(
         label = "included"
         notes.append(_INCLUDED_NOTE)
 
-    if route.provider == "openrouter":
-        notes.append("OpenRouter cost is estimated from the models API until reconciled.")
+    notes.extend(_route_notes(route.provider, deepseek_peak_hour))
 
     return CostResult(
         amount_usd=amount, status=status, source=entry.source, label=label,

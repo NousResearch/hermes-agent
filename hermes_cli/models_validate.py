@@ -446,23 +446,32 @@ def static_model_provider_conflict(
     names no vendor lists (hidden or preview slugs) stay permissive. A conflict is a name outside
     the provider's family that another native vendor's catalog lists — or any foreign-family name
     on the OAuth catalogs with a strict family gate (``_STATIC_FAMILY_PREFIXES``) (#96817) — or an
-    unlisted name in another vendor's family on a single-vendor API. ``native_endpoint=False`` (the
-    provider's base URL is redirected to a proxy) keeps that last case undecidable."""
+    unlisted name in another vendor's family on a single-vendor API, including a plugin provider whose
+    declared catalog is one family. ``native_endpoint=False`` (the provider's base URL is redirected
+    to a proxy) keeps that last case undecidable."""
     from hermes_cli import models as _m
 
     requested = (model_name or "").strip()
     normalized = _m.normalize_provider(provider)
     catalog = list(_m._PROVIDER_MODELS.get(normalized, ()))
+    declared_only = not catalog
+    if declared_only:
+        # A plugin provider has no curated entry here; its profile declares what it serves.
+        from providers import get_provider_profile
+        profile = get_provider_profile(normalized)
+        catalog = list(getattr(profile, "fallback_models", None) or ())
     if not requested or not catalog or normalized == "moa" or normalized in _m._AGGREGATOR_PROVIDERS:
         return None
     if _m._model_in_provider_catalog(requested.lower(), _m._provider_keys(normalized)):
         return None
-    if _family_head(requested) in {_family_head(m) for m in catalog}:
+    families = {_family_head(m) for m in catalog}
+    if _family_head(requested) in families:
         return None
+    single_vendor = normalized in _SINGLE_VENDOR_PROVIDERS or (declared_only and len(families) == 1)
     strict = normalized in _STATIC_FAMILY_PREFIXES or (
-        native_endpoint and normalized in _SINGLE_VENDOR_PROVIDERS and _names_another_vendors_family(requested, normalized)
+        native_endpoint and single_vendor and _names_another_vendors_family(requested, normalized)
     )
-    if not strict and next(_m._static_catalog_matches(requested, normalized), None) is None:
+    if not strict and (declared_only or next(_m._static_catalog_matches(requested, normalized), None) is None):
         return None
     suggestions = get_close_matches(requested, catalog, n=limit, cutoff=0.4) or catalog[:limit]
     label = _m._PROVIDER_LABELS.get(normalized, normalized)
@@ -471,6 +480,21 @@ def static_model_provider_conflict(
         "message": (f"Model `{requested}` is not served by provider `{normalized}` ({label}). "
                     f"Closest {label} models: " + ", ".join(f"`{s}`" for s in suggestions) + "."),
     }
+
+
+def launch_model_conflict(model_name: str, provider: Optional[str], model_config: dict) -> Optional[dict[str, Any]]:
+    """``static_model_provider_conflict`` for a session launch: an empty ``provider`` means the one the
+    session would build with, and a base URL set for that provider, in config or its env var, is a proxy
+    that may serve any family. The caller holds the profile's env scope."""
+    from hermes_cli.auth import PROVIDER_REGISTRY, _provider_env_base_url
+    from hermes_cli.runtime_provider import resolve_requested_provider
+
+    provider = str(provider or "").strip() or resolve_requested_provider()
+    redirected = (str(model_config.get("provider") or "").strip().lower() == provider.lower()
+                  and bool(str(model_config.get("base_url") or "").strip()))
+    pconfig = PROVIDER_REGISTRY.get(provider.lower())
+    redirected = redirected or bool(pconfig and _provider_env_base_url(pconfig))
+    return static_model_provider_conflict(model_name, provider, native_endpoint=not redirected)
 
 
 def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:

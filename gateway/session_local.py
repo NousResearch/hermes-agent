@@ -262,6 +262,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     from dataclasses import replace
     private_secrets = dict(trusted_secrets or {})
     client_key = params.get('api_key')  # the client's own; an alias's key is the owner's expansion
+    model_conflict = None
     if trusted_policy is not None:
         policy = trusted_policy
     elif any(params.get(name) is True for name in BYPASS_FIELDS):
@@ -272,6 +273,10 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         with profile_env_scope():  # an alias's ``key_env`` / ``${VAR}`` key reads the same .env
             config = load_profile_config()
             params = resolve_launch_route(params, config)
+            if isinstance(model := params.get('model'), str) and model.strip() and 'base_url' not in params:
+                from hermes_cli.models_validate import launch_model_conflict
+                model_cfg = config.get('model')
+                model_conflict = launch_model_conflict(model, params.get('provider'), model_cfg if isinstance(model_cfg, dict) else {})
         # A client's session.create is the one caller whose named folder may select the coding posture.
         policy = build_policy(params, config, private_secrets=private_secrets, workspace_posture=True,
                               client_local=client_local)
@@ -325,6 +330,10 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
             if key is None or not hmac.compare_digest(key, params.get('api_key') or ''):
                 raise RuntimeStoreError('admission_conflict')
         return restore_local_session(authority, sid)
+    if model_conflict is not None:
+        # Before any state: minting the pair only defers the failure, or a silent fallback, to the
+        # first turn (#96817). An exact retry above keeps the session it already has.
+        raise RuntimeStoreError('model_provider_conflict', field='model', detail=model_conflict['message'])
     from gateway.session_policy import launch_skills
     if launch_skills(params) and skills_prompt is None:
         # `-s` is rendered off-loop by the RPC handler (render_launch_skills); a caller that

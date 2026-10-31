@@ -2264,6 +2264,8 @@ cli:
     usage_switch_reasoning: "changer et définir l'effort de raisonnement"
     usage_switch_provider: "changer de fournisseur"
     usage_refresh: "recharger les listes de modèles en direct"
+    reset_none: "Déjà sur le modèle par défaut configuré ({model}) — rien à réinitialiser."
+    reset_no_default: "Aucun model.default dans config.yaml — rien vers quoi revenir."
     choice_switch_anyway: "Changer quand même"
     desc_switch_anyway: "Utiliser ce modèle pour la session Hermes en cours."
     choice_cancel: "Annuler"

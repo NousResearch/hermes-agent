@@ -2012,6 +2012,8 @@ cli:
     usage_switch_reasoning: "전환하고 추론 강도 설정"
     usage_switch_provider: "제공자 전환"
     usage_refresh: "실시간 모델 목록 다시 가져오기"
+    reset_none: "이미 설정된 기본값({model})을 사용 중입니다 — 재설정할 것이 없습니다."
+    reset_no_default: "config.yaml에 model.default가 없습니다 — 되돌릴 대상이 없습니다."
     choice_switch_anyway: "그래도 전환"
     desc_switch_anyway: "현재 Hermes 세션에서 이 모델을 사용해요."
     choice_cancel: "취소"

@@ -2029,6 +2029,8 @@ cli:
     usage_switch_reasoning: "váltás és gondolkodási szint beállítása"
     usage_switch_provider: "szolgáltató váltása"
     usage_refresh: "élő modellisták újratöltése"
+    reset_none: "Már a beállított alapértelmezés ({model}) van használatban — nincs mit visszaállítani."
+    reset_no_default: "Nincs model.default a config.yaml-ban — nincs mire visszaállni."
     choice_switch_anyway: "Váltás mindenképp"
     desc_switch_anyway: "Ennek a modellnek a használata a jelenlegi Hermes-munkamenetben."
     choice_cancel: "Mégse"

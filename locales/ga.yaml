@@ -2012,6 +2012,8 @@ cli:
     usage_switch_reasoning: "athraigh agus socraigh iarracht réasúnaíochta"
     usage_switch_provider: "athraigh an soláthraí"
     usage_refresh: "faigh liostaí beo na samhlacha arís"
+    reset_none: "Ar an réamhshocrú cumraithe cheana ({model}) — níl aon rud le hathshocrú."
+    reset_no_default: "Níl model.default in config.yaml — níl aon rud le filleadh air."
     choice_switch_anyway: "Athraigh ar aon nós"
     desc_switch_anyway: "Úsáid an tsamhail seo don seisiún Hermes reatha."
     choice_cancel: "Cealaigh"

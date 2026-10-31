@@ -2012,6 +2012,8 @@ cli:
     usage_switch_reasoning: "змінити модель і задати рівень міркувань"
     usage_switch_provider: "змінити провайдера"
     usage_refresh: "повторно отримати актуальні списки моделей"
+    reset_none: "Уже використовується налаштована типова модель ({model}) — скидати нічого."
+    reset_no_default: "У config.yaml немає model.default — повертатися нема до чого."
     choice_switch_anyway: "Усе одно змінити"
     desc_switch_anyway: "Використати цю модель для поточного сеансу Hermes."
     choice_cancel: "Скасувати"

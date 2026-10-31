@@ -2012,6 +2012,8 @@ cli:
     usage_switch_reasoning: "التبديل وتعيين مستوى الاستدلال"
     usage_switch_provider: "تبديل المزوّد"
     usage_refresh: "إعادة جلب قوائم النماذج الحية"
+    reset_none: "يُستخدم بالفعل النموذج الافتراضي المُعدّ ({model}) — لا شيء لإعادة تعيينه."
+    reset_no_default: "لا يوجد model.default في config.yaml — لا شيء لإعادة التعيين إليه."
     choice_switch_anyway: "التبديل على أي حال"
     desc_switch_anyway: "استخدام هذا النموذج لجلسة Hermes الحالية."
     choice_cancel: "إلغاء"

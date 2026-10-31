@@ -2012,6 +2012,8 @@ cli:
     usage_switch_reasoning: "切換並設定推理強度"
     usage_switch_provider: "切換提供方"
     usage_refresh: "重新擷取即時模型清單"
+    reset_none: "已在使用設定的預設模型（{model}）— 無需重設。"
+    reset_no_default: "config.yaml 中沒有 model.default — 無可重設的目標。"
     choice_switch_anyway: "仍要切換"
     desc_switch_anyway: "在目前的 Hermes 工作階段使用此模型。"
     choice_cancel: "取消"

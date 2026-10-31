@@ -2012,6 +2012,8 @@ cli:
     usage_switch_reasoning: "değiştir ve akıl yürütme düzeyini ayarla"
     usage_switch_provider: "sağlayıcıyı değiştir"
     usage_refresh: "canlı model listelerini yeniden getir"
+    reset_none: "Zaten yapılandırılmış varsayılan ({model}) kullanılıyor — sıfırlanacak bir şey yok."
+    reset_no_default: "config.yaml içinde model.default yok — dönülecek bir şey yok."
     choice_switch_anyway: "Yine de değiştir"
     desc_switch_anyway: "Bu modeli geçerli Hermes oturumu için kullanın."
     choice_cancel: "İptal"

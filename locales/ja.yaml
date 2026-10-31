@@ -2012,6 +2012,8 @@ cli:
     usage_switch_reasoning: "切り替えて推論の強度を設定"
     usage_switch_provider: "プロバイダーを切り替え"
     usage_refresh: "最新のモデル一覧を再取得"
+    reset_none: "すでに設定済みのデフォルト（{model}）を使用中です — リセットするものはありません。"
+    reset_no_default: "config.yaml に model.default がありません — 戻す先がありません。"
     choice_switch_anyway: "それでも切り替える"
     desc_switch_anyway: "現在の Hermes セッションでこのモデルを使用します。"
     choice_cancel: "キャンセル"

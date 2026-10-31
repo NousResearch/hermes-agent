@@ -2012,6 +2012,8 @@ cli:
     usage_switch_reasoning: "wechseln und Reasoning-Stärke setzen"
     usage_switch_provider: "Anbieter wechseln"
     usage_refresh: "Live-Modelllisten neu abrufen"
+    reset_none: "Bereits auf dem konfigurierten Standard ({model}) — nichts zurückzusetzen."
+    reset_no_default: "Kein model.default in config.yaml — nichts, worauf zurückgesetzt werden kann."
     choice_switch_anyway: "Trotzdem wechseln"
     desc_switch_anyway: "Dieses Modell für die aktuelle Hermes-Sitzung verwenden."
     choice_cancel: "Abbrechen"

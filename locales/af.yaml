@@ -2012,6 +2012,8 @@ cli:
     usage_switch_reasoning: "verander en stel redenering-inspanning"
     usage_switch_provider: "verander verskaffer"
     usage_refresh: "haal lewendige modellyste weer op"
+    reset_none: "Reeds op die gekonfigureerde verstek ({model}) — niks om terug te stel nie."
+    reset_no_default: "Geen model.default in config.yaml nie — niks om na terug te stel nie."
     choice_switch_anyway: "Verander in elk geval"
     desc_switch_anyway: "Gebruik hierdie model vir die huidige Hermes-sessie."
     choice_cancel: "Kanselleer"

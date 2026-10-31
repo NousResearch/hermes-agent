@@ -52,9 +52,9 @@ Reddit's public Atom feeds (`.rss` endpoints), the only unauthenticated route Re
 serves to non-residential IPs. It is throttled to about one request per minute per IP and
 returns thinner data (no scores, top-level comments only), which is fine for a few calls.
 
-**Optional upgrade (app credentials, still no user login):** for sustained use or full
-data, register a free "script" type app at https://www.reddit.com/prefs/apps and put its
-two values in `~/.hermes/.env`:
+**Optional upgrade (app credentials, still no user login) - currently gated by Reddit,
+read the warning below before acting on it.** A free "script" type app registered at
+https://www.reddit.com/prefs/apps yields two values for `~/.hermes/.env`:
 
 ```
 REDDIT_CLIENT_ID=...
@@ -67,9 +67,18 @@ acts as the user. With both values set it switches to the OAuth API automaticall
 (~100 requests per minute, scores, nested comments, `num_comments`); if they are
 missing or rejected it falls back to the anonymous feeds and says so on stderr.
 
+> **Do not send the user to that form as a quick fix.** Verified 2026-09-21: the
+> create-app form silently does nothing unless the account already has approved Data API
+> access. The CAPTCHA passes, the page reloads unchanged, no app appears and no error is
+> shown. The real gate is the "You must also register to use the API" link in the form's
+> first line, which is a separate review queue, not a checkbox. Reports in r/redditdev put
+> it at roughly three weeks at best, with people waiting eight weeks to several months
+> without an answer and many rejections. Treat the OAuth backend as unavailable unless the
+> user already holds credentials.
+
 | | Anonymous feeds (default) | OAuth app credentials |
 |---|---|---|
-| Setup | nothing | 1-minute app registration, two `.env` values |
+| Setup | nothing | Data API approval (weeks, often refused), then two `.env` values |
 | Rate limit | ~1 request / minute / IP | ~100 requests / minute |
 | Thread data | post + top-level comments, no scores | nested comments, scores, comment counts |
 | Acts as a user | no | no |
@@ -116,10 +125,11 @@ than stopping at titles; the listing only carries the first ~300 characters of e
 ④ Cite the permalink (`url` field), not the listing page, when the result feeds a report.
 `grounded-citations` registers these URLs like any other source.
 
-⑤ If the user needs sustained Reddit access (monitoring, more than ~10 calls), stop and
-ask them to register the app credentials (Prerequisites) rather than grinding through the
-throttle. Tell them plainly: it is a free app registration, not logging Hermes into their
-account. Never ask for a Reddit password or browser cookies.
+⑤ If the task needs sustained Reddit access (monitoring, more than ~10 calls), say so and
+cut the plan down rather than grinding through the throttle. Do not tell the user to "just
+register an app": app creation is gated behind Data API approval (Prerequisites) and is not
+a step they can complete on demand. Ask whether they already hold credentials; if not, plan
+for the anonymous feed. Never ask for a Reddit password or browser cookies.
 
 ## Pitfalls
 
@@ -136,7 +146,7 @@ account. Never ask for a Reddit password or browser cookies.
   environment only.
 - Do not "fix" a 429 by retrying in a loop or adding a proxy; the throttle is per IP and
   the script already waits out the window once. More than one 429 in a row means the
-  task needs the app credentials.
+  task is too heavy for the anonymous feed: cut the number of calls.
 
 ## Verification
 

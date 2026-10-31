@@ -4,6 +4,7 @@ import time
 import pytest
 from agent.rate_limit_tracker import (
     RateLimitBucket,
+    _fmt_count,
     parse_rate_limit_headers,
 )
 
@@ -60,3 +61,9 @@ class TestBucket:
         b = RateLimitBucket(limit=800, remaining=795, reset_seconds=60.0, captured_at=now - 10)
         # ~50 seconds should remain
         assert 49 <= b.remaining_seconds_now <= 51
+
+
+def test_fmt_count_rolls_rounded_thousands_into_millions():
+    assert _fmt_count(999_949) == "999.9K"
+    assert _fmt_count(999_950) == "1.0M"
+    assert _fmt_count(999_999) == "1.0M"

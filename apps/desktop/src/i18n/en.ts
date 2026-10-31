@@ -388,6 +388,14 @@ export const en: Translations = {
 
   boot: enBoot.boot,
 
+  remoteReauthBanner: {
+    title: 'Reconnection required',
+    body: host => `Automatic sign-in to ${host} failed repeatedly. Sign in to restore your session.`,
+    action: 'Sign in',
+    signingIn: 'Signing in…',
+    failed: 'Automatic sign-in stopped after repeated failures. Sign in manually to restore the session.'
+  },
+
   notifications: {
     sharedProfileWarning:
       'Another Hermes installation is using this profile. Both installations share its settings and data, so changes can conflict. You can continue, or close the other installation before making changes.',

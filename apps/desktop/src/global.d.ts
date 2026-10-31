@@ -271,6 +271,14 @@ declare global {
         options?: DesktopOauthLoginOptions
       ) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLogoutResult>
+      // Main → renderer: automatic (silent) sign-in for this gateway exhausted
+      // its bounded retries — no further login windows open on their own, and
+      // a manual sign-in is the only way back. Optional: older Electron mains
+      // don't emit it.
+      onOauthLoginExhausted?: (callback: (payload: { baseUrl: string }) => void) => () => void
+      // Main → renderer: a login for this gateway succeeded, closing a failure
+      // episode. Optional: older Electron mains don't emit it.
+      onOauthLoginRestored?: (callback: (payload: { baseUrl: string }) => void) => () => void
       // Hermes Cloud: one portal login powers discovery + silent per-agent
       // sign-in (cloud-auto-discovery Phase 3).
       cloud: {

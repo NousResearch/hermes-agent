@@ -29,11 +29,13 @@ import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shel
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
+import { RemoteReauthBanner } from '@/components/remote-reauth-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
 import { SharedMetricsConsentDialog } from '@/components/shared-metrics/consent-dialog'
 import { TipHost } from '@/components/tips'
 import { UpdateHoldOverlay } from '@/components/update-hold-overlay'
 import { emitGatewayEvent } from '@/contrib/events'
+import { useRemoteReauthEvents } from '@/hooks/use-remote-reauth-events'
 import { translateNow } from '@/i18n'
 import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { isMessagingSource } from '@/lib/session-source'
@@ -337,6 +339,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   useRouteRequestNavigation(navigate)
   useRecoveryRequestToasts()
+  useRemoteReauthEvents()
 
   const freshDraftReady = useStore($freshDraftReady)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
@@ -1311,6 +1314,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <UpdatesOverlay />
       <GatewayConnectingOverlay />
       <StartupOverlay />
+      <RemoteReauthBanner />
       <UpdateHoldOverlay />
       <CommandPalette />
       <PluginInstallModal />

@@ -18,9 +18,19 @@
  *     exponential backoff. The hold is time-based, not "until the user
  *     clicks": the first attempt after a wake fails while Wi-Fi/VPN reconnect,
  *     and the next one recovers on its own.
- *   - A foreground caller (the user's click) is never held by a cooldown. If a
- *     hidden attempt is already running it is revealed instead of opening a
- *     competing window, and a repeat click focuses the open one.
+ *   - The hold is bounded in time AND in count: after `maxConsecutiveFailures`
+ *     consecutive failed attempts a background caller is refused outright
+ *     (`SilentLoginExhaustedError`) and no window is opened at all. A gateway
+ *     whose credential is genuinely dead (rotated secret, revoked session)
+ *     must not be hammered forever at the backoff ceiling — the exhaustion is
+ *     reported once (`onExhausted`) so the UI can present "reconnection
+ *     required" with a manual action as the only way forward.
+ *   - A foreground caller (the user's click) is never held by a cooldown or by
+ *     an exhaustion: it IS the manual action. If a hidden attempt is already
+ *     running it is revealed instead of opening a competing window, and a
+ *     repeat click focuses the open one. The first successful login for the
+ *     key clears the failure ledger (`onLoginRecovered` reports the episode
+ *     closing).
  */
 
 export type LoginIntent = 'background' | 'foreground'
@@ -36,6 +46,12 @@ export interface OauthLoginFlightsOptions {
   baseDelayMs?: number
   maxDelayMs?: number
   joinTimeoutMs?: number
+  /** Consecutive failed attempts after which background logins stop entirely (and stay stopped until a manual login succeeds). */
+  maxConsecutiveFailures?: number
+  /** Fired once when a key crosses into exhaustion — the UI's "reconnection required" signal. */
+  onExhausted?: (key: string) => void
+  /** Fired when a successful login closes a failure episode for the key. */
+  onLoginRecovered?: (key: string) => void
 }
 
 export class SilentLoginSuppressedError extends Error {
@@ -47,6 +63,19 @@ export class SilentLoginSuppressedError extends Error {
     )
     this.name = 'SilentLoginSuppressedError'
     this.retryAfterMs = retryAfterMs
+  }
+}
+
+export class SilentLoginExhaustedError extends Error {
+  readonly consecutiveFailures: number
+
+  constructor(consecutiveFailures: number) {
+    super(
+      `Automatic sign-in for this gateway failed ${consecutiveFailures} times in a row; no further attempts will open ` +
+        'until you sign in manually.'
+    )
+    this.name = 'SilentLoginExhaustedError'
+    this.consecutiveFailures = consecutiveFailures
   }
 }
 
@@ -70,6 +99,13 @@ export function loginFlightKey(partition: string, baseUrl: string): string {
   return `${partition} ${origin}`
 }
 
+/** The inverse of `loginFlightKey`: the origin half of a key, for reporting. */
+export function originFromFlightKey(key: string): string {
+  const origin = key.slice(key.indexOf(' ') + 1)
+
+  return origin || key
+}
+
 interface Flight {
   result: Promise<unknown>
   reveal: () => void
@@ -80,14 +116,23 @@ export class OauthLoginFlights {
   private readonly baseDelayMs: number
   private readonly maxDelayMs: number
   private readonly joinTimeoutMs: number
+  private readonly maxConsecutiveFailures: number
+  private readonly onExhausted: (key: string) => void
+  private readonly onLoginRecovered: (key: string) => void
   private readonly inFlight = new Map<string, Flight>()
   private readonly failures = new Map<string, { consecutive: number; blockedUntil: number }>()
 
   constructor(options: OauthLoginFlightsOptions = {}) {
     this.now = options.now ?? Date.now
     this.baseDelayMs = options.baseDelayMs ?? 5_000
-    this.maxDelayMs = options.maxDelayMs ?? 60_000
+    // A permanently dead credential must not be probed every minute either:
+    // the ceiling is 5 minutes, and `maxConsecutiveFailures` ends the series
+    // outright long before a capped delay can repeat many times.
+    this.maxDelayMs = options.maxDelayMs ?? 300_000
     this.joinTimeoutMs = options.joinTimeoutMs ?? 15_000
+    this.maxConsecutiveFailures = Math.max(1, options.maxConsecutiveFailures ?? 3)
+    this.onExhausted = options.onExhausted ?? (() => undefined)
+    this.onLoginRecovered = options.onLoginRecovered ?? (() => undefined)
   }
 
   isRunning(key: string): boolean {
@@ -120,6 +165,12 @@ export class OauthLoginFlights {
       return Promise.reject(new SilentLoginSuppressedError(remaining))
     }
 
+    const failure = this.failures.get(key)
+
+    if (intent === 'background' && (failure?.consecutive ?? 0) >= this.maxConsecutiveFailures) {
+      return Promise.reject(new SilentLoginExhaustedError(failure?.consecutive ?? 0))
+    }
+
     let attempt: LoginAttempt<T>
 
     try {
@@ -130,8 +181,14 @@ export class OauthLoginFlights {
       return Promise.reject(error)
     }
 
+    const hadFailures = failure !== undefined
+
     const result: Promise<T> = attempt.result.then(
       value => {
+        if (hadFailures) {
+          this.onLoginRecovered(key)
+        }
+
         this.failures.delete(key)
 
         return value
@@ -179,5 +236,9 @@ export class OauthLoginFlights {
     const delay = Math.min(this.baseDelayMs * 2 ** (consecutive - 1), this.maxDelayMs)
 
     this.failures.set(key, { consecutive, blockedUntil: this.now() + delay })
+
+    if (consecutive === this.maxConsecutiveFailures) {
+      this.onExhausted(key)
+    }
   }
 }

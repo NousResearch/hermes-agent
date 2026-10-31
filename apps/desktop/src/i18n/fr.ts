@@ -401,6 +401,15 @@ export const frOverrides = {
       "Ce chemin n'est pas sur cet ordinateur : il se trouve sur la machine du backend. Utilisez « Afficher dans l'arborescence »."
   },
   boot: frBoot.boot,
+
+  remoteReauthBanner: {
+    title: 'Reconnexion requise',
+    body: host => `La connexion automatique à ${host} a échoué à plusieurs reprises. Connectez-vous pour rétablir la session.`,
+    action: 'Se connecter',
+    signingIn: 'Connexion…',
+    failed: 'La connexion automatique s’est arrêtée après plusieurs échecs. Connectez-vous manuellement pour rétablir la session.'
+  },
+
   notifications: {
     region: 'Notifications',
     hide: 'Masquer',

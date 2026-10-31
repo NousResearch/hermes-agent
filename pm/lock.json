@@ -524,8 +524,8 @@
           "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261021/cpython-3.14.9+20261021-aarch64-unknown-linux-gnu-install_only.tar.gz"
         },
         "linux-arm64-bionic": {
-          "sha256": "3166e56c2b6c03fff41191fbb9d736302978e7c484702814d9f6dc99dd6006bd",
-          "url": "https://packages.termux.dev/apt/termux-main/pool/main/p/python/python_3.14.6-1_aarch64.deb"
+          "sha256": "55fcd7c23a603ba0caeca3ef9e670ec88ff71c1a480101de4983629792563b5e",
+          "url": "https://packages.termux.dev/apt/termux-main/pool/main/p/python/python_3.14.8_aarch64.deb"
         },
         "linux-arm64-musl": {
           "sha256": "ef171f00a80763ea5e3f547686217a1baf24cdb13905204ef8e647bfef511715",

@@ -192,6 +192,10 @@ def _stop_browser_use_state(state: dict[str, Any]) -> bool:
         logger.debug("Browser Use reload exited %s for %s: %s", result.returncode, state["session"],
                      (result.stderr or result.stdout or "").strip()[-500:])
         return False
+    with _owned_daemon_groups_lock:
+        pgid = _owned_daemon_groups.pop(daemon_identity(state["env"]), None)
+    if pgid is not None:
+        release_process_group_once_empty(pgid)
     return True
 
 

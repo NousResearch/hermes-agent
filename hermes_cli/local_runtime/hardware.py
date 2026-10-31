@@ -145,17 +145,24 @@ def _windows_memory_status():
 
 def _ram_bytes() -> tuple[int, int]:
     """(total, available) physical memory, cross-platform stdlib."""
+    total, avail, _measured = _ram_reading()
+    return total, avail
+
+
+def _ram_reading() -> tuple[int, int, bool]:
+    """(total, available, measured): ``measured`` is False when available is a fallback guess
+    (half of total) or the probe failed, so launch-time callers can tell a reading from a guess."""
     stat = _windows_memory_status()
     if stat is not None:
-        return stat.ullTotalPhys, stat.ullAvailPhys
+        return stat.ullTotalPhys, stat.ullAvailPhys, stat.ullTotalPhys > 0
     try:
         if sys.platform == "darwin":
             # macOS getconf has no _PHYS_PAGES/_AVPHYS_PAGES (exit 64) — the POSIX branch would
             # return (0, 0) and every model would read unavailable. sysctl is the platform truth.
             total = int(_stdout("/usr/sbin/sysctl", "-n", "hw.memsize").strip() or 0)
             if total <= 0:
-                return 0, 0
-            avail = total // 2  # conservative fallback
+                return 0, 0, False
+            avail, measured = total // 2, False  # conservative fallback
             with suppress(OSError, ValueError):
                 out = _stdout("/usr/bin/vm_stat")
                 page_m = re.search(r"page size of (\d+)", out)
@@ -166,23 +173,24 @@ def _ram_bytes() -> tuple[int, int]:
                     "Pages free", "Pages inactive", "Pages purgeable", "Pages speculative")
                     if (m := re.search(rf"{key}:\s+(\d+)\.", out)))
                 if pages > 0:
-                    avail = pages * page
-            return total, avail
+                    avail, measured = pages * page, True
+            return total, avail, measured
         if sys.platform.startswith("linux"):
             meminfo = _linux_meminfo_text()
             if meminfo is not None:
                 linux_ram = _linux_ram_from_meminfo(meminfo)
                 if linux_ram is not None:
-                    return linux_ram
+                    return (*linux_ram, True)
         # POSIX
         page = int(_stdout("getconf", "PAGE_SIZE") or 4096)
         total = int(_stdout("getconf", "_PHYS_PAGES") or 0) * page
-        avail = total // 2  # conservative when _AVPHYS is unavailable
+        avail, measured = total // 2, False  # conservative when _AVPHYS is unavailable
         with suppress(OSError, ValueError):
-            avail = int(_stdout("getconf", "_AVPHYS_PAGES") or 0) * page or avail
-        return total, avail
+            if read := int(_stdout("getconf", "_AVPHYS_PAGES") or 0) * page:
+                avail, measured = read, True
+        return total, avail, measured and total > 0
     except (OSError, ValueError):
-        return 0, 0
+        return 0, 0, False
 
 
 # nvidia-smi lives at a fixed path under the driver install; PATH presence varies by session type
@@ -411,11 +419,12 @@ def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
 
 
 def _uma_budget(base: int, total: int, *, gpu_name: str = "",
-                gpu_pci_id: int | None = None, lazy_reads: bool = True) -> HardwareBudget:
+                gpu_pci_id: int | None = None, lazy_reads: bool = True,
+                ram_backed: bool = False) -> HardwareBudget:
     usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
     return HardwareBudget(usable_vram_bytes=usable, total_device_bytes=total,
                           ram_available_bytes=0, uma=True, gpu_name=gpu_name, platform=sys.platform,
-                          gpu_pci_id=gpu_pci_id, lazy_reads=lazy_reads)
+                          gpu_pci_id=gpu_pci_id, lazy_reads=lazy_reads, ram_backed=ram_backed)
 
 
 def _windows_commit_room(own_bytes: int = 0) -> int | None:
@@ -546,7 +555,7 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
         # prefill (#28160).
         pool = min(ram_total, _windows_igpu_bytes(device) or ram_total)
         return _uma_budget(pool if planning else min(pool, ram_avail), pool,
-                           lazy_reads=gpu_class() not in ("amd", "intel"))
+                           lazy_reads=gpu_class() not in ("amd", "intel"), ram_backed=True)
 
     total, free, gpu_name, gpu_pci_id = vram
     margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
@@ -567,16 +576,29 @@ def launch_budget(capacity: HardwareBudget, *, own_bytes: int = 0) -> HardwareBu
     ``own_bytes`` is the device-memory estimate of what the managed server holds now and frees
     before the new instance loads. A stopped server's memory reads as free by the time its process
     has exited (measured on Windows: free memory was fully back at the first reading after exit).
+    None when the device query fails, so callers keep the capacity plan.
+
     Unified memory: free commit on Windows (the model and its prompt cache must fit there), with
-    ``own_bytes`` converted to the commit Windows charged for it, else None (its live budget is
-    already free memory). None too when the device query fails, so callers keep the capacity plan.
+    ``own_bytes`` converted to the commit Windows charged for it. Elsewhere a budget built from
+    system RAM (``ram_backed``: Apple Silicon, Linux integrated GPUs) is priced against the RAM free
+    now, because its capacity is 80% of *total* RAM: an 18 GiB Mac booted a 27B at 221K (14.3 GiB)
+    with ~5 GiB free, and the load failed. A free figure that is only a guess (``vm_stat`` failed)
+    keeps the capacity plan, and so do NVIDIA unified-memory devices, whose pool sits partly
+    behind a carve-out that RAM readings cannot see.
     """
     if capacity.uma:
         room = _windows_commit_room(model_commit_bytes(own_bytes) if own_bytes > 0 else 0)
-        if room is None:
+        if room is not None:
+            usable = min(capacity.usable_vram_bytes, int(room * (1 - _UMA_HEADROOM_FRACTION)))
+            return replace(capacity, usable_vram_bytes=usable, commit_room_bytes=room)
+        if not capacity.ram_backed:
             return None
-        usable = min(capacity.usable_vram_bytes, int(room * (1 - _UMA_HEADROOM_FRACTION)))
-        return replace(capacity, usable_vram_bytes=usable, commit_room_bytes=room)
+        _total, avail, measured = _ram_reading()
+        if not measured:
+            return None
+        usable = min(capacity.usable_vram_bytes,
+                     max(0, avail + max(0, own_bytes) - _LAUNCH_HEADROOM))
+        return replace(capacity, usable_vram_bytes=usable)
     vram = _nvidia_vram()
     if vram is not None:
         total, free = vram[0], vram[1]

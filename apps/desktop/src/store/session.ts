@@ -1712,6 +1712,19 @@ export const getCurrentModelSource = (): ComposerModelSource => {
   return source === 'default' || source === 'manual' ? source : ''
 }
 
+/** The owner's sticky choice, not the runtime/fallback currently painted in the pill. */
+export const getComposerModelSelection = () => ({
+  model: storedComposerString(COMPOSER_MODEL_KEY) ?? '',
+  provider: storedComposerString(COMPOSER_PROVIDER_KEY) ?? '',
+  source: getCurrentModelSource()
+})
+
+export const restoreComposerModelSelection = (): void => {
+  const selection = getComposerModelSelection()
+  setCurrentModelTransient(selection.model)
+  setCurrentProviderTransient(selection.provider)
+}
+
 // Reactive mirror of the persisted source so UI (the composer pill's
 // override badge) can subscribe. The getter above stays storage-backed —
 // it's read cross-window, where this atom wouldn't see writes.

@@ -665,6 +665,7 @@ class GatewayTurnHygieneMixin:
         """Build the detached hygiene ``AIAgent`` with the live session's system prompt. Returns
         ``(agent, sync_session_db)``."""
         from gateway.run import _GATEWAY_HYGIENE_PLATFORM, _seed_hygiene_system_prompt
+        from agent.prompt_caching import refresh_auto_cache_ttl
         from run_agent import AIAgent
         try:
             _hyg_session_row = await self._session_db.get_session(session_entry.session_id)
@@ -694,6 +695,7 @@ class GatewayTurnHygieneMixin:
         # restore-identity field, so it no longer forces the next live turn to rebuild; the seed's
         # retain flag is what keeps the reduced-toolset build out of the session row (#122822).
         _hyg_agent.platform = _GATEWAY_HYGIENE_PLATFORM
+        refresh_auto_cache_ttl(_hyg_agent)
         return _hyg_agent, _hyg_session_db
 
     async def _hmwa_hygiene_detached_attempt(

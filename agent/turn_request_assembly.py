@@ -214,7 +214,8 @@ def assemble_api_request(
             # Clamp per-destination: a configured 1h regresses to 5m on
             # Qwen/Alibaba routes, whose context cache is 5m-only.
             cache_ttl=effective_cache_ttl(
-                agent._cache_ttl, provider=agent.provider, model=agent.model
+                agent._cache_ttl, provider=agent.provider, model=agent.model,
+                auto=getattr(agent, "_cache_ttl_auto", False),
             ),
             native_anthropic=agent._use_native_cache_layout,
             static_system_prefix=(

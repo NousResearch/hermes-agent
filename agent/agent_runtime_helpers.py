@@ -1629,7 +1629,7 @@ def _raw_cache_ttl_from_config(default: Any) -> Any:
     """Raw ``prompt_caching.cache_ttl`` config value, or ``default`` when config cannot be read."""
     try:
         from hermes_cli.config import load_config_readonly
-        return (load_config_readonly().get("prompt_caching", {}) or {}).get("cache_ttl", "5m")
+        return (load_config_readonly().get("prompt_caching", {}) or {}).get("cache_ttl", "auto")
     except Exception:
         return default
 

@@ -8,8 +8,11 @@ replaying the identical request until ``max_retries``.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.turn_retry_state import TurnRetryState
+from run_agent import AIAgent
 
 _REVERSED_400 = "reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh"
 
@@ -161,3 +164,49 @@ def test_rejected_reasoning_level_retries_without_the_effort():
     _recover(agent, _REVERSED_400)
     assert _wire_reasoning_config(agent) == {"enabled": True, "effort": "high"}
     assert any("rejects disabling reasoning" in n for n in agent.notices)
+
+
+@pytest.mark.parametrize("configured", [{"enabled": True, "effort": "high"}, None])
+def test_openrouter_rejected_effort_stays_omitted_in_final_request(configured):
+    """Recovery must not turn an omitted effort into the profile's default medium."""
+    from agent.transports.chat_completions import ChatCompletionsTransport
+
+    agent = _WireAgent(configured)
+    agent.provider = "openrouter"
+    agent.model = "deepseek/deepseek-v4"
+    agent.base_url = "https://openrouter.ai/api/v1"
+    agent.__dict__.update(
+        _base_url_lower=agent.base_url,
+        _get_transport=lambda: ChatCompletionsTransport(),
+        _is_qwen_portal=lambda: False,
+        _is_openrouter_url=lambda: True,
+        _supports_reasoning_extra_body=lambda: True,
+        _prepare_messages_for_non_vision_model=lambda messages: messages,
+        _resolved_api_call_timeout=lambda: 30,
+        provider_require_parameters=False,
+    )
+    for name in ("max_tokens", "session_id", "_ollama_num_ctx", "openrouter_min_coding_score",
+                 "_ephemeral_max_output_tokens", "providers_allowed", "providers_ignored",
+                 "providers_order", "provider_sort", "provider_data_collection"):
+        setattr(agent, name, None)
+    messages = [{"role": "user", "content": "hi"}]
+
+    def build():
+        return AIAgent._build_api_kwargs(agent, messages, tools_for_api=[])
+
+    with patch("hermes_cli.models_reasoning_caps.openrouter_model_reasoning_capabilities", return_value=None):
+        expected = configured or {"enabled": True, "effort": "medium"}
+        assert build()["extra_body"]["reasoning"] == expected
+        _recover(agent, _STRUCTURED_LEVEL_400)
+        assert agent._reasoning_effort_rejected is True
+        assert agent._reasoning_disable_rejected is False
+        for _ in range(2):  # The retry and later requests must both respect the rejection.
+            kwargs = build()
+            assert "reasoning" not in kwargs.get("extra_body", {})
+            assert "reasoning_effort" not in kwargs
+        assert agent.reasoning_config == configured
+
+        # Unset on a fresh agent still means medium, not recovery's explicit omission.
+        agent._reasoning_effort_rejected = False
+        agent.reasoning_config = None
+        assert build()["extra_body"]["reasoning"] == {"enabled": True, "effort": "medium"}

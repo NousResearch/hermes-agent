@@ -116,6 +116,12 @@ function useTicking(start?: null | number): null | string {
 
 export type ArcState = 'queued' | 'running' | 'stale'
 
+/** A worker heartbeats every 60 s and this board's socketless refetch is also 60 s,
+ *  so a live card is legitimately two minutes quiet under ordinary jitter; a 120 s
+ *  window called healthy workers dead. Five minutes is past anything the dispatcher's
+ *  own reclaim acts on, so amber here still means something is actually wrong. */
+export const HEARTBEAT_STALE_SECONDS = 300
+
 /**
  * The card's machine-activity state. The board looked dead between "I made a
  * card" and "it's suddenly running" — this narrates the in-between. Only the
@@ -123,11 +129,17 @@ export type ArcState = 'queued' | 'running' | 'stale'
  * sweep, no-heartbeat = amber crawl. `queued` (triage / assigned-ready /
  * review) renders as the footer's named-agent chip — motion means work.
  */
+
 export function arcState(task: KanbanTask, fallbackAssignee: string): ArcState | null {
   if (task.status === 'running') {
-    // No heartbeat for 2+ min = the worker may have died; the dispatcher will
-    // reclaim it, but be honest instead of sweeping green forever.
-    const stale = task.last_heartbeat_at ? Date.now() / 1000 - task.last_heartbeat_at > 120 : false
+    // Age the heartbeat against the clock the payload was built with, never this
+    // machine's: a client clock a few minutes off (or a card painted from a snapshot)
+    // lit every running card amber immediately. Older backends send no stamp, so fall
+    // back to the local clock.
+    const nowSeconds = task.heartbeat_now ?? Date.now() / 1000
+    const stale = task.last_heartbeat_at
+      ? nowSeconds - task.last_heartbeat_at > HEARTBEAT_STALE_SECONDS
+      : false
 
     return stale ? 'stale' : 'running'
   }

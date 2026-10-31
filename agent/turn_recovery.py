@@ -22,6 +22,7 @@ from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.fallback_cooldown import probe_failed_fast
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
@@ -1809,6 +1810,17 @@ def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context:
     return _genuine
 
 
+def _pool_blocks_eager_fallback(agent: Any, reason: Any) -> bool:
+    """Credential rotation may still recover a rate limit, so the eager switch waits. Never for an
+    upstream-aggregator 429 (the pool can't help) or a failed outage probe: rotation neither
+    benches nor rotates on overload/server errors, so a healthy pool would otherwise send the
+    probe through the whole retry budget instead of straight back to the fallback."""
+    from agent.conversation_loop import _ra
+    if reason == FailoverReason.upstream_rate_limit or probe_failed_fast(agent, reason):
+        return False
+    return bool(_ra()._pool_may_recover_from_rate_limit(agent._credential_pool))
+
+
 def route_classified_error(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *, error_msg: str,
     error_context: Any, recovered_with_pool: bool, base_url: Any, model: Any,
@@ -1935,17 +1947,14 @@ def route_classified_error(
         max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
     _should_fallback = (
         (is_rate_limited and _wrapped_output_cap_budget is None)
-        or (_is_transport_failure and retry_count >= 2)
+        or (_is_transport_failure and retry_count >= 2) or probe_failed_fast(agent, classified.reason)
     ) and not (getattr(classified, "error_context", None) or {}).get("usage_window")  # never switch models on a plan limit
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
         # No eager fallback while credential pool rotation may recover. Exception: an
         # upstream-aggregator 429 — the pool can't help, always fall back.
         # Fixes #11314.
         _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
-        pool_may_recover = (
-            False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
-        )
-        if not pool_may_recover:
+        if not _pool_blocks_eager_fallback(agent, classified.reason):
             agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
             reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
             if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):

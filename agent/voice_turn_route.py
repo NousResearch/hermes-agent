@@ -105,9 +105,13 @@ def _voice_reasoning(agent: Any, effort: Optional[dict[str, Any]]) -> Optional[d
 
 
 def _capture(agent: Any) -> dict[str, Any]:
+    from agent.fallback_reasoning import _UNSET
     from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
     return {
         "snapshot": _build_primary_runtime_snapshot(agent, agent.api_mode),
+        # Binding the voice route records its own effort here; the surrounding fallback's must
+        # survive the voice turn so the primary restore can still tell a user's change from it.
+        "_fallback_bound_reasoning": vars(agent).get("_fallback_bound_reasoning", _UNSET),
         **{name: getattr(agent, name, None) for name in _EXTRA_FIELDS},
     }
 
@@ -115,7 +119,7 @@ def _capture(agent: Any) -> dict[str, Any]:
 def _reinstall(agent: Any, state: dict[str, Any]) -> None:
     from agent.route_binding import reinstall_runtime_snapshot
     reinstall_runtime_snapshot(agent, state["snapshot"])
-    for name in _EXTRA_FIELDS:
+    for name in (*_EXTRA_FIELDS, "_fallback_bound_reasoning"):
         setattr(agent, name, state[name])
 
 

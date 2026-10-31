@@ -1,6 +1,6 @@
 name: cadence
 repo: https://github.com/abundantbeing/cadence
-sha: 7f52573ecc9a9b0f5889d85edb04104340cfdfc7
+sha: d74f2636eb680efa063769359020d7d2b6fd7540
 title: Cadence
 description: "Local usage page: year heatmap, streaks from days a chat was used, model and place breakdowns, and this week against last week. Disclosure: reads the selected profile state.db read-only and runs the local cadence command through Hermes cli.exec. No network calls, secrets, telemetry, or provider logins. Not a fork of hermes-activity."
 maintainer: abundantbeing
@@ -10,7 +10,7 @@ requires_hermes: ">=0.21.7"
 docs_url: https://github.com/abundantbeing/cadence
 version: "1.0.0"
 screenshots:
-  - https://raw.githubusercontent.com/abundantbeing/cadence/7f52573ecc9a9b0f5889d85edb04104340cfdfc7/assets/cadence-preview.png
+  - https://raw.githubusercontent.com/abundantbeing/cadence/d74f2636eb680efa063769359020d7d2b6fd7540/assets/cadence-preview.png
 readme: true
 platforms: []
 capabilities:

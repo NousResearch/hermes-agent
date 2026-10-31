@@ -1262,11 +1262,22 @@ def _card_button(label: str, btn_type: str, value: dict[str, Any]) -> dict[str, 
     return {"tag": "button", "text": {"tag": "plain_text", "content": label}, "type": btn_type, "value": value}
 
 
-def _card(title: str, template: str, markdown: str, *, actions: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
-    """Wide interactive card: colored header + one markdown block (+ an optional button row)."""
+def _card(
+    title: str,
+    template: str,
+    markdown: str,
+    *,
+    actions: Optional[list[dict[str, Any]]] = None,
+    action_rows: Optional[list[list[dict[str, Any]]]] = None,
+) -> dict[str, Any]:
+    """Wide interactive card: colored header + one markdown block (+ optional button rows)."""
     elements: list[dict[str, Any]] = [{"tag": "markdown", "content": markdown}]
     if actions is not None:
         elements.append({"tag": "action", "actions": actions})
+    if action_rows is not None:
+        for row in action_rows:
+            if row:
+                elements.append({"tag": "action", "actions": row})
     return {
         "config": {"wide_screen_mode": True},
         "header": {"title": {"content": title, "tag": "plain_text"}, "template": template},
@@ -1344,6 +1355,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._approval_counter = itertools.count(1)
         self._update_prompt_state: dict[int, dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
+        self._model_picker_state: dict[int, dict[str, Any]] = {}
+        self._model_picker_counter = itertools.count(1)
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: OrderedDict[str, str] = OrderedDict()
         self._load_seen_message_ids()
@@ -1863,6 +1876,177 @@ class FeishuAdapter(BasePlatformAdapter):
         tmp_path.write_text(answer, encoding="utf-8")
         tmp_path.replace(response_path)
 
+    @staticmethod
+    def _build_model_picker_provider_card(
+        *,
+        picker_id: int,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+    ) -> dict[str, Any]:
+        curr_m = current_model or "未设置"
+        curr_p = current_provider or "未设置"
+        md = f"**当前模型**：`{curr_m}`\n**当前服务商**：`{curr_p}`\n\n请选择模型服务商 (Provider)："
+        buttons = []
+        for p in providers:
+            slug = str(p.get("slug") or "")
+            name = str(p.get("name") or slug)
+            count = p.get("total_models", len(p.get("models", [])))
+            is_curr = bool(p.get("is_current")) or (slug == current_provider)
+            label = f"{name} ({count})"
+            if is_curr:
+                label = f"✓ {label}"
+            buttons.append(_card_button(
+                label,
+                "primary" if is_curr else "default",
+                {"hermes_model_picker_action": "select_provider", "picker_id": picker_id, "provider_slug": slug},
+            ))
+        action_rows = []
+        for i in range(0, len(buttons), 2):
+            action_rows.append(buttons[i:i+2])
+        action_rows.append([_card_button(
+            "❌ 取消",
+            "danger",
+            {"hermes_model_picker_action": "cancel", "picker_id": picker_id},
+        )])
+        return _card("🤖 选择模型 | 服务商列表", "blue", md, action_rows=action_rows)
+
+    @staticmethod
+    def _build_model_picker_models_card(
+        *,
+        picker_id: int,
+        provider: dict[str, Any],
+        current_model: str,
+        page: int = 0,
+        page_size: int = 14,
+    ) -> dict[str, Any]:
+        slug = str(provider.get("slug") or "")
+        name = str(provider.get("name") or slug)
+        models = provider.get("models", [])
+        total_models = len(models)
+        total_pages = max(1, (total_models + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        start = page * page_size
+        end = min(start + page_size, total_models)
+        page_models = models[start:end]
+
+        md = f"服务商：**{name}** (`{slug}`)\n共 {total_models} 个模型"
+        if total_pages > 1:
+            md += f" (第 {page + 1}/{total_pages} 页)"
+        md += "\n\n请点击目标模型进行切换："
+
+        buttons = []
+        for m in page_models:
+            model_id = str(m)
+            is_curr = (model_id == current_model)
+            label = f"✓ {model_id}" if is_curr else model_id
+            buttons.append(_card_button(
+                label,
+                "primary" if is_curr else "default",
+                {
+                    "hermes_model_picker_action": "select_model",
+                    "picker_id": picker_id,
+                    "provider_slug": slug,
+                    "model_id": model_id,
+                },
+            ))
+        action_rows = []
+        for i in range(0, len(buttons), 2):
+            action_rows.append(buttons[i:i+2])
+
+        nav_buttons = []
+        if total_pages > 1:
+            if page > 0:
+                nav_buttons.append(_card_button(
+                    "◀ 上一页",
+                    "default",
+                    {"hermes_model_picker_action": "select_provider", "picker_id": picker_id, "provider_slug": slug, "page": page - 1},
+                ))
+            if page < total_pages - 1:
+                nav_buttons.append(_card_button(
+                    "下一页 ▶",
+                    "default",
+                    {"hermes_model_picker_action": "select_provider", "picker_id": picker_id, "provider_slug": slug, "page": page + 1},
+                ))
+        if nav_buttons:
+            action_rows.append(nav_buttons)
+
+        action_rows.append([
+            _card_button(
+                "◀ 返回服务商",
+                "default",
+                {"hermes_model_picker_action": "back", "picker_id": picker_id},
+            ),
+            _card_button(
+                "❌ 取消",
+                "danger",
+                {"hermes_model_picker_action": "cancel", "picker_id": picker_id},
+            ),
+        ])
+        return _card(f"🤖 选择模型 | {name}", "wathet", md, action_rows=action_rows)
+
+    @staticmethod
+    def _build_resolved_model_picker_card(
+        *,
+        model_id: str,
+        provider_slug: str,
+        result_text: str,
+        user_name: str,
+    ) -> dict[str, Any]:
+        md = f"**模型切换已生效！**\n\n- **目标模型**：`{model_id}`\n- **服务商**：`{provider_slug}`\n- **操作者**：{user_name}"
+        if result_text and result_text.strip():
+            md += f"\n\n{result_text.strip()}"
+        return _card("✅ 模型切换成功", "green", md)
+
+    @staticmethod
+    def _build_cancelled_model_picker_card(*, user_name: str) -> dict[str, Any]:
+        return _card("已取消", "grey", f"模型选择已由 {user_name} 取消。")
+
+    @staticmethod
+    def _build_expired_model_picker_card() -> dict[str, Any]:
+        return _card("⏳ 选择器已过期", "grey", "该模型选择卡片已过期，请重新输入 `/model`。")
+
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive Feishu card model picker."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        try:
+            picker_id = next(self._model_picker_counter)
+            card = self._build_model_picker_provider_card(
+                picker_id=picker_id,
+                providers=providers,
+                current_model=current_model,
+                current_provider=current_provider,
+            )
+            result = await self._send_interactive_card(
+                chat_id, card, metadata, "send_model_picker failed",
+                state_map=self._model_picker_state, state_id=picker_id, session_key=session_key,
+            )
+            if result.success:
+                self._model_picker_state[picker_id].update({
+                    "providers": providers,
+                    "current_model": current_model,
+                    "current_provider": current_provider,
+                    "on_model_selected": on_model_selected,
+                    "created_at": time.time(),
+                })
+                if len(self._model_picker_state) > 50:
+                    oldest_k = min(self._model_picker_state.keys(), key=lambda k: self._model_picker_state[k].get("created_at", 0))
+                    self._model_picker_state.pop(oldest_k, None)
+            return result
+        except Exception as exc:
+            logger.warning("[Feishu] send_model_picker failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None, **kwargs,
@@ -2206,6 +2390,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
             if action_value.get("hermes_update_prompt_action"):
                 return self._handle_update_prompt_card_action(event=event, action_value=action_value, loop=loop)
+            if action_value.get("hermes_model_picker_action"):
+                return self._handle_model_picker_card_action(event=event, action_value=action_value, loop=loop)
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         return self._card_response()
 
@@ -2315,6 +2501,91 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._submit_on_loop(loop, coro):
             return self._card_response()
         return self._card_response(self._build_resolved_update_prompt_card(answer=answer, user_name=user_name))
+
+    def _handle_model_picker_card_action(self, *, event: Any, action_value: dict[str, Any], loop: Any) -> Any:
+        """Schedule model picker action and return synchronous card response."""
+        picker_id = action_value.get("picker_id")
+        if picker_id is None:
+            logger.debug("[Feishu] Card action missing picker_id, ignoring")
+            return self._card_response()
+        state = self._model_picker_state.get(picker_id)
+        if not state:
+            logger.debug("[Feishu] Model picker %s already resolved or expired", picker_id)
+            return self._card_response(self._build_expired_model_picker_card())
+
+        checked = self._validate_card_action(event=event, state=state, label="model picker", ident=picker_id)
+        if checked is None:
+            return self._card_response()
+        _open_id, chat_id, user_name = checked
+
+        action_type = str(action_value.get("hermes_model_picker_action") or "").strip()
+
+        if action_type == "cancel":
+            self._model_picker_state.pop(picker_id, None)
+            return self._card_response(self._build_cancelled_model_picker_card(user_name=user_name))
+
+        if action_type == "back":
+            card = self._build_model_picker_provider_card(
+                picker_id=picker_id,
+                providers=state.get("providers", []),
+                current_model=state.get("current_model", ""),
+                current_provider=state.get("current_provider", ""),
+            )
+            return self._card_response(card)
+
+        if action_type == "select_provider":
+            provider_slug = str(action_value.get("provider_slug") or "").strip()
+            matched = next((p for p in state.get("providers", []) if p.get("slug") == provider_slug), None)
+            if not matched:
+                logger.warning("[Feishu] Selected provider %r not found in picker state", provider_slug)
+                return self._card_response()
+            page = int(action_value.get("page", 0))
+            card = self._build_model_picker_models_card(
+                picker_id=picker_id,
+                provider=matched,
+                current_model=state.get("current_model", ""),
+                page=page,
+            )
+            return self._card_response(card)
+
+        if action_type == "select_model":
+            model_id = str(action_value.get("model_id") or "").strip()
+            provider_slug = str(action_value.get("provider_slug") or "").strip()
+            on_model_selected = state.get("on_model_selected")
+
+            result_text = ""
+            if callable(on_model_selected):
+                try:
+                    res = on_model_selected(chat_id, model_id, provider_slug)
+                    if asyncio.iscoroutine(res):
+                        is_same_loop = False
+                        try:
+                            is_same_loop = (asyncio.get_running_loop() is loop)
+                        except RuntimeError:
+                            pass
+
+                        if is_same_loop:
+                            loop.create_task(res)
+                            result_text = "切换请求已生效"
+                        else:
+                            fut = asyncio.run_coroutine_threadsafe(res, loop)
+                            result_text = fut.result(timeout=2.5)
+                    else:
+                        result_text = str(res or "")
+                except Exception as exc:
+                    logger.error("[Feishu] Model switch on_model_selected failed: %s", exc)
+                    result_text = str(exc)
+
+            self._model_picker_state.pop(picker_id, None)
+            card = self._build_resolved_model_picker_card(
+                model_id=model_id,
+                provider_slug=provider_slug,
+                result_text=result_text,
+                user_name=user_name,
+            )
+            return self._card_response(card)
+
+        return self._card_response()
 
     def _pop_validated_prompt_state(
         self, *, states: dict[int, dict[str, str]], ident: Any, label: str, open_id: str, chat_id: str,

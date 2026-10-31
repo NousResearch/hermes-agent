@@ -1028,92 +1028,6 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
-def _resolve_project_link(
-    conn: sqlite3.Connection, project_id: Optional[str], project_source_task_id: Optional[str],
-    workspace_kind: str, workspace_path: Optional[str],
-) -> tuple[Optional[str], Any, Optional[str], str]:
-    """``(project_id, project_obj, project_repo, workspace_kind)`` for ``create_task``.
-
-    A project-linked task is anchored to the project's primary repo as a
-    worktree with a deterministic branch (slug + task id). Projects live in the
-    creator's per-profile projects.db, but the stored repo path is absolute so
-    the cross-profile dispatcher needs no projects.db access. ``project_repo``
-    is set when the worktree path must still be derived from the new task id.
-    """
-    project_id = (str(project_id).strip() or None) if project_id is not None else None
-    if not project_id:
-        return None, None, None, workspace_kind
-    from hermes_cli import projects_db as _pdb
-
-    project_repo: Optional[str] = None
-    try:
-        with _pdb.connect_closing() as _pconn:
-            project_obj = _pdb.get_project(_pconn, project_id)
-    except Exception:
-        project_obj = None
-    if project_obj is None and project_source_task_id:
-        project_obj, project_repo = _project_from_source_task(
-            conn, _pdb, project_id, str(project_source_task_id),
-        )
-        if project_obj is not None and workspace_kind == "scratch":
-            workspace_kind = "worktree"
-    if project_obj is None:
-        # Unresolvable id/slug: drop the link (never a dangling reference,
-        # never a crash) and create an ordinary scratch task.
-        return None, None, None, workspace_kind
-    # Canonicalise (a slug may have been passed) and anchor the worktree
-    # under the project's primary repo.
-    if workspace_kind == "scratch" and project_obj.primary_path:
-        workspace_kind = "worktree"
-    if workspace_kind == "worktree" and workspace_path is None and project_obj.primary_path:
-        # Concrete path is deferred to the insert loop: a fresh
-        # ``<repo>/.worktrees/<task-id>`` keyed on the new task id.
-        project_repo = str(project_obj.primary_path)
-    return project_obj.id, project_obj, project_repo, workspace_kind
-
-
-def _project_from_source_task(
-    conn: sqlite3.Connection, _pdb: Any, project_id: str, source_task_id: str,
-) -> tuple[Any, Optional[str]]:
-    """Recover a Project (and its repo) from a canonical project-linked
-    worktree task on this board. Worker profiles have their own projects.db
-    while the Kanban DB is shared, so this carries the repo + branch
-    convention forward without opening the creator's store and without
-    reusing the source task's literal worktree path. ``(None, None)`` when
-    the source task is not a ``<repo>/.worktrees/<id>`` project worktree."""
-    source_task = get_task(conn, source_task_id)
-    if not (
-        source_task is not None
-        and source_task.project_id == project_id
-        and source_task.workspace_kind == "worktree"
-        and source_task.workspace_path
-    ):
-        return None, None
-    source_path = Path(source_task.workspace_path)
-    if not (
-        source_path.is_absolute()
-        and source_path.name == source_task.id
-        and source_path.parent.name == ".worktrees"
-    ):
-        return None, None
-    project_slug = None
-    if source_task.branch_name:
-        prefix, separator, leaf = source_task.branch_name.partition("/")
-        if separator and (leaf == source_task.id or leaf.startswith(f"{source_task.id}-")):
-            with contextlib.suppress(ValueError):
-                project_slug = _pdb.normalize_slug(prefix)
-    if project_slug is None:
-        with contextlib.suppress(ValueError):
-            project_slug = _pdb.normalize_slug(project_id)
-    if not project_slug:
-        return None, None
-    project_repo = str(source_path.parent.parent)
-    project_obj = _pdb.Project(
-        id=project_id, slug=project_slug, name=project_slug, created_at=0, primary_path=project_repo,
-    )
-    return project_obj, project_repo
-
-
 def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str]]:
     """Strip/dedupe a skills list. Commas are refused (a comma-joined string must
     not land in one argv slot); toolset names are rejected all at once because
@@ -1180,11 +1094,15 @@ def create_task(
     ``creator_task_id``: inherit durable session/subscriptions independently of
     dependency edges; an explicit ``session_id`` still wins.
     ``project_source_task_id``: cross-profile fallback when ``project_id`` is not
-    in the active profile's projects.db — see ``_resolve_project_link``.
+    in the active profile's projects.db — see ``resolve_project_link``.
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
+    A project whose ``primary_path`` is not inside a git repo never anchors a
+    worktree: the task falls back to ``scratch`` with a
+    ``project_worktree_skipped`` event instead of dying at spawn.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
+    from hermes_cli.kanban_db_project import record_worktree_skip, resolve_project_link
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
     completion_contract = validate_contract(completion_contract)
@@ -1216,7 +1134,7 @@ def create_task(
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
 
-    project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
+    project_id, project_obj, project_repo, workspace_kind, worktree_skipped = resolve_project_link(
         conn, project_id, project_source_task_id, workspace_kind, workspace_path
     )
     parents = tuple(p for p in parents if p)
@@ -1302,6 +1220,9 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                # A project that could not anchor a worktree says so on the card
+                # (no-op when the upgrade went through).
+                record_worktree_skip(conn, task_id, worktree_skipped)
                 if task_status == "blocked":
                     _append_event(
                         conn,

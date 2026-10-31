@@ -1,6 +1,7 @@
 """Turn-scoped editable Telegram todo status; ordinary progress has its own lifetime."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -84,7 +85,13 @@ class TodoProgress:
         self.next_edit = time.monotonic() + 1.5
         try:
             if self.state.progress_msg_id is None:
-                result = await self.progress._send_progress_text(self.state, self.latest)
+                try:
+                    result = await self.progress._send_progress_text(self.state, self.latest)
+                except asyncio.CancelledError:
+                    # Telegram may have accepted the send before cancellation hid its receipt.
+                    # Without an id, another send during the final drain could duplicate it.
+                    self.disabled = True
+                    raise
             else:
                 result = await self.progress._edit_progress_message(
                     self.state, self.state.progress_msg_id, self.latest,

@@ -125,7 +125,7 @@ describe('I18nProvider', () => {
 
   it('does not overwrite unsupported configured languages', async () => {
     const configClient: I18nConfigClient = {
-      getConfig: vi.fn().mockResolvedValue({ display: { language: 'it' } }),
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'xx' } }),
       saveConfig: vi.fn()
     }
 
@@ -141,7 +141,7 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('label').textContent).toBe('Language')
     expect(configClient.saveConfig).not.toHaveBeenCalled()
     // …but remembers the ask so a backend pack for it can be fetched.
-    expect($requestedLocale.get()).toBe('it')
+    expect($requestedLocale.get()).toBe('xx')
   })
 
   it('promotes a saved pack-only language once its pack registers, then drops back when it is removed', async () => {

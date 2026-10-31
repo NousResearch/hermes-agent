@@ -155,8 +155,8 @@ class ApiErrorSummaryMixin:
     def _summarize_api_error(error: Exception) -> str:
         """Extract a human-readable one-liner from an API error.
 
-        Cloudflare HTML pages → ``<title>``; network/DNS failures (even SDK-wrapped) → offline hint; else
-        truncated str(error).
+        Cloudflare HTML pages → ``<title>``; network/DNS failures (even SDK-wrapped) → offline hint;
+        transport timeouts → connect/read phase plus the setting to raise; else truncated str(error).
         """
         raw = str(error)
 
@@ -170,6 +170,11 @@ class ApiErrorSummaryMixin:
                     "Check your internet connection and try again."
                 )
             current = current.__cause__ or current.__context__
+
+        from agent.timeout_error_summary import summarize_timeout_error
+        timeout_summary = summarize_timeout_error(error)
+        if timeout_summary is not None:
+            return timeout_summary
 
         if is_provider_stream_parse_error(error):
             return f"Malformed provider streaming response: {raw[:300]}"

@@ -6,9 +6,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // names one of THAT source's profiles. Routing it through the profile-only
 // path resolved the descriptor with a bare name, which the main process
 // answers against the primary — the gateway snapped back home and the pick
-// looked like it never took. Default on the explicit `local` source is the
-// exception: that name is also the window primary's profile key, so the
-// profile-only door would activate a remote-primary VPS.
+// looked like it never took. This applies to the explicit `local` source too:
+// a bare profile name would inherit the saved cloud primary.
 
 const ensureGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const ensureGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => true)
@@ -66,13 +65,13 @@ describe('selectProfile', () => {
     expect(ensureGatewayForAgent).not.toHaveBeenCalled()
   })
 
-  it('keeps the legacy profile-only path when the explicit local source is live', async () => {
+  it('keeps named picks on the explicit local source', async () => {
     activeGatewayConnectionId.mockReturnValue('local')
 
     selectProfile('override-profile')
 
-    await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('override-profile'))
-    expect(ensureGatewayForAgent).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('local', 'override-profile'))
+    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
   })
 
   it('keeps Default on the explicit local source instead of the window primary', async () => {
@@ -95,13 +94,13 @@ describe('newSessionInProfile', () => {
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
   })
 
-  it('keeps the legacy profile-only path for a new chat on the explicit local source', async () => {
+  it('keeps named new chats on the explicit local source', async () => {
     activeGatewayConnectionId.mockReturnValue('local')
 
     newSessionInProfile('override-profile')
 
-    await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('override-profile'))
-    expect(ensureGatewayForAgent).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('local', 'override-profile'))
+    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
   })
 
   it('opens a Default new chat on the explicit local source, not the window primary', async () => {

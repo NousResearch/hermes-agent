@@ -992,11 +992,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 await admit_internal_event(adapter, synth_event)
             return True
         except WakeNotAccepted as exc:
-            # Permanent only on proof: a pin the authority's state shows gone (/new, #141562) or a
-            # final code. An unowned or foreign-pinned refusal may still find its owner (d6635ffe03b).
+            # Permanent only on proof: a pin the authority's state shows gone (/new, #141562), a
+            # routing snapshot that can never rebuild its own key (#143720), or a final code. An
+            # unowned or foreign-pinned refusal may still find its owner (d6635ffe03b).
             from gateway.wake import PERMANENT_REFUSAL_REASONS
             pin_gone = await self._watch_pin_gone(evt, str(exc), log=not raise_not_accepted)
-            exc.permanent = pin_gone or exc.reason in PERMANENT_REFUSAL_REASONS
+            route_drifted = (exc.reason == "admission_conflict"
+                             and await self._watch_route_identity_drifted(evt, source))
+            exc.permanent = pin_gone or route_drifted or exc.reason in PERMANENT_REFUSAL_REASONS
             if pin_gone and not raise_not_accepted:
                 return None
             if not raise_not_accepted:

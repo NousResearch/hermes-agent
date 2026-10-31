@@ -249,3 +249,87 @@ async def test_refused_watch_wake_logs_the_refusal_code(tmp_path, monkeypatch, c
             'Watch notification not admitted for discord chat=42: admission_conflict']
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_route_drifted_wake_refusal_is_proven_permanent_and_the_cap_drops_it(
+    tmp_path, monkeypatch, caplog
+):
+    """A wake whose snapshot no longer rebuilds the key it addresses is refused on every
+    redelivery, so the refusal must count as permanent and the drain's 8-attempt cap must drop
+    it instead of requeueing on the 60 s ceiling forever (#143720)."""
+    import logging
+    import queue
+    from gateway.session_identity import replace_source
+    runner, authority, _adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human')
+    try:
+        route = metadata['gateway_session_key']
+        # The route's persisted origin was rewritten around the drift: the snapshot restored from it
+        # rebuilds another key while the event stays pinned to this one (#143720).
+        runner.session_store._entries[route].origin = replace_source(source, thread_id='7')
+        completion_queue = queue.Queue()
+        evt = {'type': 'completion', 'session_id': 'proc_x', 'session_key': route, 'platform': 'discord',
+               'chat_id': '42', 'chat_type': 'dm', 'exit_code': 0, 'output': 'done', 'started_at': 1.0,
+               'parent_session_id': metadata['gateway_session_id']}
+        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+            for attempt in range(1, 9):
+                assert await runner._inject_watch_notification('[done]', evt) is False
+                assert evt['_refusal_permanent'] is True, 'a deterministic route-key drift is permanent'
+                runner._requeue_refused_watch_event(completion_queue, evt)
+                if completion_queue.empty():
+                    assert attempt == 8
+                    break
+                evt = completion_queue.get_nowait()
+        assert completion_queue.empty(), 'the cap dropped the event instead of requeueing forever'
+        drops = [r.getMessage() for r in caplog.records if 'dropping the queued event' in r.getMessage()]
+        assert len(drops) == 1
+        assert 'proc_x' in drops[0]
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_route_identity_drift_is_proven_only_from_the_snapshot(tmp_path, monkeypatch):
+    """Only a snapshot that provably rebuilds a different key than the one it addresses counts as
+    drift. A keyless event and a raw non-agent session key are never proven."""
+    from gateway.session_identity import replace_source
+    runner, authority, _adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        route = metadata['gateway_session_key']
+        evt = {'type': 'watch_match', 'session_id': 'proc_x', 'session_key': route, 'platform': 'discord',
+               'chat_id': '42', 'chat_type': 'dm', 'user_id': '42', 'user_name': 'human',
+               'exit_code': 0, 'output': 'done', 'started_at': 1.0,
+               'parent_session_id': metadata['gateway_session_id']}
+        undrifted = runner._build_process_event_source(evt)
+        assert undrifted is not None
+        assert await runner._watch_route_identity_drifted(evt, undrifted) is False
+        assert await runner._watch_route_identity_drifted(dict(evt, session_key=''), undrifted) is False
+        assert await runner._watch_route_identity_drifted(
+            dict(evt, session_key='raw-x-hermes-session-id'), undrifted) is False
+        runner.session_store._entries[route].origin = replace_source(source, thread_id='7')
+        drifted = runner._build_process_event_source(evt)
+        assert drifted is not None
+        assert await runner._watch_route_identity_drifted(evt, drifted) is True
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_pin_with_an_undrifted_snapshot_stays_transient(tmp_path, monkeypatch, caplog):
+    """The d6635ffe03b class is preserved: a notice pinned to a session its route does not run may
+    still find its owner, so its admission_conflict must not be proven permanent by this gate."""
+    import logging
+    runner, authority, _adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        route = metadata['gateway_session_key']
+        # An unrelated, still-open conversation: the pin is foreign, not gone, and the snapshot's
+        # own identity still rebuilds the route exactly.
+        authority.db.create_session('20260101_000000_elsewhere', source='discord')
+        evt = {'type': 'completion', 'session_id': 'proc_x', 'session_key': route, 'platform': 'discord',
+               'chat_id': '42', 'chat_type': 'dm', 'exit_code': 0, 'output': 'done', 'started_at': 1.0,
+               'parent_session_id': '20260101_000000_elsewhere'}
+        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+            assert await runner._inject_watch_notification('[done]', evt) is False
+        assert evt.get('_refusal_permanent') is not True
+    finally:
+        authority.db.close()

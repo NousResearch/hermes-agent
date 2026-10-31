@@ -1059,7 +1059,7 @@ class GatewayBusySessionMixin:
 
     # busy_handler key (hermes_cli/commands.py CommandDef) → mid-run variant ``_busy_<key>_command``.
     _BUSY_SPECIAL_HANDLERS: dict[str, str] = {
-        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "steer", "egress", "goal", "loop")
+        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "steer", "egress", "goal", "loop", "login")
     }
 
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):

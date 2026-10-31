@@ -75,7 +75,7 @@ own or consume those turns, and an interrupted started turn stays unknown and pa
 broadcast surfaces) and binds the WHOLE install's `providers.nous`, so shared gateways must set
 `allow_admin_from`. It drains `anon_auth.run_sign_in` on its private single-worker `_login_executor`
 (never the shared pool), allows one attempt per process, and on completion evicts agents still on
-`nous/welcome` instead of writing a model override. Long form: `gateway-internals.md` § `/login`.
+`nous/welcome` instead of writing a model override. Long form, incl. `/login codex`: `gateway-internals.md` § `/login`.
 
 ## Gateway lifecycle vs. the Desktop app
 

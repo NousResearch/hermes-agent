@@ -107,7 +107,7 @@ def _resolve_minimax_oauth_arm(req: _ResolveRequest) -> _ResolveResult:
     )
     from agent.anthropic_adapter import build_anthropic_client  # SDK-absent boundary, like _try_anthropic
     try:
-        real_client = build_anthropic_client(token_provider, base_url)
+        real_client = build_anthropic_client(token_provider, base_url, provider=req.provider)
     except ImportError:
         return None, None
     client = AnthropicAuxiliaryClient(

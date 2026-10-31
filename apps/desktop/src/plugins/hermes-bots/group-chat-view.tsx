@@ -1451,7 +1451,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
             ) : null}
           </div>
           <div
-            className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere" // The app shell sets user-select: none globally; message bodies opt
+            className="min-w-0 text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere" // The app shell sets user-select: none globally; message bodies opt
             // back in so drag-select and ⌘C work in group chat logs.
             data-selectable-text="true"
             data-slot="group-chat-message-content"

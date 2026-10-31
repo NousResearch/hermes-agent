@@ -290,7 +290,7 @@ export function GroupMentionInput({ handleFor, members, onChange, onSubmitDraft,
         // (#95300), then scroll internally before the composer takes over
         // the room — same field-sizing idiom as the Kanban drawer.
         className={cn(
-          'field-sizing-content max-h-[min(50vh,24rem)] min-h-9 resize-none overflow-y-auto',
+          'group-chat-editor field-sizing-content max-h-[min(50vh,24rem)] min-h-9 resize-none overflow-y-auto',
           inputProps.className
         )}
         onBlur={() => setToken(null)}

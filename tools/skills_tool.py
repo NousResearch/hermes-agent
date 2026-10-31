@@ -445,54 +445,6 @@ def _collect_skill_candidates(name, local_category_name, all_dirs):
     return candidates
 
 
-# (support dir, globs, recursive, files only) — order is the linked_files key order.
-_LINKED_FILE_SPECS = (
-    ("references", ["*.md"], False, False),
-    ("templates", ["*.md", "*.py", "*.yaml", "*.yml", "*.json", "*.tex", "*.sh"], True, False),
-    ("assets", ["*"], True, True),
-    ("scripts", ["*.py", "*.sh", "*.bash", "*.js", "*.ts", "*.rb"], False, False))
-
-
-def _has_dot_dir_component(rel_path: str) -> bool:
-    """Check if a relative POSIX path has any component starting with '.'."""
-    return any(part.startswith(".") for part in rel_path.split("/"))
-
-
-def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
-    """references/templates/assets/scripts + auto-discovered custom subdirectories
-    of a directory skill (empty groups dropped). Excludes files under any
-    dot-directory at any depth."""
-    from tools.skill_manager_tool import _discover_skill_subdirs
-
-    files: dict = {}
-    # Standard subdirectories (hardcoded specs)
-    if skill_dir:
-        for sub, globs, recursive, files_only in _LINKED_FILE_SPECS:
-            base = skill_dir / sub
-            found = [
-                f.relative_to(skill_dir).as_posix() for g in globs if base.exists()
-                for f in (base.rglob(g) if recursive else base.glob(g))
-                if not files_only or f.is_file()]
-            # Filter out files under any dot-directory component
-            found = [p for p in found if not _has_dot_dir_component(p)]
-            if found:
-                files[sub] = found
-
-        # Auto-discover custom subdirectories (not in the standard 4)
-        custom = _discover_skill_subdirs(skill_dir) - set(k for k, *_ in _LINKED_FILE_SPECS)
-        for sub in sorted(custom):
-            base = skill_dir / sub
-            entries = []
-            for f in base.rglob("*"):
-                if f.is_file():
-                    rel = f.relative_to(skill_dir).as_posix()
-                    if not _has_dot_dir_component(rel):
-                        entries.append(rel)
-            if entries:
-                files[sub] = entries
-    return files
-
-
 def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict, dict]:
     """Resolve required env vars / credential files (prompting for secrets where the surface
     allows) and register what's available for sandboxes. Returns ``(fields, extras)``: fields go
@@ -685,6 +637,7 @@ def skill_view(
         hermes_meta = (metadata.get("hermes", {}) or {}) if isinstance(metadata, dict) else {}
         tags, related_skills = (
             _parse_tags(hermes_meta.get(k) or frontmatter.get(k, "")) for k in ("tags", "related_skills"))
+        from tools.skills_tool_plugin import _skill_linked_files
         linked_files = _skill_linked_files(skill_dir)
         try:
             rel_path = str(skill_md.relative_to(active_skills_dir))
@@ -758,7 +711,7 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Load a skill's SKILL.md, or one of its linked references, templates or scripts. The first call returns SKILL.md plus a 'linked_files' dict; call again with file_path to read one.",
+    "description": "Load a skill's SKILL.md or a supporting file from its standard or discovered custom directories. The first call returns SKILL.md plus a 'linked_files' dict; call again with file_path to read one.",
     "parameters": {
         "type": "object",
         "properties": {

@@ -54,6 +54,7 @@ export const LOCAL_SESSION_SOURCE_IDS = [
   'gateway',
   'kanban',
   'local',
+  'mobile',
   'oneshot',
   'tui'
 ]

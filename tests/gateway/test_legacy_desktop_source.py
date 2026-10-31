@@ -194,3 +194,26 @@ async def test_renaming_ones_own_branch_leaves_another_logins_parent_title_alone
             await mutate_session(authority, alice, SessionRef('p', 'alice-branch'), params)
         root = db.get_session('root')
         assert (root['title'], root['runtime_revision']) == ('Bob title', before)
+
+
+def test_mobile_dashboard_chat_resumes_and_takes_sidebar_edits(tmp_path):
+    """#146814: the dashboard's web chat stores phone sessions as ``source='mobile'``. That label was
+    on neither list, so the row could neither be adopted (native resume) nor edited (pin/archive/
+    delete): ``validate_legacy_row`` answered ``not_found`` and ``authorize_history`` returned False.
+    It is a local-machine surface exactly like ``desktop``/``tui``, so both must accept it."""
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    try:
+        db.create_session('mobile-row', source='mobile')
+        db.create_session('mobile-alice', source='mobile', user_id='basic:alice')
+        caps = frozenset({'session:read', 'session:create'})
+        alice, bob = (Principal(_login(u), str(tmp_path), caps, 'native-http:x') for u in ('alice', 'bob'))
+        validate_legacy_row(db, db.get_session('mobile-row'))  # the resume adopts it ...
+        with db._read_ctx() as conn:
+            assert authorize_history(conn, alice, 'mobile-row') is True  # ... so it takes an edit.
+            # A dashboard login stamp on a mobile row names that login, like a desktop row (#139818).
+            validate_legacy_row(db, db.get_session('mobile-alice'), subject=alice.subject)
+            assert authorize_history(conn, alice, 'mobile-alice') is True
+            with pytest.raises(RuntimeStoreError, match='permission_denied'):
+                authorize_history(conn, bob, 'mobile-alice', claim=True)
+    finally:
+        db.close()

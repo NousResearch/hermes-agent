@@ -12,7 +12,9 @@ LEGACY_PREFIX = 'gateway.local_legacy.v1:'
 # ``cli`` and keeping their label, so human pickers still hide them (INTERNAL_LISTING_SOURCES).
 # ``desktop`` is the label main's Desktop stored; it is adopted as the ``gui`` creation source.
 # ``acp`` is main's in-process editor server (Zed, VS Code, JetBrains): adopted under its own source.
-LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'oneshot', 'tool', 'acp'})
+# ``mobile`` is the dashboard web chat's label for sessions started from a phone browser: a
+# local-machine surface, so it is adopted and edited like ``desktop``/``tui`` (#146814).
+LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'mobile', 'oneshot', 'tool', 'acp'})
 # Legacy labels that are not creation sources of their own (session_policy.SURFACES).
 LEGACY_CREATION_SOURCES = {'desktop': 'gui'}
 

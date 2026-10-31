@@ -7373,7 +7373,7 @@ def register(ctx) -> None:
         platform_hint=PLATFORM_HINT,
         display_tier="high",
         # Mobile inbox: quiet tool_progress / busy-ack, but keep interim commentary and heartbeats.
-        display_overrides={"tool_progress": "off", "busy_ack_detail": False},
+        display_overrides={"tool_progress": "off", "busy_ack_detail": False, "streaming": True},
         target_ref_syntax_fn=parse_send_target,
         env_overrides=gateway_env.ENV_OVERRIDES,
         env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,

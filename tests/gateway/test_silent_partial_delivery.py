@@ -279,7 +279,12 @@ async def _run_turn(monkeypatch, tmp_path, *, consumer_cls=None, session_id):
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump(
             {
-                "display": {"tool_progress": "off", "interim_assistant_messages": False},
+                "display": {
+                    "tool_progress": "off",
+                    "interim_assistant_messages": False,
+                    # Discord does not stream by default; these turns exercise the stream consumer.
+                    "platforms": {"discord": {"streaming": True}},
+                },
                 "streaming": {
                     "enabled": True,
                     "edit_interval": 0.01,

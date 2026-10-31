@@ -92,9 +92,18 @@ export const uk: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Активний провайдер пам'яті",
+    noProvider: "немає — лише вбудована",
+    builtinLayer: "Вбудований шар",
+    builtinNote: "MEMORY.md і USER.md — власна пам'ять Hermes, незалежна від зовнішніх провайдерів. Типово обидва файли завантажуються в сесії; перемикачі конфігурації (memory.memory_enabled / memory.user_profile_enabled) вимикають кожен із них. Зовнішній провайдер доповнює їх, але ніколи не замінює.",
+  },
+
   status: {
     actionFailed: "Дія не вдалася",
     actionFinished: "Завершено",
+    actionFinishedOwed: "Оновлено, але роботу ще не завершено (запустіть `hermes update` знову, щоб завершити)",
     actions: "Дії",
     agent: "Агент",
     activeSessions: "Активні сесії",
@@ -162,9 +171,14 @@ export const uk: Translations = {
     deleteSelectedConfirmMessage:
       "Це назавжди видалить {count} вибраних сесій і всі їхні повідомлення. Цю дію неможливо скасувати.",
     selectedSessionsDeleted: "Видалено сесій: {count}",
+    selectedSessionsSkippedActive: "Видалено: {deleted}; залишено: {count}, бо хід ще виконується",
     failedToDeleteSelected: "Не вдалося видалити вибрані сесії",
     resumeInChat: "Продовжити в чаті",
     newChat: "Новий чат",
+    workspace: "робоча папка",
+    workspaceDefault: "За замовчуванням",
+    workspaceRescan: "Пересканувати репозиторії",
+    workspaceCustom: "Інший шлях…",
     previousPage: "Попередня сторінка",
     nextPage: "Наступна сторінка",
     roles: {
@@ -325,6 +339,8 @@ export const uk: Translations = {
     disableRuntime: "Вимкнути",
     enableAfterInstall: "Увімкнути після встановлення",
     enableRuntime: "Увімкнути",
+    toggleTakesEffectAfterRestart:
+      "Збережено — перезапустіть шлюз, щоб застосувати зміну.",
     forceReinstall: "Примусово перевстановити (спершу видалити наявну теку)",
     headline:
       "Знаходьте, встановлюйте, вмикайте та оновлюйте плагіни Hermes (паритет з `hermes plugins`).",
@@ -470,6 +486,8 @@ export const uk: Translations = {
     copyCliCommand: "Скопіювати CLI-команду (для зовнішнього / резервного варіанту)",
     connect: "Підключити",
     sessionExpires: "Сесія завершиться через {time}",
+    sessionExpiredNoError:
+      "Час входу минув, не досягнувши провайдера. Зазвичай це означає, що сторінка входу зависла у відкритій вкладці (проблема на боці сервера) — завершіть вхід там, потім натисніть «Повторити». Якщо помилка повторюється, скористайтеся API-ключем або CLI.",
     initiatingLogin: "Запуск процесу входу…",
     exchangingCode: "Обмін коду на токени…",
     connectedClosing: "Підключено! Закриття…",
@@ -619,6 +637,12 @@ export const uk: Translations = {
       "Дошки дозволяють розділяти непов'язані потоки роботи — по одній на проєкт, репозиторій або домен. Воркери на одній дошці ніколи не бачать задач іншої дошки.",
     slug: "Slug",
     slugHint: "— рядкові літери, дефіси, напр. atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Відображувана назва",
     displayNameHint: "(необов'язково)",
     description: "Опис",

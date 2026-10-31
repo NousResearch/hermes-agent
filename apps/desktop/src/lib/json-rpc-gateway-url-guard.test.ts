@@ -63,3 +63,66 @@ describe('JsonRpcGatewayClient connect() URL guard', () => {
     }
   })
 })
+
+describe('JsonRpcGatewayClient structured errors', () => {
+  it('rejects with JsonRpcGatewayError including code and data', async () => {
+    class RespondingSocket {
+      static OPEN = 1
+      readyState = 0
+      private messageHandler: ((event: { data: string }) => void) | null = null
+
+      addEventListener = vi.fn((type: string, handler: (event?: { data: string }) => void) => {
+        if (type === 'open') {
+          setTimeout(() => {
+            this.readyState = RespondingSocket.OPEN
+            handler()
+          }, 0)
+        }
+
+        if (type === 'message') {
+          this.messageHandler = handler as (event: { data: string }) => void
+        }
+      })
+      removeEventListener = vi.fn()
+      close = vi.fn()
+      send = vi.fn((raw: string) => {
+        const req = JSON.parse(raw) as { id: string }
+        queueMicrotask(() => {
+          this.messageHandler?.({
+            data: JSON.stringify({
+              jsonrpc: '2.0',
+              id: req.id,
+              error: {
+                code: 4018,
+                message: 'target user message is no longer in session history',
+                data: { user_turn_count: 2, ordinal: 5, segment_ordinal: 3 }
+              }
+            })
+          })
+        })
+      })
+    }
+
+    vi.stubGlobal('WebSocket', RespondingSocket)
+
+    try {
+      const client = new JsonRpcGatewayClient({
+        requestTimeoutMs: 5_000,
+        socketFactory: () => new RespondingSocket() as unknown as WebSocket
+      })
+
+      await client.connect('ws://127.0.0.1:1234/api/ws?token=t')
+
+      await expect(client.request('prompt.submit', { session_id: 's' })).rejects.toEqual(
+        expect.objectContaining({
+          name: 'JsonRpcGatewayError',
+          code: 4018,
+          message: 'target user message is no longer in session history',
+          data: { user_turn_count: 2, ordinal: 5, segment_ordinal: 3 }
+        })
+      )
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})

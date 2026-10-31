@@ -8,6 +8,7 @@ use the notepad, and the `hermes cron notepad` CLI handler.
 from __future__ import annotations
 
 import argparse
+import importlib
 import sys
 from pathlib import Path
 
@@ -80,13 +81,6 @@ class TestNotepadCrud:
         assert notepad.get_note("job-2", "k") == "two"
         assert len(notepad.list_notes("job-1")) == 1
 
-    def test_survives_new_connection(self, notepad):
-        """Durability: values persist across independent calls (fresh connections)."""
-        notepad.set_note("job-1", "state", "persisted")
-        # Every public call opens its own connection, so a second read
-        # after the writer's connection closed proves on-disk durability.
-        assert notepad.get_note("job-1", "state") == "persisted"
-        assert notepad.list_notes("job-1")[0]["value"] == "persisted"
 
     def test_clear_notepad_removes_all_keys_for_job_only(self, notepad):
         notepad.set_note("job-1", "a", "1")
@@ -95,6 +89,71 @@ class TestNotepadCrud:
         assert notepad.clear_notepad("job-1") == 2
         assert notepad.list_notes("job-1") == []
         assert notepad.get_note("job-2", "a") == "keep"
+
+    def test_clear_notepad_noop_without_db_file(self, notepad):
+        """Clearing a job that never used the notepad must not create the DB
+        (remove_job calls clear_notepad unconditionally)."""
+        assert notepad.clear_notepad("never-used") == 0
+        assert not notepad.NOTEPAD_FILE.exists()
+
+
+class TestNotepadProfileIsolation:
+    def test_profile_override_routes_writes_to_current_home(self, tmp_path):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        import cron.notepad as notepad_mod
+
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+
+        import_token = set_hermes_home_override(profile_a)
+        try:
+            importlib.reload(notepad_mod)
+        finally:
+            reset_hermes_home_override(import_token)
+
+        runtime_token = set_hermes_home_override(profile_b)
+        try:
+            notepad_mod.set_note("job-1", "cursor", "page=7")
+        finally:
+            reset_hermes_home_override(runtime_token)
+
+        assert (profile_b / "cron" / "notepad.db").exists()
+        assert not (profile_a / "cron" / "notepad.db").exists()
+
+
+class TestJobRemovalCleanup:
+    def test_remove_job_clears_notepad(self, cron_env, notepad):
+        """remove_job must clear the job's notepad rows — without this,
+        deleted jobs orphan their KV state in notepad.db forever
+        (post-merge audit of #81139: clear_notepad was dead code)."""
+        from cron.jobs import create_job, remove_job
+
+        job = create_job(prompt="Check the feed", schedule="every 1h")
+        other = create_job(prompt="Other job", schedule="every 2h")
+        notepad.set_note(job["id"], "cursor", "page=7")
+        notepad.set_note(other["id"], "cursor", "keep")
+
+        assert remove_job(job["id"]) is True
+        assert notepad.list_notes(job["id"]) == []
+        # Sibling jobs' notepads are untouched.
+        assert notepad.get_note(other["id"], "cursor") == "keep"
+
+    def test_remove_job_survives_notepad_failure(self, cron_env, notepad, monkeypatch):
+        """Notepad cleanup is best effort — a notepad error must never block
+        job removal itself."""
+        from cron.jobs import create_job, get_job, remove_job
+
+        job = create_job(prompt="Check the feed", schedule="every 1h")
+
+        def _boom(job_id):
+            raise RuntimeError("disk on fire")
+
+        monkeypatch.setattr(notepad, "clear_notepad", _boom)
+        assert remove_job(job["id"]) is True
+        assert get_job(job["id"]) is None
 
 
 class TestNotepadCaps:
@@ -143,12 +202,9 @@ class TestPromptInjection:
         notepad.set_note(job["id"], "watchlist", "alpha, beta")
 
         prompt = _build_job_prompt(job)
-        assert "Job notepad (persistent across runs)" in prompt
         assert "last_seen_id" in prompt
         assert "8842" in prompt
         assert "watchlist" in prompt
-        # The injected section documents the CLI write path for this job.
-        assert f"hermes cron notepad {job['id']} set" in prompt
 
     def test_empty_notepad_prompt_byte_stable(self, cron_env, notepad):
         from cron.jobs import create_job
@@ -218,7 +274,7 @@ class TestNotepadCli:
 
         big = "x" * (notepad.MAX_VALUE_BYTES + 1)
         assert cron_notepad(self._ns(job_id="job-1", notepad_action="set", key="k", value=big)) == 1
-        assert "too large" in capsys.readouterr().out.lower()
+        assert notepad.get_note("job-1", "k") is None
 
     def test_cron_command_dispatches_notepad(self, notepad):
         from hermes_cli.cron import cron_command

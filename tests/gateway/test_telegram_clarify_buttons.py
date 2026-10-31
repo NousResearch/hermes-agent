@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway.platforms.base import unauthorized_action_notice
+
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable
 # ---------------------------------------------------------------------------
@@ -23,30 +25,6 @@ if _repo not in sys.path:
 # Minimal Telegram mock so TelegramAdapter can be imported (mirrors
 # test_telegram_approval_buttons.py)
 # ---------------------------------------------------------------------------
-def _ensure_telegram_mock():
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-
-    mod = MagicMock()
-    mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    mod.constants.ParseMode.MARKDOWN = "Markdown"
-    mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    mod.constants.ParseMode.HTML = "HTML"
-    mod.constants.ChatType.PRIVATE = "private"
-    mod.constants.ChatType.GROUP = "group"
-    mod.constants.ChatType.SUPERGROUP = "supergroup"
-    mod.constants.ChatType.CHANNEL = "channel"
-    mod.error.NetworkError = type("NetworkError", (OSError,), {})
-    mod.error.TimedOut = type("TimedOut", (OSError,), {})
-    mod.error.BadRequest = type("BadRequest", (Exception,), {})
-
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, mod)
-    sys.modules.setdefault("telegram.error", mod.error)
-
-
-_ensure_telegram_mock()
-
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.config import PlatformConfig
 
@@ -229,7 +207,7 @@ class TestTelegramClarifyCallback:
         assert entry is not None
         assert not entry.event.is_set()
         query.answer.assert_called_once()
-        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
         # State preserved
         assert adapter._clarify_state["cidC"] == "sk-auth"
 

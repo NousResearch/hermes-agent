@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.memory_cmd import memory_command
 from hermes_cli.subcommands.memory import build_memory_parser
@@ -62,7 +62,7 @@ def _run_memory_cli(monkeypatch, argv, memory_entries=None, user_entries=None):
                 if len(unique) > 1:
                     return json.dumps({
                         "success": False,
-                        "error": f"Multiple entries matched.",
+                        "error": "Multiple entries matched.",
                     })
             idx = matches[0][0]
             entries.pop(idx)

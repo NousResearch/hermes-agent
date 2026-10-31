@@ -2,6 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { MOUSE_TRACKING } from '../config/env.js'
 import { ZERO } from '../domain/usage.js'
+import { t } from '../i18n/runtime.js'
 import { bootTheme } from '../lib/themeBoot.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -14,6 +15,8 @@ const buildUiState = (): UiState => ({
   busy: false,
   busyInputMode: 'queue',
   compact: false,
+  compacting: false,
+  destructiveSlashConfirm: true,
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,
   focusView: false,
@@ -29,9 +32,12 @@ const buildUiState = (): UiState => ({
   sessionTitle: '',
   showReasoning: false,
   sid: null,
-  status: 'summoning hermes…',
+  status: t('status.summoning'),
   statusBar: 'top',
+  storedSid: null,
+  statusBarFields: null,
   streaming: true,
+  timestamps: false,
   // Last session's resolved theme paints frame one (flash-free boot, like
   // the desktop's hermes-boot-* keys); DEFAULT_THEME only on first launch.
   theme: bootTheme ?? DEFAULT_THEME,
@@ -44,6 +50,10 @@ export const $uiTheme = computed($uiState, state => state.theme)
 export const $uiSessionId = computed($uiState, state => state.sid)
 
 export const getUiState = () => $uiState.get()
+
+// The folder a user-typed path is relative to: the session's, else the one `hermes --tui` was
+// launched from. Never this process's cwd (the ui-tui install) or the shared gateway's.
+export const sessionCwd = (): string | undefined => $uiState.get().info?.cwd || process.env.HERMES_CWD || undefined
 
 export const patchUiState = (next: Partial<UiState> | ((state: UiState) => UiState)) =>
   $uiState.set(typeof next === 'function' ? next($uiState.get()) : { ...$uiState.get(), ...next })

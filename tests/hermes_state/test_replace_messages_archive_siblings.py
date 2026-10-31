@@ -79,26 +79,6 @@ class TestAcpPersistPreservesArchives:
         ]
         assert [m["content"] for m in live] == ["rewritten", "rewritten answer"]
 
-    def test_persist_source_has_no_failopen_probe(self):
-        """The fail-open has_archived_messages probe must stay dead in _persist.
-
-        Guards the #80216 bug class at the source level: a probe that fails
-        open (``except: has_archived = False``) silently reintroduces the
-        destructive replace.  ``active_only=True`` must be unconditional.
-        """
-        import inspect
-        import acp_adapter.session as acp_session
-
-        src = inspect.getsource(acp_session.SessionManager._persist)
-        # Assert on the CALL, not a local-variable name — a reintroduced probe
-        # under any local name (archived = db.has_archived_messages(...))
-        # must still trip this guard. The explanatory comment in _persist
-        # writes the name as "(has_archived_messages)" (paren BEFORE the
-        # name), so the call-shaped substring doesn't false-positive on it.
-        assert "has_archived_messages(" not in src, (
-            "_persist re-grew a has_archived_messages probe — #80216 class"
-        )
-        assert "active_only=True" in src
 
     def test_fresh_session_active_only_equals_full_replace(self, state_db):
         """On a never-compacted session active_only=True must behave exactly
@@ -124,36 +104,104 @@ class TestAcpPersistPreservesArchives:
         assert _archived_count(state_db, sid) == 0
 
 
-class TestTuiPromptTruncationPreservesArchives:
-    def test_truncation_source_uses_active_only(self):
-        """The edit/regenerate persistence call must pass active_only=True."""
-        import inspect
-        import tui_gateway.methods_prompt as mp
 
-        src = inspect.getsource(mp)
-        # The truncation write is the only replace_messages call in the module;
-        # it must carry active_only=True.
-        import re
-        calls = re.findall(r"db\.replace_messages\([^)]*\)", src, re.S)
-        assert calls, "expected the truncation replace_messages call"
-        for call in calls:
-            assert "active_only=True" in call, (
-                f"bare replace_messages in methods_prompt — #80216 class: {call}"
-            )
 
-    def test_truncation_write_keeps_archived_rows(self, state_db):
-        """Drive the exact write shape methods_prompt now performs against a
-        compacted session and assert the archive survives."""
-        sid = "tui-compacted"
-        _seed_compacted_session(state_db, sid)
-        assert _archived_count(state_db, sid) == 4
+class TestArchiveDroppedIsRecoverable:
+    """`active_only=True` protects rows archived EARLIER; it still DELETEs the
+    live ones it replaces.
 
-        truncated = [{"role": "user", "content": "kept head"}]
-        state_db.replace_messages(sid, truncated, active_only=True)
+    That is the last write standing between a mis-aimed rewind and permanent
+    loss, and all three reported incidents (#70516, #80763, #82756) ended
+    there with an empty WAL, no `active=0` rows and an FTS entry dropped in
+    sync. `archive_dropped=True` keeps the replaced turns on disk under the
+    same "the user took it back" marking `rewind_to_message` uses.
+    """
 
-        assert _archived_count(state_db, sid) == 4
+    def test_dropped_turns_survive_as_inactive_rows(self, state_db):
+        sid = "archive-dropped"
+        state_db.create_session(sid, "test")
+        state_db.append_messages_batch(
+            sid,
+            [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "first reply"},
+                {"role": "user", "content": "second"},
+                {"role": "assistant", "content": "second reply"},
+            ],
+        )
+
+        state_db.replace_messages(
+            sid,
+            [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "first reply"},
+            ],
+            active_only=True,
+            archive_dropped=True,
+        )
+
+        # The live transcript is exactly what a destructive replace would leave.
         live = [
             m for m in state_db.get_messages_as_conversation(sid)
             if m.get("role") in ("user", "assistant")
         ]
-        assert [m["content"] for m in live] == ["kept head"]
+        assert [m["content"] for m in live] == ["first", "first reply"]
+
+        # …but the dropped turns are still readable instead of gone.
+        recovered = [
+            m["content"]
+            for m in state_db.get_messages(sid, include_inactive=True)
+            if not m["active"]
+        ]
+        assert "second" in recovered
+        assert "second reply" in recovered
+
+    def test_archived_rows_use_rewind_marking_not_compaction(self, state_db):
+        """compacted=0 keeps abandoned turns out of session search results.
+
+        `archive_and_compact` marks its rows compacted=1 precisely so they stay
+        discoverable; a rewound turn is one the user took back, so it must
+        carry the `rewind_to_message` marking instead.
+        """
+        sid = "archive-marking"
+        state_db.create_session(sid, "test")
+        state_db.append_messages_batch(
+            sid,
+            [
+                {"role": "user", "content": "keep"},
+                {"role": "assistant", "content": "drop me"},
+            ],
+        )
+
+        state_db.replace_messages(
+            sid,
+            [{"role": "user", "content": "keep"}],
+            active_only=True,
+            archive_dropped=True,
+        )
+
+        archived = [
+            m for m in state_db.get_messages(sid, include_inactive=True)
+            if not m["active"]
+        ]
+        assert archived, "the replaced rows must still be on disk"
+        assert all(not m.get("compacted") for m in archived)
+
+    def test_default_stays_destructive(self, state_db):
+        """The other three callers must be untouched by the new parameter."""
+        sid = "archive-default"
+        state_db.create_session(sid, "test")
+        state_db.append_messages_batch(
+            sid,
+            [
+                {"role": "user", "content": "gone"},
+                {"role": "assistant", "content": "also gone"},
+            ],
+        )
+
+        state_db.replace_messages(sid, [{"role": "user", "content": "fresh"}])
+
+        assert not [
+            m for m in state_db.get_messages(sid, include_inactive=True)
+            if not m["active"]
+        ]

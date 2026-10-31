@@ -1,14 +1,27 @@
 /** Appended by TUI pickers; converted to the backend's `--session` flag before `config.set`. */
 export const TUI_SESSION_MODEL_FLAG = '--tui-session'
 
+/** The levels `hermes_constants.parse_reasoning_effort` accepts; the display words are config.yaml
+ *  writes. */
+export const CANONICAL_REASONING_EFFORTS = new Set([
+  'none',
+  'false',
+  'disabled',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra'
+])
+
 export const sessionScopedModelArg = (value: string) => {
   const parts = value.trim().split(/\s+/).filter(Boolean)
   const kept = parts.filter(part => part !== TUI_SESSION_MODEL_FLAG && part !== '--global' && part !== '--session')
 
   return kept.length ? `${kept.join(' ')} --session` : ''
 }
-
-export const looksLikeSlashCommand = (text: string) => /^\/[^\s/]*(?:\s|$)/.test(text)
 
 // A `/` means two different things depending on where it sits:
 //
@@ -47,50 +60,6 @@ export const inlineSlashTrigger = (text: string): { query: string; start: number
   return { query, start: text.length - query.length - 1 }
 }
 
-export const parseSlashCommand = (cmd: string) => {
-  const [name = '', ...rest] = cmd.slice(1).split(/\s+/)
-
-  return { arg: rest.join(' '), cmd, name: name.toLowerCase() }
-}
-
-// A skill referenced mid-prose in a message that's already been sent
-// ("clean this up with /clean"). The composer offers it as a completion, so
-// the transcript marks it as one rather than flattening it into the body text.
-//
-// Unlike the caret-anchored trigger above this scans finished text, so it has
-// to reject a token that continues into a path: `/usr/local/bin` would
-// otherwise mark `/usr`. `(?![\w-]*\/)` requires the token to end at something
-// other than another slash. A leading `/` is excluded too — that's a command
-// invocation, which never reaches the transcript as a user message.
-const SLASH_SKILL_REF_RE = /(?<=\s)\/[a-zA-Z][\w-]*(?![\w-]*\/)/g
-
-/**
- * Split `text` into alternating plain and `/skill` reference runs. Always
- * returns at least one segment, and concatenating every `text` reproduces the
- * input exactly — the transcript styles the reference without rewriting it.
- */
-export const splitSlashSkillRefs = (text: string): { ref: boolean; text: string }[] => {
-  const out: { ref: boolean; text: string }[] = []
-  let last = 0
-
-  for (const match of text.matchAll(SLASH_SKILL_REF_RE)) {
-    const start = match.index ?? 0
-
-    if (start > last) {
-      out.push({ ref: false, text: text.slice(last, start) })
-    }
-
-    out.push({ ref: true, text: match[0] })
-    last = start + match[0].length
-  }
-
-  if (last < text.length || !out.length) {
-    out.push({ ref: false, text: text.slice(last) })
-  }
-
-  return out
-}
-
 /**
  * Apply a completion row to the current input, mirroring the editor's
  * replace semantics: replace from `compReplace` with the row text, dropping
@@ -124,9 +93,14 @@ export const applyCompletion = (value: string, rowText: string, compReplace: num
 export const completionToApplyOnSubmit = (
   value: string,
   rowText: string | undefined,
-  compReplace: number
+  compReplace: number,
+  isLocalCommand: (name: string) => boolean = () => false
 ): string | null => {
-  if (!rowText) {
+  // The gateway does not know TUI-local commands, so its fuzzy list can rank another command
+  // above one typed in full (`/connectors` matches a description word of `/login`).
+  const typed = value.trim()
+
+  if (!rowText || (/^\/[\w-]+$/.test(typed) && isLocalCommand(typed.slice(1)))) {
     return null
   }
 

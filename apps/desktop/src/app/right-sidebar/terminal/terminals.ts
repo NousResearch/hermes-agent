@@ -1,11 +1,110 @@
+import { randomUuid } from '@hermes/shared'
+import type { WebglAddon } from '@xterm/addon-webgl'
+import type { Terminal } from '@xterm/xterm'
 import { atom, computed } from 'nanostores'
 
 import { readKey, writeKey } from '@/lib/storage'
+import { notifyError } from '@/store/notifications'
 import { $currentCwd } from '@/store/session'
 
 import { setTerminalTakeover } from '../store'
 
 import { seedAgentTerminalCommand } from './agent-terminal-stream'
+
+// xterm WebGL terminals that share one glyph atlas (same font/theme/DPR) keep
+// per-terminal render models over a SHARED texture. Clearing one terminal's
+// atlas (theme switch, tab activation) wipes the shared texture pages, and
+// xterm 0.19 never tells the sibling renderers to rebuild their models — so
+// their stale cells draw whatever glyphs land in the freed atlas rows: garbled
+// text until a resize forces a full refresh. Upstream fixed this in
+// xtermjs/xterm.js#6055 (atlas clear bumps the shared page-layout version);
+// we stay pinned on 0.19.0, so every terminal that mutates the shared atlas
+// must refresh its siblings itself. Registration is the inverse: each xterm
+// registers its own redraw+atlas-rebuild and unregisters on dispose.
+// Two-phase fan-out: all clears FIRST, then all refreshes. A sequential
+// clear+refresh per terminal would let a later clear wipe the atlas that an
+// earlier terminal just rebuilt, leaving it with dangling glyph references.
+// Splitting the phases guarantees every terminal rebuilds against a clean atlas.
+const webglClearFns = new Map<Terminal, () => void>()
+const webglRefreshFns = new Map<Terminal, () => void>()
+
+/** Register a terminal's atlas-rebuild+redraw so sibling refreshes reach it.
+ *  Returns an unregister function (call on dispose). */
+export function registerWebglRefresh(term: Terminal, getWebgl: () => WebglAddon | null): () => void {
+  webglClearFns.set(term, () => {
+    try {
+      getWebgl()?.clearTextureAtlas()
+    } catch {
+      // WebGL context lost or uninitialized — the DOM fallback has no atlas.
+    }
+  })
+  webglRefreshFns.set(term, () => {
+    term.refresh(0, term.rows - 1)
+  })
+
+  return () => {
+    webglClearFns.delete(term)
+    webglRefreshFns.delete(term)
+  }
+}
+
+let refreshFrame = 0
+
+/** Rebuild the glyph atlas + redraw every live xterm EXCEPT *skipTerm* (when
+ *  given). Callers that are about to mutate the shared atlas (clearTextureAtlas)
+ *  must fan out so the OTHER terminals sharing it don't keep drawing stale
+ *  cells. Coalesced into one frame per tick: a theme switch fires N
+ *  per-terminal effects, and fanning out on each would clear+rebuild the atlas
+ *  N times over.
+ *
+ *  Two-phase execution: all atlas clears run first, then all terminal refreshes.
+ *  This prevents a later clear from invalidating an earlier terminal's rebuilt
+ *  glyph model (GottZ triage, PR #76463).
+ *
+ *  Skip the caller only when it already clears+redraws itself inline (font
+ *  change); theme/activation callers must NOT skip — they need their own atlas
+ *  rebuilt too (the theme colors changed / the frame was stale while hidden).
+ *  Terminals on a different atlas (different font/theme/DPR) are force-cleared
+ *  harmlessly; DOM-fallback terminals aren't registered at all. */
+export function redrawAllTerminals(skipTerm?: Terminal): void {
+  if (refreshFrame) {
+    return
+  }
+
+  refreshFrame = requestAnimationFrame(() => {
+    refreshFrame = 0
+
+    // Phase 1: clear all atlases first.
+    for (const [term, clear] of webglClearFns) {
+      if (skipTerm && term === skipTerm) {
+        continue
+      }
+
+      clear()
+    }
+
+    // Phase 2: rebuild render models against the now-clean atlas.
+    for (const [term, refresh] of webglRefreshFns) {
+      if (skipTerm && term === skipTerm) {
+        continue
+      }
+
+      refresh()
+    }
+  })
+}
+
+// An OS resume can evict the GPU's glyph textures without ever firing
+// 'webglcontextlost' (common on macOS after sleep/wake): every terminal then
+// paints from an empty atlas. The main process broadcasts powerMonitor
+// 'resume'/'unlock-screen' as 'hermes:power-resume'; rebuild every registered
+// terminal's atlas + render model when it arrives. Import-for-side-effect,
+// same pattern as store/power.ts.
+if (typeof window !== 'undefined') {
+  window.hermesDesktop?.onPowerResume?.(() => {
+    redrawAllTerminals()
+  })
+}
 
 /** One in-app terminal tab. `id` is the renderer-side handle (distinct from the
  *  PTY session id the main process mints); each instance owns its own shell. */
@@ -29,6 +128,8 @@ export interface TerminalEntry {
    *  revived — a fresh shell starts beneath the restored buffer. Captured live
    *  for user tabs only; agent mirrors stay runtime-only. */
   reviveBuffer?: string
+  /** A server shell was created for this tab; restoration must never respawn it. */
+  persistent?: boolean
   /** `user` = interactive PTY shell. `agent` = read-only mirror of an agent
    *  background process (`terminal(background=true)`), keyed by `procId`. */
   kind: 'user' | 'agent'
@@ -41,6 +142,8 @@ interface PersistedTerminalEntry {
   id: string
   restoreCwd?: string
   reviveBuffer?: string
+  /** A server shell was created for this tab; restoration must never respawn it. */
+  persistent?: boolean
   title: string
 }
 
@@ -78,6 +181,7 @@ function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | nul
     id,
     ...(restoreCwd ? { restoreCwd } : {}),
     ...(reviveBuffer ? { reviveBuffer } : {}),
+    ...(record.persistent === true ? { persistent: true } : {}),
     title: title || 'Terminal'
   }
 }
@@ -126,6 +230,7 @@ function persistTerminals(list: readonly TerminalEntry[], activeTerminalId: null
       id: term.id,
       ...(term.restoreCwd ? { restoreCwd: term.restoreCwd } : {}),
       ...(term.reviveBuffer ? { reviveBuffer: term.reviveBuffer } : {}),
+      ...(term.persistent ? { persistent: true } : {}),
       title: term.title
     }))
 
@@ -154,8 +259,7 @@ export const $activeTerminal = computed(
   (list, id) => list.find(term => term.id === id) ?? null
 )
 
-const newId = () =>
-  globalThis.crypto?.randomUUID?.() ?? `term-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+const newId = () => randomUuid()
 
 /** Append a fresh terminal and focus it. Captures the current cwd once (its only
  *  tie to session/project state); pass an explicit cwd to override. Returns the id. */
@@ -279,9 +383,30 @@ export function cycleTerminal(direction: 1 | -1): void {
   $activeTerminalId.set(list[(current + direction + list.length) % list.length].id)
 }
 
+const closingTerminals = new Set<string>()
+
 /** Drop a terminal. Focus slides to the neighbor that fills its slot; closing
  *  the last one closes the whole pane. */
 export function closeTerminal(id: string): void {
+  const entry = $terminals.get().find(term => term.id === id)
+  const closeSaved = window.hermesDesktop?.terminal?.closeSaved
+
+  if (entry?.kind !== 'user' || !closeSaved) {
+    removeExitedTerminal(id)
+
+    return
+  }
+
+  if (closingTerminals.has(id)) {return}
+  closingTerminals.add(id)
+  // Keep the tab and its resume handle until the server confirms termination.
+  void closeSaved(id).then(closed => {
+    if (!closed) {throw new Error('Terminal close was not confirmed; retry closing this tab')}
+    removeExitedTerminal(id)
+  }).catch(error => notifyError(error, 'Could not close terminal')).finally(() => closingTerminals.delete(id))
+}
+
+export function removeExitedTerminal(id: string): void {
   const list = $terminals.get()
   const index = list.findIndex(term => term.id === id)
 
@@ -327,33 +452,31 @@ export function closeActiveTerminal(): void {
 }
 
 export function closeAllTerminals(): void {
-  if ($terminals.get().length === 0) {
-    return
-  }
-
-  $terminals.set([])
-  $activeTerminalId.set(null)
-  setTerminalTakeover(false)
+  $terminals.get().forEach(term => closeTerminal(term.id))
 }
 
 export function closeOtherTerminals(id: string): void {
   const keep = $terminals.get().find(term => term.id === id)
 
   if (keep) {
-    $terminals.set([keep])
+    $terminals.get().filter(term => term.id !== id).forEach(term => closeTerminal(term.id))
     $activeTerminalId.set(keep.id)
   }
 }
 
-/** Record the latest serialized scrollback for a tab so it can be replayed on
- *  the next launch. Oversized buffers are tail-trimmed to stay under the storage
- *  budget; only user tabs ever carry one. */
+/** Server replay replaces renderer-only history once persistence is negotiated. */
+export function markTerminalPersistent(id: string): void {
+  $terminals.set($terminals.get().map(term =>
+    term.id === id ? { ...term, persistent: true, reviveBuffer: undefined } : term
+  ))
+}
+
 export function updateTerminalReviveBuffer(id: string, reviveBuffer: string): void {
   const capped =
     reviveBuffer.length > MAX_REVIVE_BUFFER_CHARS ? reviveBuffer.slice(-MAX_REVIVE_BUFFER_CHARS) : reviveBuffer
 
   $terminals.set(
-    $terminals.get().map(term => (term.id === id && term.kind === 'user' ? { ...term, reviveBuffer: capped } : term))
+    $terminals.get().map(term => (term.id === id && term.kind === 'user' && !term.persistent ? { ...term, reviveBuffer: capped } : term))
   )
 }
 

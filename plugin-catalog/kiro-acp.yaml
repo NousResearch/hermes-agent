@@ -1,0 +1,14 @@
+name: kiro-acp
+repo: https://github.com/tobenwarrior/hermes-kiro-provider
+sha: 02c4dd06585436751145961658a22b773f23a0ef
+description: Kiro CLI (AWS) as a Hermes model provider, driven over ACP stdio.
+maintainer: tobenwarrior
+tier: community
+category: models
+docs_url: https://github.com/tobenwarrior/hermes-kiro-provider#readme
+version: "0.1.2"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

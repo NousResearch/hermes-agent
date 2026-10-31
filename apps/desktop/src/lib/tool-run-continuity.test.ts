@@ -248,3 +248,37 @@ describe('run identity', () => {
     expect(runs.map(run => run.map(t => t.toolCallId))).toEqual([['a'], ['b']])
   })
 })
+
+describe('coalesced tool lifecycle', () => {
+  it('keeps the latest completion boundary from a folded tool-only message', () => {
+    const messages: ChatMessage[] = [
+      {
+        completedAt: 2,
+        id: 'assistant-text',
+        parts: [assistantTextPart('Checking.')],
+        role: 'assistant',
+        timestamp: 1
+      },
+      {
+        id: 'assistant-tool',
+        parts: [
+          {
+            args: {} as never,
+            argsText: '{}',
+            completedAt: 5,
+            timestamp: 3,
+            toolCallId: 'call-1',
+            toolName: 'terminal',
+            type: 'tool-call'
+          }
+        ],
+        role: 'assistant',
+        timestamp: 3
+      }
+    ]
+
+    const [merged] = coalesceToolOnlyAssistants(messages, createToolMergeCache())
+
+    expect(merged.completedAt).toBe(5)
+  })
+})

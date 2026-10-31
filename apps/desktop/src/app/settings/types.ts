@@ -7,6 +7,7 @@ import type { EnvVarInfo } from '@/types/hermes'
 export type SettingsView =
   | 'about'
   | 'billing'
+  | 'connections'
   | 'gateway'
   | 'keybinds'
   | 'keys'
@@ -14,6 +15,8 @@ export type SettingsView =
   | 'plugins'
   | 'providers'
   | 'sessions'
+  | 'vault'
+  | 'web-access'
   | `config:${string}`
 export type EnvPatch = Partial<Pick<EnvVarInfo, 'is_set' | 'redacted_value'>>
 
@@ -45,8 +48,8 @@ export interface EnvRowProps {
   revealed: Record<string, string>
   saving: string | null
   setEdits: Dispatch<SetStateAction<Record<string, string>>>
-  onSave: (key: string) => void
-  onClear: (key: string) => void
+  onSave: (key: string, editKey?: string) => void
+  onClear: (key: string, editKey?: string) => void
   onReveal: (key: string) => void
   compact?: boolean
 }

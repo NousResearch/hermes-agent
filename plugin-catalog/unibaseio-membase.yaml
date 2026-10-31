@@ -1,0 +1,19 @@
+name: unibaseio-membase
+repo: https://github.com/unibaseio/membase
+sha: d304dc773e028bd6a90ae628692b9c8dc008e8dc
+subdir: integrations/hermes
+title: Membase
+description: "Long-term memory for you and your AI from Membase (membase.com, by Unibase): one memory every connected AI shares. Searches the user's Membase memory before each turn (8 s, fail-open) and adds membase_search, membase_save and membase_profile. Disclosure — user prompts are sent as search queries to the Membase API (api.app.membase.com); with the opt-in capture_turns setting the user's messages are saved there too, and what Hermes' built-in memory records about the user is saved to their Membase profile. MEMBASE_API_KEY comes from the Hermes secret scope; the only local file is $HERMES_HOME/unibaseio-membase.json. No background processes, shell commands or telemetry."
+maintainer: unibaseio
+tier: community
+category: memory
+requires_hermes: ">=0.22.2"
+version: "0.1.0"
+docs_url: https://github.com/unibaseio/membase/tree/main/integrations/hermes#readme
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - MEMBASE_API_KEY

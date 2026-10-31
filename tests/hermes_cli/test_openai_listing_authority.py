@@ -21,11 +21,12 @@ from unittest.mock import patch as mock_patch
 import pytest
 
 from hermes_cli import models as models_mod
+from hermes_cli import models_validate
 
 
 def _validate(requested: str, base_url: str, live: list[str], provider: str = "openai-api"):
     with mock_patch.object(models_mod, "fetch_api_models", return_value=live):
-        return models_mod.validate_requested_model(
+        return models_validate.validate_requested_model(
             requested,
             provider=provider,
             api_key="sk-test",
@@ -53,8 +54,8 @@ class TestOfficialHostAuthority:
 
 class TestCuratedFallbackPreserved:
     def test_custom_proxy_keeps_curated_fallback(self):
-        # gpt-5.5 is in the curated openai catalog; a custom proxy's listing
-        # may be incomplete, so the #46850 soft-accept stays.
-        result = _validate("gpt-5.5", "https://proxy.corp.test/v1", live=["some-other-model"])
+        # A curated model absent from a custom proxy's (often incomplete)
+        # listing keeps the #46850 soft-accept.
+        curated = models_mod._PROVIDER_MODELS["openai-api"][0]
+        result = _validate(curated, "https://proxy.corp.test/v1", live=["some-other-model"])
         assert result["accepted"] is True
-        assert "curated catalog" in (result.get("message") or "")

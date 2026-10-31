@@ -302,11 +302,14 @@ def _tool_candidates(name: str, tools: Iterable[Any], should_register: Callable[
 
 
 def _utility_candidates(name: str, entries: Iterable[Any], tool_timeout) -> list[_Candidate]:
-    """``{schema, handler_key}`` rows (live selection or cache) -> candidates; malformed rows dropped."""
+    """``{schema, handler_key}`` rows (live selection or cache) -> candidates; malformed rows dropped.
+    The name is re-derived from ``(server, handler_key)``: a cache written under an older naming
+    rule would otherwise register a name the first live connection removes."""
     out: list[_Candidate] = []
     for raw in entries:
         schema, key = (raw.get("schema"), raw.get("handler_key")) if isinstance(raw, dict) else (None, None)
-        if isinstance(schema, dict) and key in _UTILITY_HANDLER_FACTORIES and schema.get("name"):
+        if isinstance(schema, dict) and key in _UTILITY_HANDLER_FACTORIES:
+            schema = {**schema, "name": _schema.mcp_prefixed_tool_name(name, key)}
             out.append(_Candidate(schema["name"], f"{_UTILITY_ORIGIN_PREFIX}{key!r}", schema,
                                   _UTILITY_HANDLER_FACTORIES[key](name, tool_timeout)))
     return out

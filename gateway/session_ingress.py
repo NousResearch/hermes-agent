@@ -270,7 +270,10 @@ async def execute_admission(authority, ref, row):
     from gateway.config import Platform
     from gateway.session_api_turn import api_execution, prepare_api_execution
     from gateway.session_results import execution_result
-    is_api = live.source.platform == Platform.API_SERVER
+    # The family marker, not the platform alone: a mounted cold Desktop row's admissions are
+    # plain viewer text on an API-family source — treating them as API would route them through
+    # ``prepare_api_execution`` (refusing not_found) and stamp the prompt ``event.internal``.
+    is_api = live.source.platform == Platform.API_SERVER and 'api_turn_v1' in row['payload']
     if not (event.internal or is_api or live.source.platform == Platform.LOCAL):
         # The claim on a chat route (native or a viewer's submit): a /new before the turn resolves
         # its session must not move it onto the fresh conversation (main's /new cancelled its task).

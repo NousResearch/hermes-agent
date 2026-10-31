@@ -97,6 +97,26 @@ def _workdir_is_observably_gone(
         if parent == path:
             return False
         if not parent.is_dir():
+            # The parent path does not resolve. That is either a genuine
+            # deletion of the parent (project moved / parent removed from a
+            # still-mounted filesystem) or a detached volume whose mount
+            # point itself vanished. Distinguish the two by walking up to the
+            # nearest existing ancestor: if it sits on the same device as the
+            # recorded parent, the parent was deleted from a live filesystem
+            # and the project is genuinely orphaned; otherwise the parent's
+            # device is not observable and we stay conservative (an unmount
+            # can hide the parent, and we must not delete restore points over
+            # a transient mount state).
+            if parent_dev is not None:
+                ancestor = parent
+                while not ancestor.exists() and ancestor != ancestor.parent:
+                    ancestor = ancestor.parent
+                if ancestor.exists():
+                    try:
+                        if ancestor.stat().st_dev == parent_dev:
+                            return True
+                    except OSError:
+                        return False
             return False
         if parent_dev is not None and parent_ino is not None:
             st = parent.stat()
@@ -120,6 +140,71 @@ def _workdir_is_observably_gone(
     except OSError:
         # Probe failed (permission, I/O error) — not evidence of deletion.
         return False
+
+
+def _workdir_unreachable_reason(
+    workdir: str,
+    parent_dev: Optional[int] = None,
+    parent_ino: Optional[int] = None,
+    require_parent_identity: bool = True,
+) -> Optional[str]:
+    """Human-readable reason why an unreachable ``workdir`` is NOT a
+    safely-confirmable orphan, or ``None`` when it is live or safely
+    confirmable (auto-prunable).
+
+    Mirrors ``_workdir_is_observably_gone``: it short-circuits on the same
+    verdict and only classifies the not-confirmable residue. This lets a
+    human see *why* prune leaves a record behind (e.g. a volume was
+    unmounted/remounted, or the parent directory was reborn on a different
+    identity after reboot) so the store can be cleaned up by hand without
+    changing the delete policy.
+    """
+    if not workdir or Path(workdir).exists():
+        return None
+    if _workdir_is_observably_gone(workdir, parent_dev, parent_ino, require_parent_identity):
+        return None
+    # Unreachable and not confirmable — classify why.
+    path = Path(workdir)
+    parent = path.parent
+    if parent == path:
+        return "workdir path is a filesystem root"
+    try:
+        if not parent.is_dir():
+            # Parent gone. Distinguish a moved/deleted parent on a live
+            # filesystem (which would have been confirmable) from a detached
+            # volume, by walking to the nearest existing ancestor.
+            if parent_dev is None:
+                return "parent path gone and no parent identity recorded"
+            ancestor = parent
+            while not ancestor.exists() and ancestor != ancestor.parent:
+                ancestor = ancestor.parent
+            if not ancestor.exists():
+                return "no existing ancestor to corroborate parent device"
+            try:
+                ancestor_dev = ancestor.stat().st_dev
+            except OSError:
+                return "ancestor probe failed"
+            if ancestor_dev != parent_dev:
+                return (
+                    f"volume identity drift: recorded parent_dev {parent_dev}, "
+                    f"nearest existing ancestor {ancestor} has st_dev {ancestor_dev}"
+                )
+            return "parent path gone with an unresolvable parent identity"
+        st = parent.stat()
+        if parent_dev is not None and parent_ino is not None:
+            if (st.st_dev, st.st_ino) != (parent_dev, parent_ino):
+                return (
+                    f"parent directory reborn on a different identity: recorded "
+                    f"(dev {parent_dev}, ino {parent_ino}), now "
+                    f"(dev {st.st_dev}, ino {st.st_ino})"
+                )
+        elif require_parent_identity:
+            return "no parent identity recorded"
+        # Parent present, identity ok (or not required), yet not confirmable:
+        # an empty parent that is not a mount point.
+        return "parent directory present but holds no entries and is not a mount point"
+    except OSError as exc:
+        return f"parent probe failed: {exc}"
 
 
 def _dir_has_any_entry(directory: Path) -> bool:
@@ -521,24 +606,51 @@ def store_status(checkpoint_base: Optional[Path] = None) -> dict:
                     commits = int(count_out) if ok else 0
                 except ValueError:
                     commits = 0
+                pdev = meta.get("workdir_parent_dev")
+                pino = meta.get("workdir_parent_ino")
+                if not isinstance(pdev, int) or isinstance(pdev, bool):
+                    pdev = None
+                if not isinstance(pino, int) or isinstance(pino, bool):
+                    pino = None
+                confirmable = (not workdir) or _workdir_is_observably_gone(
+                    workdir, pdev, pino
+                )
                 out["projects"].append({
                     "hash": dir_hash,
                     "workdir": workdir,
                     "exists": bool(workdir) and Path(workdir).exists(),
+                    "orphan_confirmable": confirmable,
+                    "unconfirmable_reason": (
+                        None
+                        if confirmable
+                        else _workdir_unreachable_reason(workdir, pdev, pino)
+                    ),
                     "created_at": meta.get("created_at"),
                     "last_touch": meta.get("last_touch"),
                     "commits": commits,
                 })
     out["project_count"] = len(out["projects"])
 
-    out["pre_v2_projects"] = [
-        {
+    out["pre_v2_projects"] = []
+    for r in _pre_v2_shadow_repos(base):
+        wd = r["workdir"]
+        confirmable = (not wd) or _workdir_is_observably_gone(
+            wd, None, None, require_parent_identity=False
+        )
+        out["pre_v2_projects"].append({
             "path": str(r["path"]),
-            "workdir": r["workdir"],
+            "workdir": wd,
             "exists": r["exists"],
-        }
-        for r in _pre_v2_shadow_repos(base)
-    ]
+            "marker_unreadable": r.get("marker_unreadable", False),
+            "orphan_confirmable": confirmable,
+            "unconfirmable_reason": (
+                None
+                if confirmable
+                else _workdir_unreachable_reason(
+                    wd, None, None, require_parent_identity=False
+                )
+            ),
+        })
 
     for child in base.iterdir():
         if child.is_dir() and child.name.startswith(_LEGACY_PREFIX):

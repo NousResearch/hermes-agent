@@ -45,8 +45,16 @@ def cmd_status(args: argparse.Namespace) -> int:
             wd = p.get("workdir") or "(unknown)"
             if len(wd) > 60:
                 wd = "…" + wd[-59:]
-            state = "live" if p.get("exists") else "orphan"
+            if p.get("exists"):
+                state = "live"
+            elif p.get("orphan_confirmable"):
+                state = "orphan"
+            else:
+                state = "unreachable"
             print(f"  {wd:<60}  {p.get('commits', 0):>7}  {_fmt_age(p.get('last_touch')):>12}  {state}")
+            if state == "unreachable":
+                print(f"    unreachable but not prunable: {p.get('unconfirmable_reason') or 'unknown'}")
+                print("    (prune leaves this record; clean up manually if the project is truly gone)")
 
     legacy = info.get("legacy_archives", [])
     if legacy:
@@ -75,8 +83,8 @@ def cmd_prune(args: argparse.Namespace) -> int:
 
     if delete_orphans and not args.force:
         info = store_status()
-        orphans = [p for p in info.get("projects", []) if not p.get("exists")]
-        pre_v2_orphans = [p for p in info.get("pre_v2_projects", []) if not p.get("exists")]
+        orphans = [p for p in info.get("projects", []) if p.get("orphan_confirmable")]
+        pre_v2_orphans = [p for p in info.get("pre_v2_projects", []) if p.get("orphan_confirmable")]
         if orphans or pre_v2_orphans:
             print(f"This will permanently delete {len(orphans) + len(pre_v2_orphans)} "
                   "orphan checkpoint project(s) whose workdir is not currently reachable:")

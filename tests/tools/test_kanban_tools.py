@@ -1465,6 +1465,227 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Project identity across a cross-profile dir-workspace handoff
+#
+# The Builder child is filed by a profile whose own projects.db has never
+# carried the parent's project. Identity must survive because the child writes
+# in the same governed directory as its project-bound parent — and must not
+# leak to a child pointed anywhere else.
+# ---------------------------------------------------------------------------
+
+def _two_profile_board(monkeypatch, tmp_path):
+    """Two real profile homes over one pinned board: ``(owner_home, filer_home, board)``."""
+    from pathlib import Path as _Path
+
+    owner_home = tmp_path / "home-owner"
+    filer_home = tmp_path / "home-filer"
+    owner_home.mkdir()
+    filer_home.mkdir()
+    board = tmp_path / "kanban.db"
+    # Pin the board: every surface opens THIS file while HERMES_HOME moves
+    # between the two profiles' stores.
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(board))
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(owner_home))
+    monkeypatch.setenv("HERMES_PROFILE", "owner")
+    return owner_home, filer_home, board
+
+
+def _seed_dir_parent(monkeypatch, tmp_path, *, with_project=True):
+    """A project-bound ``dir`` parent filed from home A; the caller continues as home B."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import projects_db as pdb
+
+    repo = tmp_path / "governed-repo"
+    repo.mkdir()
+    owner_home, filer_home, board = _two_profile_board(monkeypatch, tmp_path)
+    project_id = None
+    if with_project:
+        with pdb.connect_closing() as pconn:
+            project_id = pdb.create_project(
+                pconn, name="Governed Repo", primary_path=str(repo))
+    with kbc.connect_closing() as conn:
+        parent_id = kb.create_task(
+            conn, title="steward card", assignee="default",
+            workspace_kind="dir", workspace_path=str(repo), project_id=project_id)
+        parent = kb.get_task(conn, parent_id)
+    assert (parent.project_id, parent.workspace_kind) == (project_id, "dir"), parent
+    # The child is filed by a DIFFERENT profile: same board, its own store.
+    monkeypatch.setenv("HERMES_HOME", str(filer_home))
+    monkeypatch.setenv("HERMES_PROFILE", "builder")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", parent_id)
+    return {"parent": parent_id, "project_id": project_id, "repo": repo,
+            "owner_home": owner_home, "filer_home": filer_home, "board": board}
+
+
+def _create_child(info, **extra):
+    from tools import kanban_tools as kt
+
+    args = {"title": "builder child", "assignee": "default", "parents": [info["parent"]]}
+    args.update(extra)
+    payload = json.loads(kt._handle_create(args))
+    assert payload.get("ok") is True, payload
+    return payload
+
+
+def _stored(task_id):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    with kbc.connect_closing() as conn:
+        return kb.get_task(conn, task_id)
+
+
+def test_dir_child_inherits_project_from_parent_across_profiles(monkeypatch, tmp_path):
+    """A child in the parent's own governed directory keeps the parent's project
+    even though the filing profile's projects.db cannot resolve it."""
+    info = _seed_dir_parent(monkeypatch, tmp_path)
+    payload = _create_child(
+        info, workspace_kind="dir", workspace_path=str(info["repo"]))
+    child = _stored(payload["task_id"])
+
+    assert child.project_id == info["project_id"]
+    assert payload["project_id"] == info["project_id"]
+    assert child.workspace_kind == "dir"
+    assert child.workspace_path == str(info["repo"])
+    assert child.branch_name is None
+    assert not (info["repo"] / ".worktrees").exists()
+
+
+def test_dir_child_does_not_inherit_across_a_different_workspace(monkeypatch, tmp_path):
+    """The anti-misapplication control: another directory never acquires the
+    parent's project identity."""
+    info = _seed_dir_parent(monkeypatch, tmp_path)
+    other = tmp_path / "unrelated-repo"
+    other.mkdir()
+
+    payload = _create_child(info, workspace_kind="dir", workspace_path=str(other))
+    child = _stored(payload["task_id"])
+
+    assert child.project_id is None
+    assert (child.workspace_kind, child.workspace_path) == ("dir", str(other))
+
+
+def test_dir_child_without_a_project_parent_stays_unlinked(monkeypatch, tmp_path):
+    """No project on the parent means nothing to inherit — no inference from the
+    board metadata or from the path."""
+    info = _seed_dir_parent(monkeypatch, tmp_path, with_project=False)
+    payload = _create_child(
+        info, workspace_kind="dir", workspace_path=str(info["repo"]))
+    child = _stored(payload["task_id"])
+
+    assert info["project_id"] is None
+    assert child.project_id is None
+    assert (child.workspace_kind, child.workspace_path) == ("dir", str(info["repo"]))
+
+
+def test_dir_child_empty_project_opt_out_stays_unlinked(monkeypatch, tmp_path):
+    """``project=""`` is the documented opt-out; it must not be overridden by the
+    parent's identity."""
+    info = _seed_dir_parent(monkeypatch, tmp_path)
+    payload = _create_child(
+        info, workspace_kind="dir", workspace_path=str(info["repo"]), project="")
+    child = _stored(payload["task_id"])
+
+    assert child.project_id is None
+    assert (child.workspace_kind, child.workspace_path) == ("dir", str(info["repo"]))
+
+
+def test_dir_child_explicit_project_is_not_overridden(monkeypatch, tmp_path):
+    """An explicit project that resolves in the filing profile wins; the patch
+    never rewrites it to the parent's."""
+    info = _seed_dir_parent(monkeypatch, tmp_path)
+    from hermes_cli import projects_db as pdb
+
+    other_repo = tmp_path / "explicit-repo"
+    other_repo.mkdir()
+    with pdb.connect_closing() as pconn:
+        explicit = pdb.create_project(pconn, name="Explicit", primary_path=str(other_repo))
+    assert explicit != info["project_id"]
+
+    payload = _create_child(
+        info, workspace_kind="dir", workspace_path=str(info["repo"]), project=explicit)
+    child = _stored(payload["task_id"])
+
+    assert child.project_id == explicit
+    assert (child.workspace_kind, child.workspace_path) == ("dir", str(info["repo"]))
+
+
+def test_worktree_child_inheritance_is_unchanged(monkeypatch, tmp_path):
+    """Regression control for the untouched branch: an omitted workspace still
+    inherits the parent's project as a fresh ``.worktrees/<id>`` worktree."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import projects_db as pdb
+
+    repo = tmp_path / "governed-repo"
+    repo.mkdir()
+    _owner_home, filer_home, _board = _two_profile_board(monkeypatch, tmp_path)
+    with pdb.connect_closing() as pconn:
+        project_id = pdb.create_project(pconn, name="Governed Repo", primary_path=str(repo))
+    with kbc.connect_closing() as conn:
+        parent_id = kb.create_task(
+            conn, title="owner card", assignee="default",
+            project_id=project_id, workspace_kind="worktree")
+        assert kb.get_task(conn, parent_id).workspace_kind == "worktree"
+
+    monkeypatch.setenv("HERMES_HOME", str(filer_home))
+    monkeypatch.setenv("HERMES_PROFILE", "builder")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", parent_id)
+    payload = _create_child({"parent": parent_id})
+    child = _stored(payload["task_id"])
+
+    assert child.project_id == project_id
+    assert child.workspace_kind == "worktree"
+    assert child.workspace_path == str(repo / ".worktrees" / child.id)
+    assert child.branch_name and child.id in child.branch_name
+    assert not child.branch_name.startswith("wt/")
+
+
+def test_two_profile_dir_child_keeps_project_without_workspace_mutation(monkeypatch, tmp_path):
+    """Disposable two-profile integration: home A owns the project and the parent
+    card, home B files the child. Identity crosses the boundary; the governed
+    directory is read, never rewritten."""
+    import hashlib
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import projects_db as pdb
+
+    info = _seed_dir_parent(monkeypatch, tmp_path)
+    repo = info["repo"]
+    (repo / "README.md").write_text("governed\n", encoding="utf-8")
+    (repo / "src").mkdir()
+    (repo / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
+
+    def snapshot():
+        return {
+            str(p.relative_to(repo)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(repo.rglob("*")) if p.is_file()
+        }
+
+    before = snapshot()
+    payload = _create_child(info, workspace_kind="dir", workspace_path=str(repo))
+    child = _stored(payload["task_id"])
+
+    assert snapshot() == before
+    assert not (repo / ".worktrees").exists()
+    assert child.project_id == info["project_id"] == payload["project_id"]
+    assert (child.workspace_kind, child.workspace_path) == ("dir", str(repo))
+    assert child.branch_name is None
+
+    with kbc.connect_closing() as conn:
+        created = [e for e in kb.list_events(conn, child.id) if e.kind == "created"]
+        assert created and created[-1].payload["project_id"] == info["project_id"]
+
+    # The filing profile's store still holds no project: the identity came from
+    # the parent card, not from a local row.
+    with pdb.connect_closing() as pconn:
+        assert pdb.list_projects(pconn) == []
+
+
 class TestDefaultTaskId:
     def test_numeric_task_id_is_coerced(self, monkeypatch):
         from tools import kanban_tools as kt

@@ -106,7 +106,7 @@ EMAIL_AUTHSERV_ID=mx.google.com
 # Optional
 EMAIL_IMAP_PORT=993                    # Default: 993 (IMAP SSL)
 EMAIL_SMTP_PORT=587                    # Default: 587 (SMTP STARTTLS)
-EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 15)
+EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 15; 60 on Gmail hosts)
 EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
 ```
 
@@ -200,7 +200,7 @@ Hermes acts on a message only when the `Authentication-Results` header stamped b
 | **Messages not received** | Check `EMAIL_ALLOWED_USERS` includes the sender's email. If the gateway log shows `authserv-id is not configured`, set `EMAIL_AUTHSERV_ID` to the exact id on the topmost `Authentication-Results` header your server writes. Check spam folder — some providers flag automated replies. |
 | **"Authentication failed"** | For Gmail, you must use an App Password, not your regular password. Ensure 2FA is enabled first. |
 | **Duplicate replies** | Ensure only one gateway instance is running. Check `hermes gateway status`. |
-| **Slow response** | The default poll interval is 15 seconds. Reduce with `EMAIL_POLL_INTERVAL=5` for faster response (but more IMAP connections). |
+| **Slow response** | The default poll interval is 15 seconds (60 on Gmail hosts). Reduce with `EMAIL_POLL_INTERVAL=5` for faster response (but more IMAP connections). A failing mailbox is retried with exponential backoff (30s → 300s); after 10 consecutive failures the log shows a `DEGRADED` error. |
 | **Replies not threading** | The adapter uses In-Reply-To headers. Some email clients (especially web-based) may not thread correctly with automated messages. |
 
 ---
@@ -229,7 +229,7 @@ Hermes acts on a message only when the `Authentication-Results` header stamped b
 | `EMAIL_SMTP_HOST` | Yes | — | SMTP server host (e.g., `smtp.gmail.com`) |
 | `EMAIL_IMAP_PORT` | No | `993` | IMAP server port |
 | `EMAIL_SMTP_PORT` | No | `587` | SMTP server port |
-| `EMAIL_POLL_INTERVAL` | No | `15` | Seconds between inbox checks |
+| `EMAIL_POLL_INTERVAL` | No | `15` (`60` on Gmail hosts) | Seconds between inbox checks. Gmail applies a per-operation security delay to connections from datacenter IPs, so it gets the slower cadence by default; setting this variable overrides either default. After a failed check the adapter keeps polling with exponential backoff (30s → 300s) instead of forcing a reconnect. |
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_AUTHSERV_ID` | Yes, unless sender authentication is off | — | Exact authserv-id on your receiving server's topmost `Authentication-Results` header; without it every message needing an authenticated `From:` is dropped |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |

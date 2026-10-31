@@ -474,6 +474,7 @@ function DropdownMenuSubTrigger({
 function DropdownMenuSubContent({
   className,
   collisionPadding = 8,
+  hideWhenDetached = true,
   onPointerMove,
   style,
   ...props
@@ -513,6 +514,8 @@ function DropdownMenuSubContent({
         // the submenu never gets clipped.
         collisionPadding={collisionPadding}
         data-slot="dropdown-menu-sub-content"
+        // A trigger can leave its scroll container while remaining inside the window.
+        hideWhenDetached={hideWhenDetached}
         onPointerMove={event => {
           // The pointer made it into the submenu: cancel a pending hover close.
           hoverSubmenus?.keep()

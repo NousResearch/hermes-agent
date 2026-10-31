@@ -746,7 +746,7 @@ has no usage endpoint, or the fetch fails (stdout stays empty).
 ## `hermes status`
 
 ```bash
-hermes status [--full] [--deep]
+hermes status [--full] [--deep] [--json]
 ```
 
 By default prints a one-screen summary: model, active provider, every provider with
@@ -757,6 +757,52 @@ platforms the gateway would start, and scheduled jobs. No key values are printed
 |--------|-------------|
 | `--full` | Print every section (API keys redacted, auth providers, terminal backend, sessions, ...). `--all` is an alias. |
 | `--deep` | Run deeper checks that may take longer. Implies `--full`. |
+| `--json` | Print one machine-readable JSON document (shape below) instead of text. |
+
+### `hermes status --json`
+
+A stable document for trays, status bars and scripts, so they never read `state.db` or
+`runtime/active_sessions.json` directly. Fields are only added within a `schema_version`.
+API keys are reported by provider name, never by value.
+
+```json
+{
+  "schema_version": 1,
+  "version": "0.x.y", "project_root": "...", "python_version": "3.12.4",
+  "hermes_home": "/home/me/.hermes", "profile": "default", "env_file_exists": true,
+  "model": "anthropic/claude-sonnet-4", "provider": "OpenRouter",
+  "estop": {"paused": false, "reason": null, "timestamp": null},
+  "gateway": {"running": true, "via_default_multiplexer": false, "manager": "systemd (user)",
+              "pids": [4242], "service_installed": true, "service_running": true},
+  "terminal": {"backend": "local", "sudo": false},
+  "auth": {"api_keys": ["OpenRouter"],
+           "oauth": {"OpenAI Codex": {"logged_in": false, "last_refresh": null, "error": null}}},
+  "platforms": {"telegram": {"label": "Telegram", "configured": true, "home_channel": "12345"}},
+  "cron": {"jobs": 3, "enabled": 2},
+  "sessions": {
+    "live": [{"session_id": "20261025_120108_aef2c9", "profile": "default", "surface": "cli",
+              "pid": 15930, "started_at": 1792954868.9, "source": "cli",
+              "model": "anthropic/claude-sonnet-4", "title": "Refactor the parser"}],
+    "registry_unreadable": [],
+    "slots": {"in_use": 1, "cap": 4},
+    "gateway_active": 2, "total": 118, "last_activity": 1792954900.1,
+    "recent": [{"id": "...", "title": "...", "source": "cli", "model": "...",
+                "started_at": 1792954868.9, "last_active": 1792954900.1}]
+  },
+  "usage": {"tokens": 1234567, "cost_usd": 12.34},
+  "errors": {}
+}
+```
+
+- `sessions.live` comes from the active-session lease registry of **every profile on the host**:
+  a CLI or TUI/Desktop session holds its lease for as long as its process owns the session, a
+  messaging-gateway turn for the turn in flight (its `session_id` is the gateway session key).
+  An entry disappears the moment its owning process exits, so a crashed CLI is never listed.
+  `registry_unreadable` names profiles whose registry file could not be read.
+- `sessions.slots` is `null` unless `max_concurrent_sessions` is set.
+- A section whose probe fails is `null`, with the reason under `errors.<section>`
+  (`session_store` covers `sessions.total/recent/gateway_active` and `usage`; `live` covers
+  `sessions.live`).
 
 ## `hermes cron`
 

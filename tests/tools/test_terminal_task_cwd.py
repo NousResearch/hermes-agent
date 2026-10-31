@@ -3,7 +3,7 @@
 import json
 from types import SimpleNamespace
 
-import tools.terminal_tool as terminal_tool
+from tools import terminal_tool
 
 
 def _minimal_terminal_config(cwd="/default"):
@@ -190,7 +190,7 @@ def test_host_local_background_command_bypasses_configured_backend(tmp_path, mon
             raise AssertionError("host-local command reached configured backend")
 
     import tools.process_registry as process_registry_mod
-    import tools.self_repo_guard as self_repo_guard
+    from tools import self_repo_guard
 
     task_id = "bot-delivery"
     monkeypatch.setattr(

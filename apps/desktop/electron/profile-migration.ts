@@ -210,9 +210,8 @@ export function decideMigration(
 }
 
 /**
- * List named profile directory names under `profilesRoot`. A directory named
- * `default` is accepted if present (unusual) but production default is not a
- * child of this folder — see `withDefaultCandidate`.
+ * List named profile directory names under `profilesRoot`. A directory named `default` is accepted if present
+ * (unusual) but production default is not a child of this folder — see `withDefaultCandidate`.
  */
 export function listProfileDirs(deps: MigrationDeps): string[] {
   let entries: Dirent[]

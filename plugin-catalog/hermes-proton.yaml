@@ -1,0 +1,58 @@
+name: hermes-proton
+repo: https://github.com/Maytrella007/hermes-proton
+sha: 3e0612848cf20116294f9ff58e74aadf34bc858e
+description: "Proton Mail, Calendar, Contacts and Drive for a Hermes Agent, through an MIT-licensed client built from Proton's own open-source Go libraries (go-srp, go-proton-api) — no Proton Bridge and no paid plan. Reads, searches and sends mail (attachments, scheduled send, labels, folders), manages calendar events and RSVPs, contacts (signed/encrypted vCards), and Drive (upload, download, move, rename, trash, public share links). Sign-in runs in a terminal via `hermes proton login` and the account password is never taken through chat; sending is refused until a recipient allowlist is set and every send is gated by Hermes's pre_tool_call approval. Disclosure — talks to Proton's private, undocumented web API over the network; stores a per-account session file (0600) holding OAuth-style tokens and the derived key passphrase (never the password) under the profile's plugin-data folder, and on first load copies any sessions from the standalone client's `~/.config/protonlite` into it; reads local files you approve for attachments and Drive uploads and writes downloaded attachments and Drive files under that plugin-data folder; shells out to gpg for calendar/Drive key provisioning; `proton_schedule_followup` creates one-shot Hermes cron jobs (read-only Proton toolset) that run unattended and deliver to your home channel; no self-update, no downloaded binaries, no telemetry."
+maintainer: Maytrella007
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Maytrella007/hermes-proton#readme
+version: "0.28.0"
+image: https://raw.githubusercontent.com/Maytrella007/hermes-proton/3e0612848cf20116294f9ff58e74aadf34bc858e/assets/banner.jpg
+readme: true
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools:
+    - proton_login
+    - proton_accounts
+    - proton_unread
+    - proton_list
+    - proton_read
+    - proton_send
+    - proton_draft
+    - proton_mark
+    - proton_delete
+    - proton_get_attachment
+    - proton_search
+    - proton_gather_context
+    - proton_labels
+    - proton_calendar
+    - proton_contacts
+    - proton_contact
+    - proton_drive_list
+    - proton_drive_download
+    - proton_drive_create_folder
+    - proton_drive_upload
+    - proton_drive_move
+    - proton_drive_rename
+    - proton_drive_delete
+    - proton_drive_share
+    - proton_drive_unshare
+    - proton_create_event
+    - proton_cancel_event
+    - proton_create_contact
+    - proton_edit_contact
+    - proton_delete_contact
+    - proton_rsvp
+    - proton_edit_event
+    - proton_label
+    - proton_schedule_followup
+    - proton_storage
+    - proton_empty
+    - proton_manage_label
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

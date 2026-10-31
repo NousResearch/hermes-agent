@@ -20,7 +20,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 
-def _td(name: str, description: str = "", properties: Dict[str, Any] | None = None) -> Dict[str, Any]:
+def _td(name: str, description: str = "", properties: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "type": "function",
         "function": {
@@ -118,7 +118,7 @@ class TestClassification:
         from tools.tool_search import ToolSearchConfig, assemble_tool_defs
 
         discover_builtin_tools()
-        names = {"read_window_below", "apply_layout", "project_list"}
+        names = {"read_window_below", "set_theme", "project_list"}
         assembled = assemble_tool_defs(
             [_td(name, f"GUI {name}") for name in names],
             context_length=200_000,
@@ -352,7 +352,7 @@ class TestBridgeDispatch:
         assert "error" in json.loads(result)
 
     def test_tool_search_rejects_empty_and_overcap_queries(self):
-        import tools.tool_search as tool_search
+        from tools import tool_search
 
         cfg = tool_search.ToolSearchConfig.from_raw({})
         assert "error" in json.loads(tool_search.dispatch_tool_search(
@@ -396,7 +396,7 @@ class TestBridgeDispatch:
 
     def test_resolve_underlying_call_parses_object_args(self):
         from tools.tool_search import resolve_underlying_call
-        name, args, err = resolve_underlying_call({
+        _name, _args, err = resolve_underlying_call({
             "name": "unknown_xxx",
             "arguments": {"foo": "bar"},
         })
@@ -407,7 +407,7 @@ class TestBridgeDispatch:
     def test_resolve_underlying_call_rejects_recursion(self):
         """tool_call cannot invoke tool_call itself."""
         from tools.tool_search import resolve_underlying_call, TOOL_CALL_NAME
-        name, args, err = resolve_underlying_call({
+        _name, _args, err = resolve_underlying_call({
             "name": TOOL_CALL_NAME,
             "arguments": {},
         })
@@ -609,6 +609,41 @@ class TestCatalogListing:
         # framing overhead above the 4K listing budget.
         assert description_tokens < 4500
         assert result.listing_form in {"names", "groups", "mixed"}
+
+    def test_builtin_catalog_lines_are_whole_first_sentences(self):
+        """A catalog line is the first sentence; a clipped one hides what the tool does."""
+        from tools.registry import discover_builtin_tools, registry
+        from tools.tool_search_catalog import _short_desc
+
+        discover_builtin_tools()
+        clipped = {}
+        for entry in registry.get_all_entries():
+            if not getattr(entry.handler, "__module__", "").startswith("tools."):
+                continue
+            schema = dict(entry.schema)
+            if entry.dynamic_schema_overrides:
+                schema.update(entry.dynamic_schema_overrides() or {})
+            line = _short_desc(schema.get("description", ""))
+            if line.endswith("…"):
+                clipped[entry.name] = line
+        assert clipped == {}
+
+    def test_image_generate_catalog_line_names_edit_refs_and_configured_model(self):
+        """The deferred image_generate line must say it edits with references on the
+        configured model, or agents bypass it with direct provider scripts."""
+        from unittest.mock import patch
+
+        import tools.image_generation_tool as ig
+        from tools.tool_search_catalog import _short_desc
+
+        model = next(m for m, meta in ig.FAL_MODELS.items()
+                     if meta.get("edit_endpoint") and int(meta.get("max_reference_images") or 0) > 1)
+        with patch.object(ig, "_resolve_fal_model", return_value=(model, ig.FAL_MODELS[model])), \
+                patch.object(ig, "_read_configured_image_provider", return_value=None):
+            line = _short_desc(ig._build_dynamic_image_schema()["description"])
+        assert not line.endswith("…")
+        for phrase in ("edit", "reference image", "configured model"):
+            assert phrase in line
 
 
 

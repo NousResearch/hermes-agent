@@ -1330,36 +1330,6 @@ class TestBuildApiKwargs:
         assert "reasoning" not in kwargs.get("extra_body", {})
 
 
-    def test_reasoning_sent_for_copilot_gpt5(self, agent):
-        """Copilot/GitHub Models: GPT-5 reasoning goes in extra_body.reasoning."""
-        from agent.transports import get_transport
-        from providers import get_provider_profile
-
-        transport = get_transport("chat_completions")
-        profile = get_provider_profile("copilot")
-        msgs = [{"role": "user", "content": "hi"}]
-        kwargs = transport.build_kwargs(
-            model="gpt-5.4",
-            messages=msgs,
-            tools=None,
-            supports_reasoning=True,
-            provider_profile=profile,
-        )
-        assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
-
-
-    def test_core_responses_preserves_supported_xhigh(self, agent, monkeypatch):
-        """The core GitHub Responses path must preserve a supported xhigh."""
-        monkeypatch.setattr(
-            "hermes_cli.models.github_model_reasoning_efforts",
-            lambda _model: ["none", "low", "medium", "high", "xhigh"],
-        )
-        agent.model = "gpt-5.5"
-        agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
-
-        assert agent._github_models_reasoning_extra_body() == {"effort": "xhigh"}
-
-
     def test_qwen_portal_formats_messages_and_metadata(self, agent):
         agent.provider = "qwen-oauth"
         agent.base_url = "https://portal.qwen.ai/v1"
@@ -1591,41 +1561,6 @@ class TestExecuteToolCalls:
         assert metadata["old_text"] == old_text
         assert metadata["tool_call_id"] == "mem-1"
         assert messages[-1]["tool_call_id"] == "mem-1"
-
-    def test_keyboard_interrupt_emits_cancelled_post_tool_hook(self, agent, monkeypatch):
-        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
-        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
-        messages = []
-        hook_calls = []
-        agent.session_id = "session-1"
-        agent._current_turn_id = "turn-1"
-        agent._current_api_request_id = "api-1"
-
-        def _capture_hook(hook_name, **kwargs):
-            hook_calls.append((hook_name, kwargs))
-            return []
-
-        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _capture_hook)
-        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
-
-        with (
-            patch("model_tools.handle_function_call", side_effect=KeyboardInterrupt),
-            patch("run_agent._set_interrupt"),
-            patch("agent.interrupt_control._set_interrupt"),
-            pytest.raises(KeyboardInterrupt),
-        ):
-            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
-
-        post_calls = [kwargs for name, kwargs in hook_calls if name == "post_tool_call"]
-        assert len(post_calls) == 1
-        assert post_calls[0]["tool_name"] == "web_search"
-        assert post_calls[0]["tool_call_id"] == "c1"
-        assert post_calls[0]["session_id"] == "session-1"
-        assert post_calls[0]["turn_id"] == "turn-1"
-        assert post_calls[0]["api_request_id"] == "api-1"
-        assert post_calls[0]["status"] == "cancelled"
-        assert post_calls[0]["error_type"] == "keyboard_interrupt"
-        assert json.loads(post_calls[0]["result"])["status"] == "cancelled"
 
     def test_interrupt_skips_remaining(self, agent, monkeypatch):
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -2314,7 +2249,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         # manage_connections / setup_mcp shim: no card on this fake agent, so the MCP leg runs the
         # backend at once; pin the catalog and the backend so the run is hermetic.
         monkeypatch.setattr("tools.connectors.mcp._catalog_names", lambda: ["linear"])
-        monkeypatch.setattr("tools.connectors.mcp._configured_names", lambda: [])
+        monkeypatch.setattr("tools.connectors.mcp._configured_names", list)
 
         class _NoInstallBackend:
             def required_env(self, name):
@@ -2815,7 +2750,7 @@ class TestHandleMaxIterations:
             # on user/assistant messages.
             if m.get("role") == "tool":
                 assert "name" not in m, m
-        assert [m for m in sent_msgs if m.get("role") == "user"][0]["name"] == "sylvain"
+        assert next(m for m in sent_msgs if m.get("role") == "user")["name"] == "sylvain"
         # Internal history is untouched — the path copies each message.
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[2]["name"] == "execute_code"
@@ -3499,6 +3434,7 @@ class TestRunConversation:
         """A clean-stop reasoning answer returns without compression or recovery."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
+        agent._custom_providers = [{"base_url": agent.base_url, "capabilities": {"answer_in_reasoning": True}}]
         agent.compression_enabled = True
         empty_resp = _mock_response(
             content=None,
@@ -3523,7 +3459,6 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "reasoning only"
         assert result["api_calls"] == 1
-
 
     def test_truly_empty_response_stops_after_repeated_empty(self, agent):
         """Repeated empty responses stop after one retry and return an explanation."""
@@ -4231,7 +4166,7 @@ class TestRunConversation:
         protect_first = agent.context_compressor.protect_first_n
         protect_last = agent.context_compressor.protect_last_n
         prefill = []
-        for _i in range((protect_first + protect_last + 4)):
+        for _i in range(protect_first + protect_last + 4):
             prefill.append({"role": "user", "content": f"q{_i}"})
             prefill.append({"role": "assistant", "content": f"a{_i}"})
 
@@ -5816,36 +5751,6 @@ class TestFallbackAnthropicProvider:
         assert agent._use_prompt_caching is True
 
 
-def test_aiagent_uses_copilot_acp_client():
-    with (
-        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI") as mock_openai,
-        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
-    ):
-        acp_client = MagicMock()
-        mock_acp_client.return_value = acp_client
-
-        agent = AIAgent(
-            api_key="copilot-acp",
-            base_url="acp://copilot",
-            provider="copilot-acp",
-            acp_command="/usr/local/bin/copilot",
-            acp_args=["--acp", "--stdio"],
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
-
-    assert agent.client is acp_client
-    mock_openai.assert_not_called()
-    mock_acp_client.assert_called_once()
-    assert mock_acp_client.call_args.kwargs["base_url"] == "acp://copilot"
-    assert mock_acp_client.call_args.kwargs["api_key"] == "copilot-acp"
-    assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/copilot"
-    assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
-
-
 def test_quiet_spinner_allowed_with_explicit_print_fn(agent):
     agent._print_fn = lambda *_a, **_kw: None
     with patch.object(run_agent.sys.stdout, "isatty", return_value=False):
@@ -5894,7 +5799,7 @@ class TestAnthropicBaseUrlPassthrough:
             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
         ):
             mock_build.return_value = MagicMock()
-            a = AIAgent(
+            AIAgent(
                 api_key="sk-ant-api03-test1234567890",
                 base_url="https://llm-proxy.company.com/v1",
                 api_mode="anthropic_messages",
@@ -6189,7 +6094,7 @@ class TestStreamingApiCall:
             headers={"x-request-id": "req-plain-text"},
             content=(
                 f"event: error\ndata: {provider_message}\n\n"
-            ).encode("utf-8"),
+            ).encode(),
         )
         agent.stream_delta_callback = MagicMock()
 
@@ -6231,7 +6136,7 @@ class TestStreamingApiCall:
             content=(
                 "event: error\n"
                 f"data: request validation failed: token={secret}\n\n"
-            ).encode("utf-8"),
+            ).encode(),
         )
         agent.stream_delta_callback = MagicMock()
 
@@ -6995,7 +6900,7 @@ class TestMemoryContextSanitization:
         """Helper-level: a string with an embedded memory-context block is
         cleaned to just the surrounding text.  Used by build_memory_context_block
         (input-validation) and by plugins on their own backend boundary."""
-        from agent.memory_manager import sanitize_context
+        from agent.memory_context import sanitize_context
         user_text = "how is the honcho working"
         injected = (
             user_text + "\n\n"

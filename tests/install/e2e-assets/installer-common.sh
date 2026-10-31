@@ -19,6 +19,9 @@ arm_source_redirect() {
     "$real_git" config --file "$cfg" --add "url.file://$serve.insteadOf" "$url"
   done
   export GIT_CONFIG_GLOBAL="$cfg"
+  # serve.git publishes commits on main, not releases: HEAD's installer would otherwise
+  # install the latest stable release its tags name. Older installers ignore the variable.
+  export HERMES_INSTALL_CHANNEL=main
   [ "$(git -C "$repo" remote get-url origin)" = "file://$serve" ] \
     || fail 'git URL redirect did not reach the staged repository'
 
@@ -77,7 +80,7 @@ run_source_installer() {
   # Historical (pre-PM) installers ran their own Playwright/npm browser
   # install, which is slow and can prompt for sudo; skip it there. A PM
   # installer (it enters `pm.cli`) gets no flag: its default install carries
-  # agent-browser + Chromium, which is what users get, so the leg exercises it.
+  # the browser (Chromium), which is what users get, so the leg exercises it.
   # Rejection messages also mention --skip-browser, so trust only the help.
   help_text="$(bash "$script" --help < /dev/null 2>/dev/null)" || help_text=""
   if grep -qF -- --skip-browser <<< "$help_text" && ! grep -qF 'pm.cli' <<< "$text"; then

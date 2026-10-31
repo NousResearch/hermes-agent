@@ -58,6 +58,8 @@ export const zhHantArtifacts = {
 
   preview: {
     tab: '預覽',
+    pin: '固定到工作區',
+    unpin: '從工作區取消固定',
     closePane: '關閉預覽窗格',
     loading: '正在載入預覽',
     unavailable: '預覽不可用',
@@ -114,6 +116,7 @@ export const zhHantArtifacts = {
       sentMessage: count => `已將 ${count} 條記錄新增至輸入框`
     },
     web: {
+      embeddedPreviewHint: '部分網站不允許嵌入式預覽。請在瀏覽器分頁中開啟原始頁面。',
       appFailedToBoot: '預覽應用程式啟動失敗',
       serverNotFound: '找不到伺服器',
       remoteLoopback:

@@ -48,6 +48,14 @@ export const $setupReadyTick = atom(0)
  *  same lifecycle seam. */
 export const $gatewayBootGeneration = atom(0)
 
+/** When the active source's socket last said `gateway.ready` (the backend dispatches requests from
+ *  then on); null before the first. The onboarding due check counts its way-out budget from it. */
+export const $gatewayReadyAt = atom<null | number>(null)
+
+export function noteGatewayReady(): void {
+  $gatewayReadyAt.set(Date.now())
+}
+
 export function setChangeEventsAvailable(available: boolean): void {
   $changeEventsAvailable.set(available)
 }

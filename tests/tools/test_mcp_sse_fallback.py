@@ -67,7 +67,7 @@ def test_sse_only_server_connects_via_fallback(monkeypatch, exc):
 
 @pytest.mark.parametrize("exc,ever_connected", [
     (_http_400(), True),                # reconnect after a proven session: never mask the 400
-    (asyncio.TimeoutError(), False),    # timeout is not a transport mismatch
+    (TimeoutError(), False),    # timeout is not a transport mismatch
     (_http_400(500), False),            # 5xx is a broken server, not SSE-only
 ])
 def test_no_fallback_on_reconnect_timeout_or_server_error(monkeypatch, exc, ever_connected):

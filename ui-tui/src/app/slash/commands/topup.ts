@@ -305,6 +305,52 @@ const validateAmount = (raw: string, s: BillingStateResponse): { amount?: string
   return { amount: cleaned }
 }
 
+/** A billing write with no payload beyond `ok`: errors render, resolve ok/false. */
+const mutate = (ctx: SlashRunCtx, sys: Sys, method: string, params: Record<string, unknown>) =>
+  ctx.gateway
+    .rpc<BillingMutationResponse>(method, params)
+    .then(r => {
+      if (r && r.ok) {
+        return true
+      }
+
+      if (r) {
+        renderBillingError(sys, ctx, r)
+      }
+
+      return false
+    })
+    .catch(e => {
+      ctx.guardedErr(e)
+
+      return false
+    })
+
+/** Keep going on credits: a missing Remote Spending grant runs the step-up, then sends the same change once. */
+const applyKeepGoing = (ctx: SlashRunCtx, sys: Sys, enabled: boolean): Promise<boolean> =>
+  ctx.gateway
+    .rpc<BillingMutationResponse>('billing.keep_going_on_credits', { enabled })
+    .then(async r => {
+      if (r && r.ok) {
+        return true
+      }
+
+      if (r && !r.ok && r.error === 'insufficient_scope' && (await requestRemoteSpending(ctx))) {
+        return mutate(ctx, sys, 'billing.keep_going_on_credits', { enabled })
+      }
+
+      if (r) {
+        renderBillingError(sys, ctx, r)
+      }
+
+      return false
+    })
+    .catch(e => {
+      ctx.guardedErr(e)
+
+      return false
+    })
+
 /**
  * Build the closure bundle the BillingOverlay needs to talk to the gateway
  * and emit transcript lines.  Keeps ALL RPC + error-mapping logic here
@@ -312,28 +358,12 @@ const validateAmount = (raw: string, s: BillingStateResponse): { amount?: string
  */
 const buildOverlayCtx = (ctx: SlashRunCtx, sys: Sys, s: BillingStateResponse): BillingOverlayCtx => ({
   applyAutoReload: (enabled, threshold, topUp) =>
-    ctx.gateway
-      .rpc<BillingMutationResponse>('billing.auto_reload', {
-        enabled,
-        ...(threshold != null ? { threshold } : {}),
-        ...(topUp != null ? { top_up_amount: topUp } : {})
-      })
-      .then(r => {
-        if (r && r.ok) {
-          return true
-        }
-
-        if (r) {
-          renderBillingError(sys, ctx, r)
-        }
-
-        return false
-      })
-      .catch(e => {
-        ctx.guardedErr(e)
-
-        return false
-      }),
+    mutate(ctx, sys, 'billing.auto_reload', {
+      enabled,
+      ...(threshold != null ? { threshold } : {}),
+      ...(topUp != null ? { top_up_amount: topUp } : {})
+    }),
+  applyKeepGoingOnCredits: enabled => applyKeepGoing(ctx, sys, enabled),
   charge: (amount: string, idempotencyKey?: string): Promise<BillingChargeOutcome> => {
     sys(t('slashCmd.topup.charge.submitted'))
 

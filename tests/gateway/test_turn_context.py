@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 
 from gateway.config import Platform
-from gateway.platforms.base import resolve_channel_prompt
+from gateway.platforms.base_channel_prompts import resolve_channel_prompt
 from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
 

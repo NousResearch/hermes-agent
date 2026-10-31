@@ -71,6 +71,7 @@ test('resolveRemoteSshDashboardProfile never sends a conn: pool key to the remot
   assert.equal(resolveRemoteSshDashboardProfile('', 'bob'), 'bob')
   assert.equal(resolveRemoteSshDashboardProfile('', 'default'), '')
   assert.equal(resolveRemoteSshDashboardProfile('writer', 'conn:mac-mini::default'), 'writer')
+  assert.equal(resolveRemoteSshDashboardProfile('default', 'mac-mini'), '')
 })
 
 test('normAuthMode coerces to token unless explicitly oauth', () => {
@@ -646,6 +647,32 @@ test('pathForRegistryBackendRequest uses the resolved registry backend scope', (
     ),
     '/api/profiles/sessions/sidebar?recents_profile=remote-research&recents_exclude=cron%2Cdesktop'
   )
+})
+
+test('a /api/profiles/<name>/… path already names its profile: no ambient scope is appended (#140791)', () => {
+  for (const backend of [{ mode: 'local' }, { sharedPrimary: true }, { sharedRemote: true }]) {
+    for (const ambient of ['default', '__all__', 'beta']) {
+      for (const path of ['/api/profiles/p2/soul', '/api/profiles/p2', '/api/profiles/p2/model',
+        '/api/profiles/projects/soul', '/api/profiles/sessions/soul']) {
+        assert.equal(pathForRegistryBackendRequest(path, ambient, backend), path)
+      }
+
+      // Collection routes under /api/profiles/ carry no name in the path: they still get the scope.
+      for (const path of ['/api/profiles/sessions', '/api/profiles/projects/tree', '/api/profiles']) {
+        assert.equal(pathForRegistryBackendRequest(path, ambient, backend), `${path}?profile=${ambient}`)
+      }
+    }
+  }
+
+  assert.equal(pathWithProfileScope('/api/profiles/p2/soul', 'default'), '/api/profiles/p2/soul')
+  // Method-aware: PATCH/DELETE of a profile NAMED active/import/sessions names that profile.
+  for (const [path, method] of [['/api/profiles/active', 'PATCH'], ['/api/profiles/import', 'DELETE'],
+    ['/api/profiles/sessions', 'DELETE']]) {
+    assert.equal(pathForRegistryBackendRequest(path, 'beta', { mode: 'local' }, method), path)
+  }
+
+  assert.equal(pathForRegistryBackendRequest('/api/profiles/active', 'beta', { mode: 'local' }, 'GET'),
+    '/api/profiles/active?profile=beta')
 })
 
 test('registry model reads and writes retain each profile on a shared local backend', () => {
@@ -1253,6 +1280,18 @@ test('cookiesHaveSession handles non-arrays', () => {
   assert.equal(cookiesHaveSession(null), false)
   assert.equal(cookiesHaveSession(undefined), false)
   assert.equal(cookiesHaveSession([]), false)
+})
+
+test('a gateway Webapp signs in with cookies named for its gateway, and they count as a session', () => {
+  // Cookies are not scoped to a port, so the gateway's Webapp names its login cookies
+  // hermes_session_at_<gateway> and hermes_session_rt_<gateway>; the dashboard keeps the bare names.
+  const gateway = '0123456789abcdef'
+  assert.equal(cookiesHaveSession([{ name: `hermes_session_at_${gateway}`, value: 'x' }]), true)
+  assert.equal(cookiesHaveSession([{ name: `__Host-hermes_session_at_${gateway}`, value: 'x' }]), true)
+  assert.equal(cookiesHaveSession([{ name: `hermes_session_rt_${gateway}`, value: 'x' }]), false)
+  assert.equal(cookiesHaveLiveSession([{ name: `__Secure-hermes_session_rt_${gateway}`, value: 'x' }]), true)
+  assert.equal(cookiesHaveSession([{ name: 'hermes_session_at_other', value: 'x' }]), false)
+  assert.equal(cookiesHaveLiveSession([{ name: `hermes_webapp_signin_${gateway}`, value: 'x' }]), false)
 })
 
 // --- cookiesHaveLiveSession (AT or RT — the connectivity check) ---

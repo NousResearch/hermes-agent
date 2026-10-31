@@ -311,7 +311,8 @@ def _strip_auth_headers(request: Any) -> None:
 
 
 def build_bearer_http_client(
-    token_provider: Callable[[], str], *, sends_as_api_key: Callable[[str], bool] | None = None, **httpx_kwargs: Any
+    token_provider: Callable[[], str], *, sends_as_api_key: Callable[[str], bool] | None = None,
+    client_cls: type | None = None, **httpx_kwargs: Any
 ) -> Any:
     """``httpx.Client`` minting a fresh Entra bearer JWT per outbound request. The Anthropic SDK computes
     ``Authorization`` once at construction, so per-request refresh needs a ``request`` hook: mint (cheap —
@@ -340,7 +341,7 @@ def build_bearer_http_client(
         else:
             request.headers["Authorization"] = f"Bearer {token}"
 
-    return httpx.Client(event_hooks={"request": [_inject_auth]}, **httpx_kwargs)
+    return (client_cls or httpx.Client)(event_hooks={"request": [_inject_auth]}, **httpx_kwargs)
 
 
 __all__ = [

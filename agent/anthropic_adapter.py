@@ -408,6 +408,7 @@ def _build_anthropic_client_with_bearer_hook(
     sdk = _require_sdk("Azure Foundry Anthropic-style endpoints with Entra ID auth", verb="Install with")
     normalize_proxy_env_vars()
     from agent.azure_identity_adapter import build_bearer_http_client
+    from agent.anthropic_request_compression import gzip_httpx_client_cls, native_gzip_allowed
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
     # A key_cmd on the native host can print a Console API key, which (as in the static path's
     # _auth_style) belongs in x-api-key; OAuth tokens and Azure/third-party routes keep Bearer. The
@@ -416,6 +417,7 @@ def _build_anthropic_client_with_bearer_hook(
     kwargs["http_client"] = build_bearer_http_client(
         token_provider, timeout=kwargs["timeout"],
         sends_as_api_key=(lambda token: not _is_oauth_token(token)) if is_native_anthropic_host(base_url) else None,
+        **({"client_cls": gzip_httpx_client_cls()} if is_native_anthropic_host(base_url) and native_gzip_allowed() else {}),
     )
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
     betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
@@ -501,6 +503,11 @@ def build_anthropic_client(api_key, base_url: str | None = None, timeout: float 
         )
     normalize_proxy_env_vars()
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
+    from agent.anthropic_request_compression import anthropic_gzip_client_cls, native_gzip_allowed
+    if is_native_anthropic_host(base_url) and native_gzip_allowed():
+        cls = anthropic_gzip_client_cls(sdk)
+        if cls is not None:
+            kwargs["http_client"] = cls(timeout=kwargs["timeout"])
     if "default_query" in kwargs:  # historical: this path also strips a stray trailing slash on Azure
         kwargs["base_url"] = normalized_base_url.rstrip("/")
     common_betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)

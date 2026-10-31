@@ -92,14 +92,57 @@ def _is_bytecode_compile_failure(result: subprocess.CompletedProcess) -> bool:
     return _BYTECODE_COMPILE_MARKER in text
 
 
+def _diagnostic_excerpt(output: str, limit: int = 1200) -> str:
+    """The part of uv's output that explains WHY a resolve failed.
+
+    uv puts the cause at the TOP of a resolver failure ("No solution found when
+    resolving dependencies for split (markers: ...)" and the "cause:" line naming
+    the package with no compatible wheels) and only the derived conclusion at the
+    bottom. A tail-only excerpt therefore shows "X cannot be used" with the
+    platform that broke it cut off — the one fact the reader needs.
+
+    Kept: the failing split and its cause (everything up to uv's per-version
+    derivation) plus the tail — uv's own "hint:" line when it printed one, else
+    the last lines, which is where a streamed build leaves its final diagnostic.
+    Dropped: the derivation, which restates the same conclusion for every
+    candidate version and says nothing the cause did not.
+    """
+    text = output.strip()
+    if len(text) <= limit:
+        return text
+    # The tail first: it is the part a streamed build leaves its final diagnostic in, and
+    # it must survive the budget. The head is the cause; what is left of the budget goes
+    # to it.
+    tail = ""
+    for line in reversed(text.splitlines()):
+        if line.strip().startswith("hint:"):
+            tail = line.strip()
+            break
+    if not tail:
+        tail = text[-(limit // 3):].strip()
+    head = text
+    for marker in ("\n         we can conclude", "\nwe can conclude"):
+        index = head.find(marker)
+        if index != -1:
+            head = head[:index]
+            break
+    head_budget = max(limit - len(tail) - 8, 0)
+    head = head[:head_budget].strip()
+    if not head:
+        return tail
+    if tail and tail not in head:
+        return f"{head}\n...\n{tail}"
+    return head
+
+
 def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallError:
     """Turn a failed `uv <stage>` into the right classified error.
 
     Resolver-conflict output → ResolutionConflict; a build backend that ran and
     failed → BuildFailure; anything else (fetch, tooling) → plain InstallError
-    with the tail of the output.
+    with the diagnostic excerpt of the output.
     """
-    cause = f"uv {stage} exited {returncode}: {output.strip()[-600:]}"
+    cause = f"uv {stage} exited {returncode}: {_diagnostic_excerpt(output)}"
     lowered = output.lower()
     if _UNDATED_PIN in lowered or all(marker in lowered for marker in _UNDATED_FILE):
         return InstallError("venv", cause, UNDATED_INDEX_HINT)

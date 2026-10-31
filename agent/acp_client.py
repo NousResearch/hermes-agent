@@ -378,6 +378,12 @@ class ACPClient:
     ) -> Any:
         prompt_text = _format_messages_as_prompt(messages or [], model=model, tools=tools, tool_choice=tool_choice)
         response_text, reasoning = self._run_prompt(prompt_text, timeout_seconds=_effective_timeout(timeout), model=model)
+        # Copilot emits this channel refusal as agent text with a normal stop reason.
+        # Preserve its numeric limit so the existing overflow handler can adopt it.
+        if response_text.lstrip().lower().startswith(
+            "error: execution failed: request exceeds the model's prompt budget after reserving output"
+        ):
+            raise RuntimeError(response_text)
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
         message = SimpleNamespace(
             content=cleaned_text, tool_calls=tool_calls, reasoning=reasoning or None, reasoning_content=reasoning or None,

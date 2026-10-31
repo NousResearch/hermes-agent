@@ -271,6 +271,8 @@ _CONTEXT_OVERFLOW_PATTERNS = (
     # Together/Fireworks-style: "Input length 131393 exceeds the maximum allowed input length of 131040
     # tokens."  No other pattern in this list matches that wording. (port of anomalyco/opencode#37848)
     "maximum allowed input length",
+    # Copilot CLI's text-shaped channel refusal (including ACP-wrapped failures).
+    "exceeds the model's prompt budget",
 )
 
 # Last entry: OpenRouter 404 when no endpoint supports tool calling —

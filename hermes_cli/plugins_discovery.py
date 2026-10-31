@@ -266,6 +266,21 @@ def plugins_in_both_lists() -> list[str]:
     return [key for key, manifest in winners.items() if gate_manifest(manifest, disabled, enabled).error == IN_BOTH_LISTS]
 
 
+def enabled_plugins_not_loaded() -> list[str]:
+    """Keys of the installed plugins the active profile's config opts into that its plugin manager has not
+    loaded cleanly: enabled after discovery, or the load failed or was skipped (``requires_hermes``). Same
+    manifests, precedence and gate as the discovery sweep, so an alias entry (``observability/langfuse``)
+    counts as its loaded plugin and one ``plugins.disabled`` also names is not meant to load."""
+    from hermes_cli.plugins import get_plugin_manager
+    loaded = {info["key"] for info in get_plugin_manager().list_plugins() if info["enabled"] and not info["error"]}
+    manifests = collect_directory_manifests()
+    directory_keys = {manifest_key(m) for m in manifests}
+    manifests += [m for m in discover_entrypoint_manifests() if manifest_key(m) not in directory_keys]
+    disabled, enabled = _get_disabled_plugins(), _get_enabled_plugins()
+    return sorted(key for key, manifest in resolve_manifest_winners(manifests).items()
+                  if key not in loaded and gate_manifest(manifest, disabled, enabled).action == "load")
+
+
 def gate_manifest(
     manifest: PluginManifest, disabled: set[str], enabled: Optional[set[str]]
 ) -> ManifestGate:

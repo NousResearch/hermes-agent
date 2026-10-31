@@ -1437,6 +1437,63 @@ class TestSenderAuthentication(unittest.TestCase):
         )
         self.assertTrue(ok, reason)
 
+    def test_authserv_id_pin_accepts_wildcard_and_list_entries(self):
+        """Providers with many inbound MXes stamp a different authserv-id per host (Fastmail:
+        phl-mx-NN.messagingengine.com), so one exact pin silently drops most mail. A ``*.suffix``
+        entry matches any id one or more labels under the suffix, a comma-separated pin tries each
+        entry, and nothing else relaxes: the bare suffix, lookalike domains and ids pinned by no
+        entry stay untrusted, and only the topmost header is ever consulted."""
+        passing = "dmarc=pass header.from=example.com"
+        for pin, topmost_id, expect_ok in (
+            ("*.messagingengine.com", "phl-mx-07.messagingengine.com", True),
+            ("*.messagingengine.com", "sub.phl-mx-07.messagingengine.com", True),
+            ("*.messagingengine.com", "messagingengine.com", False),
+            ("*.messagingengine.com", "evilmessagingengine.com", False),
+            ("mx.ourserver.com, *.messagingengine.com", "phl-mx-01.messagingengine.com", True),
+            ("mx.ourserver.com, *.messagingengine.com", "mx.ourserver.com", True),
+            ("mx.ourserver.com, *.messagingengine.com", "edge.receiver.test", False),
+        ):
+            with self.subTest(pin=pin, topmost=topmost_id):
+                ok, reason = self._verify("admin@example.com", [f"{topmost_id}; {passing}"], authserv_id=pin)
+                self.assertEqual(ok, expect_ok, reason)
+        # A wildcard pin never searches below the topmost header either.
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["edge.receiver.test; dmarc=fail header.from=example.com",
+             f"phl-mx-07.messagingengine.com; {passing}"],
+            authserv_id="*.messagingengine.com",
+        )
+        self.assertFalse(ok, reason)
+
+    def test_verdicts_span_the_leading_run_of_trusted_authserv_headers(self):
+        """A receiver may stamp several Authentication-Results headers in one run, all under its own
+        id: Fastmail writes x-ptr, bimi, arc, and the dkim/dmarc verdicts as four separate headers,
+        so a verdict-bearing header below the first must still be consulted. Only the contiguous
+        leading run of pinned ids is trusted — the first foreign id ends it, and a pinned id below a
+        foreign one (sender-written, which the receiving MTA failed to strip) stays untrusted."""
+        from plugins.platforms.email.adapter import _UNTRUSTED_AUTHSERV_REASON
+
+        fastmail_run = [
+            "phl-mx-08.messagingengine.com; x-csa=none; x-ptr=pass smtp.helo=mail.example.com",
+            "phl-mx-08.messagingengine.com; bimi=skipped (DMARC Policy is not at enforcement)",
+            "phl-mx-08.messagingengine.com; arc=none (no signatures found)",
+            "phl-mx-08.messagingengine.com; dkim=pass header.d=example.com header.a=rsa-sha256; "
+            "dmarc=pass policy.applied-disposition=none header.from=example.com",
+        ]
+        ok, reason = self._verify("admin@example.com", fastmail_run, authserv_id="*.messagingengine.com")
+        self.assertTrue(ok, reason)
+        # The first foreign id ends the trusted run: the same verdict header below it is never read.
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["edge.receiver.test; x-ptr=pass smtp.helo=mail.example.com", fastmail_run[3]],
+            authserv_id="*.messagingengine.com",
+        )
+        self.assertEqual((ok, reason), (False, _UNTRUSTED_AUTHSERV_REASON))
+        # A verdict-free trusted run fails on its content, not on the pin.
+        ok, reason = self._verify("admin@example.com", fastmail_run[:3], authserv_id="*.messagingengine.com")
+        self.assertFalse(ok, reason)
+        self.assertNotEqual(reason, _UNTRUSTED_AUTHSERV_REASON)
+
 
 def test_oversized_cron_output_is_delivered_as_one_whole_email():
     """No 4000-char truncation footer pointing at a file on the gateway host: the router hands

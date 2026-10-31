@@ -18,6 +18,7 @@ export default function ProjectsPage() {
 
   const [variant, setVariant] = useState<"workbench" | "overview">(readVariant);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [unassignedCount, setUnassignedCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -31,6 +32,7 @@ export default function ProjectsPage() {
       .then((res) => {
         if (cancelled) return;
         setProjects(res.projects);
+        setActiveProjectId(res.active_id);
         setUnassignedCount(res.unassigned.sessionCount);
       })
       .catch((e: unknown) => {
@@ -48,6 +50,11 @@ export default function ProjectsPage() {
   function handleVariantChange(v: "workbench" | "overview") {
     setVariant(v);
     writeVariant(v);
+  }
+
+  async function activateProject(id: string) {
+    const result = await api.activateProject(id);
+    setActiveProjectId(result.active_id);
   }
 
   // Counts + variant picker live in the shared page banner (like Sessions /
@@ -84,6 +91,8 @@ export default function ProjectsPage() {
           loading={loading}
           error={error}
           initialProjectId={initialProjectId}
+          activeProjectId={activeProjectId}
+          onProjectActivate={activateProject}
         />
       </div>
     );
@@ -96,6 +105,8 @@ export default function ProjectsPage() {
         unassignedCount={unassignedCount}
         loading={loading}
         error={error}
+        activeProjectId={activeProjectId}
+        onProjectActivate={activateProject}
       />
     </div>
   );

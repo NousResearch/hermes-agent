@@ -783,6 +783,15 @@ export default function SessionsPage() {
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
   const navigate = useNavigate();
 
+  useEffect(() => {
+    // A project-scoped Sessions view is another project entry point. Keep the
+    // shared server pointer aligned so a subsequent chat starts in that project.
+    if (!projectFilter || projectFilter === "unassigned") return;
+    void api.activateProject(projectFilter).catch(() => {
+      // The sessions list remains useful when an older backend lacks this route.
+    });
+  }, [projectFilter]);
+
   const refreshEmptyCount = useCallback(() => {
     api
       .getEmptySessionsCount()

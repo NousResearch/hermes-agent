@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -14,6 +14,8 @@ interface ProjectsOverviewProps {
   unassignedCount: number;
   loading: boolean;
   error: string | null;
+  activeProjectId: string | null;
+  onProjectActivate: (id: string) => Promise<void>;
 }
 
 function BoardBar({ counts }: { counts: BoardCounts }) {
@@ -57,6 +59,8 @@ export function ProjectsOverview({
   unassignedCount,
   loading,
   error,
+  activeProjectId,
+  onProjectActivate,
 }: ProjectsOverviewProps) {
   const navigate = useNavigate();
   const [openId, setOpenId] = useState<string | null>(projects[0]?.id ?? null);
@@ -64,7 +68,17 @@ export function ProjectsOverview({
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (activeProjectId) setOpenId(activeProjectId);
+  }, [activeProjectId]);
+
   async function openProject(id: string) {
+    try {
+      await onProjectActivate(id);
+    } catch (e) {
+      setDetailError(e instanceof Error ? e.message : "Failed to activate project");
+      return;
+    }
     if (openId === id) {
       setOpenId(null);
       return;
@@ -79,6 +93,15 @@ export function ProjectsOverview({
       setDetailError(e instanceof Error ? e.message : "Failed to load");
     } finally {
       setDetailLoading(false);
+    }
+  }
+
+  async function openProjectChat(id: string) {
+    try {
+      await onProjectActivate(id);
+      navigate(`/chat?project=${encodeURIComponent(id)}`);
+    } catch (e) {
+      setDetailError(e instanceof Error ? e.message : "Failed to activate project");
     }
   }
 
@@ -121,6 +144,11 @@ export function ProjectsOverview({
             >
               <h3 className="text-base font-semibold flex items-center gap-2">
                 {p.name}
+                {activeProjectId === p.id && (
+                  <span className="font-mono text-[9px] uppercase tracking-wider text-success">
+                    active
+                  </span>
+                )}
                 {runningCount > 0 && (
                   <KanbanBadge status="doing" className="text-[9px] py-0 px-1.5">
                     {runningCount} running
@@ -199,7 +227,7 @@ export function ProjectsOverview({
                 Kanban ↗
               </Button>
               <Button
-                onClick={() => navigate(`/chat?project=${openProject_.id}`)}
+                onClick={() => void openProjectChat(openProject_.id)}
               >
                 ▶ New chat
               </Button>

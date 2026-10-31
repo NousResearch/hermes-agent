@@ -12202,6 +12202,7 @@ def get_projects():
 
         with pdb.connect_closing() as conn:
             projects = [p.to_dict() for p in pdb.list_projects(conn)]
+            active_id = pdb.get_active_id(conn)
 
         sessions = _sessions_for_tree()
         tree = project_tree.build_tree(
@@ -12245,11 +12246,31 @@ def get_projects():
             ],
         }
 
-        return {"projects": result_projects, "unassigned": unassigned}
+        return {"projects": result_projects, "active_id": active_id, "unassigned": unassigned}
     except HTTPException:
         raise
     except Exception:
         _log.exception("GET /api/projects failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/projects/{project_id}/activate")
+def activate_project(project_id: str):
+    """Persist the active project pointer used by project-aware clients."""
+    try:
+        from hermes_cli import projects_db as pdb
+
+        with pdb.connect_closing() as conn:
+            project = pdb.get_project(conn, project_id)
+            if project is None:
+                raise HTTPException(status_code=404, detail="Project not found")
+            pdb.set_active(conn, project.id)
+            active_id = pdb.get_active_id(conn)
+        return {"ok": True, "active_id": active_id}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/projects/%s/activate failed", project_id)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

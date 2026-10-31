@@ -359,15 +359,10 @@ export const api = {
   ) =>
     fetchJSON<PaginatedSessions>(
       appendProfileParam(
-        `/api/sessions?include_children=true&kind=subagent&limit=100`,
+        `/api/sessions?include_children=true&kind=subagent&parent_session_id=${encodeURIComponent(parentId)}`,
         profile,
       ),
-    ).then((res) => ({
-      ...res,
-      sessions: res.sessions.filter(
-        (s) => s.parent_session_id === parentId,
-      ),
-    })),
+    ),
   getSessionMessages: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionMessagesResponse>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),

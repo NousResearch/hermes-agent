@@ -104,3 +104,24 @@ describe("api OAuth helpers", () => {
     }
   });
 });
+
+describe("api.getSessionChildren", () => {
+  it("passes parent_session_id as a server-side query param instead of filtering client-side", async () => {
+    vi.stubGlobal("window", {});
+    const parentId = "sess_parent_abc123";
+    const fetchMock = jsonFetchMock({
+      sessions: [],
+      total: 0,
+      limit: 20,
+      offset: 0,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getSessionChildren(parentId);
+
+    const calledUrl: string = fetchMock.mock.calls[0][0] as string;
+    expect(calledUrl).toContain("parent_session_id=sess_parent_abc123");
+    // Must NOT limit to 100 client-side anymore
+    expect(calledUrl).not.toContain("limit=100");
+  });
+});

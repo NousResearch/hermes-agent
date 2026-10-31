@@ -4903,6 +4903,7 @@ def get_sessions(
     profile: Optional[str] = None,
     kind: Optional[str] = None,
     include_children: bool = False,
+    parent_session_id: Optional[str] = None,
 ):
     """List sessions.
 
@@ -4925,6 +4926,11 @@ def get_sessions(
 
     ``include_children=true`` (optional): include subagent child sessions in
     the list (they are hidden by default).
+
+    ``parent_session_id`` (optional): return only sessions whose
+    ``parent_session_id`` matches the given value.  Filters at DB level so
+    callers with large child-session sets are not limited by a client-side
+    100-row cap.
     """
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(
@@ -4969,6 +4975,7 @@ def get_sessions(
                 # with the API-level _strip_session_list_rows below).\
                 compact_rows=not full,
                 include_children=include_children,
+                parent_session_id=parent_session_id or None,
             )
             total = db.session_count(
                 source=source or None,

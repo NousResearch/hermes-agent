@@ -3,55 +3,15 @@
 Tests are self-contained: they import the helpers directly from web_server
 without starting FastAPI or touching any DB.
 """
-import re
-import types
 import pytest
 from unittest.mock import MagicMock
 
 # ---------------------------------------------------------------------------
-# Import the helpers under test — extracted via module-level exec so we don't
-# need the whole web_server import chain.  We re-implement the tiny slice we
-# need to test rather than risk a 30-second module load with DB side-effects.
+# Import the real helpers from the production module.  web_server creates a
+# FastAPI app at module level but does NOT start a server or open a DB, so
+# importing is safe inside the test runner.
 # ---------------------------------------------------------------------------
-
-# Import the real functions from the production module.  web_server does a lot
-# at import time (FastAPI app creation, etc.) so we use a targeted import that
-# doesn't trigger the full module load.
-import importlib.util, sys, pathlib
-
-_WS_PATH = pathlib.Path(__file__).parents[2] / "hermes_cli" / "web_server.py"
-
-# We only need the two helper functions — load just enough of the module.
-# Extract _classify_session_kind and _enrich_session_list by running a minimal
-# exec of the file up to the point where they're defined.  Since web_server is
-# 20k+ lines, extract via regex instead.
-
-_src = _WS_PATH.read_text()
-
-# Pull the KANBAN_WORKTREE_RE pattern directly from source so the test stays
-# in sync.
-_re_match = re.search(
-    r"_KANBAN_WORKTREE_RE\s*=\s*_re\.compile\(r['\"](.+?)['\"]\)",
-    _src,
-)
-assert _re_match, "Could not find _KANBAN_WORKTREE_RE in web_server.py"
-_KANBAN_WORKTREE_RE = re.compile(_re_match.group(1))
-
-
-def _classify_session_kind(session: dict) -> dict:
-    """Re-implementation that mirrors web_server._classify_session_kind exactly."""
-    source = session.get("source") or ""
-    parent = session.get("parent_session_id") or ""
-    cwd = session.get("cwd") or ""
-
-    if source == "subagent" or bool(parent):
-        return {"kind": "subagent", "kanban_task_id": None, "child_count": 0}
-
-    m = _KANBAN_WORKTREE_RE.search(cwd)
-    if m:
-        return {"kind": "kanban_worker", "kanban_task_id": m.group(1), "child_count": 0}
-
-    return {"kind": "main", "kanban_task_id": None, "child_count": 0}
+from hermes_cli.web_server import _classify_session_kind, _KANBAN_WORKTREE_RE
 
 
 # ---------------------------------------------------------------------------

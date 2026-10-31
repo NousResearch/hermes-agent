@@ -152,6 +152,17 @@ reopens the gesture-less forced-navigation class the advisory closed.
 
 - Live transcript navigation reads the session store; the shared navigation
   context carries only the selected historical page, not every streamed delta.
+- Unchanged retained snapshots must not republish the terminal store. Closing
+  the last mounted writer must enforce the cold agent-terminal retention budget
+  even when no later output arrives.
+- Hidden terminals stay mounted and keep parsing output. Suppress only their
+  DOM rows, not the measurable host/helpers or terminal state. Do not reduce
+  scrollback or replace parser state to save painting work. WebGL surfaces remain
+  unchanged; hidden DOM-row suppression must leave fitting and font helpers measurable.
+  Register an agent-terminal writer before recovering its matching process
+  snapshot. A quiet tab can reopen after cold eviction without any new registry
+  notification; recovery must not duplicate live output or exempt cold entries
+  from the retention budget.
 
 ## Nous free tier: state is pulled, never latched in the renderer
 

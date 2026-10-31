@@ -283,6 +283,17 @@ def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
         return _session_cwd.get(_qualify_task_key(str(session_key or "default")))
 
 
+def _live_session_cwd(session_key: Optional[str], env_type: Optional[str], fallback: Optional[str]) -> Optional[str]:
+    """:func:`get_session_cwd`, unless on the local backend the recorded folder was deleted (a removed
+    worktree) and *fallback* (the session's current workspace) exists: every command would otherwise
+    fail ``cd`` into the dead folder."""
+    recorded = get_session_cwd(session_key)
+    if (recorded and env_type == "local" and not os.path.isdir(recorded)
+            and fallback and os.path.isdir(os.path.expanduser(fallback))):
+        return None
+    return recorded
+
+
 def clear_session_cwd(session_key: str) -> None:
     """Drop a session's cwd record (session teardown)."""
     with _session_cwd_lock:
@@ -1038,7 +1049,7 @@ def _resolve_command_cwd(
     """
     if workdir:
         return coerce_ssh_remote_cwd(_container_visible_cwd(workdir, env_type, env), env_type)
-    recorded = get_session_cwd(session_key)
+    recorded = _live_session_cwd(session_key, env_type, default_cwd)
     if recorded and _is_container_backend(env_type) and _is_unusable_container_cwd(
         recorded, mounted_host=mounted_host
     ) and not _in_sandbox_home(recorded, env):
@@ -1214,7 +1225,7 @@ def _plan_execution(
     image = _select_image(env_type, overrides, config)
 
     cwd = coerce_ssh_remote_cwd(
-        overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"], env_type)
+        overrides.get("cwd") or _live_session_cwd(task_id, env_type, config["cwd"]) or config["cwd"], env_type)
     host_cwd = _resolve_task_host_cwd(config, task_id)
     # config["cwd"] was sanitized for container backends in _get_env_config
     # but an override / session record is raw: a host path would reach

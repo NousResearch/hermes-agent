@@ -11,7 +11,7 @@ import sqlite3
 import tempfile
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -25,6 +25,11 @@ _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
 _VERIFY_SCHEMA_VERSION = 1
+# Latest verify-command run per (session, root) whose own exit status the shell hid, with the
+# time it ran. Read by the stop nudge in this same process, so it stays in memory; bounded for
+# long-lived gateways.
+_UNATTRIBUTED_RUNS: dict[tuple[str, str], tuple[str, str]] = {}
+_MAX_UNATTRIBUTED_RUNS = 256
 
 _INTERPRETERS = {"python", "python3", "py", "node", "bash", "sh", "ruby", "perl"}
 # Windows spells the same interpreters `python.exe` / `py.exe` (a venv's absolute Scripts path).
@@ -112,7 +117,7 @@ class VerificationEvidence:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _db_path() -> Path:
@@ -210,25 +215,52 @@ def _split_shell_segments(command: str, *, posix: bool = True) -> list[_ShellSeg
     return segments if all(s.tokens for s in segments) else []
 
 
-def _exit_status_is_attributable(segments: list[_ShellSegment], match_index: int, exit_code: int) -> bool:
-    """Whether the shell's status proves the matched segment's own status.
+def _segment_status(
+    segments: list[_ShellSegment], match_index: int, exit_code: int,
+    pipeline_status: Optional[list[int]] = None,
+) -> Optional[int]:
+    """The matched segment's own exit status when the shell proves it, else ``None``.
 
-    Only the last ``;``-separated sequence reports its status; backgrounding,
-    pipes and ``||`` hide it; an ``&&`` chain proves each member only on success.
+    Only the last ``;``-separated sequence reports its status; backgrounding and ``||``
+    hide it; an ``&&`` chain proves each member only on success. A pipeline hides every
+    status but the last segment's, unless ``pipeline_status`` (the shell's PIPESTATUS
+    array) is supplied and the match leads the sequence's last pipeline. Behind ``&&``
+    that pipeline may never have run, leaving PIPESTATUS from an earlier one
+    (``true | false && pytest | tail``); a short-circuited chain exits non-zero, so
+    there the array counts only when the shell's own code is 0, as for plain ``&&``.
     """
     if not segments or not 0 <= match_index < len(segments) or any(s.following_operator == "&" for s in segments):
-        return False
+        return None
 
     sequence_start = max(
         (i + 1 for i, s in enumerate(segments[:-1]) if s.following_operator == ";"), default=0
     )
     if match_index < sequence_start:
-        return False
+        return None
 
     operators = {segment.following_operator for segment in segments[sequence_start:-1]}
-    if operators & {"|", "|&", "||"}:
-        return False
-    return not operators or (int(exit_code) == 0 and operators == {"&&"})
+    if "||" in operators:
+        return None
+    if operators & {"|", "|&"}:
+        pipeline_start = max(
+            (
+                sequence_start + index + 1
+                for index, operator in enumerate(
+                    segment.following_operator for segment in segments[sequence_start:-1]
+                )
+                if operator not in {"|", "|&"}
+            ),
+            default=sequence_start,
+        )
+        chain_ran = "&&" not in operators or int(exit_code) == 0
+        if chain_ran and pipeline_status and len(pipeline_status) >= 2 and match_index == pipeline_start:
+            return pipeline_status[0]
+        return None
+    if not operators:
+        return int(exit_code)
+    if operators == {"&&"}:
+        return int(exit_code) if int(exit_code) == 0 else None
+    return None
 
 
 def _canonical_tokens(canonical: str) -> list[str]:
@@ -239,14 +271,99 @@ def _canonical_tokens(canonical: str) -> list[str]:
         return []
 
 
+# Status-preserving wrappers -> (options that still run the child, options taking a value).
+# Anything else (``--help``, ``--version``) may exit without running the child: no match.
+_WRAPPER_OPTIONS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "timeout": (frozenset({"-p", "--preserve-status", "-f", "--foreground", "-v", "--verbose"}),
+                frozenset({"-s", "--signal", "-k", "--kill-after"})),
+    "nice": (frozenset(), frozenset({"-n", "--adjustment"})),
+    "nohup": (frozenset(), frozenset()),
+    "stdbuf": (frozenset(), frozenset({"-i", "-o", "-e", "--input", "--output", "--error"})),
+}
+# A ``timeout`` duration: ``300``, ``5m``, ``1.5h``.
+_TIMEOUT_DURATION_RE = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
+
+
+def _wrapper_option_width(token: str, flags: frozenset[str], valued: frozenset[str]) -> int:
+    """Tokens one wrapper option spans (``-n 5`` 2, ``-n5``/``--signal=KILL`` 1), 0 if unknown."""
+    if token in flags:
+        return 1
+    if token in valued:
+        return 2
+    attached = any(token.startswith(f"{v}=") if v.startswith("--") else token.startswith(v) for v in valued)
+    return 1 if attached else 0
+
+
+def _skip_wrapper(tokens: list[str], i: int) -> Optional[int]:
+    """Index of the child command after the wrapper at ``tokens[i]``, ``None`` unless the
+    wrapper's options and arguments are ones that run the child."""
+    flags, valued = _WRAPPER_OPTIONS[tokens[i]]
+    timeout = tokens[i] == "timeout"
+    i += 1
+    while i < len(tokens) and tokens[i].startswith("-") and tokens[i] != "--":
+        width = _wrapper_option_width(tokens[i], flags, valued)
+        if not width:
+            return None
+        i += width
+    i += int(i < len(tokens) and tokens[i] == "--")
+    if timeout:
+        if i >= len(tokens) or not _TIMEOUT_DURATION_RE.match(tokens[i]):
+            return None
+        i += 1
+    return i
+
+
 def _strip_command_prefix(tokens: list[str]) -> list[str]:
-    """Remove harmless command prefixes (env, VAR=x, command/time/noglob)."""
+    """Remove harmless command prefixes: env assignments, command/time/noglob, and
+    status-preserving wrappers with the options and duration that still run the child."""
     i = 1 if tokens and tokens[0] == "env" else 0
     while i < len(tokens) and "=" in tokens[i] and not tokens[i].startswith("-"):
         i += 1
-    while i < len(tokens) and tokens[i] in {"command", "time", "noglob"}:
-        i += 1
+    while i < len(tokens):
+        if tokens[i] in {"command", "time", "noglob"}:
+            i += 1
+        elif tokens[i] in _WRAPPER_OPTIONS and (child := _skip_wrapper(tokens, i)) is not None:
+            i = child
+        else:
+            break
     return list(tokens[i:])
+
+
+def _interpreter_family(token: str) -> Optional[str]:
+    """Family name for an interpreter token wherever it lives, else ``None``.
+
+    ``./venv/bin/python3.12``, ``python3`` and ``/usr/bin/python`` are all ``python``:
+    the detected command is ``pytest`` and the agent runs it through a venv interpreter.
+    """
+    name = token.replace("\\", "/").rsplit("/", 1)[-1]
+    name = _WINDOWS_EXE_SUFFIX_RE.sub("", re.sub(r"^(?:\./)+", "", name))
+    if not _INTERPRETER_NAME_RE.match(name):
+        return None
+    family = re.sub(r"[0-9.]+$", "", name)
+    return "python" if family == "py" else family
+
+
+_INTERPRETER_FLAG_RE = re.compile(r"^-(?:[IBuEsSOd]+|3(?:\.\d+)?|[WX].*)$")
+
+
+def _is_harmless_interpreter_flag(token: str) -> bool:
+    return bool(_INTERPRETER_FLAG_RE.match(token))
+
+
+def _normalize_tokens(tokens: list[str]) -> list[str]:
+    """Comparison form: no leading ``./``, interpreters collapsed, Python's harmless flags
+    dropped. Only Python's: the same letters mean other things elsewhere (``bash -s``
+    reads commands from stdin and never runs the script named after it)."""
+    normalized: list[str] = []
+    i = 0
+    while i < len(tokens):
+        family = _interpreter_family(tokens[i])
+        normalized.append(family or re.sub(r"^(?:\./)+", "", tokens[i]))
+        i += 1
+        if family == "python":
+            while i < len(tokens) and _is_harmless_interpreter_flag(tokens[i]):
+                i += 2 if tokens[i] in {"-W", "-X"} else 1
+    return normalized
 
 
 def _equivalent_needles(needle: list[str]) -> list[list[str]]:
@@ -261,18 +378,28 @@ def _equivalent_needles(needle: list[str]) -> list[list[str]]:
     return candidates
 
 
-def _find_canonical_match(command: str, canonical_commands: list[str], exit_code: int) -> Optional[tuple[str, list[str]]]:
-    """Return ``(canonical, trailing_args)`` for the first detected command."""
+def _find_canonical_match(
+    command: str, canonical_commands: list[str], exit_code: int,
+    pipeline_status: Optional[list[int]] = None, *, attributed: bool = True,
+) -> Optional[tuple[str, list[str], Optional[int]]]:
+    """Return ``(canonical, trailing_args, status)`` for the first detected command.
+
+    ``attributed=False`` also matches a run whose own status the shell hid (status ``None``).
+    """
     segments = _split_shell_segments(command)
     for canonical in canonical_commands:
         needle = _canonical_tokens(canonical)
         if not needle:
             continue
         for index, segment in enumerate(segments):
-            candidate_tokens = _strip_command_prefix(segment.tokens)
+            candidate_tokens = _normalize_tokens(_strip_command_prefix(segment.tokens))
+            status = _segment_status(segments, index, exit_code, pipeline_status)
+            if status is None and attributed:
+                continue
             for candidate in _equivalent_needles(needle):
-                if candidate_tokens[:len(candidate)] == candidate and _exit_status_is_attributable(segments, index, exit_code):
-                    return canonical, candidate_tokens[len(candidate):]
+                candidate = _normalize_tokens(candidate)
+                if candidate_tokens[:len(candidate)] == candidate:
+                    return canonical, candidate_tokens[len(candidate):], status
     return None
 
 
@@ -349,7 +476,7 @@ def _find_ad_hoc_match(command: str, root: str | Path | None, exit_code: int = 0
         segments = _split_shell_segments(command, posix=posix)
         for index, segment in enumerate(segments):
             trailing_args = _ad_hoc_script_args(segment.tokens, root)
-            if trailing_args is not None and _exit_status_is_attributable(segments, index, exit_code):
+            if trailing_args is not None and _segment_status(segments, index, exit_code) is not None:
                 return trailing_args
     return None
 
@@ -372,7 +499,7 @@ def _prune_old_events(conn: sqlite3.Connection, *, session_id: str, root: str) -
     old events and cap the total — never dropping an event still referenced
     by a ``verification_state.last_event_id``.
     """
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=_MAX_EVIDENCE_AGE_DAYS)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(days=_MAX_EVIDENCE_AGE_DAYS)).isoformat()
     conn.execute(
         "DELETE FROM verification_events WHERE session_id = ? AND root = ? AND id NOT IN ("
         " SELECT id FROM verification_events WHERE session_id = ? AND root = ?"
@@ -422,9 +549,14 @@ def _load_changed_paths(raw: Any) -> list[Any]:
 
 
 def classify_verification_command(
-    command: str, *, cwd: str | Path | None = None, session_id: str | None = None, exit_code: int = 0, output: str = ""
+    command: str, *, cwd: str | Path | None = None, session_id: str | None = None, exit_code: int = 0,
+    output: str = "", pipeline_status: Optional[list[int]] = None,
 ) -> Optional[VerificationEvidence]:
     """Classify a terminal command as verification evidence, if applicable.
+
+    ``pipeline_status`` is the shell's ``PIPESTATUS`` array: when the verifier is the
+    leading command of a pipeline, its own status comes from there rather than from the
+    shell's code (which belongs to the last filter).
 
     Ad-hoc temp scripts only count when the project has no canonical verify
     commands at all, so they never shadow a real suite.
@@ -434,33 +566,77 @@ def classify_verification_command(
     facts = _project_facts(cwd)
     if not facts:
         return None
+    return _classify_in_workspace(
+        command, facts, cwd=cwd, session_id=session_id, exit_code=exit_code, output=output,
+        pipeline_status=pipeline_status,
+    )
 
+
+def _classify_in_workspace(
+    command: str, facts: dict[str, Any], *, cwd: str | Path | None, session_id: str | None,
+    exit_code: int, output: str, pipeline_status: Optional[list[int]],
+) -> Optional[VerificationEvidence]:
     verify_commands = list(facts.get("verifyCommands") or [])
-    match = _find_canonical_match(command, verify_commands, int(exit_code))
-    if match is not None:
-        canonical, trailing_args = match
+    match = _find_canonical_match(command, verify_commands, int(exit_code), pipeline_status)
+    if match is not None and match[2] is not None:
+        canonical, trailing_args, status = match
         kind = _kind_for_command(canonical)
         scope = "targeted" if any(map(_looks_like_target, trailing_args)) else "full"
     else:
         if verify_commands or _find_ad_hoc_match(command, facts.get("root"), int(exit_code)) is None:
             return None
         canonical, kind, scope = "ad-hoc verification script", "ad_hoc", "targeted"
+        status = int(exit_code)
     return VerificationEvidence(
         command=command, canonical_command=canonical, kind=kind, scope=scope,
-        status="passed" if int(exit_code) == 0 else "failed", exit_code=int(exit_code),
+        status="passed" if int(status) == 0 else "failed", exit_code=int(exit_code),
         cwd=str(Path(cwd or ".").resolve()), root=_root_for(facts, cwd),
         session_id=str(session_id or "default"), output_summary=_summarize_output(output),
     )
 
 
 def record_terminal_result(
-    *, command: str, cwd: str | Path | None, session_id: str | None, exit_code: int, output: str = ""
+    *, command: str, cwd: str | Path | None, session_id: str | None, exit_code: int, output: str = "",
+    pipeline_status: Optional[list[int]] = None,
 ) -> Optional[dict[str, Any]]:
-    """Record a foreground terminal result when it is verification evidence."""
-    if not _ledger_enabled():
+    """Record a foreground terminal result when it is verification evidence.
+
+    A run of a detected verify command whose own status the shell hid (``pytest || true``,
+    a pipe on a backend without ``PIPESTATUS``) is remembered so the stop nudge can say why
+    it did not count.
+    """
+    if not _ledger_enabled() or not command or not isinstance(command, str):
         return None
-    evidence = classify_verification_command(command, cwd=cwd, session_id=session_id, exit_code=exit_code, output=output)
-    return None if evidence is None else _insert_evidence(evidence)
+    facts = _project_facts(cwd)
+    if not facts:
+        return None
+    key = (str(session_id or "default"), _root_for(facts, cwd))
+    evidence = _classify_in_workspace(
+        command, facts, cwd=cwd, session_id=session_id, exit_code=exit_code, output=output,
+        pipeline_status=pipeline_status,
+    )
+    if evidence is not None:
+        return _insert_evidence(evidence)
+    verify_commands = list(facts.get("verifyCommands") or [])
+    if _find_canonical_match(command, verify_commands, int(exit_code), attributed=False):
+        _UNATTRIBUTED_RUNS.pop(key, None)
+        _UNATTRIBUTED_RUNS[key] = (command, _utc_now())
+        while len(_UNATTRIBUTED_RUNS) > _MAX_UNATTRIBUTED_RUNS:
+            _UNATTRIBUTED_RUNS.pop(next(iter(_UNATTRIBUTED_RUNS)))
+    return None
+
+
+def last_unattributed_run(
+    *, session_id: str | None, root: str | None, since: str | None = None,
+) -> Optional[str]:
+    """The latest verify-command run in ``root`` whose own exit status could not be read,
+    unless evidence recorded at ``since`` came after it. ``hermes verify`` usually records
+    from its own process, so this process's memory alone cannot know about that run.
+    """
+    run = _UNATTRIBUTED_RUNS.get((str(session_id or "default"), str(root)))
+    if run is None or (since and since >= run[1]):
+        return None
+    return run[0]
 
 
 def record_verify_run(
@@ -489,6 +665,7 @@ def _insert_evidence(evidence: VerificationEvidence) -> dict[str, Any]:
     """Insert a classified evidence row and repoint the workspace state."""
     created_at = _utc_now()
     e = evidence
+    _UNATTRIBUTED_RUNS.pop((e.session_id, e.root), None)
     with _DB_LOCK, _transaction() as conn:
         cur = conn.execute(
             "INSERT INTO verification_events("
@@ -511,6 +688,15 @@ def _insert_evidence(evidence: VerificationEvidence) -> dict[str, Any]:
             " changed_paths_json = '[]'",
             (e.session_id, e.root, event_id),
         )
+        # A full passing ``hermes verify`` proves the workspace. Partial or
+        # failed runs must not wipe another session's edit record (#103650).
+        if e.kind == "verify" and e.status == "passed" and e.scope == "full":
+            conn.execute(
+                "UPDATE verification_state"
+                " SET last_event_id = ?, last_edit_at = NULL, changed_paths_json = '[]'"
+                " WHERE root = ? AND session_id != ?",
+                (event_id, e.root, e.session_id),
+            )
         _prune_old_events(conn, session_id=e.session_id, root=e.root)
         conn.commit()
 
@@ -554,10 +740,32 @@ def mark_workspace_edited(
     return {"session_id": sid, "root": root, "last_edit_at": edited_at, "changed_paths": changed_paths}
 
 
+def _newest_workspace_verify(
+    conn: sqlite3.Connection, *, root: str, since: str | None
+) -> Optional[sqlite3.Row]:
+    """Latest full passing ``hermes verify`` for ``root``, optionally not older than ``since``."""
+    if since:
+        return conn.execute(
+            "SELECT * FROM verification_events"
+            " WHERE root = ? AND kind = 'verify' AND status = 'passed' AND scope = 'full'"
+            " AND created_at >= ?"
+            " ORDER BY id DESC LIMIT 1",
+            (root, since),
+        ).fetchone()
+    return conn.execute(
+        "SELECT * FROM verification_events"
+        " WHERE root = ? AND kind = 'verify' AND status = 'passed' AND scope = 'full'"
+        " ORDER BY id DESC LIMIT 1",
+        (root,),
+    ).fetchone()
+
+
 def verification_status(*, session_id: str | None, cwd: str | Path | None) -> dict[str, Any]:
     """Return the best known verification state for a session/workspace.
 
-    Evidence recorded before the latest edit is reported as ``stale``.
+    Evidence recorded before the latest edit is reported as ``stale``. A
+    ``hermes verify`` event for the same ``root`` that is at least as new as
+    that edit satisfies the guard even if another session recorded it.
     """
     if not _ledger_enabled():
         return {"status": "disabled", "evidence": None}
@@ -578,13 +786,20 @@ def verification_status(*, session_id: str | None, cwd: str | Path | None) -> di
         event = None
         if state["last_event_id"] is not None:
             event = conn.execute("SELECT * FROM verification_events WHERE id = ?", (state["last_event_id"],)).fetchone()
+        last_edit_at = state["last_edit_at"]
+        stale = bool(event is not None and last_edit_at and last_edit_at > event["created_at"])
+        if event is None or stale:
+            shared = _newest_workspace_verify(conn, root=root, since=last_edit_at)
+            if shared is not None:
+                event = shared
+                stale = False
 
-    result = {
-        "evidence": None, "root": root, "session_id": sid, "changed_paths": _load_changed_paths(state["changed_paths_json"])
-    }
-    if event is None:
-        return {"status": "unverified", **result}
+        result = {
+            "evidence": None, "root": root, "session_id": sid,
+            "changed_paths": _load_changed_paths(state["changed_paths_json"]),
+        }
+        if event is None:
+            return {"status": "unverified", **result}
 
-    evidence = dict(event)
-    stale = bool(state["last_edit_at"]) and state["last_edit_at"] > evidence["created_at"]
-    return {"status": "stale" if stale else evidence["status"], **result, "evidence": evidence}
+        evidence = dict(event)
+        return {"status": "stale" if stale else evidence["status"], **result, "evidence": evidence}

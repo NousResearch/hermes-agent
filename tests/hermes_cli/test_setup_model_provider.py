@@ -64,12 +64,12 @@ def test_setup_model_provider_preserves_auxiliary_choices_written_by_picker(tmp_
 def test_setup_summary_local_browser_unavailable_without_chromium(
     tmp_path, monkeypatch, capsys
 ):
-    """End-to-end: agent-browser present but no Chromium in local mode must
+    """End-to-end: browser-harness present but no Chromium in local mode must
     render as unavailable with an install hint — not a false 'available'.
 
     Unlike the mocked-feature tests above, this drives the real
     ``get_nous_subscription_features`` so the surface stays aligned with the
-    runtime gate in ``tools.browser_tool_install.check_browser_requirements``.
+    launcher's Chromium selection (``hermes_cli.browser_runtime.chromium_executable``).
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
@@ -83,19 +83,18 @@ def test_setup_summary_local_browser_unavailable_without_chromium(
     save_config(cfg)
 
     # Only stub the readiness probes; the feature resolver itself is real.
-    monkeypatch.setattr("hermes_cli.nous_subscription._has_agent_browser", lambda: True)
+    monkeypatch.setattr("hermes_cli.nous_subscription._has_browser_harness", lambda: True)
     monkeypatch.setattr(
         "hermes_cli.nous_subscription.get_nous_portal_account_info",
         lambda *a, **k: None,
     )
-    monkeypatch.setattr("tools.browser_tool_install._chromium_installed", lambda: False)
-    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: False)
+    monkeypatch.setattr("hermes_cli.browser_runtime.chromium_executable", lambda **_kw: None)
     monkeypatch.setattr(
-        "agent.auxiliary_client.get_available_vision_backends", lambda: []
+        "agent.auxiliary_client.get_available_vision_backends", list
     )
 
     _print_setup_summary(load_config(), tmp_path)
     output = capsys.readouterr().out
 
     assert "Browser Automation (Local browser)" not in output
-    assert "hermes pm install agent-browser" in output
+    assert "hermes pm install chromium" in output

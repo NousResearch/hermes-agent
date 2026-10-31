@@ -33,7 +33,7 @@ def reran_completion(cp: subprocess.CompletedProcess) -> bool:
 def make_origin(root: Path) -> Path:
     """``I.make_origin`` at the commit under test, serving partial clones like GitHub does.
 
-    install.sh clones ``--filter=tree:0``. Without ``uploadpack.allowFilter`` the local origin
+    install.sh clones ``--filter=blob:none``. Without ``uploadpack.allowFilter`` the local origin
     ignores the filter and must pack every blob in history, which a blobless developer
     checkout (the ``--shared`` object store) cannot serve.
     """
@@ -85,7 +85,8 @@ def login_shell(sb: I.Sandbox, script: str, *, path: str = "/usr/local/bin:/usr/
     env = dict(sb.env, PATH=path)
     bash = shutil.which("bash")
     assert bash is not None, "bash required"
-    return H.run([bash, "-lic", script], env=env, cwd=sb.root, writable=[sb.root], timeout=120)
+    return H.run([bash, "-lic", script], env=env, cwd=sb.root, writable=[sb.root], timeout=120,
+                 ro_binds=H.LOGIN_SHELL_RO_BINDS)
 
 
 def interpreter_paths(sb: I.Sandbox, python: str | None = None) -> dict:
@@ -118,7 +119,7 @@ class Gateway:
             return {}
 
     def start(self, timeout: float = 180) -> dict:
-        fh = open(self.log, "w", encoding="utf-8")  # noqa: SIM115 - handed to the child
+        fh = open(self.log, "w", encoding="utf-8")
         self.proc = subprocess.Popen(
             H.sandbox_argv([self.sb.hermes, "gateway", "run"], writable=[self.sb.root]),
             env=self.sb.env, cwd=str(self.sb.root), stdin=subprocess.DEVNULL, stdout=fh,

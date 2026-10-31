@@ -206,12 +206,15 @@ def build_write_denied_paths(home: str) -> set[str]:
     return {os.path.realpath(p) for p in paths}
 
 
+# Home-relative credential directories (POSIX paths). Also dropped from profile exports (hermes_cli.profiles).
+HOME_CREDENTIAL_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh", ".config/gcloud")
+
+
 def build_write_denied_prefixes(home: str) -> list[str]:
     """Return sensitive directory prefixes that must never be written."""
     paths = [
-        *(os.path.join(home, d) for d in (".ssh", ".aws", ".gnupg", ".kube")),
+        *(os.path.join(home, *d.split("/")) for d in HOME_CREDENTIAL_DIRS),
         "/etc/sudoers.d", "/etc/systemd",
-        *(os.path.join(home, *d) for d in ((".docker",), (".azure",), (".config", "gh"), (".config", "gcloud"))),
     ]
     return [os.path.realpath(p) + os.sep for p in paths]
 
@@ -239,11 +242,13 @@ def build_write_approval_paths(home: str) -> set[str]:
 # HERMES_HOME / root subpaths that the agent's generic file tools must not
 # rewrite. Session transcripts (state.db, sessions/) are application-owned
 # state whose rewrite can falsify history and break resume/compression;
-# mcp-tokens/, pairing/, vault/ (key + ciphertext side by side) and
-# browser-profile/ (copied cookies / Login Data) hold credential material.
+# mcp-tokens/, pairing/, vault/ (key + ciphertext side by side),
+# browser-profile/ (copied cookies / Login Data) and webapp/ (the Webapp's
+# browser credential and its grants to native apps) hold credential material.
 # Control files (auth.json, config.yaml, webhook_subscriptions.json) are
 # deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
-_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile")
+_HERMES_PROTECTED_SUBPATHS = (
+    "state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile", "webapp")
 
 
 def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
@@ -357,8 +362,13 @@ _READ_DENIED_DIRS = (
      "is inside the Hermes real-profile browser snapshot (copied cookies/logins) and cannot be read directly."),
     # vault.key + vault.json.enc sit side by side; key + ciphertext = plaintext, so the whole dir is one credential.
     ("vault",
-     "is the Hermes credential vault directory and cannot be read directly (secrets are filled server-side by browser_vault_fill).",
-     "is inside the Hermes credential vault (encrypted secrets + local key) and cannot be read directly (browser_vault_fill resolves them server-side)."),
+     "is the Hermes credential vault directory and cannot be read directly (secrets are filled server-side by browser_vault).",
+     "is inside the Hermes credential vault (encrypted secrets + local key) and cannot be read directly (browser_vault resolves them server-side)."),
+    # session-token is the Webapp's browser credential (a bare token no redaction pattern masks); the
+    # rest are its grants to native apps and its Web Access registration.
+    ("webapp",
+     "is the Hermes Webapp sign-in directory and cannot be read directly.",
+     "is a Hermes Webapp sign-in file (the browser credential or its sign-in records) and cannot be read directly."),
 )
 
 
@@ -367,7 +377,7 @@ def get_read_block_error(path: str) -> Optional[str]:
 
     Blocked: internal skill-hub caches (prompt-injection carriers), credential
     stores under HERMES_HOME and the global root (exact files, plus anything
-    under ``mcp-tokens/`` and ``browser-profile/``), and project-local ``.env``
+    under ``mcp-tokens/``, ``browser-profile/``, ``vault/`` and ``webapp/``), and project-local ``.env``
     files anywhere on disk (``.env.example`` is the documented-shape substitute).
 
     Callers that resolve relative paths against a non-process cwd (e.g.
@@ -420,7 +430,7 @@ def raise_if_read_blocked(path: str) -> None:
     """
     try:
         blocked = get_read_block_error(path)
-    except Exception:  # noqa: BLE001 - guard must never break local-file loading
+    except Exception:
         return
     if blocked:
         raise ValueError(blocked)

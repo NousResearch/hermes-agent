@@ -232,6 +232,59 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     expect(tiles.find(t => t.storedSessionId === 'stored-A-next')).toBeDefined()
   })
 
+  it('carries the conversation preview tabs onto the new tip when compression rotates it (#73890)', async () => {
+    const { $previewTabs, $visiblePreviewTabs, closeRightRail, openPreview } = await import('@/store/preview')
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-A')
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
+    )
+
+    try {
+      openPreview({ kind: 'url', label: 'Docs', source: 'https://docs.example', url: 'https://docs.example' })
+
+      act(() => {
+        cache.updateSessionState('runtime-A', state => state, 'stored-A')
+        cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+      })
+
+      expect($previewTabs.get().map(tab => tab.sessionId)).toEqual(['stored-A-next'])
+      expect($visiblePreviewTabs.get()).toHaveLength(1)
+
+      act(() => setSelectedStoredSessionId('stored-A-next'))
+      expect($visiblePreviewTabs.get()).toHaveLength(1)
+    } finally {
+      closeRightRail()
+    }
+  })
+
+  it("hands a runtime's pre-stored-id preview tabs over when its stored id binds, even on a no-op update (#73890)", async () => {
+    const { $previewTabs, closeRightRail, openPreview } = await import('@/store/preview')
+    let cache!: Cache
+
+    setActiveSessionId('runtime-B')
+    setSelectedStoredSessionId(null)
+    render(<Harness activeSessionId="runtime-B" onReady={value => (cache = value)} selectedStoredSessionId={null} />)
+
+    try {
+      act(() => {
+        cache.updateSessionState('runtime-B', state => state, null)
+      })
+      openPreview({ kind: 'url', label: 'Docs', source: 'https://docs.example', url: 'https://docs.example' }, null)
+      expect($previewTabs.get().map(tab => tab.sessionId)).toEqual([undefined])
+
+      act(() => {
+        cache.updateSessionState('runtime-B', state => state, 'stored-B')
+      })
+
+      expect($previewTabs.get().map(tab => tab.sessionId)).toEqual(['stored-B'])
+    } finally {
+      closeRightRail()
+    }
+  })
+
   it('rekeys the persisted owner profile when its runtime rotates while another profile is visible', () => {
     let cache!: Cache
     const profileA = 'rotation-profile-a-98622'

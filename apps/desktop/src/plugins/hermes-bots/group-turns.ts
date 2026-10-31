@@ -6,7 +6,7 @@
  * Room-level sequencing lives in group-rounds.ts, which drives these.
  */
 
-import { APPROVAL_RESPOND_TIMEOUT_MS, host } from '@hermes/plugin-sdk'
+import { APPROVAL_RESPOND_TIMEOUT_MS, host, randomUuid } from '@hermes/plugin-sdk'
 
 import { noteBotAttention } from './data'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
@@ -26,7 +26,11 @@ import {
   groupSessionOwner,
   hasThreadScopedGroupSession
 } from './group-membership'
-import { GROUP_PROMPT_HEADER_PREFIX } from './group-round-prompt'
+import {
+  addFreshThreadRoomContext,
+  formatFreshThreadRoomContext,
+  GROUP_PROMPT_HEADER_PREFIX
+} from './group-round-prompt'
 import { botConnectionRoute, requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, ProfileRoute } from './types'
 
@@ -259,6 +263,8 @@ interface GroupMemberSessionHandle {
   runtime: null | string
   /** Durable id persisted in `room.sessions`; `true` is the legacy sentinel. */
   stored?: null | string | true
+  /** True only when this call minted a genuinely new thread session. */
+  fresh?: boolean
 }
 
 /** Ensure the member's session FOR THIS THREAD exists and return a LIVE
@@ -365,7 +371,8 @@ export async function ensureGroupChatSession(
 
           return {
             runtime: res.session_id,
-            stored
+            stored,
+            fresh: false
           }
         }
       } catch (error: any) {
@@ -424,7 +431,8 @@ export async function ensureGroupChatSession(
 
     return {
       runtime: created?.session_id || null,
-      stored
+      stored,
+      fresh: true
     }
   } finally {
     binding.dispose()
@@ -1191,7 +1199,7 @@ async function runGroupChatMemberTurnLeased(
   })
 
   try {
-    const { runtime, stored } = await ensureGroupChatSession(group, member, thread)
+    const { runtime, stored, fresh } = await ensureGroupChatSession(group, member, thread)
 
     if (!runtime || !binding.isLive()) {
       return null
@@ -1223,8 +1231,14 @@ async function runGroupChatMemberTurnLeased(
       return null
     }
 
+    const roomContext = fresh
+      ? formatFreshThreadRoomContext($groupChats.get()[group]?.log || [], member, thread, group)
+      : []
+
+    const contextualPrompt = addFreshThreadRoomContext(prompt, roomContext)
     const staged = groupTurnAttachmentSuffix(fileRefs, failed)
-    const turnText = staged ? `${prompt}\n\n${staged}` : prompt
+
+    const turnText = staged ? `${contextualPrompt}\n\n${staged}` : contextualPrompt
 
     // #93602: one-shot recovery when the runtime session was reaped between
     // minting and submitting. Tracks the runtime id the submit landed on so
@@ -1238,7 +1252,7 @@ async function runGroupChatMemberTurnLeased(
     runtimeIds.add(liveRuntime)
 
     // A UUID, not a clock+random suffix: a marker persisted by a previous process must never equal a token this one mints.
-    const turn = `${liveRuntime}:${crypto.randomUUID()}`
+    const turn = `${liveRuntime}:${randomUuid()}`
     liveGroupTurns.add(turn)
     markGroupTurnInFlight(group, member, {
       before,

@@ -107,7 +107,7 @@ def test_active_session_fallback_sends_resume_control_message(pty_client, monkey
 
 def test_explicit_resume_sends_no_control_message(pty_client, monkeypatch):
     """An explicit `?resume=` already tells the client via the URL param."""
-    ws, client, token = pty_client
+    _ws, client, token = pty_client
     channel = "explicit-resume-chan"
 
     monkeypatch.setattr(
@@ -130,7 +130,7 @@ def test_child_eof_closes_socket_and_bridge(pty_client, monkeypatch):
     never be closed. The reader now closes the WebSocket on EOF so the
     handler's ``finally`` runs ``bridge.close()``.
     """
-    ws, client, token = pty_client
+    _ws, client, token = pty_client
     bridges = []
 
     class _RecordingBridge(_OneFrameBridge):
@@ -176,7 +176,7 @@ def test_profile_switch_closes_previous_profile_keepalive_pty(pty_client, monkey
     """
     import time
 
-    ws, client, token = pty_client
+    _ws, client, token = pty_client
     bridges = []
 
     class _IdleBridge(_OneFrameBridge):

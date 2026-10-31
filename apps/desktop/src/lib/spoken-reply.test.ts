@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
+import type { SessionMessage } from '@/types/hermes'
+
+import { assistantTextPart, type ChatMessage, lastTextPartText, toChatMessages } from './chat-messages'
 import {
   absorbSpokenReplyRewrite,
   adoptSpokenReplySession,
@@ -8,7 +11,8 @@ import {
   isLiveTailReplyId,
   markAssistantIdSpoken,
   resolveSpokenReply,
-  spokenReplyOf
+  spokenReplyOf,
+  spokenSegmentKey
 } from './spoken-reply'
 
 const assistant = (id: string) => ({ id, role: 'assistant' as const })
@@ -139,5 +143,53 @@ describe('adoptSpokenReplySession', () => {
 
     expect(spokenReplyOf('session-b')).toBeNull()
     expect(spokenReplyOf('session-a')?.id).toBe('a1')
+  })
+})
+
+describe('spokenSegmentKey', () => {
+  it('survives a live-id rewrite: same turn, same text, same key', () => {
+    expect(spokenSegmentKey('s1:0', 'the folded answer')).toBe(spokenSegmentKey('s1:0', 'the folded answer'))
+  })
+
+  it('separates the segments of one tool-run turn', () => {
+    expect(spokenSegmentKey('s1:0', 'Looking into it.')).not.toBe(spokenSegmentKey('s1:0', 'Here is the final report.'))
+  })
+
+  it('separates two turns that say the same thing', () => {
+    expect(spokenSegmentKey('s1:0', 'Done.')).not.toBe(spokenSegmentKey('s1:1', 'Done.'))
+  })
+})
+
+// Hydration folds a tool-call turn's assistant rows into one bubble, so its full
+// text is progress + final. A window that only sees that history must derive
+// the same key as the window that spoke the live final bubble, or both read it.
+describe('spokenSegmentKey across a hydration fold', () => {
+  it("gives the hydrated bubble the live final bubble's key", () => {
+    const stored: SessionMessage[] = [
+      { role: 'user', content: 'fix it', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: 'Looking into it.',
+        timestamp: 2,
+        tool_calls: [{ id: 'tc', function: { name: 'terminal', arguments: '{}' } }]
+      },
+      { role: 'tool', tool_call_id: 'tc', content: 'ok', timestamp: 3 },
+      { role: 'assistant', content: 'Here is the final report.', timestamp: 4 }
+    ]
+
+    const hydrated = toChatMessages(stored)
+    const folded = hydrated.findLast(m => m.role === 'assistant')!
+
+    // The fold really did merge both messages into one bubble.
+    expect(hydrated.filter(m => m.role === 'assistant')).toHaveLength(1)
+
+    const live: ChatMessage = {
+      id: 'assistant-stream-2',
+      parts: [assistantTextPart('Here is the final report.')],
+      role: 'assistant'
+    }
+
+    expect(spokenSegmentKey('s1:0', lastTextPartText(folded))).toBe(spokenSegmentKey('s1:0', lastTextPartText(live)))
+    expect(spokenSegmentKey('s1:0', lastTextPartText(folded))).not.toBe(spokenSegmentKey('s1:0', 'Looking into it.'))
   })
 })

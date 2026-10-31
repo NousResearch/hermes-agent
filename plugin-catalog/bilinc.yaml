@@ -1,0 +1,21 @@
+name: bilinc
+repo: https://github.com/ReARCLabs/bilinc-hermes-plugin
+sha: 1ad81b4aaef8632ba5d6438384f3f063f46a0ebd
+version: "1.0.0"
+description: "Hosted memory for Hermes with a full history: see what your agent remembered, when it changed and why. Recalls relevant memories before each turn, adds bilinc_recall, bilinc_remember, bilinc_revise and bilinc_forget tools, and mirrors Hermes built-in memory writes. Maintained by ReARC Labs; free plan available. Disclosure — recall queries (the text of each message, when auto_recall is on), tool arguments, mirrored built-in memory writes, the Hermes session id and, only if memory.bilinc.capture_turns is turned on, each turn's user and assistant text are sent over HTTPS to bilinc.space under your BILINC_API_KEY; requests carry User-Agent bilinc-hermes/<version> and X-Bilinc-Client: hermes-plugin headers. Secret-looking strings are redacted before sending. Recall and writes run on background threads inside Hermes; no separate process, local database or telemetry."
+maintainer: ReARCLabs
+tier: community
+category: memory
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/ReARCLabs/bilinc-hermes-plugin#readme
+title: "Bilinc"
+image: https://raw.githubusercontent.com/ReARCLabs/bilinc-hermes-plugin/1ad81b4aaef8632ba5d6438384f3f063f46a0ebd/docs/banner.jpg
+screenshots:
+- https://raw.githubusercontent.com/ReARCLabs/bilinc-hermes-plugin/1ad81b4aaef8632ba5d6438384f3f063f46a0ebd/docs/screenshots/memory-history.png
+- https://raw.githubusercontent.com/ReARCLabs/bilinc-hermes-plugin/1ad81b4aaef8632ba5d6438384f3f063f46a0ebd/docs/screenshots/memory-workspace.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - BILINC_API_KEY

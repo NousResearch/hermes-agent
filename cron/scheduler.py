@@ -2558,7 +2558,7 @@ def run_job(
     ``extra_prompt``: optional per-run context from ``cronjob(action='run', prompt=...)`` (#57331). Appended
     to the stored prompt for this fire only — never persisted to the job definition.
     """
-    from gateway.session_cron import current_execution
+    from gateway.session_cron import current_execution, finish_pre_agent_run
     owner_execution = current_execution()
     if owner_execution is not None and owner_execution[2:] != (job['id'], execution_id):
         owner_execution = None
@@ -2571,7 +2571,7 @@ def run_job(
 
     early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
     if early is not None:
-        return early
+        return finish_pre_agent_run(owner_execution, early)
     from run_agent import AIAgent
 
     _cron_session_id = (owner_execution[1] if owner_execution is not None else
@@ -2596,7 +2596,7 @@ def run_job(
         model = jc.model
         setup = _resolve_cron_agent_setup(job, job_id, job_name, jc)
         if setup.blocked is not None:
-            return setup.blocked
+            return finish_pre_agent_run(owner_execution, setup.blocked)
         model = setup.model
 
         # Open state.db only after every early-return gate has passed.

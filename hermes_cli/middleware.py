@@ -20,9 +20,11 @@ TOOL_REQUEST_MIDDLEWARE = "tool_request"
 TOOL_EXECUTION_MIDDLEWARE = "tool_execution"
 LLM_REQUEST_MIDDLEWARE = "llm_request"
 LLM_EXECUTION_MIDDLEWARE = "llm_execution"
+AUXILIARY_EXECUTION_MIDDLEWARE = "auxiliary_execution"
 
 VALID_MIDDLEWARE: set[str] = {
     TOOL_REQUEST_MIDDLEWARE, TOOL_EXECUTION_MIDDLEWARE, LLM_REQUEST_MIDDLEWARE, LLM_EXECUTION_MIDDLEWARE,
+    AUXILIARY_EXECUTION_MIDDLEWARE,
 }
 
 
@@ -137,6 +139,18 @@ def run_llm_execution_middleware(
     """Run provider execution through registered LLM execution middleware."""
     return _run_execution_chain(
         LLM_EXECUTION_MIDDLEWARE, next_call,
+        request=request, original_request=context.pop("original_request", request), **context)
+
+
+def run_auxiliary_execution_middleware(
+    request: dict[str, Any], next_call: Callable[[dict[str, Any]], Any], **context: Any) -> Any:
+    """Run one auxiliary provider attempt through ``auxiliary_execution`` middleware.
+
+    Separate from ``llm_execution`` on purpose: plugins that wrap main-loop dispatches (routers,
+    policy gates) must not start receiving compression/title/vision traffic they never asked for.
+    """
+    return _run_execution_chain(
+        AUXILIARY_EXECUTION_MIDDLEWARE, next_call,
         request=request, original_request=context.pop("original_request", request), **context)
 
 

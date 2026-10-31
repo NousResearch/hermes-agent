@@ -100,7 +100,13 @@ def estimate_and_persist(task_id: str, *, board: Optional[str] = None) -> dict:
     with kbc.connect_closing(board=board) as conn:
         current = kanban_db.get_task(conn, task_id)
         enabled = bool(kanban_db.read_board_metadata(board).get("auto_estimate_enabled", False))
-        if current is None or not enabled or current.status not in kanban_db.AUTO_ESTIMATE_STATUSES:
+        if (
+            current is None
+            or not enabled
+            or current.status not in kanban_db.AUTO_ESTIMATE_STATUSES
+            or current.title != task.title
+            or current.body != task.body
+        ):
             return {"ok": False, "reason": "task changed while estimating"}
         with kanban_db.write_txn(conn):
             conn.execute("UPDATE tasks SET estimate = ? WHERE id = ?", (json.dumps(result), task_id))

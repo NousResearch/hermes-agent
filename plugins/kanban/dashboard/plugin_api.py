@@ -1064,10 +1064,22 @@ def estimate_text_endpoint(payload: EstimateBody):
 
 @router.post("/tasks/{task_id}/estimate")
 def estimate_task_endpoint(task_id: str, board: Optional[str] = Query(None)):
-    """Estimate for an existing task; ``{ok, est_tokens, complexity, rationale, model}``."""
+    """Estimate and persist an existing eligible task."""
+    from hermes_cli.kanban_estimate import estimate_and_persist
     with _board_conn(board) as (board, conn):
-        task = _require_task(conn, task_id)
-    return _run_estimate(task.title, task.body, task_id=task_id)
+        _require_task(conn, task_id)
+    result = estimate_and_persist(task_id, board=board)
+    if not result.get("ok") and result.get("reason") == "task is no longer eligible for automatic estimation":
+        # Explicit user action is allowed to estimate any non-archived task;
+        # only the automatic path is restricted to the pre-running columns.
+        with _board_conn(board) as (board, conn):
+            task = _require_task(conn, task_id)
+        result = _run_estimate(task.title, task.body, task_id=task_id)
+        if result.get("ok"):
+            with _board_conn(board) as (board, conn), kanban_db.write_txn(conn):
+                conn.execute("UPDATE tasks SET estimate = ? WHERE id = ?", (json.dumps(result), task_id))
+                conn.execute("INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'estimate', ?, ?)", (task_id, json.dumps(result), int(time.time())))
+    return result
 
 
 def _cap(s: Optional[str], n: int) -> str:

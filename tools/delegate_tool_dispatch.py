@@ -15,7 +15,9 @@ from typing import Any, Dict, List, Optional
 
 from hermes_cli.observability.shared_metrics_loop import begin_delegation_run, finish_delegation_unit
 from tools.async_delegation import _new_delegation_id, record_unit_child
-from tools.delegate_tool_child_run import _attach_child, _detach_child, _fabricated_entry, _signal_child_stop
+from tools.delegate_tool_child_run import (
+    _attach_child, _close_child, _detach_child, _fabricated_entry, _signal_child_stop,
+)
 from tools.delegate_tool_progress import (
     SUBAGENT_FAILURE_STATUSES, _print_completion_line, _quiet, describe_subagent_failure, format_batch_tag,
 )
@@ -235,7 +237,8 @@ _SYNC_FALLBACK_NOTES = {
     "at_capacity": (
         "The background delegation pool was at capacity (delegation.max_concurrent_children), so the subagent(s) ran "
         "SYNCHRONOUSLY and the result is included above. Raise "
-        "delegation.max_concurrent_children in config.yaml to allow more concurrent background delegations."
+        "delegation.max_concurrent_children in config.yaml to allow more concurrent background delegations, "
+        "or set delegation.at_capacity: reject to get a rejection instead of an inline run."
     ),
 }
 
@@ -245,6 +248,31 @@ def _run_sync_with_note(batch: _Batch, reason: str) -> str:
     if isinstance(result, dict):
         result["note"] = _SYNC_FALLBACK_NOTES[reason]
     return json.dumps(result, ensure_ascii=False)
+
+def _reject_at_capacity(batch: _Batch, max_async_children: int) -> str:
+    """``delegation.at_capacity: reject``: release the built children unrun and tell the model to wait
+    instead of blocking its turn on an inline run."""
+    from tools.delegation_live_log import update_manifest_statuses
+    rejected = {"status": "rejected", "exit_reason": "at_capacity"}
+    for i, _, child in batch.children:
+        _detach_child(batch.parent_agent, child)
+        _close_child(child, "Failed to close child agent rejected at capacity")
+        if i < len(batch.live_writers) and batch.live_writers[i] is not None:
+            with _quiet("Live transcript finalize failed", exc_info=True):
+                batch.live_writers[i].finalize(rejected)
+    rejected_results = [{"task_index": i, **rejected} for i, _, _ in batch.children]
+    update_manifest_statuses(batch.live_deleg_id, rejected_results, home=batch.live_home)
+    finish_delegation_unit(batch.task_list, rejected_results, background=True)
+    return json.dumps({
+        "status": "rejected", "mode": "background",
+        "error": (
+            f"The background delegation pool is full ({max_async_children} running, "
+            "delegation.max_concurrent_children); nothing was started. Do NOT retry now: the running "
+            "subagents' results will re-enter the conversation when they finish. Delegate these goals "
+            "again after that, or pass background=false to run them inline."
+        ),
+        "goals": [task["goal"] for task in batch.task_list],
+    }, ensure_ascii=False)
 
 def _resolve_async_wake_sid(
     origin_wake_sid: str, origin_session_history_delivery: bool = False, oneshot_session: bool = False,
@@ -433,8 +461,8 @@ def _dispatch_background(batch: _Batch) -> str:
     """Dispatch the call as independent async units (see ``_units_of``) and return the tool result JSON. Every unit
     of one call shares ONE pool slot (``slot_key``), so grouping never changes capacity accounting. Falls back to
     running synchronously (with an explanatory ``note``) when the session cannot receive detached completions or the
-    async pool is at capacity."""
-    from tools.delegate_tool import _get_max_async_children
+    async pool is at capacity; ``delegation.at_capacity: reject`` returns a rejection instead in the latter case."""
+    from tools.delegate_tool import _get_at_capacity_policy, _get_max_async_children
     wake_sid = _resolve_async_wake_sid(
         batch.origin_wake_sid, batch.origin_session_history_delivery,
         oneshot_session=getattr(batch.parent_agent, "_oneshot_session", None) is True,  # agent_is_oneshot's pin
@@ -470,6 +498,10 @@ def _dispatch_background(batch: _Batch) -> str:
             continue
         _restore_parent_cancellation(unit)
         if not dispatched:
+            if dispatch.get("at_capacity") and _get_at_capacity_policy() == "reject":
+                logger.info("delegate_task: async pool at capacity (%s); rejecting the batch (delegation.at_capacity).",
+                            dispatch.get("error", "rejected"))
+                return _reject_at_capacity(batch, routing["max_async_children"])
             logger.info(
                 "delegate_task: async pool at capacity (%s); running the whole batch synchronously instead.",
                 dispatch.get("error", "rejected"),

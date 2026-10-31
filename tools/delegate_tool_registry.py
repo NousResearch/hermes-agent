@@ -234,6 +234,15 @@ def _owns_subagent_record(record: dict[str, Any], parent_agent: Any) -> bool:
     # Compression rotation on either side: compare lineage tips.
     return _resolve_session_lineage(owner_sid, parent_agent) in {parent_sid, _resolve_session_lineage(parent_sid, parent_agent)}
 
+def _pool_payload() -> dict[str, Any]:
+    """Background pool capacity, so a caller can size its next batch instead of tripping ``at_capacity``.
+    Slots are process-wide (one per running background delegate_task call), not just this conversation's."""
+    from tools.async_delegation import occupied_slots
+    from tools.delegate_tool import _get_at_capacity_policy, _get_max_async_children
+    cap, running = _get_max_async_children(), occupied_slots()
+    return {"cap": cap, "running": running, "free": max(0, cap - running), "at_capacity": _get_at_capacity_policy()}
+
+
 def _list_payload(parent_agent: Any) -> dict[str, Any]:
     with _active_subagents_lock:
         records = list(_active_subagents.values())
@@ -252,7 +261,7 @@ def _list_payload(parent_agent: Any) -> dict[str, Any]:
             "accepting_steer": bool(r.get("accepting_steer", False)),
             "live_transcript": getattr(r.get("agent"), "_live_transcript_path", None),
         })
-    payload: dict[str, Any] = {"action": "list", "count": len(entries), "subagents": entries}
+    payload: dict[str, Any] = {"action": "list", "count": len(entries), "subagents": entries, "pool": _pool_payload()}
     if not entries:
         payload["note"] = (
             "No live subagents right now. Children that already finished "

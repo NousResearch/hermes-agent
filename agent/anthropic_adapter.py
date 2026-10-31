@@ -584,6 +584,8 @@ _OAUTH_SYSTEM_REPLACEMENTS = (
 # dereferences, and the rewritten form does not exist (#48860). The OPENING quote marks an
 # identifier; a sentence-final ``.`` or a possessive ``'s`` is prose.
 _OAUTH_SLUG_PATTERN = re.compile(r"""(?<![\w./:@'"`-])hermes-agent(?![\w/@-]|\.\w)""")
+_OAUTH_SKILL_INDEX_PATTERN = re.compile(r"(?m)^(\s*-\s+)hermes-agent(?=:|$)")
+_OAUTH_SKILL_INDEX_SENTINEL = "__HERMES_AGENT_SKILL_SLUG__"
 
 
 def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire):
@@ -600,7 +602,11 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
             text = block.get("text", "")
             for old, new in _OAUTH_SYSTEM_REPLACEMENTS:
                 text = text.replace(old, new)
+            text = _OAUTH_SKILL_INDEX_PATTERN.sub(
+                rf"\1{_OAUTH_SKILL_INDEX_SENTINEL}", text
+            )
             text = _OAUTH_SLUG_PATTERN.sub("claude-code", text)
+            text = text.replace(_OAUTH_SKILL_INDEX_SENTINEL, "hermes-agent")
             block["text"] = _apply_oauth_prose_aliases(text)
     for tool in anthropic_tools or []:
         if "name" in tool:

@@ -1049,11 +1049,17 @@ export interface AnalyticsTotals {
 }
 
 export interface CronJob {
+  /** Missed-run policy: true runs one catch-up, false skips; null/absent follows the default. */
+  catch_up?: boolean | null
   deliver?: null | string
   enabled: boolean
   id: string
   last_error?: null | string
   last_run_at?: null | string
+  /** The job's newest ledger attempt (``cron.jobs.list_jobs``); claimed/running = a run in flight. */
+  latest_execution?: CronJobExecution | null
+  /** The newest claimed/running attempt under a live owner, even when a newer refused row is latest. */
+  live_execution?: CronJobExecution | null
   model?: null | string
   name?: null | string
   next_run_at?: null | string
@@ -1066,7 +1072,23 @@ export interface CronJob {
   state?: null | string
 }
 
+export interface CronJobExecution {
+  claimed_at?: null | string
+  error?: null | string
+  id: string
+  status: string
+}
+
+/** POST /api/cron/jobs/{id}/cancel: ``cancelled`` is false when no run was in flight. */
+export interface CronCancelResult {
+  cancelled: boolean
+  detail?: string
+  execution_id?: null | string
+  job_id: string
+}
+
 export interface CronJobCreatePayload {
+  catch_up?: boolean
   deliver?: string
   model?: string
   name?: string
@@ -1083,6 +1105,7 @@ export interface CronJobSchedule {
 }
 
 export interface CronJobUpdates {
+  catch_up?: boolean | null
   deliver?: string
   enabled?: boolean
   model?: null | string

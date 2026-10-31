@@ -15,9 +15,16 @@ _WORKSPACE_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
 def _scope():
-    from gateway.platforms.base import _TRUTHY, _docker_persistent_active, _tenv
+    from gateway.platforms.base import _docker_persistent_active, _tenv
 
-    return _tenv, _TRUTHY, _docker_persistent_active
+    return _tenv, _docker_persistent_active
+
+
+def _cwd_mount_enabled() -> bool:
+    """The terminal's own predicate, so the file panel agrees with what the container mounted."""
+    from tools.terminal_tool_config import _tenv_bool
+
+    return _tenv_bool("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
 
 
 def _docker_sandbox_dir_candidates(session_key: str = "", workspace_key: str = "") -> list[str]:
@@ -26,10 +33,12 @@ def _docker_sandbox_dir_candidates(session_key: str = "", workspace_key: str = "
     Mirrors ``_resolve_container_task_id``: profile scope (``default``, else
     ``profile:<name>``), then the legacy ``session:<key>`` layout. A session
     that bound a host workspace also has ``<base>:ws:<digest>`` — a different
-    directory from the shared profile sandbox. The digest is explicit because
+    directory from the shared profile sandbox — but only with the cwd mount on:
+    without it every session keeps the profile sandbox, and a ``*_ws_*`` dir
+    left by an older build is not this session's. The digest is explicit because
     an ambient lookup after the turn would collapse onto ``default``.
     """
-    tenv, _truthy, _persistent = _scope()
+    tenv, _persistent = _scope()
     try:
         from tools.environments.path_utils import sanitize_task_id_for_path
     except Exception:  # health: allow BLE001 -- path translation fails closed; a miss is a 404, not a 500
@@ -44,7 +53,7 @@ def _docker_sandbox_dir_candidates(session_key: str = "", workspace_key: str = "
     # key is not a per-workspace container, so a :ws: digest does not apply.
     if shared := tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip():
         candidates.append(sanitize_task_id_for_path(f"shared:{shared}"))
-    elif _WORKSPACE_KEY_RE.fullmatch(workspace_key or ""):
+    elif _WORKSPACE_KEY_RE.fullmatch(workspace_key or "") and _cwd_mount_enabled():
         base = "default" if profile == "default" else f"profile:{profile}"
         candidates.append(sanitize_task_id_for_path(f"{base}:ws:{workspace_key}"))
     if profile != "default":
@@ -63,7 +72,7 @@ def _docker_persistent_sandbox_roots(
     Empty unless Docker + persistent. The translator tries each until the file
     resolves.
     """
-    _tenv, _truthy, persistent = _scope()
+    _tenv, persistent = _scope()
     if not persistent():
         return []
     try:
@@ -76,7 +85,7 @@ def _docker_persistent_sandbox_roots(
 
 
 def _mounted_workspace_cwd(workspace_cwd: str = "") -> list[Path]:
-    tenv, _truthy, _persistent = _scope()
+    tenv, _persistent = _scope()
     cwd = workspace_cwd or tenv("TERMINAL_CWD") or os.getcwd()
     try:
         host = Path(os.path.expanduser(cwd)).resolve(strict=False)
@@ -114,10 +123,10 @@ def _shared_cwd_mount_guess(workspace_key: str) -> list[Path]:
     cross-process attach never inspects the container's mounts. Reads keep the
     profile cwd, as before; a session Save there is a guess the caller refuses.
     """
-    tenv, truthy, persistent = _scope()
+    tenv, persistent = _scope()
     if not persistent() or not _WORKSPACE_KEY_RE.fullmatch(workspace_key or ""):
         return []
-    if tenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() not in truthy:
+    if not _cwd_mount_enabled():
         return []
     if not tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip():
         return []
@@ -138,12 +147,11 @@ def _default_docker_workspace_host_roots(
     ``/workspace`` is still the sandbox directory, because the host cwd was
     not bind-mounted when the container was created.
     """
-    tenv, truthy, persistent = _scope()
+    tenv, persistent = _scope()
     if not persistent():
         return []
     roots: list[Path] = []
-    mounted = tenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in truthy
-    if mounted:
+    if _cwd_mount_enabled():
         if not _WORKSPACE_KEY_RE.fullmatch(workspace_key or ""):
             return _mounted_workspace_cwd()
         if tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip():

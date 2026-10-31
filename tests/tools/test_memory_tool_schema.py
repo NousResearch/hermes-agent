@@ -39,7 +39,7 @@ def test_each_memory_field_is_advertised_once_and_legacy_shapes_still_write(tmp_
     """The schema advertises one shape (target + operations[]) with no alias; the handler still
     accepts the top-level single-op shape and the new_text alias models and transcripts send."""
     params = MEMORY_SCHEMA["parameters"]
-    assert set(params["properties"]) == {"target", "operations"}
+    assert set(params["properties"]) == {"action", "target", "operations"}
     assert "new_text" not in json.dumps(params)
 
     monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
@@ -80,7 +80,8 @@ def test_one_item_add_that_overflows_returns_the_live_entries_like_the_legacy_ad
     store.add("memory", "written by another session after load")
     result = json.loads(handler({"target": "memory", "operations": [{"action": "add", "content": "x" * 40}]}, store=store))
     assert result["success"] is False
-    assert result["current_entries"] == ["written by another session after load"]
+    assert "current_entries" not in result
+    assert "action='read'" in result["error"]
     assert store.memory_entries == ["written by another session after load"]
 
 

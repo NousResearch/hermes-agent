@@ -612,6 +612,8 @@ from hermes_cli.personality import (
 
 from hermes_cli.config_version_stamp import (
     check_config_version, note_first_stamp, read_config_version_stamp, stamp_missing_config)
+from hermes_cli.config_secret_display import (
+    _maskable_secret_text, config_set_display_value, redact_config_value)
 
 
 # ---- Config Migration System ----
@@ -2872,25 +2874,6 @@ def _is_secret_config_key(key: str) -> bool:
     return leaf in _SECRET_CONFIG_KEYS or leaf.endswith(_SECRET_CONFIG_KEY_SUFFIXES)
 
 
-def redact_config_value(value: Any, _depth: int = 0) -> Any:
-    """Copy of ``value`` with credential-shaped keys masked. ``print`` bypasses the logging
-    redactor and opaque tokens miss the vendor-prefix regexes, so structural masking is required."""
-    from agent.redact import mask_secret
-
-    if _depth > 20:  # bound recursion for pathological/cyclic configs
-        return value
-    if isinstance(value, dict):
-        return {
-            k: mask_secret(v)
-            if isinstance(k, str) and _is_secret_config_key(k) and isinstance(v, str) and v
-            and not _ENV_PLACEHOLDER_RE.match(v)
-            else redact_config_value(v, _depth + 1)
-            for k, v in value.items()}
-    if isinstance(value, list):
-        return [redact_config_value(v, _depth + 1) for v in value]
-    return value
-
-
 def edit_config():
     """Open config file in user's editor."""
     if is_managed():
@@ -3431,13 +3414,9 @@ def set_config_value(key: str, value: str, force: bool = False):
         from agent.i18n import reset_language_cache
         reset_language_cache()
 
-    # Mask the echoed value when the (possibly nested) key is credential-shaped, e.g.
-    # ``model.api_key`` (lowercase, so it misses the .env routing above).
-    _display_value = value
-    if _is_secret_config_key(key) and isinstance(value, str) and value:
-        from agent.redact import mask_secret
-        _display_value = mask_secret(value)
-    print(f"✓ Set {key} = {_display_value} in {config_destination(config_path)}")
+    # Mask credentials in the echo, e.g. ``model.api_key`` (lowercase, so it misses the .env
+    # routing above) or a nested password inside a mapping value.
+    print(f"✓ Set {key} = {config_set_display_value(key, value)} in {config_destination(config_path)}")
     if _route_notice:
         print(_route_notice)
 
@@ -3474,9 +3453,9 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
 
     from agent.redact import _redact_enabled, mask_secret
     if not raw and _redact_enabled():
-        if isinstance(value, str):
-            if _is_secret_config_key(key) and not _ENV_PLACEHOLDER_RE.match(value):
-                value = mask_secret(value)
+        if text := _maskable_secret_text(value):
+            if _is_secret_config_key(key) and not _ENV_PLACEHOLDER_RE.match(text):
+                value = mask_secret(text)
         else:
             value = redact_config_value(value)
 

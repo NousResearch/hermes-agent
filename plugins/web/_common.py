@@ -215,12 +215,17 @@ def http_status_detail(response: Any) -> str:
 
 def http_get_json(
     label: str, url: str, *, params: dict[str, Any], headers: dict[str, str], timeout: int,
-    logger: logging.Logger, reach_target: Optional[str] = None,
+    logger: logging.Logger, reach_target: Optional[str] = None, method: str = "GET",
 ) -> tuple[Any, Optional[dict[str, Any]]]:
-    """GET ``url`` and parse JSON → ``(data, None)`` or ``(None, failure_dict)``.
-    ``reach_target`` overrides the "Could not reach ..." subject (SearXNG includes its URL)."""
+    """Request ``url`` and parse JSON → ``(data, None)`` or ``(None, failure_dict)``.
+    ``reach_target`` overrides the "Could not reach ..." subject (SearXNG includes its URL).
+    ``method`` defaults to GET; a provider whose config asks for POST (SearXNG) sends
+    ``params`` in the form body instead."""
     try:
-        resp = httpx.get(url, params=params, headers=headers, timeout=timeout)
+        if method.upper() == "GET":
+            resp = httpx.get(url, params=params, headers=headers, timeout=timeout)
+        else:
+            resp = httpx.request(method, url, data=params, headers=headers, timeout=timeout)
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         logger.warning("%s HTTP error: %s", label, exc)

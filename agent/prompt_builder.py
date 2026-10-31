@@ -905,6 +905,7 @@ def _clear_backend_probe_cache() -> None:
 def _local_host_hints() -> list[str]:
     """Host OS / home / cwd block for a local terminal backend (tools run on this host)."""
     import platform
+    from hermes_platform.host.identity import effective_identity_hint
 
     host = (
         "WSL (Windows Subsystem for Linux)" if is_wsl()
@@ -912,7 +913,13 @@ def _local_host_hints() -> list[str]:
         else f"macOS ({platform.mac_ver()[0] or platform.release()})" if sys.platform == "darwin"
         else f"{platform.system()} ({platform.release()})"
     )
-    host_lines = [f"Host: {host}", f"User home directory: {os.path.expanduser('~')}"]
+    host_lines = [f"Host: {host}", "Terminal backend: local; shell: bash (independent of the user's login shell).",
+                  f"User home directory: {os.path.expanduser('~')}"]
+    if identity := effective_identity_hint():
+        host_lines.append(identity)
+    if sys.platform == "darwin":
+        host_lines.append("macOS uses BSD utilities: Linux interfaces such as /proc, /etc/shadow and "
+                          "systemctl are not available. Check the installed command's help for supported options.")
     try:
         host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
     except OSError:

@@ -499,6 +499,9 @@ class CLITuiRuntimeMixin:
         """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
         from cli import _DIM, _RST, _cprint, _invoke_interrupted_session_end, _run_cleanup, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
         self._should_exit = True
+        # From here on the SIGINT handler ignores further signals: a second Ctrl+C would unwind
+        # this teardown mid-way and skip finalize / release (#140890).
+        self._tui_shutting_down = True
         self._pet_stop_anim()
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):

@@ -761,6 +761,23 @@ Scope and safety:
 - The rest of the pipeline is unchanged: mention gating, `allowed_channels`,
   and `SLACK_ALLOWED_USERS` still apply to the (now human) sender.
 
+### Processing Reactions (`reactions`, `reaction_scope`)
+
+While it works on a message, the bot adds `:eyes:` and then swaps it for
+`:white_check_mark:` (or `:x:` on failure). Set `reactions: false` (or
+`SLACK_REACTIONS=false`) to turn this off entirely.
+
+By default these reactions only appear on messages that directly address the
+bot — 1:1 DMs and `@mentions`. Follow-ups the bot answers without a mention
+(for example, a reply in a thread it is already part of) get no reaction. Set
+`reaction_scope: all` (or `SLACK_REACTION_SCOPE=all`) to react on every message
+the bot processes:
+
+```yaml
+slack:
+  reaction_scope: all   # addressed (default) | all
+```
+
 ### Reaction Triggers (`reaction_triggers`)
 
 By default, emoji reactions are acknowledged and dropped — a 👍 on a bot

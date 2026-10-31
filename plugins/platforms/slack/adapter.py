@@ -3262,6 +3262,13 @@ class SlackAdapter(BasePlatformAdapter):
         configured = _extra_or_secret(self.config.extra, "reactions", "SLACK_REACTIONS", "true")
         return str(configured).lower() not in {"false", "0", "no"}
 
+    def _reaction_scope(self) -> str:
+        """Which admitted messages get lifecycle reactions (scoped ``SLACK_REACTION_SCOPE`` →
+        ``extra.reaction_scope``): ``addressed`` (default; DMs and @mentions) or ``all``."""
+        configured = _extra_or_secret(
+            self.config.extra, "reaction_scope", "SLACK_REACTION_SCOPE", "addressed")
+        return "all" if str(configured).strip().lower() == "all" else "addressed"
+
     def _reacting_target(self, event: MessageEvent) -> Optional[tuple[str, str, Any]]:
         """``(ts, team_id, marker)`` when reactions are on and ``event`` is being tracked."""
         if not self._reactions_enabled():
@@ -4675,9 +4682,11 @@ class SlackAdapter(BasePlatformAdapter):
             reply_expected=self._slack_reply_expected(
                 routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
                 addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
-        # React only when directly addressed; MPIMs are shared, so they need a
-        # mention like any channel.
-        if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
+        # By default react only when directly addressed (MPIMs are shared, so they need a
+        # mention like any channel); ``reaction_scope: all`` also covers admitted
+        # unaddressed messages such as follow-ups in a thread the bot is part of.
+        if self._reactions_enabled() and (
+                is_one_to_one_dm or is_mentioned or self._reaction_scope() == "all"):
             self._track_reacting_message(team_id, ts)
         # App-context is per-turn UI state: in the user message, not SessionSource (would rebuild
         # the agent per view switch and leak stale context). Inert label, never a channel body.

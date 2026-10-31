@@ -685,8 +685,9 @@ class GatewayStartupMixin:
         await self._safe_adapter_disconnect(adapter, platform)
 
     def _startup_retry_entry(self, platform, adapter, platform_config, *, queued: bool = True) -> dict:
-        """``_failed_platforms`` entry for a platform that failed at startup (first retry in 30s)."""
-        return self._reconnect_queue_entry(platform, adapter, platform_config, attempts=1, delay=30, queued=queued)
+        """``_failed_platforms`` entry for a platform that failed at startup (first retry in 30s, 5s for relay)."""
+        delay = 5 if platform == Platform.RELAY else 30
+        return self._reconnect_queue_entry(platform, adapter, platform_config, attempts=1, delay=delay, queued=queued)
 
     async def _abort_startup_if_shutdown_requested(
         self, adapter: Optional[BasePlatformAdapter] = None, platform: Optional[Platform] = None
@@ -1571,8 +1572,8 @@ class GatewayStartupMixin:
         from gateway.run import _planned_restart_notification_pending, _restart_notification_pending
         from gateway.shutdown_flush import recover_gateway_pending
         await self._start_post_connect_services(connected_count)
-        # Let fresh adapters settle before lifecycle sends (helps Discord thread deliveries).
-        if connected_count > 0:
+        # Let fresh adapters settle before lifecycle sends (helps Discord thread deliveries); relay-only skips it.
+        if connected_count > 0 and set(self.adapters) != {Platform.RELAY}:
             await asyncio.sleep(1.0)
         # Before _send_restart_notification() unlinks the marker: did we boot from a chat /restart?
         # One-shot signal for _is_stale_restart_redelivery.

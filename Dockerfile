@@ -397,6 +397,16 @@ COPY --link --chmod=a+rX,go-w . .
 # The shared assembler binds the prepared environment and frontend products.
 RUN /opt/hermes/.venv/bin/python -m docker.build_agent
 
+# Bake the code's bytecode (the venv's is already compiled). PYTHONDONTWRITEBYTECODE means no
+# process can cache it at runtime, so without this every gateway, dashboard and CLI start
+# recompiles the whole import graph (a second or more per process). The marker drops the launcher's
+# user-level cache redirect, which would hide these. Timestamp pycs, so a source edited in a
+# container still wins; tests, frontends and the toolchains in tools/ are left out.
+RUN /opt/hermes/.venv/bin/python -I -m compileall -q -j0 \
+        -x '^/opt/hermes/(\.venv|uv-cache|node_modules|tests|tests-js|evals|website|apps|web|ui-tui|tools/[A-Za-z0-9_.]+-[0-9][^/]*)/|/node_modules/' \
+        /opt/hermes && \
+    printf 'timestamp\n' > /opt/hermes/.hermes-baked-pycache
+
 # Wire the exec shim and install-method stamp.  Files under /opt/hermes are
 # already root-owned (COPY, dep assembly, npm install all run as root) and
 # read-only for the hermes user (go-w from the --chmod above).

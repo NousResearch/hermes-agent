@@ -125,6 +125,8 @@ class SubagentResult:
     usage_metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     tool_execution_summary: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     result_hash: Optional[str] = None
+    summary_truncated: bool = False
+    summary_full_path: Optional[str] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -199,6 +201,35 @@ def _session_id_of(agent: Any) -> Optional[str]:
 
 def _clip(value: Any) -> Optional[str]:
     return str(value)[:_MAX_RESULT_CHARS] if value is not None else None
+
+
+def _plain_json(value: Any) -> bool:
+    return value is None or type(value) in (str, bool, int, dict, list) or (type(value) is float and math.isfinite(value))
+
+
+def _public_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _public_json(v) for k, v in value.items() if isinstance(k, str) and not k.startswith("_") and _plain_json(v)}
+    if isinstance(value, list):
+        return [_public_json(v) for v in value if _plain_json(v)]
+    return value
+
+
+def _usage_from_entry(raw: dict[str, Any]) -> dict[str, Any]:
+    usage = {"api_calls": raw.get("api_calls", 0)}
+    for key in ("model", "cost_status"):
+        if isinstance(raw.get(key), str):
+            usage[key] = raw[key]
+    tokens = raw.get("tokens")
+    if isinstance(tokens, dict):
+        usage["tokens"] = {k: int(tokens[k]) for k in ("input", "output")
+                           if type(tokens.get(k)) in (int, float) and math.isfinite(tokens[k])}
+    cost = raw.get("cost_usd")
+    if type(cost) in (int, float) and math.isfinite(cost):
+        usage["cost_usd"] = float(cost)
+    if isinstance(raw.get("route"), dict):
+        usage["route"] = _public_json(raw["route"])
+    return usage
 
 
 # Per-field shape check applied to a (possibly deserialized) handle before trusting it.
@@ -428,10 +459,14 @@ class SubagentLifecycleService:
             else:
                 state = SubagentState.SUCCEEDED if status == "completed" else SubagentState.FAILED
             fields: dict[str, Any] = dict(
-                summary=_clip(raw.get("summary")), error_message=_clip(raw.get("error") or None),
+                summary=None if raw.get("summary") is None else str(raw["summary"]),
+                summary_truncated=raw.get("summary_truncated") if isinstance(raw.get("summary_truncated"), bool) else False,
+                summary_full_path=raw.get("summary_full_path") if isinstance(raw.get("summary_full_path"), str) and raw["summary_full_path"] else None,
+                error_message=_clip(raw.get("error") or None),
                 error_classification=None if state == SubagentState.SUCCEEDED else status.upper(),
-                usage_metadata={"api_calls": raw.get("api_calls", 0)} if is_dict else {},
-                tool_execution_summary={"duration_seconds": raw.get("duration_seconds", 0)} if is_dict else {},
+                usage_metadata=_usage_from_entry(raw) if is_dict else {},
+                tool_execution_summary={"duration_seconds": raw.get("duration_seconds", 0),
+                                        **({"exit_reason": raw["exit_reason"]} if isinstance(raw.get("exit_reason"), str) else {})} if is_dict else {},
             )
         except Exception as exc:
             state = SubagentState.FAILED

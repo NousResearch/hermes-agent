@@ -509,7 +509,11 @@ class HostedRoomRuntime:
                 should_wake = binding.room_id in self._rooms_needing_reschedule
                 self._rooms_needing_reschedule.discard(binding.room_id)
             if should_wake:
-                self.wakeup()
+                # Revisit this room only: _run_cycle starts every inactive room, so
+                # waking the worker suffices. wakeup() here would also re-mark every
+                # other live room, and those exits would re-mark again — the self-
+                # sustaining reschedule chain of #136619 (~1 CPU core, 2+ rooms).
+                self._wake.set()
 
     def _process_room(self, binding: HostedRoomBinding) -> None:
         if self.prepare_room is not None:

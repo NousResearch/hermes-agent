@@ -775,6 +775,10 @@ This is useful for MCP servers whose capabilities change dynamically (e.g. a ser
 
 The refresh is lock-protected so rapid-fire notifications from the same server don't cause overlapping refreshes. Prompt and resource change notifications (`prompts/list_changed`, `resources/list_changed`) are received but not yet acted on.
 
+### Tools with union input schemas
+
+Servers that generate a tool's input schema from a union (for example zod's `z.union` or `z.discriminatedUnion`) put every argument inside root-level `anyOf`/`oneOf`/`allOf` branches, often without `"type": "object"`. Hermes fills in the missing type so the rest of the server's tools still load, then lifts the branch arguments into one flat argument list for the model: a discriminator such as `action` becomes an enum, a name is required only when every alternative requires it, and the tool description gains a line such as `Argument sets (provide one): action="get", id | action="search", query`. The server still validates each call against its original schema.
+
 ### Reloading
 
 If you change MCP config, use:

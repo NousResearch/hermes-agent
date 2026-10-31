@@ -3,6 +3,7 @@ compatibility, mcp__server__tool naming, utility-tool schemas, include/exclude f
 description injection scanning."""
 
 import logging
+import functools
 import hashlib
 import fnmatch
 import re
@@ -142,6 +143,71 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     if normalized.get("type") == "object" and "properties" not in normalized:
         normalized = {**normalized, "properties": {}}
     return normalized
+
+
+def list_tools_repairing_schemas(session):
+    """``session.list_tools`` that survives a tool whose ``inputSchema``/``outputSchema`` omits
+    ``"type"``. Servers that build schemas from a ``z.union``/``discriminatedUnion`` root emit a bare
+    ``{"anyOf": [...]}``; the SDK's ``ListToolsResult`` model rejects the WHOLE page for one such tool,
+    so the server failed to connect with zero tools. On that validation error the page is re-read raw,
+    the missing ``"type": "object"`` is filled in (the union itself is handled by the provider-side
+    schema sanitizer), and the SDK's own per-tool bookkeeping is applied to the repaired result.
+    ``functools.wraps`` keeps the SDK signature visible to the pagination calling-convention probe."""
+    list_tools = session.list_tools
+
+    @functools.wraps(list_tools)
+    async def list_tools_repaired(**kwargs):
+        from pydantic import ValidationError
+        try:
+            return await list_tools(**kwargs)
+        except ValidationError as exc:
+            result = await _relist_filling_schema_types(session, kwargs, exc)
+            if result is None:
+                raise
+            return result
+    return list_tools_repaired
+
+
+async def _relist_filling_schema_types(session, kwargs: dict, exc: Exception):
+    """Re-read one ``tools/list`` page below the SDK's result validation (``send_request`` checks
+    every result against the protocol surface first; mcp is pinned, and missing hooks leave the
+    original error standing) and validate it with the missing schema types filled in."""
+    from mcp import types  # late: keeps the SDK import lazy
+    dispatcher, stamp = getattr(session, "_dispatcher", None), getattr(session, "_stamp", None)
+    if dispatcher is None or not callable(stamp):
+        return None
+    params = kwargs.get("params")
+    if params is None and kwargs.get("cursor"):
+        params = types.PaginatedRequestParams(cursor=kwargs["cursor"])
+    data = types.ListToolsRequest(params=params).model_dump(by_alias=True, mode="json", exclude_none=True)
+    opts: dict = {}
+    stamp(data, opts)
+    timeout = getattr(session, "_session_read_timeout_seconds", None)
+    if timeout is not None:
+        opts["timeout"] = timeout
+    raw = await dispatcher.send_raw_request(data["method"], data.get("params"), opts)
+    repaired = list(_fill_missing_schema_types(raw))
+    if not repaired:
+        return None
+    logger.warning("MCP tools/list: filled the missing \"type\": \"object\" on %s (rejected as: %s)",
+                   ", ".join(repaired), str(exc).splitlines()[0])
+    result = types.ListToolsResult.model_validate(raw, by_name=False)
+    absorb = getattr(session, "_absorb_tool_listing", None)  # SDK per-tool state (output schemas)
+    complete = (params is None or params.cursor is None) and result.next_cursor is None
+    return absorb(result, complete=complete) if callable(absorb) else result
+
+
+def _fill_missing_schema_types(raw: Any):
+    """Yield ``<tool>.<key>`` for each dict schema in a raw ``tools/list`` page lacking ``type``,
+    adding ``"type": "object"`` in place."""
+    for tool in (raw.get("tools") if isinstance(raw, dict) else None) or ():
+        if not isinstance(tool, dict):
+            continue
+        for key in ("inputSchema", "outputSchema"):
+            schema = tool.get(key)
+            if isinstance(schema, dict) and schema.get("type") is None:
+                tool[key] = {**schema, "type": "object"}
+                yield f"{tool.get('name')}.{key}"
 
 
 def sanitize_mcp_name_component(value: str) -> str:

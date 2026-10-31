@@ -625,10 +625,13 @@ def find_routable_user(users: list[dict[str, Any]], phone_number: str) -> Option
 def wait_for_opted_in_user(
     project_id: str, project_secret: str, phone_number: str, *, timeout_s: float = 300.0,
     interval_s: float = 5.0, on_waiting: Optional[Callable[[int], None]] = None,
-    sleep_fn: Callable[[float], None] = time.sleep) -> Optional[dict[str, Any]]:
+    sleep_fn: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic) -> Optional[dict[str, Any]]:
     """Poll until ``phone_number``'s row is opted in; the opted-in row, or None at the bound.
-    A failed list call is a missed poll (the wait rides out the operator's manual step); the
-    attempt cap keeps instant-``sleep_fn`` tests deterministic."""
+    A failed list call is a missed poll (the wait rides out the operator's manual step). Two
+    bounds: the attempt cap, and a wall-clock deadline so slow list calls (30 s HTTP timeout
+    each) cannot stretch the promised wait far past ``timeout_s``."""
+    deadline = clock() + timeout_s
     max_attempts = max(1, int(timeout_s / interval_s))
     for attempt in range(1, max_attempts + 1):
         try:
@@ -639,8 +642,9 @@ def wait_for_opted_in_user(
             logger.debug("photon: opt-in poll failed (attempt %d): %s", attempt, exc)
         if on_waiting is not None:
             on_waiting(attempt)
-        if attempt < max_attempts:
-            sleep_fn(interval_s)
+        if attempt == max_attempts or clock() + interval_s > deadline:
+            break
+        sleep_fn(interval_s)
     return None
 
 

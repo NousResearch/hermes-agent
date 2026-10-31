@@ -348,6 +348,23 @@ def test_wait_for_opted_in_user_polls_until_flag_lands(
     ) is None
 
 
+def test_wait_for_opted_in_user_wall_clock_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Slow list calls must not stretch the promised wait past timeout_s (attempt cap is 12)."""
+    now = {"t": 0.0, "calls": 0}
+
+    def slow_get(url: str, **kwargs: Any) -> _FakeResponse:
+        now["calls"] += 1
+        now["t"] += 31.0  # each call burns most of its 30 s HTTP timeout
+        return _users_body({"id": "u1", "phoneNumber": "+15551234567", "meta": {}})
+
+    monkeypatch.setattr(photon_auth.httpx, "get", slow_get)
+    assert photon_auth.wait_for_opted_in_user(
+        "proj", "secret", "+15551234567", timeout_s=60, interval_s=5,
+        sleep_fn=lambda s: now.__setitem__("t", now["t"] + s), clock=lambda: now["t"],
+    ) is None
+    assert now["calls"] == 2 and now["t"] <= 60 + 31
+
+
 def test_register_user_if_absent_reuses_opted_in_duplicate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

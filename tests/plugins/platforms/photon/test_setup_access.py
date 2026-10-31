@@ -147,3 +147,29 @@ def test_setup_regenerates_when_existing_secret_invalid(
     out = capsys.readouterr().out
     assert "new secret saved" in out
     assert "restart it so the sidecar" in out
+
+
+def test_setup_without_opt_in_does_not_report_complete(
+    monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """A number that never texted its assigned line cannot route: setup must not end on
+    "complete" (non-TTY run, so the opt-in wait is skipped rather than blocking)."""
+    monkeypatch.setattr(cli.photon_auth, "load_photon_token", lambda: "token")
+    monkeypatch.setattr(cli.photon_auth, "check_photon_token_valid", lambda token: True)
+    monkeypatch.setattr(cli.photon_auth, "load_dashboard_project_id", lambda: "dashboard")
+    monkeypatch.setattr(cli.photon_auth, "load_project_credentials", lambda: ("dashboard", "s"))
+    monkeypatch.setattr(cli.photon_auth, "list_users", lambda pid, secret: [])
+    monkeypatch.setattr(cli.photon_auth, "store_project_credentials", lambda **kwargs: None)
+    monkeypatch.setattr(cli.photon_auth, "register_user_if_absent", lambda *a, **k: (
+        {"id": "u1", "phoneNumber": "+15551234567", "assignedPhoneNumber": "+16282679185", "meta": {}}, True))
+    monkeypatch.setattr(cli.photon_auth, "store_user_numbers", lambda **kwargs: None)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False, raising=False)
+
+    rc = cli._cmd_setup(argparse.Namespace(
+        project_name=None, phone="+15551234567", first_name=None, last_name=None,
+        email=None, no_browser=True, skip_sidecar_install=True))
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "setup complete" not in out
+    assert "routing is NOT live" in out and "+16282679185" in out

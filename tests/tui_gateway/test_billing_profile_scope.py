@@ -146,6 +146,183 @@ def test_reads_keep_scope_and_route_every_request(runtime, caplog, monkeypatch, 
     assert dict(os.environ) == ambient
 
 
+@pytest.fixture
+def sources():
+    """A clean secret-source registry and per-home cache, restored afterwards."""
+    from agent.secret_sources import registry
+    from hermes_cli import env_loader
+    registry._reset_registry_for_tests()
+    env_loader.reset_secret_source_cache()
+    yield registry
+    registry._reset_registry_for_tests()
+    env_loader.reset_secret_source_cache()
+
+
+def _vault_sources(runtime, sources, runs, **fetchers):
+    """Enable one fixture ``op``/``bws``-style source per ``fetchers`` item on the secondary profile, whose
+    ``.env`` no longer carries a Portal override; each fetch appends its name to ``runs``."""
+    from agent.secret_sources.base import SecretSource
+    secondary = runtime.homes["secondary"]
+    (secondary / ".env").write_text("NOUS_INFERENCE_BASE_URL=https://secondary-inference.invalid/v1\n")
+    with (secondary / "config.yaml").open("a") as config:
+        config.write("secrets:\n" + "".join(f"  {name}:\n    enabled: true\n" for name in fetchers))
+
+    class _Vault(SecretSource):
+        label, shape = "Fixture vault", "bulk"
+
+        def __init__(self, name, result):
+            self.name, self._result = name, result
+
+        def fetch(self, cfg, home_path):
+            runs.append(self.name)
+            return self._result()
+    for name, result in fetchers.items():
+        sources.register_source(_Vault(name, result), replace=True)
+
+
+def _portal():
+    from agent.secret_sources.base import FetchResult
+    return FetchResult(secrets={"HERMES_PORTAL_BASE_URL": "https://secondary-portal.invalid"})
+
+
+def _down():
+    from agent.secret_sources.base import ErrorKind, FetchResult
+    return FetchResult().fail("helper exited 1", ErrorKind.AUTH_FAILED)
+
+
+@pytest.mark.parametrize("method", READS)
+def test_polled_reads_load_an_external_portal_override_once_not_every_poll(runtime, sources, method):
+    """Desktop polls these views every 30 s. Their Portal override may come only from an external
+    source (``op``/``bws``), and a failing source is never cached, so loading per call reran the slow
+    CLI on every poll. A cold profile loads its sources once; later polls reuse that snapshot."""
+    runs = []
+    _vault_sources(runtime, sources, runs, vaultportal=_portal, vaultdown=_down)
+
+    for _ in range(3):
+        result = _call(runtime.server, method, {"profile": "secondary"})
+        assert result.get("logged_in", result.get("available")) is True, result
+
+    assert runtime.calls
+    assert all(url.startswith("https://secondary-portal.invalid/") for _, url, _ in runtime.calls), runtime.calls
+    assert sorted(runs) == ["vaultdown", "vaultportal"], runs
+
+
+def test_a_polled_read_retries_a_failed_source_once_the_retry_interval_passes(runtime, sources, monkeypatch):
+    """A source that failed (a vault still locked at serve start) is not rerun by every poll, but is retried
+    after ``SECRET_SOURCE_RETRY_INTERVAL_S``, so its recovered Portal override is picked up."""
+    from hermes_cli import env_loader
+    clock, runs, attempts = [1000.0], [], iter([_down])
+    monkeypatch.setattr(env_loader, "_monotonic", lambda: clock[0])
+    _vault_sources(runtime, sources, runs, vaultportal=lambda: next(attempts, _portal)())
+
+    def poll():
+        runtime.calls.clear()
+        _call(runtime.server, "billing.state", {"profile": "secondary"})
+        return {url.split("/")[2] for _, url, _ in runtime.calls}
+
+    assert "secondary-portal.invalid" not in poll() and runs == ["vaultportal"]
+    clock[0] += env_loader.SECRET_SOURCE_RETRY_INTERVAL_S - 1
+    assert "secondary-portal.invalid" not in poll() and runs == ["vaultportal"]
+    clock[0] += 2
+    assert "secondary-portal.invalid" in poll() and runs == ["vaultportal"] * 2
+
+
+def test_overlapping_polled_reads_of_a_cold_profile_share_one_source_attempt(runtime, sources, monkeypatch):
+    """Desktop's settings page mounts ``billing.state`` and ``subscription.state`` together: both reach the
+    pool before the cold profile's first load finishes, and must not each run the failing source."""
+    from hermes_cli import env_loader
+    runs, attempts = [], []
+    entered, release, second_waiting = threading.Event(), threading.Event(), threading.Event()
+
+    def held_down():
+        entered.set()
+        assert release.wait(10)
+        return _down()
+    _vault_sources(runtime, sources, runs, vaultdown=held_down)
+    real_load, real_lock = env_loader._hydrate_profile_secret_sources, env_loader._SECRET_SOURCE_CACHE_LOCK
+
+    def counted_load(*args):  # one load attempt of the profile's sources
+        attempts.append(threading.get_ident())
+        return real_load(*args)
+
+    class SignallingLock:  # tells the test when a second thread starts waiting for the loader lock
+        def __enter__(self):
+            if attempts and threading.get_ident() != attempts[0]:
+                second_waiting.set()
+            return real_lock.__enter__()
+
+        def __exit__(self, *exc):
+            return real_lock.__exit__(*exc)
+    monkeypatch.setattr(env_loader, "_hydrate_profile_secret_sources", counted_load)
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCE_CACHE_LOCK", SignallingLock())
+
+    wires = [Wire(), Wire()]
+    assert runtime.server.dispatch({"jsonrpc": "2.0", "id": "a", "method": "billing.state",
+                                    "params": {"profile": "secondary"}}, wires[0]) is None
+    assert entered.wait(10)
+    assert runtime.server.dispatch({"jsonrpc": "2.0", "id": "b", "method": "subscription.state",
+                                    "params": {"profile": "secondary"}}, wires[1]) is None
+    assert second_waiting.wait(10)  # the second read found the profile untried and waits for the first load
+    release.set()
+    assert all(wire.event.wait(10) for wire in wires)
+    assert len(attempts) == 1, attempts
+    assert runs == ["vaultdown"], runs
+
+
+def test_a_polled_read_of_a_tried_profile_answers_while_another_load_holds_the_loader_lock(runtime, sources):
+    """A poll whose profile was tried recently reuses its snapshot without the loader lock, so it does not
+    wait behind another profile's slow fetch."""
+    from hermes_cli import env_loader
+    runs = []
+    _vault_sources(runtime, sources, runs, vaultportal=_portal)
+    _call(runtime.server, "billing.state", {"profile": "secondary"})  # loads; the profile now counts as tried
+    held, release = threading.Event(), threading.Event()
+
+    def hold_loader_lock():  # stands in for another profile's slow fetch
+        with env_loader._SECRET_SOURCE_CACHE_LOCK:
+            held.set()
+            release.wait(10)
+    holder = threading.Thread(target=hold_loader_lock, daemon=True)
+    holder.start()
+    try:
+        assert held.wait(10)
+        runtime.calls.clear()
+        wire = Wire()
+        assert runtime.server.dispatch({"jsonrpc": "2.0", "id": "poll", "method": "billing.state",
+                                        "params": {"profile": "secondary"}}, wire) is None
+        assert wire.event.wait(5), "the poll waited for the loader lock"
+        assert "result" in wire.response, wire.response
+        assert runtime.calls
+    finally:
+        release.set()
+        holder.join(10)
+    assert all(url.startswith("https://secondary-portal.invalid/") for _, url, _ in runtime.calls), runtime.calls
+    assert runs == ["vaultportal"], runs
+
+
+def test_profile_scoped_rejects_an_unknown_hydrate_secrets_option(runtime):
+    with pytest.raises(ValueError, match="hydrate_secrets"):
+        runtime.server._profile_scoped(lambda rid, params: None, hydrate_secrets="cold")
+
+
+@pytest.mark.parametrize("method", ("display.status", "display.thumbnail"))
+def test_polled_display_views_never_run_the_profiles_external_secret_source(runtime, monkeypatch, method):
+    """Desktop polls the display thumbnail every 4 s; neither view reads a secret."""
+    from hermes_cli import env_loader
+    runs = []
+    monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", lambda home: runs.append(home) or {})
+    wire = Wire()
+    req = {"jsonrpc": "2.0", "id": "probe", "method": method, "params": {"profile": "secondary"}}
+
+    response = runtime.server.dispatch(req, wire)
+    if response is None:
+        assert wire.event.wait(10), "registered RPC did not return"
+        response = wire.response
+
+    assert response.get("id") == "probe", response
+    assert runs == []
+
+
 @pytest.mark.parametrize("method", READS)
 def test_reads_keep_profile_routing_when_switching_homes(runtime, caplog, method):
     with caplog.at_level(logging.WARNING):

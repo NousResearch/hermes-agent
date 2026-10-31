@@ -1058,3 +1058,58 @@ class TestNonConversationalTrackerOffload:
         assert sorted(writes[-1]) == ["1", "2"]
 
 
+
+
+def _forward(text: str, msg_id: int, *, author=None):
+    """A Discord forward: empty wrapper, text in ``message_snapshots``, reference typed 'forward'."""
+    message = make_history_message(author=author or SimpleNamespace(id=56, display_name="Alice", bot=False),
+                                   content="", msg_id=msg_id)
+    message.message_snapshots = [SimpleNamespace(content=text, embeds=[], attachments=[])]
+    message.reference = SimpleNamespace(message_id=1, resolved=None, type=SimpleNamespace(name="forward"))
+    return message
+
+
+@pytest.mark.asyncio
+async def test_forward_and_reply_to_a_forward_carry_the_forwarded_text(adapter, monkeypatch):
+    """A forward is not a reply, and a reply TO a forward quotes the forwarded text (it was empty)."""
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "123")
+    channel = FakeTextChannel(channel_id=123)
+
+    forward = _forward("/reset everything", 70)
+    forward.channel, forward.mentions, forward.created_at = channel, [], datetime.now(UTC)
+    await adapter._handle_message(forward)
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "[Forwarded] /reset everything"  # forwarded text never runs as a slash command
+    assert event.reply_to_message_id is None
+
+    reply = make_message(channel=channel, content="what does this mean?")
+    reply.reference = SimpleNamespace(message_id=70, resolved=_forward("deploy at 5pm", 70),
+                                      type=SimpleNamespace(name="default"))
+    await adapter._handle_message(reply)
+    event = adapter.handle_message.await_args.args[0]
+    assert event.reply_to_message_id == "70"
+    assert event.reply_to_text == "[Forwarded] deploy at 5pm"
+
+
+@pytest.mark.asyncio
+async def test_backfill_reads_forwards_embeds_and_the_thread_starter(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    alice = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    monitor = SimpleNamespace(id=60, display_name="Monitor", name="Monitor", bot=True)
+    alert = make_history_message(author=monitor, content="", msg_id=500)
+    alert.embeds = [SimpleNamespace(title="CI failed", description="main is red", fields=[], footer=None)]
+    parent = FakeTextChannel(channel_id=10)
+    parent.fetch_message = AsyncMock(return_value=alert)
+
+    class HistoryThread(FakeThread):
+        def history(self, *, limit, before, after=None, oldest_first=None):
+            return FakeHistoryChannel([_forward("logs from staging", 501, author=alice)]).history(
+                limit=limit, before=before, after=after, oldest_first=oldest_first)
+
+    thread = HistoryThread(channel_id=500, parent=parent)
+    result = await adapter._fetch_channel_context(thread, before=SimpleNamespace(id=999))
+
+    parent.fetch_message.assert_awaited_once_with(500)  # starter lives in the parent under the thread id
+    assert "(thread starter) [Monitor [bot]] CI failed\nmain is red" in result
+    assert "[Alice] [Forwarded] logs from staging" in result
+    assert result.index("thread starter") < result.index("logs from staging")

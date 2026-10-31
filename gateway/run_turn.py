@@ -509,6 +509,20 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
+            # Non-admin tool-tier whitelist + iteration clamp (#20744). Admins and
+            # ungated scopes are unchanged. Failures leave the turn unrestricted.
+            try:
+                from gateway.user_tier import apply_user_tier_to_agent_kwargs, platform_config_for_runner
+
+                enabled_toolsets, max_iterations, _tier_bg = apply_user_tier_to_agent_kwargs(
+                    source=source,
+                    enabled_toolsets=enabled_toolsets,
+                    max_iterations=max_iterations,
+                    user_config=user_config,
+                    platform_config=platform_config_for_runner(self, source),
+                )
+            except Exception as _tier_bg_exc:
+                logger.debug("user_tier background resolve skipped: %s", _tier_bg_exc)
             reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
             self._reasoning_config = reasoning_config
             self._service_tier = self._resolve_session_service_tier(source=source)

@@ -1271,6 +1271,23 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if room is not None:
             max_iterations = room.max_iterations
             ctx.enabled_toolsets = list(room.enabled_toolsets)
+        # Phase-1 user-tier clamp (#20744). Applied after session policy and room
+        # execution policy so it only narrows: admins and ungated scopes keep the
+        # newer budgets, non-admins lose sensitive toolsets and extra iterations.
+        try:
+            from gateway.user_tier import apply_user_tier_to_agent_kwargs, platform_config_for_runner
+
+            if isinstance(ctx.enabled_toolsets, list):
+                _tier_tools, max_iterations, _tier_dec = apply_user_tier_to_agent_kwargs(
+                    source=ctx.source,
+                    enabled_toolsets=ctx.enabled_toolsets,
+                    max_iterations=max_iterations,
+                    user_config=ctx.user_config if isinstance(ctx.user_config, dict) else None,
+                    platform_config=platform_config_for_runner(runner, ctx.source),
+                )
+                ctx.enabled_toolsets = _tier_tools
+        except Exception as _tier_exc:
+            logger.debug("user_tier resolve skipped: %s", _tier_exc)
         try:
             model, runtime_kwargs = runner._resolve_session_agent_runtime(
                 source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,

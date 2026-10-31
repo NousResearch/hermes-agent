@@ -1,6 +1,6 @@
 import { Box, Text, useStdout } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { Component, type ReactNode } from 'react'
+import { Component, memo, type ReactNode } from 'react'
 
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiTheme } from '../app/uiStore.js'
@@ -80,25 +80,70 @@ export const openWidget = <S,>(app: WidgetApp<S>, state: S): void => place(app a
 /** Async state delivery: patch the app's state ONLY while it is still active
  *  in its slot — a late fetch resolution can never resurrect a closed app or
  *  clobber a different one. This is how data-backed apps land results
- *  outside the input pipeline (see the weather reference app). */
+ *  outside the input pipeline (see the weather reference app).
+ *
+ * Soft redraw: when `fn` returns the same state reference (or shallow-equal
+ * values via softUpdateWidget), the overlay is not patched — so sibling
+ * ambient cards and the status bar do not re-render for a no-op tick. */
 export function updateWidget<S>(app: WidgetApp<S>, fn: (state: S) => S): void {
   const overlay = $overlayState.get()
 
   if (isAmbient(app as WidgetApp<never>)) {
-    if (overlay.ambient.some(active => active.appId === app.id)) {
-      patchOverlayState({
-        ambient: overlay.ambient.map(active =>
-          active.appId === app.id ? { appId: app.id, state: fn(active.state as S) } : active
-        )
-      })
+    const current = overlay.ambient.find(active => active.appId === app.id)
+
+    if (!current) {
+      return
     }
+
+    const prev = current.state as S
+    const next = fn(prev)
+
+    if (Object.is(next, prev)) {
+      return
+    }
+
+    patchOverlayState({
+      ambient: overlay.ambient.map(active => (active.appId === app.id ? { appId: app.id, state: next } : active))
+    })
 
     return
   }
 
   if (overlay.widget?.appId === app.id) {
-    patchOverlayState({ widget: { appId: app.id, state: fn(overlay.widget.state as S) } })
+    const prev = overlay.widget.state as S
+    const next = fn(prev)
+
+    if (Object.is(next, prev)) {
+      return
+    }
+
+    patchOverlayState({ widget: { appId: app.id, state: next } })
   }
+}
+
+/** Soft value patch for ambient/modal widgets: merges only the provided keys
+ *  and skips the overlay write when every value is Object.is-equal. Prefer
+ *  this for countdown / gauge ticks so only the changed widget card redraws. */
+export function softUpdateWidget<S extends object>(app: WidgetApp<S>, patch: Partial<S>): void {
+  updateWidget(app, prev => {
+    let changed = false
+    const next = { ...prev }
+
+    for (const key of Object.keys(patch) as Array<keyof S>) {
+      const value = patch[key]
+
+      if (value === undefined) {
+        continue
+      }
+
+      if (!Object.is(prev[key], value)) {
+        next[key] = value as S[keyof S]
+        changed = true
+      }
+    }
+
+    return changed ? next : prev
+  })
 }
 
 /** Feed one keypress to the active MODAL app (ambient apps capture no
@@ -196,10 +241,22 @@ const renderApp = (active: ActiveWidget, ctx: RenderCtx) => {
   )
 }
 
-const CardStack = ({ apps, ctx }: { apps: ActiveWidget[]; ctx: RenderCtx }) => (
+/** One ambient card: memoized on appId + state ref so a soft value tick on
+ *  widget A does not re-render sibling cards in the dock strip. Theme/cols
+ *  still update because the card subscribes to them internally. */
+const AmbientCard = memo(
+  function AmbientCard({ active }: { active: ActiveWidget }) {
+    const ctx = useRenderCtx()
+
+    return <Box>{renderApp(active, ctx)}</Box>
+  },
+  (prev, next) => prev.active.appId === next.active.appId && Object.is(prev.active.state, next.active.state)
+)
+
+const CardStack = ({ apps }: { apps: ActiveWidget[] }) => (
   <Box flexDirection="column" rowGap={1}>
     {apps.map(active => (
-      <Box key={active.appId}>{renderApp(active, ctx)}</Box>
+      <AmbientCard active={active} key={active.appId} />
     ))}
   </Box>
 )
@@ -218,7 +275,6 @@ export function ActiveWidgetSlot(): ReactNode {
  *  bar, `dock-bottom` above the bottom one. */
 export function AmbientDock({ placement }: { placement: 'dock-bottom' | 'dock-top' }): ReactNode {
   const overlay = useStore($overlayState)
-  const ctx = useRenderCtx()
   const docked = overlay.ambient.filter(active => zoneOf(active) === placement)
 
   if (!docked.length) {
@@ -230,7 +286,7 @@ export function AmbientDock({ placement }: { placement: 'dock-bottom' | 'dock-to
   return (
     <Box columnGap={1} flexDirection="row" justifyContent="flex-end" paddingRight={2} width="100%">
       {docked.map(active => (
-        <Box key={active.appId}>{renderApp(active, ctx)}</Box>
+        <AmbientCard active={active} key={active.appId} />
       ))}
     </Box>
   )
@@ -264,7 +320,6 @@ export function useAmbientRailWidth(side: 'left' | 'right'): number {
  *  widgets — `top-*` zones stack from its top, `bottom-*` from its bottom. */
 export function AmbientRail({ side }: { side: 'left' | 'right' }): ReactNode {
   const overlay = useStore($overlayState)
-  const ctx = useRenderCtx()
   const apps = railApps(overlay.ambient, side)
 
   if (!apps.length) {
@@ -279,8 +334,8 @@ export function AmbientRail({ side }: { side: 'left' | 'right' }): ReactNode {
       paddingX={1}
       width={ambientRailWidth(side, overlay.ambient)}
     >
-      <CardStack apps={apps.filter(active => zoneOf(active).startsWith('top'))} ctx={ctx} />
-      <CardStack apps={apps.filter(active => zoneOf(active).startsWith('bottom'))} ctx={ctx} />
+      <CardStack apps={apps.filter(active => zoneOf(active).startsWith('top'))} />
+      <CardStack apps={apps.filter(active => zoneOf(active).startsWith('bottom'))} />
     </Box>
   )
 }

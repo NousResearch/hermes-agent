@@ -44,6 +44,28 @@ export const normalizeStatusBarFields = (raw: unknown): null | ReadonlySet<strin
   return cleaned.length ? new Set(cleaned) : null
 }
 
+// `display.tui_widget_refresh_ms` — host-suggested ambient widget soft-tick
+// period in ms. Missing / unparseable / negative falls back to the 30s default
+// so a typo cannot freeze the dock; an explicit 0 turns the host suggestion
+// off (widgets keep polling their own network cadence). Positive values below
+// the 1s floor clamp up to 1000 so a value-only tick cannot thrash the strip.
+const WIDGET_REFRESH_DEFAULT_MS = 30_000
+const WIDGET_REFRESH_MIN_MS = 1_000
+
+export const normalizeWidgetRefreshMs = (raw: unknown): number => {
+  if (raw === 0 || raw === '0') {
+    return 0
+  }
+
+  const ms = typeof raw === 'string' ? Number(raw.trim()) : raw
+
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) {
+    return WIDGET_REFRESH_DEFAULT_MS
+  }
+
+  return Math.max(WIDGET_REFRESH_MIN_MS, Math.floor(ms))
+}
+
 const BUSY_MODES = new Set<BusyInputMode>(['interrupt', 'queue', 'steer'])
 
 // TUI defaults to `queue` even though the framework default
@@ -360,7 +382,8 @@ export const applyDisplay = (
     streaming: d.streaming !== false,
     // The SAME key that stamps [HH:MM] on classic-CLI labels (#41531) —
     // no separate TUI knob.
-    timestamps: d.timestamps === true
+    timestamps: d.timestamps === true,
+    widgetRefreshMs: normalizeWidgetRefreshMs(d.tui_widget_refresh_ms)
   })
 }
 

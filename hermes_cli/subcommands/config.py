@@ -36,6 +36,14 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_unset = config_subparsers.add_parser("unset", help="Remove a configuration value")
     config_unset.add_argument("key", nargs="?", help="Configuration key to remove")
 
+    for name, verb in (("add", "Add an item to"), ("remove", "Remove an item from")):
+        list_edit = config_subparsers.add_parser(name, help=f"{verb} a list setting (e.g., toolsets)")
+        list_edit.add_argument("key", nargs="?", help="List setting key (e.g., toolsets, plugins.enabled)")
+        list_edit.add_argument("value", nargs="?", help="Item; a string unless --json")
+        list_edit.add_argument(
+            "--json", action="store_true",
+            help="Parse the item as JSON (a number, boolean, object or list) instead of a string")
+
     config_subparsers.add_parser("path", help="Print config file path")
     config_subparsers.add_parser("env-path", help="Print .env file path")
     config_subparsers.add_parser("check", help="Check for missing/outdated config")

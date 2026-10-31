@@ -232,7 +232,9 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
     if any(isinstance(op, dict) and op.get("action") == "delete" for op in operations):
         if len(operations) != 1:
             return tool_error("delete must be the SOLE op in its call — it doesn't "
-                              "compose with other ops' rollback.", success=False)
+                              "compose with other ops' rollback. If you meant the other "
+                              "ops, retry those WITHOUT the delete — do NOT retry as a "
+                              "sole delete.", success=False)
         nm = operations[0].get("name") or default_name
         if not nm:
             return tool_error("operations[0] (delete) needs a 'name'.", success=False)

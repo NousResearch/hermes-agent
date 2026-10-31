@@ -195,8 +195,9 @@ def test_ledger_entry_on_edit_and_delete(ledger_env):
 
 
 def test_deleted_skill_recoverable_from_ledger(ledger_env):
-    """A foreground hard delete stays a hard delete — but the ledger entry
-    can restore the skill's files from blobs."""
+    """A delete is recoverable on two levels: the skill is relocated into the
+    curator archive (``skills/.archive/``), and the ledger entry keeps the
+    before-blobs so the files can also be rebuilt from the ledger."""
     from tools import skill_ledger
     from tools.skill_manager_tool import skill_manage
 

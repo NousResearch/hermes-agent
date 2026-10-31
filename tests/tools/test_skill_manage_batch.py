@@ -86,6 +86,23 @@ class TestSkillManageBatch(unittest.TestCase):
         self.assertFalse(r["success"])
         self.assertFalse(os.path.exists(os.path.join(self.home, "skills", "fresh")))
 
+    def test_mixed_delete_error_redirects_the_caller_away_from_deleting(self):
+        # create + delete in one call is rejected (delete must be sole). The
+        # error must tell a confused caller to retry the ops it MEANT — and
+        # explicitly not to retry the delete alone (forensics: the old error
+        # coached five consecutive sole-delete retries).
+        self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
+        r = self._call("probe", [
+            {"action": "patch", "old_string": "Step 1.", "new_string": "X."},
+            {"action": "delete"},
+        ])
+        self.assertFalse(r["success"])
+        self.assertIn("SOLE", r["error"])
+        lowered = r["error"].lower()
+        self.assertIn("retry those", lowered)
+        self.assertIn("sole delete", lowered)
+        self.assertIn("without the delete", lowered)
+
     def test_validation_rules(self):
         # delete as SOLE op routes to the real delete (works)
         self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])

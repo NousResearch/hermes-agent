@@ -397,6 +397,27 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
     return fresh
 
 
+def _retire_discarded_queued_rows(session: dict, envelopes: list) -> None:
+    """Deactivate the accept-time rows of queued prompts Stop discarded, addressed like the drain (recorded
+    session, following a compaction clone); a left-active row is replayed after every compaction (#146968)."""
+    rows = [envelope["_submit_user_row"] for envelope in envelopes
+            if isinstance(envelope, dict) and isinstance(envelope.get("_submit_user_row"), dict)
+            and isinstance(envelope["_submit_user_row"].get("_row_id"), int)]
+    if not rows:
+        return
+    with _session_db(session) as db:
+        if db is None:
+            return
+        for staged in rows:
+            try:
+                key = _submit_row_owner_key(staged, session)
+                live_id = db.resolve_active_row_id(key, staged["_row_id"])
+                if live_id is not None:
+                    db.deactivate_message(key, live_id)
+            except Exception:
+                logger.debug("discarded queued-prompt row retire failed", exc_info=True)
+
+
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
                         turn_author: dict | None = None, display_kind: str | None = None) -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry

@@ -216,7 +216,7 @@ def test_hot_serve_still_parks_a_profile_another_gateway_owns(tmp_path):
     with _holder("owner", fresh):
         started = time.monotonic()
         reason = asyncio.run(runner._serve_profile_runtime("boot", fresh))
-        assert reason and reason.startswith("home owned by another gateway")
+        assert reason and reason[0].startswith("home owned by another gateway")
         assert time.monotonic() - started < _browse_reconcile_reserve_wait_s() / 2
         assert not process_ownership.owns(fresh)
         assert runner.config._runtime_profile_homes == (("default", root),)

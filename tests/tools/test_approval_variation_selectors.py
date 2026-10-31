@@ -20,6 +20,9 @@ INVISIBLE = "invisible or bidirectional Unicode control character (possible obfu
     "\ufe0fls",
     # A second selector after an emoji's own VS16 is not presentation.
     "echo '\u2764\ufe0f\ufe0f'",
+    # The keycap exemption needs the whole sequence: VS16 alone, or VS15 + keycap, is not a keycap emoji.
+    "echo 'a\ufe0f\u20e3'",
+    "echo '1\ufe0e\u20e3'",
 ])
 def test_selector_after_ordinary_character_is_flagged(command):
     assert detect_dangerous_command(command)[:2] == (True, INVISIBLE)
@@ -34,6 +37,9 @@ def test_selector_after_ordinary_character_is_flagged(command):
     "echo '\U0001F468\u200d\U0001F469\u200d\U0001F467 family'",
     "echo '\U0001F3F3\ufe0f\u200d\U0001F308'",
     "echo '\U0001F1EF\U0001F1F5'",
+    # Keycap emoji: digit, # or * + VS16 + COMBINING ENCLOSING KEYCAP.
+    "echo 'step 1️⃣ then 2️⃣'",
+    "echo '#️⃣ *️⃣ 0️⃣'",
     "echo '\u65e5\u672c\u8a9e\u306e\u30c6\u30ad\u30b9\u30c8'",
 ])
 def test_emoji_presentation_and_plain_text_pass(command):

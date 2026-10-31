@@ -2,9 +2,9 @@ import { execFileSync } from 'node:child_process'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, delimiter } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, expect, test } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 import { npmCommand } from '../scripts/build/node-deps.mjs'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -339,3 +339,47 @@ test('a receipt keyed by the probed version reuses under the manifest version, e
   json(join(npmRoot, 'package.json'), { name: 'npm', version: '10.8.3' })
   expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
 }, 30000)
+
+// A package manager GC, a dangling symlink, or a lazily materialized FUSE shim can
+// make a PATH entry stop resolving between existsSync() and realpathSync(). The scan
+// must skip that entry and keep going, instead of aborting `hermes update` (#147216).
+// The race is reproduced by making realpathSync() fail for the fixture entry while
+// existsSync() still sees it: exactly the probe-then-resolve gap.
+async function withVanishingEntry(root, body) {
+  vi.resetModules()
+  vi.doMock('node:fs', async importOriginal => {
+    const actual = await importOriginal()
+    return { ...actual, realpathSync: (path, ...rest) => {
+      if (String(path).startsWith(root)) throw Object.assign(new Error(`ENOENT: no such file or directory, lstat '${path}'`), { code: 'ENOENT' })
+      return actual.realpathSync(path, ...rest)
+    } }
+  })
+  try {
+    return await body(await import('../scripts/build/node-deps.mjs'))
+  } finally {
+    vi.doUnmock('node:fs')
+    vi.resetModules()
+  }
+}
+
+test.skipIf(process.platform === 'win32')('a PATH entry that stops resolving mid-scan is skipped, not fatal', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'npm vanishing entry-'))
+  roots.push(root)
+  mkdirSync(join(root, 'bin'))
+  writeFileSync(join(root, 'bin', 'npm'), '#!/bin/sh\n')
+  const env = { ...process.env, PATH: `${join(root, 'bin')}${delimiter}${process.env.PATH}` }
+  delete env.npm_execpath
+  const [, cli] = await withVanishingEntry(root, mod => mod.npmCommand({ env }))
+  expect(existsSync(cli)).toBe(true)
+})
+
+test.skipIf(process.platform === 'win32')('a PATH where nothing resolves reports the controlled error, not ENOENT', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'npm vanishing only-'))
+  roots.push(root)
+  mkdirSync(join(root, 'bin'))
+  writeFileSync(join(root, 'bin', 'npm'), '#!/bin/sh\n')
+  const env = { ...process.env, PATH: join(root, 'bin') }
+  delete env.npm_execpath
+  await expect(withVanishingEntry(root, mod => mod.npmCommand({ env })))
+    .rejects.toThrow(/npm CLI is required on PATH/)
+})

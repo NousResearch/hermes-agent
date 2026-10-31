@@ -120,9 +120,9 @@ def check_sandbox_requirements() -> bool:
 
 # Per-tool stub templates: (signature, docstring, args_dict_expr — the JSON payload sent over RPC).
 _TOOL_STUBS = {
-    "web_search": ("query: str, limit: int = 5",
+    "web_search": ("query: str, limit: int = 5, categories: list = None",
         '"""Search the web. Returns dict with data.web list of {url, title, description}."""',
-        '{"query": query, "limit": limit}'),
+        '{"query": query, "limit": limit, "categories": categories}'),
     "web_extract": ("urls: list, char_limit: int = None",
         '"""Extract content from URLs (no LLM summarization). Returns dict with results list of {url, title, content, error}. Pages over char_limit (default 15000) are head+tail truncated with the full text stored on disk; the content footer gives the path. content is markdown."""',
         '{"urls": urls, "char_limit": char_limit}'),

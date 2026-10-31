@@ -300,3 +300,11 @@ Delegated subagents cannot open a password prompt: their concurrent work does no
 :::warning
 On messaging platforms, if sudo fails, the output includes a tip to add `SUDO_PASSWORD` to `~/.hermes/.env`.
 :::
+
+### Search categories
+
+`web_search` accepts an optional `categories` list. With SearXNG, values such as
+`["science"]` or `["news"]` select the corresponding categories on your instance.
+Available categories depend on its configured engines. Filters are included in
+cache identity. A backend without category support reports an error rather than
+silently returning an unfiltered search; omit `categories` for ordinary searches.

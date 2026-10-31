@@ -88,13 +88,13 @@ class SearchMemo:
         self._key_locks: dict[tuple, threading.Lock] = {}
 
     @staticmethod
-    def _key(provider: str, query: str, limit: int) -> tuple:
-        return (provider, normalize_query(query), bucket_limit(limit))
+    def _key(provider: str, query: str, limit: int, categories=None) -> tuple:
+        return (provider, normalize_query(query), bucket_limit(limit), tuple(sorted(set(categories or []))))
 
-    def lookup(self, provider: str, query: str, limit: int) -> Optional[dict]:
+    def lookup(self, provider: str, query: str, limit: int, *, categories=None) -> Optional[dict]:
         if not cache_enabled():
             return None
-        key = self._key(provider, query, limit)
+        key = self._key(provider, query, limit, categories)
         with self._store_lock:
             hit = self._store.get(key)
             if hit is None or time.monotonic() >= hit[0]:
@@ -103,20 +103,20 @@ class SearchMemo:
         logger.info("web_search cache hit: %r via %s", query, provider)
         return _deep_copy(hit[1])
 
-    def store(self, provider: str, query: str, limit: int, response: dict) -> None:
+    def store(self, provider: str, query: str, limit: int, response: dict, *, categories=None) -> None:
         """Cache a SUCCESSFUL response for the bucketed key."""
         if not cache_enabled() or not isinstance(response, dict) or not response.get("success"):
             return
-        key = self._key(provider, query, limit)
+        key = self._key(provider, query, limit, categories)
         with self._store_lock:
             now = time.monotonic()  # opportunistic expiry sweep bounds memory
             for k in [k for k, (exp, _) in self._store.items() if now >= exp]:
                 del self._store[k]
             self._store[key] = (now + ttl_seconds(), _deep_copy(response))
 
-    def flight_lock(self, provider: str, query: str, limit: int) -> threading.Lock:
+    def flight_lock(self, provider: str, query: str, limit: int, *, categories=None) -> threading.Lock:
         """Per-key lock held around lookup-miss → paid request → store."""
-        key = self._key(provider, query, limit)
+        key = self._key(provider, query, limit, categories)
         with self._store_lock:
             lock = self._key_locks.get(key)
             if lock is None:

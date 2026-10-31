@@ -3870,6 +3870,10 @@ export interface Translations extends NoticeTranslations {
     thread: {
       loadingSession: string
       showEarlier: string
+      showLater: string
+      jumpToLatest: string
+      historyLoadFailed: string
+      historyPagingUnavailable: string
       loadingResponse: string
       loadingLocalModel: (model: string) => string
       processingPrompt: string

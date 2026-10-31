@@ -1,12 +1,12 @@
 name: lithermes
 repo: https://github.com/wjgoarxiv/lithermes
-sha: 7baecfc738e2a12b4f93d16d81305051236c2deb
+sha: b119ede337cb3ce27bc2a5eec0f68e09ed20f0c6
 subdir: packages/lithermes-installer/assets/lithermes-plugin
-description: Adds lit to Hermes Agent so a request is planned, built with tests and recorded checks, reviewed, and closed with a handoff note. 37 skills. MIT.
+description: Adds lit to Hermes Agent so a request is planned, built with tests and recorded checks, reviewed, and closed with a handoff note. 40 skills. MIT.
 maintainer: wjgoarxiv
 tier: community
 category: automation
-version: "1.0.28"
+version: "1.0.32"
 docs_url: https://github.com/wjgoarxiv/lithermes
 capabilities:
   provides_tools:

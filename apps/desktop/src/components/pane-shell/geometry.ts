@@ -13,8 +13,12 @@
 
 import { type RefObject, useLayoutEffect, useState, useSyncExternalStore } from 'react'
 
+import { TITLEBAR_FALLBACK_WINDOW_BUTTON_X, TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { $connection } from '@/store/session'
+import { $zoomPercent } from '@/store/zoom'
+
+import { MACOS_TRAFFIC_LIGHTS_WIDTH } from '../../../window-chrome'
 
 // ---------------------------------------------------------------------------
 // Rects
@@ -46,10 +50,9 @@ export function intersect(a: Rect, b: Rect): Rect | null {
 // ---------------------------------------------------------------------------
 
 /** Height of the band the native controls live in. */
-const CONTROLS_BAND_HEIGHT = 34
+const CONTROLS_BAND_HEIGHT = TITLEBAR_HEIGHT
 /** Width of the macOS traffic-light cluster measured from the buttons' x. */
-const MACOS_LIGHTS_WIDTH = 58
-const MACOS_FALLBACK_BUTTON_X = 24
+const MACOS_FALLBACK_BUTTON_X = TITLEBAR_FALLBACK_WINDOW_BUTTON_X
 
 interface ConnectionLike {
   windowButtonPosition?: { x: number; y: number } | null
@@ -62,7 +65,7 @@ interface ConnectionLike {
  * is nothing to dodge (fullscreen, plain browser, secondary windows with
  * hidden controls).
  */
-export function windowControlsRect(connection: ConnectionLike | null, viewportWidth: number): Rect | null {
+export function windowControlsRect(connection: ConnectionLike | null, viewportWidth: number, zoomFactor = 1): Rect | null {
   const inElectron = typeof window !== 'undefined' && 'hermesDesktop' in window
 
   if (!inElectron) {
@@ -96,7 +99,7 @@ export function windowControlsRect(connection: ConnectionLike | null, viewportWi
 
   const x = pos?.x ?? MACOS_FALLBACK_BUTTON_X
 
-  return { x: 0, y: 0, width: x + MACOS_LIGHTS_WIDTH, height: CONTROLS_BAND_HEIGHT }
+  return { x: 0, y: 0, width: x + MACOS_TRAFFIC_LIGHTS_WIDTH / zoomFactor, height: CONTROLS_BAND_HEIGHT }
 }
 
 // ---------------------------------------------------------------------------
@@ -111,7 +114,7 @@ function rectKey(r: Rect | null) {
 }
 
 function readControlsRect(): Rect | null {
-  const next = windowControlsRect($connection.get(), typeof window === 'undefined' ? 0 : window.innerWidth)
+  const next = windowControlsRect($connection.get(), typeof window === 'undefined' ? 0 : window.innerWidth, $zoomPercent.get() / 100)
   const key = rectKey(next)
 
   // Referentially stable snapshot for useSyncExternalStore.
@@ -125,10 +128,12 @@ function readControlsRect(): Rect | null {
 
 function subscribeControlsRect(cb: () => void) {
   const unsubConnection = $connection.subscribe(() => cb())
+  const unsubZoom = $zoomPercent.subscribe(() => cb())
   window.addEventListener('resize', cb)
 
   return () => {
     unsubConnection()
+    unsubZoom()
     window.removeEventListener('resize', cb)
   }
 }

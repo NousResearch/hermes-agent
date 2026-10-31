@@ -594,3 +594,11 @@ The detailed state contract lives in the scoped
 - [ ] `cursor-pointer`, focus ring, and `Esc`-to-close behave?
 - [ ] Touched a primitive, token, or variant? Its named-contract entry in this
       file is updated in the same change.
+
+### Native macOS titlebar geometry
+
+The macOS header is 44 CSS pixels high; other desktop headers remain 34.
+`window-chrome.ts` shares the band height and traffic-light geometry between
+Electron and the renderer. Keep native controls centered on that band when page
+scale changes; convert native coordinates to CSS pixels before reserving space.
+The toolbar uses the same centerline, without an OS-version-specific Y nudge.

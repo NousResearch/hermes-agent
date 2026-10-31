@@ -54,6 +54,11 @@ const TERMINAL_NOTIFY = new Map<string, { titleKey: string; toast: ToastKind }>(
   ['timed_out', { titleKey: 'notify.timedOutTitle', toast: 'warning' }]
 ])
 
+/** Events proving that a prior task problem is no longer the current state.
+ *  `completed` emits a success toast with the same stable id, replacing the
+ *  problem rather than being dismissed silently. */
+const SILENT_RECOVERY = new Set(['archived', 'changes_requested', 'claimed', 'review_requested', 'unblocked'])
+
 const seenEventIdByBoard = new Map<string, number>()
 const baselinePending = new Set<string>()
 
@@ -142,7 +147,16 @@ function rawErrorFor(kind: string, ev: CompletionEvent): string {
   return kind === 'gave_up' ? trimmed(ev.payload?.error) : ''
 }
 
-function notifyOne(kind: string, spec: { titleKey: string; toast: ToastKind }, ev: CompletionEvent): void {
+function notificationId(slug: string, taskId: string): string {
+  return `kanban:${slug}:${taskId}`
+}
+
+function notifyOne(
+  slug: string,
+  kind: string,
+  spec: { titleKey: string; toast: ToastKind },
+  ev: CompletionEvent
+): void {
   const taskId = (ev.task_id ?? '').trim()
   const body = bodyFor(kind, ev)
 
@@ -164,6 +178,7 @@ function notifyOne(kind: string, spec: { titleKey: string; toast: ToastKind }, e
   const title = t(spec.titleKey)
   const message = body || taskId || title
   host.notify({
+    ...(taskId ? { id: notificationId(slug, taskId) } : {}),
     kind: spec.toast,
     title,
     message,
@@ -206,12 +221,20 @@ export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent
 
     cursor = ev.id
     seenEventIdByBoard.set(slug, cursor)
-    const spec = TERMINAL_NOTIFY.get(ev.kind ?? '')
+    const kind = ev.kind ?? ''
+    const taskId = (ev.task_id ?? '').trim()
+    const spec = TERMINAL_NOTIFY.get(kind)
 
     if (spec) {
       try {
-        notifyOne(ev.kind!, spec, ev)
+        notifyOne(slug, kind, spec, ev)
         fired = true
+      } catch {
+        /* swallowed */
+      }
+    } else if (taskId && SILENT_RECOVERY.has(kind)) {
+      try {
+        host.dismissNotification(notificationId(slug, taskId))
       } catch {
         /* swallowed */
       }

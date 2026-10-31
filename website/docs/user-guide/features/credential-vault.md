@@ -57,13 +57,23 @@ Nothing to enable. If the `op` or `bw` command-line tool is installed and signed
 in, Hermes picks it up automatically and its website logins become fillable
 alongside the local ones. The first time the agent needs one of those logins it
 asks you to unlock the manager with your master password (masked prompt; once
-per session, 30 minutes idle). Hermes hands the master password to the manager's
+per session, 30 minutes idle by default). Hermes hands the master password to the manager's
 CLI through its non-interactive channel (`op signin` on stdin, `bw unlock
 --passwordenv` in the child's environment) and keeps only the session token in
 memory. The agent never sees the master password, the token, or any login.
 A manager item that lists several websites (say `amazon.co.uk`,
 `www.amazon.co.uk` and `eu.account.amazon.com`) fills on each of those exact
 origins; nothing is inferred beyond the URLs saved on the item.
+
+The native session idle timeout is profile-scoped and can be set with
+`vault.bitwarden.idle_timeout_seconds` (or `vault.onepassword.idle_timeout_seconds`).
+For example, `14400` allows four hours without a manager call. Only integer seconds
+from `1` to `86400` are accepted; missing or invalid values retain the 30-minute
+default. There is no `Never` mode. Status checks do not extend the timer; real
+manager calls do. Manual lock, owner-session release and process shutdown still
+discard the in-memory token. This is independent of the Bitwarden browser
+extension's timeout and `browser.inactivity_timeout`, which closes idle browser
+sessions rather than locking the vault.
 
 Prefer not to use a detected manager? `hermes vault sources --disable bitwarden`,
 or the switch in **Settings → Passwords & Logins**.

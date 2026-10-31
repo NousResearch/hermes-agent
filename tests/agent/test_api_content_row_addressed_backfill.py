@@ -179,9 +179,9 @@ class TestRealEarlyFlushAndOverrideLifecycle:
                     persist_user_message=clean_text,
                 )
 
-            # Live user message has the API text and api_content
+            # Live user message keeps the durable text; the API-only bytes ride api_content
             turn_msg = ctx.messages[ctx.current_turn_user_idx]
-            assert turn_msg["content"] == api_text
+            assert turn_msg["content"] == clean_text
             assert turn_msg["api_content"] == api_text
 
             # Database row has clean text as content, but api_text as api_content!

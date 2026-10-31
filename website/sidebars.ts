@@ -524,6 +524,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/payments/payments-mpp-agent',
+                    'user-guide/skills/optional/payments/payments-spend-gate',
                     'user-guide/skills/optional/payments/payments-stripe-link-cli',
                     'user-guide/skills/optional/payments/payments-stripe-projects',
                   ],
@@ -579,8 +580,11 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/security/security-1password',
+                    'user-guide/skills/optional/security/security-application-threat-model',
+                    'user-guide/skills/optional/security/security-data-share-review',
                     'user-guide/skills/optional/security/security-godmode',
                     'user-guide/skills/optional/security/security-oss-forensics',
+                    'user-guide/skills/optional/security/security-security-event-response',
                     'user-guide/skills/optional/security/security-sherlock',
                     'user-guide/skills/optional/security/security-unbroker',
                     'user-guide/skills/optional/security/security-web-pentest',
@@ -620,6 +624,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/software-development/software-development-python-debugpy',
                     'user-guide/skills/optional/software-development/software-development-rest-graphql-debug',
                     'user-guide/skills/optional/software-development/software-development-subagent-driven-development',
+                    'user-guide/skills/optional/software-development/software-development-tech-debt-audit',
                   ],
                 },
                 {
@@ -628,6 +633,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-web-development',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/web-development/web-development-accessibility-audit',
                     'user-guide/skills/optional/web-development/web-development-cloudflare-temporary-deploy',
                     'user-guide/skills/optional/web-development/web-development-har-derived-api-client',
                     'user-guide/skills/optional/web-development/web-development-page-agent',

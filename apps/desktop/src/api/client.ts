@@ -99,6 +99,9 @@ function remainingRequestBudget(deadline: number, signal?: AbortSignal): number 
 
 export class HermesGateway extends JsonRpcGatewayClient {
   private canonical = false
+  private nativeDial = false
+  private protocolReady: Promise<void> = Promise.resolve()
+  private rejectProtocolReady: ((error: Error) => void) | null = null
   private readonly protocol = new CanonicalDesktopProtocol()
   private readonly promptHandlers = new Set<ServerRequestHandler>()
   // A stored ID can exist in several profile islands (for example after import).
@@ -186,6 +189,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
   }
 
   override close(): void {
+    this.rejectProtocolReady?.(new Error('Hermes gateway connection closed before protocol readiness'))
     this.connectionGeneration++
     this.deliveredPrompts.clear()
     this.sessionProfiles.clear()
@@ -219,6 +223,10 @@ export class HermesGateway extends JsonRpcGatewayClient {
   }
 
   private deliverNormalized(event: GatewayEvent, handler: (event: GatewayEvent) => void): void {
+    if (event.type === 'gateway.ready' && (event.payload as { session_authority?: unknown } | undefined)?.session_authority === true) {
+      this.canonical = true
+    }
+
     const key = JSON.stringify([event.session_id, event.replay_epoch])
     // While an owner probe for this (session, epoch) runs, its frames wait and deliver in order.
     const parked = this.canonical && event.session_id ? this.parkedFrames.get(key) : undefined
@@ -328,12 +336,14 @@ export class HermesGateway extends JsonRpcGatewayClient {
   }
 
   protected override isDesktopLocal(): boolean {
-    return this.canonical
+    return this.nativeDial
   }
 
   override async connect(wsUrl: string): Promise<void> {
-    this.connectionGeneration++
-    this.canonical = new URL(wsUrl).searchParams.has('native_dial')
+    if (this.connectionState === 'open' || this.connectionState === 'connecting') { return this.protocolReady }
+    const generation = ++this.connectionGeneration
+    this.nativeDial = new URL(wsUrl).searchParams.has('native_dial')
+    this.canonical = this.nativeDial
     this.attached.clear()
     this.deliveredPrompts.clear()
     this.sessionProfiles.clear()
@@ -343,7 +353,40 @@ export class HermesGateway extends JsonRpcGatewayClient {
     this.reconciledEpochs.clear()
     this.parkedFrames.clear()
 
-    return super.connect(wsUrl)
+    let rejectReady: (error: Error) => void = () => {}
+
+    let stopReady = () => {}
+
+    let stopState = () => {}
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const ready = this.nativeDial ? Promise.resolve() : new Promise<void>((resolve, reject) => {
+      rejectReady = reject
+      stopReady = this.on('gateway.ready', () => resolve())
+      timer = setTimeout(() => reject(new Error('Hermes gateway protocol readiness timed out')), DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS)
+    })
+
+    this.protocolReady = ready
+    this.rejectProtocolReady = rejectReady
+
+    try {
+      const transport = super.connect(wsUrl)
+      stopState = this.onState(state => {
+        if (state === 'closed') { rejectReady(new Error('Hermes gateway disconnected before protocol readiness')) }
+      })
+      await Promise.all([transport, ready])
+    } catch (error) {
+      rejectReady(error instanceof Error ? error : new Error('Hermes gateway connection failed'))
+
+      if (generation === this.connectionGeneration) { this.invalidate('Hermes gateway protocol negotiation failed') }
+      throw error
+    } finally {
+      clearTimeout(timer)
+      stopReady()
+      stopState()
+
+      if (this.rejectProtocolReady === rejectReady) { this.rejectProtocolReady = null }
+    }
   }
 
   // Sessions attached over THIS socket. An authority subscription is per
@@ -388,8 +431,11 @@ export class HermesGateway extends JsonRpcGatewayClient {
   }
 
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
-    if (!this.canonical) { return super.request<T>(method, legacyParams(method, params), timeoutMs, signal) }
     const generation = this.connectionGeneration
+    await this.protocolReady
+    this.requireConnectionGeneration(generation)
+
+    if (!this.canonical) { return super.request<T>(method, legacyParams(method, params), timeoutMs, signal) }
     const deadline = requestDeadline(timeoutMs)
     // A truncating submit (edit / regenerate / restore) is the owner's rewind, then the submit.
     const rewind = method === 'prompt.submit' ? splitRewindSubmit(params) : null

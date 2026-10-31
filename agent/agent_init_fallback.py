@@ -51,7 +51,7 @@ def recompute_init_fallback_api_mode(agent, fb_client) -> None:
     ``_primary_runtime`` snapshot so ``restore_primary_runtime`` replays the recomputed mode.
     A detection failure keeps the primary's mode and never blocks the fallback itself.
     """
-    from agent.chat_completion_helpers import _fallback_api_mode_resolved
+    from agent.route_binding import _fallback_api_mode_resolved
     try:
         agent.api_mode = _fallback_api_mode_resolved(
             agent, agent.provider, agent.model, str(getattr(fb_client, "base_url", "") or ""))

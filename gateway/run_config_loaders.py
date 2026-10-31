@@ -178,7 +178,7 @@ class GatewayConfigLoadersMixin:
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         model: str = "",
     ) -> dict | None:
-        """Session ``/reasoning --session`` > per-model ``agent.reasoning_overrides`` > global.
+        """Session override > channel/topic override > per-model override > global.
 
         ``model`` must be the session's *effective* model (session ``/model`` override included);
         empty uses ``model.default``.
@@ -190,9 +190,46 @@ class GatewayConfigLoadersMixin:
                 return _r_state.conversation.reasoning_override
         from gateway.session_setting_commands import local_policy
         if (policy := local_policy(self, source)) is not None:
-            # A local session runs its frozen (or followed) level, not the profile's.
             return policy.current_reasoning_config(self, resolved_session_key)
+        config = getattr(self, "config", None)
+        if config and source is not None:
+            from gateway.channel_override_fields import _get_channel_override_field
+            from hermes_constants import parse_reasoning_effort
+            channel_effort = _get_channel_override_field(
+                config, source.platform, str(source.chat_id) if source.chat_id else "", "reasoning_effort",
+                thread_id=str(source.thread_id) if source.thread_id else None,
+                parent_id=str(source.parent_chat_id) if source.parent_chat_id else None,
+            )
+            if channel_effort is not None:
+                parsed = parse_reasoning_effort(channel_effort)
+                if parsed is not None:
+                    return parsed
+                if str(channel_effort).strip():
+                    logger.warning("Unknown channel reasoning_effort '%s', using configured default", channel_effort)
         return self._load_reasoning_config(model)
+
+    def _has_scoped_reasoning_override(
+        self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None
+    ) -> bool:
+        """Whether session/channel reasoning must stay fixed across model fallback."""
+        resolved_session_key = self._resolve_session_key_or_none(source, session_key)
+        if resolved_session_key:
+            state = self._peek_session_state(resolved_session_key)
+            if state is not None and state.conversation.reasoning_override is not None:
+                return True
+        if source is None or getattr(self, "config", None) is None:
+            return False
+        from gateway.channel_override_fields import _get_channel_override_field
+        from hermes_constants import parse_reasoning_effort
+        value = _get_channel_override_field(
+            self.config,
+            source.platform,
+            str(source.chat_id) if source.chat_id else "",
+            "reasoning_effort",
+            thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+            parent_id=(str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None),
+        )
+        return value is not None and parse_reasoning_effort(value) is not None
 
     def _set_session_reasoning_override(self, session_key: str, reasoning_config: Optional[dict]) -> None:
         """Set or clear the session-scoped reasoning override."""

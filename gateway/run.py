@@ -1734,17 +1734,17 @@ def _handoff_watch_scopes(runner: object) -> list:
 
 
 async def _resolve_handoff_watch_scopes(runner: object) -> list:
-    """``_handoff_watch_scopes`` for an on-loop watcher tick. Multiplex resolution walks the filesystem
-    (``profiles_to_serve``), so it hops to the executor; single-profile mode does no I/O and returns the
-    root poll directly — no per-tick thread spawn on the unbounded executor. A config-less stand-in
-    (tests) and a runner without the executor hop fall through to the plain resolver."""
+    """``_handoff_watch_scopes`` for an on-loop watcher tick, resolved on the warm scope worker
+    (``gateway.handoff_scope``): a pool that has to start a thread at submit time holds the loop in
+    ``Thread.start()``. Single-profile mode does no I/O and returns the root poll directly. A stand-in
+    without the executor hop (tests) resolves plainly."""
     config = getattr(runner, "config", None)
     if config is not None and not getattr(config, "multiplex_profiles", False):
         return [(None, None)]
-    offload = getattr(runner, "_run_in_executor_with_context", None)
-    if callable(offload):
-        return await offload(_handoff_watch_scopes, runner)
-    return _handoff_watch_scopes(runner)
+    if not callable(getattr(runner, "_run_in_executor_with_context", None)):
+        return _handoff_watch_scopes(runner)
+    from gateway.handoff_scope import resolve_off_loop
+    return await resolve_off_loop(_handoff_watch_scopes, runner)
 
 
 async def _reclaim_stale(runner: object) -> None:

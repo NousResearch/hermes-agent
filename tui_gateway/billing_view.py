@@ -9,6 +9,7 @@ so tests may still monkeypatch e.g. ``server._usage_payload``.
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from .method_ctx import bind_module
@@ -17,6 +18,11 @@ from .method_ctx import bind_module
 def _wire_str(value):
     """Decimal/number → wire string (None passes through)."""
     return None if value is None else str(value)
+
+
+def _billing_pick(result: dict, **fields) -> dict:
+    """``{"ok": True, <snake>: result[<camel>], ...}`` in ``fields`` order."""
+    return {"ok": True, **{key: result.get(src) for key, src in fields.items()}}
 
 
 def _serialize_billing_error(exc) -> dict:
@@ -104,9 +110,34 @@ def _serialize_billing_state(state, *, free_tier_account: bool = False) -> dict:
         "min_usd": _wire_str(state.min_usd), "max_usd": _wire_str(state.max_usd),
         "card": card, "payment_method": _serialize_payment_method(state.payment_method),
         "monthly_cap": mc, "auto_reload": _serialize_auto_reload(state.auto_reload, format_money),
+        "keep_going_on_credits": getattr(state, "keep_going_on_credits", None),
         "portal_url": state.portal_url, "error": state.error,
         # Shared two-bar dollar usage model so /topup matches /usage and /subscription; fail-open.
-        "usage": _usage_payload(state)}
+        "usage": _usage_payload(state),
+        # Usage-window gauges (today / week / month / large models): what Desktop Settings → Billing
+        # draws for window plans. Fail-open None.
+        "plan_usage": _plan_usage_payload(state)}
+
+
+def _plan_usage_payload(state) -> Optional[dict]:
+    """``ModelOptionProvider.plan_usage``-shaped block (usage-window gauges; None for every other account)
+    for the billing/subscription states. Window plans only: the plan shape comes from the snapshot
+    ``_usage_payload`` just cached (no round trip), and any other account (or no snapshot) returns None
+    without a lookup, exactly like main. ``warm=True`` refreshes an expired snapshot for window plans. Never raises."""
+    if not getattr(state, "logged_in", False):
+        return None
+    try:
+        from agent.credits_tracker import _window_seed_fields
+        from hermes_cli.nous_account import cached_nous_portal_account_info
+        snapshot = cached_nous_portal_account_info(any_age=True)
+        if snapshot is None or _window_seed_fields(getattr(snapshot, "usage_window", None)) is None:
+            return None
+        from hermes_cli.model_picker_usage import nous_picker_usage
+        usage = nous_picker_usage(warm=True)
+        return usage.to_payload() if usage is not None else None
+    except Exception:
+        logging.getLogger(__name__).debug("Plan usage payload unavailable", exc_info=True)
+        return None
 
 
 def _usage_payload(state) -> dict:
@@ -183,7 +214,8 @@ def _serialize_subscription_state(state) -> dict:
         "portal_url": state.portal_url, "error": state.error,
         # Shared two-bar usage model (account-info is the only source with top-up dollars);
         # fail-open → {available:false}; lazy when logged out.
-        "usage": _usage_payload(state)}
+        "usage": _usage_payload(state),
+        "plan_usage": _plan_usage_payload(state)}
 
 
 def _serialize_subscription_preview(p) -> dict:

@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
@@ -129,6 +131,15 @@ def stage_native(args) -> int:
         return subprocess.run(command, cwd=root, env=env, check=False).returncode
 
 
+@contextmanager
+def _phase(label: str):
+    """Name each staging phase and its duration: several run minutes without output."""
+    print(f"  {label}…", flush=True)
+    started = time.monotonic()
+    yield
+    print(f"  ✓ {label} ({time.monotonic() - started:.1f}s)", flush=True)
+
+
 def prune_staged_store(store_dir: Path, names: list[str]) -> None:
     """Prune this build's store, never the ambient user's tool store."""
     facts = Facts(store_dir / "facts.json", strict=True)
@@ -156,7 +167,7 @@ def prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
         prepared_path(out).unlink(missing_ok=True)
         (out / "manifest.json").unlink(missing_ok=True)
         return _prepare_native(out=out, ref=ref, source=Path(source).resolve(),
-                               cache=Path(cache).resolve(), tools=tools, env=env)
+                               cache=Path(cache).absolute(), tools=tools, env=env)
 
 
 def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
@@ -168,11 +179,11 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     store_dir.mkdir(parents=True, exist_ok=True)
     repo_dir = out / "hermes-agent"
     from scripts.bundles.payload import INERT_SNAPSHOT_DIRS, snapshot
-    print(f"staging repo snapshot ({ref})…", flush=True)
     revision = subprocess.check_output(
         ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=source,
         text=True, encoding="utf-8").strip()
-    snapshot(source, revision, repo_dir, exclude=INERT_SNAPSHOT_DIRS)
+    with _phase(f"staging repo snapshot ({ref})"):
+        snapshot(source, revision, repo_dir, exclude=INERT_SNAPSHOT_DIRS)
     # PM's provider code reads its adjacent lock. Never combine that tool graph
     # with a revision selecting different pins.
     if (repo_dir / "pm/lock.json").read_bytes() != paths.lockfile_path().read_bytes():
@@ -185,10 +196,12 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     ]
     from pm import prepare_tools, stage_tools
 
-    prepare_tools(names, out=Path(tools) if tools is not None else store_dir,
-                  target=current_target(), cache=cache)
+    with _phase(f"preparing {len(names)} pinned tools"):
+        prepare_tools(names, out=Path(tools) if tools is not None else store_dir,
+                      target=current_target(), cache=cache)
     if tools is not None:
-        stage_tools(names, source_store=Path(tools), out=store_dir, target=current_target())
+        with _phase("copying verified tools into the payload store"):
+            stage_tools(names, source_store=Path(tools), out=store_dir, target=current_target())
 
     # Prune the staged store BEFORE the venv sync and packaging: drop the
     # fetch-<sha> download-cache archives (needed only at install time — dead
@@ -199,7 +212,8 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     # Only this build's store is ours to prune; machine-wide partials are not.
     # Cached facts may still name packages removed from the current selection.
     # Retain the dependency closure before using facts as the deletion roots.
-    prune_staged_store(store_dir, names)
+    with _phase("pruning the staged tool store"):
+        prune_staged_store(store_dir, names)
 
 
     facts = Facts(store_dir / "facts.json")
@@ -212,8 +226,8 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
 
     if python_bin is None:
         raise FileNotFoundError("staged Python executable is missing")
-    stage_pm_runtime(out, python_bin, repo_dir, cache=cache)
-    print("✓ pm-runtime (independent locked dependencies)", flush=True)
+    with _phase("pm-runtime (independent locked dependencies)"):
+        stage_pm_runtime(out, python_bin, repo_dir, cache=cache)
 
     # Build + sync INSIDE the staged repo: the editable project install
     # must point at the payload's own tree, not this checkout.

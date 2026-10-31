@@ -11,17 +11,17 @@ from hermes_cli.doctor_report import (
     warn_on_error,
 )
 from hermes_cli.sizefmt import format_bytes as _human_bytes
-from hermes_state_common import FTS_STORAGE_VERSION
 from hermes_state_holders import read_only_db_uri
 
 
 def _doctor_memory_config(hermes_home: Path | None = None) -> dict:
     """Return the effective memory section used by doctor diagnostics."""
+    from hermes_cli.config_backend import config_exists
     from hermes_cli.doctor import HERMES_HOME
     try:
         from hermes_cli.config_effective import load_user_config_effective
         config_path = (hermes_home if hermes_home is not None else HERMES_HOME) / "config.yaml"
-        if not config_path.exists():
+        if not config_exists(config_path):
             return {}
         section = load_user_config_effective(config_path).get("memory")
         return section if isinstance(section, dict) else {}
@@ -94,12 +94,12 @@ def _render_state_db_stats(stats: dict, holders=None, host_note: str = "") -> li
                           "(stop the listed processes; the host gateway's own retry then rebuilds, or run "
                           "'hermes sessions optimize-storage' with every holder stopped)"))
     # Oversized DB: suggest auto_prune, plus the offline optimize-storage pass when the FTS rebuild is
-    # pending OR the DB predates the current trigram layout (fts_storage_version < FTS_STORAGE_VERSION).
+    # pending, an earlier run stopped before tearing down the old index, or the stored FTS layout is an
+    # older release's (not just a lagging marker).
     if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:
         detail = "consider enabling sessions.auto_prune in config.yaml to bound growth"
-        stale_trigram = (fts is not None and fts.get("messages_fts_trigram")
-                         and (stats.get("fts_storage_version") or 0) < FTS_STORAGE_VERSION)
-        if stats.get("fts_rebuild_pending") or stale_trigram:
+        structural_fts_upgrade = bool(stats.get("fts_storage_upgrade_needed"))
+        if stats.get("fts_rebuild_pending") or stats.get("fts_teardown_pending") or structural_fts_upgrade:
             detail += "; run 'hermes sessions optimize-storage' offline (with the host gateway stopped) to compact FTS storage"
         lines.append(("warn", f"state.db is large ({_human_bytes(logical)})", f"({detail})"))
     # WAL runaway is deliberately NOT warned here: _state_db_wal already warns above 50 MB and offers --fix.
@@ -263,6 +263,9 @@ def _check_scratch_dir(hermes_home: Path, _DHH: str) -> None:
     scratch = get_scratch_dir(hermes_home, prune=False)
     size = _human_bytes(scratch_dir_usage_bytes(scratch))
     check_ok(f"{_DHH}/cache/scratch/ is the scratch dir (TMPDIR; {size}, entries pruned after {SCRATCH_MAX_IDLE_HOURS}h idle)")
+    from hermes_constants_scratch_stuck import removal_hint, stuck_entries
+    for entry in stuck_entries(scratch):
+        check_warn(f"{_DHH}/cache/scratch/{entry.name}/ holds files you may not delete, so the prune skips it — {removal_hint(entry)}")
     for name, nbytes in unpruned_cache_hogs(hermes_home):
         check_warn(
             f"{_DHH}/cache/{name}/ is {_human_bytes(nbytes)} and outside every pruner "
@@ -624,6 +627,11 @@ def _check_memory_provider(should_fix: bool, f: Finding) -> None:
     if is_core_memory_provider(name):
         check_ok("Built-in memory active", "(no external provider configured — this is fine)")
         return
+    from plugins.memory import parked_provider_notice
+    if parked_provider_notice(name):
+        check_warn(f"{name} is turned off", "(plugins.disabled lists it, so built-in memory is used)")
+        f.manual_issues.append(f"Memory provider '{name}' is turned off — run: hermes plugins enable {name}")
+        return
     checker, missing_row, missing_issue, label = _MEMORY_PROVIDER_CHECKS.get(name, (None, None, None, name))
     try:
         checker(f.issues) if checker else _memory_provider_generic(name)
@@ -636,9 +644,45 @@ def _check_memory_provider(should_fix: bool, f: Finding) -> None:
         check_warn(f"{label} check failed", str(_e))
 
 
+@doctor_check("")  # best-effort: an unreadable config is the config check's finding
+def _check_plugins_disabled_by_update(should_fix: bool, f: Finding) -> None:
+    """Plugins an update turned off (pm.plugin_eviction): every later update retries them."""
+    from hermes_cli.doctor import HERMES_HOME
+    from pm.plugins_state import RECORD, read_home_selection
+    plugins = (read_home_selection(HERMES_HOME) or {}).get("plugins") or {}
+    record, disabled = plugins.get(RECORD), set(plugins.get("disabled") or ())
+    entries = {name: entry for name, entry in record.items() if name in disabled} if isinstance(record, dict) else {}
+    if not entries:
+        return
+    _section("Plugins Turned Off by an Update")
+    for name, entry in entries.items():
+        reason = entry.get("reason", "") if isinstance(entry, dict) else ""
+        check_warn(f"{name} is off", f"({reason})" if reason else "")
+        f.manual_issues.append(f"Plugin '{name}' was turned off by an update; a later update retries it, "
+                               f"or run: hermes plugins enable {name}")
+
+
+@doctor_check("")  # best-effort: an unreadable config is the config check's finding
+def _check_plugins_in_both_lists(should_fix: bool, f: Finding) -> None:
+    """A plugin in both plugins.enabled and plugins.disabled loads nowhere (the disable wins). Older
+    updates left plugins in that state when they had to turn them off. Judged by the loader's gate."""
+    from hermes_cli.plugins_discovery import plugins_in_both_lists
+    both = plugins_in_both_lists()
+    if not both:
+        return
+    _section("Plugins Listed as Both Enabled and Disabled")
+    for name in both:
+        check_warn(f"{name} will not load", "(plugins.disabled wins)")
+        f.manual_issues.append(f"Plugin '{name}' is in both plugins.enabled and plugins.disabled, so it is off. "
+                               f"Turn it on with `hermes plugins enable {name}` (a memory provider also needs "
+                               f"memory.provider set), or keep it off with `hermes plugins disable {name}`")
+
+
 @doctor_check("")  # best-effort: profile enumeration must never break doctor
 def _check_profiles(should_fix: bool, f: Finding) -> None:
-    from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
+    from hermes_constants import PROFILE_ID_RE
+    from hermes_cli.config_backend import config_exists
+    from hermes_cli.profiles import _wrapper_path, list_profiles, _get_wrapper_dir, profile_exists
     import re as _re
     named_profiles = [p for p in list_profiles() if not p.is_default]
     if not named_profiles:
@@ -649,8 +693,8 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
     for p in named_profiles:
         parts = [text for cond, text in (
             (p.gateway_running, "gateway running"), (p.model, (p.model or "")[:30]),
-            (not (p.path / "config.yaml").exists(), "⚠ missing config"), (not (p.path / ".env").exists(), "no .env"),
-            (not (wrapper_dir / p.name).exists(), "no alias")) if cond]
+            (not config_exists(p.path / "config.yaml"), "⚠ missing config"), (not (p.path / ".env").exists(), "no .env"),
+            (p.alias_path is None, "no alias")) if cond]
         check_ok(f"  {p.name}: {', '.join(parts) if parts else 'configured'}")
     # Orphan wrappers
     if wrapper_dir.is_dir():
@@ -660,7 +704,9 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
             with warn_on_error(""):
                 _m = _re.search(r"hermes -p (\S+)", wrapper.read_text(encoding="utf-8-sig"))
                 if _m and not profile_exists(_m.group(1)):
-                    check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
+                    alias = wrapper.stem if _wrapper_path(wrapper.stem) == wrapper else wrapper.name
+                    fix = f"hermes profile alias {alias} --remove" if PROFILE_ID_RE.match(alias) else f"delete {wrapper}"
+                    check_warn(f"Orphan alias: {alias} → profile '{_m.group(1)}' no longer exists", f"(remove with: {fix})")
     # Same helper as the multiplex migration preflight, so doctor names the duplicates that make
     # `hermes gateway migrate --multiplex` refuse (and made pre-multiplex standalone gateways race).
     from hermes_cli.gateway_migrate import duplicate_credential_findings

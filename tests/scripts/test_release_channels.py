@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import base64
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -11,6 +12,8 @@ from urllib.parse import parse_qs, urlsplit
 import xml.sax.saxutils
 
 import pytest
+
+from scripts.releases import lanes as lane_set
 
 
 @contextmanager
@@ -109,8 +112,8 @@ def test_unknown_channel_created_over_http_retains_identity_and_immutable_reques
             reader.resolve("not-registered-in-code")
         record = pub.create("not-registered-in-code")
         assert reader.resolve(record["name"]).manifest is None
-        one = pub.allocate(record["name"], "a" * 40, "1.2.3", {"HERMES_GUEST_ONBOARDING": "1"})
-        two = pub.allocate(record["name"], "a" * 40, "1.2.3", {"HERMES_GUEST_ONBOARDING": "0"})
+        one = pub.allocate(record["name"], "a" * 40, "1.2.3", {"HERMES_DATA_DIR_SUFFIX": "-a"})
+        two = pub.allocate(record["name"], "a" * 40, "1.2.3", {"HERMES_DATA_DIR_SUFFIX": "-b"})
         assert one["identity"] == two["identity"] == record["identity"]
         assert one["buildId"] != two["buildId"]
         assert one["sequence"] < two["sequence"]
@@ -460,6 +463,12 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
                         name = f"{identity['artifactNamePascal']}-2.0.0-mac-{arch}.{suffix}"
                         files[name] = (name + " fixture bytes").encode()
                     metadata["filename"] = f"{identity['artifactNamePascal']}-2.0.0-mac-{arch}.zip"
+                    # The per-arch electron feed leg, as the macOS build stages it.
+                    leg = {"version": "2.0.0", "files": [
+                        {"url": name, "size": len(files[name]),
+                         "sha512": base64.b64encode(hashlib.sha512(files[name]).digest()).decode("ascii")}
+                        for name in (f"{identity['artifactNamePascal']}-2.0.0-mac-{arch}.{ext}" for ext in ("zip", "dmg"))]}
+                    files[f"{arch}-stable-mac.yml"] = canonical_json(leg)
                 else:
                     metadata.update(publisher="CN=Fixture", applicationId=identity["appNamePascal"])
                     files[f"{identity['artifactNamePascal']}-2.0.0-win-{arch}.msix"] = b"fixture msix"
@@ -520,7 +529,7 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
                             lambda policy, env, **_kwargs: (tag, commit))
         monkeypatch.setattr(channel_releases.stable, "final_context",
                             lambda env: (tag, commit, {"claim_epoch": 1_787_965_323,
-                                                       "skip_bundles": False, "skip_tests": False}))
+                                                       "lanes": lane_set.DEFAULT}))
         monkeypatch.setattr(channel_releases, "accepted_stable", lambda *args, **kwargs: accepted)
         promotion_attempts = [0]
         def promote_stable_feeds(*args):
@@ -534,12 +543,15 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
         def put(**kwargs):
             pub.store.put(kwargs["key"], __import__("pathlib").Path(kwargs["file"]).read_bytes())
         monkeypatch.setattr(r2, "put", put)
+        # A previous bundled release already owns the stable head.
+        pub.store.put("releases/stable/release-candidates.json", b'{"tag":"v1.9.0"}')
         with pytest.raises(ChannelError, match="fixture feed failure"):
             channel_releases.publish_release("stable-release", {"GITHUB_REPOSITORY": pub.repository}, tmp_path / "failed")
         assert pub._read("released")[0]["head"] is None
         result = channel_releases.publish_release("stable-release", {"GITHUB_REPOSITORY": pub.repository}, tmp_path / "downloaded")
         assert result["name"] == "released"
         assert pub.reader.resolve("released").manifest == manifest
+        assert json.loads(pub.store.get("releases/stable/release-candidates.json")[0]) == accepted
         assert manifest["request"]["sourceVersion"] == "2.0.0"
         before = dict(objects)
         assert channel_releases.publish_release("stable-release", {"GITHUB_REPOSITORY": pub.repository}, tmp_path / "retry") == result
@@ -557,7 +569,7 @@ def test_protected_transaction_refuses_custom_workflow_and_unpublished_release(m
            "GITHUB_REPOSITORY": "example/hermes-agent", "RELEASE_TAG": attempt,
            "RELEASE_COMMIT": commit, "RELEASE_CLAIM_TAG": attempt,
            "RELEASE_CLAIM_OBJECT": "b" * 40,
-           "GITHUB_WORKFLOW_REF": "example/hermes-agent/.github/workflows/stable-release.yml@refs/tags/" + attempt}
+           "GITHUB_WORKFLOW_REF": "example/hermes-agent/.github/workflows/stable-release.yml@refs/heads/main"}
     published = [True]
 
     def final_context(_env, run):
@@ -592,7 +604,7 @@ def test_stable_admission_requires_an_attempt_ref_release_tag(monkeypatch):
            "GITHUB_REPOSITORY": "example/hermes-agent", "RELEASE_TAG": attempt,
            "RELEASE_COMMIT": commit, "RELEASE_CLAIM_TAG": attempt,
            "RELEASE_CLAIM_OBJECT": "b" * 40,
-           "GITHUB_WORKFLOW_REF": "example/hermes-agent/.github/workflows/stable-release.yml@refs/tags/" + attempt}
+           "GITHUB_WORKFLOW_REF": "example/hermes-agent/.github/workflows/stable-release.yml@refs/heads/main"}
     monkeypatch.setattr(channel_releases.stable, "final_context",
                         lambda _env, run: ("v1.2.3", commit, {}))
 
@@ -641,15 +653,15 @@ def test_accepted_stable_reads_the_release_archive_by_tag(monkeypatch):
         objects[key] = raw
         candidate_env = {"CANDIDATE_MANIFEST_SHA256": hashlib.sha256(raw).hexdigest(), "CANDIDATE_MANIFEST_URL": pub.public_base + "/" + key}
         assert channel_releases.accepted_stable(pub, candidate_env, attempt, commit, release_epoch,
-                                                skip_tests=False) == candidate
+                                                lanes=lane_set.DEFAULT) == candidate
         # Passed smokes cannot stand behind a claim that skipped tests, or the reverse.
         with pytest.raises(ValueError, match="test policy"):
             channel_releases.accepted_stable(pub, candidate_env, attempt, commit, release_epoch,
-                                             skip_tests=True)
+                                             lanes=lane_set.select(without=["smoke"]))
         faults["stale_public"] = b"{}"
         with pytest.raises(ChannelError):
             channel_releases.accepted_stable(pub, candidate_env, attempt, commit, release_epoch,
-                                             skip_tests=False)
+                                             lanes=lane_set.DEFAULT)
 
 
 def test_request_inputs_are_rejected_before_allocating():
@@ -694,3 +706,34 @@ def test_stable_requests_name_the_attempt_archive_only_when_given():
         assert pub.request(bare["buildId"]) == bare
         with pytest.raises(ChannelError, match="(?i)archive ref"):
             allocate("c" * 40, "2.2.0", "rc.2-v2.9.9")
+
+
+def test_stable_receipts_bind_the_attempt_ref_while_metadata_binds_the_payload_tag(tmp_path):
+    """Stable stages handoffs under rc.N-vX.Y.Z but record() stamps vX.Y.Z."""
+    from scripts.releases import channel_releases
+    from scripts.releases.handoff import receipt_name
+    from hermes_cli.release_channels import ChannelError, canonical_json
+    attempt, payload, commit = "rc.15-v2.0.0", "v2.0.0", "e" * 40
+    legs = ("darwin-arm64", "win32-arm64", "win32-x64")
+
+    def stage(metadata_tag):
+        for leg in legs:
+            platform, arch = leg.split("-")
+            native = "macos" if platform == "darwin" else "windows"
+            name = f"metadata-{native}-{arch}.json"
+            body = canonical_json({"platform": native, "arch": arch, "tag": metadata_tag, "commit": commit})
+            (tmp_path / name).write_bytes(body)
+            rows = [{"path": name, "size": len(body), "sha256": hashlib.sha256(body).hexdigest()}]
+            receipt = {"schema": 1, "tag": attempt, "commit": commit, "name": leg, "files": rows}
+            (tmp_path / receipt_name(leg)).write_bytes(canonical_json(receipt))
+
+    stage(payload)
+    native = channel_releases.read_native_receipts(tmp_path, attempt, commit, legs, payload_tag=payload)
+    assert {row["tag"] for row in native["packages"]} == {payload}
+    # Without the payload tag the rows are held to the attempt ref and refused.
+    with pytest.raises(ChannelError, match="identity mismatch"):
+        channel_releases.read_native_receipts(tmp_path, attempt, commit, legs)
+    # A row stamped with the attempt ref is not the published payload.
+    stage(attempt)
+    with pytest.raises(ChannelError, match="identity mismatch"):
+        channel_releases.read_native_receipts(tmp_path, attempt, commit, legs, payload_tag=payload)

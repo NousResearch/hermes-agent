@@ -1,14 +1,21 @@
 import { useStore } from '@nanostores/react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useEffect } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/i18n'
 import { COMPLETION_SOUND_VARIANTS, previewCompletionSound } from '@/lib/completion-sound'
 import { triggerHaptic } from '@/lib/haptics'
+import { hostHas } from '@/lib/host-capabilities'
 import { Bell, Play } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import {
+  $browserNotificationPermission,
+  askBrowserNotificationPermission,
+  refreshBrowserNotificationPermission
+} from '@/store/browser-notification-permission'
 import { $completionSoundVariantId, setCompletionSoundVariantId } from '@/store/completion-sound'
+import { $hapticsMuted, setHapticsMuted } from '@/store/haptics'
 import {
   $nativeNotifyPrefs,
   NATIVE_NOTIFICATION_KINDS,
@@ -29,6 +36,37 @@ function Caption({ children, className }: { children: ReactNode; className?: str
   return <p className={cn(CAPTION, className)}>{children}</p>
 }
 
+/** Webapp only: the browser's notification permission, asked from a click here
+ *  or on Send test notification, never on page load. The tab title flashes
+ *  whatever the answer. */
+function BrowserPermissionRow() {
+  const { t } = useI18n()
+  const copy = t.settings.notifications.browserPermission
+  const permission = useStore($browserNotificationPermission)
+
+  useEffect(refreshBrowserNotificationPermission, [])
+
+  return (
+    <ListRow
+      action={
+        permission === 'default' ? (
+          <Button
+            onClick={() => void askBrowserNotificationPermission()}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            {copy.allow}
+          </Button>
+        ) : undefined
+      }
+      description={copy.states[permission]}
+      id={settingElementId(SETTING_IDS.notifications.browserPermission)}
+      title={copy.title}
+    />
+  )
+}
+
 interface NotificationsSettingsProps {
   subpage?: string
 }
@@ -36,6 +74,7 @@ interface NotificationsSettingsProps {
 export function NotificationsSettings({ subpage }: NotificationsSettingsProps = {}) {
   const { t } = useI18n()
   const prefs = useStore($nativeNotifyPrefs)
+  const muted = useStore($hapticsMuted)
   const completionSoundVariantId = useStore($completionSoundVariantId)
   const copy = t.settings.notifications
   const showAlerts = subpage === undefined || subpage === 'alerts'
@@ -45,6 +84,11 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
 
   const runTest = async () => {
     triggerHaptic('open')
+
+    if (hostHas('browserNotifications')) {
+      await askBrowserNotificationPermission()
+    }
+
     const ok = await sendTestNativeNotification(copy.testTitle, copy.testBody)
     notify({ kind: ok ? 'info' : 'error', message: ok ? copy.testSent : copy.testUnsupported })
   }
@@ -64,6 +108,8 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
             onChange={setNativeNotifyEnabled}
           />
 
+          {hostHas('browserNotifications') && <BrowserPermissionRow />}
+
           {NATIVE_NOTIFICATION_KINDS.map(kind => (
             <ToggleRow
               checked={prefs.enabled && prefs.kinds[kind]}
@@ -79,51 +125,60 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
       )}
 
       {showSounds && (
-        <ListRow
-          action={
-            <>
-              <Select
-                onValueChange={value => {
-                  const variantId = Number.parseInt(value, 10)
+        <>
+          <ToggleRow
+            checked={muted}
+            description={copy.muteSoundsDesc}
+            id={settingElementId(SETTING_IDS.notifications.muteSounds)}
+            label={copy.muteSoundsTitle}
+            onChange={setHapticsMuted}
+          />
+          <ListRow
+            action={
+              <>
+                <Select
+                  onValueChange={value => {
+                    const variantId = Number.parseInt(value, 10)
 
-                  setCompletionSoundVariantId(variantId)
-                  previewCompletionSound(variantId)
-                  triggerHaptic('selection')
-                }}
-                value={String(completionSoundVariantId)}
-              >
-                <SelectTrigger className={cn('min-w-56', CONTROL_TEXT)}>
-                  <SelectValue />
-                </SelectTrigger>
+                    setCompletionSoundVariantId(variantId)
+                    previewCompletionSound(variantId)
+                    triggerHaptic('selection')
+                  }}
+                  value={String(completionSoundVariantId)}
+                >
+                  <SelectTrigger className={cn('min-w-56', CONTROL_TEXT)}>
+                    <SelectValue />
+                  </SelectTrigger>
 
-                <SelectContent>
-                  {COMPLETION_SOUND_VARIANTS.map(variant => (
-                    <SelectItem key={variant.id} value={String(variant.id)}>
-                      {variant.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                  <SelectContent>
+                    {COMPLETION_SOUND_VARIANTS.map(variant => (
+                      <SelectItem key={variant.id} value={String(variant.id)}>
+                        {variant.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
 
-              <Button
-                className="gap-1.5"
-                onClick={() => {
-                  previewCompletionSound()
-                  triggerHaptic('crisp')
-                }}
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                <Play className="size-3.5" />
-                {copy.completionSoundPreview}
-              </Button>
-            </>
-          }
-          description={copy.completionSoundDesc}
-          id={settingElementId(SETTING_IDS.notifications.completionSound)}
-          title={copy.completionSoundTitle}
-        />
+                <Button
+                  className="gap-1.5"
+                  onClick={() => {
+                    previewCompletionSound()
+                    triggerHaptic('crisp')
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <Play className="size-3.5" />
+                  {copy.completionSoundPreview}
+                </Button>
+              </>
+            }
+            description={copy.completionSoundDesc}
+            id={settingElementId(SETTING_IDS.notifications.completionSound)}
+            title={copy.completionSoundTitle}
+          />
+        </>
       )}
 
       {showAlerts && (

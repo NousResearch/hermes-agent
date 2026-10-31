@@ -356,6 +356,20 @@ def _deps_hold_resume(root: Path) -> bool:
         return False
 
 
+def _paused_on_unreadable_head(token: dict) -> bool:
+    """Every pause in the set already found HEAD unreadable and none bound a tree move since.
+
+    The gateways were serving exactly this tree when they stopped, and no step of the update wrote
+    a file (``_checkout_move`` records its targets/paths before git writes), so restarting them
+    leaves the tree as they knew it. Without this a ``.git`` git rejects (an empty ``HEAD``) kept
+    the set stopped on every later launch, since no update can fetch until the checkout is repaired.
+    """
+    baselines = token.get("baselines") or []
+    return bool(baselines) and all(
+        b.get("pre_sha") is None and not (b.get("move_targets") or b.get("move_paths") or b.get("landed"))
+        for b in baselines)
+
+
 def tree_is_whole(token: dict, root: Path | None = None) -> tuple[bool, str]:
     """May paused gateways start on this checkout now? ``(verdict, reason when not)``."""
     from hermes_cli._early_recovery import interrupted_pull_marker
@@ -365,6 +379,8 @@ def tree_is_whole(token: dict, root: Path | None = None) -> tuple[bool, str]:
             return False, "the checkout is mid-pull (interrupted-pull marker present)"
         head = head_sha(root)
         if head is None:
+            if _paused_on_unreadable_head(token):
+                return True, ""
             return False, "the checkout HEAD is unreadable"
         baselines = token.get("baselines") or []
         at_head = [b for b in baselines if b.get("pre_sha") == head]

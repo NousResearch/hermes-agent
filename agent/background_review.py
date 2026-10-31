@@ -228,6 +228,14 @@ def _review_input_token_budget(
 def load_background_review_settings() -> tuple[bool, dict[str, Any]]:
     """Single config read -> ``(enabled, task_cfg)``. Fail-open (``enabled=True``) so a broken
     config never silently disables reviews — but WARN so the cost is visible."""
+    from agent.safe_worker_policy import safe_worker_enabled
+    from gateway.session_finite import finite_turn_required
+
+    # A finite gateway turn (`chat -q` / `-z`) is one-shot like the in-process run, whose exit
+    # takes the daemon review thread with it; the long-lived gateway would otherwise fork a
+    # ~30K-token review after the viewer has already gone.
+    if safe_worker_enabled() or finite_turn_required() is True:
+        return False, {}
     try:
         from hermes_cli.config import load_config_readonly
         from utils import is_truthy_value
@@ -567,7 +575,8 @@ def _preview(text: str, limit: int) -> str:
 
 # Memory op -> (glyph, which field carries the preview, preview length).
 _MEMORY_OP_FORMATS: dict[str, tuple[str, str, int]] = {
-    "add": ("➕", "content", 120), "replace": ("✏️", "content", 120), "remove": ("➖", "old_text", 60)
+    "add": ("➕", "content", 120), "replace": ("✏️", "content", 120), "patch": ("✏️", "content", 120),
+    "remove": ("➖", "old_text", 60)
 }
 
 
@@ -765,19 +774,23 @@ def _snapshot_review_usage(review_agent: Any) -> dict[str, Any]:
     }
 
 
-def _record_review_usage_to_parent(parent_agent: Any, usage: dict[str, Any]) -> None:
-    """Record a fork's usage against the parent session (best-effort, never raises). The fork has
-    ``_session_db = None`` so conversation_loop's DB-gated accounting never sees its calls; route
-    them through the aux-accounting chokepoint, which writes only ``session_model_usage`` — never
-    the transcript or ``sessions`` row."""
+def _record_review_usage_to_parent(
+    parent_agent: Any, usage: dict[str, Any], *, task: str = "background_review",
+    session_id: Optional[str] = None,
+) -> None:
+    """Record a fork's usage against the parent session (or ``session_id`` when given) under
+    ``task`` (best-effort, never raises). The fork has ``_session_db = None`` so
+    conversation_loop's DB-gated accounting never sees its calls; route them through the
+    aux-accounting chokepoint, which writes only ``session_model_usage`` — never the transcript
+    or ``sessions`` row."""
     try:
         session_db = getattr(parent_agent, "_session_db", None)
-        session_id = getattr(parent_agent, "session_id", None)
+        session_id = session_id or getattr(parent_agent, "session_id", None)
         counts = {key: int(usage.get(key) or 0) for key in _USAGE_COUNTERS}
         if session_db is None or not session_id or not any(counts.values()):
             return  # no DB, or the fork made no successful API calls (e.g. failed at spawn)
         session_db.record_auxiliary_usage(
-            session_id, task="background_review", model=usage.get("model"),
+            session_id, task=task, model=usage.get("model"),
             billing_provider=usage.get("provider"), billing_base_url=usage.get("base_url"),
             estimated_cost_usd=usage.get("estimated_cost_usd"),
             api_call_count=counts.pop("api_calls"), **counts,
@@ -1133,6 +1146,20 @@ def _release_fork_clients(review_agent: Any) -> None:
     session-bound (close() kills that session's terminal processes), so release only clients."""
     with suppress(Exception):
         review_agent.release_clients()
+
+
+def release_cache_parity_fork(
+    parent_agent: Any, fork: Any, *, task: str, session_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Teardown for a one-shot :func:`build_cache_parity_fork` caller (``/btw``, plugin side
+    questions): attribute the fork's usage under ``task`` to ``session_id`` (default: the parent's
+    current session), then release only its clients (never ``close()``, which tears down the
+    shared session's terminal sandbox, browser and file state). Never raises; returns the usage
+    snapshot."""
+    usage = _snapshot_review_usage(fork)
+    _record_review_usage_to_parent(parent_agent, usage, task=task, session_id=session_id)
+    _release_fork_clients(fork)
+    return usage
 
 
 def _run_review_fork(

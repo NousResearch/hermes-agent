@@ -918,6 +918,20 @@ class TestSSHConfigWriteGate:
         assert "single-query" in result["error"]
         assert not ssh_config.exists()
 
+    def test_relative_path_is_gated_from_the_task_cwd_not_the_process_cwd(self, ssh_config, tmp_path,
+                                                                           monkeypatch):
+        """A gateway-hosted turn's workspace is not the process cwd: the gate must judge the path
+        the write will actually land on, or a relative spelling skips approval."""
+        ws, elsewhere = tmp_path / "ws", tmp_path / "elsewhere"
+        for d in (ws, elsewhere, ssh_config.parent):
+            d.mkdir()
+        (ws / "sshdir").symlink_to(ssh_config.parent, target_is_directory=True)
+        monkeypatch.setenv("TERMINAL_CWD", str(ws))
+        monkeypatch.chdir(elsewhere)
+        from tools.file_tools_write_guards import _check_approval_required_write
+
+        assert "BLOCKED" in (_check_approval_required_write(["sshdir/config"], "ssh-gate-task") or "")
+
 
 class TestSecretFileReadRedaction:
     """#110567: read_file / search_files must classify the RESOLVED path and run the

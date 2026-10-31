@@ -372,6 +372,22 @@ def test_bearer_authenticates_gated_route_without_cookie(gated_client):
     assert r.json()["user_id"] == "stub-user-1"
 
 
+def test_a_native_bearer_reads_the_full_webapp_status(gated_client, monkeypatch):
+    """The Webapp trims a signed-out ``/api/status``; a Desktop's redeemed bearer is signed in."""
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    monkeypatch.setattr(web_server.app.state, "listener_public_url", "", raising=False)
+    verifier, challenge = _make_pkce()
+    code, _state = _walk_native_login(
+        gated_client, redirect_uri="http://127.0.0.1:53999/cb", challenge=challenge)
+    at = gated_client.post(
+        "/auth/native/token", json={"code": code, "code_verifier": verifier}).json()["access_token"]
+    gated_client.cookies.clear()
+
+    assert "install_id" not in gated_client.get("/api/status").json()
+    full = gated_client.get("/api/status", headers={"Authorization": f"Bearer {at}"}).json()
+    assert full["install_id"] and "profiles" in full
+
+
 
 
 # ---------------------------------------------------------------------------

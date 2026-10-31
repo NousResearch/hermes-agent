@@ -54,13 +54,8 @@ class SessionRecoveryMixin:
     @staticmethod
     def _profile_from_session_key(session_key: Optional[str]) -> Optional[str]:
         """Extract the profile namespace encoded in a gateway session key."""
-        if not session_key:
-            return None
-        parts = str(session_key).split(":")
-        if len(parts) < 2 or parts[0] != "agent":
-            return None
-        from gateway.session import profile_from_session_key_namespace
-        return profile_from_session_key_namespace(parts[1] or "main")
+        from hermes_state_keys import profile_from_session_key
+        return profile_from_session_key(session_key)
 
     @staticmethod
     def _active_profile_name() -> str:
@@ -305,6 +300,8 @@ class SessionRecoveryMixin:
                 promote(session_id, reason)
             else:
                 db.end_session(session_id, reason)
+            from gateway.session_bot import release_superseded_bot_chat
+            release_superseded_bot_chat(db, self, session_key, session_id)
             # Stop the departed conversation's schedule in its owning profile, even when
             # the in-memory watch still holds a pre-reset session id.
             heartbeat_key = f"heartbeat:{session_id}"
@@ -336,9 +333,11 @@ class SessionRecoveryMixin:
         recorder = getattr(db, "record_gateway_session_peer", None)
         if not callable(recorder):
             return
+        from gateway.session_api import api_storage_source
+        from gateway.session_a2a import storage_source
         from gateway.session_identity import transport_profile_of
         peer = dict(
-            source=source.platform.value, user_id=source.user_id, session_key=session_key,
+            source=storage_source(db, source, session_id, api_storage_source(db, session_id, source.platform.value)), user_id=source.user_id, session_key=session_key,
             chat_id=source.chat_id, chat_type=source.chat_type, thread_id=source.thread_id)
         try:
             recorder(
@@ -412,6 +411,19 @@ class SessionRecoveryMixin:
                     "self-healing peer refresh on the next turn",
                     create_kwargs.get("session_id"), session_key, during, e),
             )
+
+    def _announce_route(self, session_key: str, entry) -> None:
+        """*session_key* now names *entry*'s conversation: tell the owner (``route_named``), so a
+        live conversation still on that route leaves it before anything else can run there."""
+        listener = getattr(self, "route_named", None)
+        if listener is not None and entry is not None:
+            listener(session_key, entry.session_id, entry.origin)
+
+    def _row_settled(self, session_id: str) -> None:
+        """The route transition that published *session_id* returned (its state.db half done or
+        failed): from here a missing or ended row is real again (see ``_is_session_ended_in_db``)."""
+        with self._lock:
+            self._rows_pending.discard(session_id)
 
     @staticmethod
     def _session_create_kwargs(

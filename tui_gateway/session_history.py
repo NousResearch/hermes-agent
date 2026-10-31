@@ -192,7 +192,7 @@ def _user_image_display_text(content: Any) -> str | None:
     if len(image_parts) != len(paths) or len(content) not in (1 + len(paths), 2 + len(paths)):
         return None
     if len(content) > 1 + len(paths):
-        from agent.memory_manager import sanitize_context
+        from agent.memory_context import sanitize_context
         memory = content[-1]
         if not isinstance(memory, dict) or memory.get("type") != "text" or not isinstance(memory.get("text"), str) or sanitize_context(memory["text"]).strip():
             return None
@@ -282,6 +282,18 @@ _HISTORY_ASSISTANT_DETAIL_KEYS = (
 _HISTORY_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 
+def _remember_tool_call_args(tool_calls: list, tool_call_args: dict) -> None:
+    """Index an assistant row's calls by id so their tool rows render with name and args."""
+    for tc in tool_calls:
+        fn, tc_id = tc.get("function", {}), tc.get("id", "")
+        if tc_id and fn.get("name"):
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            tool_call_args[tc_id] = (fn["name"], args)
+
+
 def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: bool = True) -> list[dict]:
     """``image_urls=False`` is the ``inline_images=false`` projection (#116511): image parts render ``[image]``
     so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment."""
@@ -296,8 +308,13 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
         if m is None:
             continue
         role = m.get("role")
-        # display_kind="hidden": model-facing scaffolding the "[System:" sniff does not catch.
-        if role not in _HISTORY_ROLES or m.get("display_kind") == "hidden":
+        if role not in _HISTORY_ROLES:
+            continue
+        if role == "assistant" and m.get("tool_calls"):
+            _remember_tool_call_args(m["tool_calls"], tool_call_args)
+        # display_kind="hidden": model-facing scaffolding the "[System:" sniff does not catch (a held
+        # turn's commentary too: its tool rows still render, labelled from the calls read above).
+        if m.get("display_kind") == "hidden":
             continue
         content_text = _user_image_display_text(m.get("content")) if role == "user" else None
         if content_text is None:
@@ -305,18 +322,7 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
         if _is_display_hidden_marker(role, content_text):
             continue
         if role == "user":
-            # A setup handoff's first message carries the first-task skill after what the user sees.
-            from agent.first_task_prompt import visible_text
-            content_text = visible_text(_DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text))
-        if role == "assistant" and m.get("tool_calls"):
-            for tc in m["tool_calls"]:
-                fn, tc_id = tc.get("function", {}), tc.get("id", "")
-                if tc_id and fn.get("name"):
-                    try:
-                        args = json.loads(fn.get("arguments", "{}"))
-                    except (json.JSONDecodeError, TypeError):
-                        args = {}
-                    tool_call_args[tc_id] = (fn["name"], args)
+            content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)
         if role == "user" and m.get("display_kind") == STEER_DISPLAY_KIND:
             # Mid-turn /steer: show the user's own words, not the model-facing marker wrapper.
             from agent.conversation_compression import _extract_steer_text_from_message

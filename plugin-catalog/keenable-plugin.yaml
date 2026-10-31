@@ -1,0 +1,18 @@
+name: keenable-plugin
+title: Keenable
+repo: https://github.com/keenableai/keenable-hermes-plugin
+sha: ffa97c924415f7b6e3517d900694272efac8af41
+description: "Web search and page fetching through Keenable's hosted MCP server, with search and research skills: single-site and publish-date filters, result and snippet limits, and page fetches that return only what a prompt asks for. Works without an API key; an optional KEENABLE_API_KEY lifts the keyless rate limits. Adds direct MCP tools beside Hermes's built-in Keenable web backend and leaves web_search / web_extract provider selection unchanged. Disclosure: connects to Keenable's hosted MCP server at `api.keenable.ai` and sends it the search queries, URLs and fetch prompts the agent issues, labelled with the header `X-Keenable-Title: hermes-plugin`; sends `X-API-Key` only when the user adds the optional config.yaml entry with their key."
+maintainer: keenableai
+tier: community
+category: web
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/keenableai/keenable-hermes-plugin#readme
+version: "1.0.0"
+image: https://raw.githubusercontent.com/keenableai/keenable-hermes-plugin/ffa97c924415f7b6e3517d900694272efac8af41/assets/keenable-catalog-card.svg
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

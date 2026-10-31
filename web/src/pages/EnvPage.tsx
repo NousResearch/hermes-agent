@@ -127,7 +127,7 @@ function EnvVarRow({
   clearDialogOpen?: boolean;
   compact?: boolean;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const isEditing = edits[varKey] !== undefined;
   const isRevealed = !!revealed[varKey];
   const displayValue = isRevealed
@@ -213,7 +213,11 @@ function EnvVarRow({
         <div className="flex items-center gap-2">
           <Label className="font-mono-ui text-xs">{varKey}</Label>
           <Badge tone={info.is_set ? "success" : "outline"}>
-            {info.is_set ? t.common.set : t.env.notSet}
+            {info.is_set
+              ? locale === "cs"
+                ? t.common.configured
+                : t.common.set
+              : t.env.notSet}
           </Badge>
         </div>
         {info.url && (
@@ -361,7 +365,7 @@ function ProviderGroupCard({
   clearDialogOpen?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
 
   // Separate API keys from base URLs and other settings
   const apiKeys = group.entries.filter(
@@ -401,7 +405,13 @@ function ProviderGroupCard({
           </span>
           {hasAnyConfigured && (
             <Badge tone="success" className="text-xs">
-              {configuredCount} {t.common.set.toLowerCase()}
+              {locale === "cs" ? (
+                `${t.common.configured}: ${configuredCount}`
+              ) : (
+                <>
+                  {configuredCount} {t.common.set.toLowerCase()}
+                </>
+              )}
             </Badge>
           )}
         </div>
@@ -420,7 +430,14 @@ function ProviderGroupCard({
           <span className="text-xs text-text-tertiary">
             {t.env.keysCount
               .replace("{count}", String(group.entries.length))
-              .replace("{s}", group.entries.length !== 1 ? "s" : "")}
+              .replace(
+                "{s}",
+                locale === "cs"
+                  ? ""
+                  : group.entries.length !== 1
+                    ? "s"
+                    : "",
+              )}
           </span>
         </div>
       </ListItem>
@@ -518,7 +535,7 @@ function CustomKeysCard({
   onAddKey: (key: string) => void;
   clearDialogOpen?: boolean;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [newKey, setNewKey] = useState("");
   const trimmed = newKey.trim().toUpperCase();
   const alreadyEditing = edits[trimmed] !== undefined;
@@ -553,7 +570,10 @@ function CustomKeysCard({
         <CardDescription>
           {t.env.customConfigured
             .replace("{count}", String(entries.length))
-            .replace("{s}", entries.length !== 1 ? "s" : "")}
+            .replace(
+              "{s}",
+              locale === "cs" ? "" : entries.length !== 1 ? "s" : "",
+            )}
         </CardDescription>
         <CardDescription className="text-text-tertiary">
           {t.env.customHint}

@@ -146,7 +146,7 @@ export default function SkillsPage() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorSkill, setEditorSkill] = useState<string | null>(null);
   const { toast, showToast } = useToast();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
   // ── Profile scoping ──
@@ -498,7 +498,11 @@ export default function SkillsPage() {
                       .replace("{count}", String(searchMatchedSkills.length))
                       .replace(
                         "{s}",
-                        searchMatchedSkills.length !== 1 ? "s" : "",
+                        locale === "cs"
+                          ? ""
+                          : searchMatchedSkills.length !== 1
+                            ? "s"
+                            : "",
                       )}
                   </Badge>
                 </div>
@@ -542,7 +546,14 @@ export default function SkillsPage() {
                     <Badge tone="secondary" className="text-xs">
                       {t.skills.skillCount
                         .replace("{count}", String(activeSkills.length))
-                        .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
+                        .replace(
+                          "{s}",
+                          locale === "cs"
+                            ? ""
+                            : activeSkills.length !== 1
+                              ? "s"
+                              : "",
+                        )}
                     </Badge>
                     <Button
                       size="sm"

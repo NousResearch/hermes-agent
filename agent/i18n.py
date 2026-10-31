@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # live set including overlay and pack languages.
 SUPPORTED_LANGUAGES: tuple[str, ...] = (
     "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
-    "af", "ko", "it", "ga", "pt", "ru", "hu", "ar",
+    "af", "ko", "it", "ga", "pt", "ru", "hu", "ar", "cs",
 )
 DEFAULT_LANGUAGE = "en"
 
@@ -61,6 +61,7 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
     "arabic": "ar", "العربية": "ar",
     "ar-sa": "ar", "ar-eg": "ar", "ar-ae": "ar", "ar-ma": "ar", "ar-dz": "ar",
+    "czech": "cs", "čeština": "cs", "cestina": "cs", "česky": "cs", "cesky": "cs", "cs-cz": "cs",
 }
 
 # (home, lang) -> merged catalog (packs over overlay over bundled). home -> supported tuple.

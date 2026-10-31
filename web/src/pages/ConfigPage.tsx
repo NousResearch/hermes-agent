@@ -123,7 +123,7 @@ export default function ConfigPage() {
   const [confirmReset, setConfirmReset] = useState(false);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { setEnd } = usePageHeader();
 
   useLayoutEffect(() => {
@@ -614,7 +614,14 @@ export default function ConfigPage() {
                       {searchMatchedFields.length}{" "}
                       {t.config.fields.replace(
                         "{s}",
-                        searchMatchedFields.length !== 1 ? "s" : "",
+                        locale === "cs"
+                          ? searchMatchedFields.length >= 1 &&
+                            searchMatchedFields.length <= 4
+                            ? "pole"
+                            : "polí"
+                          : searchMatchedFields.length !== 1
+                            ? "s"
+                            : "",
                       )}
                     </Badge>
                   </div>
@@ -645,7 +652,13 @@ export default function ConfigPage() {
                       {activeFields.length}{" "}
                       {t.config.fields.replace(
                         "{s}",
-                        activeFields.length !== 1 ? "s" : "",
+                        locale === "cs"
+                          ? activeFields.length >= 1 && activeFields.length <= 4
+                            ? "pole"
+                            : "polí"
+                          : activeFields.length !== 1
+                            ? "s"
+                            : "",
                       )}
                     </Badge>
                   </div>

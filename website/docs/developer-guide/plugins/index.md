@@ -1198,17 +1198,35 @@ def register(ctx):
             ctx.register_skill(child.name, skill_md)
 ```
 
-The agent can now load your skills with their namespaced name:
+The agent and the user can load your skills by their namespaced name, or by the bare skill name
+when nothing else holds it:
 
 ```python
-skill_view("my-plugin:my-workflow")   # → plugin's version
-skill_view("my-workflow")              # → built-in version (unchanged)
+skill_view("my-plugin:my-workflow")   # → always the plugin's version
+skill_view("my-checklist")             # → the plugin's version: no on-disk skill is named my-checklist
+skill_view("my-workflow")              # → an on-disk my-workflow if the user has one, else the plugin's
 ```
+
+The interactive CLI, TUI and desktop accept `/my-plugin:my-workflow` and, under the same rule,
+`/my-workflow`.
+
+**Bare-name precedence.** A bare name resolves in this order:
+
+1. An on-disk skill (project, local, `skills.create_dir`, then `skills.external_dirs`) always wins.
+   A plugin never shadows a skill the user installed or wrote.
+2. Otherwise, the one enabled plugin skill registered under that name.
+3. When two or more enabled plugins register the same bare name, the bare name is refused and the
+   reply lists every `plugin:skill` name. Neither gets a bare `/name` slash command.
+
+`hermes skills list` shows each plugin skill whose bare name does not reach it, with the reason
+(`'my-workflow' loads the on-disk skill; use my-plugin:my-workflow`). The system prompt's skills
+index keeps listing plugin skills under their qualified names. It is built once per session, so
+enabling a plugin or adding a colliding skill changes it from the next session on.
 
 **Key properties:**
 - Plugin skills are **read-only** — they don't enter `~/.hermes/skills/` and can't be edited via `skill_manage`.
-- Plugin skills are **not** listed in the system prompt's `<available_skills>` index — they're opt-in explicit loads.
-- Bare skill names are unaffected — the namespace prevents collisions with built-in skills.
+- They appear in `skills_list`, `hermes skills list` and the dashboard's Skills API (`GET /api/skills`), each under its `plugin:skill` name.
+- A bare name only reaches a plugin skill when no on-disk skill and no other plugin claims it (see the precedence above), so shipping skills through a plugin needs no `skills.external_dirs` entry.
 - When the agent loads a plugin skill, a bundle context banner is prepended listing sibling skills from the same plugin.
 
 :::tip Legacy pattern
@@ -1228,7 +1246,7 @@ contract:
 | `tools.skills_tool.sort_skills(skills)` | The one listing order (category, then name). |
 | `tools.skills_tool.skill_search_dirs()` | `(roots, active_dir)`: `(tier, dir)` roots in precedence order (project, local, `create_dir`, external) and the live profile's skills dir. |
 | `tools.skills_tool.skill_lookup_path_error(name)` | An error string if `name` is absolute or contains `..`, else `None`. Check it before any lookup. |
-| `tools.skills_tool.locate_skill(name, local_category_name, roots)` | `(error_json, skill_dir, skill_md)` for one name over `roots`: tier precedence, same-tier collision refusal and the project-skill quarantine gate. `local_category_name` is an extra relative path to try (it is not a category filter), so pass `None` unless you need one. `skill_md` is set only when `error_json` is `None`. |
+| `tools.skills_tool.locate_skill(name, local_category_name, roots, on_missing=None)` | `(error_json, skill_dir, skill_md)` for one name over `roots`: tier precedence, same-tier collision refusal and the project-skill quarantine gate. `local_category_name` is an extra relative path to try (it is not a category filter), so pass `None` unless you need one. `skill_md` is set only when `error_json` is `None`. `on_missing()` is optional: on a miss its non-`None` return replaces the not-found reply (`skill_view` uses it to fall back to plugin skills). |
 | `tools.skills_sync.dir_hash(directory)` | The package hash the bundled-skill sync stores, so you can tell whether a user's copy still matches what was installed. |
 | `tools.skill_usage.read_skill_name(skill_md, fallback)` | The frontmatter `name:` of a `SKILL.md`, else `fallback`. |
 

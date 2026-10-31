@@ -89,6 +89,7 @@ def _git(repo_dir: Path, *cmd_args):
         capture_output=True,
         text=True,
         timeout=20,
+        check=False,
     )
 
 

@@ -32,6 +32,17 @@ describe('ModelPicker reasoning step', () => {
     expect(pickerOffersReasoning(provider(undefined), 'gpt-5.6')).toBe(true)
     expect(pickerOffersReasoning(undefined, 'gpt-5.6')).toBe(true)
   })
+
+  it('does not add an undeclared disable-reasoning value to a declared vocabulary', () => {
+    expect(
+      reasoningPickerRows(provider({ 'gpt-5.6': { fast: false, reasoning: true, reasoning_efforts: ['low', 'high'] } }), 'gpt-5.6')
+    ).toEqual([
+      { label: 'low', value: 'low' },
+      { label: 'high', value: 'high' },
+      { label: 'Keep current effort', value: '' }
+    ])
+  })
+
   it('resolves the labelled effort rows against the active language at call time', () => {
     const en = messages().pickers.model.reasoning
     expect(reasoningPickerRows().at(-2)?.label).toBe(en.none)

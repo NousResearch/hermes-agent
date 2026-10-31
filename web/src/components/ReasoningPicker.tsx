@@ -29,6 +29,7 @@ import {
   normalizeEffort,
   VALID_EFFORTS,
 } from "@/lib/reasoning-effort";
+import type { ModelOptionsResult } from "@hermes/shared";
 
 interface ReasoningPickerProps {
   /** Current model string from config — re-reads the saved effort when it
@@ -43,6 +44,17 @@ interface ReasoningPickerProps {
   onChanged?: (effort: string) => void;
 }
 
+/** A provider declaration is authoritative when present, including an empty
+ * declaration. Keep a saved effort visible so changing models never silently
+ * rewrites config before the user explicitly selects a new value. */
+export function reasoningPickerOptions(effort: string, supportedEfforts: readonly string[] | undefined) {
+  if (supportedEfforts === undefined) return EFFORT_OPTIONS;
+  if (supportedEfforts.length === 0) return [];
+
+  const supported = EFFORT_OPTIONS.filter(option => supportedEfforts.includes(option.value));
+  return supported.some(option => option.value === effort) ? supported : [...supported, { label: effort, value: effort }];
+}
+
 export function ReasoningPicker({
   currentModel,
   profile,
@@ -53,21 +65,44 @@ export function ReasoningPicker({
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const lastFetchKeyRef = useRef("");
+  const fetchGenerationRef = useRef(0);
+  const [supportedEfforts, setSupportedEfforts] = useState<string[] | undefined>();
 
   useEffect(() => {
     const fetchKey = `${profile ?? ""}:${currentModel}:${refreshKey}`;
     if (fetchKey === lastFetchKeyRef.current) return;
     lastFetchKeyRef.current = fetchKey;
+    const generation = ++fetchGenerationRef.current;
+    setLoaded(false);
+    setSaving(false);
+    setSupportedEfforts(undefined);
+
     void api
       .getConfig(profile)
-      .then((cfg) => {
+      .then((cfg: Record<string, unknown>) => {
+        if (generation !== fetchGenerationRef.current) return;
         const agent = (cfg?.agent as Record<string, unknown> | undefined) ?? {};
         setEffort(normalizeEffort(agent.reasoning_effort));
         setLoaded(true);
       })
       .catch(() => {
-        // Best-effort: keep the last known value rather than blanking it.
+        if (generation !== fetchGenerationRef.current) return;
+        // Config is authoritative for the displayed value; do not show stale
+        // data from another profile when it cannot be read.
+        setEffort("medium");
         setLoaded(true);
+      });
+
+    void api
+      .getModelOptions({ profile })
+      .then((options: ModelOptionsResult) => {
+        if (generation !== fetchGenerationRef.current) return;
+        const row = options.providers.find(provider => provider.is_current) ?? options.providers.find(provider => provider.models?.includes(currentModel));
+        setSupportedEfforts(row?.capabilities?.[currentModel]?.reasoning_efforts ?? undefined);
+      })
+      .catch(() => {
+        // Options are optional metadata. A same-scope failure leaves the
+        // unrestricted fallback; a superseded response cannot alter it.
       });
   }, [currentModel, profile, refreshKey]);
 
@@ -75,6 +110,7 @@ export function ReasoningPicker({
     (next: string) => {
       if (!VALID_EFFORTS.has(next) || next === effort) return;
       const prev = effort;
+      const generation = fetchGenerationRef.current;
       setEffort(next); // optimistic
       setSaving(true);
       // Sparse patch: PUT /api/config deep-merges onto disk, so sending only
@@ -84,15 +120,22 @@ export function ReasoningPicker({
       void api
         .saveConfig({ agent: { reasoning_effort: next } }, profile)
         .then(() => {
+          if (generation !== fetchGenerationRef.current) return;
           onChanged?.(next);
         })
         .catch(() => {
+          if (generation !== fetchGenerationRef.current) return;
           setEffort(prev); // revert on failure
         })
-        .finally(() => setSaving(false));
+        .finally(() => {
+          if (generation === fetchGenerationRef.current) setSaving(false);
+        });
     },
     [effort, onChanged, profile],
   );
+
+  const options = reasoningPickerOptions(effort, supportedEfforts);
+  if (supportedEfforts?.length === 0) return null;
 
   return (
     <div className="flex items-center gap-2 px-3 py-2 text-xs">
@@ -106,7 +149,7 @@ export function ReasoningPicker({
         onValueChange={onSelect}
         value={effort}
       >
-        {EFFORT_OPTIONS.map((opt) => (
+        {options.map((opt) => (
           <SelectOption key={opt.value} value={opt.value}>
             {opt.label}
           </SelectOption>

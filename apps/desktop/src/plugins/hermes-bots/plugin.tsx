@@ -27,6 +27,7 @@ import {
 import type { ChatEmptyProps, PluginContext, ProfileGroupRoute } from '@hermes/plugin-sdk'
 
 import { startFaceClock, stopFaceClock } from './avatar'
+import { startBotNotificationLevels } from './bot-pause'
 import {
   $botChatFocused,
   $botsPaneVisible,
@@ -126,6 +127,8 @@ export default {
     startBotRelay()
     // Opt-in per bot: raise a bot's Screen tab on its first live screen tool call.
     const stopScreenAutoRaise = startScreenAutoRaise()
+    // Per-bot notification level (bot meta `notifications`) over core's native notifications.
+    const stopBotNotificationLevels = startBotNotificationLevels()
 
     // Disabling the plugin (or a hot reload) must actually stop the clock —
     // before this, the rAF loop + 1Hz document scan ran until app restart.
@@ -134,6 +137,7 @@ export default {
       ctx.onDispose(stopFaceClock)
       ctx.onDispose(stopBotRelay)
       ctx.onDispose(stopScreenAutoRaise)
+      ctx.onDispose(stopBotNotificationLevels)
     }
 
     // @-mention autocomplete: typing "@rese…" in ANY composer offers the

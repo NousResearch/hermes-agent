@@ -2165,6 +2165,7 @@ export interface ProfilesConfigureApplied {
   ui_meta?: boolean | null
   ui_meta_revisions?: Record<string, number> | null
   ui_meta_conflicts?: Record<string, UiMetaConflict> | null
+  bot_pause_enforced?: boolean | null
   soul?: boolean | null
   description?: boolean | null
   model?: boolean | null

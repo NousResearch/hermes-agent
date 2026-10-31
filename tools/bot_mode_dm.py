@@ -460,6 +460,18 @@ class LiveTargetHeldError(LiveTargetUnavailableError):
         return HELD_NOT_SENT
 
 
+class LiveTargetPausedError(LiveTargetUnavailableError):
+    """The recipient's user paused it: its owner refused the id before any admission and settled it
+    as never sent (``gateway/session_bot.py:_paused_refusal``), so this is a definite no-send."""
+
+    resend = "after its user resumes it"
+
+    @property
+    def reason(self) -> str:
+        from tools.bot_failure_reasons import RECIPIENT_PAUSED
+        return RECIPIENT_PAUSED
+
+
 def _unavailable_payload(dm_file: str, exc: LiveTargetUnavailableError) -> str:
     return json.dumps({"reason": exc.reason, "delivery_id": _dm_delivery_id(dm_file),
                        "error": f"{exc} — the message was NOT sent; it is safe to resend {exc.resend}."})
@@ -546,6 +558,9 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     if _held_disposition(record):
         # The callers remove the intent and payload (``_settled_no_send``).
         raise LiveTargetHeldError("Bot Chat is held by another session writer")
+    from tools.bot_failure_reasons import RECIPIENT_PAUSED
+    if record and record.get("refused") is True and record.get("reason") == RECIPIENT_PAUSED:
+        raise LiveTargetPausedError("the recipient bot is paused by its user")
     return record
 
 
@@ -642,7 +657,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
         if home is not None or os.path.exists(_live_intent_file(dm_file)):
             try:
                 record = _admit_live_dm(home, dm_file, author)
-            except LiveTargetHeldError as exc:
+            except (LiveTargetHeldError, LiveTargetPausedError) as exc:
                 print(_settled_no_send(dm_file, exc))  # the owner settled the id: drop the payload too
                 return 1
             except LiveTargetUnavailableError as exc:

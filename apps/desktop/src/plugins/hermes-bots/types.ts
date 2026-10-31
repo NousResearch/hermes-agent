@@ -60,6 +60,8 @@ export interface SessionPreview {
   title?: string
 }
 
+export type BotNotificationLevel = 'all' | 'needs-you' | 'off'
+
 /** Per-bot presentation state, persisted in the profile's `ui_meta`. */
 export interface BotMeta {
   /** Which user-made section this bot is filed under (`user-sections.ts`).
@@ -85,6 +87,12 @@ export interface BotMeta {
   /** Legacy single-group scalar, projected alongside `groups`. */
   group?: null | string
   pinned?: boolean
+  /** Paused by its user: the backend stops its scheduled jobs (missed slots
+   *  skipped) and refuses teammates' `message_agent` (`bot-pause.ts`). The
+   *  user can still chat with it. Unlike `hidden`, this is not display-only. */
+  paused?: boolean
+  /** How much this bot may notify natively on this Desktop; absent = 'all'. */
+  notifications?: BotNotificationLevel
   /** Raise this bot's Screen tab when it starts driving its desktop (`screen-autoraise.ts`). Opt-in per bot. */
   screenAutoOpen?: boolean
   shape?: string

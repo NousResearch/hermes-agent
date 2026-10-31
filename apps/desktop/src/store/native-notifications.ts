@@ -7,6 +7,7 @@ import { persistString, storedString } from '@/lib/storage'
 import { recordFeatureToggle } from './desktop-metrics'
 import { $gateway } from './gateway'
 import { $hapticsMuted } from './haptics'
+import { notificationLevelAllows, sessionNotificationLevel } from './native-notification-policy'
 import { withinNativeNotifyBaseline } from './notify-baseline'
 import {
   answerApproval,
@@ -17,7 +18,7 @@ import {
 } from './prompts'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { $activeSessionId, ownerLookupSessionRows, sessionMatchesStoredId } from './session'
-import { storedSessionIdForRuntimeId } from './session-states'
+import { knownOwnerForSession, storedSessionIdForRuntimeId } from './session-states'
 
 export type { HermesOpenTarget }
 
@@ -160,6 +161,14 @@ function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, glo
   return isBackgrounded() && Boolean(sessionId) && sessionId === $activeSessionId.get()
 }
 
+/** The owner's notification level (a bot's own setting, via its plugin). */
+function ownerLevelAllows(kind: NativeNotificationKind, runtimeSessionId: string): boolean {
+  const storedSessionId = storedSessionIdForRuntimeId(runtimeSessionId) ?? runtimeSessionId
+  const owner = knownOwnerForSession(runtimeSessionId)
+
+  return notificationLevelAllows(sessionNotificationLevel({ owner, runtimeSessionId, storedSessionId }), kind)
+}
+
 /** Last-resort label for a session the renderer has no row for (yet): the id
  *  tail still tells three parked approvals apart. */
 const shortSessionId = (id: string) => `#${id.slice(-6)}`
@@ -235,6 +244,10 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
   }
 
   if (!shouldFire(input.kind, input.sessionId, input.global)) {
+    return false
+  }
+
+  if (input.sessionId && !ownerLevelAllows(input.kind, input.sessionId)) {
     return false
   }
 

@@ -710,17 +710,23 @@ context:
 
 ## 迭代预算
 
-当 agent 在处理具有许多工具调用的复杂任务时，它可能会耗尽其迭代预算（默认：500 轮）。Hermes **不会**在任务中途注入压力警告 —— 早期版本会在预算达到 70%/90% 时警告模型，这会导致模型过早放弃复杂任务，该机制已于 2026 年 4 月移除。
+当 agent 在处理具有许多工具调用的复杂任务时，它可能会耗尽其迭代预算（`agent.max_turns`，默认不设上限）。Hermes **不会**在任务中途注入压力警告 —— 早期版本会在预算达到 70%/90% 时警告模型，这会导致模型过早放弃复杂任务，该机制已于 2026 年 4 月移除。
 
-取而代之的是，当预算真正耗尽（500/500）时，Hermes 注入一条消息要求模型收尾，并允许一次**宽限调用**以便其给出最终响应。如果该宽限调用仍未产生文本，则会要求 agent 总结已完成的工作。
+取而代之的是，当设置的有限上限真正耗尽时，Hermes 注入一条消息要求模型收尾，并允许一次**宽限调用**以便其给出最终响应。如果该宽限调用仍未产生文本，则会要求 agent 总结已完成的工作。
 
 ```yaml
 agent:
-  max_turns: 500               # 每次对话轮次的最大迭代次数（默认：500）
+  max_turns: none              # 每次对话轮次的迭代次数（默认：none = 不限）
+                               # 设为正整数即启用上限；"none"/"null"/
+                               # "unlimited"/"inf"/"infinity"/"infinite"/0/-1 = 不限
   api_max_retries: 3           # 回退启动前每个 provider 的重试次数（默认：3）
 ```
 
-当迭代预算完全耗尽时，CLI 向用户显示通知：`⚠ Iteration budget reached (500/500) — response may be incomplete`。
+`agent.max_turns` **默认不设上限** —— 轮次上限带来的问题比它解决的更多（任务中途被静默截断），因此开箱即用时 Hermes 会把一轮对话跑完。如需设置上限，请填写一个正整数。要显式表示“不限”，以下写法（不区分大小写）均可：`"none"`、`"null"`、`"unlimited"`、`"infinite"`、`"infinity"`、`"inf"`、`0`、`-1`（它们会解析为 `sys.maxsize` 哨兵值，循环不会因轮次计数而退出）。
+
+:::note 已知问题
+当 `config.yaml` 中没有 `agent.max_turns` 时，经典 CLI（`hermes`）和 TUI 目前仍会套用 500 轮的上限。如需在这两处也不设上限，请显式设置 `agent.max_turns: unlimited`（或 `0`）。在 TUI 中，显式写 `null` 不起作用。
+:::
 
 `agent.api_max_retries` 控制 Hermes 在回退 provider 切换启动**之前**对瞬时错误（速率限制、连接断开、5xx）重试 provider API 调用的次数。默认为 `3` —— 总共四次尝试。如果您配置了[回退 providers](./features/fallback-providers.md) 并希望更快地故障转移，请将其降至 `0`，这样主 provider 上的第一个瞬时错误会立即切换到回退，而不是对不稳定的端点进行重试。
 

@@ -199,6 +199,28 @@ class TestGetCategoryFromPath:
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
             assert _get_category_from_path(tmp_path / "other" / "SKILL.md") is None
 
+    def test_category_from_create_dir(self, tmp_path, monkeypatch):
+        """``skills.create_dir`` is a scan tier like the others: a categorized
+        skill beneath it must keep its category. The checker knew only the
+        local and external roots, so create_dir skills catalogued with
+        ``category=None`` and category filtering missed them (#141159).
+        """
+        from agent import skill_utils
+
+        home = tmp_path / "home"
+        home.mkdir()
+        brain = tmp_path / "brain"
+        skill_md = brain / "mlops" / "axolotl" / "SKILL.md"
+        skill_md.parent.mkdir(parents=True)
+        skill_md.touch()
+        (home / "config.yaml").write_text(
+            f"skills:\n  create_dir: {brain}\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        skill_utils._external_dirs_cache_clear()
+
+        with patch("tools.skills_tool.SKILLS_DIR", home / "skills"):
+            assert _get_category_from_path(skill_md) == "mlops"
+
 
 # ---------------------------------------------------------------------------
 # find_all_skills

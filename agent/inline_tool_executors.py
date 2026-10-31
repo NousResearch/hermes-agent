@@ -240,6 +240,23 @@ def _setup_beat(agent, args: dict, ctx: InlineToolContext) -> Any:
     )
 
 
+def _goal_skip_clarify(questions: list) -> dict:
+    return {"answers": {}, "outcome": "undelivered", "notice": (
+        "goal mode (goals.clarify: skip): questions are not asked while a /goal runs. Pick the best "
+        "choices using your own judgment, state the assumption in your reply, and continue.")}
+
+
+def _clarify_callback(agent) -> Optional[Callable]:
+    # Inspired by MiniMax Code: "Questions: Skip" for Goal mode, so an unattended /goal never
+    # parks on a clarify wait. Headless runs (callback None) keep their own unavailable result.
+    callback = agent.clarify_callback
+    if callback is None:
+        return None
+    from hermes_cli.goals import goal_skips_clarify
+
+    return _goal_skip_clarify if goal_skips_clarify(getattr(agent, "session_id", None)) else callback
+
+
 def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
     # Replay shim for conversations whose cached prompt still names setup_mcp.
     # Not in _LEGACY_TOOL_ALIASES: inline tools bypass handle_function_call.
@@ -265,7 +282,7 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
     "memory": _memory,
     "clarify": _tool(
         "tools.clarify_tool", "clarify_tool", ("questions", "questions"),
-        callback=lambda agent, ctx: agent.clarify_callback,
+        callback=lambda agent, ctx: _clarify_callback(agent),
     ),
     "read_terminal": _callback_tool(
         "tools.read_terminal_tool", "read_terminal_tool", "read_terminal_callback",

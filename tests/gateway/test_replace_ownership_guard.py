@@ -126,6 +126,84 @@ class TestRecordAuthority:
         ):
             assert _replace_target_belongs_to_other_profile(424242) is True
 
+    @pytest.mark.parametrize("stamped, refused", [(True, False), (False, True)])
+    def test_lock_record_binds_only_when_stamped_with_launch_home(self, profile_env, stamped, refused):
+        """An ordinary start holds gateway.lock before it writes gateway.pid: its lock record binds.
+        A record from a build that predates launch_home stamping proves nothing."""
+        from gateway.run import _replace_target_belongs_to_other_profile
+
+        lock_record = _record(home=str(profile_env))
+        if stamped:
+            lock_record["launch_home"] = str(profile_env)
+        with (
+            patch("gateway.status._read_pid_record", return_value=None),
+            patch(
+                "gateway.status._read_gateway_lock_record",
+                return_value=lock_record,
+            ),
+            patch(
+                "gateway.status._get_pid_path",
+                return_value=profile_env / "gateway.pid",
+            ),
+            patch(
+                "gateway.status._get_process_start_time",
+                return_value=111222333,
+            ),
+            patch("gateway.status._read_process_cmdline", return_value=None),
+            patch(
+                "gateway.status._get_process_hermes_home",
+                return_value=profile_env,
+            ),
+        ):
+            assert _replace_target_belongs_to_other_profile(424242) is refused
+
+    def test_unreadable_pid_file_never_falls_back_to_lock_record(self, profile_env):
+        """A present-but-invalid gateway.pid stays unprovable; only an absent one defers to the lock."""
+        from gateway.run import _replace_target_belongs_to_other_profile
+
+        pid_path = profile_env / "gateway.pid"
+        pid_path.write_text("not json", encoding="utf-8")
+        with (
+            patch("gateway.status._read_pid_record", return_value=None),
+            patch(
+                "gateway.status._read_gateway_lock_record",
+                return_value={**_record(home=str(profile_env)), "launch_home": str(profile_env)},
+            ),
+            patch("gateway.status._get_pid_path", return_value=pid_path),
+            patch(
+                "gateway.status._get_process_start_time",
+                return_value=111222333,
+            ),
+            patch(
+                "gateway.status._get_process_hermes_home",
+                return_value=profile_env,
+            ),
+        ):
+            assert _replace_target_belongs_to_other_profile(424242) is True
+
+    def test_member_home_lock_record_never_proves_the_multiplexer(self, profile_env, monkeypatch):
+        """A multiplexer reserves member homes with its own identity: from a member, still refuse."""
+        import os
+
+        from gateway.run import _replace_target_belongs_to_other_profile
+        from gateway.runtime_ownership import ProfileOwnership
+
+        root = profile_env
+        member = root / "profiles" / "ops"
+        monkeypatch.setattr(
+            "gateway.status._record_argv", lambda: ["python", "-m", "hermes_cli.main", "gateway", "run"])
+        monkeypatch.setattr("gateway.host_attach.host_gateway", lambda: None)
+        monkeypatch.setattr("gateway.status._read_process_cmdline", lambda _pid: None)
+        holder = ProfileOwnership()
+        holder.reserve([root, member])
+        try:
+            monkeypatch.setenv("HERMES_HOME", str(member))
+            assert _replace_target_belongs_to_other_profile(os.getpid()) is True
+            monkeypatch.setenv("HERMES_HOME", str(root))
+            assert _replace_target_belongs_to_other_profile(os.getpid()) is False
+        finally:
+            holder.close()
+
     def test_legacy_record_without_home_refuses(self, profile_env):
         """A pre-hermes_home-stamping record cannot prove ownership."""
         from gateway.run import _replace_target_belongs_to_other_profile

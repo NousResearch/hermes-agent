@@ -912,7 +912,55 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
     return final_summary, llm_meta
 
 
+# One in-flight review pass, shared by the gateway scheduler
+# (maybe_run_curator -> run_curator_review) and a manual ``/curator run``.
+# Non-blocking: a second entry returns busy instead of mutating skill state
+# alongside the first (#68884 review).
+_curator_run_lock = threading.Lock()
+_lock_release_state = {"released": True, "handoff": False}
+
+
+def _release_curator_run_lock() -> None:
+    """Release the shared run lock once. Safe if the worker already dropped it."""
+    if _lock_release_state["released"]:
+        return
+    _lock_release_state["released"] = True
+    _curator_run_lock.release()
+
+
 def run_curator_review(
+    on_summary: Optional[Callable[[str], None]] = None, synchronous: bool = False,
+    dry_run: bool = False, consolidate: Optional[bool] = None, trigger: str = "manual",
+) -> dict[str, Any]:
+    """Execute one review pass, or return busy if one is already in flight.
+
+    The gateway scheduler and a manual ``/curator run`` share
+    ``_curator_run_lock``. A second caller does not mutate state; it gets
+    ``{"busy": True, "summary_so_far": "already running"}``.
+    """
+    if not _curator_run_lock.acquire(blocking=False):
+        return {
+            "started_at": None,
+            "auto_transitions": {},
+            "summary_so_far": "already running",
+            "busy": True,
+        }
+    _lock_release_state["released"] = False
+    _lock_release_state["handoff"] = False
+    try:
+        return _run_curator_review_impl(
+            on_summary=on_summary,
+            synchronous=synchronous,
+            dry_run=dry_run,
+            consolidate=consolidate,
+            trigger=trigger,
+        )
+    finally:
+        if not _lock_release_state["handoff"]:
+            _release_curator_run_lock()
+
+
+def _run_curator_review_impl(
     on_summary: Optional[Callable[[str], None]] = None, synchronous: bool = False,
     dry_run: bool = False, consolidate: Optional[bool] = None, trigger: str = "manual",
 ) -> dict[str, Any]:
@@ -995,8 +1043,20 @@ def run_curator_review(
         # reported and overwritten under another profile's run. Copy the caller's context into
         # the thread, the same way the gateway already carries scope into executor work
         # (_run_in_executor_with_context, MCP discovery #95518).
+        def _worker():
+            try:
+                _llm_pass()
+            finally:
+                _release_curator_run_lock()
+
         ctx = copy_context()
-        threading.Thread(target=ctx.run, args=(_llm_pass,), daemon=True, name="curator-review").start()
+        # The worker owns the release. If start() fails, the wrapper still holds it.
+        _lock_release_state["handoff"] = True
+        try:
+            threading.Thread(target=ctx.run, args=(_worker,), daemon=True, name="curator-review").start()
+        except BaseException:
+            _lock_release_state["handoff"] = False
+            raise
     return {"started_at": start.isoformat(), "auto_transitions": counts, "summary_so_far": auto_summary}
 
 

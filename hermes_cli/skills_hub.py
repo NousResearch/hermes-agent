@@ -168,6 +168,11 @@ def _skill_md_preview(bundle) -> Optional[str]:
     content = bundle.files["SKILL.md"]
     if isinstance(content, bytes):
         content = content.decode("utf-8", errors="replace")
+    return _preview_text(content)
+
+
+def _preview_text(content: str) -> str:
+    """First 50 lines of a SKILL.md body, with a truncation tail."""
     lines = content.split("\n")
     more = f"\n\n... ({len(lines) - 50} more lines)" if len(lines) > 50 else ""
     return "\n".join(lines[:50]) + more
@@ -488,40 +493,95 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
         "page": page, "total_pages": total_pages, "total": len(deduped)}
 
 
-def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
-    """Preview a skill's SKILL.md content without installing."""
-    c = console or _console
+def _installed_skill(identifier: str) -> Optional[dict]:
+    """Inspect record for an installed skill, resolved through the runtime catalog.
+
+    ``inspect`` answered from hub registries only, so a skill ``hermes skills list`` shows and the
+    runtime loads came back as "No skill named ... found in any source" (#25087). Explicit hub
+    identifiers (``owner/repo/...``) never reach this: they keep the registry path.
+    """
+    from agent.skill_utils import (
+        TIER_CREATE_DIR, TIER_EXTERNAL, TIER_PROJECT, get_disabled_skill_names)
+    from tools.skills_sync import _read_manifest
+    from tools.skills_tool import _parse_tags, _read_skill_text, _safe_frontmatter, _skill_catalog
+    if "/" in identifier:
+        return None
+    key = identifier.strip().lower()
+    rows = [s for s in _skill_catalog(skip_disabled=True) if s.get("load_name")]
+    row = (next((s for s in rows if str(s["load_name"]).lower() == key), None)
+           or next((s for s in rows if str(s["name"]).lower() == key), None))
+    if row is None:
+        return None
+    try:
+        content = _read_skill_text(Path(row["path"]))
+    except OSError:  # the cached catalog row outlived its file
+        return None
+    frontmatter = _safe_frontmatter(content=content)
+    metadata = frontmatter.get("metadata")
+    hermes_meta = (metadata.get("hermes") or {}) if isinstance(metadata, dict) else {}
+    tier_labels = {TIER_PROJECT: "project", TIER_CREATE_DIR: "create_dir", TIER_EXTERNAL: "external"}
+    source = ("builtin" if row["name"] in set(_read_manifest())
+              else tier_labels.get(row["tier"], "local"))
+    return {
+        "name": row["name"], "description": row["description"], "source": source,
+        "identifier": row["load_name"], "trust": _trust_cell(source, source),
+        "status": "disabled" if row["name"] in get_disabled_skill_names() else "enabled",
+        "tags": _parse_tags(hermes_meta.get("tags") or frontmatter.get("tags", "")),
+        "extra_lines": [], "install_hint": None,
+        "skill_md_preview": _preview_text(content)}
+
+
+def _hub_skill(identifier: str, c: Console) -> Optional[dict]:
+    """Inspect record from the hub registries (None when no source resolves it)."""
     identifier, meta, bundle, _src = _resolve_identifier(identifier, _sources(), c)
-    if not identifier:
-        return
-    if not meta:
-        _print_error(c, f"Could not find '{identifier}' in any source.")
-        return
+    if not identifier or not meta:
+        if identifier:
+            _print_error(c, f"Could not find '{identifier}' in any source.")
+        return None
+    return {"name": meta.name, "description": meta.description, "source": meta.source,
+            "identifier": meta.identifier, "trust": _trust_cell(meta.trust_level, meta.source),
+            "status": "", "tags": list(meta.tags or []),
+            "extra_lines": _format_extra_metadata_lines(meta.extra),
+            "install_hint": "hermes skills install <id> to install",
+            "skill_md_preview": _skill_md_preview(bundle)}
+
+
+def do_inspect(identifier: str, console: Optional[Console] = None) -> Optional[bool]:
+    """Preview a skill's SKILL.md: an installed skill first (what the runtime loads), then the hub
+    registries. False when neither has it, so `hermes skills inspect` exits non-zero."""
+    c = console or _console
+    record = _installed_skill(identifier) or _hub_skill(identifier, c)
+    if record is None:
+        return False
     c.print()
-    info_lines = [f"[bold]Name:[/] {meta.name}", f"[bold]Description:[/] {meta.description}",
-                  f"[bold]Source:[/] {meta.source}",
-                  f"[bold]Trust:[/] {_trust_cell(meta.trust_level, meta.source)}",
-                  f"[bold]Identifier:[/] {meta.identifier}"]
-    if meta.tags:
-        info_lines.append(f"[bold]Tags:[/] {', '.join(meta.tags)}")
-    info_lines.extend(_format_extra_metadata_lines(meta.extra))
-    c.print(Panel("\n".join(info_lines), title=f"Skill: {meta.name}"))
-    preview = _skill_md_preview(bundle)
-    if preview is not None:
-        c.print(Panel(preview, title="SKILL.md Preview", subtitle="hermes skills install <id> to install"))
+    info_lines = [f"[bold]Name:[/] {record['name']}",
+                  f"[bold]Description:[/] {record['description']}",
+                  f"[bold]Source:[/] {record['source']}",
+                  f"[bold]Trust:[/] {record['trust']}",
+                  f"[bold]Identifier:[/] {record['identifier']}"]
+    if record["status"]:
+        style = "bold green" if record["status"] == "enabled" else "dim red"
+        info_lines.append(f"[bold]Status:[/] [{style}]{record['status']}[/]")
+    if record["tags"]:
+        info_lines.append(f"[bold]Tags:[/] {', '.join(record['tags'])}")
+    info_lines.extend(record["extra_lines"])
+    c.print(Panel("\n".join(info_lines), title=f"Skill: {record['name']}"))
+    if record["skill_md_preview"] is not None:
+        c.print(Panel(record["skill_md_preview"], title="SKILL.md Preview",
+                      subtitle=record["install_hint"]))
     c.print()
+    return None
 
 
 def inspect_skill(identifier: str) -> Optional[dict]:
     """Skill metadata (+ SKILL.md preview) for programmatic callers."""
-    ident, meta, bundle, _ = _resolve_identifier(identifier, _sources(), Console(quiet=True))
-    if not ident or not meta:
+    record = _installed_skill(identifier) or _hub_skill(identifier, Console(quiet=True))
+    if record is None:
         return None
-    out = {**_row(meta, "name", "description", "source", "identifier"),
-           "tags": list(meta.tags) if meta.tags else []}
-    preview = _skill_md_preview(bundle)
-    if preview is not None:
-        out["skill_md_preview"] = preview
+    out = {field: record[field] for field in ("name", "description", "source", "identifier")}
+    out["tags"] = record["tags"]
+    if record["skill_md_preview"] is not None:
+        out["skill_md_preview"] = record["skill_md_preview"]
     return out
 
 

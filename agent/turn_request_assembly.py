@@ -14,6 +14,7 @@ import logging
 from typing import Any
 
 from agent.message_sanitization import _sanitize_messages_surrogates
+from agent.prefill_messages import fold_system_prefill_messages
 from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
@@ -113,7 +114,7 @@ def assemble_api_request(
     user merge and surrogate stripping, so the same row's bytes never vary across turns."""
     from agent.conversation_loop import (
         _CODEX_INCOMPLETE_NUDGE, _apply_context_engine_selection, _canonicalize_api_tool_calls,
-        _clone_message_for_send, _midturn_request_pressure_tokens, _pressure_with_real_floor,
+        _midturn_request_pressure_tokens, _pressure_with_real_floor,
     )
     from agent.model_metadata import (
         estimate_messages_tokens_rough,
@@ -129,13 +130,11 @@ def assemble_api_request(
     if moa_config:
         _append_moa_context(agent, api_messages, moa_config, original_user_message)
 
-    # Ephemeral prefill messages go right after the system prompt, API-call-time only.
-    if agent.prefill_messages:
-        sys_offset = 1 if (api_messages and api_messages[0].get("role") == "system") else 0
-        for idx, pfm in enumerate(agent.prefill_messages):
-            # Structural clone: the in-place sanitizers below must not write
-            # through into agent.prefill_messages' nested containers.
-            api_messages.insert(sys_offset + idx, _clone_message_for_send(pfm))
+    # Ephemeral prefill messages, API-call-time only: system-role prefills fold into the
+    # single leading system prompt (strict chat templates reject a second system message);
+    # the rest go right after it. Prefills are deep-copied, so the in-place sanitizers
+    # below never write through into agent.prefill_messages' nested containers.
+    api_messages = fold_system_prefill_messages(api_messages, agent.prefill_messages)
 
     # Per-turn context selection hook: an engine may select/replace context for THIS
     # call only — request-only, fail-open, and independent of should_compress().

@@ -52,6 +52,58 @@ def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> st
     )
 
 
+# Same argument as the demotion above, for assistant text: a degenerate generation (a model that collapses into
+# repeating one phrase) can write a single message orders of magnitude larger than the whole tail budget, and nothing
+# evicts it — the message-count floor in ``_find_tail_cut_by_tokens`` and the newest-assistant anchor (#29824) both pin
+# it inside the tail. OFF by default (``compression.tail_assistant_max_chars: 0``): the cut rewrites text the model
+# really emitted, and a legitimate 20K-char report must not be cut, so it is opt-in. The deployment that hit this ran
+# 16000 (~4K tokens against a 10K-25K lean tail).
+_LEAN_TAIL_TRUNCATION_MARKER = "[assistant message truncated at compaction"
+# Our own footer, only when it terminates the content. A message that merely QUOTES the marker stays subject to the
+# cap, and matching the size back out lets a LOWERED cap re-cut an earlier truncation without restating the original
+# length wrong.
+_LEAN_TAIL_TRUNCATION_FOOTER_RE = re.compile(
+    r"\n\n" + re.escape(_LEAN_TAIL_TRUNCATION_MARKER) + r" — ([\d,]+) chars preserved in session history\..*\]\Z"
+)
+
+
+def _lean_truncation_note(content_len: int, session_id: str) -> str:
+    """Footer appended to an assistant message cut inside the tail."""
+    hint = f" Recover with session_search(query=..., session_id='{session_id}')" if session_id else ""
+    return f"\n\n{_LEAN_TAIL_TRUNCATION_MARKER} — {content_len:,} chars preserved in session history.{hint}]"
+
+
+def truncate_oversized_tail_assistants(
+    messages: list[dict[str, Any]], tail_start: int, session_id: str, limit: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Cut tail assistant ``content`` longer than *limit* chars to ``limit`` plus a recovery footer.
+
+    Tool results have :func:`demote_stale_tail_tools`; assistant content had no equivalent, so a runaway generation
+    stayed pinned in the tail and compaction reclaimed nothing — every later turn re-sent the wall of repetition that
+    was itself feeding the degeneration. Only ``content`` is cut: ``tool_calls`` stay intact so tool-group pairing
+    survives, and the full message stays in session history, which is what the footer's pointer recovers. Returns a
+    new list (untouched rows shared, cut ones copied) and the number of rows cut."""
+    from agent.context_compressor import _rewritten
+
+    result = list(messages)
+    truncated = 0
+    for i in range(tail_start, len(messages)):
+        msg = messages[i]
+        content = msg.get("content")
+        if msg.get("role") != "assistant" or not isinstance(content, str):
+            continue
+        # Measure the cap against the body, not an earlier pass's footer, and carry that pass's original size
+        # forward so a lowered cap re-cuts and still names the real size.
+        prior = _LEAN_TAIL_TRUNCATION_FOOTER_RE.search(content)
+        body = content[: prior.start()] if prior else content
+        if len(body) <= limit:
+            continue
+        original = int(prior.group(1).replace(",", "")) if prior else len(content)
+        result[i] = _rewritten(msg, body[:limit] + _lean_truncation_note(original, session_id))
+        truncated += 1
+    return result, truncated
+
+
 def skill_view_names_by_call_id(messages: list[dict[str, Any]]) -> dict[str, str]:
     """Map each ``skill_view`` tool-call id to the skill name it loaded."""
     from agent.context_compressor import _json_dict, _tc_get

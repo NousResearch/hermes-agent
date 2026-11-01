@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Optional
 
-from hermes_state_common import _RESET_CHILD_SQL, _sql_json_extract
+from hermes_state_common import _RESET_CHILD_SQL, _sql_json_extract, _tool_fork_sql
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -26,7 +26,7 @@ _DESCENDANTS_SQL = f"""
                 WHERE {_sql_json_extract('s.model_config', '$._delegate_from')} IS NULL
                   AND {_sql_json_extract('s.model_config', '$._branched_from')} IS NULL
                   AND NOT ({_RESET_CHILD_SQL.format(a='s')})
-                  AND COALESCE(s.source, '') != 'tool'
+                  AND NOT {_tool_fork_sql('s.')}
             )
             SELECT id, parent_session_id, started_at FROM descendants
             """

@@ -217,3 +217,47 @@ def test_a_launchd_job_is_paused_through_launchd_and_restarted_through_it(tmp_pa
         assert pid() and pid() != first, "the restart did not bring the job back under launchd"
     finally:
         subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True, check=False)
+
+
+@pytest.mark.platforms("linux")
+def test_an_updater_inside_a_sibling_hermes_unit_is_not_left_exposed_to_the_stop_cascade(
+        tmp_path, monkeypatch):
+    """A desktop-terminal update runs inside ``hermes-dashboard.service`` while the pause stops
+    ``hermes-gateway.service``; the dashboard follows the gateway (PartOf/Upstreams/BindsTo), so
+    the gateway stop cascades into the updater's own cgroup. Being outside the TARGET unit is not
+    safety — the updater must move out (or refuse the stop) whenever it sits inside ANY Hermes
+    unit's cgroup."""
+    from hermes_cli import update_cmd_posix_pause as m
+
+    slice_app = "/user.slice/user-1000.slice/user@1000.service/app.slice"
+    gateway_unit = {"kind": "systemd", "scope": "user", "unit": "hermes-gateway.service",
+                    "pid": 4242, "cgroup": f"{slice_app}/hermes-gateway.service"}
+    monkeypatch.setattr(m, "_pid_cgroup", lambda pid="self": f"{slice_app}/hermes-dashboard.service")
+    monkeypatch.setattr(m, "_ppid", lambda pid: 1)  # no real ancestor walk in the test
+    moved: list[tuple] = []
+    monkeypatch.setattr(m, "_start_transient_update_scope",
+                        lambda bus, pids, unit_name: moved.append((bus, tuple(pids))),
+                        raising=False)
+    escaped = m._escape_cgroup(gateway_unit)
+    assert escaped is False, (
+        "the updater sits in hermes-dashboard.service and declared the gateway stop safe because "
+        "it was outside the gateway's OWN cgroup — the PartOf cascade kills it mid-update")
+    assert moved, "the updater never tried to move out of the sibling unit before allowing the stop"
+
+
+@pytest.mark.platforms("linux")
+def test_an_updater_outside_every_hermes_unit_needs_no_escape(tmp_path, monkeypatch):
+    """A raw-shell update (outside every Hermes unit's cgroup) keeps the fast path: the stop and
+    any cascade from it cannot reach the updater, so no transient scope is created."""
+    from hermes_cli import update_cmd_posix_pause as m
+
+    slice_app = "/user.slice/user-1000.slice/user@1000.service/app.slice"
+    gateway_unit = {"kind": "systemd", "scope": "user", "unit": "hermes-gateway.service",
+                    "pid": 4242, "cgroup": f"{slice_app}/hermes-gateway.service"}
+    monkeypatch.setattr(m, "_pid_cgroup", lambda pid="self": f"{slice_app}/bash-1234.scope")
+    moved: list[tuple] = []
+    monkeypatch.setattr(m, "_start_transient_update_scope",
+                        lambda bus, pids, unit_name: moved.append((bus, tuple(pids))),
+                        raising=False)
+    assert m._escape_cgroup(gateway_unit) is True
+    assert moved == [], "an updater no Hermes unit can reach must not churn transient scopes"

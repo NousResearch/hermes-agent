@@ -748,7 +748,19 @@ def _cmd_claim(args: argparse.Namespace) -> int:
 
 
 def _cmd_comment(args: argparse.Namespace) -> int:
-    body = " ".join(args.text).strip()
+    body_file = getattr(args, "body_file", None)
+    if body_file is not None and args.text:
+        return _err("kanban comment: text and --body-file are mutually exclusive", 2)
+    if body_file is not None:
+        try:
+            body = sys.stdin.read() if body_file == "-" else Path(body_file).read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeError) as exc:
+            return _err(f"kanban comment: --body-file: {exc}", 2)
+    else:
+        body = " ".join(args.text)
+    body = body.strip()
+    if not body:
+        return _err("kanban comment: a non-empty comment body is required", 2)
     if args.max_len is not None:
         if args.max_len < 1:
             return _err("kanban: --max-len must be positive", 2)
@@ -1421,6 +1433,9 @@ def run_slash(rest: str) -> str:
         return f"⚠ /kanban usage error\n{body}" if body else "⚠ /kanban usage error"
     except argparse.ArgumentError as exc:
         return f"⚠ /kanban usage error\n{_usage_for_error()}\n{exc}"
+
+    if args.kanban_action == "comment" and getattr(args, "body_file", None) is not None:
+        return "kanban comment: --body-file is local CLI only; pass comment text directly in /kanban"
 
     with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
         try:

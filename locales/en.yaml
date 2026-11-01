@@ -820,6 +820,7 @@ gateway:
 
   moa:
     prepare_failed: "Failed to prepare MoA turn."
+    managed_session: "/moa isn't available in this session: safe-mode, config-free, kanban and managed-worker sessions run every turn on their own model. Send the prompt without /moa."
 
   quick_command:
     no_output: "Command returned no output."

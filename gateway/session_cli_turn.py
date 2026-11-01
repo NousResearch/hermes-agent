@@ -82,8 +82,9 @@ def _executing(message_id):
 
 
 def cli_turn(message_id):
-    """The committed CLI turn fields of the admission whose event id is ``message_id``; ``{}`` for
-    any other turn, so a follow-up drained on the same task never inherits them."""
+    """The CLI turn fields of the executing admission whose event id is ``message_id``: its committed
+    fields plus any this execution rebound (expanded ``api_text``, a ``/moa`` ``model_override``);
+    ``{}`` for any other turn, so a follow-up drained on the same task never inherits them."""
     bound = _executing(message_id)
     return {} if bound is None else bound[1]
 
@@ -100,8 +101,8 @@ def rebind_api_text(message_id, text):
 def rebind_model_override(message_id, override):
     """``/moa`` typed in a local session's admitted text: ``override`` runs this execution in place of
     any committed ``model_override``, as the classic CLI's own ``/moa`` does. The committed row keeps
-    the raw command, so a retry or a queued drain dispatches it again and binds afresh. False when
-    ``message_id`` is not the executing admission: nothing would run the override."""
+    the raw command, so a ``/moa`` queued behind a running turn binds its preset when it drains. False
+    when ``message_id`` is not the executing admission: nothing would run the override."""
     bound = _executing(message_id)
     if bound is None:
         return False

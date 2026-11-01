@@ -810,6 +810,7 @@ gateway:
     ack_generate: "AGENTS.md létrehozása a projekt átvizsgálása alapján…"
   moa:
     prepare_failed: "Nem sikerült előkészíteni a MoA kört."
+    managed_session: "A /moa nem érhető el ebben a munkamenetben: a csökkentett módú, konfiguráció nélküli, kanban és felügyelt workeres munkamenetek minden kört a saját modelljükön futtatnak. Küldd el a promptot /moa nélkül."
   quick_command:
     no_output: "A parancs nem adott kimenetet."
     timed_out: "A gyorsparancs időtúllépés miatt leállt (30 s)."

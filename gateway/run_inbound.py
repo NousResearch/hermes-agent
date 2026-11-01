@@ -983,13 +983,19 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         except Exception:
             moa_cfg = normalize_moa_config({})
         from gateway.session_policy import policy_for_source
-        if policy_for_source(self, source) is not None:
+        policy = policy_for_source(self, source)
+        if policy is not None:
             # A local session runs its frozen launch route and never reads the session-state override
             # below, so the preset rides the admitted turn's execution, as the classic CLI's own /moa does.
             from gateway.session_cli_turn import rebind_model_override
             from gateway.session_command_sink import active_sink
+            from gateway.session_managed_worker import policy_if_managed
             if active_sink() is not None:
-                return False, None  # slash.exec: the client submits /moa as typed and its turn lands here
+                # slash.exec: the client submits /moa as typed and its turn lands here, unless the
+                # session's turns run in a managed worker, which never binds the preset.
+                if policy_if_managed(policy) is not None:
+                    return True, t("gateway.moa.managed_session")
+                return False, None
             if not rebind_model_override(event.message_id, {"model": moa_cfg["default_preset"], "provider": "moa"}):
                 return True, t("gateway.moa.prepare_failed")
             event.text = moa_payload

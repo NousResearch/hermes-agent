@@ -152,3 +152,22 @@ async def test_a_busy_session_still_refuses_slash_moa_and_runs_a_queued_one_on_t
 
     assert refused['type'] == 'exec' and '/moa' in refused['output'], refused
     assert _Agent.turns == [('first turn', *SESSION_ROUTE), (PROMPT, *MOA_ROUTE), ('and again', *SESSION_ROUTE)]
+
+
+@pytest.mark.asyncio
+async def test_a_safe_mode_session_refuses_slash_moa_instead_of_sending_it_to_its_worker(owner):
+    """A safe-mode session's turns run in a managed worker that cannot switch to a preset: ``slash.exec``
+    refuses ``/moa`` visibly and admits nothing, rather than handing the worker the literal command."""
+    from agent.i18n import t
+    from gateway.session_local import create_local_session
+    authority, connection, cwd = owner
+    sid = create_local_session(authority, connection.actor, {
+        'request_id': 'safe', 'source': 'gui', 'cwd': str(cwd), 'toolsets': [], 'safe_mode': True,
+        'provider': 'custom', 'model': 'session-model', 'base_url': 'http://127.0.0.1:9/v1'}).session_id
+    await _call(connection, 'session.resume', session_id=sid)
+
+    refused = await _call(connection, 'slash.exec', session_id=sid, command=f'/moa {PROMPT}')
+
+    assert refused == {'type': 'exec', 'output': t('gateway.moa.managed_session')}, refused
+    assert '/moa' in refused['output'], refused  # the sentence itself, not its missing key
+    assert _rows(authority, sid) == []

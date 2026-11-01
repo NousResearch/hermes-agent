@@ -42,7 +42,7 @@ import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/st
 import { onSessionsChanged } from '@/store/session-sync'
 import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
-import { isBrowserWindow, isHudWindow, isPeerInstanceWindow, isSecondaryWindow } from '@/store/windows'
+import { isBrowserWindow, isHudWindow, isPeerInstanceWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
@@ -554,8 +554,13 @@ export function useDesktopIntegrations({
   }, [])
 
   // Another window mutated the shared session list -> re-pull the sidebar.
+  // A pop-out (`win=secondary`) has no global sidebar but still renders the one
+  // session it owns and reads its live title from this store, so it must
+  // subscribe too — otherwise a rename in the main window never reaches it
+  // without a profile switch. Only a Browser pop-out (a web page, no sessions)
+  // is excluded.
   useEffect(() => {
-    if (isSecondaryWindow() || isBrowserWindow()) {
+    if (isBrowserWindow()) {
       return
     }
 

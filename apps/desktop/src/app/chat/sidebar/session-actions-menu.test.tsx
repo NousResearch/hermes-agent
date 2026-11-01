@@ -77,9 +77,11 @@ vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
 vi.mock('@/lib/profile-color', () => ({ PROFILE_SWATCHES: [] }))
 vi.mock('@/lib/session-export', () => ({ exportSession: vi.fn() }))
 vi.mock('@/store/gateway', () => ({ activeGateway: vi.fn(() => null) }))
+vi.mock('@/store/session-sync', () => ({ broadcastSessionsChanged: vi.fn(), onSessionsChanged: vi.fn(() => () => {}) }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/store/projects', () => ({
   $projectTree: atom<unknown[]>([]),
+  applyRenamedSessionTitle: vi.fn(),
   moveSessionToProject: vi.fn(),
   projectIdForCwd: vi.fn(() => null),
   projectRootCwd: vi.fn(() => ''),
@@ -93,6 +95,7 @@ vi.mock('@/store/session', () => ({
   $selectedStoredSessionId: atom<null | string>(null),
   $sessions: atom<unknown[]>([]),
   $unreadFinishedSessionIds: atom<string[]>([]),
+  applySessionTitle: vi.fn(),
   markSessionRead: vi.fn(),
   sessionMatchesStoredId: vi.fn(() => false),
   sessionPinId: vi.fn((s: { id: string }) => s.id),
@@ -199,6 +202,37 @@ describe('SessionActionsMenu', () => {
     await waitFor(() => {
       expect(renameSession).toHaveBeenCalledWith('s1', 'Prep Butler', 'personal')
     })
+  })
+
+  it('broadcasts a cross-window sessions-changed after a rename', async () => {
+    const { renameSession } = await import('@/hermes')
+    const { broadcastSessionsChanged } = await import('@/store/session-sync')
+    vi.mocked(renameSession).mockResolvedValue({ ok: true, title: 'Renamed here' })
+    vi.mocked(broadcastSessionsChanged).mockClear()
+
+    render(
+      <SessionActionsMenu sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const rename = await screen.findByRole('menuitem', { name: /rename/i })
+    fireEvent.click(rename)
+
+    const dialog = await screen.findByRole('dialog')
+    const input = within(dialog).getByRole('textbox')
+    fireEvent.change(input, { target: { value: 'Renamed here' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /save/i }))
+
+    // Other windows (and the pop-out showing this session) re-pull on the ping.
+    await waitFor(() => expect(broadcastSessionsChanged).toHaveBeenCalled())
   })
 
   it('confirms before deleting — cancel keeps the session, confirm deletes it', async () => {

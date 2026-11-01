@@ -1414,6 +1414,7 @@ export interface Translations extends NoticeTranslations {
       pillFitsGpu: string
       pillUsesRam: string
       pillTooBig: string
+      pillNoRoomNow: string
       browseTitle: string
       browseHint: string
       browsePlaceholder: string

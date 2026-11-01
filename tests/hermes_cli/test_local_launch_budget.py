@@ -318,15 +318,20 @@ def test_growth_counts_the_growing_model_as_free(hermes_home, monkeypatch, capac
     from hermes_cli.local_runtime import bootstrap, growth, presets
 
     mdir, gguf = _stage_27b(hermes_home, monkeypatch)
-    monkeypatch.setattr(bootstrap, "get_supervisor", lambda: SimpleNamespace(is_idle=lambda m: True))
+    path = hermes_home / "presets.ini"
+    loaded = presets.preset_for_model(gguf, CARD_CAPACITY, set())
+    loaded.window = 144 * 1024
+    loaded.keys["ctx-size"] = str(loaded.window)
+    presets.write_presets([loaded], path)
+    monkeypatch.setattr(bootstrap, "get_supervisor", lambda: SimpleNamespace(
+        is_idle=lambda m: True, preset_path=path))
     monkeypatch.setattr(growth, "is_managed_endpoint", lambda url: True)
     from hermes_cli.local_runtime import estimator, gguf as gguf_mod
 
     monkeypatch.setattr(gguf_mod, "read_gguf_header", presets.read_gguf_header)
     monkeypatch.setattr(estimator, "profile_from_gguf", presets.profile_from_gguf)
-    own = presets.resident_footprint(gguf, CARD_CAPACITY, 144 * 1024)
+    own = presets.resident_footprint(gguf, CARD_CAPACITY, 144 * 1024, preset_path=path)
     _card(monkeypatch, 2.0 + own / GIB)  # 2 GiB of other programs plus our loaded 144K model
-    path = hermes_home / "presets.ini"
 
     def refresh():
         presets.generate_presets(mdir, CARD_CAPACITY, path)
@@ -344,13 +349,19 @@ def test_growth_refuses_a_rung_other_programs_leave_no_room_for(hermes_home, mon
     from hermes_cli.local_runtime import bootstrap, growth, presets
 
     _mdir, gguf = _stage_27b(hermes_home, monkeypatch)
-    monkeypatch.setattr(bootstrap, "get_supervisor", lambda: SimpleNamespace(is_idle=lambda m: True))
+    path = hermes_home / "presets.ini"
+    loaded = presets.preset_for_model(gguf, CARD_CAPACITY, set())
+    loaded.window = 144 * 1024
+    loaded.keys["ctx-size"] = str(loaded.window)
+    presets.write_presets([loaded], path)
+    monkeypatch.setattr(bootstrap, "get_supervisor", lambda: SimpleNamespace(
+        is_idle=lambda m: True, preset_path=path))
     monkeypatch.setattr(growth, "is_managed_endpoint", lambda url: True)
     from hermes_cli.local_runtime import estimator, gguf as gguf_mod
 
     monkeypatch.setattr(gguf_mod, "read_gguf_header", presets.read_gguf_header)
     monkeypatch.setattr(estimator, "profile_from_gguf", presets.profile_from_gguf)
-    own = presets.resident_footprint(gguf, CARD_CAPACITY, 144 * 1024)
+    own = presets.resident_footprint(gguf, CARD_CAPACITY, 144 * 1024, preset_path=path)
     _card(monkeypatch, 5.4 + own / GIB)
     monkeypatch.setattr(bootstrap, "refresh_local_runtime", lambda: pytest.fail("bounced"))
     assert growth.maybe_grow_window(MODEL_ID, base_url="http://127.0.0.1:1/v1",

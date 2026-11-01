@@ -55,7 +55,7 @@ Adapted from the GSD (Get Shit Done) project's gates reference — MIT © 2025 L
 **Recovery:** Human investigates root cause, fixes, restarts from checkpoint.
 
 **Examples:**
-- Context window critically low during execution (POOR tier, >70%) — abort cleanly rather than produce truncated output.
+- Context genuinely exhausted during execution — compaction unavailable or failing, or a hard limit hit — abort cleanly rather than produce truncated output. A high usage percentage alone is not an abort condition: the runtime compacts context, so keep working until a real limit or failure appears.
 - Critical dependency unavailable mid-run (network down, API key revoked).
 - Unrecoverable filesystem state (disk full, permissions lost).
 - Safety invariant violated (agent attempted an irreversible destructive action outside approved scope).
@@ -64,7 +64,7 @@ Adapted from the GSD (Get Shit Done) project's gates reference — MIT © 2025 L
 
 When you write an orchestration skill that has validation checkpoints, **name each checkpoint by its gate type explicitly** and answer three questions:
 
-1. **What condition triggers this gate?** (e.g., "plan file missing", "issue count didn't decrease", "context >70%")
+1. **What condition triggers this gate?** (e.g., "plan file missing", "issue count didn't decrease", "compaction failed or a hard context limit was hit")
 2. **What happens when it fails?** (block / loop back / ask human / abort)
 3. **Who resumes, and from where?** (fix precondition + retry, revise + re-check, human decision, restart from checkpoint)
 
@@ -86,8 +86,8 @@ Answering these three up front means your skill never hits "what do we do now?" 
 (on revision loop exhaustion)
 [Escalation] "3 review cycles failed to converge on issue X — pick: force-merge, rewrite task, abandon"
                 ↓ user picks
-(on any tier-POOR context pressure during loop)
-[Abort] "context at 73%, checkpointing and stopping"
+(on unrecoverable context failure during loop)
+[Abort] "compaction failed at 73% usage — checkpointing and stopping"
 ```
 
 The vocabulary is small on purpose. Every gate in every workflow should fit one of these four. If you find yourself inventing a fifth, it's probably a revision gate with extra branching, or an escalation gate in disguise.

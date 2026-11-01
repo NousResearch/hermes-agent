@@ -41,7 +41,38 @@ def _account_payload(
     subscription: dict[str, Any] | None,
     subscription_credits: float,
     purchased_credits: float,
+    member_spend_cap_exceeded: bool | None = None,
+    member_spend_cap_usd: float | str | None = None,
+    member_spend_usd: float | str | None = None,
+    member_spend_cap_remaining_usd: float | str | None = None,
 ) -> dict[str, Any]:
+    psa: dict[str, Any] = {
+        "allowed": allowed,
+        "paid_access": allowed,
+        "reason": "usable_credits" if allowed else "no_usable_credits",
+        "organisation_id": "org_123",
+        "effective_at_ms": 123456789,
+        "has_active_subscription": subscription is not None,
+        "active_subscription_is_paid": bool(
+            subscription and subscription.get("monthly_charge", 0) > 0
+        ),
+        "subscription_tier": subscription.get("tier") if subscription else None,
+        "subscription_monthly_charge": (
+            subscription.get("monthly_charge") if subscription else None
+        ),
+        "subscription_credits_remaining": subscription_credits,
+        "purchased_credits_remaining": purchased_credits,
+        "total_usable_credits": subscription_credits + purchased_credits,
+    }
+    if member_spend_cap_exceeded is not None:
+        psa["member_spend_cap_exceeded"] = member_spend_cap_exceeded
+        psa["reason"] = "member_spend_cap_exceeded"
+    if member_spend_cap_usd is not None:
+        psa["member_spend_cap_usd"] = member_spend_cap_usd
+    if member_spend_usd is not None:
+        psa["member_spend_usd"] = member_spend_usd
+    if member_spend_cap_remaining_usd is not None:
+        psa["member_spend_cap_remaining_usd"] = member_spend_cap_remaining_usd
     return {
         "user": {
             "email": "alice@example.test",
@@ -52,24 +83,7 @@ def _account_payload(
         },
         "subscription": subscription,
         "purchased_credits_remaining": purchased_credits,
-        "paid_service_access": {
-            "allowed": allowed,
-            "paid_access": allowed,
-            "reason": "usable_credits" if allowed else "no_usable_credits",
-            "organisation_id": "org_123",
-            "effective_at_ms": 123456789,
-            "has_active_subscription": subscription is not None,
-            "active_subscription_is_paid": bool(
-                subscription and subscription.get("monthly_charge", 0) > 0
-            ),
-            "subscription_tier": subscription.get("tier") if subscription else None,
-            "subscription_monthly_charge": (
-                subscription.get("monthly_charge") if subscription else None
-            ),
-            "subscription_credits_remaining": subscription_credits,
-            "purchased_credits_remaining": purchased_credits,
-            "total_usable_credits": subscription_credits + purchased_credits,
-        },
+        "paid_service_access": psa,
     }
 
 
@@ -254,8 +268,120 @@ def test_pool_oauth_entry_force_fresh_uses_account_api(monkeypatch):
     assert info.credential_source == "pool:dashboard device_code"
 
 
+# ── member spend cap exceeded ───────────────────────────────────────────────
 
 
+def test_member_spend_cap_exceeded_message(monkeypatch):
+    """When the Portal returns member_spend_cap_exceeded, the entitlement
+    message should explain the cap — not say 'no credits'."""
+    payload = _account_payload(
+        allowed=False,
+        subscription=None,
+        subscription_credits=0,
+        purchased_credits=222990.17,
+        member_spend_cap_exceeded=True,
+        member_spend_cap_usd="500",
+        member_spend_usd="520.51",
+        member_spend_cap_remaining_usd="0",
+    )
+    token = _jwt({"sub": "user_123", "org_id": "org_123", "exp": int(time.time()) + 900})
+    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: _state(token))
+    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: "fresh-token")
+    monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
+
+    info = get_nous_portal_account_info(force_fresh=True)
+
+    assert info.paid_service_access is False
+    assert info.paid_service_access_info is not None
+    assert info.paid_service_access_info.member_spend_cap_exceeded is True
+    assert info.paid_service_access_info.member_spend_cap_usd == 500.0
+    assert info.paid_service_access_info.member_spend_usd == 520.51
+
+    msg = format_nous_portal_entitlement_message(info, capability="Nous model access")
+    assert msg is not None
+    # Must mention spend cap, not "no active subscription or usable credits"
+    assert "spend cap" in msg
+    assert "$500.00" in msg
+    assert "$520.51" in msg
+    # Should NOT say "no active subscription"
+    assert "no active subscription" not in msg
+    # Should still show available credits
+    assert "$222990.17" in msg
+
+
+def test_member_spend_cap_exceeded_without_amounts(monkeypatch):
+    """Even if the Portal doesn't include cap/spend amounts, the message
+    should still mention the spend cap rather than credits."""
+    payload = _account_payload(
+        allowed=False,
+        subscription=None,
+        subscription_credits=0,
+        purchased_credits=100,
+        member_spend_cap_exceeded=True,
+    )
+    token = _jwt({"sub": "user_123", "org_id": "org_123", "exp": int(time.time()) + 900})
+    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: _state(token))
+    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: "fresh-token")
+    monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
+
+    info = get_nous_portal_account_info(force_fresh=True)
+    msg = format_nous_portal_entitlement_message(info, capability="Nous model access")
+    assert msg is not None
+    assert "spend cap" in msg
+    assert "no active subscription" not in msg
+
+
+
+
+# ── cached snapshot is bound to the login that fetched it ───────────────────
+
+
+def test_cached_snapshot_is_only_served_to_the_login_that_fetched_it(monkeypatch):
+    """A profile/login switch must never read another account's cached snapshot, even ``any_age``."""
+    from hermes_cli.nous_account import cached_nous_portal_account_info
+
+    payload = _account_payload(allowed=True, subscription=None, subscription_credits=0, purchased_credits=5)
+    auth_state = {"state": _state("token-a")}
+    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: auth_state["state"])
+    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: auth_state["state"]["access_token"])
+    monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
+
+    info = get_nous_portal_account_info(force_fresh=True)
+    assert cached_nous_portal_account_info() is info
+    assert cached_nous_portal_account_info(any_age=True) is info
+
+    auth_state["state"] = _state("token-b")  # another login
+    assert cached_nous_portal_account_info() is None
+    assert cached_nous_portal_account_info(any_age=True) is None
+
+    auth_state["state"] = {}  # logged out
+    assert cached_nous_portal_account_info(any_age=True) is None
+
+
+def test_cached_snapshot_survives_a_token_refresh_but_not_an_account_or_org_switch(monkeypatch):
+    """A refresh (new token, same user + org) between the fetch and a picker's read must not hide the
+    snapshot: ``hermes model`` refreshes runtime credentials right after its account fetch."""
+    from hermes_cli.nous_account import cached_nous_portal_account_info
+
+    def token(sub: str, org: str, n: int) -> str:
+        return _jwt({"sub": sub, "org_id": org, "exp": int(time.time()) + 900, "jti": f"t{n}"})
+
+    payload = _account_payload(allowed=True, subscription=None, subscription_credits=0, purchased_credits=5)
+    auth_state = {"state": _state(token("user_a", "org_a", 1))}
+    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: auth_state["state"])
+    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: auth_state["state"]["access_token"])
+    monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
+
+    info = get_nous_portal_account_info(force_fresh=True)
+
+    auth_state["state"] = _state(token("user_a", "org_a", 2))  # refreshed token, same account
+    assert cached_nous_portal_account_info() is info
+
+    auth_state["state"] = _state(token("user_a", "org_b", 3))  # same user, other org
+    assert cached_nous_portal_account_info(any_age=True) is None
+
+    auth_state["state"] = _state(token("user_b", "org_a", 4))  # other user
+    assert cached_nous_portal_account_info(any_age=True) is None
 
 
 # ── org slug/name parsing + top-up URL builder ──────────────────────────────

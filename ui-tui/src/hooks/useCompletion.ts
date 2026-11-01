@@ -1,23 +1,28 @@
+import { looksLikeSlashCommand } from '@hermes/shared/slash'
 import { useEffect, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
-import { inlineSlashTrigger, looksLikeSlashCommand } from '../domain/slash.js'
+import { rankSlashItems } from '../app/slash/fuzzyScore.js'
+import { getUiState, sessionCwd } from '../app/uiStore.js'
+import { inlineSlashTrigger } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { CompletionResponse } from '../gatewayTypes.js'
+import { t } from '../i18n/runtime.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { listWidgetApps } from '../sdk/registry.js'
 
 /** Client-side widget apps live in the TUI's registry, not the gateway — so
  *  `/` completions merge their title/metadata here. Registry-driven: a new
- *  app surfaces automatically, no hardcoded lists on either side. */
+ *  app surfaces automatically, no hardcoded lists on either side. Matching is
+ *  description-aware (ported from grok-cli's slash menu): `/timer` surfaces a
+ *  widget whose help text mentions timers, not just id-prefix hits. */
 export function mergeWidgetAppItems(input: string, items: CompletionItem[]): CompletionItem[] {
   // Only complete the command NAME position (no args typed yet).
   if (input.includes(' ')) {
     return items
   }
 
-  const local = listWidgetApps()
-    .filter(app => `/${app.id}`.startsWith(input.toLowerCase()))
+  const local = rankSlashItems(listWidgetApps(), input, app => ({ description: app.help, id: app.id }))
     .filter(app => !items.some(item => item.text === `/${app.id}`))
     .map(app => ({ display: `/${app.id}`, meta: app.help, text: `/${app.id}` }))
 
@@ -29,7 +34,7 @@ const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))
 export function completionRequestForInput(
   input: string
 ):
-  | { method: 'complete.path'; params: { word: string }; replaceFrom: number }
+  | { method: 'complete.path'; params: { word: string; cwd?: string; session_id?: string }; replaceFrom: number }
   | { method: 'complete.slash'; params: { text: string }; replaceFrom: number; skillsOnly?: boolean }
   | null {
   const isSlashCommand = looksLikeSlashCommand(input)
@@ -67,9 +72,13 @@ export function completionRequestForInput(
     return null
   }
 
+  const cwd = sessionCwd()
+  // The shared gateway lists the session's own folder, so it must know which session is asking.
+  const sid = getUiState().sid
+
   return {
     method: 'complete.path',
-    params: { word: pathWord },
+    params: { word: pathWord, ...(cwd ? { cwd } : {}), ...(sid ? { session_id: sid } : {}) },
     replaceFrom: input.length - pathWord.length
   }
 }
@@ -108,12 +117,19 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
       return
     }
 
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       if (ref.current !== input) {
         return
       }
 
-      gw.request<CompletionResponse>(request.method, request.params)
+      // Skill completions are per session: project-local skills follow the
+      // session's repo, so the gateway must know which session is asking.
+      const sid = getUiState().sid
+
+      const params =
+        request.method === 'complete.slash' && sid ? { ...request.params, session_id: sid } : request.params
+
+      gw.request<CompletionResponse>(request.method, params)
         .then(raw => {
           if (ref.current !== input) {
             return
@@ -151,8 +167,8 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
           setCompletions([
             {
               text: '',
-              display: 'completion unavailable',
-              meta: e instanceof Error && e.message ? e.message : 'unavailable'
+              display: t('libText.completion.unavailable'),
+              meta: e instanceof Error && e.message ? e.message : t('libText.completion.unavailableMeta')
             }
           ])
           setCompIdx(0)
@@ -160,7 +176,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
         })
     }, 60)
 
-    return () => clearTimeout(t)
+    return () => clearTimeout(timer)
   }, [blocked, gw, input])
 
   return { completions, compIdx, setCompIdx, compReplace }

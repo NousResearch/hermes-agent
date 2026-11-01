@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
+import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
 import { group, split } from '../model'
 import {
@@ -19,20 +20,11 @@ import { TreeGroup } from './tree-group'
 // doesn't close it". Renders the REAL zone renderer and opens the REAL
 // context menu.
 
-class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-
 beforeAll(() => {
-  vi.stubGlobal('ResizeObserver', TestResizeObserver)
+  stubResizeObserver()
+  stubMenuDomApis()
   // jsdom lacks CSS.escape, which tab-strip-scroll uses in a layout effect.
   vi.stubGlobal('CSS', { ...globalThis.CSS, escape: (value: string) => value })
-  Element.prototype.hasPointerCapture ??= () => false
-  Element.prototype.setPointerCapture ??= () => undefined
-  Element.prototype.releasePointerCapture ??= () => undefined
-  HTMLElement.prototype.scrollIntoView ??= () => undefined
 })
 
 const disposers: (() => void)[] = []
@@ -124,6 +116,33 @@ describe('right-clicking a tool panel tab', () => {
     openContextMenu(tabEl('logs')!)
 
     expect(await screen.findByRole('menuitem', { name: /^close$/i })).toBeTruthy()
+  })
+})
+
+describe('zone menu shortcut', () => {
+  it('keeps the spelled-out tab-strip chord inside the menu', async () => {
+    declareDefaultTree(
+      split('column', [
+        group(['workspace'], { active: 'workspace', id: 'grp-main' }),
+        group(['terminal', 'logs'], { active: 'logs', id: 'grp-tools' })
+      ])
+    )
+    render(<TreeGroup node={zoneAt(1)} parentAxis="column" />)
+
+    openContextMenu(tabEl('logs')!)
+
+    // jsdom is not a Mac, so the default `mod+alt+t` renders as Ctrl+Alt+T.
+    // A fixed menu width plus overflow-x-hidden clips that last glyph.
+    const item = await screen.findByRole('menuitem', { name: /(?:show|hide) tabs/i })
+
+    expect(item.textContent).toContain('Ctrl+Alt+T')
+
+    const menu = item.closest('[data-slot="context-menu-content"]')
+    const hint = [...item.querySelectorAll('span')].find(span => span.textContent === 'Ctrl+Alt+T')
+
+    expect(menu?.className.split(/\s+/)).toContain('w-max')
+    expect(menu?.className.split(/\s+/)).not.toContain('w-40')
+    expect(hint?.className.split(/\s+/)).toContain('shrink-0')
   })
 })
 

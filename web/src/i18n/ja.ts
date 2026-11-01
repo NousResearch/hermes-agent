@@ -92,9 +92,18 @@ export const ja: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "有効なメモリプロバイダー",
+    noProvider: "なし — 組み込みのみ",
+    builtinLayer: "組み込みレイヤー",
+    builtinNote: "MEMORY.md と USER.md は外部プロバイダーとは別の Hermes 自身のメモリです。どちらも既定でセッションに読み込まれ、設定の切り替え (memory.memory_enabled / memory.user_profile_enabled) でそれぞれオフにできます。外部プロバイダーはこれに追加されるもので、置き換えることはありません。",
+  },
+
   status: {
     actionFailed: "アクションが失敗しました",
     actionFinished: "完了",
+    actionFinishedOwed: "更新済みですが未完了の処理があります（完了するには `hermes update` を再実行してください）",
     actions: "アクション",
     agent: "エージェント",
     activeSessions: "アクティブなセッション",
@@ -162,9 +171,14 @@ export const ja: Translations = {
     deleteSelectedConfirmMessage:
       "選択した{count}件のセッションとそのすべてのメッセージが完全に削除されます。この操作は取り消せません。",
     selectedSessionsDeleted: "{count}件のセッションを削除しました",
+    selectedSessionsSkippedActive: "{deleted}件を削除、実行中のターンがあるため{count}件を保持しました",
     failedToDeleteSelected: "選択したセッションの削除に失敗しました",
     resumeInChat: "チャットで再開",
     newChat: "新しいチャット",
+    workspace: "ワークスペース",
+    workspaceDefault: "デフォルト",
+    workspaceRescan: "リポジトリを再スキャン",
+    workspaceCustom: "別のパス…",
     previousPage: "前のページ",
     nextPage: "次のページ",
     roles: {
@@ -323,6 +337,8 @@ export const ja: Translations = {
     disableRuntime: "無効化",
     enableAfterInstall: "インストール後に有効化",
     enableRuntime: "有効化",
+    toggleTakesEffectAfterRestart:
+      "保存しました — 変更を適用するにはゲートウェイを再起動してください。",
     forceReinstall: "強制再インストール (既存のフォルダを先に削除)",
     headline:
       "Hermes プラグインを発見、インストール、有効化、更新します (`hermes plugins` 相当)。",
@@ -468,6 +484,8 @@ export const ja: Translations = {
     copyCliCommand: "CLI コマンドをコピー (外部 / フォールバック用)",
     connect: "接続",
     sessionExpires: "セッションは {time} 後に期限切れになります",
+    sessionExpiredNoError:
+      "プロバイダーに到達しないままサインインの有効期限が切れました。多くの場合、開いたタブでサインインページが止まっている（サーバー側の問題）ことが原因です。そのタブでサインインを完了してから「再試行」をクリックしてください。それでも失敗する場合は、API キーまたは CLI をご利用ください。",
     initiatingLogin: "ログインフローを開始しています…",
     exchangingCode: "コードをトークンと交換しています…",
     connectedClosing: "接続しました！閉じています…",
@@ -617,6 +635,12 @@ export const ja: Translations = {
       "ボードを使うと、関連のない作業の流れを分けられます — プロジェクト、リポジトリ、ドメインごとに 1 つずつ。あるボードのワーカーは、別のボードのタスクを見ることはありません。",
     slug: "スラッグ",
     slugHint: "— 小文字とハイフン、例: atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "表示名",
     displayNameHint: "（任意）",
     description: "説明",

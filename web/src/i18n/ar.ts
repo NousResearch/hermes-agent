@@ -92,9 +92,18 @@ export const ar = defineLocale({
     webUi: "واجهة الويب",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "مزوّد الذاكرة النشط",
+    noProvider: "لا يوجد — المدمجة فقط",
+    builtinLayer: "الطبقة المدمجة",
+    builtinNote: "MEMORY.md وUSER.md هما ذاكرة Hermes الخاصة، مستقلتان عن أي مزوّد خارجي. يُحمَّل كلاهما في الجلسات افتراضيًا؛ ويعطّل مفتاحا الإعداد (memory.memory_enabled / memory.user_profile_enabled) كلًّا منهما. يضيف المزوّد إليهما ولا يستبدلهما أبدًا.",
+  },
+
   status: {
     actionFailed: "فشلت الإجراء",
     actionFinished: "انتهى",
+    actionFinishedOwed: "تم التحديث، لكن لا تزال هناك خطوات معلّقة (أعد تشغيل `hermes update` لإكمالها)",
     actions: "إجراءات",
     agent: "العامل",
     activeSessions: "الجلسات النشطة",
@@ -269,6 +278,8 @@ export const ar = defineLocale({
     disableRuntime: "تعطيل",
     enableAfterInstall: "تفعيل بعد التثبيت",
     enableRuntime: "تفعيل",
+    toggleTakesEffectAfterRestart:
+      "تم الحفظ — أعد تشغيل البوابة لتطبيق التغيير.",
     forceReinstall: "إعادة تثبيت إجباري (حذف المجلد الموجود أولاً)",
     headline:
       "اكتشف وثبِّت وفعِّل وحدِّث مكوِّنات Hermes الإضافية (مطابقة `hermes plugins`).",
@@ -553,6 +564,12 @@ export const ar = defineLocale({
       "تتيح اللوحات فصل تدفقات العمل غير المرتبطة — واحدة لكل مشروع أو مستودع أو مجال.",
     slug: "المعرِّف",
     slugHint: "— أحرف صغيرة، واصلات، مثال atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "الاسم المعروض",
     displayNameHint: "(اختياري)",
     description: "الوصف",

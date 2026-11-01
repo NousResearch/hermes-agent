@@ -1,5 +1,3 @@
-// @vitest-environment jsdom
-// downloadGatewayMediaFile drives an <a download> click, so these need a DOM.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
@@ -7,34 +5,14 @@ import { $connection } from '@/store/session'
 import {
   downloadGatewayMediaFile,
   filePathFromMediaPath,
+  gatewayImageProxyDataUrl,
   gatewayMediaDataUrl,
   isInlineMediaSrc,
-  isRemoteGateway,
   mediaExternalUrl,
+  mediaGatewayStreamUrl,
   resolveMediaDisplaySrc,
   resolveMediaPlaybackSrc
 } from './media'
-
-describe('isRemoteGateway', () => {
-  afterEach(() => {
-    $connection.set(null)
-  })
-
-  it('is false with no connection', () => {
-    $connection.set(null)
-    expect(isRemoteGateway()).toBe(false)
-  })
-
-  it('is false in local mode', () => {
-    $connection.set({ mode: 'local' } as never)
-    expect(isRemoteGateway()).toBe(false)
-  })
-
-  it('is true in remote mode', () => {
-    $connection.set({ mode: 'remote' } as never)
-    expect(isRemoteGateway()).toBe(true)
-  })
-})
 
 describe('filePathFromMediaPath', () => {
   it('passes through a plain path', () => {
@@ -43,6 +21,19 @@ describe('filePathFromMediaPath', () => {
 
   it('decodes a file:// URL with encoded characters', () => {
     expect(filePathFromMediaPath('file:///tmp/a%20b.png')).toBe('/tmp/a b.png')
+  })
+
+  // The URL's own `/C:/...` pathname opens nothing on Windows, and dropping a
+  // UNC host named another file.
+  it.each([
+    ['file:///C:/Users/me/a%20b.png', 'C:\\Users\\me\\a b.png'],
+    ['file://nas/share/a%20b.png', '\\\\nas\\share\\a b.png']
+  ])('reads %s as the Windows path %s', (url, path) => {
+    expect(filePathFromMediaPath(url)).toBe(path)
+  })
+
+  it.each(['file:///tmp/..%2f..%2fetc/a.png', 'file:///tmp/100%.png'])('keeps %s undecoded', url => {
+    expect(filePathFromMediaPath(url)).toBe(url.slice('file://'.length))
   })
 })
 
@@ -54,6 +45,15 @@ describe('mediaExternalUrl', () => {
   it('passes through http(s) URLs untouched', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 't' } as never)
     expect(mediaExternalUrl('https://example.com/a.png')).toBe('https://example.com/a.png')
+  })
+
+  // Their bytes are in the URL itself, never a gateway path, so none of them gets a tokened link.
+  it('passes through data: and blob: URLs untouched', () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 'SECRET' } as never)
+
+    for (const url of ['data:image/png;base64,AAAA', 'blob:https://app.example/3f1c']) {
+      expect(mediaExternalUrl(url)).toBe(url)
+    }
   })
 
   it('keeps file:// form in local mode', () => {
@@ -72,9 +72,95 @@ describe('mediaExternalUrl', () => {
     )
   })
 
+  it('downloads a Windows gateway file URL by its native path', () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 't' } as never)
+
+    expect(new URL(mediaExternalUrl('file:///C:/Users/me/a%20b.png')).searchParams.get('path')).toBe(
+      'C:\\Users\\me\\a b.png'
+    )
+    expect(new URL(mediaExternalUrl('file://nas/share/a.png')).searchParams.get('path')).toBe('\\\\nas\\share\\a.png')
+  })
+
+  // #93508 item 5: the browser-hosted Desktop's session token grants host shells. Its gateway files
+  // save through the ticketed bridge, so no URL built here may carry that token.
+  it('never puts the browser-hosted Desktop session token into a URL', () => {
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    $connection.set({ mode: 'remote', baseUrl: 'http://127.0.0.1:9119', token: 'SECRET' } as never)
+
+    try {
+      for (const path of ['/home/me/report.pdf', 'file:///tmp/a.png', 'out/render.png']) {
+        expect(mediaExternalUrl(path)).not.toContain('SECRET')
+      }
+    } finally {
+      document.documentElement.removeAttribute('data-hermes-desktop-host')
+    }
+  })
+
   it('falls back to file:// when remote connection lacks a token', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw' } as never)
     expect(mediaExternalUrl('/tmp/a.png')).toBe('file:///tmp/a.png')
+  })
+
+  // #84361: the raw `file://${path}` concat broke on URL-structural
+  // characters — `#`/`?` truncated the path at the fragment/query boundary
+  // and a stray `%` made the main process's fileURLToPath throw.
+  it('escapes URL-structural characters so the whole path survives the round trip', () => {
+    $connection.set({ mode: 'local' } as never)
+
+    const roundTrip = (fileUrl: string): string => {
+      const parsed = new URL(fileUrl)
+
+      return decodeURIComponent(parsed.pathname)
+    }
+
+    expect(mediaExternalUrl('/tmp/Report #2.pdf')).toBe('file:///tmp/Report %232.pdf')
+    expect(mediaExternalUrl('/tmp/a?b.pdf')).toBe('file:///tmp/a%3Fb.pdf')
+    expect(mediaExternalUrl('/tmp/100%.pdf')).toBe('file:///tmp/100%25.pdf')
+
+    for (const path of ['/tmp/Report #2.pdf', '/tmp/a?b.pdf', '/tmp/100%.pdf', '/tmp/café.png']) {
+      expect(roundTrip(mediaExternalUrl(path))).toBe(path)
+    }
+  })
+})
+
+describe('mediaGatewayStreamUrl', () => {
+  afterEach(() => {
+    $connection.set(null)
+  })
+
+  it('rewrites gateway-local media to the main-process remote stream proxy', () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 's e/cret' } as never)
+
+    for (const path of [
+      '/tmp/a b.mp4',
+      'file:///tmp/a%20b.mp4',
+      'C:/Users/Alice/video.mp4',
+      'file:///C:/Users/Alice/video%20clip.mp4',
+      'file://nas/share/video%20clip.mp4'
+    ]) {
+      const url = new URL(mediaGatewayStreamUrl(path))
+      expect(url.protocol).toBe('hermes-media:')
+      expect(url.hostname).toBe('remote')
+      expect.soft(decodeURIComponent(url.pathname.slice(1)), path).toBe(path)
+    }
+  })
+
+  it('supports OAuth remotes with no renderer-visible token and scopes pool profiles', () => {
+    $connection.set({ authMode: 'oauth', mode: 'remote', profile: 'voice reviewer', token: null } as never)
+    expect(mediaGatewayStreamUrl('/tmp/a.mp4')).toBe('hermes-media://remote/%2Ftmp%2Fa.mp4?profile=voice%20reviewer')
+  })
+
+  it('pins remote streams to their registered connection and profile', () => {
+    $connection.set({
+      connectionId: 'studio-ssh',
+      mode: 'remote',
+      profile: 'voice reviewer',
+      remoteKind: 'ssh'
+    } as never)
+
+    expect(mediaGatewayStreamUrl('/tmp/a.mp4')).toBe(
+      'hermes-media://remote/%2Ftmp%2Fa.mp4?connectionId=studio-ssh&profile=voice%20reviewer'
+    )
   })
 })
 
@@ -138,6 +224,29 @@ describe('resolveMediaDisplaySrc', () => {
     )
     expect(readFileDataUrl).toHaveBeenCalledWith('/Users/me/project/a b.png')
   })
+
+  it('reads Windows file URLs from the local desktop shell by their native path', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,bG9jYWw=')
+
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+    $connection.set({ mode: 'local' } as never)
+
+    await resolveMediaDisplaySrc('file:///C:/Users/me/a%20b.png')
+    await resolveMediaDisplaySrc('file://nas/share/a.png')
+    expect(readFileDataUrl.mock.calls).toEqual([['C:\\Users\\me\\a b.png'], ['\\\\nas\\share\\a.png']])
+  })
+
+  it('reads an owner-pinned Windows file URL through the gateway by its native path', async () => {
+    vi.stubGlobal('window', { hermesDesktop: { api } })
+    $connection.set({ mode: 'remote' } as never)
+
+    await resolveMediaDisplaySrc('file:///C:/Users/me/a%20b.png', { connectionId: 'win-gw', profile: 'work' })
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'win-gw',
+      path: `/api/fs/read-data-url?path=${encodeURIComponent('C:\\Users\\me\\a b.png')}`,
+      profile: 'work'
+    })
+  })
 })
 
 describe('resolveMediaPlaybackSrc', () => {
@@ -155,12 +264,12 @@ describe('resolveMediaPlaybackSrc', () => {
     )
   })
 
-  it('routes gateway-local video through the authenticated download endpoint', async () => {
+  it('routes OAuth gateway-local video through the authenticated main-process proxy', async () => {
     vi.stubGlobal('window', { hermesDesktop: { api: vi.fn() } })
-    $connection.set({ mode: 'remote', baseUrl: 'https://gateway.test', token: 's e/cret' } as never)
+    $connection.set({ authMode: 'oauth', mode: 'remote', profile: 'default', token: null } as never)
 
     await expect(resolveMediaPlaybackSrc('/root/outputs/render.mp4')).resolves.toBe(
-      'https://gateway.test/api/files/download?path=%2Froot%2Foutputs%2Frender.mp4&token=s%20e%2Fcret'
+      'hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4?profile=default'
     )
   })
 
@@ -169,6 +278,9 @@ describe('resolveMediaPlaybackSrc', () => {
     $connection.set({ mode: 'local' } as never)
 
     await expect(resolveMediaPlaybackSrc('C:\\renders\\demo.mp4')).resolves.toBe(
+      'hermes-media://stream/C%3A%5Crenders%5Cdemo.mp4'
+    )
+    await expect(resolveMediaPlaybackSrc('file:///C:/renders/demo.mp4')).resolves.toBe(
       'hermes-media://stream/C%3A%5Crenders%5Cdemo.mp4'
     )
   })
@@ -204,50 +316,89 @@ describe('gatewayMediaDataUrl', () => {
   })
 })
 
-describe('downloadGatewayMediaFile', () => {
+describe('gatewayImageProxyDataUrl (#74564)', () => {
   const api = vi.fn(async ({ path }: { path: string }) => {
-    if (path.startsWith('/api/fs/read-data-url?')) {
-      return { dataUrl: 'data:text/markdown;base64,IyByZXBvcnQ=' }
+    if (path.startsWith('/api/media/proxy?')) {
+      return { dataUrl: 'data:image/png;base64,cGRveGllZA==' }
     }
 
     throw new Error(`unexpected path ${path}`)
   })
 
-  let clickSpy: ReturnType<typeof vi.spyOn>
-
   beforeEach(() => {
     api.mockClear()
-    vi.stubGlobal('window', { hermesDesktop: { api }, setTimeout: vi.fn() })
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({ blob: async () => new Blob(['# report'], { type: 'text/markdown' }) }))
-    )
-    URL.createObjectURL = vi.fn(() => 'blob:remote-artifact')
-    URL.revokeObjectURL = vi.fn()
-    clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    vi.stubGlobal('window', { hermesDesktop: { api } })
     $connection.set({ mode: 'remote' } as never)
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
-    vi.clearAllMocks()
-    clickSpy.mockRestore()
     $connection.set(null)
   })
 
-  it('downloads gateway files through the desktop fs bridge', async () => {
-    await downloadGatewayMediaFile('file:///Users/me/project/report.md')
+  it('fetches a client-unreachable CDN image through the gateway proxy', async () => {
+    const url = 'https://v3.fal.media/media/abc123?x=1'
 
-    expect(api).toHaveBeenCalledWith({
-      path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2Fproject%2Freport.md'
-    })
-    expect(clickSpy).toHaveBeenCalledOnce()
+    await expect(gatewayImageProxyDataUrl(url)).resolves.toBe('data:image/png;base64,cGRveGllZA==')
+    expect(api).toHaveBeenCalledWith({ path: `/api/media/proxy?url=${encodeURIComponent(url)}` })
   })
 
-  it('rejects when the gateway refuses the file read', async () => {
-    api.mockRejectedValueOnce(new Error('403 File is not readable'))
+  it('pins the request to the owner connection and profile when given', async () => {
+    await gatewayImageProxyDataUrl('https://fal.run/img.png', {
+      connectionId: 'studio-ssh',
+      profile: 'voice reviewer'
+    })
 
-    await expect(downloadGatewayMediaFile('/Users/me/project/report.md')).rejects.toThrow('403')
-    expect(clickSpy).not.toHaveBeenCalled()
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'studio-ssh',
+      path: '/api/media/proxy?url=https%3A%2F%2Ffal.run%2Fimg.png',
+      profile: 'voice reviewer'
+    })
+  })
+
+  it('returns an empty string for non-http sources and proxy failures', async () => {
+    await expect(gatewayImageProxyDataUrl('data:image/png;base64,aGk=')).resolves.toBe('')
+    await expect(gatewayImageProxyDataUrl('/local/file.png')).resolves.toBe('')
+    expect(api).not.toHaveBeenCalled()
+
+    api.mockRejectedValueOnce(new Error('403 Image host not allowed'))
+    await expect(gatewayImageProxyDataUrl('https://fal.media/x.png')).resolves.toBe('')
+  })
+})
+
+describe('downloadGatewayMediaFile', () => {
+  const saveGatewayFile = vi.fn(async () => ({ path: '/Users/me/Downloads/report.md', saved: true }))
+
+  beforeEach(() => {
+    saveGatewayFile.mockClear()
+    vi.stubGlobal('window', { hermesDesktop: { saveGatewayFile } })
+    $connection.set({ connectionId: 'work-ssh', mode: 'remote', profile: 'docker-gw' } as never)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    $connection.set(null)
+  })
+
+  it('downloads gateway files through the native desktop save bridge', async () => {
+    await expect(downloadGatewayMediaFile('file:///Users/me/project/a%20b.md')).resolves.toEqual({
+      path: '/Users/me/Downloads/report.md',
+      saved: true
+    })
+
+    expect(saveGatewayFile).toHaveBeenCalledWith({
+      connectionId: 'work-ssh',
+      path: 'file:///Users/me/project/a%20b.md',
+      profile: 'docker-gw',
+      suggestedName: 'a b.md'
+    })
+  })
+
+  it('rejects when the desktop bridge is unavailable', async () => {
+    vi.stubGlobal('window', { hermesDesktop: {} })
+
+    await expect(downloadGatewayMediaFile('/Users/me/project/report.md')).rejects.toThrow(
+      'Desktop file download bridge'
+    )
   })
 })

@@ -2,15 +2,26 @@ import { atom, computed } from 'nanostores'
 
 import { translateNow } from '@/i18n'
 import { stableArray } from '@/lib/stable-array'
-import type { TodoItem, TodoStatus } from '@/lib/todos'
+import { type TodoItem, type TodoStatus, todoTree } from '@/lib/todos'
 
 import { $gateway } from './gateway'
 import { $goalsBySession, type GoalStatus } from './goals'
+import { $liveWorkRoster, noteEventFed, rosterLiveIds } from './live-work-roster'
 import { dispatchNativeNotification } from './native-notifications'
 import { notifyError } from './notifications'
-import { $sessionStates } from './session-states'
+import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone, noteRuntimeAlive } from './runtime-gone'
+import { $sessions, lineageAliases } from './session'
+import { ambientRequestFor } from './session-gone-latch'
+import { $sessionStates, requestForOwnedSession } from './session-states'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 import { $todosBySession } from './todos'
+
+export {
+  isSessionGone,
+  isSessionGoneForBackgroundPolling,
+  markSessionGone,
+  resetBackgroundPollingGuard
+} from './runtime-gone'
 
 /** Composer status stack feed — merged todos, subagents, background per session. */
 export type StatusItemState = 'done' | 'failed' | 'running'
@@ -21,6 +32,8 @@ export interface ComposerStatusItem {
   exitCode?: number
   /** subagent: active tool label shown on the right. */
   currentTool?: string
+  /** todo: nesting depth (0 = top-level) for indented subtask rows. */
+  depth?: number
   /** goal: active | paused | waiting | done. */
   goalStatus?: GoalStatus
   id: string
@@ -39,34 +52,55 @@ export interface ComposerStatusItem {
 // Writable source for background work, synced from the gateway's process
 // registry (`terminal(background=true)` spawns) via `process.list`.
 export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem[]>>({})
+// When the backend snapshot behind each list arrived: the freshness the
+// live-work roster compares against. Local removals (dismiss, auto-clear) carry
+// the snapshot's stamp forward; they are not new backend data.
+const backgroundWrittenAt = new WeakMap<readonly ComposerStatusItem[], number>()
 
 // Stored session ids that have at least one RUNNING background process. The
-// sidebar row reads this for a pulsing gray dot — distinct from the accent
-// pulse of an active LLM turn — so the user can tell at a glance "this session
-// has something chugging along in the background" even when the turn is idle.
+// sidebar row reads this for a hollow dot — distinct from the filled dot of an
+// active LLM turn — so the user can tell at a glance "this session has
+// something chugging along in the background" even when the turn is idle.
 //
 // $backgroundStatusBySession is keyed by RUNTIME session id (gateway events
 // and process.list both speak that); the sidebar row knows only the STORED id.
-// $sessionStates bridges the two: runtime id → state.storedSessionId.
+// $sessionStates bridges the two: runtime id → state.storedSessionId, then
+// lineageAliases covers whichever tip of that conversation a surface holds.
 // Perf: recomputes on every $sessionStates change (message deltas, tens/sec),
 // but the background-running set rarely moves. `stableArray` keeps the prior
 // reference when unchanged so rows reading this don't re-render per token.
 let backgroundRunningIds: readonly string[] = []
-export const $backgroundRunningSessionIds = computed([$backgroundStatusBySession, $sessionStates], (bg, states) => {
-  const ids = new Set<string>()
+export const $backgroundRunningSessionIds = computed(
+  [$backgroundStatusBySession, $sessionStates, $sessions, $liveWorkRoster],
+  (bg, states, sessions, roster) => {
+    const ids = new Set<string>()
+    const eventFedAt = new Map<string, number>()
 
-  for (const [runtimeId, items] of Object.entries(bg)) {
-    if (items.some(i => i.state === 'running')) {
-      const storedId = states[runtimeId]?.storedSessionId
+    for (const [runtimeId, items] of Object.entries(bg)) {
+      if (items.length === 0) {
+        continue
+      }
 
-      if (storedId) {
-        ids.add(storedId)
+      // Same fresh-chat fallback as the working/attention projections: before a
+      // conversation is persisted its runtime id is the id surfaces key on.
+      const aliases = lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)
+      noteEventFed(eventFedAt, aliases, backgroundWrittenAt.get(items) ?? -Infinity)
+
+      if (items.some(i => i.state === 'running')) {
+        for (const alias of aliases) {
+          ids.add(alias)
+        }
       }
     }
-  }
 
-  return (backgroundRunningIds = stableArray(backgroundRunningIds, [...ids]))
-})
+    // Rows no current event feed speaks for (off screen, every row after a reload).
+    for (const alias of rosterLiveIds(roster, 'background', eventFedAt, sessions)) {
+      ids.add(alias)
+    }
+
+    return (backgroundRunningIds = stableArray(backgroundRunningIds, [...ids]))
+  }
+)
 
 // Rows the user X-ed away. The registry keeps finished processes around for a
 // while, so without this every refresh would resurrect a dismissed row.
@@ -138,7 +172,8 @@ const subToItem = (s: SubagentProgress): ComposerStatusItem => ({
   type: 'subagent'
 })
 
-const todoToItem = (t: TodoItem): ComposerStatusItem => ({
+const todoToItem = (t: TodoItem, depth: number): ComposerStatusItem => ({
+  depth,
   id: `todo:${t.id}`,
   state: t.status === 'in_progress' ? 'running' : 'done',
   title: t.content,
@@ -175,6 +210,7 @@ const sameStatusItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
   a.currentTool === b.currentTool &&
   a.goalStatus === b.goalStatus &&
   a.todoStatus === b.todoStatus &&
+  a.depth === b.depth &&
   a.sessionId === b.sessionId
 
 const stabilizeItems = (prev: ComposerStatusItem[] | undefined, next: ComposerStatusItem[]): ComposerStatusItem[] => {
@@ -201,7 +237,10 @@ export const $statusItemsBySession = computed(
     }
 
     for (const [sid, list] of Object.entries(todos)) {
-      push(sid, list.map(todoToItem))
+      push(
+        sid,
+        todoTree(list).map(([t, depth]) => todoToItem(t, depth))
+      )
     }
 
     for (const [sid, goal] of Object.entries(goals)) {
@@ -251,12 +290,16 @@ export function groupStatusItems(items: readonly ComposerStatusItem[]): StatusGr
   return TYPE_ORDER.filter(type => byType.has(type)).map(type => ({ items: byType.get(type)!, type }))
 }
 
-const writeBackground = (sid: string, items: ComposerStatusItem[]) => {
+const writeBackground = (sid: string, items: ComposerStatusItem[], snapshotAt: number | undefined) => {
   const current = $backgroundStatusBySession.get()
   const next = { ...current }
 
   if (items.length > 0) {
     next[sid] = items
+
+    if (snapshotAt !== undefined) {
+      backgroundWrittenAt.set(items, snapshotAt)
+    }
   } else {
     delete next[sid]
   }
@@ -312,8 +355,22 @@ export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessE
 
   for (const [id, item] of fresh) {
     if (item.state !== 'running' && prevState.get(id) === 'running') {
+      let body = item.title
+
+      if (item.exitCode !== undefined) {
+        body += ` (exit ${item.exitCode})`
+      }
+
+      if (item.output) {
+        const tailLines = item.output.trim().split('\n').slice(-3)
+
+        if (tailLines.length > 0) {
+          body += '\n' + tailLines.join('\n')
+        }
+      }
+
       dispatchNativeNotification({
-        body: item.title,
+        body,
         kind: 'backgroundDone',
         sessionId: sid,
         title: translateNow(
@@ -367,22 +424,38 @@ export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessE
     return
   }
 
-  writeBackground(sid, next)
+  writeBackground(sid, next, Date.now())
 }
 
 /** Pull the session's live process snapshot from the gateway. */
 export async function refreshBackgroundProcesses(sid: string): Promise<void> {
   const gateway = $gateway.get()
 
-  if (!sid || !gateway) {
+  if (!sid || !gateway || isSessionGone(sid)) {
     return
   }
 
   try {
-    const result = await gateway.request<{ processes?: GatewayProcessEntry[] }>('process.list', { session_id: sid })
+    const result = await requestForOwnedSession<{ processes?: GatewayProcessEntry[] }>(
+      sid,
+      ambientRequestFor(gateway),
+      'process.list',
+      { session_id: sid }
+    )
 
     reconcileBackgroundProcesses(sid, result?.processes ?? [])
-  } catch {
+    // The binding answered, so it is healthy: refund the stored session's
+    // recovery budget (a heal that stuck must not count against the next one).
+    noteRuntimeAlive(sid)
+  } catch (error) {
+    // A gone session never comes back under this runtime id: stop polling it,
+    // or the 5s timer hammers the gateway with 4001s for the window's lifetime.
+    if (isSessionGoneForBackgroundPolling(error)) {
+      markSessionGone(sid)
+
+      return
+    }
+
     // Transient socket loss — the next trigger (event or poll) retries.
   }
 }
@@ -399,7 +472,8 @@ export function dismissBackgroundProcess(sid: string, id: string) {
 
   writeBackground(
     sid,
-    list.filter(item => item.id !== id)
+    list.filter(item => item.id !== id),
+    backgroundWrittenAt.get(list)
   )
 }
 
@@ -408,10 +482,34 @@ export function dismissBackgroundProcess(sid: string, id: string) {
  *  row while the process lived on, stranding rogue tasks. On failure the row
  *  stays so the user can retry / see it didn't die. */
 export async function stopBackgroundProcess(sid: string, id: string): Promise<void> {
+  const gateway = $gateway.get()
+
+  if (isSessionGone(sid)) {
+    // The backend has already declared this runtime gone, so there is no
+    // authoritative process left to kill through this session. Remove the
+    // stale local row instead of leaving the Stop button permanently inert.
+    dismissBackgroundProcess(sid, id)
+
+    return
+  }
+
+  if (!gateway) {
+    notifyError(new Error('Gateway is not connected'), 'Could not stop the process')
+
+    return
+  }
+
   try {
-    await $gateway.get()?.request('process.kill', { process_id: id, session_id: sid })
+    await requestForOwnedSession(sid, ambientRequestFor(gateway), 'process.kill', { process_id: id, session_id: sid })
     dismissBackgroundProcess(sid, id)
   } catch (err) {
+    if (isSessionGoneForBackgroundPolling(err)) {
+      dismissBackgroundProcess(sid, id)
+      markSessionGone(sid)
+
+      return
+    }
+
     notifyError(err, 'Could not stop the process')
   }
 }
@@ -438,10 +536,19 @@ export function resetSessionBackground(sid: string) {
     dismissed.add(item.id)
 
     if (item.state === 'running') {
-      void gateway?.request('process.kill', { process_id: item.id, session_id: sid }).catch(() => undefined)
+      if (gateway && !isSessionGone(sid)) {
+        void requestForOwnedSession(sid, ambientRequestFor(gateway), 'process.kill', {
+          process_id: item.id,
+          session_id: sid
+        }).catch(error => {
+          if (isSessionGoneForBackgroundPolling(error)) {
+            markSessionGone(sid)
+          }
+        })
+      }
     }
   }
 
   dismissedBySession.set(sid, dismissed)
-  writeBackground(sid, [])
+  writeBackground(sid, [], undefined)
 }

@@ -148,6 +148,16 @@ export function patchSpectrumTs(root = scriptDir()) {
         !original.includes("const rebuildFromAppleMessage = async")) {
       continue;
     }
+    // spectrum-ts 12.x replaced the attachment-only branches with
+    // `buildUnwrappedContentMessage` + `toOrderedParts`, which already emits a
+    // group containing both text and attachments. There is nothing left for
+    // Hermes to patch; keep the legacy v8 path below for older pinned installs.
+    if (
+      original.includes("const buildUnwrappedContentMessage = async") &&
+      original.includes("const parts = toOrderedParts(message.content.text, attachments);")
+    ) {
+      return { patched: false, file, reason: "upstream preserves mixed payloads" };
+    }
     let patched = original;
     patched = patchRebuild(patched);
     patched = patchInbound(patched);

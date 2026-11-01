@@ -430,13 +430,25 @@ class CreateTaskBody(BaseModel):
     provider_override: Optional[str] = None
     reasoning_effort: Optional[str] = None  # none|minimal|…|ultra; None inherits the profile's level
     project_id: Optional[str] = None  # None inherits the board's scoped project (if any)
+    # Containment is separate from ``parents`` and never delays task dispatch.
+    group_parent_id: Optional[str] = None
 
 
 @router.post("/tasks")
 def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn), _value_error_400():
+        if payload.group_parent_id and kanban_db.get_task(conn, payload.group_parent_id) is None:
+            raise HTTPException(status_code=404, detail="group parent task not found")
         # CreateTaskBody field names match create_task's keyword parameters.
-        task_id = kanban_db.create_task(conn, created_by="dashboard", board=board, **payload.model_dump())
+        task_data = payload.model_dump(exclude={"group_parent_id"})
+        task_id = kanban_db.create_task(
+            conn, created_by="dashboard", board=board, **task_data
+        )
+        if payload.group_parent_id:
+            try:
+                kanban_db.group_task(conn, payload.group_parent_id, task_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(
             task, current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id)
@@ -455,6 +467,78 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             except Exception:
                 pass  # probe failure must never block the create itself
         return body
+
+
+class GroupTaskBody(BaseModel):
+    """Body for attaching an existing task to a non-blocking parent."""
+
+    child_id: str = Field(min_length=1, max_length=128)
+
+
+@router.get("/tasks/{task_id}/group")
+def get_task_group(task_id: str, board: Optional[str] = Query(None)):
+    """Return a task's containment parent and direct children."""
+    with _board_conn(board) as (_, conn):
+        if kanban_db.get_task(conn, task_id) is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        parent_id = kanban_db.group_parent_id(conn, task_id)
+        parent = kanban_db.get_task(conn, parent_id) if parent_id else None
+        children = [
+            child
+            for child_id in kanban_db.group_child_ids(conn, task_id)
+            if (child := kanban_db.get_task(conn, child_id)) is not None
+        ]
+        return {
+            "parent": _task_dict(parent) if parent else None,
+            "children": [_task_dict(child) for child in children],
+        }
+
+
+@router.get("/task-groups")
+def list_task_groups(
+    task_ids: list[str] = Query(..., max_length=100),
+    board: Optional[str] = Query(None),
+):
+    """Return direct grouped children for a batch of task ids."""
+    with _board_conn(board) as (_, conn):
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for task_id in task_ids:
+            if kanban_db.get_task(conn, task_id) is None:
+                continue
+            groups[task_id] = [
+                _task_dict(child)
+                for child_id in kanban_db.group_child_ids(conn, task_id)
+                if (child := kanban_db.get_task(conn, child_id)) is not None
+            ]
+        return {"groups": groups}
+
+
+@router.post("/tasks/{task_id}/group")
+def group_existing_task(
+    task_id: str,
+    payload: GroupTaskBody,
+    board: Optional[str] = Query(None),
+):
+    """Group an existing task without changing its dependency links."""
+    with _board_conn(board) as (_, conn):
+        try:
+            kanban_db.group_task(conn, task_id, payload.child_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"parent_id": task_id, "child_id": payload.child_id}
+
+
+@router.delete("/tasks/{task_id}/group/{child_id}")
+def ungroup_existing_task(
+    task_id: str,
+    child_id: str,
+    board: Optional[str] = Query(None),
+):
+    """Remove a containment edge while preserving workflow dependencies."""
+    with _board_conn(board) as (_, conn):
+        if not kanban_db.ungroup_task(conn, task_id, child_id):
+            raise HTTPException(status_code=404, detail="task group relation not found")
+        return {"parent_id": task_id, "child_id": child_id, "removed": True}
 
 
 # --- Attachments — upload / list / download / delete ------------------------

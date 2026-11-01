@@ -37,6 +37,7 @@ from gateway.session import (
     neutralize_untrusted_inline_text,
 )
 from gateway.turn_lease import TurnLeaseTimeoutError
+from hermes_cli.observability.shared_metrics_busy import note_busy_admitting, note_busy_outcome
 from typing import Any, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -739,6 +740,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                     and self._effective_busy_text_mode(source) == "queue")):
             return False
         outcome = await self._resolve_busy_steer_or_redirect(event, _quick_key, mode, running_agent)
+        note_busy_outcome(event, outcome)
         await self._busy_interrupt_and_ack(event, _quick_key, adapter, state, running_agent, outcome)
         return bool(outcome.steered or outcome.redirected)
 
@@ -1235,6 +1237,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                     return True, None  # a /stop or /new came after its command, as it clears the slot
                 # A failed admit stays the authority's answer (refusal notice or turn error), never a
                 # pending legacy turn: that would run unadmitted, outside the FIFO's order.
+                note_busy_admitting(event)
                 return True, await admit_message(authority, event)
         if (authority is None and not is_internal and not event.get_command()
                 and getattr(self, 'session_authority', None) is not None):

@@ -289,6 +289,9 @@
           },
           {
             "$ref": "#/$defs/prepared_compaction_counter"
+          },
+          {
+            "$ref": "#/$defs/busy_arrival_counter"
           }
         ]
       }
@@ -3808,9 +3811,12 @@
                 "3",
                 "gte_4"
               ]
+            },
+            "gateway_peak_busy_chats_bucket": {
+              "$ref": "#/$defs/count_bucket"
             }
           },
-          "description": "v5 engagement: one per closed UTC day with activity: total active time (inter-interaction gaps capped at 5 minutes), surfaces used, and the model that served most attended turns (none when no attended turn). active_profile_count_bucket: distinct profiles of the host with a user turn that day, reported only on the root (default) profile's row; other profiles' rows carry 0."
+          "description": "v5 engagement: one per closed UTC day with activity: total active time (inter-interaction gaps capped at 5 minutes), surfaces used, and the model that served most attended turns (none when no attended turn). active_profile_count_bucket: distinct profiles of the host with a user turn that day, reported only on the root (default) profile's row; other profiles' rows carry 0. gateway_peak_busy_chats_bucket (optional: rows recorded before it omit it): the most chats of this profile with a turn running at the same moment that day, as its gateway process saw them; 0 when no gateway served the profile."
         },
         "value": {
           "type": "integer",
@@ -5396,6 +5402,63 @@
               ]
             }
           }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "busy_arrival_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.gateway.busy_arrival.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "disposition",
+            "platform",
+            "wait_bucket"
+          ],
+          "properties": {
+            "disposition": {
+              "enum": [
+                "queued",
+                "steered",
+                "interrupted",
+                "merged",
+                "dropped",
+                "other"
+              ]
+            },
+            "platform": {
+              "$ref": "#/$defs/catalog_identifier"
+            },
+            "wait_bucket": {
+              "enum": [
+                "lt_5s",
+                "5s_to_30s",
+                "30s_to_2m",
+                "2m_to_10m",
+                "gte_10m",
+                "never"
+              ]
+            }
+          },
+          "description": "busy-wait: one per human message that arrived while its chat's turn was running, once its fate is known. disposition: queued (ran later as its own turn), steered (delivered into the running turn), interrupted (stopped the running turn, then ran), merged (folded into another busy message), dropped (never ran: cleared, /stop, /new, refused or over the queue cap), other. wait_bucket: arrival to the moment it reached the agent; never when it did not."
         },
         "value": {
           "type": "integer",

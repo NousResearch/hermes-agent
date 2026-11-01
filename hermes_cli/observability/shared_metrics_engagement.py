@@ -17,6 +17,10 @@ profile's day row reports the count; every other profile's row carries ``0`` so 
 host total twice. When the root profile has collection off, nothing is written to its store and
 the count is not reported.
 
+The day row also carries ``gateway_peak_busy_chats_bucket``: the most chats of this profile that had
+a turn running at the same moment that day, as the gateway process serving them saw it
+(``shared_metrics_busy``); folded in at every interaction, ``0`` for a profile no gateway served.
+
 Only closed enums, buckets, catalog-sanitized provider/model names and profile hashes are stored
 in the state row; the hashes never leave it.
 """
@@ -49,6 +53,7 @@ _SWITCH_THRESHOLDS = ((2, "1"), (4, "2_to_3"), (11, "4_to_10"), (31, "11_to_30")
 _ENGAGED_ENTRYPOINTS = frozenset({"gateway_message", "interactive", "one_shot"})
 _INTERACTION_METRICS = frozenset({contract.TASK_STARTED_METRIC, contract.TASK_FINISHED_METRIC})
 _ALL = "*"
+_BUSY_PEAK = "busy_chats_peak"
 
 # Test / live-probe seam: wall clock in epoch seconds.
 _now: Callable[[], float] = time.time
@@ -106,9 +111,11 @@ def record(store: Any, resource: dict[str, str], *, surface: str | None, route: 
     root_home = _root_home(profile_home)
     owner = root_home == profile_home
     profile = _profile_hash(profile_home) if surface is not None else None
+    from .shared_metrics_busy import day_peak
+
     store.update_rollup_state(STATE_KEY, lambda state: apply(
         state, now_ms=_now_ms(), resource=resource, surface=surface, route=route,
-        profile=profile if owner else None, owner=owner,
+        profile=profile if owner else None, owner=owner, busy_peak=lambda day: day_peak(profile_home, day),
     ))
     if profile is not None and not owner and _collects(root_home):
         _root_store(root_home).update_rollup_state(STATE_KEY, lambda state: apply(
@@ -185,11 +192,11 @@ def _valid_state(state: Any) -> bool:
 def apply(
     state: dict[str, Any] | None, *, now_ms: int, resource: dict[str, str],
     surface: str | None = None, route: tuple[str, str] | None = None, profile: str | None = None,
-    owner: bool = False,
+    owner: bool = False, busy_peak: Callable[[str], int] | None = None,
 ) -> tuple[dict[str, Any], list[tuple[str, dict, dict, str]]]:
-    """Fold one interaction (``surface``), attended turn (``route``) and/or a profile's user turn
-    (``profile``, host accumulator only) into the day's state; close the stored day first when the
-    clock has moved past it."""
+    """Fold one interaction (``surface``), attended turn (``route``), a profile's user turn
+    (``profile``, host accumulator only) and/or the day's running-chat peak (``busy_peak(day)``) into
+    the day's state; close the stored day first when the clock has moved past it."""
     today, rows = _utc_day(now_ms), []
     if state is not None and not _valid_state(state):
         state = None
@@ -211,6 +218,9 @@ def apply(
     if route is not None:
         key = " ".join(route)
         state["models"][key] = int(state["models"].get(key, 0)) + 1
+    if busy_peak is not None:
+        stored = state.get(_BUSY_PEAK)
+        state[_BUSY_PEAK] = max(stored if isinstance(stored, int) else 0, busy_peak(today))
     return state, rows
 
 
@@ -238,9 +248,11 @@ def close_day(state: dict[str, Any]) -> list[tuple[str, dict, dict, str]]:
         for name, v in sorted(surfaces.items())
     ]
     provider, model = _primary(state["models"])
+    peak = state.get(_BUSY_PEAK)
     rows.append((contract.ENGAGEMENT_DAY_METRIC, {
         "active_minutes_bucket": active_minutes_bucket(int((streams.get(_ALL) or [0])[0])),
         "active_profile_count_bucket": contract.size_bucket(active_profiles),
+        contract.BUSY_PEAK_FIELD: contract.count_bucket(peak if isinstance(peak, int) else 0),
         "primary_model": model, "primary_provider": provider,
         "surfaces_used_count": surfaces_used_bucket(len(surfaces)),
     }, resource, day))

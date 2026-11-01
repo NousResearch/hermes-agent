@@ -20,6 +20,7 @@ from .shared_metrics_prepared_compaction import (
     PREPARED_COMPACTION_DIMENSIONS, PREPARED_COMPACTION_MARK, PREPARED_COMPACTION_METRIC,
     PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
 )
+from .shared_metrics_busy import BUSY_ARRIVAL_DISPOSITIONS, BUSY_ARRIVAL_METRIC, BUSY_PEAK_FIELD, BUSY_WAIT_BUCKETS
 
 SCHEMA_KEY = "hermes.metrics.schema_version"
 # A random per-emit token (no payload) on rows whose producer waits to learn they were SAVED: facts
@@ -1024,7 +1025,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     # ---- v5 engagement ----
     ENGAGEMENT_DAY_METRIC: {
         "active_minutes_bucket": ACTIVE_MINUTES_BUCKETS, "active_profile_count_bucket": SIZE_BUCKETS,
-        "surfaces_used_count": SURFACES_USED_BUCKETS,
+        "surfaces_used_count": SURFACES_USED_BUCKETS, BUSY_PEAK_FIELD: COUNT_BUCKETS,
     },
     ENGAGEMENT_SURFACE_METRIC: {"active_minutes_bucket": ACTIVE_MINUTES_BUCKETS, "surface": ENGAGEMENT_SURFACES},
     MODEL_SWITCH_AFTER_METRIC: {"turns_before_switch_bucket": TURNS_BEFORE_SWITCH_BUCKETS},
@@ -1068,6 +1069,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     },
     # ---- end v4 connectors ----
     PREPARED_COMPACTION_METRIC: {**PREPARED_COMPACTION_DIMENSIONS, "failure_class": COMPRESSION_FAILURE_CLASSES},
+    BUSY_ARRIVAL_METRIC: {"disposition": BUSY_ARRIVAL_DISPOSITIONS, "platform": ADAPTER_PLATFORMS, "wait_bucket": BUSY_WAIT_BUCKETS},
 }
 _MODEL_ROUTE_MAX_LENGTHS = {
     "model": MODEL_IDENTIFIER_MAX_LENGTH, "provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
@@ -1164,6 +1166,7 @@ _LEGACY_METRIC_FIELDS[EXTENSION_INSTALL_METRIC] = (
 )
 _LEGACY_METRIC_FIELDS[UPDATE_RUN_METRIC] = (_METRIC_FIELDS[UPDATE_RUN_METRIC] - {"failure_class"},)
 # ---- end iuf c1 ----
+_LEGACY_METRIC_FIELDS[ENGAGEMENT_DAY_METRIC] = (_METRIC_FIELDS[ENGAGEMENT_DAY_METRIC] - {BUSY_PEAK_FIELD},)  # busy-wait
 COUNTER_METRICS = frozenset(_METRIC_FIELDS) - {LEGACY_MODEL_CALL_METRIC}
 # Counters whose value is a summed quantity rather than an event count.
 SUM_METRICS = frozenset({MODEL_TOKENS_METRIC})
@@ -1220,6 +1223,7 @@ _DECISION_MARK_METRICS = {
     # ---- end iuf c2 ----
     TOOL_SEARCH_MARK: TOOL_SEARCH_METRIC, TOOL_BATCH_MARK: TOOL_BATCH_METRIC,
     CONNECTOR_CHAIN_MARK: CONNECTOR_CHAIN_METRIC, PREPARED_COMPACTION_MARK: PREPARED_COMPACTION_METRIC,
+    BUSY_ARRIVAL_METRIC: BUSY_ARRIVAL_METRIC,  # busy-wait: the gateway marks under the metric's own name
 }
 
 

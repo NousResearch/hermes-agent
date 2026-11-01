@@ -464,3 +464,16 @@ If you are hunting for all the places a provider touches, search these symbols:
 - [Provider Runtime Resolution](./provider-runtime.md)
 - [Architecture](./architecture.md)
 - [Contributing](./contributing.md)
+
+## Worked example: Fikra API as a named custom provider
+
+Fikra API is an OpenAI-compatible endpoint with pinned DeepSeek builds. It does not need a native adapter. Use the named custom provider path with:
+
+- Base URL: `https://api.fikraapi.co.ke/v1`
+- API key: your Fikra key
+- Models: `deepseek-v4.1-flash-1017`, `deepseek-v4.1-flash`, `deepseek-v4-flash-0731`
+- Limits: read `https://api.fikraapi.co.ke/v1/models`
+
+If your custom provider config takes a provider name, use `fikra`. If it takes `provider:model`, use `fikra:deepseek-v4.1-flash-1017`.
+
+Agent-assisted accounts are supported: an agent can create an account for a human with `POST /v1/agents/accounts`, get a 6-hour delegated token, create a key and top up. See https://fikraapi.co.ke/for-agents.

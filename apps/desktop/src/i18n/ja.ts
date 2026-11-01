@@ -3062,6 +3062,16 @@ export const jaOverrides = {
     openFolder: 'フォルダーを開く',
     refreshTree: 'ツリーを更新',
     collapseAll: 'すべてのフォルダーを折りたたむ',
+    filesSort: {
+      title: '並べ替え',
+      ariaLabel: current => `ファイルの並べ替え: ${current}`,
+      nameAsc: '名前（昇順）',
+      nameDesc: '名前（降順）',
+      mtimeDesc: '更新日（新しい順）',
+      mtimeAsc: '更新日（古い順）',
+      sizeDesc: 'サイズ（大きい順）',
+      sizeAsc: 'サイズ（小さい順）'
+    },
     showIgnored: 'gitignore されたファイルを表示',
     hideIgnored: 'gitignore されたファイルを非表示',
     previewUnavailable: 'プレビューは利用できません',

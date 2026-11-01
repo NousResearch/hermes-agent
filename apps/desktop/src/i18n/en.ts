@@ -4225,6 +4225,16 @@ export const en: Translations = {
     openFolder: 'Open folder',
     refreshTree: 'Refresh tree',
     collapseAll: 'Collapse all folders',
+    filesSort: {
+      title: 'Sort by',
+      ariaLabel: current => `Sort files: ${current}`,
+      nameAsc: 'Name (A → Z)',
+      nameDesc: 'Name (Z → A)',
+      mtimeDesc: 'Date modified (newest first)',
+      mtimeAsc: 'Date modified (oldest first)',
+      sizeDesc: 'Size (largest first)',
+      sizeAsc: 'Size (smallest first)'
+    },
     showIgnored: 'Show gitignored files',
     hideIgnored: 'Hide gitignored files',
     previewUnavailable: 'Preview unavailable',

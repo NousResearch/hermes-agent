@@ -4638,6 +4638,16 @@ export const esOverrides = {
     openFolder: 'Abrir carpeta',
     refreshTree: 'Actualizar árbol',
     collapseAll: 'Contraer todas las carpetas',
+    filesSort: {
+      title: 'Ordenar por',
+      ariaLabel: current => `Ordenar archivos: ${current}`,
+      nameAsc: 'Nombre (A → Z)',
+      nameDesc: 'Nombre (Z → A)',
+      mtimeDesc: 'Fecha de modificación (más recientes primero)',
+      mtimeAsc: 'Fecha de modificación (más antiguos primero)',
+      sizeDesc: 'Tamaño (más grandes primero)',
+      sizeAsc: 'Tamaño (más pequeños primero)'
+    },
     showIgnored: 'Mostrar archivos ignorados por git',
     hideIgnored: 'Ocultar archivos ignorados por git',
     previewUnavailable: 'Vista previa no disponible',

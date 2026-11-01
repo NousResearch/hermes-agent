@@ -4067,6 +4067,16 @@ export const zhOverrides = {
     openFolder: '打开文件夹',
     refreshTree: '刷新文件树',
     collapseAll: '折叠所有文件夹',
+    filesSort: {
+      title: '排序方式',
+      ariaLabel: current => `文件排序：${current}`,
+      nameAsc: '名称（A → Z）',
+      nameDesc: '名称（Z → A）',
+      mtimeDesc: '修改日期（最新优先）',
+      mtimeAsc: '修改日期（最早优先）',
+      sizeDesc: '大小（从大到小）',
+      sizeAsc: '大小（从小到大）'
+    },
     showIgnored: '显示 gitignore 的文件',
     hideIgnored: '隐藏 gitignore 的文件',
     previewUnavailable: '预览不可用',

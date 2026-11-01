@@ -4662,6 +4662,16 @@ export const frOverrides = {
     openFolder: 'Ouvrir le dossier',
     refreshTree: "Actualiser l'arbre",
     collapseAll: 'Réduire tous les dossiers',
+    filesSort: {
+      title: 'Trier par',
+      ariaLabel: current => `Trier les fichiers : ${current}`,
+      nameAsc: 'Nom (A → Z)',
+      nameDesc: 'Nom (Z → A)',
+      mtimeDesc: 'Date de modification (plus récents d’abord)',
+      mtimeAsc: 'Date de modification (plus anciens d’abord)',
+      sizeDesc: 'Taille (plus grands d’abord)',
+      sizeAsc: 'Taille (plus petits d’abord)'
+    },
     showIgnored: 'Afficher les fichiers ignorés par Git',
     hideIgnored: 'Masquer les fichiers ignorés par Git',
     previewUnavailable: 'Aperçu indisponible',

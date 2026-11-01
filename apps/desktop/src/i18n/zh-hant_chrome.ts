@@ -444,6 +444,16 @@ export const zhHantChrome = {
     openFolder: '開啟資料夾',
     refreshTree: '重新整理檔案樹',
     collapseAll: '收合所有資料夾',
+    filesSort: {
+      title: '排序方式',
+      ariaLabel: current => `檔案排序：${current}`,
+      nameAsc: '名稱（A → Z）',
+      nameDesc: '名稱（Z → A）',
+      mtimeDesc: '修改日期（最新優先）',
+      mtimeAsc: '修改日期（最早優先）',
+      sizeDesc: '大小（由大到小）',
+      sizeAsc: '大小（由小到大）'
+    },
     showIgnored: '顯示 gitignore 的檔案',
     hideIgnored: '隱藏 gitignore 的檔案',
     previewUnavailable: '預覽不可用',

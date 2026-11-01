@@ -4653,6 +4653,16 @@ export const deOverrides = {
     openFolder: 'Ordner öffnen',
     refreshTree: 'Baum aktualisieren',
     collapseAll: 'Alle Ordner einklappen',
+    filesSort: {
+      title: 'Sortieren nach',
+      ariaLabel: current => `Dateien sortieren: ${current}`,
+      nameAsc: 'Name (A → Z)',
+      nameDesc: 'Name (Z → A)',
+      mtimeDesc: 'Änderungsdatum (neueste zuerst)',
+      mtimeAsc: 'Änderungsdatum (älteste zuerst)',
+      sizeDesc: 'Größe (größte zuerst)',
+      sizeAsc: 'Größe (kleinste zuerst)'
+    },
     showIgnored: 'Von Git ignorierte Dateien anzeigen',
     hideIgnored: 'Von Git ignorierte Dateien ausblenden',
     previewUnavailable: 'Vorschau nicht verfügbar',

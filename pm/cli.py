@@ -414,6 +414,23 @@ def cmd_install(args) -> int:
 
 
 def cmd_env(args) -> int:
+    pid = getattr(args, "pid", None)
+    if pid is not None:
+        if args.names:
+            print("✗ --pid cannot be combined with package names", file=sys.stderr)
+            return 2
+        from pm.environments import pid_runtime_paths
+
+        interpreter, deps = pid_runtime_paths(pid)
+        if interpreter is None or deps is None:
+            print(
+                f"✗ PID {pid} does not expose a Hermes PM dependency generation",
+                file=sys.stderr,
+            )
+            return 1
+        print(json.dumps({"pid": pid, "interpreter": interpreter, "deps": deps}, indent=2))
+        return 0
+
     from pm.install import env_for
 
     names = args.names or _lockfile().names()
@@ -937,8 +954,15 @@ def main(argv=None) -> int:
     )
     p.set_defaults(func=cmd_install)
 
-    p = sub.add_parser("env", help="print composed env of installed packages")
+    p = sub.add_parser(
+        "env",
+        help="print package exports, or inspect a running Hermes PID",
+    )
     p.add_argument("names", nargs="*")
+    p.add_argument(
+        "--pid", type=int, metavar="PID",
+        help="print the live interpreter and PM dependency generation loaded by PID",
+    )
     p.set_defaults(func=cmd_env)
 
     p = sub.add_parser("doctor", help="check installed state against the lockfile")

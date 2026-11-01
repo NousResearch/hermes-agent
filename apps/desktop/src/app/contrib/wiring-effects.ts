@@ -2,7 +2,10 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
 
+import { $newSessionTabAction } from '@/components/pane-shell/tree/store'
 import { $freshSessionRequest, refreshActiveProfile } from '@/store/profile'
+import { $composerSelectModelAction, type ComposerModelSelection } from '@/store/session'
+import { isAuxiliaryWindow } from '@/store/windows'
 
 import { resetProjectTreeState } from '../right-sidebar/files/use-project-tree'
 import { SETTINGS_ROUTE } from '../routes'
@@ -43,6 +46,31 @@ export function useCreditsNoticeDemo() {
 
 // Expose the restart handler to the preview pane contribution (module
 // boundary crossed via atom — contrib-panes can't import wiring.tsx).
+// Register the tab-strip "+" action (also the plugin SDK's new-tab verb): the
+// generic renderer stays session-agnostic; null until wired hides the glyph.
+export function usePublishNewSessionTabAction(openNewSessionTab: () => void) {
+  useEffect(() => {
+    $newSessionTabAction.set(openNewSessionTab)
+
+    return () => $newSessionTabAction.set(null)
+  }, [openNewSessionTab])
+}
+
+// Plugins switch a session's model through the model menu's own path
+// (`host.composer.selectModel`) — never a bare config.set that moves the session
+// while the composer pill keeps showing the old pick. Main window only.
+export function usePublishComposerSelectModel(selectModel: (selection: ComposerModelSelection) => Promise<unknown>) {
+  useEffect(() => {
+    if (isAuxiliaryWindow()) {
+      return
+    }
+
+    $composerSelectModelAction.set(async selection => Boolean(await selectModel(selection)))
+
+    return () => $composerSelectModelAction.set(null)
+  }, [selectModel])
+}
+
 export function usePublishRestartPreviewServer(restartPreviewServer: RestartPreviewServer) {
   useEffect(() => {
     $restartPreviewServer.set(restartPreviewServer)

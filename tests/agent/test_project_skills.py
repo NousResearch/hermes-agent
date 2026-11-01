@@ -1,6 +1,7 @@
 """Tests for project-local skill discovery (skills.trusted_project_dirs)."""
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,16 @@ def _trust(config: Path, repo: Path) -> None:
         f"skills:\n  external_dirs: []\n  trusted_project_dirs: ['{repo}']\n"
     )
     su._external_dirs_cache_clear()
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
 
 
 class TestFindProjectRoot:
@@ -108,6 +119,79 @@ class TestTrustGate:
         monkeypatch.chdir(repo)
         su._external_dirs_cache_clear()
         assert su.get_untrusted_project_skills_root() is None
+
+
+class TestRegisteredWorktreeTrust:
+    def test_registered_worktree_inherits_trusted_checkout(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        config = home / "config.yaml"
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "tests@example.invalid")
+        _git(repo, "config", "user.name", "Project Skills Test")
+        (repo / "README.md").write_text("base\n")
+        _git(repo, "add", "README.md")
+        _git(repo, "commit", "-m", "initial")
+
+        worktree = tmp_path / "registered-worktree"
+        _git(repo, "worktree", "add", "-b", "skills-worktree", str(worktree))
+        skill_dir = worktree / ".hermes" / "skills" / "worktree-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: worktree-skill\ndescription: from linked worktree\n---\nbody\n"
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.chdir(repo)
+        _trust(config, repo)
+        assert su.is_project_root_trusted(repo) is True
+
+        monkeypatch.chdir(worktree)
+        assert su.find_project_root() == worktree.resolve()
+        assert su.get_project_skills_dirs() == [(worktree / ".hermes" / "skills").resolve()]
+        assert [p.name for p in su.iter_project_skill_files(worktree / ".hermes" / "skills")] == ["SKILL.md"]
+
+    def test_only_registered_worktree_of_trusted_repo_inherits(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        config = home / "config.yaml"
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "tests@example.invalid")
+        _git(repo, "config", "user.name", "Project Skills Test")
+        (repo / "README.md").write_text("base\n")
+        _git(repo, "add", "README.md")
+        _git(repo, "commit", "-m", "initial")
+        _trust(config, repo)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        clone = tmp_path / "clone"
+        subprocess.run(
+            ["git", "clone", str(repo), str(clone)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        nested = repo / "nested-repo"
+        nested.mkdir()
+        _git(nested, "init")
+        fake = tmp_path / "fake-worktree"
+        fake.mkdir()
+        (fake / ".git").write_text(f"gitdir: {repo / '.git'}\n")
+
+        for candidate in (clone, nested, fake):
+            skill_dir = candidate / ".hermes" / "skills" / "candidate-skill"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: candidate-skill\ndescription: candidate\n---\nbody\n"
+            )
+            monkeypatch.chdir(candidate)
+            assert su.find_project_root() == candidate.resolve()
+            assert su.get_project_skills_dirs() == []
 
 
 class TestPrecedence:

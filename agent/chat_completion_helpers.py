@@ -32,6 +32,8 @@ from agent.error_classifier import (
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_local import _streams_llamacpp, stale_giveup
+# Re-exported: these lived here until they moved to agent/provider_sse.py.
+from agent.provider_sse import _parse_provider_sse_events, _status_code_from_value
 from agent.chat_completion_headers import _chat_completion_capturing_headers
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor, StreamLifetimeExceeded
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
@@ -132,15 +134,6 @@ class ProviderStreamError(Exception):
         return text
 
 
-def _status_code_from_value(value: Any) -> Optional[int]:
-    if isinstance(value, int) and 100 <= value < 600:
-        return value
-    if not isinstance(value, str):
-        return None
-    match = re.search(r"(?:HTTP_STATUS/)?\b([1-5]\d\d)\b", value, re.IGNORECASE)
-    return int(match.group(1)) if match else None
-
-
 def _status_code_from_payload(payload: Any) -> Optional[int]:
     if not isinstance(payload, dict):
         return None
@@ -164,55 +157,6 @@ def _json_object_from_text(text: str) -> Optional[dict]:
             decoded = json.loads(stripped)
             return decoded if isinstance(decoded, dict) else None
     return None
-
-
-def _parse_provider_sse_events(text: str) -> list[dict]:
-    """Parse provider text that looks like Server-Sent Events."""
-    events: list[dict] = []
-    current = {"event": None, "data": [], "comments": [], "fields": {}}
-
-    def _flush_current():
-        nonlocal current
-        if any(current.values()):
-            status_candidates = list(current["comments"]) + [
-                current["fields"][key]
-                for key in ("status", "status_code", "http_status")
-                if key in current["fields"]
-            ]
-            events.append({
-                "event": current["event"],
-                "data": "\n".join(current["data"]),
-                "comments": list(current["comments"]),
-                "fields": dict(current["fields"]),
-                "status_code": next(
-                    (s for s in map(_status_code_from_value, status_candidates) if s is not None), None),
-            })
-        current = {"event": None, "data": [], "comments": [], "fields": {}}
-
-    for raw_line in (text or "").splitlines():
-        line = raw_line.rstrip("\r")
-        if line == "":
-            _flush_current()
-            continue
-        if line.startswith(":"):
-            current["comments"].append(line[1:].strip())
-            continue
-
-        field, sep, value = line.partition(":")
-        if not sep:
-            current["fields"][field.strip().lower()] = ""
-            continue
-        field = field.strip().lower()
-        value = value.removeprefix(" ")
-        if field == "event":
-            current["event"] = value.strip()
-        elif field == "data":
-            current["data"].append(value)
-        else:
-            current["fields"][field] = value
-
-    _flush_current()
-    return events
 
 
 def _provider_error_body(payload: dict, status_code: Optional[int]) -> dict:

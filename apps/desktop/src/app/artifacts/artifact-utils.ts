@@ -1,5 +1,11 @@
 import { mediaTagValues } from '@/lib/chat-messages/parts'
-import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
+import {
+  isArtifactFilePath,
+  mediaExternalUrl,
+  mediaName,
+  mediaPathFromMarkdownHref,
+  resolveMediaDisplaySrc
+} from '@/lib/media'
 import type { SessionInfo, SessionMessage, SessionMessagesResponse } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
@@ -256,19 +262,6 @@ export async function artifactImageSrc(value: string): Promise<string> {
   return resolveMediaDisplaySrc(value)
 }
 
-function artifactLabel(value: string): string {
-  try {
-    const url = new URL(value)
-    const item = url.pathname.split('/').filter(Boolean).pop()
-
-    return item || value
-  } catch {
-    const parts = value.split(/[\\/]/).filter(Boolean)
-
-    return parts.pop() || value
-  }
-}
-
 function normalizeArtifactTimestamp(timestamp: null | number | undefined): null | number {
   if (typeof timestamp !== 'number' || !Number.isFinite(timestamp) || timestamp <= 0) {
     return null
@@ -521,7 +514,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         kind: artifactKind(value),
         value,
         href: artifactHref(value),
-        label: artifactLabel(value),
+        label: mediaName(value),
         sessionId: session.id,
         profile: session.profile,
         sessionTitle: title,

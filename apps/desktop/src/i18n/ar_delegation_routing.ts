@@ -67,8 +67,20 @@ export const arDelegationRouting: DelegationRoutingTranslations = {
   tierFast: 'سريعة',
   tierUltrafast: 'فائقة السرعة',
   tierHint: 'فقط في النماذج التي توفرها.',
+  turnsLabel: 'Turn limit',
+  turnsPlaceholder: 'Uses the global limit',
+  turnsHint: 'Maximum turns for a subagent on this route.',
+  timeoutLabel: 'Timeout (seconds)',
+  timeoutPlaceholder: 'Uses the global timeout',
+  timeoutHint: 'Idle seconds before a subagent on this route is stopped. 0 disables.',
   optional: 'اختياري',
-  errors: { required: 'مطلوب', spaces: 'بلا مسافات', duplicate: 'مسار آخر يستخدم هذا الاسم بالفعل' },
+  errors: {
+    required: 'مطلوب',
+    spaces: 'بلا مسافات',
+    duplicate: 'مسار آخر يستخدم هذا الاسم بالفعل',
+    turns: 'Use a whole number of 1 or more.',
+    seconds: 'Use a whole number of 0 or more.'
+  },
   saveRoute: 'حفظ المسار',
   createRoute: 'إضافة مسار',
 

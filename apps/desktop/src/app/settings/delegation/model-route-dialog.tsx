@@ -211,6 +211,41 @@ export function ModelRouteDialog({ route, taken, scope, onClose, onSave }: Model
             </Field>
           </div>
 
+          <div className="grid items-start gap-4 sm:grid-cols-2">
+            <Field htmlFor="delegation-route-turns" label={r.turnsLabel} optional optionalLabel={r.optional}>
+              <Input
+                aria-invalid={Boolean(errorFor('max_iterations'))}
+                id="delegation-route-turns"
+                inputMode="numeric"
+                onBlur={() => touch('max_iterations')}
+                onChange={event => set('max_iterations', event.target.value)}
+                placeholder={r.turnsPlaceholder}
+                value={draft.max_iterations}
+              />
+              {errorFor('max_iterations') ? (
+                <FieldHint error>{errorFor('max_iterations')}</FieldHint>
+              ) : (
+                <FieldHint>{r.turnsHint}</FieldHint>
+              )}
+            </Field>
+            <Field htmlFor="delegation-route-timeout" label={r.timeoutLabel} optional optionalLabel={r.optional}>
+              <Input
+                aria-invalid={Boolean(errorFor('child_timeout_seconds'))}
+                id="delegation-route-timeout"
+                inputMode="numeric"
+                onBlur={() => touch('child_timeout_seconds')}
+                onChange={event => set('child_timeout_seconds', event.target.value)}
+                placeholder={r.timeoutPlaceholder}
+                value={draft.child_timeout_seconds}
+              />
+              {errorFor('child_timeout_seconds') ? (
+                <FieldHint error>{errorFor('child_timeout_seconds')}</FieldHint>
+              ) : (
+                <FieldHint>{r.timeoutHint}</FieldHint>
+              )}
+            </Field>
+          </div>
+
           <DialogFooter>
             <Button disabled={busy} onClick={onClose} type="button" variant="ghost">
               {t.common.cancel}

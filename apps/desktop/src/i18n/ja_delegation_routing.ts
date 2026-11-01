@@ -74,8 +74,20 @@ export const jaDelegationRouting: DelegationRoutingTranslations = {
   tierFast: '高速',
   tierUltrafast: '超高速',
   tierHint: '対応しているモデルのみ。',
+  turnsLabel: 'Turn limit',
+  turnsPlaceholder: 'Uses the global limit',
+  turnsHint: 'Maximum turns for a subagent on this route.',
+  timeoutLabel: 'Timeout (seconds)',
+  timeoutPlaceholder: 'Uses the global timeout',
+  timeoutHint: 'Idle seconds before a subagent on this route is stopped. 0 disables.',
   optional: '任意',
-  errors: { required: '必須', spaces: 'スペースは使えません', duplicate: 'この名前は別のルートで使われています' },
+  errors: {
+    required: '必須',
+    spaces: 'スペースは使えません',
+    duplicate: 'この名前は別のルートで使われています',
+    turns: 'Use a whole number of 1 or more.',
+    seconds: 'Use a whole number of 0 or more.'
+  },
   saveRoute: 'ルートを保存',
   createRoute: 'ルートを追加',
 

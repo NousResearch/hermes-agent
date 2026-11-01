@@ -77,8 +77,20 @@ export const frDelegationRouting: DelegationRoutingTranslations = {
   tierFast: 'Rapide',
   tierUltrafast: 'Ultra-rapide',
   tierHint: 'Uniquement sur les modèles qui la proposent.',
+  turnsLabel: 'Turn limit',
+  turnsPlaceholder: 'Uses the global limit',
+  turnsHint: 'Maximum turns for a subagent on this route.',
+  timeoutLabel: 'Timeout (seconds)',
+  timeoutPlaceholder: 'Uses the global timeout',
+  timeoutHint: 'Idle seconds before a subagent on this route is stopped. 0 disables.',
   optional: 'facultatif',
-  errors: { required: 'Obligatoire', spaces: "Pas d'espaces", duplicate: 'Une autre route utilise déjà ce nom' },
+  errors: {
+    required: 'Obligatoire',
+    spaces: "Pas d'espaces",
+    duplicate: 'Une autre route utilise déjà ce nom',
+    turns: 'Use a whole number of 1 or more.',
+    seconds: 'Use a whole number of 0 or more.'
+  },
   saveRoute: 'Enregistrer la route',
   createRoute: 'Ajouter une route',
 

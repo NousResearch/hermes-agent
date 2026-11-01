@@ -74,8 +74,20 @@ export const ruDelegationRouting: DelegationRoutingTranslations = {
   tierFast: 'Быстрая',
   tierUltrafast: 'Сверхбыстрая',
   tierHint: 'Только для моделей, которые это поддерживают.',
+  turnsLabel: 'Turn limit',
+  turnsPlaceholder: 'Uses the global limit',
+  turnsHint: 'Maximum turns for a subagent on this route.',
+  timeoutLabel: 'Timeout (seconds)',
+  timeoutPlaceholder: 'Uses the global timeout',
+  timeoutHint: 'Idle seconds before a subagent on this route is stopped. 0 disables.',
   optional: 'необязательно',
-  errors: { required: 'Обязательно', spaces: 'Без пробелов', duplicate: 'Это название уже использует другой маршрут' },
+  errors: {
+    required: 'Обязательно',
+    spaces: 'Без пробелов',
+    duplicate: 'Это название уже использует другой маршрут',
+    turns: 'Use a whole number of 1 or more.',
+    seconds: 'Use a whole number of 0 or more.'
+  },
   saveRoute: 'Сохранить маршрут',
   createRoute: 'Добавить маршрут',
 

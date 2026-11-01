@@ -78,8 +78,20 @@ export const esDelegationRouting: DelegationRoutingTranslations = {
   tierFast: 'Rápida',
   tierUltrafast: 'Ultrarrápida',
   tierHint: 'Solo en modelos que la ofrecen.',
+  turnsLabel: 'Turn limit',
+  turnsPlaceholder: 'Uses the global limit',
+  turnsHint: 'Maximum turns for a subagent on this route.',
+  timeoutLabel: 'Timeout (seconds)',
+  timeoutPlaceholder: 'Uses the global timeout',
+  timeoutHint: 'Idle seconds before a subagent on this route is stopped. 0 disables.',
   optional: 'opcional',
-  errors: { required: 'Obligatorio', spaces: 'Sin espacios', duplicate: 'Otra ruta ya usa este nombre' },
+  errors: {
+    required: 'Obligatorio',
+    spaces: 'Sin espacios',
+    duplicate: 'Otra ruta ya usa este nombre',
+    turns: 'Use a whole number of 1 or more.',
+    seconds: 'Use a whole number of 0 or more.'
+  },
   saveRoute: 'Guardar ruta',
   createRoute: 'Añadir ruta',
 

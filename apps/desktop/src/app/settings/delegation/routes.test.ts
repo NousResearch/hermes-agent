@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest'
 
 import type { DelegationModelMap } from '@/hermes'
 
-import { removeRoute, routeFromDraft, toggleProfileRoute, upsertRoute, validateRouteDraft } from './routes'
+import {
+  draftFromRoute,
+  removeRoute,
+  routeFromDraft,
+  toggleProfileRoute,
+  upsertRoute,
+  validateRouteDraft
+} from './routes'
 
 const route = (name: string, extra: Record<string, unknown> = {}) => ({
   name,
@@ -36,7 +43,16 @@ describe('route editing keeps a default while routes exist', () => {
   })
 
   it('refuses incomplete or clashing drafts; an edit keeps keys the dialog does not edit and names its source', () => {
-    const draft = { name: 'deep', description: '', provider: '', model: '', reasoning_effort: '', service_tier: '' }
+    const draft = {
+      name: 'deep',
+      description: '',
+      provider: '',
+      model: '',
+      reasoning_effort: '',
+      service_tier: '',
+      max_iterations: '',
+      child_timeout_seconds: ''
+    }
 
     expect(validateRouteDraft(draft, ['deep'])).toEqual({
       name: 'duplicate',
@@ -65,5 +81,56 @@ describe('route editing keeps a default while routes exist', () => {
       base_url: 'http://127.0.0.1:8080/v1',
       api_key: '«redacted:sk-…1234»'
     })
+  })
+})
+
+describe('route max_iterations', () => {
+  const base = { name: 'scout', description: 'd', provider: 'p', model: 'm' }
+
+  it('loads a stored number into the draft as text', () => {
+    expect(draftFromRoute({ ...base, max_iterations: 15 }).max_iterations).toBe('15')
+    expect(draftFromRoute(base).max_iterations).toBe('')
+  })
+
+  it('refuses a value that is not a whole number of 1 or more', () => {
+    const draft = { ...draftFromRoute(base), max_iterations: '0' }
+    expect(validateRouteDraft(draft, []).max_iterations).toBe('turns')
+    expect(validateRouteDraft({ ...draft, max_iterations: '2.5' }, []).max_iterations).toBe('turns')
+    expect(validateRouteDraft({ ...draft, max_iterations: '15' }, []).max_iterations).toBeUndefined()
+    expect(validateRouteDraft({ ...draft, max_iterations: '' }, []).max_iterations).toBeUndefined()
+  })
+
+  it('saves a number and drops a blank value', () => {
+    expect(routeFromDraft({ ...draftFromRoute(base), max_iterations: '15' }).max_iterations).toBe(15)
+    expect(
+      routeFromDraft({ ...draftFromRoute(base), max_iterations: '' }, { ...base, max_iterations: 9 })
+    ).not.toHaveProperty('max_iterations')
+  })
+})
+
+describe('route child_timeout_seconds', () => {
+  const base = { name: 'scout', description: 'd', provider: 'p', model: 'm' }
+
+  it('loads a stored number into the draft as text', () => {
+    expect(draftFromRoute({ ...base, child_timeout_seconds: 300 }).child_timeout_seconds).toBe('300')
+    expect(draftFromRoute({ ...base, child_timeout_seconds: 0 }).child_timeout_seconds).toBe('0')
+    expect(draftFromRoute(base).child_timeout_seconds).toBe('')
+  })
+
+  it('refuses a value that is not a whole number of 0 or more', () => {
+    const draft = { ...draftFromRoute(base), child_timeout_seconds: '-5' }
+    expect(validateRouteDraft(draft, []).child_timeout_seconds).toBe('seconds')
+    expect(validateRouteDraft({ ...draft, child_timeout_seconds: 'soon' }, []).child_timeout_seconds).toBe('seconds')
+    expect(validateRouteDraft({ ...draft, child_timeout_seconds: '0' }, []).child_timeout_seconds).toBeUndefined()
+    expect(validateRouteDraft({ ...draft, child_timeout_seconds: '300' }, []).child_timeout_seconds).toBeUndefined()
+    expect(validateRouteDraft({ ...draft, child_timeout_seconds: '' }, []).child_timeout_seconds).toBeUndefined()
+  })
+
+  it('saves a number and drops a blank value', () => {
+    expect(routeFromDraft({ ...draftFromRoute(base), child_timeout_seconds: '300' }).child_timeout_seconds).toBe(300)
+    expect(routeFromDraft({ ...draftFromRoute(base), child_timeout_seconds: '0' }).child_timeout_seconds).toBe(0)
+    expect(
+      routeFromDraft({ ...draftFromRoute(base), child_timeout_seconds: '' }, { ...base, child_timeout_seconds: 9 })
+    ).not.toHaveProperty('child_timeout_seconds')
   })
 })

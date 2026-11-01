@@ -66,8 +66,20 @@ export const zhHantDelegationRouting: DelegationRoutingTranslations = {
   tierFast: '快速',
   tierUltrafast: '極速',
   tierHint: '僅適用於提供此選項的模型。',
+  turnsLabel: 'Turn limit',
+  turnsPlaceholder: 'Uses the global limit',
+  turnsHint: 'Maximum turns for a subagent on this route.',
+  timeoutLabel: 'Timeout (seconds)',
+  timeoutPlaceholder: 'Uses the global timeout',
+  timeoutHint: 'Idle seconds before a subagent on this route is stopped. 0 disables.',
   optional: '選填',
-  errors: { required: '必填', spaces: '不可包含空格', duplicate: '其他路由已使用此名稱' },
+  errors: {
+    required: '必填',
+    spaces: '不可包含空格',
+    duplicate: '其他路由已使用此名稱',
+    turns: 'Use a whole number of 1 or more.',
+    seconds: 'Use a whole number of 0 or more.'
+  },
   saveRoute: '儲存路由',
   createRoute: '新增路由',
 

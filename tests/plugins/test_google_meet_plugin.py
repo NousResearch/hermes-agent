@@ -157,14 +157,70 @@ def test_stop_signals_process_and_clears_pointer(tmp_path):
     def _kill(pid, sig):
         sent.append((pid, sig))
 
+    # Legacy record (no pid_start_time): identity falls back to the cmdline
+    # still naming the meet_bot module.
     with patch.object(pm, "_pid_alive", side_effect=_alive), \
          patch.object(pm.os, "kill", side_effect=_kill), \
-         patch.object(pm.time, "sleep", lambda _s: None):
+         patch.object(pm.time, "sleep", lambda _s: None), \
+         patch("psutil.Process") as process:
+        process.return_value.cmdline.return_value = ["python", "-m", "plugins.google_meet.meet_bot"]
         res = pm.stop()
 
     assert res["ok"] is True
     assert (11111, signal.SIGTERM) in sent
     # .active.json cleared
+    assert pm._read_active() is None
+
+
+@pytest.mark.parametrize("identity", ["legacy-module", "legacy-data", "matching-start", "reused-pid"])
+def test_stop_checks_real_process_identity(tmp_path, identity):
+    import subprocess
+    import sys
+
+    from gateway.status import get_process_start_time
+    from plugins.google_meet import process_manager as pm
+
+    package = tmp_path / "plugins" / "google_meet"
+    package.mkdir(parents=True)
+    (package.parent / "__init__.py").write_text("")
+    (package / "__init__.py").write_text("")
+    (package / "meet_bot.py").write_text("import time; time.sleep(30)")
+    executable = getattr(sys, "_base_executable", sys.executable)
+    args = (["-m", "plugins.google_meet.meet_bot"] if identity == "legacy-module"
+            else ["-c", "import time; time.sleep(30)", "meet_bot"])
+    proc = subprocess.Popen([executable, *args], cwd=tmp_path, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        record = {"pid": proc.pid, "meeting_id": "example"}
+        if identity in {"matching-start", "reused-pid"}:
+            fingerprint = get_process_start_time(proc.pid)
+            assert fingerprint is not None
+            record["pid_start_time"] = fingerprint + (10000 if identity == "reused-pid" else 0)
+        pm._write_active(record)
+        assert pm.stop()["ok"]
+        if identity in {"legacy-module", "matching-start"}:
+            proc.wait(timeout=5)
+        else:
+            assert proc.poll() is None, "a different process must not receive a signal"
+        assert pm._read_active() is None
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+        proc.wait(timeout=5)
+
+
+def test_stop_revalidates_identity_before_escalating(tmp_path, monkeypatch):
+    from plugins.google_meet import process_manager as pm
+
+    pm._write_active({"pid": 33333, "pid_start_time": 4200, "meeting_id": "example"})
+    starts = iter([4200, 99999])
+    sent = []
+    monkeypatch.setattr(pm, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(pm, "_kill", lambda pid, sig: sent.append(sig))
+    monkeypatch.setattr(pm.time, "sleep", lambda delay: None)
+    monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: next(starts))
+    assert pm.stop()["ok"]
+    assert sent == [signal.SIGTERM]
     assert pm._read_active() is None
 
 

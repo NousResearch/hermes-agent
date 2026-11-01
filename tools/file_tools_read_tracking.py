@@ -55,7 +55,7 @@ def _task_data(task_id: str) -> dict:
     task_data = _read_tracker.setdefault(task_id, {
         "last_key": None, "consecutive": 0, "read_history": set()})
     for key in ("dedup", "dedup_hits", "read_timestamps", "read_coverage", "full_write_baselines",
-                "blind_patches"):
+                "blind_patches", "remote_write_baselines"):
         task_data.setdefault(key, {})
     task_data.setdefault("dedup_generation_reads", set())
     return task_data
@@ -94,6 +94,7 @@ def _cap_read_tracker_data(task_data: dict) -> None:
         ("read_coverage", _READ_TIMESTAMPS_CAP),
         ("full_write_baselines", _FULL_WRITE_BASELINES_CAP),
         ("blind_patches", _FULL_WRITE_BASELINES_CAP),
+        ("remote_write_baselines", _FULL_WRITE_BASELINES_CAP),
         ("not_found", _NOT_FOUND_CAP)):
         container = task_data.get(key)
         if container is not None and len(container) > cap:
@@ -354,7 +355,7 @@ def _is_own_blind_patch(resolved: str, task_id: str) -> bool:
 _READ_COVERAGE_RANGES_CAP = 256
 
 
-def _note_read_coverage(task_data: dict, resolved: str, version: tuple, start: int, end: int,
+def _note_read_coverage(task_data: dict, resolved: str | tuple[str, str], version: tuple | str, start: int, end: int,
                         total_lines, redacted: bool) -> tuple[bool, bool]:
     """Merge the page ``start..end`` into this task's coverage of *resolved* and return
     ``(complete, redacted_any)``: whether pages taken at this same *version* now reach from
@@ -377,6 +378,41 @@ def _note_read_coverage(task_data: dict, resolved: str, version: tuple, start: i
     complete = (isinstance(total_lines, int) and total_lines > 0
                 and merged[0][0] <= 1 and merged[0][1] >= total_lines)
     return complete, entry["redacted"]
+
+
+def _record_remote_read(task_id: str, key: tuple[str, str], digest: str, *, start: int,
+                        end: int, total_lines: int | None, redacted: bool) -> None:
+    """Record a backend file version only after the same version bracketed the read."""
+    with _read_tracker_lock:
+        data = _task_data(task_id)
+        baselines = data["remote_write_baselines"]
+        if baselines.get(key) == digest:
+            return
+        complete, redacted_any = _note_read_coverage(
+            data, key, digest, start, end, total_lines, redacted)
+        if total_lines == 0 and start == 1:
+            complete = True
+        if complete and not redacted_any:
+            baselines[key] = digest
+        else:
+            baselines.pop(key, None)
+        _cap_read_tracker_data(data)
+
+
+def _remote_write_baseline(task_id: str, key: tuple[str, str]) -> str | None:
+    with _read_tracker_lock:
+        data = _read_tracker.get(task_id) or {}
+        return data.get("remote_write_baselines", {}).get(key)
+
+
+def _mark_remote_write_baseline(task_id: str, key: tuple[str, str], digest: str | None) -> None:
+    with _read_tracker_lock:
+        baselines = _task_data(task_id)["remote_write_baselines"]
+        if digest is None:
+            baselines.pop(key, None)
+        else:
+            baselines[key] = digest
+        _cap_read_tracker_data(_task_data(task_id))
 
 
 def _read_mtime_drifted(filepath: str, task_id: str) -> bool:

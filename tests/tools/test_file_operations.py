@@ -1,6 +1,7 @@
 """Tests for tools/file_operations.py — deny list, result dataclasses, helpers."""
 
 import base64
+import hashlib
 import os
 import pytest
 import shutil
@@ -638,6 +639,20 @@ class TestPatchReplacePostWriteVerification:
 # =========================================================================
 # Atomic write: umask-default permissions for new files
 # =========================================================================
+
+class TestFileDigest:
+    """file_digest reports the backend's own view: a digest, or why there is none."""
+
+    def test_distinguishes_file_missing_and_directory(self, tmp_path):
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        target = tmp_path / "with spaces.txt"
+        assert ops.file_digest(str(target)) == ("missing", None)
+        target.write_bytes(b"first\n")
+        assert ops.file_digest(str(target)) == ("file", hashlib.sha256(b"first\n").hexdigest())
+        target.write_bytes(b"second\n")
+        assert ops.file_digest(str(target)) == ("file", hashlib.sha256(b"second\n").hexdigest())
+        assert ops.file_digest(str(tmp_path)) == ("not_regular", None)
+
 
 class TestAtomicWriteNewFilePermissions:
     """_atomic_write should apply umask-default perms to new files (not 0600)."""

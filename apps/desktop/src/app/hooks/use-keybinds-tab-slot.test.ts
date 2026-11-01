@@ -62,6 +62,7 @@ beforeEach(() => {
     () =>
       useKeybinds({
         archiveSelectedSession: () => undefined,
+        isActiveRunBusy: () => false,
         openNewSessionTab: () => undefined,
         requestGateway: <T>() => Promise.resolve(undefined as T),
         startFreshSession: () => undefined,

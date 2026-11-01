@@ -358,8 +358,8 @@ def _fill_thin_and_results(db, query: str, raw_results: list, limit: int, role_f
     The storage layer relaxes to OR only on a zero-row miss, so one incidental full-term match
     hides the session that holds the answer under a paraphrase. AND rows keep the lead; explicit
     OR/NOT queries and single terms are left as written (``_or_relaxed_query`` returns None)."""
-    if len({r.get("session_id") for r in raw_results}) >= limit:
-        return raw_results
+    if len({_resolve_lineage(db, r["session_id"]) for r in raw_results if r.get("session_id")}) >= limit:
+        return raw_results  # discovery dedupes by lineage, so count lineages, not raw continuation ids
     relaxed = type(db)._or_relaxed_query(query) if hasattr(type(db), "_or_relaxed_query") else None
     if not relaxed:
         return raw_results

@@ -60,6 +60,7 @@ from hermes_cli.plugins_dispatch import (
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
+from hermes_cli.plugins_toolsets import build_plugin_toolsets as _build_plugin_toolsets
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
@@ -132,7 +133,11 @@ VALID_HOOKS: set[str] = {
     "transform_api_error_classification", "on_session_start", "on_session_end",
     "on_session_finalize", "on_session_reset", "on_session_delete",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
-    "on_skill_lifecycle", "subagent_start", "subagent_stop",
+    "on_skill_lifecycle",
+    # CLI session-switch observers. ``on_session_pre_switch`` fires before any
+    # rotation work; ``on_session_post_switch`` receives both IDs after a successful switch.
+    "on_session_pre_switch", "on_session_post_switch",
+    "subagent_start", "subagent_stop",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
@@ -2135,29 +2140,4 @@ def get_plugin_auxiliary_tasks() -> list[dict[str, Any]]:
 
 def get_plugin_toolsets() -> list[tuple]:
     """Plugin toolsets as ``(key, label, description)`` tuples for the ``hermes tools`` TUI."""
-    manager = get_plugin_manager()
-    if not manager._plugin_tool_names:
-        return []
-    try:
-        from tools.registry import registry
-    except Exception:
-        return []
-    # Group plugin tool names by their toolset, then map each toolset back to the plugin that
-    # registered it (first owner wins) for the description.
-    toolset_tools: dict[str, list[str]] = {}
-    for tool_name in manager._plugin_tool_names:
-        entry = registry.get_entry(tool_name)
-        if entry:
-            toolset_tools.setdefault(entry.toolset, []).append(entry.name)
-    toolset_plugin: dict[str, LoadedPlugin] = {}
-    for loaded in manager._plugins.values():
-        for tool_name in loaded.tools_registered:
-            entry = registry.get_entry(tool_name)
-            if entry and entry.toolset in toolset_tools:
-                toolset_plugin.setdefault(entry.toolset, loaded)
-    result = []
-    for ts_key in sorted(toolset_tools):
-        plugin = toolset_plugin.get(ts_key)
-        desc = (plugin.manifest.description if plugin else "") or ", ".join(sorted(toolset_tools[ts_key]))
-        result.append((ts_key, f"🔌 {ts_key.replace('_', ' ').title()}", desc))
-    return result
+    return _build_plugin_toolsets(get_plugin_manager())

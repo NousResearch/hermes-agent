@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { isLikelyProseCodeBlock, isLikelyProseFence, isLikelyStructuredText } from './markdown-code'
+import {
+  isLikelyProseCodeBlock,
+  isLikelyProseFence,
+  isLikelyStructuredText,
+  shikiLanguageForFilename
+} from './markdown-code'
 
 describe('isLikelyProseCodeBlock', () => {
   it('detects prose that Streamdown mislabels as an unknown language', () => {
@@ -91,5 +96,26 @@ describe('isLikelyProseFence', () => {
         ].join('\n')
       )
     ).toBe(true)
+  })
+})
+
+describe('shikiLanguageForFilename', () => {
+  it('maps LaTeX sources to the bundled latex grammar', () => {
+    expect(shikiLanguageForFilename('manuscript.tex')).toBe('latex')
+    expect(shikiLanguageForFilename('/papers/ch1/methods.tex')).toBe('latex')
+    expect(shikiLanguageForFilename('journal.sty')).toBe('latex')
+  })
+
+  it('maps BibTeX bibliographies to the bibtex grammar', () => {
+    expect(shikiLanguageForFilename('references.bib')).toBe('bibtex')
+  })
+
+  it('is case-insensitive, like every other extension', () => {
+    expect(shikiLanguageForFilename('MANUSCRIPT.TEX')).toBe('latex')
+  })
+
+  it('still returns an empty string for unknown extensions', () => {
+    expect(shikiLanguageForFilename('notes.unknownext')).toBe('')
+    expect(shikiLanguageForFilename(undefined)).toBe('')
   })
 })

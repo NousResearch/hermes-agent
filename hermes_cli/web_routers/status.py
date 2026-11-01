@@ -531,7 +531,13 @@ async def _webapp_caller_signed_out(request: Request) -> bool:
 async def get_status(profile: Optional[str] = None,
                      request: Request = None):  # type: ignore[assignment]  # None when awaited in-process
     """Public machine-level liveness probe (``PUBLIC_API_PATHS``): version, gateway state,
-    active session count and the auth-gate shape — no bodies, no session content, no secrets.
+    activity hints and the auth-gate shape — no bodies, no session content, no secrets.
+
+    ``active_agents`` is the resolved gateway's persisted active-work count, not a
+    host-wide idle guarantee. ``active_sessions`` is a best-effort count in the
+    selected profile's latest 50 stored sessions: not ended and active within five
+    minutes. It returns zero on timeout or lookup failure. Neither field establishes
+    that all Desktop chats are idle or that restarting a shared backend is safe.
 
     ``?profile=`` (dashboard management switcher) uses the config-only contextvar scope, NOT
     _profile_scope: this handler awaits the remote health probe, and _profile_scope swaps

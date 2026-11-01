@@ -40,6 +40,13 @@ async def _discord_session(tmp_path, monkeypatch):
                'exit_code': 0, 'output': f'{name} output'}
         assert await runner._inject_watch_notification(f'[IMPORTANT: {name} finished]', evt) is True
 
+    async def tick(name):
+        evt = {'type': 'heartbeat', 'session_id': name, 'event_id': f'{name}-tick', 'started_at': 1.0,
+               'session_key': route, 'parent_session_id': sid, 'platform': 'discord', 'chat_type': 'dm',
+               'chat_id': '42', 'user_id': '42', 'output': f'{name} still running', 'omitted': 0}
+        assert await runner._inject_watch_notification(f'[IMPORTANT: {name} still running]', evt) is True
+    complete.tick = tick
+
     def queued():
         return [row for row in list_session_admissions(authority.db, session_id=owner) if row['status'] == 'queued']
     def history():
@@ -52,8 +59,10 @@ async def _discord_session(tmp_path, monkeypatch):
 async def test_completions_queued_behind_a_turn_fold_into_one_turn(tmp_path, monkeypatch):
     authority, _human, complete, queued = await _discord_session(tmp_path, monkeypatch)
     try:
-        for name in ('proc_a', 'proc_b', 'proc_c'):
-            await complete(name)
+        await complete('proc_a')
+        await complete.tick('proc_b')  # the finishing process's own tick never blocks the fold
+        await complete('proc_b')
+        await complete('proc_c')
         rows = queued()
         assert [row['principal_id'].split(':')[0] for row in rows] == ['messaging', 'automation']
         text = rows[-1]['payload']['text']
@@ -62,9 +71,12 @@ async def test_completions_queued_behind_a_turn_fold_into_one_turn(tmp_path, mon
         assert all(f'{name} finished' in text for name in ('proc_a', 'proc_b', 'proc_c'))
         assert text.count('INTERNAL NOTIFICATION') == 1
         assert len(rows[-1]['payload']['native_text_v1']['automation']['identities']) == 3
-        # Each replaced row drops its text (the batch carries it): storage grows with N, not N^2.
-        folded = [row for row in complete.history() if row['outcome'] == 'cancelled']
+        # Each replaced row keeps only its own identity (the batch carries text and identities):
+        # storage grows with N, not N^2.
+        folded = [row for row in complete.history() if row['outcome'] == 'cancelled'
+                  and row['request_id'].startswith('["completion"')]
         assert [row['payload']['text'] for row in folded] == ['[folded into a later completion batch]'] * 2
+        assert not [row for row in folded if 'identities' in row['payload']['native_text_v1']['automation']]
     finally:
         authority.db.close()
 
@@ -79,7 +91,7 @@ async def test_a_prompt_queued_between_completions_keeps_them_apart(tmp_path, mo
         await complete('proc_a')
         if stale_read:
             tail = queued()[-1]
-            monkeypatch.setattr(session_automation, '_waiting_completion', lambda *args: tail)
+            monkeypatch.setattr(session_automation, '_waiting_completion', lambda *args: {**tail, '_skip': []})
         await human('queued follow-up')
         await complete('proc_b')
         rows = queued()

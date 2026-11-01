@@ -133,6 +133,36 @@ def test_compaction_of_a_blocked_turn_never_sends_the_prompt(provider_url, tmp_p
         db.close()
 
 
+def test_retry_and_undo_after_a_block_resubmit_the_typed_text(provider_url, tmp_path, monkeypatch):
+    """/retry (CLI, TUI, gateway, ACP, Desktop) and /undo read a rewind's live view or receipt: both carry
+    what the user typed, so the hook re-decides on it (0 model calls, blocked again), never the placeholder."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    import hermes_state_runtime as rt
+
+    typed = f"look up {SECRET}"
+    for name in ("receipt", "rewind"):
+        db = SessionDB(db_path=tmp_path / f"{name}.db")
+        try:
+            _blocked_session(provider_url, db)
+            if name == "receipt":
+                epoch = rt.begin_runtime_epoch(db, instance_id="owner")
+                receipt = rt.mutate_runtime_session(
+                    db, epoch=epoch, principal_id="human", session_id="s-block", request_id="r", expected_revision=0,
+                    expected_generation=0, operation="rewind", payload={"target_message_id": db.get_messages("s-block")[0]["id"]})
+                assert receipt["target_message"]["content"] == typed
+                continue
+            history = db.get_messages_as_conversation("s-block")
+            outcome = db.rewind_user_turn("s-block", -1, warm_history=history, require_retryable=True)
+            assert outcome.live_text == typed and outcome.prefix == []
+            dlp = lambda hook, **kw: ([{"action": "block", "message": BLOCK_MSG}] if hook == "pre_llm_call"
+                                      and SECRET in kw["user_message"] else [])
+            with patch("hermes_cli.plugins.invoke_hook", side_effect=dlp):
+                again = _agent(provider_url, db).run_conversation(outcome.live_text, conversation_history=[], task_id="t")
+            assert again["turn_exit_reason"] == PRE_LLM_BLOCK_EXIT_REASON and _Provider.chat_requests == []
+        finally:
+            db.close()
+
+
 @pytest.mark.parametrize(("stdout", "expected"), [
     ('{"action": "block", "message": "no"}', {"action": "block", "message": "no"}),
     ('{"decision": "block", "reason": "no"}', {"action": "block", "message": "no"}),

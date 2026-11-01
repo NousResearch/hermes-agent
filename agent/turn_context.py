@@ -26,7 +26,9 @@ from agent.lsp.deferred import forward_to_agent as forward_lsp_verdicts
 from agent.plugin_live_notes import pop_plugin_notices
 from agent.skills_index_delta import stage_skills_index_note
 from agent.prompt_refresh import refresh_warm_prompt
-from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
+from agent.message_metadata import (
+    PERSISTENCE_ONLY_MESSAGE_FIELDS, PRE_LLM_BLOCK_WITHHELD_PROMPT, append_message, stamp_message_timestamp,
+)
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_native_anthropic_request_tokens_rough,
@@ -804,7 +806,6 @@ def _ensure_session_row(agent: Any, pending_cli_message: Any) -> None:
 # ``turn_exit_reason`` of a turn a ``pre_llm_call`` hook vetoed before any inference request, and
 # the stored ``content`` of the vetoed user row (what the user typed is display-only metadata).
 PRE_LLM_BLOCK_EXIT_REASON = "blocked_by_plugin_pre_llm_call"
-PRE_LLM_BLOCK_WITHHELD_PROMPT = "[Message withheld: a pre_llm_call policy hook blocked it.]"
 
 
 def _withhold_blocked_prompt(agent: Any, turn_user_msg: dict[str, Any], typed: Any) -> None:

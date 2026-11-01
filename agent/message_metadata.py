@@ -78,6 +78,7 @@ def stamp_data_use(message: MutableMapping[str, Any], requires: list[str]) -> No
 # replay, compaction, session_search, memory providers, background review) only ever sees that; transcript
 # views render this key instead (agent/turn_context.py::_withhold_blocked_prompt).
 WITHHELD_PROMPT = "withheld_prompt"
+PRE_LLM_BLOCK_WITHHELD_PROMPT = "[Message withheld: a pre_llm_call policy hook blocked it.]"
 
 
 def withheld_prompt_text(message: Any) -> Optional[str]:
@@ -85,6 +86,21 @@ def withheld_prompt_text(message: Any) -> Optional[str]:
     metadata = message.get("display_metadata") if isinstance(message, Mapping) else None
     text = metadata.get(WITHHELD_PROMPT) if isinstance(metadata, Mapping) else None
     return text if isinstance(text, str) else None
+
+
+def typed_prompt_content(content: Any, message: Any) -> Any:
+    """*content* (a rewind's live view of *message*) with the withheld placeholder swapped back for what
+    the user typed: ``/retry`` re-submits the real ask so the hook decides again, and ``/undo`` restores it
+    to the composer. Never the placeholder as a new prompt."""
+    typed = withheld_prompt_text(message)
+    if typed is None:
+        return content
+    if isinstance(content, str):
+        return content.replace(PRE_LLM_BLOCK_WITHHELD_PROMPT, typed)
+    if isinstance(content, list):
+        return [{**part, "text": part["text"].replace(PRE_LLM_BLOCK_WITHHELD_PROMPT, typed)}
+                if isinstance(part, dict) and isinstance(part.get("text"), str) else part for part in content]
+    return content
 
 
 def without_withheld_prompts(messages: Any) -> Any:

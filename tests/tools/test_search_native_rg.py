@@ -128,6 +128,37 @@ def test_limit_hit_keeps_drained_matches_when_group_kill_is_refused(tree, ops_fa
     assert not result.error and len(result.matches) == 2, result.to_dict()
 
 
+def test_rg_exiting_at_eof_is_reaped_not_killed_when_the_group_is_already_gone(tree, ops_factory, monkeypatch):
+    """rg closes stdout and exits on its own right as the runner checks ``poll()``. macOS then
+    raises ESRCH from ``os.getpgid()`` for the zombie child, which surfaced as ``[Errno 3] No such
+    process`` from a file-list search. The runner reaps the exiting child and tolerates a group
+    that vanished between ``poll()`` and the kill."""
+    import subprocess
+
+    from tools.environments import local
+
+    ops = ops_factory(tree, [])
+
+    class PollsRunningOnce(subprocess.Popen):
+        """Reports the child as still running on the first ``poll()`` after EOF."""
+        _first = True
+
+        def poll(self):
+            if PollsRunningOnce._first:
+                PollsRunningOnce._first = False
+                return None
+            return super().poll()
+
+    def group_already_gone(proc):
+        raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(subprocess, "Popen", PollsRunningOnce)
+    monkeypatch.setattr(local, "_kill_process_group_posix", group_already_gone)
+    result = ops._run_rg_native(["sh", "-c", "'echo a.py; echo b.py'"], 50, timeout=30)
+    assert result.exit_code == 0, result.stdout
+    assert result.stdout.split() == ["a.py", "b.py"]
+
+
 def test_local_search_runs_the_pinned_ripgrep_not_the_first_on_path(_local_env, tmp_path, monkeypatch):
     """The terminal PATH puts the user's tools first; Hermes's own search still runs PM's rg."""
     import pm

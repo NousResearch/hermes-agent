@@ -1,0 +1,11 @@
+{
+  "name": "prompt-optimizer",
+  "label": "Prompt Optimizer",
+  "description": "Desktop composer button that optimizes the draft prompt via the live session model (backend API only)",
+  "icon": "Zap",
+  "version": "1.1.0",
+  "tab": {
+    "hidden": true
+  },
+  "api": "plugin_api.py"
+}

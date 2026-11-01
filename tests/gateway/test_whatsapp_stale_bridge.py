@@ -269,12 +269,12 @@ class TestStaleBridgeHandshake:
              patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
              patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
              patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
-             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=mock_proc) as mock_spawn, \
              patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
             assert await adapter.connect() is False  # not adopted; the replacement bridge "died" (mock) → False
 
-        mock_popen.assert_called_once()
-        assert mock_popen.call_args.kwargs["env"]["HERMES_WHATSAPP_BRIDGE_TOKEN"] == _TEST_TOKEN
+        mock_spawn.assert_called_once()
+        assert mock_spawn.call_args.kwargs["env"]["HERMES_WHATSAPP_BRIDGE_TOKEN"] == _TEST_TOKEN
         assert all("Authorization" not in headers for _url, headers in mock_client.requests), mock_client.requests
         assert [url.rsplit("/", 1)[1] for url, _ in mock_client.requests] == ["auth-proof"] * len(mock_client.requests)
 

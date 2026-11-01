@@ -34,6 +34,7 @@ async def prepare_compress(authority, live, payload, prepared):
     from agent.context_compressor import ContextCompressor
     from agent.agent_init import _parse_config_int
     from agent.model_metadata import estimate_request_tokens_rough
+    from gateway.compaction_todo_hydration import fold_todos_for_compaction
     from hermes_cli.partial_compress import (
         rejoin_compressed_head_and_tail, split_history_for_partial_compress, summarize_compress_preview)
     from utils import is_truthy_value
@@ -88,7 +89,8 @@ async def prepare_compress(authority, live, payload, prepared):
                                                focus_topic=request.focus_topic, memory_context=memory_context)
             if not any(m.get('_compressed_summary') for m in compressed):
                 return None, compressor
-            return rejoin_compressed_head_and_tail(compressed, tail), compressor
+            compressed = rejoin_compressed_head_and_tail(compressed, tail)
+            return fold_todos_for_compaction(messages, compressed, authority.db, snapshot["target"]), compressor
     compressed, compressor = await asyncio.to_thread(summarize)
     # The same report every native /compress prints ("Compressed: N → M messages").
     from agent.manual_compression_feedback import summarize_manual_compression

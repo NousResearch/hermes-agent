@@ -37,6 +37,27 @@ def test_env_override_wins(tmp_path, monkeypatch) -> None:
     assert sidecar_paths.resolve_sidecar_dir(tmp_path / "src") == override
 
 
+def test_manifest_validation_rejects_merge_conflict_markers(tmp_path) -> None:
+    (tmp_path / "package.json").write_text(
+        '{\n<<<<<<< HEAD\n"version": "1"\n=======\n"version": "2"\n>>>>>>> main\n}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+
+    assert sidecar_paths.sidecar_manifest_error(tmp_path) == (
+        "package.json contains unresolved merge-conflict markers"
+    )
+
+
+def test_manifest_validation_accepts_json_objects(tmp_path) -> None:
+    (tmp_path / "package.json").write_text('{"name": "sidecar"}', encoding="utf-8")
+    (tmp_path / "package-lock.json").write_text(
+        '{"lockfileVersion": 3}', encoding="utf-8"
+    )
+
+    assert sidecar_paths.sidecar_manifest_error(tmp_path) is None
+
+
 def test_writable_source_runs_in_place(tmp_path, monkeypatch) -> None:
     """Dev installs: writable tree keeps today's behavior exactly."""
     monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)

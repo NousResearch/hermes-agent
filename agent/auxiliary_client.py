@@ -3255,11 +3255,11 @@ _PAYMENT_KEYWORDS = _BILLING_PATTERNS + (
 
 
 def _is_payment_error(exc: Exception) -> bool:
-    """Payment/credit/quota exhaustion: HTTP 402, or a billing/quota body on 403/404/429/no-status."""
-    status = getattr(exc, "status_code", None)
-    return status == 402 or (
-        status in {403, 404, 429, None} and _contains_any(str(exc).lower(), _PAYMENT_KEYWORDS)
-    )
+    """Payment/credit/quota exhaustion: HTTP 402, a billing/quota body on 403/404/429/no-status, or on 400
+    only the main classifier's ``_BILLING_PATTERNS`` (Anthropic's "credit balance is too low", #139285)."""
+    status, text = getattr(exc, "status_code", None), str(exc).lower()
+    return status == 402 or (status in {403, 404, 429, None} and _contains_any(text, _PAYMENT_KEYWORDS)) or (
+        status == 400 and _contains_any(text, _BILLING_PATTERNS))
 
 
 def _nous_portal_account_has_fresh_paid_access() -> bool:

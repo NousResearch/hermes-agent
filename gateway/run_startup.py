@@ -317,9 +317,18 @@ class GatewayStartupMixin:
         claimed = await self._claim_pending_obligations()
 
         async def _boot_sends() -> None:
-            await self._send_restart_notification()
+            # The chat that ran /restart already got "restarted": seed its key so neither this boot
+            # nor the reconnect replay also broadcasts "online" to it. #27870
+            delivered = await self._send_restart_notification()
             if planned_restart_notification_pending:
                 await self._replay_pending_planned_restart_notification()
+            else:
+                # No planned-restart marker: cold boot, supervisor/crash recovery, or a CLI
+                # stop+start (all of Windows). Owe the online notice anyway, throttled; the
+                # replay below and each later reconnect discharge it. #27870
+                await self._send_ordinary_start_notice(
+                    skip_targets={delivered} if delivered else None
+                )
             await self._redeliver_claimed_obligations(claimed)
 
         boot_task = asyncio.create_task(_boot_sends())

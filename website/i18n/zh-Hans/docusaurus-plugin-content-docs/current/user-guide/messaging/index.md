@@ -500,6 +500,10 @@ gateway:
 
 在嘈杂或低优先级的平台上禁用，同时在主要聊天上保持启用。无论有多少会话正在进行，每次重启只发送一次通知。
 
+不只是重启：每一次启动都会自动播报——冷启动、崩溃或被守护进程重新拉起，以及 `hermes gateway stop` 之后再 `hermes gateway start`，都会向每个已配置的主频道发送同一条"agent 已恢复"消息。这里没有独立开关——同一个按平台的 `gateway_restart_notification: false` 同时关闭重启通知与普通启动通知；未配置主频道的安装不会收到任何消息（也不会记成错误）。为避免崩溃循环刷屏，每个安装每 5 分钟最多发送一次，窗口记录在网关 Hermes home 下 `.startup_notice.json` 的 `sent_at` 时间戳里。
+
+纯 CLI 会话（`hermes`、`hermes -q`、TUI）永远不会发送这条通知，这是有意为之：主频道与各平台传输只在网关进程内存在，CLI 启动既没有目标也没有投递路径。判断网关本身是否存活请用 `hermes gateway status`。
+
 ### 正在输入指示器
 
 当 agent 正在处理消息时，网关会在支持的平台上显示实时的输入状态——Telegram/Discord/Signal 上的"正在输入……"气泡，或 Slack 上的"is thinking…"助手状态。这由 `gateway-config.yaml` 中每个平台的 `typing_indicator` 标志控制，默认为 `true`：

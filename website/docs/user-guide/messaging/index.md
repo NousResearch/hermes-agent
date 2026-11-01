@@ -886,6 +886,10 @@ gateway:
 
 Disable it on noisy or low-priority platforms while leaving it on for your primary chat. The notification is sent once per restart, regardless of how many sessions were in flight.
 
+Every start announces itself, not just a restart: a cold boot, a crash or supervisor respawn, and a `hermes gateway stop` followed by `hermes gateway start` send the same "the agent is back" message to each configured home channel. There is no separate switch for this — the same per-platform `gateway_restart_notification: false` opt-out covers both the restart notice and the ordinary-start notice, and an install with no home channel configured gets no message (nothing is logged as an error either). To keep a crash loop from paging you, at most one such notice goes out per 5 minutes per install; the window is the `sent_at` timestamp in `.startup_notice.json` under the gateway's Hermes home.
+
+A plain CLI session (`hermes`, `hermes -q`, the TUI) never sends this notification, and that is deliberate: home channels and the platform transports exist only inside the gateway process, so a CLI start has no destination and no delivery path. Use `hermes gateway status` to check whether the gateway itself is alive.
+
 ### Typing indicators
 
 While the agent is processing a message, the gateway shows a live typing status on platforms that support it — a "typing…" bubble on Telegram/Discord/Signal, or the "is thinking…" assistant status on Slack. This is controlled per-platform by the `typing_indicator` flag in `config.yaml`, which defaults to `true`:

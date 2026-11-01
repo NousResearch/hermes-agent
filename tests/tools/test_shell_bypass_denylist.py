@@ -129,3 +129,46 @@ class TestBenignNotFlagged:
     def test_benign_not_flagged(self, cmd):
         assert detect_dangerous_command(cmd)[0] is False, f"false positive: {cmd!r}"
         assert detect_hardline_command(cmd)[0] is False, f"false positive (hardline): {cmd!r}"
+
+
+# ---------------------------------------------------------------------------
+# Class 4 -- brace-expansion and ANSI-C quoting word spellings (#132191)
+# ---------------------------------------------------------------------------
+
+class TestBraceAndAnsiCWordSpellings:
+    """``{rm,-rf,/}`` and ``$'\\x72\\x6d'`` both run as ``rm -rf /`` in bash but presented no
+    literal token sequence for the hardline floor to anchor on."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "{rm,-rf,/}",
+            r"$'\x72\x6d' -rf /",   # ANSI-C hex escapes spelling `rm`
+            r"$'\162\155' -rf /",   # ANSI-C octal escapes spelling `rm`
+        ],
+    )
+    def test_word_spelling_bypass_is_hardline(self, cmd):
+        hardline, desc = detect_hardline_command(cmd)
+        assert hardline is True, f"word-spelling bypass not caught: {cmd!r}"
+        assert "delete" in desc
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Argument-position braces stay literal: the dynamic-word rules key on them.
+            "find /tmp -{delete,print}",
+            "echo find . -{delete,print}",
+            "mkdir {a,b}",
+            "cp a{1,2}.txt b/",
+            # Decoded ANSI-C prose is data, exactly like plain quotes.
+            "echo $'nothing dangerous here'",
+        ],
+    )
+    def test_benign_brace_and_ansi_c_shapes_stay_inert(self, cmd):
+        assert detect_hardline_command(cmd) == (False, None), f"false positive: {cmd!r}"
+
+    def test_find_dynamic_brace_flag_still_flags(self):
+        # The brace fix must not swallow the argument-position dynamic rule (#132191 probe).
+        dangerous, _key, desc = detect_dangerous_command("find /tmp -{delete,print}")
+        assert dangerous is True
+        assert "destructive flag" in desc

@@ -1,5 +1,7 @@
 """macOS TCC-safe behavior for broad file searches."""
 
+import posixpath
+import shlex
 from pathlib import Path
 
 import pytest
@@ -92,6 +94,38 @@ def test_grep_pruned_search_still_finds_nested_protected_names(tmp_path, monkeyp
 
 
 @pytest.mark.platforms("macos")
+@pytest.mark.parametrize("top,cwd_rel,root", [
+    (" Work", ".", " Work"),
+    ("rg: Work", ".", "rg: Work"),
+    ("Work", "Work/alice", "."),
+    ("Work", "Work/alice", ""),
+    ("Work", "Work", "."),
+    ("Work", ".", "./Work"),
+], ids=[" Work", "rg: Work", "dot-is-home", "empty-is-home", "dot-above-home", "dot-slash-Work"])
+def test_grep_pruned_relative_home_root_still_prunes_protected(tmp_path, monkeypatch, top, cwd_rel, root):
+    """find prints descendants under its operand exactly as given (``./Downloads``
+    for ``.``, ``./ Work/...`` for an anchored `` Work``), so the protected ``-path``
+    predicates must use that spelling too or find walks Downloads."""
+    work = tmp_path / "work"
+    home = work / top / "alice"
+    (home / "proj").mkdir(parents=True)
+    (home / "proj" / "notes.txt").write_text("needle here\n")
+    protected = home / "Downloads"
+    protected.mkdir()
+    (protected / "secret.txt").write_text("needle protected\n")
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(work / cwd_rel)))
+    monkeypatch.setattr(ops, "_has_command", lambda command: command in {"grep", "find"})
+
+    result = ops.search("needle", path=root, target="content")
+
+    matched_paths = [m.path for m in (result.matches or [])]
+    assert result.error is None
+    assert any(p.endswith("proj/notes.txt") for p in matched_paths), matched_paths
+    assert not any("Downloads" in p for p in matched_paths), matched_paths
+
+
+@pytest.mark.platforms("macos")
 def test_remote_backend_never_prunes(tmp_path, monkeypatch):
     """Non-local environments get no exclusions: platform facts describe the
     controller, not the execution host (macOS controller + Linux SSH backend
@@ -165,7 +199,7 @@ def test_rg_scoped_multi_root_terminates_options_before_dash_prefixed_root(monke
         if command.startswith("command -v rg"):
             return {"output": "/usr/bin/rg\n", "returncode": 0}
         if "--files" in command:
-            return {"output": "", "returncode": 0}
+            return {"output": "./--version/notes.txt\n", "returncode": 0}
         raise AssertionError(command)
 
     env.execute = execute
@@ -173,8 +207,14 @@ def test_rg_scoped_multi_root_terminates_options_before_dash_prefixed_root(monke
 
     command = _rg_files_commands(env.commands)[0]
     assert "cd '/Users/alice' &&" in command
-    assert " -- '.' '--version'" in command
+    # The safety property, not one spelling: options end at ``--`` and no root word
+    # can be read as an option (a dash-led root must also be ``./``-anchored).
+    words = shlex.split(command.split(" && ", 1)[1].split(" | ", 1)[0])
+    roots = words[words.index("--") + 1:]
+    assert not any(root.startswith("-") for root in roots), roots
+    assert [posixpath.normpath(root) for root in roots] == [".", "--version"]
     assert result.error is None
+    assert result.files == ["/Users/alice/--version/notes.txt"]
 
 
 @pytest.mark.platforms("macos")

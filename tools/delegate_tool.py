@@ -230,6 +230,10 @@ def _build_child_agent(
     override_reasoning_effort: Any = None,
     profile_home: Optional[Path] = None,
     override_service_tier: Optional[str] = None,  # a route's checked speed tier (tools/delegate_tool_tuning.py)
+    # action='continue' rebuilds a finished child under its own id and session (tools/delegate_tool_continue.py).
+    subagent_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    expect_endpoint: Optional[tuple] = None,  # the (provider, base_url) it first ran on; a different one refuses
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair. ``profile_home`` builds (and later runs,
@@ -246,7 +250,7 @@ def _build_child_agent(
 
     # One subagent_id shared by the progress callback, spawn_requested event and
     # the live registry; parent_id is set when THIS parent is itself a subagent.
-    subagent_id = f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
+    subagent_id = subagent_id or f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
     parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
 
     # General delegation behavior (reasoning, compression, capabilities) stays
@@ -278,6 +282,14 @@ def _build_child_agent(
             override_acp_args=override_acp_args,
             routing_cfg=routing_cfg, override_reasoning_effort=override_reasoning_effort,
         )
+        # An inherited route re-resolves from the parent, which may have switched provider since: its transcript
+        # must not continue on another backend (or send another provider's key to its endpoint).
+        if expect_endpoint is not None and (rt["provider"], rt["base_url"]) != tuple(expect_endpoint):
+            raise ValueError(
+                f"Subagent '{subagent_id}' ran on provider '{expect_endpoint[0]}', and its route now resolves to "
+                f"provider '{rt['provider']}' or a different endpoint (the parent switched since), so its "
+                "conversation cannot continue on the same backend. Spawn a new task instead."
+            )
         if override_service_tier:
             rt["service_tier"] = override_service_tier
         if override_request_overrides is not None:
@@ -301,7 +313,7 @@ def _build_child_agent(
                         if child_progress_cb else None
                     ),
                     session_db=child_session_db, parent_session_id=parent_sid, request_overrides=request_overrides,
-                    session_id=getattr(child_session_db, "reserved_session_id", None),
+                    session_id=session_id or getattr(child_session_db, "reserved_session_id", None),
                     tool_progress_callback=child_progress_cb,
                     iteration_budget=None,  # fresh budget per subagent
                     # A profile route carries that profile's identity (its SOUL.md under the bound home).
@@ -342,6 +354,9 @@ def _build_child_agent(
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
         child._session_init_model_config["_delegate_from"] = parent_sid
     child._delegate_profile_home = profile_home  # _ChildRun.await_child runs the conversation in this scope
+    child._delegate_resume = {  # for action='continue'
+        "goal": goal, "context": context, "toolsets": list(child_toolsets), "endpoint": (rt["provider"], rt["base_url"]),
+    }
     if child_pool is not None:
         child._credential_pool = child_pool
 
@@ -450,9 +465,11 @@ def _build_children(
     task_list: list[dict[str, Any]], task_schemas: list[Optional[dict[str, Any]]], routes: list[Any], *,
     top_role: str, max_iterations: int, parent_agent,
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[list[Optional[list[str]]]] = None,
+    rebuild: Optional[list[dict[str, Any]]] = None,
 ) -> tuple[list[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe), each on its task's route;
-    ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
+    ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure. ``rebuild`` (action='continue')
+    gives per-task builder kwargs (toolsets, model, subagent_id, session_id) that replace the spawn defaults."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
     children = []
@@ -466,10 +483,11 @@ def _build_children(
             _child_context = append_output_contract(_child_context, _task_schema)
         try:
             child = _build_child_preserving_parent_tools(
-                task_index=i, goal=t["goal"], context=_child_context,
-                toolsets=None,  # always inherit the parent's toolsets
-                model=route.creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **_route_overrides(route),
+                task_index=i, goal=t["goal"], context=_child_context, max_iterations=max_iterations,
+                task_count=len(task_list), parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                **_route_overrides(route),
+                # A spawn always inherits the parent's toolsets; a continued child keeps its own.
+                **{"toolsets": None, "model": route.creds["model"], **(rebuild[i] if rebuild else {})},
             )
         except ValueError as exc:
             # An owner refusal can land mid-batch: the siblings built so far hold reservations.
@@ -478,6 +496,8 @@ def _build_children(
                 _close_child(built, "Failed to close child after a refused sibling")
             return [], str(exc)
         pin_child_service_tier(child, route.creds)
+        if isinstance(getattr(child, "_delegate_resume", None), dict):
+            child._delegate_resume["route"] = route
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
                 child._delegate_output_schema = _task_schema
@@ -563,10 +583,13 @@ def delegate_task(
         return tool_error("delegate_task requires a parent agent context.")
 
     normalized_action = (action or "").strip().lower()
+    if normalized_action == "continue":
+        from tools.delegate_tool_continue import continue_subagent
+        return continue_subagent(subagent_id, message, parent_agent, background=is_truthy_value(background, default=False))
     if normalized_action in _CONTROL_ACTIONS:
         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
     if normalized_action and normalized_action != "spawn":
-        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
+        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, stop, or continue.")
 
     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
     if is_spawn_paused():
@@ -841,15 +864,20 @@ DELEGATE_TASK_SCHEMA = {
                 "'list' = ids/goals/status/transcripts; 'steer' = queue "
                 "course-correction text into one child (subagent_id + "
                 "message) without stopping it; 'stop' = end one child "
-                "early (subagent_id; partial result still returns). "
+                "early (subagent_id; partial result still returns); "
+                "'continue' = give a FINISHED child a follow-up (subagent_id + message): it resumes its own "
+                "conversation and its result returns like a spawn's. "
                 "Control actions return immediately; goal/tasks are ignored unless spawning.",
-                enum=["spawn", "list", "steer", "stop"],
+                enum=["spawn", "list", "steer", "stop", "continue"],
             ),
-            "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),
+            "subagent_id": _p(
+                "string", "Target for action='steer'/'stop'/'continue' (ids from the spawn response or action='list').",
+            ),
             "message": _p(
                 "string",
                 "For action='steer': the course correction, appended to "
-                "the child's next tool result mid-run. Be directive and specific.",
+                "the child's next tool result mid-run. Be directive and specific. "
+                "For action='continue': the finished child's next instruction.",
             ),
         },
         "required": [],

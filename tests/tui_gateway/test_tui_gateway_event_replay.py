@@ -362,3 +362,70 @@ def test_a_raising_teardown_still_releases_the_replay_ring(monkeypatch):
         session_lifecycle._teardown_popped_session({"_sid": "failed-sid"}, end_reason="tui_shutdown")
 
     assert events_since("failed-sid", 0) == []
+
+
+def test_stamped_frames_reach_the_transport_in_seq_order_under_concurrency(monkeypatch):
+    """Stamp order is wire order, even when two worker threads emit for one session.
+
+    The desktop client's watermark silently drops any same-session frame whose seq
+    does not advance (``dispatchIfNewer``), so a frame that is stamped first but
+    enqueued second vanishes from the live transcript — a tool the model ran that
+    never appears on screen while its row IS stored (2026-10-12 field capture: the
+    second tool of a parallel pair reached neither bubble, while its stored row fed
+    the durable fold). Parallel tool callbacks emit from worker threads, so the
+    stamp→enqueue window must be one per-session critical section.
+    """
+    from tui_gateway import server
+    from tui_gateway import hosted_room_member_activity as room
+
+    sid = "seq-order"
+    written: list[int] = []
+
+    class _Recorder:
+        def write(self, obj):
+            written.append(obj["params"]["seq"])
+            return True
+
+    server._sessions[sid] = {"transport": _Recorder()}
+    first_stamped = threading.Event()
+    second_landed = threading.Event()
+
+    real_project = room.project_room_member_activity
+
+    def project_with_first_writer_parked(obj, sessions):
+        payload = (obj.get("params") or {}).get("payload") or {}
+        if payload.get("mark") == "A":
+            first_stamped.set()
+            # Park the first writer inside its stamp→enqueue window: unfixed, the
+            # second writer lands during the wait; fixed, the session lock blocks
+            # it and the wait times out. Nothing races the scheduler either way.
+            second_landed.wait(3.0)
+        real_project(obj, sessions)
+
+    monkeypatch.setattr(room, "project_room_member_activity", project_with_first_writer_parked)
+
+    def emit(mark: str):
+        server.write_json(
+            {
+                "jsonrpc": "2.0",
+                "method": "event",
+                "params": {"type": "tool.start", "session_id": sid, "payload": {"mark": mark}},
+            }
+        )
+
+        if mark == "B":
+            second_landed.set()
+
+    try:
+        first = threading.Thread(target=emit, args=("A",))
+        first.start()
+        # A is now mid stamp→write; B must not overtake it on the wire.
+        assert first_stamped.wait(5.0)
+        second = threading.Thread(target=emit, args=("B",))
+        second.start()
+        first.join(10.0)
+        second.join(10.0)
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert written == [1, 2]

@@ -216,6 +216,17 @@ def apply_stop_gates(
             "(kanban_complete/kanban_request_review/kanban_block) — nudging to finish"
         )
         return verdict
+    from agent.final_answer_extensions import EXTENSION_SYNTHETIC_FLAG, before_final
+    extension = before_final(agent, final_response, messages)
+    if extension is not None:
+        # Silent continuation: the draft and the private nudge are both ephemeral scaffolding.
+        final_msg["finish_reason"] = extension.reason
+        final_msg[extension.synthetic_flag] = True
+        final_msg[EXTENSION_SYNTHETIC_FLAG] = True
+        append_message(messages, final_msg)
+        verdict = _continue(extension.text, extension.synthetic_flag)
+        messages[-1][EXTENSION_SYNTHETIC_FLAG] = True
+        return verdict
     return StopGateVerdict(
         continue_turn=False, final_response=final_response,
         pending_verification_response=pending_verification_response,

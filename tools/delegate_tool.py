@@ -25,8 +25,9 @@ logger = logging.getLogger(__name__)
 # The delegate_tool_* siblings hold the pieces split out of this module; every name callers or patching tests reach as
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
 from tools.delegate_tool_child_run import (
-    _ChildRun, _attach_child, _build_child_goal_message, _close_child, _detach_child, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
+    _ChildRun, _signal_child_stop, _attach_child, _build_child_goal_message, _close_child, _detach_child, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
     _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
+    _SchemaOutcome, _next_escalation_effort, _result_exit_reason,
 )
 from tools.delegate_tool_config import (
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
@@ -230,6 +231,11 @@ def _build_child_agent(
     override_reasoning_effort: Any = None,
     profile_home: Optional[Path] = None,
     override_service_tier: Optional[str] = None,  # a route's checked speed tier (tools/delegate_tool_tuning.py)
+    # A reasoning-escalation retry keeps its predecessor's id (so steer/stop/list by the dispatched id keep
+    # working) and is attached to the parent only when the predecessor was (a detached background unit's retry
+    # must never receive a mirrored parent-turn interrupt).
+    subagent_id: Optional[str] = None,
+    attach_to_parent: bool = True,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair. ``profile_home`` builds (and later runs,
@@ -246,7 +252,7 @@ def _build_child_agent(
 
     # One subagent_id shared by the progress callback, spawn_requested event and
     # the live registry; parent_id is set when THIS parent is itself a subagent.
-    subagent_id = f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
+    subagent_id = subagent_id or f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
     parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
 
     # General delegation behavior (reasoning, compression, capabilities) stays
@@ -345,7 +351,8 @@ def _build_child_agent(
     if child_pool is not None:
         child._credential_pool = child_pool
 
-    _attach_child(parent_agent, child)  # interrupt propagation
+    if attach_to_parent:
+        _attach_child(parent_agent, child)  # interrupt propagation
     # spawn_requested now — the child may queue for seconds when the pool is
     # saturated — then the subagent_start lifecycle hook.
     _safe_progress(child_progress_cb, "subagent.spawn_requested", preview=goal)
@@ -375,7 +382,43 @@ def _run_single_child(
       truncated   == (exit_reason == "max_iterations").
 
     * ``"completed"``       — normal finish. See #97655.
+
+    Reasoning escalation (a route's ``escalate_reasoning`` + ``escalate_ceiling``, pinned on the child by
+    ``_build_children``): an attempt that stops on budget (``exit_reason`` max_iterations, or a timeout after at
+    least one API call) is retried on the same route at the next reasoning level, in the same workspace, until one
+    finishes or the ceiling (or the provider's clamp) stops the climb. The parent gets one entry: the last attempt's,
+    plus ``attempts`` (effort + exit_reason each) and the cost summed across attempts. A single attempt's entry is
+    unchanged.
     """
+    from tools.delegate_tool_child_run import _EscalationChain
+    owner = {"owner_session_id": owner_session_id, "owner_transport": owner_transport,
+             "owner_session_record": owner_session_record}
+    chain = _EscalationChain(original_goal=goal, first_child=child)
+    first_child = child
+    attached_to_parent = hasattr(parent_agent, "_active_children") and first_child in getattr(parent_agent, "_active_children", ())
+    entry = _run_child_attempt(task_index, goal, child, parent_agent, chain, **owner)
+    while chain.pending is not None:
+        (child, attempt_goal), chain.pending = chain.pending, None
+        if attached_to_parent:
+            _attach_child(parent_agent, child)
+        else:
+            _detach_child(parent_agent, child)
+        first_child._delegate_last_attempt = child
+        first_child._delegate_attempt_seq = getattr(first_child, "_delegate_attempt_seq", 0) + 1
+        entry = _run_child_attempt(task_index, attempt_goal, child, parent_agent, chain, **owner)
+    if chain.attempts:  # at least one retry ran: record the attempt that ended the chain
+        chain.record(child, entry.get("exit_reason") or entry.get("status"))
+    return chain.finish(entry)
+
+
+def _run_child_attempt(
+    task_index: int, goal: str, child: Any, parent_agent: Any, chain: Any, *, owner_session_id: Optional[str],
+    owner_transport: Any, owner_session_record: Any,
+) -> dict[str, Any]:
+    """One attempt of ``_run_single_child``'s chain. An attempt that escalates (``run.escalate``) returns its raw
+    entry without the completion event, the worktree finalize or the schema retry turn; ``chain.pending`` then
+    holds the next attempt."""
+    display_goal = chain.original_goal
     child_progress_cb = getattr(child, "tool_progress_callback", None)
     child_pool, leased_cred_id = _lease_child_credential(child)
     # Heartbeat keeps the parent's _last_activity_ts moving so the gateway inactivity timeout doesn't fire while the
@@ -384,22 +427,35 @@ def _run_single_child(
     # TUI/RPC registry entry (kill/pause/status by subagent_id); None for test
     # doubles without a stable id. Unregistered in the finally block.
     _subagent_id = _register_child(
-        child, parent_agent, goal, owner_session_id=owner_session_id, owner_transport=owner_transport,
+        child, parent_agent, display_goal, owner_session_id=owner_session_id, owner_transport=owner_transport,
         owner_session_record=owner_session_record,
     )
-    run = _ChildRun(child, parent_agent, task_index, goal, _subagent_id, child_progress_cb, heartbeat=heartbeat)
+    run = _ChildRun(child, parent_agent, task_index, goal, _subagent_id, child_progress_cb, heartbeat=heartbeat,
+                    chain=chain)
     # Set when a timed-out Future still owns the child: closing it from this
     # thread before the worker settles races the conversation's finally path.
     _child_close_deferred = False
     try:
         heartbeat.start()
-        _safe_progress(child_progress_cb, "subagent.start", preview=goal)
+        _safe_progress(child_progress_cb, "subagent.start", preview=display_goal)
         run.seed_workspace()
+        if getattr(chain.first_child, "_delegate_unit_cancelled", False) is True:
+            child._delegate_unit_cancelled = True
+            _signal_child_stop(child, "Async delegation cancelled")
+            entry = _fabricated_entry(task_index, "interrupted", "Async delegation cancelled", child, run.elapsed())
+            entry["exit_reason"] = "interrupted"
+            return run.finish_failed(entry, run.close_steering(), preview="Async delegation cancelled")
         result, failure_entry, _child_close_deferred = run.await_child()
         if failure_entry is not None:
             return failure_entry
 
-        schema = _validate_child_output_schema(child, result, task_index, run.child_task_id, run.relay_text)
+        # An exhausted attempt about to escalate gets no schema retry turn: its successor writes the answer.
+        will_escalate = _next_escalation_effort(
+            child, {"exit_reason": _result_exit_reason(result), "api_calls": result.get("api_calls")}, parent_agent,
+        ) is not None
+        no_schema = _SchemaOutcome(None, None, [], 0)
+        schema = no_schema if will_escalate else _validate_child_output_schema(
+            child, result, task_index, run.child_task_id, run.relay_text)
         _merge_late_steer(result, _subagent_id, child)
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, "_flush"):
@@ -408,6 +464,11 @@ def _run_single_child(
 
         duration = run.elapsed()
         entry = _build_result_entry(child, result, task_index, duration, schema)
+        if will_escalate:
+            if run.escalate(entry):
+                return entry  # intermediate: the chain is still live
+            schema = _validate_child_output_schema(child, result, task_index, run.child_task_id, run.relay_text)
+            entry = _build_result_entry(child, result, task_index, run.elapsed(), schema)
         run.append_sibling_write_reminder(entry)
         run.account_background_processes(entry)
         run.emit_complete(result, entry, duration)
@@ -453,7 +514,6 @@ def _build_children(
 ) -> tuple[list[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe), each on its task's route;
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
-    from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
     children = []
     for i, t in enumerate(task_list):
@@ -465,12 +525,11 @@ def _build_children(
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
         try:
-            child = _build_child_preserving_parent_tools(
-                task_index=i, goal=t["goal"], context=_child_context,
-                toolsets=None,  # always inherit the parent's toolsets
-                model=route.creds["model"], max_iterations=route.max_iterations or max_iterations,
-                task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **_route_overrides(route),
+            child = _build_task_child(
+                i, t, route, goal=t["goal"], reasoning_effort=route.reasoning_effort, context=_child_context,
+                task_schema=_task_schema, images=task_images[i] if task_images and i < len(task_images) else None,
+                writer=live_writers[i] if i < len(live_writers) else None, live_deleg_id=live_deleg_id,
+                top_role=top_role, max_iterations=max_iterations, task_count=len(task_list), parent_agent=parent_agent,
             )
         except ValueError as exc:
             # An owner refusal can land mid-batch: the siblings built so far hold reservations.
@@ -478,33 +537,68 @@ def _build_children(
                 _detach_child(parent_agent, built)
                 _close_child(built, "Failed to close child after a refused sibling")
             return [], str(exc)
-        pin_child_service_tier(child, route.creds)
-        if route.child_timeout_seconds is not None:
-            # _ChildRun.await_child reads this before the global delegation.child_timeout_seconds.
-            child._delegate_child_timeout = route.child_timeout_seconds
-        if _task_schema is not None:
-            with _quiet("Could not attach output schema to child %d", i):
-                child._delegate_output_schema = _task_schema
-        # Validated per-task images; absent on image-less tasks, which keep the text-only goal turn.
-        _t_images = task_images[i] if task_images and i < len(task_images) else None
-        if _t_images:
-            with _quiet("Could not attach images to child %d", i):
-                child._delegate_images = _t_images
-        # Tee progress events into the live transcript (wrapper keeps the
-        # _flush contract and swallows writer failures).
-        _writer = live_writers[i] if i < len(live_writers) else None
-        if _writer is not None:
-            child.tool_progress_callback = wrap_progress_callback(getattr(child, "tool_progress_callback", None), _writer)
-            child._live_transcript_path = str(_writer.path)
-        if route.report() is not None:
-            child._delegate_route = route.report()
-        if live_deleg_id:
-            child._delegation_id = live_deleg_id
-            _ident_ref = getattr(child, "_progress_identity_ref", None)
-            if isinstance(_ident_ref, dict):
-                _ident_ref["delegation_id"] = live_deleg_id
         children.append((i, t, child))
     return children, None
+
+
+def _build_task_child(
+    i: int, t: dict[str, Any], route: Any, *, goal: str, reasoning_effort: Any, context: Optional[str],
+    task_schema: Optional[dict[str, Any]], images: Optional[list[str]], writer: Any, live_deleg_id: Optional[str],
+    top_role: str, max_iterations: int, task_count: int, parent_agent: Any, subagent_id: Optional[str] = None,
+    attach_to_parent: bool = True,
+) -> Any:
+    """Build one task's child on its route and pin everything the run reads off it. With reasoning escalation on
+    (``escalate_reasoning`` + ``escalate_ceiling``) the child also carries ``_delegate_build_retry(effort, goal)``:
+    the same call with only the reasoning level and goal changed, so every attempt runs the exact same route
+    (limits, tier, schema, images, live transcript, delegation id). The route itself is never modified."""
+    from tools.delegation_live_log import wrap_progress_callback
+    child: Any = _build_child_preserving_parent_tools(
+        task_index=i, goal=goal, context=context,
+        toolsets=None,  # always inherit the parent's toolsets
+        model=route.creds["model"], max_iterations=route.max_iterations or max_iterations,
+        task_count=task_count, parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+        **{**_route_overrides(route), "override_reasoning_effort": reasoning_effort},
+        subagent_id=subagent_id, attach_to_parent=attach_to_parent,
+    )
+    pin_child_service_tier(child, route.creds)
+    if route.child_timeout_seconds is not None:
+        # _ChildRun.await_child reads this before the global delegation.child_timeout_seconds.
+        child._delegate_child_timeout = route.child_timeout_seconds
+    if route.escalate_reasoning:
+        child._delegate_escalate_reasoning = True
+    if route.escalate_ceiling is not None:
+        child._delegate_escalate_ceiling = route.escalate_ceiling
+    if route.escalate_reasoning and route.escalate_ceiling:
+        def _build_retry(next_effort: str, retry_goal: str) -> Any:
+            # Same subagent_id as the attempt it replaces; attached only if that attempt still is.
+            attached = child in getattr(parent_agent, "_active_children", ())
+            return _build_task_child(
+                i, t, route, goal=retry_goal, reasoning_effort=next_effort, context=context, task_schema=task_schema,
+                images=images, writer=writer, live_deleg_id=live_deleg_id, top_role=top_role,
+                max_iterations=max_iterations, task_count=task_count, parent_agent=parent_agent,
+                subagent_id=getattr(child, "_subagent_id", None), attach_to_parent=attached,
+            )
+        child._delegate_build_retry = _build_retry
+    if task_schema is not None:
+        with _quiet("Could not attach output schema to child %d", i):
+            child._delegate_output_schema = task_schema
+    # Validated per-task images; absent on image-less tasks, which keep the text-only goal turn.
+    if images:
+        with _quiet("Could not attach images to child %d", i):
+            child._delegate_images = images
+    # Tee progress events into the live transcript (wrapper keeps the
+    # _flush contract and swallows writer failures).
+    if writer is not None:
+        child.tool_progress_callback = wrap_progress_callback(getattr(child, "tool_progress_callback", None), writer)
+        child._live_transcript_path = str(writer.path)
+    if route.report() is not None:
+        child._delegate_route = route.report()
+    if live_deleg_id:
+        child._delegation_id = live_deleg_id
+        _ident_ref = getattr(child, "_progress_identity_ref", None)
+        if isinstance(_ident_ref, dict):
+            _ident_ref["delegation_id"] = live_deleg_id
+    return child
 
 
 def _routes_for(task_list: list[dict[str, Any]], cfg: dict[str, Any], credentials_cfg: Optional[dict[str, Any]],

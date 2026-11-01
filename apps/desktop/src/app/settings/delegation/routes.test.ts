@@ -51,7 +51,9 @@ describe('route editing keeps a default while routes exist', () => {
       reasoning_effort: '',
       service_tier: '',
       max_iterations: '',
-      child_timeout_seconds: ''
+      child_timeout_seconds: '',
+      escalate_reasoning: false,
+      escalate_ceiling: ''
     }
 
     expect(validateRouteDraft(draft, ['deep'])).toEqual({
@@ -166,5 +168,31 @@ describe('route child_timeout_seconds', () => {
     expect(
       routeFromDraft({ ...draftFromRoute(base), child_timeout_seconds: '' }, { ...base, child_timeout_seconds: 9 })
     ).not.toHaveProperty('child_timeout_seconds')
+  })
+})
+
+describe('route reasoning escalation', () => {
+  const base = { name: 'deep', description: 'hard', provider: 'openai', model: 'gpt-5' }
+
+  it('loads the flag and ceiling from a stored route', () => {
+    expect(draftFromRoute({ ...base, escalate_reasoning: true }).escalate_reasoning).toBe(true)
+    expect(draftFromRoute({ ...base, escalate_reasoning: false }).escalate_reasoning).toBe(false)
+    expect(draftFromRoute(base).escalate_reasoning).toBe(false)
+    expect(draftFromRoute({ ...base, escalate_ceiling: 'xhigh' }).escalate_ceiling).toBe('xhigh')
+    expect(draftFromRoute(base).escalate_ceiling).toBe('')
+  })
+
+  it('saves true and drops false', () => {
+    expect(routeFromDraft({ ...draftFromRoute(base), escalate_reasoning: true }).escalate_reasoning).toBe(true)
+    expect(
+      routeFromDraft({ ...draftFromRoute(base), escalate_reasoning: false }, { ...base, escalate_reasoning: true })
+    ).not.toHaveProperty('escalate_reasoning')
+  })
+
+  it('saves a ceiling and drops a blank one', () => {
+    expect(routeFromDraft({ ...draftFromRoute(base), escalate_ceiling: ' high ' }).escalate_ceiling).toBe('high')
+    expect(
+      routeFromDraft({ ...draftFromRoute(base), escalate_ceiling: '' }, { ...base, escalate_ceiling: 'max' })
+    ).not.toHaveProperty('escalate_ceiling')
   })
 })

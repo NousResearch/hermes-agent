@@ -19,7 +19,7 @@ from typing import Any, Iterator, Mapping, Optional
 
 from agent.delegation_provider import (
     RESERVED_TASK_PARAMETERS, ROUTE_KEYS, DelegationProvider, DelegationRouteError, valid_route_child_timeout,
-    valid_route_max_iterations,
+    valid_route_max_iterations, valid_route_escalate_reasoning, valid_route_escalate_ceiling,
 )
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -42,6 +42,8 @@ class TaskRoute:
     error: Optional[str] = None
     max_iterations: Optional[int] = None
     child_timeout_seconds: Optional[float] = None
+    escalate_reasoning: bool = False
+    escalate_ceiling: Optional[str] = None
 
     def report(self) -> Optional[dict[str, Any]]:
         """The ``route`` a backend-routed task's result carries (None for the default backend's unlabelled route)."""
@@ -273,7 +275,10 @@ def _resolve_route(route: dict[str, Any], parent_agent: Any, backend: str) -> Ta
         creds = {**creds, **task_service_tier(str(route["service_tier"]), creds, parent_agent)}
     return TaskRoute(creds, route, route.get("reasoning_effort"), None, None, backend,
                      max_iterations=route.get("max_iterations"),
-                     child_timeout_seconds=route.get("child_timeout_seconds"))
+                     child_timeout_seconds=route.get("child_timeout_seconds"),
+                     escalate_reasoning=route.get("escalate_reasoning") is True,
+                     escalate_ceiling=(route["escalate_ceiling"].strip().lower()
+                                       if isinstance(route.get("escalate_ceiling"), str) else None))
 
 
 def _route_to_task_route(route: dict[str, Any], parent_agent: Any, cache: dict[str, TaskRoute],
@@ -333,6 +338,26 @@ def _check_route_child_timeout(index: int, route: Mapping[str, Any]) -> None:
         raise DelegationRouteError(
             f"Task {index}: child_timeout_seconds on this route must be a number of 0 or more (got {value!r})."
         )
+
+
+def _check_route_escalate_reasoning(index: int, route: Mapping[str, Any]) -> None:
+    value = route.get("escalate_reasoning")
+    if value is None or route.get("profile"):
+        return
+    if not valid_route_escalate_reasoning(value):
+        raise DelegationRouteError(
+            f"Task {index}: escalate_reasoning on this route must be a boolean (got {value!r}).")
+
+
+def _check_route_escalate_ceiling(index: int, route: Mapping[str, Any]) -> None:
+    value = route.get("escalate_ceiling")
+    if value is None or route.get("profile"):
+        return
+    if not valid_route_escalate_ceiling(value):
+        from agent.reasoning_effort import EFFORT_LADDER
+        raise DelegationRouteError(
+            f"Task {index}: escalate_ceiling on this route must be one of {', '.join(EFFORT_LADDER)} "
+            f"(got {value!r}).")
 
 
 def _undeclared_error(provider: DelegationProvider, index: int, names: list[str], config: Mapping[str, Any]) -> str:
@@ -398,6 +423,8 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
             _check_backend_effort(i, route, config)
             _check_route_max_iterations(i, route)
             _check_route_child_timeout(i, route)
+            _check_route_escalate_reasoning(i, route)
+            _check_route_escalate_ceiling(i, route)
             routes.append(_route_to_task_route(route, parent_agent, cache, config, provider.name))
         except ValueError as exc:  # DelegationRouteError, the credential resolver's and the tier check's refusals
             routes.append(TaskRoute({}, {}, backend=provider.name, error=str(exc)))

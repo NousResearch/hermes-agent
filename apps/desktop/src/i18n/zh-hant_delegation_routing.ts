@@ -72,6 +72,11 @@ export const zhHantDelegationRouting: DelegationRoutingTranslations = {
   timeoutLabel: '逾時（秒）',
   timeoutPlaceholder: '使用全域逾時',
   timeoutHint: '此路由上的子代理閒置多少秒後停止。0 表示停用；小於 30 的值以 30 處理。',
+  escalateLabel: '提升推理強度',
+  escalateHint: '子代理達到輪次上限或逾時後，以下一級推理強度重試。',
+  ceilingLabel: '提升上限',
+  ceilingNone: '無上限（關閉）',
+  ceilingHint: '重試可提升到的最高等級。未設上限時不會提升；若目前推理強度已等於上限，則不會重試。',
   optional: '選填',
   errors: {
     required: '必填',

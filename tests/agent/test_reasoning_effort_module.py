@@ -184,3 +184,50 @@ class TestRequestedEffort:
         assert requested_effort({"enabled": False, "effort": "high"}) is None
         assert requested_effort("not-a-dict") is None
         assert requested_effort({"effort": ""}) is None
+
+
+class TestRouteEffortClampTarget:
+    """The level a route really sends: the provider profile's final vocabulary and declared remap."""
+
+    @pytest.mark.parametrize("provider, model, effort, sent", [
+        ("tencent-tokenhub", "hunyuan-t2", "xhigh", "high"),
+        ("nebius-token-factory", "any", "max", "high"),
+        ("upstage", "solar-pro3", "xhigh", "high"),
+        ("kimi-coding", "k3", "medium", "high"),       # KIMI_K3_OVERRIDES
+        ("kimi-coding", "k3", "xhigh", "max"),
+        ("kimi-coding", "kimi-k2.6", "xhigh", "high"),
+        ("deepseek", "deepseek-v4", "xhigh", "max"),
+        ("zai", "glm-5.2", "medium", "high"),          # GLM-5.2 floor is high
+        ("zai", "glm-5.3", "xhigh", "max"),
+        ("ollama-cloud", "gpt-oss:120b", "minimal", "low"),
+        ("meta-ai", "muse-spark", "max", "xhigh"),
+        ("actual", "relay", "xhigh", "high"),
+        ("xai", "grok-4.6", "max", "xhigh"),
+        ("xai", "grok-4", "xhigh", "high"),
+        ("gemini", "gemini-4-argon", "xhigh", "high"),
+        ("opencode-zen", "x-preview-f-free", "medium", "low"),
+        ("opencode-zen", "x-preview-f-free", "xhigh", "max"),
+        ("openrouter", "anthropic/claude-sonnet-4", "xhigh", "xhigh"),
+        ("openai-codex", "gpt-5.5", "max", "xhigh"),
+    ])
+    def test_sends(self, provider, model, effort, sent):
+        from agent.reasoning_effort import route_effort_clamp_target
+        assert clamp_effort(effort, *route_effort_clamp_target(provider, model)) == sent
+
+    def test_entry_clamp_set_is_unchanged(self):
+        """route_supported_efforts stays the ENTRY clamp (session info / TUI wire field still use it)."""
+        from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, route_supported_efforts
+        assert route_supported_efforts("tencent-tokenhub", "hunyuan-t2") == OPENAI_COMPAT_WIRE_EFFORTS
+
+    def test_overrides_only_where_declared(self):
+        from agent.reasoning_effort import KIMI_K3_OVERRIDES, route_effort_overrides
+        assert route_effort_overrides("kimi", "kimi-k3") is KIMI_K3_OVERRIDES
+        assert route_effort_overrides("kimi", "kimi-k2.6") is None
+        assert route_effort_overrides("tencent-tokenhub", "x") is None
+        assert route_effort_overrides(None, None) is None
+
+    def test_display_label_names_the_provider_clamp(self):
+        from agent.reasoning_effort import effort_display_label
+        assert effort_display_label("xhigh", "tencent-tokenhub", "hunyuan-t2") == "xhigh (sends high on this route)"
+        assert effort_display_label("medium", "kimi-coding", "k3") == "medium (sends high on this route)"
+        assert effort_display_label("high", "kimi-coding", "k3") == "high"

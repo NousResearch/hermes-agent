@@ -30,11 +30,13 @@ def get_subagent_attribution(task_id: Optional[str]) -> Optional[dict[str, Any]]
     (children run their terminal sessions under ``task_id == subagent_id``), else None."""
     if not task_id or not isinstance(task_id, str):
         return None
+    # A reasoning-escalation retry runs under ``<subagent_id>-attempt-N`` (its own terminal session).
+    subagent_id = task_id.split("-attempt-", 1)[0]
     with _active_subagents_lock:
-        record = _active_subagents.get(task_id) or _recent_subagents.get(task_id)
+        record = _active_subagents.get(subagent_id) or _recent_subagents.get(subagent_id)
     if record is None:
         return None
-    return {"subagent_id": task_id, "goal": record.get("goal"), "delegation_id": record.get("delegation_id")}
+    return {"subagent_id": subagent_id, "goal": record.get("goal"), "delegation_id": record.get("delegation_id")}
 
 def set_spawn_paused(paused: bool) -> bool:
     """Globally block/unblock NEW delegate_task spawns (active children keep running). Returns the new state."""

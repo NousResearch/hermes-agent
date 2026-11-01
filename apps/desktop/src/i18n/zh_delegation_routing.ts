@@ -72,6 +72,11 @@ export const zhDelegationRouting: DelegationRoutingTranslations = {
   timeoutLabel: '超时（秒）',
   timeoutPlaceholder: '使用全局超时',
   timeoutHint: '此路由上的子智能体空闲多少秒后停止。0 表示禁用；小于 30 的值按 30 处理。',
+  escalateLabel: '提升推理强度',
+  escalateHint: '子智能体达到轮次上限或超时后，以下一级推理强度重试。',
+  ceilingLabel: '提升上限',
+  ceilingNone: '无上限（关闭）',
+  ceilingHint: '重试可提升到的最高级别。未设上限时不会提升；若当前推理强度已等于上限，则不会重试。',
   optional: '可选',
   errors: {
     required: '必填',

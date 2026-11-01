@@ -162,9 +162,14 @@ _MAX_EDITOR_TURNS = 2**53 - 1
 
 
 def _clean_route_limits(label: str, entry: dict) -> dict[str, Any]:
-    """The route's ``max_iterations``/``child_timeout_seconds``: the editor sends text, so decimal strings become
-    numbers; blank omits the field; anything else the route rules refuse is a 400."""
-    from agent.delegation_provider import valid_route_child_timeout, valid_route_max_iterations
+    """Normalize route limits and escalation settings; invalid values are a 400."""
+    from agent.delegation_provider import (
+        valid_route_child_timeout,
+        valid_route_escalate_reasoning,
+        valid_route_escalate_ceiling,
+        valid_route_max_iterations,
+    )
+    from agent.reasoning_effort import EFFORT_LADDER
 
     limits: dict[str, Any] = {}
     turns = entry.get("max_iterations")
@@ -192,6 +197,22 @@ def _clean_route_limits(label: str, entry: dict) -> dict[str, Any]:
         if isinstance(seconds, float) and seconds.is_integer():
             seconds = int(seconds)
         limits["child_timeout_seconds"] = seconds
+    escalate = entry.get("escalate_reasoning")
+    if escalate is not None:
+        if not valid_route_escalate_reasoning(escalate):
+            raise _bad_request(f"{label}: escalate_reasoning must be a boolean "
+                               f"(got {escalate!r}).")
+        if escalate is True:
+            limits["escalate_reasoning"] = True
+    ceiling = entry.get("escalate_ceiling")
+    if isinstance(ceiling, str):
+        ceiling = ceiling.strip().lower() or None
+    if ceiling is not None:
+        if not valid_route_escalate_ceiling(ceiling):
+            raise _bad_request(f"{label}: escalate_ceiling must be one of: "
+                               f"{', '.join(EFFORT_LADDER)} "
+                               f"(got {entry.get('escalate_ceiling')!r}).")
+        limits["escalate_ceiling"] = ceiling
     return limits
 
 
@@ -231,7 +252,7 @@ def _clean_model_option(index: int, entry: dict, stored: dict[str, dict]) -> dic
     row.update(_clean_route_limits(label, entry))
     # Route fields the editor never touches (request_overrides, label, profile) round-trip as stored.
     validated = {*_OPTION_TEXT_KEYS, "api_key", "reasoning_effort", "service_tier", "fallback_providers",
-                 "max_iterations", "child_timeout_seconds"}
+                 "max_iterations", "child_timeout_seconds", "escalate_reasoning", "escalate_ceiling"}
     for field in sorted(ROUTE_KEYS - validated):
         if entry.get(field) not in (None, "", [], {}):
             row[field] = entry[field]

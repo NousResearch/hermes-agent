@@ -1,7 +1,8 @@
-import { REASONING_EFFORTS } from '@hermes/shared'
+import { REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { type FormEvent, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
@@ -183,7 +184,7 @@ export function ModelRouteDialog({ route, taken, scope, onClose, onSave }: Model
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={INHERIT}>{r.effortInherit}</SelectItem>
-                  {['none', ...REASONING_EFFORTS].map(effort => (
+                  {REASONING_EFFORT_VALUES.map(effort => (
                     <SelectItem key={effort} value={effort}>
                       {effort}
                     </SelectItem>
@@ -239,6 +240,38 @@ export function ModelRouteDialog({ route, taken, scope, onClose, onSave }: Model
               <FieldHint error={Boolean(errorFor('child_timeout_seconds'))}>
                 {errorFor('child_timeout_seconds') ?? r.timeoutHint}
               </FieldHint>
+            </Field>
+          </div>
+
+          <div className="grid items-start gap-4 sm:grid-cols-2">
+            <Field htmlFor="delegation-route-escalate" label={r.escalateLabel} optional optionalLabel={r.optional}>
+              <div className="flex h-9 items-center">
+                <Checkbox
+                  checked={draft.escalate_reasoning}
+                  id="delegation-route-escalate"
+                  onCheckedChange={checked => setDraft(current => ({ ...current, escalate_reasoning: checked === true }))}
+                />
+              </div>
+              <FieldHint>{r.escalateHint}</FieldHint>
+            </Field>
+            <Field htmlFor="delegation-route-ceiling" label={r.ceilingLabel} optional optionalLabel={r.optional}>
+              <Select
+                onValueChange={value => set('escalate_ceiling', value === INHERIT ? '' : value)}
+                value={draft.escalate_ceiling || INHERIT}
+              >
+                <SelectTrigger id="delegation-route-ceiling">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={INHERIT}>{r.ceilingNone}</SelectItem>
+                  {REASONING_EFFORT_VALUES.map(effort => (
+                    <SelectItem key={effort} value={effort}>
+                      {effort}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <FieldHint>{r.ceilingHint}</FieldHint>
             </Field>
           </div>
 

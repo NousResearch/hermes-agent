@@ -65,6 +65,11 @@ export interface DelegationRoutingTranslations {
   timeoutLabel: string
   timeoutPlaceholder: string
   timeoutHint: string
+  escalateLabel: string
+  escalateHint: string
+  ceilingLabel: string
+  ceilingNone: string
+  ceilingHint: string
   optional: string
   errors: { required: string; spaces: string; duplicate: string; turns: string; seconds: string }
   saveRoute: string

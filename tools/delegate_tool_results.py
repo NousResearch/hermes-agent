@@ -406,13 +406,19 @@ def _rollup_children_cost(parent_agent, children_cost_total: float) -> None:
     except Exception:
         logger.debug("Subagent cost rollup failed", exc_info=True)
 
+def _last_attempt(child: Any) -> Any:
+    """The child that ended a reasoning-escalation chain (``_run_single_child`` links it on the first attempt's
+    child), else the child itself: hooks and memory must name the session that produced the result."""
+    linked = vars(child).get("_delegate_last_attempt") if hasattr(child, "__dict__") else None
+    return linked if linked is not None else child
+
 def _finalize_child_results(
     results: list[dict[str, Any]], task_list: list[dict[str, Any]], children: list[tuple[int, dict[str, Any], Any]],
     parent_agent,
 ) -> None:
     """Apply host-owned summary, memory, hook, and cost contracts once."""
     with _parent_finalization_lock(parent_agent):
-        child_by_index = {index: child for index, _task, child in children}
+        child_by_index = {index: _last_attempt(child) for index, _task, child in children}
         for entry in results:
             schema = getattr(child_by_index.get(entry.get("task_index")), "_delegate_output_schema", None)
             # Fork the forced, structure-preserving projection from the COMPLETE output before the parent budget

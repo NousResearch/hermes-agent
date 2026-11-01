@@ -35,6 +35,12 @@ Route vocabulary (:meth:`DelegationProvider.route_task` returns a dict with any 
   value for this task only. Any other value refuses the task. A profile route ignores it: that
   child uses the profile's own ``delegation.child_timeout_seconds`` (default: no idle timeout).
 
+* ``escalate_reasoning`` - a boolean enabling reasoning escalation for this child (default false).
+  Route-only: not a ``delegation`` section global. A profile route ignores it.
+* ``escalate_ceiling`` - a reasoning ladder level: none, minimal, low, medium, high, xhigh, max,
+  or ultra (case-insensitive, whitespace trimmed). Does not enable escalation by itself.
+  Route-only; a profile route ignores it. Invalid values refuse only this task.
+
 A backend's own settings live under ``delegation.backends.<backend name>`` (:meth:`DelegationProvider.settings`),
 never beside the core ``delegation`` keys.
 """
@@ -46,6 +52,7 @@ import math
 from typing import Any, Mapping
 
 from agent.provider_base import ProviderBase
+from agent.reasoning_effort import EFFORT_LADDER
 
 #: Per-task property names core owns. A provider-declared parameter with one of these names is
 #: refused at schema-build time: plugins add parameters, they never redefine core ones, and the
@@ -59,7 +66,7 @@ RESERVED_TASK_PARAMETERS = frozenset({
 ROUTE_KEYS = frozenset({
     "model", "provider", "base_url", "api_key", "api_mode", "request_overrides",
     "reasoning_effort", "service_tier", "fallback_providers", "profile", "label",
-    "max_iterations", "child_timeout_seconds",
+    "max_iterations", "child_timeout_seconds", "escalate_reasoning", "escalate_ceiling",
 })
 
 
@@ -77,6 +84,16 @@ def valid_route_child_timeout(value: Any) -> bool:
         return math.isfinite(value) and value >= 0
     except OverflowError:
         return False
+
+
+def valid_route_escalate_reasoning(value: Any) -> bool:
+    """Escalation is opt-in with a real boolean, never a truthy string or integer."""
+    return isinstance(value, bool)
+
+
+def valid_route_escalate_ceiling(value: Any) -> bool:
+    """A route ceiling must name a level on the reasoning effort ladder."""
+    return isinstance(value, str) and value.strip().lower() in EFFORT_LADDER
 
 
 class DelegationRouteError(ValueError):

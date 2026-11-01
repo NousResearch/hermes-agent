@@ -10,6 +10,8 @@ export interface ModelRouteDraft {
   service_tier: string
   max_iterations: string
   child_timeout_seconds: string
+  escalate_reasoning: boolean
+  escalate_ceiling: string
 }
 
 export type RouteField = keyof ModelRouteDraft
@@ -26,7 +28,9 @@ export const emptyRouteDraft = (): ModelRouteDraft => ({
   reasoning_effort: '',
   service_tier: '',
   max_iterations: '',
-  child_timeout_seconds: ''
+  child_timeout_seconds: '',
+  escalate_reasoning: false,
+  escalate_ceiling: ''
 })
 
 export const draftFromRoute = (route: DelegationModelRoute): ModelRouteDraft => ({
@@ -37,7 +41,9 @@ export const draftFromRoute = (route: DelegationModelRoute): ModelRouteDraft => 
   reasoning_effort: route.reasoning_effort ?? '',
   service_tier: route.service_tier ?? '',
   max_iterations: route.max_iterations == null ? '' : String(route.max_iterations),
-  child_timeout_seconds: route.child_timeout_seconds == null ? '' : String(route.child_timeout_seconds)
+  child_timeout_seconds: route.child_timeout_seconds == null ? '' : String(route.child_timeout_seconds),
+  escalate_reasoning: route.escalate_reasoning === true,
+  escalate_ceiling: route.escalate_ceiling ?? ''
 })
 
 /** Field → problem, empty when the draft can be saved. `taken` = names of the OTHER routes.
@@ -90,6 +96,16 @@ export function routeFromDraft(draft: ModelRouteDraft, previous?: DelegationMode
   const next: Record<string, unknown> = { ...previous, ...(previous ? { original_name: previous.name } : {}) }
 
   for (const field of Object.keys(draft) as RouteField[]) {
+    if (field === 'escalate_reasoning') {
+      if (draft.escalate_reasoning) {
+        next.escalate_reasoning = true
+      } else {
+        delete next.escalate_reasoning
+      }
+
+      continue
+    }
+
     const value = draft[field].trim()
 
     if (value) {

@@ -20,7 +20,7 @@ from tools.delegate_tool_progress import (
     SUBAGENT_FAILURE_STATUSES, _print_completion_line, _quiet, describe_subagent_failure, format_batch_tag,
 )
 from tools.delegate_tool_registry import _capture_gateway_steer_authority
-from tools.delegate_tool_results import _finalize_child_results
+from tools.delegate_tool_results import _finalize_child_results, _last_attempt
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -324,9 +324,11 @@ def _batch_progress_token(child_agents: list[Any]) -> tuple:
     in_tool = False
     for c in child_agents:
         try:
-            summary = c.get_activity_summary()
+            summary = _last_attempt(c).get_activity_summary()
             tool = summary.get("current_tool")
-            parts.append((summary.get("api_call_count", 0), tool, summary.get("last_activity_ts")))
+            part = (summary.get("api_call_count", 0), tool, summary.get("last_activity_ts"))
+            seq = getattr(c, "_delegate_attempt_seq", 0)
+            parts.append((seq, *part) if seq > 0 else part)
             in_tool = in_tool or bool(tool)
         except Exception:
             parts.append(None)
@@ -404,7 +406,10 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
 
     def _interrupt():
         for c in child_agents:
-            _signal_child_stop(c, "Async delegation cancelled")
+            with _quiet(None):
+                c._delegate_unit_cancelled = True
+                _last_attempt(c)._delegate_unit_cancelled = True
+            _signal_child_stop(_last_attempt(c), "Async delegation cancelled")
 
     return dispatch_async_delegation_batch(
         # Call-wide goals: completion formatting indexes them by task_index.

@@ -82,6 +82,11 @@ export const deDelegationRouting: DelegationRoutingTranslations = {
   timeoutPlaceholder: 'Verwendet das globale Zeitlimit',
   timeoutHint:
     'Sekunden ohne Aktivität, bevor ein Subagent auf dieser Route gestoppt wird. 0 schaltet es aus; Werte unter 30 werden zu 30.',
+  escalateLabel: 'Denkanstrengung erhöhen',
+  escalateHint: 'Einen Subagenten, der sein Runden- oder Zeitlimit erreicht, mit der nächsthöheren Denkanstrengung erneut ausführen.',
+  ceilingLabel: 'Obergrenze der Erhöhung',
+  ceilingNone: 'Keine Obergrenze (aus)',
+  ceilingHint: 'Höchste Stufe, bis zu der ein erneuter Versuch steigt. Ohne Obergrenze bleibt die Erhöhung aus; entspricht die aktuelle Denkanstrengung bereits der Obergrenze, gibt es keinen erneuten Versuch.',
   optional: 'optional',
   errors: {
     required: 'Erforderlich',

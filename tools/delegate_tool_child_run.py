@@ -12,8 +12,10 @@ import time
 from tools.delegation_redaction import redact_child_result, redact_child_text
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
+from agent import reasoning_effort as _reasoning_effort
 from agent.compression_marker import elide
 from agent.interrupt_compat import request_hard_interrupt
+from agent.reasoning_effort import EFFORT_LADDER, clamp_effort, route_supported_efforts
 from dataclasses import dataclass, field
 from tools import file_state
 from tools.delegate_tool_progress import _quiet, _safe_progress
@@ -106,7 +108,7 @@ def _attach_child(parent_agent: Any, child: Any) -> None:
     landed (a fan-out still building its siblings, a turn that has not reached its iteration check yet)
     would otherwise start with no signal and run to completion as an orphan. Mirror a pending stop here
     so the whole spawn tree dies with its parent."""
-    if hasattr(parent_agent, "_active_children"):
+    if hasattr(parent_agent, "_active_children") and child not in parent_agent._active_children:
         _with_children_lock(parent_agent, "append", child)
     if getattr(parent_agent, "_interrupt_requested", False) is not True:
         return
@@ -482,6 +484,26 @@ def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     _resweep_timer.daemon = True
     _resweep_timer.start()
 
+#: How long a timed-out attempt's worker gets to exit after the stop signal before a reasoning-escalation
+#: retry may take over its workspace.
+_ESCALATION_TIMEOUT_SETTLE_SECONDS = 2.0
+
+
+def _await_timed_out_worker_exit(child: Any, future: Any, grace: Optional[float] = None) -> bool:
+    """Wait (bounded) for a timed-out child's worker to exit after the stop signal; True once it has. Drains the
+    child's pooled transports first so a worker parked in an SSL read wakes with EOF instead of riding out ``grace``."""
+    if future.done():
+        return True
+    settled_ev = threading.Event()
+    future.add_done_callback(lambda _f: settled_ev.set())
+    _drain = getattr(child, "_drain_transports_after_abandonment", None)
+    if callable(_drain):
+        with _quiet("Timed-out child transport drain (escalate) failed", exc_info=True):
+            _drain(reason="delegate_timeout_escalate")
+    settled_ev.wait(timeout=_ESCALATION_TIMEOUT_SETTLE_SECONDS if grace is None else grace)
+    return bool(future.done())
+
+
 def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
     """Lease a credential from the child's pool (if any) and bind it; ``(pool, lease_id)``. The bound entry must
     serve the child's endpoint: on a mixed same-provider pool the least-leased pick may target another host, so it is
@@ -603,6 +625,189 @@ def _build_tool_trace(messages: Any) -> list[dict[str, Any]]:
             elif tool_trace:
                 tool_trace[-1].update(result_meta)  # no tool_call_id: pair with the latest call
     return tool_trace
+
+def _result_exit_reason(result: dict[str, Any]) -> str:
+    """How a finished conversation ended (``_build_result_entry``'s ``exit_reason``), readable before the entry is
+    built so the escalation decision can skip work an exhausted attempt would waste (the schema retry turn)."""
+    if result.get("interrupted", False):
+        return "interrupted"
+    if result.get("failed") or result.get("error"):
+        return "error"
+    return "completed" if result.get("completed", False) else "max_iterations"
+
+
+# ── Reasoning escalation (route ``escalate_reasoning`` + ``escalate_ceiling``) ─────────────────────────────────
+
+# Budget stops only: a child that ran out of iterations or went quiet inside its inactivity window may finish at a
+# stronger level. Errors, interrupts and successes never retry.
+_ESCALATING_EXIT_REASONS = frozenset({"max_iterations", "timeout"})
+_ORIGINAL_CLAMP_EFFORT = clamp_effort
+_ORIGINAL_ROUTE_SUPPORTED_EFFORTS = route_supported_efforts
+_HANDOFF_SUMMARY_CHARS = 8000
+
+
+def _effort_ran(child: Any) -> str:
+    """The reasoning level the child actually ran at (not the route field, which may be blank and inherited):
+    ``none`` when thinking was disabled, ``medium`` (Hermes' default) when no level was set."""
+    for attr in ("reasoning_config", "_wire_reasoning_config"):
+        config = getattr(child, attr, None)
+        if isinstance(config, dict):
+            if config.get("enabled", True) is False:
+                return "none"
+            return str(config.get("effort") or "").strip().lower() or "medium"
+    return "medium"
+
+
+def _effort_clamp_fns() -> tuple[Any, Any]:
+    """``(clamp_effort, clamp_target)``: this module's names when patched here, else the owner's. ``clamp_target``
+    maps ``(provider, model, api_mode)`` to ``(supported, overrides)`` — the provider's final wire vocabulary and
+    declared remap (TokenHub tops out at ``high``, Kimi K3 sends ``medium`` as ``high``), not just the entry clamp."""
+    clamp = clamp_effort if clamp_effort is not _ORIGINAL_CLAMP_EFFORT else _reasoning_effort.clamp_effort
+    if route_supported_efforts is not _ORIGINAL_ROUTE_SUPPORTED_EFFORTS:
+        patched = route_supported_efforts
+        return clamp, lambda provider, model, api_mode: (patched(provider, model, api_mode), None)
+    return clamp, _reasoning_effort.route_effort_clamp_target
+
+
+def _escalation_ceiling(child: Any) -> Optional[str]:
+    """The pinned ceiling when escalation is on for this child; enabled without a ceiling is off."""
+    from agent.delegation_provider import valid_route_escalate_ceiling
+    if getattr(child, "_delegate_escalate_reasoning", None) is not True:
+        return None
+    ceiling = getattr(child, "_delegate_escalate_ceiling", None)
+    return ceiling.strip().lower() if isinstance(ceiling, str) and valid_route_escalate_ceiling(ceiling) else None
+
+
+def _entry_api_calls(entry: dict[str, Any]) -> int:
+    try:
+        return int(entry.get("api_calls", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _next_escalation_effort(child: Any, entry: dict[str, Any], parent_agent: Any) -> Optional[str]:
+    """The level the retry runs at, or None when this attempt ends the chain. Triggers on ``exit_reason`` only (a
+    budget stop with no summary is ``status: failed`` and still retries); a 0-call timeout never reached the model.
+    Steps one rung up from what the child ran, never past the ceiling, and only while the provider's clamp sends a
+    strictly stronger level than the last attempt's."""
+    ceiling = _escalation_ceiling(child)
+    if (ceiling is None or getattr(parent_agent, "_interrupt_requested", False) is True
+            or getattr(child, "_delegate_unit_cancelled", False) is True):
+        return None
+    exit_reason = entry.get("exit_reason")
+    if exit_reason not in _ESCALATING_EXIT_REASONS:
+        return None
+    if exit_reason == "timeout" and _entry_api_calls(entry) == 0:
+        return None
+    ladder = EFFORT_LADDER
+    current = _effort_ran(child)
+    if current not in ladder or ceiling not in ladder or ladder.index(current) >= ladder.index(ceiling):
+        return None
+    next_effort = ladder[ladder.index(current) + 1]
+    clamp, clamp_target = _effort_clamp_fns()
+    supported, overrides = clamp_target(
+        _str_or_none(getattr(child, "provider", None)), _str_or_none(getattr(child, "model", None)),
+        _str_or_none(getattr(child, "api_mode", None)),
+    )
+    if overrides:
+        last_clamped, next_clamped = clamp(current, supported, overrides), clamp(next_effort, supported, overrides)
+    else:
+        last_clamped, next_clamped = clamp(current, supported), clamp(next_effort, supported)
+    if (last_clamped not in ladder or next_clamped not in ladder
+            or ladder.index(next_clamped) <= ladder.index(last_clamped)):
+        return None
+    return next_effort
+
+
+def _escalation_handoff(
+    original_goal: str, *, effort: str, next_effort: str, entry: dict[str, Any], transcript_path: Optional[str],
+    working_dir: Optional[str],
+) -> str:
+    """The retry's goal: the original task, what the stopped attempt left (its summary, or a pointer to the
+    transcript when there is none), the transcript path and the working directory to continue in."""
+    exit_reason = entry.get("exit_reason")
+    stopped = ("hit its iteration limit" if exit_reason == "max_iterations"
+               else "timed out (no progress inside its inactivity window)")
+    lines = [
+        original_goal, "",
+        f"[REASONING ESCALATION] A previous attempt at this task ran at reasoning effort '{effort}' and {stopped} "
+        f"before finishing. You are a fresh attempt at reasoning effort '{next_effort}' with the same limits. "
+        "Continue from where it stopped instead of starting over.",
+    ]
+    summary = entry.get("summary")
+    if isinstance(summary, str) and summary.strip() and summary.strip() != "(empty)":
+        lines += ["", "Previous attempt's summary:", elide(summary.strip(), _HANDOFF_SUMMARY_CHARS)]
+    else:
+        lines += ["", "The previous attempt left no summary"
+                  + ("; read its transcript (below) to see what it already did." if transcript_path else ".")]
+    lines.append(f"Transcript of the earlier attempt(s): {transcript_path}" if transcript_path
+                 else "No transcript of the earlier attempt is available.")
+    if working_dir:
+        lines.append(f"Working directory: {working_dir} — keep working there; the previous attempt's changes are "
+                     "already in it.")
+    missed = entry.get("missed_steer")
+    if isinstance(missed, str) and missed.strip():
+        lines.append(f"A steer from the parent arrived after the previous attempt stopped and was never delivered: "
+                     f"{missed.strip()}")
+    return "\n".join(lines)
+
+
+def _cost_of(child: Any) -> tuple[float, Optional[str]]:
+    cost = getattr(child, "session_estimated_cost_usd", 0.0)
+    status = getattr(child, "session_cost_status", None)
+    value = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else 0.0
+    return value, status if isinstance(status, str) and status else None
+
+
+@dataclass
+class _EscalationChain:
+    """One task's attempts inside a single ``delegate_task`` unit. The first attempt seeds the workspace (and the
+    only worktree); later attempts reuse it. ``pending`` holds the next attempt's ``(child, goal)`` once an
+    attempt decides to retry; that attempt then skips its completion event and worktree finalize."""
+
+    original_goal: str
+    first_child: Any = None
+    worktree_info: Optional[dict[str, str]] = None
+    seeded: bool = False
+    working_dir: Optional[str] = None
+    pending: Optional[tuple[Any, str]] = None
+    attempts: list[dict[str, Any]] = field(default_factory=list)
+    costs: list[tuple[float, Optional[str]]] = field(default_factory=list)
+    reused_child: Any = None
+
+    def record(self, child: Any, exit_reason: Any) -> None:
+        self.attempts.append({"effort": _effort_ran(child), "exit_reason": exit_reason})
+        self.costs.append(_cost_of(child))
+
+    def finish(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """The parent's single result: unchanged when only one attempt ran; else the last attempt's entry plus
+        ``attempts`` and the cost summed across every attempt."""
+        if len(self.attempts) <= 1:
+            return entry
+        entry["attempts"] = [dict(a) for a in self.attempts]
+        total = sum(cost for cost, _ in self.costs)
+        if self.reused_child is not None:
+            self.reused_child.session_estimated_cost_usd = total
+        entry["_child_cost_usd"] = total
+        entry["cost_usd"] = round(total, 6)
+        if entry.get("cost_status") in (None, "", "unknown"):
+            known = next((s for _, s in reversed(self.costs) if s and s != "unknown"), None)
+            entry["cost_status"] = known or "unknown"
+        return entry
+
+
+def _build_retry_child(child: Any, parent_agent: Any, next_effort: str, retry_goal: str) -> Any:
+    """The next attempt's child. A child built by ``_build_children`` carries ``_delegate_build_retry``, which
+    rebuilds it on the exact same route with only the reasoning level and goal changed. A child without one (a
+    direct ``_run_single_child`` caller) is rerun itself at the next level."""
+    builder = getattr(child, "_delegate_build_retry", None) if "_delegate_build_retry" in dir(child) else None
+    if builder is not None:
+        return builder(next_effort, retry_goal) if callable(builder) else None
+    from hermes_constants import parse_reasoning_effort
+    child.reasoning_config = parse_reasoning_effort(next_effort)
+    child.session_estimated_cost_usd = 0.0  # the chain already recorded this attempt
+    return child
+
 
 def _build_result_entry(
     child: Any, result: dict[str, Any], task_index: int, duration: float, schema: _SchemaOutcome,
@@ -777,9 +982,78 @@ class _ChildRun:
     parent_task_id: Optional[str] = None
     wall_start: float = 0.0
     parent_reads_snapshot: list = field(default_factory=list)
+    # Set by ``_run_single_child``: the reasoning-escalation chain this attempt belongs to (None = a lone run).
+    chain: Optional[_EscalationChain] = None
 
     def elapsed(self) -> float:
         return round(time.monotonic() - self.child_start, 2)
+
+    def working_dir(self) -> Optional[str]:
+        """Where this attempt was working: its own terminal cwd, else the worktree, the parent's cwd, the hint."""
+        from tools.delegate_tool_routes import child_profile_scope
+        cwd: Optional[str] = None
+        with _quiet("Could not read the child's cwd: %s"):
+            from tools.terminal_tool import get_session_cwd
+            with child_profile_scope(self.child):
+                cwd = get_session_cwd(self.child_task_id) if self.child_task_id else None
+        if isinstance(cwd, str) and cwd:
+            return cwd
+        if self.worktree_info is not None and self.worktree_info.get("path"):
+            return self.worktree_info["path"]
+        with _quiet(None):
+            from tools.terminal_tool import get_session_cwd as _gsc
+            cwd = _gsc(self.parent_task_id) if self.parent_task_id else None
+        if isinstance(cwd, str) and cwd:
+            return cwd
+        with _quiet(None):
+            from tools.delegate_tool import _resolve_workspace_hint
+            return _resolve_workspace_hint(self.parent_agent)
+        return None
+
+    def escalate(self, entry: dict[str, Any]) -> bool:
+        """Decide whether this attempt hands off to a retry at the next reasoning level and, if so, build the
+        retry child on the same route (same limits, fresh budget) and queue it on the chain. True = this attempt is
+        intermediate: its caller skips the completion event and the worktree finalize (the chain is still live)."""
+        chain = self.chain
+        if chain is None or getattr(chain.first_child, "_delegate_unit_cancelled", False) is True:
+            return False
+        next_effort = _next_escalation_effort(self.child, entry, self.parent_agent)
+        if next_effort is None:
+            return False
+        effort = _effort_ran(self.child)
+        working_dir = self.working_dir()
+        transcript = _str_or_none(getattr(self.child, "_live_transcript_path", None))
+        retry_goal = _escalation_handoff(
+            chain.original_goal, effort=effort, next_effort=next_effort, entry=entry, transcript_path=transcript,
+            working_dir=working_dir,
+        )
+        chain.record(self.child, entry.get("exit_reason"))  # before the build: a reused child's level changes
+        try:
+            next_child = _build_retry_child(self.child, self.parent_agent, next_effort, retry_goal)
+        except Exception as exc:
+            logger.warning("Subagent %d reasoning escalation to %s not started: %s", self.task_index, next_effort, exc)
+            next_child = None
+        if next_child is not None and getattr(chain.first_child, "_delegate_unit_cancelled", False) is True:
+            _signal_child_stop(next_child, "Async delegation cancelled")
+            if next_child is not self.child:
+                _detach_child(self.parent_agent, next_child)
+                _close_child(next_child, "Failed to close cancelled retry child")
+            else:
+                next_child.session_estimated_cost_usd = chain.costs[-1][0]
+            next_child = None
+        if next_child is None:
+            chain.attempts.pop()
+            chain.costs.pop()
+            return False
+        logger.info(
+            "Subagent %d stopped on %s at reasoning effort %s; retrying at %s", self.task_index,
+            entry.get("exit_reason"), effort, next_effort,
+        )
+        if next_child is self.child:
+            chain.reused_child = next_child
+        chain.working_dir = working_dir
+        chain.pending = (next_child, retry_goal)
+        return True
 
     def relay_text(self, delta: str) -> None:
         """Stream callback forwarding the child's reply text up the progress relay so gateway watch windows mirror it
@@ -806,7 +1080,13 @@ class _ChildRun:
         """Seed cwd/container aliases and optional worktree isolation for the child;
         ``goal`` is extended with the worktree contract note when isolation engaged."""
         import uuid as _uuid
-        self.child_task_id = self.subagent_id or f"subagent-{self.task_index}-{_uuid.uuid4().hex[:8]}"
+        chain = self.chain
+        # A retry continues the chain's workspace: the previous attempt's directory, the one worktree.
+        retry = chain is not None and chain.seeded
+        base_id = self.subagent_id or f"subagent-{self.task_index}-{_uuid.uuid4().hex[:8]}"
+        # Every attempt keeps the stable subagent_id (steer/stop/list) but runs its own terminal session and process
+        # ownership; get_subagent_attribution strips the ``-attempt-N`` suffix back to the subagent.
+        self.child_task_id = f"{base_id}-attempt-{len(chain.attempts) + 1}" if chain is not None and retry else base_id
         self.parent_task_id = getattr(self.parent_agent, "_current_task_id", None)
         # Seed the child's cwd record from the parent's: same starting directory,
         # but the child's later `cd`s stay in its own record. Per-session container
@@ -814,18 +1094,25 @@ class _ChildRun:
         # The parent's record is read in the parent's scope; the child's is written in the child's (cwd records
         # are keyed by the active profile, and a profile-routed child looks its own up as that profile).
         from tools.delegate_tool_routes import child_profile_scope
+        retry_dir = chain.working_dir if chain is not None and retry else None
         with _quiet("Child cwd seed failed: %s"):
             from tools.terminal_tool import get_session_cwd, record_session_cwd, register_container_alias
-            parent_cwd = get_session_cwd(self.parent_task_id)
+            start_cwd = retry_dir or get_session_cwd(self.parent_task_id)
             with child_profile_scope(self.child):
-                record_session_cwd(self.child_task_id, parent_cwd)
+                record_session_cwd(self.child_task_id, start_cwd)
             register_container_alias(self.child_task_id, self.parent_task_id)
 
-        self.worktree_info = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id)
+        if chain is not None and retry:
+            self.worktree_info = chain.worktree_info
+        else:
+            self.worktree_info = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id)
+            if chain is not None:
+                chain.worktree_info, chain.seeded = self.worktree_info, True
         if self.worktree_info is not None:
-            with _quiet("worktree cwd seed failed: %s"), child_profile_scope(self.child):
-                from tools.terminal_tool import record_session_cwd as _rsc
-                _rsc(self.child_task_id, self.worktree_info["path"])
+            if not retry:
+                with _quiet("worktree cwd seed failed: %s"), child_profile_scope(self.child):
+                    from tools.terminal_tool import record_session_cwd as _rsc
+                    _rsc(self.child_task_id, self.worktree_info["path"])
             # The child's context is already built; carry the isolation contract on
             # the goal message instead (same turn, no system-prompt mutation).
             from tools.subagent_worktree import build_worktree_context_note
@@ -1026,8 +1313,28 @@ class _ChildRun:
             "_child_role": getattr(child, "_delegate_role", None),
             "diagnostic_path": diagnostic_path,
         }
-        _error_entry = self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
+        _error_entry["model"] = _str_or_none(getattr(child, "model", None))
+        if (_route := _route_report(child)) is not None:
+            _error_entry["route"] = _route
+        _handoff_view = {**_error_entry, **({"missed_steer": _late_pending_steer} if _late_pending_steer else {})}
+        may_escalate = True
+        if (is_timeout and not future.done()
+                and _next_escalation_effort(child, _handoff_view, self.parent_agent) is not None):
+            # The stop is cooperative: a retry started now would share the workspace (and worktree) with a
+            # worker that is still writing. Hand off only once the predecessor has actually exited.
+            if not _await_timed_out_worker_exit(child, future):
+                may_escalate = False
+                logger.warning(
+                    "Subagent %d timed-out worker did not exit after interrupt; skipping reasoning escalation so "
+                    "the workspace is not shared with a live worker", task_index,
+                )
         close_deferred = is_timeout and not future.done()
+        if may_escalate and self.escalate(_handoff_view):
+            # Intermediate attempt: the chain goes on in the same workspace, so no completion event and no
+            # worktree finalize yet — the retry's own completion is the one the parent sees.
+            _append_missed_steer(_error_entry, _late_pending_steer)
+        else:
+            _error_entry = self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
         if close_deferred:
             _defer_close_after_timeout(child, future)
         return None, _error_entry, close_deferred
@@ -1134,16 +1441,22 @@ class _ChildRun:
             model_tools._last_resolved_tool_names = list(saved_tool_names)
 
         _detach_child(self.parent_agent, child)
+        # The retry builder closes over the parent and the route; drop it once this attempt is over (it was used,
+        # if at all, before this point) so a lingering child record never pins the parent.
+        with _quiet(None):
+            vars(child).pop("_delegate_build_retry", None)
 
         # Close tool resources (terminal sandboxes, browser daemons, background
         # processes, httpx clients) so subagent subprocesses don't outlive the delegation.
-        if not close_deferred:
+        reused = self.chain is not None and self.chain.pending is not None and self.chain.pending[0] is child
+        if not close_deferred and not reused:
             _close_child(child, "Failed to close child agent after delegation")
         # The child's execute_code kernels live exactly as long as the child (pinned against the LRU
         # cap while it runs); dispose them here so they never squat the cap after the child is gone.
         with _quiet("Failed to dispose child execute_code kernels: %s"):
             from tools.code_kernel import shutdown_kernels_for_delegated_child
-            shutdown_kernels_for_delegated_child(str(getattr(child, "session_id", "") or ""))
+            if not reused:
+                shutdown_kernels_for_delegated_child(str(getattr(child, "session_id", "") or ""))
 
         # The AIAgent turn boundary normally closes the child scope itself. This fallback covers failures before that
         # boundary starts, but must not pop a scope while a timed-out child worker is still unwinding.

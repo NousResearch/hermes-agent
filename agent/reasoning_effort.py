@@ -171,6 +171,95 @@ def route_supported_efforts(
     return OPENAI_COMPAT_WIRE_EFFORTS
 
 
+# Provider-id aliases for the routes whose profile clamps onto a narrower (or remapped) vocabulary
+# than the OpenAI-compatible entry set. Kept in step with the profiles that apply these constants.
+_TOKENHUB_PROVIDERS = frozenset({"tencent-tokenhub", "tokenhub"})
+_NEBIUS_PROVIDERS = frozenset({"nebius-token-factory", "nebius", "nebius-tokenfactory", "nebius-tf", "token-factory",
+                               "tokenfactory"})
+_SOLAR_PROVIDERS = frozenset({"upstage", "solar"})
+_KIMI_PROVIDERS = frozenset({"kimi-coding", "kimi-coding-cn", "kimi", "moonshot", "kimi-for-coding", "kimi-cn",
+                             "moonshot-cn"})
+_DEEPSEEK_PROVIDERS = frozenset({"deepseek", "deepseek-chat", "deep-seek"})
+_GLM_PROVIDERS = frozenset({"zai", "glm", "z-ai", "z.ai", "zhipu"})
+_OLLAMA_CLOUD_PROVIDERS = frozenset({"ollama-cloud", "ollama_cloud"})
+_META_AI_PROVIDERS = frozenset({"meta-ai", "meta", "muse", "muse-spark", "model-api", "msl"})
+_ACTUAL_PROVIDERS = frozenset({"actual", "actual-computer", "actualcomputer", "aci"})
+_XAI_PROVIDERS = frozenset({"xai", "x-ai", "x.ai", "grok"})
+_GEMINI_PROVIDERS = frozenset({"gemini", "google", "google-genai", "vertex"})
+_OPENCODE_PROVIDERS = frozenset({"opencode-zen", "opencode", "opencode_zen", "zen"})
+_GLM53_SLUG_TOKENS = ("glm-5.3", "glm-5-3", "glm-5p3")
+
+
+def _bare_model(model: Optional[str]) -> str:
+    return (model or "").strip().lower().rsplit("/", 1)[-1]
+
+
+def _is_grok_46(model: Optional[str]) -> bool:
+    name = _bare_model(model).replace("_", "-")
+    return name == "grok-4.6" or name.startswith("grok-4.6-")
+
+
+def route_wire_efforts(
+    provider: Optional[str], model: Optional[str], api_mode: Optional[str] = None,
+) -> tuple[str, ...]:
+    """Levels the (provider, model) route's WIRE finally accepts, after its provider profile clamps again.
+    :func:`route_supported_efforts` is only the entry clamp (wide for every non-Codex route); comparing two
+    requested levels through this set, with :func:`route_effort_overrides`, tells whether they actually reach
+    the provider as different levels."""
+    p = (provider or "").strip().lower()
+    m = (model or "").lower()
+    if p == "openai-codex":
+        return route_supported_efforts(provider, model, api_mode)
+    if p in _TOKENHUB_PROVIDERS:
+        return TOKENHUB_EFFORTS
+    if p in _NEBIUS_PROVIDERS:
+        return NEBIUS_EFFORTS
+    if p in _SOLAR_PROVIDERS:
+        return SOLAR_EFFORTS
+    if p in _KIMI_PROVIDERS:
+        return kimi_supported_efforts(model)
+    if p in _DEEPSEEK_PROVIDERS:
+        return DEEPSEEK_V4_EFFORTS
+    if p in _GLM_PROVIDERS:
+        return GLM53_EFFORTS if any(tok in m for tok in _GLM53_SLUG_TOKENS) else GLM52_EFFORTS
+    if p in _OLLAMA_CLOUD_PROVIDERS:
+        return OLLAMA_CLOUD_EFFORTS
+    if p in _META_AI_PROVIDERS:
+        return META_AI_EFFORTS
+    if p in _ACTUAL_PROVIDERS:
+        return ACTUAL_RELAY_EFFORTS
+    if p in _XAI_PROVIDERS:
+        return XAI_GROK46_EFFORTS if _is_grok_46(model) else XAI_LEGACY_EFFORTS
+    if p in _GEMINI_PROVIDERS and _bare_model(model).startswith("gemini-4"):
+        return GEMINI4_THINKING_LEVELS
+    if p in _OPENCODE_PROVIDERS and _bare_model(model) == "x-preview-f-free":
+        return OX_ALPHA_EFFORTS
+    return OPENAI_COMPAT_WIRE_EFFORTS
+
+
+def route_effort_overrides(provider: Optional[str], model: Optional[str] = None) -> Optional[dict[str, str]]:
+    """The declared vendor remap the route's profile clamps with (e.g. Kimi K3 ``medium → high``), else None."""
+    p = (provider or "").strip().lower()
+    if p in _KIMI_PROVIDERS:
+        return KIMI_K3_OVERRIDES if kimi_supported_efforts(model) is KIMI_K3_EFFORTS else None
+    if p in _DEEPSEEK_PROVIDERS:
+        return DEEPSEEK_V4_OVERRIDES
+    if p in _GLM_PROVIDERS:
+        return GLM53_OVERRIDES if any(tok in (model or "").lower() for tok in _GLM53_SLUG_TOKENS) else GLM52_OVERRIDES
+    if p in _OLLAMA_CLOUD_PROVIDERS:
+        return OLLAMA_CLOUD_OVERRIDES
+    if p in _OPENCODE_PROVIDERS and _bare_model(model) == "x-preview-f-free":
+        return OX_ALPHA_OVERRIDES
+    return None
+
+
+def route_effort_clamp_target(
+    provider: Optional[str], model: Optional[str], api_mode: Optional[str] = None,
+) -> tuple[tuple[str, ...], Optional[dict[str, str]]]:
+    """``(supported, overrides)`` to pass to :func:`clamp_effort` for the level a route really sends."""
+    return route_wire_efforts(provider, model, api_mode), route_effort_overrides(provider, model)
+
+
 def effort_display_label(
     effort: Optional[str], provider: Optional[str] = None, model: Optional[str] = None,
     api_mode: Optional[str] = None,
@@ -179,7 +268,7 @@ def effort_display_label(
     it verbatim, else ``"<level> (sends <clamped> on this route)"`` so a Hermes-internal step such as
     ``ultra`` (#61634) is never presented as a distinct wire level the route does not have."""
     requested = str(effort or "").strip().lower()
-    clamped = clamp_effort(requested, route_supported_efforts(provider, model, api_mode))
+    clamped = clamp_effort(requested, *route_effort_clamp_target(provider, model, api_mode))
     return requested if not requested or clamped == requested else f"{requested} (sends {clamped} on this route)"
 
 

@@ -155,6 +155,67 @@ def test_invalid_model_routes_are_refused_before_anything_is_written(client, hom
     assert (work / "config.yaml").read_text(encoding="utf-8") == before
 
 
+@pytest.mark.parametrize("sent", [True, False, None])
+def test_route_escalate_reasoning_only_saves_true(client, homes, sent):
+    _root, work = homes
+    option = {"name": "scout", "description": "Quick look", "provider": "openrouter", "model": "m",
+              "escalate_reasoning": sent}
+    resp = client.put("/api/delegation/backends/model_map?profile=work", json={"options": [option]})
+    assert resp.status_code == 200, resp.text
+    (saved,) = _delegation(work)["backends"]["model_map"]["options"]
+    (returned,) = resp.json()["model_map"]["options"]
+    for row in (saved, returned):
+        if sent is True:
+            assert row["escalate_reasoning"] is True
+        else:
+            assert "escalate_reasoning" not in row
+
+
+@pytest.mark.parametrize("sent", ["false", "true", 1, 0])
+def test_route_escalate_reasoning_rejects_non_booleans(client, homes, sent):
+    _root, work = homes
+    before = (work / "config.yaml").read_text(encoding="utf-8")
+    option = {"name": "scout", "description": "Quick look", "provider": "openrouter", "model": "m",
+              "escalate_reasoning": sent}
+    resp = client.put("/api/delegation/backends/model_map?profile=work", json={"options": [option]})
+    assert resp.status_code == 400
+    assert "escalate_reasoning" in resp.json()["detail"]
+    assert (work / "config.yaml").read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize("sent", [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+    " NONE ", " MINIMAL ", " LOW ", " MEDIUM ", " HIGH ", " XHIGH ", " MAX ", " ULTRA ",
+    "", "   ", None,
+])
+def test_route_escalate_ceiling_is_normalized(client, homes, sent):
+    _root, work = homes
+    option = {"name": "scout", "description": "Quick look", "provider": "openrouter", "model": "m",
+              "escalate_ceiling": sent}
+    resp = client.put("/api/delegation/backends/model_map?profile=work", json={"options": [option]})
+    assert resp.status_code == 200, resp.text
+    (saved,) = _delegation(work)["backends"]["model_map"]["options"]
+    (returned,) = resp.json()["model_map"]["options"]
+    expected = sent.strip().lower() if sent is not None else ""
+    for row in (saved, returned):
+        if expected:
+            assert row["escalate_ceiling"] == expected
+        else:
+            assert "escalate_ceiling" not in row
+
+
+@pytest.mark.parametrize("sent", ["huge", True, False, 1, 0, [], {}])
+def test_route_escalate_ceiling_rejects_invalid_values(client, homes, sent):
+    _root, work = homes
+    before = (work / "config.yaml").read_text(encoding="utf-8")
+    option = {"name": "scout", "description": "Quick look", "provider": "openrouter", "model": "m",
+              "escalate_ceiling": sent}
+    resp = client.put("/api/delegation/backends/model_map?profile=work", json={"options": [option]})
+    assert resp.status_code == 400
+    assert "escalate_ceiling" in resp.json()["detail"]
+    assert (work / "config.yaml").read_text(encoding="utf-8") == before
+
+
 def test_saving_model_routes_replaces_the_block_and_keeps_the_stored_key(client, homes):
     root, work = homes
     shown = client.get("/api/delegation/routing?profile=work").json()["model_map"]["options"][0]

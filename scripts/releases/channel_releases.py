@@ -195,9 +195,7 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
         raise ChannelError("Protected publication requires its existing release workflow")
     needs = json.loads(env.get("RELEASE_NEEDS", "{}"))
     stable.require_success(needs, list(required))
-    # Whatever its green policy, every upgrade arm that ran passed; one the claim's lanes or a
-    # missing baseline left out was skipped (stable-release.yml publish-canary gates the same).
-    stable.require_success(needs, list(lane_set.UPGRADE_ARMS), allowed=("success", "skipped"))
+    stable.require_upgrade_arms(needs)  # stable-release.yml publish-canary gates the same
     commit = require_commit(env.get("RELEASE_COMMIT"))
     expected_object = require_commit(env.get("RELEASE_TAG_OBJECT"))
     try:

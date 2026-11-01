@@ -33,9 +33,10 @@ def test_a_channel_claim_names_its_channel_and_branding_and_admits_as_one():
 def test_channel_lanes_refuse_what_a_channel_build_cannot_run():
     from scripts.releases import lanes
 
-    assert "install-e2e" in lanes.select(policy="channel")
-    for refused in ("upgrade", "windows-store"):
-        assert refused not in lanes.select(policy="channel")
+    # A channel build updates (install-e2e) and upgrades its channel's head (upgrade); only the Store
+    # is stable's and canary's.
+    assert {"install-e2e", "upgrade"} <= lanes.select(policy="channel")
+    assert "windows-store" not in lanes.select(policy="channel")
 
 
 def test_dispatch_runs_stable_release_on_a_commit_or_channel_claim_only():

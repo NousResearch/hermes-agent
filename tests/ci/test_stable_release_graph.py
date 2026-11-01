@@ -255,9 +255,30 @@ def test_a_commit_build_runs_the_default_jobs_but_upgrade_tests_and_publishes_no
     assert evaluate(group, {"tag": "rc.1-v1.2.3"}, {}) == "stable-release"
 
 
-def test_canary_publication_follows_its_claims_green_policy_and_never_touches_stable():
+@pytest.mark.parametrize(("job", "policy", "lanes"), [("publish-canary", "canary", lane_set.CANARY),
+                                                      ("publish-channel", "channel", lane_set.CHANNEL)])
+def test_preview_publication_requires_every_upgrade_arm_that_ran(job, policy, lanes):
     from scripts.releases.stable import PACKAGED_BY
 
+    publish = workflow("stable-release.yml")["jobs"][job]
+    assert publish["needs"] == ["admit", "candidate-manifest", "acceptance", *lane_set.UPGRADE_ARMS]
+    # Custody re-checks the arms from the same needs.
+    assert publish["env"]["RELEASE_NEEDS"] == "${{ toJSON(needs) }}"
+    admit = {"result": "success", "outputs": {"jobs": json.dumps(lane_set.jobs_to_run(lanes, policy)),
+                                              "policy": policy, "require-green": "false"}}
+    accepted = {"admit": admit, "candidate-manifest": {"result": "success"}, "acceptance": {"result": "failure"},
+                **{arm: {"result": "success"} for arm in lane_set.UPGRADE_ARMS}}
+    # Whatever the green policy, every upgrade arm that ran (the last published build of the
+    # canary or of the claim's channel -> this one) must pass; an arm skipped because there is no
+    # baseline or its lane is off does not hold it.
+    assert gate(publish["if"], {}, accepted)
+    assert gate(publish["if"], {}, {**accepted, **{arm: {"result": "skipped"} for arm in PACKAGED_BY}})
+    for arm in lane_set.UPGRADE_ARMS:
+        for result in ("failure", "cancelled"):
+            assert not gate(publish["if"], {}, {**accepted, arm: {"result": result}}), (arm, result)
+
+
+def test_canary_publication_follows_its_claims_green_policy_and_never_touches_stable():
     jobs = workflow("stable-release.yml")["jobs"]
     canary = lane_set.jobs_to_run(lane_set.CANARY, "canary")
     publish = jobs["publish-canary"]
@@ -283,13 +304,6 @@ def test_canary_publication_follows_its_claims_green_policy_and_never_touches_st
             assert not gate(publish["if"], {}, {**needs, "candidate-manifest": {"result": result},
                                                 "acceptance": {"result": "success"}}), result
         assert not gate(publish["if"], {}, {**needs, "acceptance": {"result": "success"}}, cancelled=True)
-        # Whatever the green policy, every upgrade arm that ran (last published canary -> this one)
-        # must pass; an arm skipped because there is no baseline or its lane is off does not hold it.
-        accepted = {**needs, "acceptance": {"result": "success"}}
-        assert gate(publish["if"], {}, {**accepted, **{arm: {"result": "skipped"} for arm in PACKAGED_BY}})
-        for arm in lane_set.UPGRADE_ARMS:
-            for result in ("failure", "cancelled"):
-                assert not gate(publish["if"], {}, {**accepted, arm: {"result": result}}), (arm, result)
     admit = admit_with("false")
     # A stable release never runs it, and a canary never runs stable publication (Store included).
     stable_admit = {"result": "success", "outputs": {"jobs": json.dumps(lane_set.jobs_to_run(lane_set.NAMES))}}

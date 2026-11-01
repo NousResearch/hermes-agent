@@ -192,6 +192,12 @@ def require_success(needs: dict, required: list[str], allowed: tuple[str, ...] =
         raise ValueError("Release blocked: " + ", ".join(failures))
 
 
+def require_upgrade_arms(needs: dict) -> None:
+    """Whatever its green policy, a canary or channel build publishes only if every signed-package
+    upgrade arm that ran passed; one its lanes or a missing baseline left out was skipped."""
+    require_success(needs, list(lane_set.UPGRADE_ARMS), allowed=("success", "skipped"))
+
+
 # Each signed-package upgrade arm and the transitions job that plans it.
 PACKAGED_BY = {"macos-packaged-arm64": "transitions-darwin-arm64",
                "macos-packaged-x64": "transitions-darwin-x64",
@@ -395,8 +401,9 @@ def _transition_row(target: str, left: dict, right: dict) -> dict:
     else:
         if left["teamId"] != right["teamId"]:
             raise ValueError("Update must preserve signing team")
-        # Consecutive canaries share X.Y.Z (X.Y.Z+canary.<stamp>): their order is the claim stamp.
-        key = (lambda row: stamped_epoch(row["tag"])) if is_canary_claim(right["tag"]) else \
+        # Consecutive canaries or channel builds share X.Y.Z (X.Y.Z+<kind>.<stamp>): their order is
+        # the claim stamp.
+        key = (lambda row: stamped_epoch(row["tag"])) if is_stamped_claim(right["tag"]) else \
             (lambda row: tuple(map(int, row["version"].split("."))))
         newer = key(right) > key(left)
     if not newer:
@@ -967,14 +974,38 @@ def _stage_transition(env: dict, archive: str, base: str, row: dict) -> dict:
             "manifest_sha256": hashlib.sha256(file.read_bytes()).hexdigest()}
 
 
-def _published_baseline(env: dict, base: str, policy: str) -> dict | None:
+def _channel_baseline(env: dict, base: str, channel: str) -> dict | None:
+    """A channel build upgrades from its channel's head: the build its subscribers run now.
+
+    The head names its claim; that claim's archive holds the accepted candidate manifest, which
+    must be exactly the packages the head serves. A head that is not a channel claim (or no head
+    yet) leaves no OLD package to upgrade from.
+    """
+    from hermes_cli.release_channels import ChannelReader
+    from scripts.releases.channel_releases import match_accepted_packages
+
+    head = ChannelReader(base, repository=env["GITHUB_REPOSITORY"]).resolve(channel).manifest
+    tag = head["request"].get("releaseTag") if head else None
+    if not is_channel_claim(tag):
+        return None
+    previous = read_manifest(f"{base}/releases/tag/{tag}/release-candidates.json", expected_origin=base)
+    if previous.get("tag") != tag:
+        raise ValueError("Channel head and its candidate manifest name different claims")
+    match_accepted_packages(head, previous)
+    return previous
+
+
+def _published_baseline(env: dict, base: str, claim: dict) -> dict | None:
     """The previous package manifest of this claim's policy, or None when none shipped one.
 
     A stable release upgrades from the last published stable release, a canary from the last
     published canary (a prerelease): each policy's publication writes its own pointer
     (channel_releases). A release that skipped bundles never writes it, so its absence only
-    means there is no OLD package to upgrade from.
+    means there is no OLD package to upgrade from. A channel build upgrades from its channel's head.
     """
+    policy = claim["policy"]
+    if policy == "channel":
+        return _channel_baseline(env, base, claim["channel"])
     try:
         previous = read_manifest(env.get("BASELINE_MANIFEST_URL") or f"{base}/releases/{policy}/release-candidates.json",
                                  expected_origin=base)
@@ -1012,7 +1043,7 @@ def transitions(env: dict) -> None:
     _tag, _commit, claim = stable_context(env)
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     archive = claim["claim_tag"]
-    previous = _published_baseline(env, base, claim["policy"])
+    previous = _published_baseline(env, base, claim)
     receipt_manifest = _receipt_from_env(env, receipt, "RECEIPT", base)
     matrices = {"windows": {"include": []}, "macos": {"include": []}}
     if previous is None or not baseline_covers(previous, receipt, base):

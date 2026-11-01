@@ -4,8 +4,10 @@ from __future__ import annotations
 import hashlib
 import json
 
+import pytest
+
 from hermes_cli.release_channels import build_prefix, canonical_json
-from scripts.releases import channel_claims, r2, stable
+from scripts.releases import channel_claims, lanes as lane_set, r2, stable
 from tests.scripts.test_release_channels import _stage_accepted_native, object_server, publisher
 
 
@@ -42,7 +44,14 @@ def test_channel_publication_assembles_receipts_and_promotes_preview_over_http(t
         monkeypatch.setattr(r2, 'public_base_url', lambda: pub.public_base)
         monkeypatch.setenv('CLOUDFLARE_R2_PUBLIC_URL', pub.public_base)
         env = {'GITHUB_REPOSITORY': pub.repository, 'CHANNEL_BUILD': request['buildId'],
-               'CHANNEL_REQUEST_SHA256': hashlib.sha256(canonical_json(request)).hexdigest()}
+               'CHANNEL_REQUEST_SHA256': hashlib.sha256(canonical_json(request)).hexdigest(),
+               'RELEASE_NEEDS': json.dumps({arm: {'result': 'success'} for arm in lane_set.UPGRADE_ARMS})}
+        # The next build's upgrade baseline is the channel head, read back over HTTP; the manifest
+        # fetch alone reads the fixture's objects (read_manifest insists on HTTPS).
+        monkeypatch.setattr(stable, 'read_manifest', lambda url, **_: json.loads(
+            objects[url.removeprefix(pub.public_base + '/')]))
+        claim = {'policy': 'channel', 'channel': 'review', 'claim_tag': 'channel.20261029T130000Z-v1.2.3'}
+        assert stable._published_baseline(env, pub.public_base, claim) is None  # no head yet
         before = dict(objects)
         result = channel_claims.publish_claim(env, tmp_path / 'published')
         resolved = pub.reader.resolve('review')
@@ -61,3 +70,15 @@ def test_channel_publication_assembles_receipts_and_promotes_preview_over_http(t
         assert channel_claims.publish_claim(env, tmp_path / 'retry') == result
         assert objects == settled
         assert not any(method == 'PUT' for method, _key in requests)
+
+        candidates = f'releases/tag/{tag}/release-candidates.json'
+        objects[candidates] = json.dumps({**accepted, 'tag': tag}).encode()
+        assert stable._published_baseline(env, pub.public_base, claim) == {**accepted, 'tag': tag}
+        # The candidate manifest must name the head's claim and hold exactly the packages it serves.
+        objects[candidates] = json.dumps({**accepted, 'tag': 'channel.20261027T130000Z-v1.2.3'}).encode()
+        with pytest.raises(ValueError, match='different claims'):
+            stable._published_baseline(env, pub.public_base, claim)
+        swapped = [{**row, 'artifact': {**row['artifact'], 'sha256': 'f' * 64}} for row in accepted['packages']]
+        objects[candidates] = json.dumps({'packages': swapped, 'tag': tag}).encode()
+        with pytest.raises(ValueError, match='differs from the accepted'):
+            stable._published_baseline(env, pub.public_base, claim)

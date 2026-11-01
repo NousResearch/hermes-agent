@@ -59,7 +59,7 @@ import {
   retainGatewayForRelay,
   retireLocalProfileGateways
 } from '@/store/gateway'
-import { notify, notifyError } from '@/store/notifications'
+import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -610,6 +610,8 @@ export const host = {
   /** Toast into the app's notification stack. */
   notify,
   notifyError,
+  /** Remove one named toast without producing replacement feedback. */
+  dismissNotification,
 
   // NOTE: every host door is async-safe — wrapped so a sync throw from an
   // internal helper (e.g. no desktop bridge in a plain browser) becomes a

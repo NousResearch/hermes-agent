@@ -28,6 +28,8 @@ export const zhHantFirstRun: FirstRunCopy = {
   skip: '略過設定',
   skipTip: '結束引導設定並開啟新對話。',
   skipFailed: '無法略過設定',
+  slashOffTitle: '設定期間無法使用斜線指令',
+  slashOffBody: '設定完成後即可照常使用。',
   localModel: {
     title: '這部電腦可以在本機執行模型',
     text: (model, size) => `${model}（${size}）適合你的硬體。它免費執行，你的對話會留在這部電腦上。`,

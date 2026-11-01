@@ -72,20 +72,18 @@ class PythonDeclaration:
 
     @property
     def installs_packages(self) -> bool:
-        """Admission would put packages into the shared environment, the thing dependency consent
-        is about. ``dependencies = []`` installs nothing, so it asks no more than no pyproject does."""
+        """Admission would put packages into the shared environment: what dependency consent asks
+        about and what makes the plugin a workspace member. ``dependencies = []`` installs nothing,
+        so like no pyproject it asks no consent and stays out of the environment stamp, which hashes
+        a member's whole tree (each enable or update would build a generation for nothing)."""
         return not self.external and (bool(self.install_requirements) or self.pyproject_installs)
-
-    @property
-    def is_member(self) -> bool:
-        return not self.external and (self.pyproject is not None or bool(self.install_requirements))
 
     def python_error(self, version: str) -> str | None:
         """Why this member cannot join a workspace built for *version*; uv intersects every
         member's requires-python, so one excluding member fails the whole lock."""
         from packaging.specifiers import SpecifierSet
 
-        if not self.is_member or not self.requires_python:
+        if not self.installs_packages or not self.requires_python:
             return None
         if SpecifierSet(self.requires_python).contains(version, prereleases=True):
             return None

@@ -322,6 +322,9 @@ function dialOf(url: string): { nonce: string; origin: string; pathname: string 
   }
 }
 
+// Voice sockets dial their own fresh `/api/ws` reservation on a sibling path (sibling-ws-url.ts).
+const VOICE_DIAL_PATHS = new Set(['/api/audio/speak-stream', '/api/audio/transcribe-stream'])
+
 // A one-use ticket crosses private IPC, then leaves the URL before dialing.
 // Public descriptors and persisted connection state never contain credentials.
 // A plugin socket's native-http grant never enters a URL at all: main attaches
@@ -355,7 +358,9 @@ export function createLocalGatewayDials() {
       const dial = dialOf(details.url)
       const grant = dial ? pending.get(dial.nonce) : undefined
 
-      if (!dial || !grant || grant.pathname !== dial.pathname || grant.webContentsId !== details.webContentsId
+      const voice = grant && !grant.header && grant.pathname === '/api/ws' && dial && VOICE_DIAL_PATHS.has(dial.pathname)
+
+      if (!dial || !grant || (grant.pathname !== dial.pathname && !voice) || grant.webContentsId !== details.webContentsId
           || details.resourceType !== 'webSocket' || (grant.header && grant.origin !== dial.origin)) {return null}
 
       pending.delete(dial.nonce)

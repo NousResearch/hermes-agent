@@ -83,6 +83,18 @@ describe('artifact version identity', (): void => {
     expect((): void => assertSourceUpdateChannel(null)).not.toThrow()
   })
 
+  it('uses the local bootstrap runtime version supplied by the desktop shell', (): void => {
+    const stamp: InstallStamp = {
+      payload: 'bootstrap',
+      displayVersion: null,
+      baseVersion: null,
+      source: 'local',
+      updateMechanism: 'self'
+    } as InstallStamp
+
+    expect(appVersionInfo(stamp, '0.21.5+6644.gb412ee9', '0.0.0').appVersion).toBe('0.21.5+6644.gb412ee9')
+  })
+
   // #124581: the desktop package.json carries a 0.0.0 placeholder, so the
   // About panel must never repeat it as the running version.
   it('skips the 0.0.0 package placeholder for builds without a baked display version', (): void => {

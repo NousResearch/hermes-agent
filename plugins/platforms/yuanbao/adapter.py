@@ -72,7 +72,6 @@ logger = logging.getLogger(__name__)
 # AUTH_BIND / sign-token header values
 from hermes_cli.version_info import get_version_info
 
-_APP_VERSION = _BOT_VERSION = get_version_info().base_version
 _YUANBAO_INSTANCE_ID = str(HERMES_INSTANCE_ID)
 _OPERATION_SYSTEM = sys.platform
 
@@ -217,8 +216,9 @@ class SignManager:
                 timestamp = cls.build_timestamp()
                 payload = {"app_key": app_key, "nonce": nonce,
                            "signature": cls.compute_signature(nonce, timestamp, app_key, app_secret), "timestamp": timestamp}
-                headers = {"Content-Type": "application/json", "X-AppVersion": _APP_VERSION, "X-OperationSystem": _OPERATION_SYSTEM,
-                           "X-Instance-Id": _YUANBAO_INSTANCE_ID, "X-Bot-Version": _BOT_VERSION}
+                version = get_version_info().base_version
+                headers = {"Content-Type": "application/json", "X-AppVersion": version, "X-OperationSystem": _OPERATION_SYSTEM,
+                           "X-Instance-Id": _YUANBAO_INSTANCE_ID, "X-Bot-Version": version}
                 if route_env:
                     headers["X-Route-Env"] = route_env
                 logger.info("Sign token request: url=%s%s", url, f" (retry {attempt}/{cls.MAX_RETRIES})" if attempt > 0 else "")
@@ -1885,10 +1885,10 @@ class ConnectionManager:
         if self._ws is None:
             return False
         uid = adapter._bot_id or token_data.get("bot_id", "")
-        msg_id = str(uuid.uuid4())
+        msg_id, version = str(uuid.uuid4()), get_version_info().base_version
         await self._ws.send(encode_auth_bind(
             biz_id="ybBot", uid=uid, source=token_data.get("source") or "bot", token=token_data.get("token", ""),
-            msg_id=msg_id, app_version=_APP_VERSION, operation_system=_OPERATION_SYSTEM, bot_version=_BOT_VERSION,
+            msg_id=msg_id, app_version=version, operation_system=_OPERATION_SYSTEM, bot_version=version,
             route_env=adapter._route_env or token_data.get("route_env", "") or "",
         ))
         logger.debug("[%s] AUTH_BIND sent (msg_id=%s uid=%s)", adapter.name, msg_id, uid)

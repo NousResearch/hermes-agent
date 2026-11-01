@@ -1,5 +1,6 @@
 """GatewayAgent drives main's HermesCLI callbacks from a scripted gateway (no live gateway)."""
 import asyncio
+import json
 import threading
 from contextlib import asynccontextmanager
 
@@ -7,7 +8,7 @@ import pytest
 
 from hermes_cli.gateway_agent import GatewayAgent
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
-from hermes_cli.gateway_connection import DISCONNECTED, GatewayConnection
+from hermes_cli.gateway_connection import DISCONNECTED, NOT_SENT, GatewayConnection
 
 SID = "local-abc"
 
@@ -487,6 +488,34 @@ def test_gateway_sudo_request_opens_mains_sudo_panel_and_replies_with_the_value(
     assert replies == [("srq-abc", {"value": "pw-from-panel"})]
 
 
+@pytest.mark.parametrize(("method", "params", "setter", "callback", "expected"), [
+    ("vault.code", {"site": "example.com", "hint": ""}, "set_code_prompt_callback",
+     lambda site, hint: "123456", "123456"),
+    ("vault.unlock_prompt", {"backend": "bitwarden", "display_name": "Bitwarden"}, "set_unlock_prompt_callback",
+     lambda backend, name: "master", "master"),
+    ("vault.save_login", {"origin": "https://example.com", "site": "example.com"}, "set_save_login_prompt_callback",
+     lambda origin, site: {"identifier": "me@example.com", "password": "pw"},
+     json.dumps({"identifier": "me@example.com", "password": "pw"})),
+    ("vault.save_login", {"origin": "https://example.com", "site": "example.com"}, "set_save_login_prompt_callback",
+     lambda origin, site: None, ""),
+])
+def test_gateway_vault_requests_open_mains_panels_and_reply_with_the_value(make_agent, method, params, setter,
+                                                                           callback, expected):
+    """The gateway's ``vault.*`` server→client requests are answered by main's vault panels (the turn's
+    registered callbacks); a classic CLI viewer no longer leaves them to time out."""
+    from agent.vault_backends import unlock
+    request = {"jsonrpc": "2.0", "id": "srq-vault", "method": method, "params": {"session_id": SID, **params}}
+    agent, _ = make_agent([request, frame("message.complete", {"text": "ok", "outcome": "completed"})])
+    replies = []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    getattr(unlock, setter)(callback)
+    try:
+        agent.run_conversation("sign in")
+    finally:
+        getattr(unlock, setter)(None)
+    assert replies == [("srq-vault", {"value": expected})]
+
+
 def test_connection_reply_sends_a_jsonrpc_response_frame():
     sent = []
 
@@ -734,6 +763,23 @@ def test_a_transport_loss_at_submit_is_still_gateway_connection():
     assert result["failure_reason"] == "gateway_connection" and result["failure_retryable"] is False
 
 
+def test_a_submit_that_never_left_keeps_the_turn_for_the_resend():
+    """NOT_SENT: the owner never saw the prompt. The CLI keeps the turn's local state (no history row,
+    the ``/model --once`` pick) so the resend is the same turn, as a pre-submit notice does."""
+    conn = GatewayConnection(connect=connect_with(RefusingClient(GatewayClientError(NOT_SENT))))
+    conn.start(5)
+    try:
+        agent = GatewayAgent(connection=conn, session_id=SID)
+        pick = {"model": "picked-model", "provider": "openrouter"}
+        agent._turn_route, agent._turn_reasoning = dict(pick), None
+        result = agent.run_conversation("q", conversation_history=[])
+        assert result["failed"] is True and result["error"] == NOT_SENT
+        assert result["admitted"] is False and result["messages"] == []
+        assert agent._turn_route == pick  # the pick is still owed
+    finally:
+        conn.close()
+
+
 def test_model_switch_is_the_session_model_mutation_and_a_rebuilt_agent_shows_it(make_agent):
     """A session-scoped ``/model`` calls ``agent.switch_model`` (#134889 M1). The gateway commits
     the target as a generation-fenced ``session.mutate model`` (no key or endpoint leaves the CLI),
@@ -876,6 +922,49 @@ def test_another_viewer_completing_the_clarify_batch_releases_mains_panel(make_a
     assert out["completed"] is True or out.get("final_response") is not None
     # Its late reply is a cancel the gateway drops (the request is already settled).
     assert replies == [("srq-clr", {"answers": {}, "outcome": "cancelled"})]
+
+
+@pytest.mark.parametrize("method", ["vault.code", "vault.unlock_prompt", "vault.save_login"])
+def test_another_viewer_answering_a_vault_prompt_releases_mains_panel(make_agent, method):
+    """The vault prompts open main's panels on the sudo panel's state. When a Desktop or Ink viewer answers
+    first, the gateway withdraws the request and the CLI's panel must close, or the pump sits in the modal
+    until its own 120-180 s deadline instead of reading the rest of the turn."""
+    from unittest.mock import MagicMock
+    from agent.vault_backends import unlock
+    from tests.hermes_cli.test_cli_clarify_batch import _make_cli_stub
+    panel = _make_cli_stub()
+    panel._sudo_state = None
+    panel._sudo_deadline = 0
+    panel._ring_bell = lambda **kw: None
+    panel._capture_modal_input_snapshot = MagicMock()
+    panel._restore_modal_input_snapshot = MagicMock()
+    params = {"vault.code": {"site": "example.com", "hint": ""},
+              "vault.unlock_prompt": {"backend": "bitwarden", "display_name": "Bitwarden"},
+              "vault.save_login": {"origin": "https://example.com", "site": "example.com"}}[method]
+    request = {"jsonrpc": "2.0", "id": "srq-vlt", "method": method, "params": {"session_id": SID, **params}}
+    withdrawn = frame("request.cancel", {"id": "srq-vlt", "method": method, "reason": "resolved"}, admission=None)
+    agent, _client = make_agent([request, "wait", withdrawn, frame("message.complete", {"text": "ok", "outcome": "completed"})],
+                                modal_withdraw_callback=panel._withdraw_gateway_modal)
+    replies = []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    out = {}
+
+    def run():
+        unlock.set_code_prompt_callback(panel._vault_code_callback)
+        unlock.set_unlock_prompt_callback(panel._vault_unlock_callback)
+        unlock.set_save_login_prompt_callback(panel._vault_save_login_callback)
+        try:
+            out.update(agent.run_conversation("sign in"))
+        finally:
+            unlock.set_code_prompt_callback(None)
+            unlock.set_unlock_prompt_callback(None)
+            unlock.set_save_login_prompt_callback(None)
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "the CLI stayed blocked in its vault panel"
+    assert panel._sudo_state is None
+    assert replies == [("srq-vlt", {"value": ""})]
 
 
 def test_a_withdrawal_for_another_request_leaves_the_panel_open(make_agent):

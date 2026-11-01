@@ -149,7 +149,8 @@ def _session_toolsets(authority, ref):
     config = policy.config(authority, secrets=False) if policy is not None else {}
     enabled = list(policy.current_toolsets(config)) if policy is not None else None
     disabled = session_disabled_toolsets(parse_config_string_list((config.get('agent') or {}).get('disabled_toolsets')) or None,
-                                         policy.platform if policy is not None else 'cli')
+                                         policy.platform if policy is not None else 'cli',
+                                         oneshot=policy is not None and policy.source == 'oneshot')
     return enabled, disabled
 
 

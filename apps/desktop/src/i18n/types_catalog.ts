@@ -23,6 +23,7 @@ export interface CatalogTranslations {
   installing: string
   installComplete: (name: string) => string
   destinationChanged: string
+  install: string
   installed: string
   searchSkills: string
   searchPlugins: string

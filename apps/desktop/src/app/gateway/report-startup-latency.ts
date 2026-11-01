@@ -1,3 +1,5 @@
+import { randomUuid } from '@hermes/shared'
+
 type GatewayRequest = (
   method: 'shared_metrics.startup_latency',
   params: { elapsed_ms: number; launch_id: string; surface: 'desktop_attach' }
@@ -21,7 +23,7 @@ export async function reportStartupLatency(
   // Declared, not env-detected: a URL/cloud backend has no HERMES_DESKTOP to tell it who attached.
   await request('shared_metrics.startup_latency', {
     elapsed_ms: elapsedMs,
-    launch_id: crypto.randomUUID(),
+    launch_id: randomUuid(),
     surface: 'desktop_attach'
   }).catch(() => undefined)
 }

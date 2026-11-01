@@ -1,0 +1,79 @@
+{
+  "fixtureVersion": 1,
+  "name": "non-mapping-replaces-mapping-and-back",
+  "description": "Proves rule-5, r8: A lower scalar or list replaces an upper mapping, and a lower mapping replaces an upper scalar; provenance of replaced leaves is dropped.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "terminal": {
+          "backend": "local"
+        },
+        "a": 5,
+        "display": {
+          "personality": "x"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {
+        "display": "off"
+      },
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "terminal": [
+          "x"
+        ],
+        "a": {
+          "b": 1
+        }
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "terminal": [
+        "x"
+      ],
+      "a": {
+        "b": 1
+      },
+      "display": "off"
+    },
+    "provenance": {
+      "terminal": "profile",
+      "a.b": "profile",
+      "display": "principal"
+    },
+    "locks": []
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "display",
+      "value": {
+        "personality": "y"
+      },
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

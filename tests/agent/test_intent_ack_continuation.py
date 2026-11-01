@@ -13,11 +13,16 @@ gates relate, not snapshots of the marker lists.
 
 from types import SimpleNamespace
 from typing import Union
+from unittest.mock import patch
 
 from agent.agent_runtime_helpers import (
     intent_ack_continuation_mode,
     looks_like_codex_intermediate_ack,
 )
+from providers.base import ProviderProfile
+
+# An ACP agent whose binary is ``copilot``: the "on <X> via acpx" cue names only external_process profiles.
+_ACP_AGENT = ProviderProfile(name="acme-acp", auth_type="external_process", process_command="copilot")
 
 
 def _agent(
@@ -156,10 +161,11 @@ def test_pronounless_action_announcements_continue_when_opted_in():
         "Exit code 1. Step 2. Checking the actual log.",
         "Attempt 1. Attempt 2. Relaunching with corrected arguments.",
     )
-    for announcement in announcements:
-        assert looks_like_codex_intermediate_ack(
-            a, user, announcement, msgs, require_workspace=False
-        ), announcement
+    with patch("providers.list_providers", return_value=[_ACP_AGENT]):
+        for announcement in announcements:
+            assert looks_like_codex_intermediate_ack(
+                a, user, announcement, msgs, require_workspace=False
+            ), announcement
 
 
 def test_pronounless_action_guardrails_reject_questions_and_finals():
@@ -245,10 +251,11 @@ def test_pronounless_action_guardrails_reject_questions_and_finals():
         "Option: 1. Launching it now.",
         "Options: 1. Creating the session now.",
     )
-    for final in final_answers:
-        assert not looks_like_codex_intermediate_ack(
-            a, user, final, msgs, require_workspace=False
-        ), final
+    with patch("providers.list_providers", return_value=[_ACP_AGENT]):
+        for final in final_answers:
+            assert not looks_like_codex_intermediate_ack(
+                a, user, final, msgs, require_workspace=False
+            ), final
 
 
 # ── detector: guardrails that hold regardless of workspace ───────────────────

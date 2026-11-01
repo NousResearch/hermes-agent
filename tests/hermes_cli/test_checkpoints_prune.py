@@ -264,6 +264,45 @@ def test_orphan_label_defensive_fallback():
     assert label({"path": "/p", "hash": "abc"}, pre_v2=True) == "/p"
 
 
+def test_orphan_verdict_layout_rules():
+    """Independent-review observation ① (deepseek pass): the orphan predicate
+    was two mirrored implementations (store_status vs prune_checkpoints) that
+    could drift. It is now one shared _orphan_verdict; this pins both layouts'
+    rules so the single implementation stays correct."""
+    import tools.checkpoint_maintenance as cm
+
+    v = cm._orphan_verdict
+    # Pre-v2 (no parent-identity channel, blank workdir kept).
+    assert v("", require_parent_identity=False, blank_workdir_confirmable=False) == (
+        False, "blank workdir recorded")
+    assert v(None, require_parent_identity=False, blank_workdir_confirmable=False) == (
+        True, None)
+    assert v("/w", marker_unreadable=True, require_parent_identity=False,
+             blank_workdir_confirmable=False) == (
+        False, "shadow repo marker is unreadable")
+    # v2 shared store: blank/missing workdir is confirmable.
+    assert v("", require_parent_identity=True, blank_workdir_confirmable=True) == (
+        True, None)
+    assert v(None, require_parent_identity=True, blank_workdir_confirmable=True) == (
+        True, None)
+
+
+def test_unreachable_reason_parent_gone_wording(tmp_path):
+    """Independent-review observation ⑤ (deepseek pass): pre-v2 has no
+    parent-identity metadata channel, so "no parent identity recorded" is a
+    category error there — it gets the same conservative wording as v2, while
+    a v2 record that *could* have recorded one keeps the specific message."""
+    import tools.checkpoint_maintenance as cm
+
+    workdir = str(tmp_path / "gone" / "proj")
+    assert cm._workdir_unreachable_reason(
+        workdir, require_parent_identity=False
+    ) == "parent path gone; deletion not corroborated (conservative)"
+    assert cm._workdir_unreachable_reason(
+        workdir, require_parent_identity=True
+    ) == "parent path gone and no parent identity recorded"
+
+
 # ─── cmd_status surfaces pre-v2 shadow repos with their reason ─────────────
 
 

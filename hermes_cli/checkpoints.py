@@ -70,7 +70,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                 state = "unreachable"
             print(f"  {wd:<60}  {p.get('commits', 0):>7}  {_fmt_age(p.get('last_touch')):>12}  {state}")
             if state == "unreachable":
-                print(f"    unreachable but not prunable as an orphan: {p.get('unconfirmable_reason') or 'unknown'}")
+                print(f"    unreachable but not prunable as an orphan: {p.get('unconfirmable_reason') or '(no reason recorded)'}")
                 print("    (prune won't treat it as an orphan; retention still drops it once older than --retention-days)")
 
     # Pre-v2 per-project shadow repos: shown separately because they carry no
@@ -99,7 +99,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                 state = "unreachable"
             print(f"  {wd:<60}  {state}")
             if state == "unreachable":
-                print(f"    unreachable but not prunable as an orphan: {p.get('unconfirmable_reason') or 'unknown'}")
+                print(f"    unreachable but not prunable as an orphan: {p.get('unconfirmable_reason') or '(no reason recorded)'}")
                 print("    (pre-v2 shadow repo; prune won't treat it as an orphan)")
 
     legacy = info.get("legacy_archives", [])
@@ -150,6 +150,10 @@ def cmd_prune(args: argparse.Namespace) -> int:
             print("A workdir can be unreachable because the project was deleted,")
             print("or because an external volume / network share / VPN is down.")
             print("Pass --keep-orphans to prune stale entries only.")
+            print("The count above is the orphan-deletion snapshot as of now: a workdir")
+            print("that comes back during the prompt is kept. Stale entries older than the")
+            print("retention window are removed by the same run per --retention-days and")
+            print("reported separately in the final counts below.")
             if not _confirm("Delete these orphan projects?"):
                 print("Aborted.")
                 return 1

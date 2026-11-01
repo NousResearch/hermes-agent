@@ -169,7 +169,12 @@ def _workdir_unreachable_reason(
             # *classifies why* for the human (volume drift vs. plain absence);
             # it never flips the verdict back to confirmable.
             if parent_dev is None:
-                return "parent path gone and no parent identity recorded"
+                if require_parent_identity:
+                    return "parent path gone and no parent identity recorded"
+                # Pre-v2 has no parent-identity metadata channel at all, so
+                # there is nothing that "wasn't recorded" — state the same
+                # conservative verdict consistently instead.
+                return "parent path gone; deletion not corroborated (conservative)"
             ancestor = parent
             while not ancestor.exists() and ancestor != ancestor.parent:
                 ancestor = ancestor.parent
@@ -200,6 +205,52 @@ def _workdir_unreachable_reason(
         return "parent directory present but holds no entries and is not a mount point"
     except OSError as exc:
         return f"parent probe failed: {exc}"
+
+
+def _orphan_verdict(
+    workdir: Optional[str],
+    *,
+    marker_unreadable: bool = False,
+    parent_dev: Optional[int] = None,
+    parent_ino: Optional[int] = None,
+    require_parent_identity: bool = True,
+    blank_workdir_confirmable: bool = False,
+) -> tuple[bool, Optional[str]]:
+    """Single source of truth for a record's orphan decision.
+
+    Returns ``(confirmable, reason)``: ``confirmable=True`` means prune may
+    delete the record as an orphan (``reason`` is ``None``); ``confirmable=False``
+    means it is kept, with ``reason`` explaining why (surfaced as
+    ``unconfirmable_reason``).
+
+    Both ``store_status()`` (confirmation preview / status listing) and
+    ``prune_checkpoints()`` (the deletion pass) resolve the verdict through
+    here, so preview and execution can never diverge — the "one verdict"
+    guarantee this PR is about. The only layout differences are encoded as
+    flags: the frozen pre-v2 layout has no parent-identity metadata channel
+    (``require_parent_identity=False``) and keeps a blank workdir
+    (``blank_workdir_confirmable=False``); the v2 shared store carries a
+    recorded parent identity and treats a blank/missing workdir as confirmable.
+    """
+    if marker_unreadable:
+        return False, "shadow repo marker is unreadable"
+    if workdir is None:
+        # An unset workdir is an orphan in both layouts.
+        return True, None
+    if not workdir:
+        # A blank (empty-string) workdir is confirmable only in the v2 shared
+        # store, where a missing workdir means "project gone"; pre-v2 keeps it.
+        return (True, None) if blank_workdir_confirmable else (False, "blank workdir recorded")
+    if _workdir_is_observably_gone(
+        workdir,
+        parent_dev=parent_dev,
+        parent_ino=parent_ino,
+        require_parent_identity=require_parent_identity,
+    ):
+        return True, None
+    return False, _workdir_unreachable_reason(
+        workdir, parent_dev, parent_ino, require_parent_identity
+    )
 
 
 def _dir_has_any_entry(directory: Path) -> bool:
@@ -319,18 +370,15 @@ def _prune_checkpoints(
         child = repo["path"]
         result["scanned"] += 1
         reason: Optional[str] = None
+        orphan, _ = _orphan_verdict(
+            repo["workdir"],
+            marker_unreadable=repo["marker_unreadable"],
+            require_parent_identity=False,
+            blank_workdir_confirmable=False,
+        )
         if (
             delete_orphans
-            and not repo["marker_unreadable"]
-            and (
-                repo["workdir"] is None
-                # The frozen pre-v2 layout has no metadata channel to carry a
-                # recorded parent identity, so only the structural checks
-                # (parent present + populated / live mount point) apply here.
-                or _workdir_is_observably_gone(
-                    repo["workdir"], require_parent_identity=False,
-                )
-            )
+            and orphan
             and (orphan_allowlist is None or str(child) in orphan_allowlist)
         ):
             reason = "orphan"
@@ -381,16 +429,16 @@ def _prune_checkpoints(
                 parent_dev = None
             if not isinstance(parent_ino, int) or isinstance(parent_ino, bool):
                 parent_ino = None
+            orphan, _ = _orphan_verdict(
+                workdir,
+                parent_dev=parent_dev,
+                parent_ino=parent_ino,
+                require_parent_identity=True,
+                blank_workdir_confirmable=True,
+            )
             if (
                 delete_orphans
-                and (
-                    not workdir
-                    or _workdir_is_observably_gone(
-                        workdir,
-                        parent_dev=parent_dev,
-                        parent_ino=parent_ino,
-                    )
-                )
+                and orphan
                 and (orphan_allowlist is None or dir_hash in orphan_allowlist)
             ):
                 reason = "orphan"
@@ -607,19 +655,19 @@ def store_status(checkpoint_base: Optional[Path] = None) -> dict:
                     pdev = None
                 if not isinstance(pino, int) or isinstance(pino, bool):
                     pino = None
-                confirmable = (not workdir) or _workdir_is_observably_gone(
-                    workdir, pdev, pino
+                confirmable, unreason = _orphan_verdict(
+                    workdir,
+                    parent_dev=pdev,
+                    parent_ino=pino,
+                    require_parent_identity=True,
+                    blank_workdir_confirmable=True,
                 )
                 out["projects"].append({
                     "hash": dir_hash,
                     "workdir": workdir,
                     "exists": bool(workdir) and Path(workdir).exists(),
                     "orphan_confirmable": confirmable,
-                    "unconfirmable_reason": (
-                        None
-                        if confirmable
-                        else _workdir_unreachable_reason(workdir, pdev, pino)
-                    ),
+                    "unconfirmable_reason": unreason,
                     "created_at": meta.get("created_at"),
                     "last_touch": meta.get("last_touch"),
                     "commits": commits,
@@ -630,30 +678,16 @@ def store_status(checkpoint_base: Optional[Path] = None) -> dict:
     for r in _pre_v2_shadow_repos(base):
         wd = r["workdir"]
         marker_unreadable = bool(r.get("marker_unreadable", False))
-        # Mirror the deletion pass's pre-v2 orphan condition exactly: an
-        # unreadable marker or a blank workdir is NOT prunable there, and only
-        # ``None`` (unset) workdir is treated as an orphan. Using ``not wd``
-        # (truthiness) here would preview a blank HERMES_WORKDIR as prunable
-        # while execution skips it — the exact divergence this PR removes.
-        confirmable = (
-            not marker_unreadable
-            and (
-                wd is None
-                or _workdir_is_observably_gone(
-                    wd, None, None, require_parent_identity=False
-                )
-            )
+        # The same single verdict the deletion pass uses (see _orphan_verdict),
+        # so a blank workdir / unreadable marker can never be previewed as
+        # prunable while execution skips it — the exact divergence this PR
+        # removes.
+        confirmable, reason = _orphan_verdict(
+            wd,
+            marker_unreadable=marker_unreadable,
+            require_parent_identity=False,
+            blank_workdir_confirmable=False,
         )
-        if confirmable:
-            reason = None
-        elif marker_unreadable:
-            reason = "shadow repo marker is unreadable"
-        elif not wd:
-            reason = "blank workdir recorded"
-        else:
-            reason = _workdir_unreachable_reason(
-                wd, None, None, require_parent_identity=False
-            )
         out["pre_v2_projects"].append({
             "path": str(r["path"]),
             "workdir": wd,

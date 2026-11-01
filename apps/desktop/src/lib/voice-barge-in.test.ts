@@ -168,6 +168,27 @@ describe('monitorSpeechDuringPlayback — voice.barge_in_threshold_multiplier (#
       // The same level is genuine speech once captured in the quiet gap.
       advance(320)
       expect(onSpeech).toHaveBeenCalledOnce()
+      expect(onSpeech).toHaveBeenCalledWith(false)
+    } finally {
+      stop()
+    }
+  })
+
+  it('retains playback provenance for loud speech delivered during a sentence gap', async () => {
+    let playing = false
+    const onSpeech = vi.fn()
+    const stop = monitorSpeechDuringPlayback({ isPlaying: () => playing, onSpeech })
+
+    try {
+      await flushMicrotasks()
+      advance(600)
+      playing = true
+      advance(700)
+      captureClock = now + 512
+      playing = false
+      micLevel = 0.2
+      advance(512)
+      expect(onSpeech).toHaveBeenCalledExactlyOnceWith(true)
     } finally {
       stop()
     }

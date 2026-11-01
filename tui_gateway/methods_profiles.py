@@ -602,6 +602,21 @@ def _bots_title(ui_meta: dict):
     return bots.get("title") if isinstance(bots, dict) else None
 
 
+def _bots_paused(ui_meta: dict) -> bool:
+    bots = ui_meta.get("hermes-bots")
+    return isinstance(bots, dict) and bots.get("paused") is True
+
+
+def _apply_bot_pause(profile_dir, was_paused: bool, paused: bool, applied: dict) -> None:
+    """The backend half of a Bot Mode pause: stamp its start/end so the resume skips the slots
+    missed meanwhile (``tools/bot_mode_pause.py``), and tell the Desktop this gateway enforces the
+    flag; an older one stores ``paused`` without acting on it, and the Desktop says so."""
+    if paused != was_paused:
+        from tools.bot_mode_pause import record_pause_change
+        record_pause_change(profile_dir, paused)
+    applied["bot_pause_enforced"] = True
+
+
 def _configure_ui_meta(profile_dir, params, applied) -> None:
     """Merge ``params["ui_meta"]`` key-wise into profile.yaml (None deletes). 64KB cap (rides
     every roster paint). ``ui_meta_expected_revisions``: per-key CAS, any mismatch rejects the
@@ -629,7 +644,7 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
                 return
             current = existing.get("ui_meta")
             current = current if isinstance(current, dict) else {}
-            old_title = _bots_title(current)
+            old_title, was_paused = _bots_title(current), _bots_paused(current)
             for key, value in incoming.items():
                 if value is None:
                     current.pop(key, None)
@@ -641,6 +656,11 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
             else:
                 existing.pop("ui_meta", None)
             existing["_ui_meta_revisions"] = revisions
+            if "hermes-bots" in incoming:
+                # Window before flag, both ways: a tick between the writes (or a failed flag write)
+                # sees "unpaused, window open" (not paused yet) or "paused, window closed" (still
+                # holding), never an unpaused bot whose pause slots are not yet on record.
+                _apply_bot_pause(profile_dir, was_paused, _bots_paused(current), applied)
             from utils import atomic_yaml_write
             atomic_yaml_write(profile_dir / "profile.yaml", existing, sort_keys=False)
             applied["ui_meta"] = True

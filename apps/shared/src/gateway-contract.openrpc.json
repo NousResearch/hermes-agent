@@ -29622,6 +29622,18 @@
             "default": null,
             "title": "Ui Meta Conflicts"
           },
+          "bot_pause_enforced": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Bot Pause Enforced"
+          },
           "soul": {
             "anyOf": [
               {

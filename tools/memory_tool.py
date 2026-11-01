@@ -258,6 +258,17 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
     if operations:
         if not isinstance(operations, list):
             return _invalid("operations must be a list of {action, content?, old_text?} objects.")
+        # Each entry must be an object (#92177-class crash: a bare string op reached
+        # _batch_op_line, whose op.get() killed the whole turn and wedged the lane).
+        if any(not isinstance(op, dict) for op in operations):
+            return _invalid(
+                "operations must be a list of {action, content?, old_text?} objects; "
+                "one or more entries were not objects (got "
+                f"{sorted({type(op).__name__ for op in operations if not isinstance(op, dict)})})."
+            )
+        if any(op.get("action") not in _STORE_ACTIONS for op in operations):
+            bad = sorted({str(op.get("action")) for op in operations if op.get("action") not in _STORE_ACTIONS})
+            return _invalid(f"Unknown batch action(s) {bad}. Use: add, patch, remove")
         if any(isinstance(op, dict) and op.get("action") == "replace" for op in operations):
             return _invalid(_REPLACE_REMOVED)
         denied = _background_delete_gate(store, action, operations, target)

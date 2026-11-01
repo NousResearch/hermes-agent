@@ -347,6 +347,83 @@ class TestMattermostWebSocketParsing:
         assert msg_event.message_type is MessageType.COMMAND
         assert msg_event.get_command() == "new"
 
+    @pytest.mark.asyncio
+    async def test_bang_known_command_is_command(self):
+        """'!cmd' aliases '/cmd': Mattermost reserves '/status' as a native presence
+        command (and mobile blocks '/' posts entirely, #25184), so the bang form is the
+        only way to reach those commands from a post."""
+        post_data = {
+            "id": "post_bang",
+            "user_id": "user_123",
+            "channel_id": "chan_dm",
+            "message": "!model opus",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "D",
+                "sender_name": "@bob",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/model opus"
+        assert msg_event.message_type is MessageType.COMMAND
+        assert msg_event.get_command() == "model"
+
+    @pytest.mark.asyncio
+    async def test_bang_unknown_text_stays_text(self):
+        """Ordinary exclamations must not be mistaken for commands."""
+        post_data = {
+            "id": "test_bang_unknown_text_stays_text",
+            "user_id": "user_123",
+            "channel_id": "chan_dm",
+            "message": "!nice work team",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "D",
+                "sender_name": "@bob",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "!nice work team"
+        assert msg_event.message_type is MessageType.TEXT
+        assert msg_event.get_command() is None
+
+    @pytest.mark.asyncio
+    async def test_bang_command_after_mention_in_channel(self):
+        """Gating strips the mention first, so '@bot !stop' reaches commands like the DM form."""
+        post_data = {
+            "id": "post_bang_chan",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@hermes-bot !stop",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/stop"
+        assert msg_event.message_type is MessageType.COMMAND
+        assert msg_event.get_command() == "stop"
+
 
 # ---------------------------------------------------------------------------
 # Mention behavior (require_mention + free_response_channels)

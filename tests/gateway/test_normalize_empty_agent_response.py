@@ -147,22 +147,26 @@ class TestGenericFailureRegression:
 
 
 class TestNonempty400EnvelopeOverflowReply:
-    """Failed turns that already carry the HTTP 400 envelope as ``final_response`` must still get
-    the session-too-large rewrite (chat sanitizers would otherwise turn the envelope into a generic
-    'provider failed' reply); every other failure with text keeps that text."""
+    """Only an overflow envelope gets session-too-large guidance; a generic rejection keeps its text."""
 
     _ENVELOPE = 'HTTP 400: {"object":"error","model":"deepseek-v4-flash"}'
 
     def _failed(self, text):
         return {"final_response": text, "failed": True, "error": text, "api_calls": 1}
 
-    def test_long_history_rewrites_envelope_to_session_too_large(self):
-        response = _normalize_empty_agent_response(
+    def test_long_history_does_not_make_generic_envelope_an_overflow(self):
+        assert _normalize_empty_agent_response(
             self._failed(self._ENVELOPE), self._ENVELOPE, history_len=138,
+        ) == self._ENVELOPE
+
+    def test_explicit_overflow_rewrites_envelope_to_session_too_large(self):
+        envelope = 'HTTP 400: {"error":"maximum context length exceeded"}'
+        response = _normalize_empty_agent_response(
+            self._failed(envelope), envelope, history_len=138,
         )
         assert "too long" in response.lower()
         assert "/compress" in response
-        assert self._ENVELOPE not in response
+        assert envelope not in response
 
     @pytest.mark.parametrize("text", [
         "Billing or credits exhausted: HTTP 429: You exceeded your current quota",

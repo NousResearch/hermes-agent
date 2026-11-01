@@ -17910,7 +17910,6 @@ app.whenReady().then(() => {
   // captured by the original transaction before removing the journal entry.
   void resumeManagedSshRecoveries()
   installApplicationMenuAfterFirstWindow({
-    isMac: IS_MAC,
     buildMenu: buildApplicationMenu,
     setApplicationMenu: menu => Menu.setApplicationMenu(menu),
     createWindow

@@ -72,6 +72,7 @@ import {
   processStartMarker,
   REAP_PROBE_TIMEOUT_MS
 } from './backend-claim'
+import { replacementBackendPromise } from './backend-connection-settle'
 import { createBackendConnectionState } from './backend-connection-state'
 import { assertDescriptorStillOwned, forgetFailedDescriptor } from './backend-descriptor-cache'
 import { BackendDialClaims } from './backend-dial-claim'
@@ -11966,6 +11967,22 @@ async function startHermes(requestedProfile?: string) {
     // the primary actually booted as another profile (#825324fd).
     return { ...connection, profile: primaryProfile, logs: hermesLog.slice(-80), ...getWindowState() }
   })().catch(async error => {
+    // A sleep/wake retry invalidates this attempt and starts another. The loser
+    // used to reject hermes:connection, and that rejection stayed on screen as
+    // "Hermes couldn't start" after the winner was already ready.
+    if (!backendConnectionState.isCurrentAttempt(connectionAttempt)) {
+      const replacement = await replacementBackendPromise(connectionPromise, () =>
+        backendConnectionState.getPromise()
+      )
+
+      if (replacement) {
+        return replacement
+      }
+
+      rememberLog('[backend] stale connection attempt ended after a newer start replaced it')
+      throw error
+    }
+
     if (!backendConnectionState.clearPromiseForAttempt(connectionAttempt)) {
       throw error
     }

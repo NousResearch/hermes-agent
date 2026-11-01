@@ -33,7 +33,8 @@ import {
   completeDesktopBoot,
   failDesktopBoot,
   resumeDesktopBootForRetry,
-  setDesktopBootStep
+  setDesktopBootStep,
+  shouldDismissStaleBootFailure
 } from '@/store/boot'
 import { resetBackgroundPollingGuard } from '@/store/composer-status'
 import { noteBackendDrop, noteBackendExited } from '@/store/desktop-metrics'
@@ -957,6 +958,11 @@ export function useGatewayBoot({
 
         if (mayPublishFailure) {
           const message = err instanceof Error ? err.message : String(err)
+
+          if (message.includes('superseded by a newer connection attempt')) {
+            return
+          }
+
           bootFailed = true
           failDesktopBoot(message)
 
@@ -990,6 +996,15 @@ export function useGatewayBoot({
       // ticket-mint / host-unreachable failures must stay in the reconnect loop
       // (otherwise a 1–3 min blip bricks reading/drafting behind "couldn't start").
       if ($gatewaySwitching.get() || bootCompleted || bootFailed) {
+        // A stale attempt's dialog must not stay up after the replacement
+        // start has already reached a live gateway.
+        if (bootFailed && shouldDismissStaleBootFailure($desktopBoot.get().error, payload)) {
+          bootFailed = false
+          completeDesktopBoot()
+
+          return
+        }
+
         // The blocked-update screen is not a boot step: a pool/profile backend
         // can meet a hold after the primary booted (R8 M6).
         if (payload.updateHold !== undefined) {
@@ -1651,6 +1666,10 @@ export function useGatewayBoot({
       } catch (err) {
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
+
+          if (message.includes('superseded by a newer connection attempt')) {
+            return
+          }
 
           // Main's classification (#82679) still decides every failure it can
           // see. The one it cannot see is the renderer-owned WebSocket dial:

@@ -114,6 +114,29 @@ class TestFormatSessionInfo:
         assert "131K" not in info
 
 
+    def test_fallback_pairs_runtime_model_with_provider_and_notice(self, runner, tmp_path):
+        """A pre-agent provider fallback must render the runtime model together with the
+        runtime provider (config primary + fallback provider is a pairing that serves
+        nothing) and carry the fallback notice (#139992)."""
+        p1, p2, p3 = _patch_info(
+            tmp_path, "model:\n  default: test-model\n  provider: primary-provider\n",
+            "test-model",
+            {
+                "provider": "zai",
+                "base_url": "",
+                "api_key": "",
+                "model": "glm-5.3",
+                "_fallback_notice": "Provider fallback: primary unavailable; using zai/glm-5.3 for this response.",
+            },
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "glm-5.3" in info
+        assert "zai" in info
+        assert "test-model" not in info
+        assert "Provider fallback" in info
+
+
 class TestResetNoticeSessionInfo:
     """#59003: the auto-reset banner must report the serving profile's config,
     not the multiplexer's base config."""

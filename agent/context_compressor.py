@@ -1516,8 +1516,8 @@ def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]], retired
     the reactive strip (#89286). Call this on the cloned ``api_messages`` list after
     sanitization (#89296). Do not pass persisted history — the rewrite is send-path only.
 
-    Eviction is driven by the provider limit, counted in image BLOCKS, with user uploads
-    reserved against the ceiling but never rewritten; the block ceiling depends on the
+    Eviction is driven by the provider limit, counted in image BLOCKS. User uploads and
+    tool-result images share the oldest-first frontier; the block ceiling depends on the
     request's image dimensions — policy and rationale in :mod:`agent.image_eviction_policy`.
     Returns the number of messages rewritten.
     ``retired_ids`` latches the frontier per session: see :func:`latched_retire_count`.
@@ -1527,7 +1527,7 @@ def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]], retired
     for i in range(len(api_messages) - 1, -1, -1):
         msg = api_messages[i]
         sources = _image_payload(msg) if isinstance(msg, dict) else []
-        if sources and msg.get("role") == "tool":
+        if sources and msg.get("role") in {"tool", "user"}:
             carriers.append((i, sources))
         else:
             reserved.extend(sources)
@@ -1538,10 +1538,20 @@ def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]], retired
         reserved_bytes=sum(map(len, reserved)),
         many_image_safe=images_all_within_many_image_limit([*reserved, *(x for _, ss in carriers for x in ss)]),
     )
-    retire = latched_retire_count(retire, [api_messages[i].get("tool_call_id") for i, _ in carriers], retired_ids)
+    carrier_ids: list[Optional[str]] = []
+    for i, _ in carriers:
+        carrier_id = api_messages[i].get("tool_call_id") or api_messages[i].get("id")
+        carrier_ids.append(carrier_id if isinstance(carrier_id, str) else None)
+    retire = latched_retire_count(retire, carrier_ids, retired_ids)
     pruned = 0
     for i, _ in carriers[len(carriers) - retire:]:
-        new_msg = _strip_images_from_tool_msg(api_messages[i])
+        msg = api_messages[i]
+        if msg.get("role") == "tool":
+            new_msg = _strip_images_from_tool_msg(msg)
+        elif _content_has_images(msg.get("content")):
+            new_msg = _rewritten(msg, _strip_images_from_content(msg.get("content")))
+        else:
+            new_msg = None
         if new_msg is not None:
             api_messages[i] = new_msg
             pruned += 1

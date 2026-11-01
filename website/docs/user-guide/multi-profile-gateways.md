@@ -1058,10 +1058,43 @@ pkill caffeinate
 | `-t N` | auto-exit after `N` seconds                       |
 | `-w P` | exit when PID `P` exits                           |
 
-:::warning Lid-close still sleeps the Mac
-`caffeinate` cannot override the hardware-driven lid-close sleep on MacBooks.
-For lid-closed operation, change your Energy Saver / Battery preferences or
-use a third-party tool.
+:::warning Closing a MacBook's lid
+Preventing idle sleep is not the same as preventing lid-close sleep.
+`caffeinate -i` or `-d`, `pmset sleep 0`, and the Battery setting that prevents
+automatic sleeping when the display is off are not a guarantee of lid-closed
+operation. If the host sleeps, the gateway cannot process messages until the
+host wakes and connectivity resumes.
+
+- **On AC power, test `caffeinate -s`** (`-dis` above includes it). It creates a
+  system-sleep assertion without root, active only on AC according to
+  `man caffeinate`. In a test on an M2 Pro MacBook Pro (`Mac14,9`), macOS 26.5.1
+  (`25F80`), with no external display and Amphetamine off, a launchd gateway
+  answered a new Telegram message after 15 minutes 22 seconds idle with the
+  lid closed and USB-C power connected. Unplugging power caused clamshell
+  sleep. This is evidence for that configuration, not a guarantee across Mac
+  models or macOS versions; do not assume automatic recovery after reconnecting
+  power without testing it.
+- **Gateway availability needs protection between turns.** An assertion held
+  only during an active agent turn cannot keep a sleeping gateway reachable
+  for the next message. Keep the host-level assertion running for the period
+  when you need the gateway available; this documentation does not add a
+  built-in gateway-lifetime mode.
+- **Closed-display mode with an external display** is another option. Check
+  Apple's requirements for your Mac, including power and external input
+  devices, rather than assuming all lid-closed configurations are supported.
+- **Avoid relying on `pmset disablesleep` as a routine workaround.** This
+  undocumented, system-wide setting is used by some closed-display helpers
+  and can suppress sleep on battery too. Its hardware behavior was not tested
+  here. If you previously enabled it, restore the recorded prior value rather
+  than leaving it enabled. Never put a running, lid-closed laptop in a bag:
+  heat and battery drain remain risks.
+
+To verify your setup, inspect `pmset -g assertions` for the `caffeinate`
+`PreventSystemSleep` assertion, then send a **new** message after an idle
+interval with the lid closed. An assertion alone does not prove delivery.
+Inspect timestamped entries in `pmset -g log` for clamshell sleep and wake
+transitions. Test power-disconnect/reconnect behavior separately, and stop
+only the `caffeinate` process you started when the test is complete.
 :::
 
 ### Linux — `systemd-inhibit` or `loginctl`

@@ -349,8 +349,9 @@ function runGit(gitBin: string, args: string[], cwd?: string): Promise<{ code: n
       reject(new Error(`Git ${args[0]} timed out after ${GIT_TIMEOUT_MS / 1000} seconds.`))
     }, GIT_TIMEOUT_MS)
 
-    child.stderr?.on('data', chunk => {
-      stderr += String(chunk)
+    child.stderr?.setEncoding('utf8') // localized git messages are multi-byte; decode across chunks
+    child.stderr?.on('data', (chunk: string) => {
+      stderr += chunk
     })
 
     child.on('error', err => {

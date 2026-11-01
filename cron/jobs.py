@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 from hermes_time import now as _hermes_now
 from hermes_time import get_timezone
 from hermes_cli.observability.shared_metrics_gateway import record_cron_missed
-from utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside
+from utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside, read_text_shared
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
 # module attribute: a monkeypatched value wins because _ensure_croniter only probes while None
@@ -1340,9 +1340,13 @@ def get_ticker_last_error() -> Optional[str]:
 def _parse_jobs_file(jobs_file: Path) -> tuple[Any, bool]:
     """Tolerant jobs.json parse -> ``(data, used_strict_fallback)``: utf-8-sig absorbs a BOM, strict
     failure retries with ``strict=False``. IO/fallback errors propagate (caller decides repair vs
-    bail)."""
-    with open(jobs_file, "r", encoding="utf-8-sig") as f:
-        raw = f.read()
+    bail).
+
+    Reads through ``utils.read_text_shared``: jobs.json is published by ``os.replace`` from the
+    ticker, CLI and desktop surfaces, and on Windows a plain ``open`` racing that rename is refused
+    with ERROR_ACCESS_DENIED/SHARING_VIOLATION — reported as ``[Errno 13] Permission denied`` and
+    previously fatal for the running job."""
+    raw = read_text_shared(jobs_file, encoding="utf-8-sig")
     try:
         return json.loads(raw), False
     except json.JSONDecodeError:

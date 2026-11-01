@@ -404,7 +404,9 @@ def cron_incidents(args) -> int:
 
 _PERMISSION_HINT = ("  Hint: jobs.json may be owned by another user (e.g. rewritten by a root "
                     "`docker exec hermes hermes cron ...`). Fix ownership to match the gateway "
-                    "user, and prefer `docker exec -u <uid>:<gid>`.")
+                    "user, and prefer `docker exec -u <uid>:<gid>`. On Windows the same errno also "
+                    "comes from a read that raced a concurrent jobs.json save; that case is now "
+                    "retried automatically, so a persistent occurrence still points at ownership.")
 _FD_EXHAUSTION_HINT = ("  Hint: the ticker hit file-descriptor exhaustion (EMFILE). The scheduler "
                        "now retries with backoff and attempts fd reclamation, but if the leak "
                        "persists, restart the gateway to recover scheduling.")

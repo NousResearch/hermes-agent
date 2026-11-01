@@ -223,6 +223,71 @@ def _publish_path(target_str: str) -> str:
     return os.path.realpath(target_str) if os.path.islink(target_str) else target_str
 
 
+# --- Contention-tolerant reads ---------------------------------------------------------------
+# Mirror image of the _REPLACE_RETRY_* budget: a reader that opens the target of an in-flight
+# os.replace() is refused on Windows, because CPython opens files WITHOUT FILE_SHARE_DELETE.
+# ERROR_ACCESS_DENIED (5) and ERROR_SHARING_VIOLATION (32) both surface as ``[Errno 13] Permission
+# denied`` — indistinguishable from a real ACL denial — so a reader with no retry turns a
+# sub-millisecond rename window into a failed run (measured on cron jobs.json: the read during a
+# multi-job dispatch second fails, and the run is recorded FAILED, while the ticker saved jobs.json
+# in the same second).
+#
+# Deliberately NOT solved by opening the reader's handle with FILE_SHARE_DELETE: measured on the
+# affected host, a share-delete handle still denies the writer's os.replace (winerror 5), so it buys
+# none of the expected benefit while adding a ctypes path. Retrying the read is the fix that
+# matches the failure mode: the denial is transient and the next attempt sees one complete revision.
+_READ_RETRY_ATTEMPTS = 4
+_READ_RETRY_BASE_DELAY_S = 0.02
+_READ_RETRY_MAX_DELAY_S = 0.1
+# A rename over an OPEN file is legal on POSIX, so EACCES/EBUSY here mean a network or FUSE
+# filesystem where a concurrent replace can still surface as a transient denial.
+_CONTENDED_READ_ERRNOS = frozenset({errno.EACCES, errno.EBUSY})
+
+
+def _is_contended_read_error(exc: OSError) -> bool:
+    """Whether *exc* is plausibly a read that raced a concurrent replace, not a real denial.
+
+    Deliberately errno-based (not ``_is_contended_windows_replace_error``) so the predicate is the
+    same on every platform and coverable by a portable test; a genuine denial merely pays the
+    bounded retry budget before surfacing unchanged.
+    """
+    if exc.errno in _CONTENDED_READ_ERRNOS:
+        return True
+    return _IS_WINDOWS and getattr(exc, "winerror", None) in _WINDOWS_CONTENDED_REPLACE_ERRORS
+
+
+def _read_text_once(path: str | Path, encoding: str) -> str:
+    """One plain open+read; the seam :func:`read_text_shared` retries around."""
+    with open(path, "r", encoding=encoding) as handle:
+        return handle.read()
+
+
+def _read_retry_delay(attempt: int) -> float:
+    """Jittered backoff for read attempt *attempt* (1-based), sharing the writer's constants."""
+    try:
+        from agent.retry_utils import jittered_backoff
+    except ImportError:  # pragma: no cover - agent package unavailable (standalone utils use)
+        return min(_READ_RETRY_BASE_DELAY_S * (2 ** (attempt - 1)), _READ_RETRY_MAX_DELAY_S)
+    return jittered_backoff(
+        attempt, base_delay=_READ_RETRY_BASE_DELAY_S, max_delay=_READ_RETRY_MAX_DELAY_S)
+
+
+def read_text_shared(path: str | Path, encoding: str = "utf-8-sig") -> str:
+    """Read *path*, tolerating a concurrent atomic replace of it.
+
+    Raises the last OSError unchanged once the retry budget is spent, so a real permission,
+    existence or encoding problem still reaches the caller with its original errno.
+    """
+    for attempt in range(_READ_RETRY_ATTEMPTS + 1):
+        try:
+            return _read_text_once(path, encoding)
+        except OSError as exc:
+            if attempt >= _READ_RETRY_ATTEMPTS or not _is_contended_read_error(exc):
+                raise
+            time.sleep(_read_retry_delay(attempt + 1))
+    raise AssertionError("unreachable: retry loop returned or raised")
+
+
 def mkstemp_beside(target: str | Path, **kw: Any) -> tuple[int, str]:
     """``tempfile.mkstemp`` in the directory :func:`atomic_replace` will rename into.
 

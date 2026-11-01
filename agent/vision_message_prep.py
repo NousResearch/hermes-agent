@@ -313,7 +313,7 @@ class VisionMessagePrepMixin:
             "dashscope" in host
             or base_url_host_matches(base, "aliyuncs.com")
             or "minimax" in host
-            or (base_url_host_matches(base, "opencode.ai") and "/zen/" in base)
+            or base_url_host_matches(base, "opencode.ai")
             or base_url_host_matches(base, "bigmodel.cn")
             or base_url_host_matches(base, "xiaomimimo.com")
             # Vertex AI OpenAI-compat endpoint — Gemini model ids keep dots

@@ -1029,7 +1029,7 @@ def _parse_models_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refresh: bool = False) -> dict[str, dict[str, Any]]:
     """Model metadata from an OpenAI-compatible ``/models`` endpoint (cached per base URL)."""
     normalized = _normalize_base_url(base_url)
-    if not normalized or base_url_host_matches(normalized, "openrouter.ai"):
+    if not normalized or any(base_url_host_matches(normalized, h) for h in ("openrouter.ai", "opencode.ai")):  # OpenCode lists ids only
         return {}
     local = is_local_endpoint(normalized)
     memo_key = _endpoint_memo_key(normalized, api_key)

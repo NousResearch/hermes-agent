@@ -2151,6 +2151,7 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
     from hermes_cli.providers import determine_api_mode, is_actual_route
     from agent.native_compaction import resolve_native_compaction_capabilities
     from hermes_cli.models import opencode_provider_family
+    from hermes_cli.models_opencode import normalize_opencode_base_url
     # Pass model so dual-wire providers (Nous Portal anthropic/* -> Messages) resolve correctly.
     if not api_mode:
         api_mode = determine_api_mode(new_provider, base_url, model=new_model)
@@ -2175,15 +2176,10 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
             is_codex_backend=new_norm == "openai-codex",
         )
     )
-    # Guard against a trailing /v1 on OpenCode base_url reaching the anthropic_messages client
-    # (double-/v1 404); model_switch already strips it, direct callers may not.
-    if (
-        api_mode == "anthropic_messages"
-        and opencode_provider_family(new_provider) is not None
-        and isinstance(base_url, str)
-        and base_url
-    ):
-        base_url = re.sub(r"/v1/?$", "", base_url)
+    # Guard against an OpenCode base_url for another wire API reaching the client (an OpenAI base on
+    # the anthropic_messages client 404s); model_switch already normalizes it, direct callers may not.
+    if opencode_provider_family(new_provider) is not None and isinstance(base_url, str) and base_url:
+        base_url = normalize_opencode_base_url(new_provider, api_mode, base_url)
     return api_mode, base_url, destination_capabilities
 
 

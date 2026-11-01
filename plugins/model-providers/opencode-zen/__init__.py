@@ -11,6 +11,7 @@ from hermes_cli.version_info import hermes_user_agent
 from providers import register_provider
 from providers.base import LazyHeaders, ProviderProfile
 from datetime import UTC
+from utils import base_url_host_matches
 
 # Attribution headers (same values as OpenRouter / Vercel / Fireworks); via
 # default_headers so they survive model switches and credential rotation.
@@ -43,7 +44,21 @@ def _is_glm_5_2_model(model: str | None) -> bool:
     return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
 
 
-class OpenCodeGoProfile(ProviderProfile):
+class OpenCodeProfile(ProviderProfile):
+    """Shared OpenCode model listing."""
+
+    def fetch_models(self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0):
+        """The catalog has no per-API path, so it isn't under any runtime base: list the family catalog
+        unless base_url is a proxy off opencode.ai. Not ``models_url``, which would make the curated list
+        authoritative in validation and reject models it doesn't have yet."""
+        from hermes_cli.models_opencode import opencode_catalog_base
+
+        if not base_url or base_url_host_matches(base_url, "opencode.ai"):
+            base_url = opencode_catalog_base(self.base_url)
+        return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
+
+
+class OpenCodeGoProfile(OpenCodeProfile):
     """OpenCode Go - model-specific reasoning controls."""
 
     # The relay's default max_tokens (262144) exceeds what Xiaomi accepts for
@@ -55,11 +70,11 @@ class OpenCodeGoProfile(ProviderProfile):
         return self.default_max_tokens if cap is None else cap
 
     def fetch_account_usage(self, *, base_url: str | None = None, api_key: str | None = None):
-        """Go subscription windows for /usage via ``/zen/go/v1/usage`` (anomalyco/opencode#16513).
+        """Go subscription windows for /usage via ``/inference/go/v1/usage`` (anomalyco/opencode#16513).
 
         Percent-based payload ``{"usage": {"rolling"|"weekly"|"monthly": {"percent", "resetsAt"}}}``.
-        Literal endpoint, NOT the runtime base_url: that one loses its /v1 suffix in
-        anthropic_messages mode and /usage only exists under /v1.
+        Literal endpoint, NOT the runtime base_url: usage has no per-API path, so it isn't under any
+        of the runtime's bases.
         """
         from datetime import datetime, timezone
 
@@ -73,7 +88,7 @@ class OpenCodeGoProfile(ProviderProfile):
         if not token:
             return None
         with httpx.Client(timeout=10.0) as client:
-            response = client.get("https://opencode.ai/zen/go/v1/usage",
+            response = client.get("https://opencode.ai/inference/go/v1/usage",
                                   headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
             response.raise_for_status()
         usage = (response.json() or {}).get("usage") or {}
@@ -107,7 +122,7 @@ class OpenCodeGoProfile(ProviderProfile):
         return {}, {}
 
 
-class OpenCodeZenProfile(ProviderProfile):
+class OpenCodeZenProfile(OpenCodeProfile):
     """OpenCode Zen - model-specific reasoning controls."""
 
     def build_api_kwargs_extras(
@@ -118,13 +133,13 @@ class OpenCodeZenProfile(ProviderProfile):
 
 opencode_zen = OpenCodeZenProfile(
     name="opencode-zen", aliases=("opencode", "opencode_zen", "zen"), env_vars=("OPENCODE_ZEN_API_KEY",),
-    base_url="https://opencode.ai/zen/v1", default_headers=LazyHeaders(_ATTRIBUTION_HEADERS),
+    base_url="https://opencode.ai/inference/openai/v1", default_headers=LazyHeaders(_ATTRIBUTION_HEADERS),
     default_aux_model="gemini-3-flash",
 )
 
 opencode_go = OpenCodeGoProfile(
     name="opencode-go", aliases=("opencode_go", "go", "opencode-go-sub"), env_vars=("OPENCODE_GO_API_KEY",),
-    base_url="https://opencode.ai/zen/go/v1", default_headers=LazyHeaders(_ATTRIBUTION_HEADERS),
+    base_url="https://opencode.ai/inference/go/openai/v1", default_headers=LazyHeaders(_ATTRIBUTION_HEADERS),
     default_aux_model="glm-5",
     # The Go relay's upstream validates tool content as a strict string: list-type tool
     # content (native vision embeds) 422s with ``messages.N.tool.content.str Input should

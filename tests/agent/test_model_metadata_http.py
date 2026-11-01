@@ -117,3 +117,18 @@ def test_metadata_auth_failure_closes_without_reading_body(servers, monkeypatch,
         assert requests == ["/v1/models"]
     assert all(response.is_closed for response in responses)
     assert not responses[0].is_stream_consumed, "rejection read the absent body"
+
+
+
+@pytest.mark.parametrize("base_url", [
+    "https://opencode.ai/inference/go/openai/v1",
+    "https://opencode.ai/inference/anthropic",
+])
+def test_opencode_endpoint_metadata_is_not_probed(base_url, monkeypatch):
+    """OpenCode's catalog has no per-API path and lists ids only, so ``{runtime base}/models`` would 404
+    and the real catalog holds no context length or pricing: no request is made."""
+    urls = []
+    monkeypatch.setattr(model_metadata_http, "stream", lambda url, **kwargs: urls.append(url))
+
+    assert model_metadata.fetch_endpoint_model_metadata(base_url, api_key="sk-test", force_refresh=True) == {}
+    assert urls == []

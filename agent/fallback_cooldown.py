@@ -88,9 +88,15 @@ def _mark_entitlement_rejected_model(agent, api_error) -> bool:
     """
     if getattr(api_error, "status_code", None) != 400:
         return False
-    from agent.error_classifier import CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER
+    from agent.error_classifier import (
+        CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER, _PROVIDER_POLICY_BLOCKED_PATTERNS,
+    )
     haystack = str(getattr(api_error, "message", "") or api_error).lower()
-    if CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER not in haystack:
+    entitlement = CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER in haystack
+    # Same session quarantine for workspace policy blocks that refuse the model
+    # itself (OpenCode Go privacy 400). Not a malformed request (#119473).
+    policy_blocked = any(p in haystack for p in _PROVIDER_POLICY_BLOCKED_PATTERNS)
+    if not entitlement and not policy_blocked:
         return False
     provider = str(getattr(agent, "provider", "") or "").strip().lower()
     model = str(getattr(agent, "model", "") or "").strip()
@@ -105,15 +111,26 @@ def _mark_entitlement_rejected_model(agent, api_error) -> bool:
     if (provider, model) in rejected:
         return True
     rejected.add((provider, model))
-    logger.warning(
-        "Model entitlement rejection: this account is not entitled to %s via %s; "
-        "treating it as unavailable for this session",
-        model, provider,
-    )
-    agent._buffer_diagnostic_status(
-        f"🚫 This account is not entitled to {model} via {provider}; it will be skipped "
-        "until restart. Switch to an entitled model via /model or `hermes model`."
-    )
+    if entitlement:
+        logger.warning(
+            "Model entitlement rejection: this account is not entitled to %s via %s; "
+            "treating it as unavailable for this session",
+            model, provider,
+        )
+        agent._buffer_diagnostic_status(
+            f"🚫 This account is not entitled to {model} via {provider}; it will be skipped "
+            "until restart. Switch to an entitled model via /model or `hermes model`."
+        )
+    else:
+        logger.warning(
+            "Model rejection: %s via %s is unavailable for this account/workspace; "
+            "treating it as unavailable for this session",
+            model, provider,
+        )
+        agent._buffer_diagnostic_status(
+            f"🚫 {model} via {provider} is blocked for this account/workspace; it will be skipped "
+            "until restart. Replace it with `hermes fallback` or /model."
+        )
     return True
 
 

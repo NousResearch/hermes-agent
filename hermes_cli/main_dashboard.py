@@ -90,6 +90,29 @@ def _run_probe(cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess:
         cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False)
 
 
+def _dashboard_unit_owned_by_this_update(scope_cmd: list, unit: str) -> bool:
+    """Gate a managed-dashboard restart on the unit's home being one this update owns.
+
+    The bare ``hermes-dashboard.service`` name is an ACCOUNT-global identity: two full installs
+    under one login user install the SAME unit name, so "the unit exists under this name" says
+    nothing about WHICH install it runs. Without this gate the legacy managed step restarts
+    whichever dashboard that name belongs to — on a multi-install host that is the FIRST
+    install's production dashboard, so every update of ANY other install took it down (H-7).
+
+    The fleet-restart loop already classifies dashboard units this way and logs foreign ones as
+    "left alone (not restarted)"; this is the same gate applied to the legacy managed step.
+    Proven-foreign ownership and unreadable ownership (a user unit that names no home this
+    update owns) both leave the unit alone — a restart we cannot prove is ours is somebody
+    else's outage.
+    """
+    from hermes_cli.update_fleet_scope import describe_skipped_runtime, systemd_unit_hermes_home, home_in_update_scope
+    home = systemd_unit_hermes_home(list(scope_cmd), unit)
+    if home is not None and home_in_update_scope(home):
+        return True
+    print(describe_skipped_runtime("systemd unit", unit, home))
+    return False
+
+
 def _restart_managed_dashboard_service(reason: str, unit: str = _DASHBOARD_SYSTEMD_UNIT) -> bool:
     """Restart a systemd-managed dashboard instead of raw-killing its PID.
 
@@ -121,6 +144,14 @@ def _restart_managed_dashboard_service(reason: str, unit: str = _DASHBOARD_SYSTE
             break
 
     if scope is None:
+        return False
+
+    # H-7: the bare ``hermes-dashboard.service`` name is account-global — on a multi-install
+    # host it belongs to whichever install registered it first, so "exists under this name"
+    # would restart ANOTHER install's dashboard. Restart only when this unit's home is one this
+    # update owns; a proven-foreign or unreadable unit is named and left alone (the same gate the
+    # fleet-restart loop applies, and the shape of its "left alone" notice).
+    if not _dashboard_unit_owned_by_this_update(["systemctl", *scope], unit):
         return False
 
     try:

@@ -208,6 +208,40 @@ def test_in_dir_sets_no_restore_cwd(main_mod, launched, monkeypatch, tmp_path):
     assert args.no_restore_cwd is True
 
 
+def test_chat_passes_startup_no_restore_to_classic_cli(main_mod, monkeypatch):
+    """The early argument resolver's decision must reach history preloading."""
+    import sys
+    from types import SimpleNamespace
+
+    captured = {}
+    monkeypatch.setattr(main_mod, "_apply_safe_mode", lambda args: None)
+    monkeypatch.setattr(main_mod, "_apply_user_config_bypass", lambda args: None)
+    monkeypatch.setattr(main_mod, "_guard_noninteractive_user_config", lambda args: None)
+    monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda args: False)
+    monkeypatch.setattr(main_mod, "_resolve_chat_session_args", lambda args, use_tui: None)
+    monkeypatch.setattr(main_mod, "_warn_retired_xai_models", lambda: None)
+    monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+    monkeypatch.setattr(main_mod, "_start_chat_background_prefetch", lambda: None)
+    monkeypatch.setattr(main_mod, "_read_query_file", lambda args: None)
+    monkeypatch.setattr(main_mod, "_confirm_startup_expensive_model_override", lambda args: None)
+    monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.free_tier_bootstrap.run_bootstrap", lambda announce=False: None)
+    monkeypatch.setattr(
+        "hermes_cli.observability.shared_metrics_consent.offer_consent_before_chat",
+        lambda args: None)
+    monkeypatch.setattr(
+        "hermes_cli.observability.shared_metrics_process.begin_process", lambda name: None)
+
+    fake_cli = SimpleNamespace(main=lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    args = _args(no_restore_cwd=True)
+
+    main_mod.cmd_chat(args)
+
+    assert captured["no_restore_cwd"] is True
+
+
 def test_in_dir_missing_directory_exits(main_mod, monkeypatch, tmp_path, capsys):
     with pytest.raises(SystemExit) as exc:
         main_mod.cmd_chat(_args(in_dir=str(tmp_path / "nope")))

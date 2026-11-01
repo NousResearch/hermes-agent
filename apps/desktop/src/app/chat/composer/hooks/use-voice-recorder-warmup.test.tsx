@@ -1,6 +1,8 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { notify } from '@/store/notifications'
+
 import type { MicRecording } from './use-mic-recorder'
 import { useVoiceRecorder } from './use-voice-recorder'
 
@@ -100,6 +102,7 @@ describe('useVoiceRecorder STT readiness barrier', () => {
     })
     syncSttLeaseSpy.mockReset()
     syncSttLeaseSpy.mockImplementation(async () => undefined)
+    vi.mocked(notify).mockReset()
   })
 
   afterEach(() => {
@@ -182,6 +185,29 @@ describe('useVoiceRecorder STT readiness barrier', () => {
     })
 
     await waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1))
+  })
+
+  it('warns when the recorder returns no audio instead of silently dropping the take', async () => {
+    micHandle.stop.mockImplementationOnce(async () => {
+      recording = false
+
+      return null
+    })
+    const transcribe = vi.fn(async () => 'hello world')
+    const hook = renderRecorder(transcribe)
+
+    await act(async () => {
+      hook.result.current.dictate()
+    })
+    await act(async () => {
+      await Promise.resolve()
+      hook.result.current.dictate()
+    })
+
+    await waitFor(() =>
+      expect(notify).toHaveBeenCalledWith({ kind: 'warning', title: 'recording failed', message: 'try again' })
+    )
+    expect(transcribe).not.toHaveBeenCalled()
   })
 
   // #128668 review: one owner per recording — resolved at mic-open, used for

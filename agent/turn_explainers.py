@@ -9,6 +9,7 @@ from contextlib import suppress
 from typing import Any, Dict, Optional
 
 from agent.i18n import t
+from hermes_constants import get_scratch_dir
 from agent.tool_dispatch_helpers import (
     _extract_error_preview, _extract_file_mutation_targets, _extract_landed_file_mutation_paths
 )
@@ -170,11 +171,15 @@ class TurnExplainersMixin:
         The recorder only sees write_file/patch receipts; a terminal redirect or an
         execute_code write leaves none. Re-checking the stat signature at turn end keeps
         the footer from listing a file that was in fact modified later this turn. Entries
-        without a snapshot (hand-built dicts) are kept as-is.
+        without a snapshot (hand-built dicts) are kept as-is. Paths under the Hermes scratch dir
+        are dropped too: throwaway helper files a cron/worker rewrites each run are not
+        deliverables, and listing them is noise in the footer.
         """
+        scratch = os.path.realpath(get_scratch_dir(prune=False)) + os.sep
         return {
             path: info for path, info in failed.items()
-            if "stat" not in info or _file_stat_signature(info["identity"]) == info["stat"]
+            if not os.path.realpath(os.path.expanduser(path)).startswith(scratch)
+            and ("stat" not in info or _file_stat_signature(info["identity"]) == info["stat"])
         }
 
     def _file_mutation_verifier_enabled(self) -> bool:

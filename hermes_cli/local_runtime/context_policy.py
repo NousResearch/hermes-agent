@@ -32,6 +32,13 @@ TARGET_WINDOW = 144 * 1024
 # past this constant). Callers add mmproj bytes on top.
 RUNTIME_OVERHEAD_BYTES = int(1.5 * (1 << 30))
 
+# Partial MoE spill covers the spill budget with this multiple of expert weight. Covering it
+# exactly leaves CUDA residency exactly full, and WDDM answers a bare overcommit by demoting
+# whole allocations to shared memory — a paging loop that measured ~30x decode collapse on a
+# 96 GB card (DeepSeek-V4-Flash, 21/43 expert blocks GPU, ~4 GiB over). The margin keeps
+# partial-offload launches inside dedicated VRAM across fit-table rounding.
+SPILL_COVER_MARGIN = 1.25
+
 # llama.cpp's default microbatch, and the larger one launch_args passes for faster prefill.
 DEFAULT_UBATCH = 512
 PREFILL_UBATCH = 2048
@@ -277,12 +284,43 @@ def recurrent_spill_blocks(profile: ModelProfile, spill_bytes: int | None = None
     return chosen
 
 
+def moe_spill_blocks(profile: ModelProfile, spill_bytes: int) -> list[int]:
+    """Fewest front blocks whose expert weights cover ``spill_bytes`` with margin.
+
+    MoE mirror of ``recurrent_spill_blocks``: routed experts are the dominant, latency-tolerant
+    weights, so displacing only enough of them to satisfy the spill budget keeps attention + KV
+    GPU-resident and preserves the rest of the VRAM budget for compute buffers. Expert weights
+    that stay GPU-resident keep their layer's decode off the host memory bus, so the fewer blocks
+    displaced the faster the model runs.
+
+    Every expert block when the model's experts cannot cover the budget — the all-to-host
+    placement this falls back to is also the legacy behavior for unknown block tables.
+    """
+    blocks = [i for i in sorted(profile.ffn_block_bytes) if i < len(profile.layers)]
+    covered_target = int(spill_bytes * SPILL_COVER_MARGIN)
+    chosen: list[int] = []
+    covered = 0
+    for i in blocks:
+        if covered >= covered_target:
+            break
+        chosen.append(i)
+        covered += profile.ffn_block_bytes[i]
+    return chosen
+
+
 def spill_overrides(profile: ModelProfile, spill_bytes: int | None = None) -> list[str]:
     """-ot placement for spilled configs: expert/FFN weights to host so attention + KV stay
-    GPU-resident. MoE gets the expert pattern; hybrids push the FFNs of just enough recurrent
-    blocks to cover ``spill_bytes`` (their n_head_kv==0 layers carry no KV worth protecting, and
-    full-attention FFNs stay on the GPU)."""
+    GPU-resident. MoE spills just enough expert blocks to cover the budget (margin included) —
+    all of them only when the experts cannot cover it; hybrids push the FFNs of just enough
+    recurrent blocks to cover ``spill_bytes`` (their n_head_kv==0 layers carry no KV worth
+    protecting, and full-attention FFNs stay on the GPU)."""
     if profile.moe:
+        if spill_bytes:
+            blocks = moe_spill_blocks(profile, spill_bytes)
+            expert_blocks = [i for i in sorted(profile.ffn_block_bytes) if i < len(profile.layers)]
+            if 0 < len(blocks) < len(expert_blocks):
+                pattern = "|".join(map(str, sorted(blocks, reverse=True)))
+                return ["-ot", r"blk\.(%s)\.ffn_.*_exps\.weight=CPU" % pattern]
         return ["-ot", r"blk\.\d+\.ffn_.*_exps\.weight=CPU"]
     blocks = recurrent_spill_blocks(profile, spill_bytes)
     if blocks:

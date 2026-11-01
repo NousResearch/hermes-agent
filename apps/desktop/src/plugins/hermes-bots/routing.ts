@@ -213,6 +213,7 @@ export interface BotRequestOptions {
  *  queues behind warm bot backends, times out after 30 s, then backs off —
  *  the write is lost. They dial foreground unless the caller says otherwise. */
 const PROFILE_WRITE_METHODS = new Set(['profiles.configure', 'profiles.create', 'profiles.set_asset'])
+const PASSIVE_PROFILE_ASSET_METHODS = new Set(['profiles.get_asset', 'profiles.set_asset'])
 
 export async function requestForBot<T = unknown>(
   bot: Partial<RosterRow> | null | undefined,
@@ -223,13 +224,36 @@ export async function requestForBot<T = unknown>(
   const route = botConnectionRoute(bot)
 
   if (route) {
+    const routedParams = scopedBotParams(route, method, params)
+
+    if (PASSIVE_PROFILE_ASSET_METHODS.has(method)) {
+      const activeConnectionId = String(
+        host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local'
+      ).trim()
+
+      // Passive avatar hydration should never cold-start a pooled backend.
+      // Local profiles normally share the primary backend now, but remote/SSH
+      // sources and HERMES_DESKTOP_ISOLATED_BACKEND still have per-profile
+      // pools. Only use the already-active source; otherwise defer to the next
+      // roster refresh rather than waking that profile backend.
+      if (activeConnectionId !== route.connectionId) {
+        throw new Error(`Passive ${method} deferred until source ${route.connectionId} is active`)
+      }
+
+      try {
+        return await (options?.timeoutMs === undefined
+          ? host.request(method, routedParams)
+          : host.request(method, routedParams, options.timeoutMs))
+      } catch (error) {
+        throw asRpcError(error, `Gateway request ${method} failed`)
+      }
+    }
+
     if (typeof host.requestProfile !== 'function') {
       throw new Error(`Cannot route ${method} for ${route.connectionId}::${route.profile}`)
     }
 
     try {
-      const routedParams = scopedBotParams(route, method, params)
-
       const spawnPriority =
         options?.spawnPriority ?? (PROFILE_WRITE_METHODS.has(method) ? ('foreground' as const) : undefined)
 

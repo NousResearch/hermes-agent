@@ -84,7 +84,7 @@ def test_a_catalog_entry_repinned_after_the_dialog_inspected_it_is_refused(world
     refused = _rpc("install", inspected_sha=reviewed, enable=False)["error"]
 
     assert "source changed since you reviewed it" in refused["message"]
-    assert refused["data"] == {"reason": "source_moved"}  # the dialog re-inspects and shows the new pin
+    assert refused["data"] == {"reason": "source_moved", "placed": False}  # the dialog re-inspects and shows the new pin
     assert not (home / "plugins" / "demo").exists()
 
 

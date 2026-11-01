@@ -1,4 +1,4 @@
-import type { GatewayWsUrlResult } from '@hermes/shared'
+import { type GatewayWsUrlResult, JsonRpcGatewayError } from '@hermes/shared'
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -55,8 +55,10 @@ vi.mock('@/hermes', async importOriginal => {
 // out on a loaded runner.
 import '@/store/session-states'
 
+import { GATEWAY_NOT_CONNECTED_MESSAGE } from '@/api/client'
 import type * as HermesModule from '@/hermes'
 import type { HermesGateway } from '@/hermes'
+import { installAgentPlugin } from '@/store/agent-plugins'
 import {
   $gateway,
   closeSecondaryGateways,
@@ -211,6 +213,26 @@ async function expectSecondaryRecoveryFailure(
   expect(gateway.connect).toHaveBeenCalledTimes(1)
 }
 
+async function installAfterFirstAttempt(firstError: Error, resend: Error) {
+  const primary = makePrimaryGateway()
+  primary.request.mockRejectedValueOnce(firstError).mockRejectedValueOnce(resend)
+
+  setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+  $gateway.set(primary as unknown as HermesGateway)
+  $gatewayState.set('open')
+
+  const { result } = renderHook(() => useGatewayRequest())
+  let outcome: Awaited<ReturnType<typeof installAgentPlugin>> | undefined
+
+  await act(async () => {
+    outcome = await installAgentPlugin(result.current.requestGateway, { identifier: 'demo', force: true })
+  })
+
+  expect(primary.request).toHaveBeenCalledTimes(2)
+
+  return outcome
+}
+
 beforeEach(() => {
   gatewayMocks.instances.length = 0
   closeSecondaryGateways()
@@ -271,6 +293,60 @@ describe('useGatewayRequest', () => {
     })
 
     expect(primary.request).toHaveBeenCalledTimes(2)
+  })
+
+  it('a plugin install resent after a dropped connection is not refused when the resend finds no connection', async () => {
+    // The first attempt may have installed before its connection dropped, so the resend's failure proves
+    // nothing about what the backend did, even when it says "not connected" and carries placed:false: only the
+    // FIRST attempt's error decides whether anything may have been sent.
+    const outcome = await installAfterFirstAttempt(
+      new Error('Hermes gateway connection closed'),
+      new JsonRpcGatewayError(GATEWAY_NOT_CONNECTED_MESSAGE, { code: 5026, data: { placed: false } })
+    )
+
+    expect(outcome).toMatchObject({ ok: false, refused: false, error: GATEWAY_NOT_CONNECTED_MESSAGE })
+  })
+
+  it('a plugin install resent after a dropped connection is not refused when the backend refuses the resend', async () => {
+    // The first attempt may have replaced and enabled the package before its connection dropped; the resend's
+    // refusal (for example the consent check) is then about that new tree, not proof that nothing landed.
+    const outcome = await installAfterFirstAttempt(
+      new Error('Hermes gateway connection closed'),
+      new JsonRpcGatewayError('install refused: consent required', { code: 5026, data: { placed: false } })
+    )
+
+    expect(outcome).toMatchObject({ ok: false, refused: false, error: 'install refused: consent required' })
+  })
+
+  it('a plugin install first sent once the connection is back is refused when the backend refuses it', async () => {
+    // "not connected" fails before anything is written to the socket, so the resend is the only attempt.
+    const outcome = await installAfterFirstAttempt(
+      new Error(GATEWAY_NOT_CONNECTED_MESSAGE),
+      new JsonRpcGatewayError('install refused: consent required', { code: 5026, data: { placed: false } })
+    )
+
+    expect(outcome).toMatchObject({ ok: false, refused: true })
+  })
+
+  it('a backend refusal that mentions a connection reset is not resent', async () => {
+    const primary = makePrimaryGateway()
+    primary.request.mockRejectedValueOnce(
+      new JsonRpcGatewayError('git clone failed: Connection reset by peer', { code: 5026, data: { placed: false } })
+    )
+
+    setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('open')
+
+    const { result } = renderHook(() => useGatewayRequest())
+    let outcome: Awaited<ReturnType<typeof installAgentPlugin>> | undefined
+
+    await act(async () => {
+      outcome = await installAgentPlugin(result.current.requestGateway, { identifier: 'demo', force: true })
+    })
+
+    expect(primary.request).toHaveBeenCalledTimes(1)
+    expect(outcome).toMatchObject({ ok: false, refused: true })
   })
 
   it('reconnects when gateway state is stale-open but the registered socket is closed', async () => {

@@ -70,7 +70,7 @@ def test_install_refuses_a_branch_that_moved_since_the_dialog_inspected_it(moved
     message = refused["error"]["message"]
     assert "source changed since you reviewed it" in message and tip[:12] in message
     # The client re-inspects on this structured marker, never on the message text.
-    assert refused["error"]["data"] == {"reason": "source_moved"}
+    assert refused["error"]["data"] == {"reason": "source_moved", "placed": False}
     assert not (home / "plugins" / "demo").exists()
 
 
@@ -88,7 +88,70 @@ def test_a_clone_failure_echoing_the_refusal_text_carries_no_marker(moved_repo, 
 
     refused = _install(inspected_sha=reviewed)["error"]
 
-    assert refused["code"] == 5026 and "data" not in refused
+    # Refused before anything was published: nothing was placed, and no ``source_moved`` from its text.
+    assert refused["code"] == 5026 and refused["data"] == {"placed": False}
+
+
+def test_a_refused_enable_names_the_tree_that_landed(moved_repo, monkeypatch):
+    """The install placed the tree, then its enable was refused: the client must know the agent half is
+    on disk, so the matching desktop half still goes down beside it."""
+    from hermes_cli import plugins_cmd
+    from hermes_cli.plugins_admission import AdmissionRefused
+    home, _reviewed, tip, _repo = moved_repo
+
+    def refuse(*_args, **_kwargs):
+        raise AdmissionRefused("dependency conflict")
+    monkeypatch.setattr(plugins_cmd, "_set_plugin_enabled", refuse)
+
+    refused = _install(inspected_sha=tip, enable=True)["error"]
+
+    assert refused["code"] == 5026 and "enable refused" in refused["message"]
+    assert refused["data"] == {"plugin_name": "demo"}
+    assert (home / "plugins" / "demo").is_dir()
+
+
+@pytest.mark.parametrize("refusal", ["unknown catalog entry", "removed source", "scan block"])
+def test_a_refusal_before_publication_says_nothing_was_placed(moved_repo, monkeypatch, refusal):
+    from hermes_cli import plugins_cmd, plugins_cmd_catalog
+    params = {}
+    if refusal == "unknown catalog entry":
+        monkeypatch.setattr(plugins_cmd_catalog, "get_live_catalog_entry", lambda _name: None)
+        params = {"catalog_name": "no-such-plugin"}
+    elif refusal == "scan block":
+        def blocked(*_args, **_kwargs):
+            raise plugins_cmd.PluginScanBlocked("dangerous code")
+        monkeypatch.setattr(plugins_cmd, "_scan_merged_tree", blocked)
+    else:
+        def removed(*_args, **_kwargs):
+            raise plugins_cmd.PluginOperationError("removed from the Hermes plugin catalog")
+        monkeypatch.setattr(plugins_cmd_catalog, "raise_if_removed", removed)
+
+    refused = _install(force=True, **params)["error"]
+
+    assert refused["code"] == 5026 and refused["data"] == {"placed": False}, refused
+
+
+@pytest.mark.parametrize("fails", ["publication", "selection read"])
+def test_a_failure_once_the_tree_went_to_pm_never_says_nothing_was_placed(moved_repo, monkeypatch, fails):
+    """A forced replacement that fails during or after publication may have replaced the tree: only a refusal
+    raised before it may tell the client nothing was placed (its desktop half then stays put)."""
+    import pm.client
+    from hermes_cli import plugins_cmd
+    home, _reviewed, tip, _repo = moved_repo
+    if fails == "publication":
+        def broken(**_kwargs):
+            raise RuntimeError("worker gone")
+        monkeypatch.setattr(pm.client, "sync_venv", broken)
+    else:
+        def unreadable(*_args, **_kwargs):
+            raise ValueError("config.yaml: plugins.enabled must be a list")
+        monkeypatch.setattr(plugins_cmd, "_set_plugin_enabled", unreadable)
+
+    refused = _install(inspected_sha=tip, enable=True, force=True)["error"]
+
+    assert refused["code"] == 5026 and "placed" not in (refused.get("data") or {}), refused
+    if fails == "selection read":
+        assert (home / "plugins" / "demo").is_dir()
 
 
 def test_reopening_the_dialog_after_a_refusal_reads_the_moved_source_again(moved_repo):

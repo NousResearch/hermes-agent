@@ -832,7 +832,8 @@ def _resolve_source(identifier: str, catalog_name: Optional[str]) -> tuple:
     if catalog_name:
         entry = catalog.get_live_catalog_entry(catalog_name)
         if entry is None:
-            return None, identifier, warnings, {"ok": False, "error": f"'{catalog_name}' is not in the Hermes plugin catalog."}
+            return None, identifier, warnings, {
+                "ok": False, "error": f"'{catalog_name}' is not in the Hermes plugin catalog.", "placed": False}
         warnings.extend(_known_issue_warnings(entry))
         identifier = entry.install_identifier
     else:
@@ -845,7 +846,7 @@ def _resolve_source(identifier: str, catalog_name: Optional[str]) -> tuple:
     except ValueError:
         pass
     except _pc().PluginOperationError as exc:
-        return entry, identifier, warnings, {"ok": False, "error": str(exc)}
+        return entry, identifier, warnings, {"ok": False, "error": str(exc), "placed": False}
     return entry, identifier, warnings, None
 
 
@@ -870,14 +871,19 @@ def _place_tree(entry, identifier: str, *, force: bool, ref: Optional[str], assu
         return _pc()._install_plugin_core(identifier, force=force, ref=ref, assume_deps_consent=assume_deps_consent,
                                           inspected_sha=inspected_sha)
 
+    from hermes_cli.plugins_transaction import watch_publication
     step(InstallPhase.downloading)
-    try:
-        return recorded_install(_install, catalog_name=entry.name if entry is not None else None,
-                                identifier=identifier)
-    except _pc().PluginScanBlocked as exc:
-        return scan_blocked_result(exc)
-    except _pc().PluginOperationError as exc:
-        return {"ok": False, "error": str(exc), **({"source_moved": True} if isinstance(exc, _pc().PluginSourceMoved) else {})}
+    # ``placed: False`` only for a refusal raised before the tree went to PM; any later failure may follow a
+    # published tree, so it says nothing about placement.
+    with watch_publication() as published:
+        try:
+            return recorded_install(_install, catalog_name=entry.name if entry is not None else None,
+                                    identifier=identifier)
+        except _pc().PluginScanBlocked as exc:
+            return {**scan_blocked_result(exc), "placed": False}  # the scan runs before publication
+        except _pc().PluginOperationError as exc:
+            return {"ok": False, "error": str(exc), **({} if published else {"placed": False}),
+                    **({"source_moved": True} if isinstance(exc, _pc().PluginSourceMoved) else {})}
 
 
 def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], None]) -> Optional[dict]:

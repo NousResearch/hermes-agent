@@ -320,6 +320,22 @@ class InterruptControlMixin:
         self._turn_user_intervened = True
         return True
 
+    def steer_content(self, content: list[dict], *, correction_id: str) -> bool:
+        """Accept a complete native user correction without interrupting tools.
+
+        The authority owns the original admission and settles it by ticket
+        through ``withdraw_steer`` after this physical turn exits.
+        """
+        steering = getattr(self, "_content_steering", None)
+        if (steering is None or self._interrupt_requested or not self._session_db
+                or getattr(self, "_persist_disabled", False)
+                or self.api_mode == "codex_app_server" or not self._model_supports_vision()):
+            return False
+        accepted = steering.accept(content, correction_id=correction_id)
+        if accepted:
+            self._turn_user_intervened = True
+        return accepted
+
     def redirect(self, text: str) -> bool:
         """Redirect the active turn without converting it into a new task: during a model request only that
         request is cancelled (completed messages kept, partial reasoning becomes assistant context, the
@@ -422,6 +438,9 @@ class InterruptControlMixin:
         stays, whatever its text) or dropped unread; False once a drain consumed it, or for an unknown one."""
         if ticket is None:
             return False
+        steering = getattr(self, "_content_steering", None)
+        if steering is not None and steering.withdraw(ticket):
+            return True
         with _ic_lock(self, "_pending_steer_lock"):
             parts = _steer_parts(self)
             kept = [part for part in parts if part[0] != ticket]

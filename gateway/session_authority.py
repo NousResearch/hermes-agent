@@ -569,11 +569,14 @@ class SessionAuthority:
         from gateway import session_retry_admission
         rewrite = session_retry_admission.take(event, self.db)
 
-        def admitted(row):
+        async def admitted(row):
             committed[0] = SessionRef(self.profile_id, row.get('target_session_id') or ref.session_id)
             if rewrite is not None and rewrite.applied:
                 rewrite.on_commit()
-            return self._admitted(committed[0], event, row)
+            self._admitted(committed[0], event, row)
+            from gateway.run_image_steering import transfer_native_images
+            await transfer_native_images(self, committed[0], row, event)
+            return self._receipt(get_session_admission(self.db, admission_id=row["admission_id"]))
         from gateway.session_ingress_media import _lease_scope
         if (scope := _lease_scope.get()) is not None:
             scope.write_started = True

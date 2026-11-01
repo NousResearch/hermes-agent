@@ -739,7 +739,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                     and self._effective_busy_text_mode(source) == "queue")):
             return False
         outcome = await self._resolve_busy_steer_or_redirect(event, _quick_key, mode, running_agent)
-        await self._busy_interrupt_and_ack(event, _quick_key, adapter, state, running_agent, outcome)
+        if (mode == "steer" and event.media_urls
+                and len(self._pending_event_audio_paths(event)) != len(event.media_urls)):
+            # Native media can transfer only AFTER durable admission. Its text-only
+            # resolution is not yet a FIFO fallback; the transfer owns the ack.
+            event._native_image_busy_ack = (_quick_key, adapter, state, running_agent, outcome)
+        else:
+            await self._busy_interrupt_and_ack(event, _quick_key, adapter, state, running_agent, outcome)
         return bool(outcome.steered or outcome.redirected)
 
     async def _hm_handle_running_session_message(

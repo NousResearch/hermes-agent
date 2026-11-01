@@ -823,7 +823,7 @@ class GatewayBusySessionMixin:
     def _compose_busy_ack_message(
         self, event: MessageEvent, now: float, _busy_state, running_agent: Any, *,
         is_steer_mode: bool, is_queue_mode: bool, is_redirect_mode: bool,
-        demoted_for_subagents: bool, demoted_for_compression: bool,
+        demoted_for_subagents: bool, demoted_for_compression: bool, steer_parent_only: bool = False,
     ) -> str:
         from gateway.run import (
             _AGENT_PENDING_SENTINEL, _hermes_home, _load_gateway_config, _platform_config_key
@@ -858,7 +858,7 @@ class GatewayBusySessionMixin:
                 pass
         status_detail = (t("gateway.busy.ack_detail_wrap", detail=t("gateway.busy.ack_detail_joiner").join(status_parts))
                          if status_parts else "")
-        if is_steer_mode and self._agent_has_active_subagents(running_agent):
+        if is_steer_mode and not steer_parent_only and self._agent_has_active_subagents(running_agent):
             head = t("gateway.busy.steered_subagents_head")
             tail = t("gateway.busy.steered_subagents_tail")
         elif is_steer_mode:
@@ -971,7 +971,9 @@ class GatewayBusySessionMixin:
         await self._busy_interrupt_and_ack(event, session_key, adapter, _busy_state, running_agent, _steer)
         return True
 
-    async def _busy_interrupt_and_ack(self, event, session_key, adapter, _busy_state, running_agent, _steer) -> None:
+    async def _busy_interrupt_and_ack(
+        self, event, session_key, adapter, _busy_state, running_agent, _steer, *, steer_parent_only=False,
+    ) -> None:
         """Interrupt-mode abort (voice transcribed) and the busy ack, after the steer/redirect resolution.
         Shared by the in-process busy handler and the session authority's busy preempt."""
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -1006,6 +1008,7 @@ class GatewayBusySessionMixin:
             is_queue_mode=is_queue_mode, is_redirect_mode=is_redirect_mode,
             demoted_for_subagents=_steer.demoted_for_subagents,
             demoted_for_compression=_steer.demoted_for_compression,
+            steer_parent_only=steer_parent_only,
         )
         await self._send_busy_ack_reply(event, adapter, message)
 

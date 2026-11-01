@@ -138,6 +138,36 @@ def test_explanation_persistence_disk_cause_keeps_disk_wording():
     assert "free some space" in lower or "disk space" in lower
 
 
+def test_explanation_persistence_disk_cause_points_at_the_log_when_the_disk_is_not_full():
+    """SQLITE_FULL is also raised with free space on the filesystem (a file-size ceiling or a
+    temp file SQLite could not create) — measured on this host, RIC-103. The copy must not
+    leave "free some space" as the only lead: it names the log line that carries the result
+    code and the database path."""
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "disk"
+    )
+    lower = out.lower()
+    assert "free space" in lower
+    assert "log line" in lower
+    assert "result code" in lower and "path" in lower
+
+
+def test_explanation_persistence_io_error_never_advises_freeing_space():
+    """An I/O error (SQLITE_IOERR / "disk I/O error") is not disk-FULL and not a permissions
+    problem — measured: ``is_disk_full_error("disk I/O error")`` is False while the classifier
+    used to return "disk" (the word "disk" matched the catch-all). The copy must name the failing
+    device and reach the log line, never lead with "free some space" (#RIC-103)."""
+    out = AIAgent._format_turn_completion_explanation("session_persistence_failed", "io_error")
+    lower = out.lower()
+    assert "i/o error" in lower
+    assert "not a full disk" in lower
+    assert "free some space" not in lower
+    assert "permissions" in lower  # it says permissions are NOT the problem
+    assert "log line" in lower and "result code" in lower
+    assert "hermes doctor" in lower
+    assert "{backups_dir}" not in out and "{home}" not in out
+
+
 def test_explanation_persistence_corrupt_cause_never_says_free_space():
     """Structural corruption must point at the repair path, not disk space
     (the #77386-family misdiagnosis: 'database disk image is malformed'
@@ -284,7 +314,11 @@ def test_classify_persistence_error_categories():
     assert classify_persistence_error("attempt to write a readonly database") == "disk"
     assert classify_persistence_error("read-only file system") == "disk"
     assert classify_persistence_error("no space left on device") == "disk"
-    assert classify_persistence_error("disk I/O error") == "disk"
+    # An I/O error is neither disk-full nor a permissions problem: it must not read as
+    # "free some space" (#RIC-103).
+    assert classify_persistence_error("disk I/O error") == "io_error"
+    assert classify_persistence_error("disk i/o error") == "io_error"
+    assert classify_persistence_error("Input/output error") == "io_error"
     assert classify_persistence_error("something else entirely") == "unknown"
     assert classify_persistence_error(None) == "unknown"
     assert classify_persistence_error("") == "unknown"
@@ -311,7 +345,9 @@ def test_classify_persistence_error_corruption_beats_disk_bucket():
     assert classify_persistence_error("malformed database schema") == "corrupt"
     # Genuine disk-space failures must keep classifying as 'disk'.
     assert classify_persistence_error("database or disk is full") == "disk"
-    assert classify_persistence_error("disk I/O error") == "disk"
+    # "disk I/O error" contains the word "disk" but is NOT a space failure — the corruption
+    # bucket is not the only one that must win over the catch-all (#RIC-103).
+    assert classify_persistence_error("disk I/O error") == "io_error"
 
 
 def test_classify_persistence_error_reuses_disk_full_markers():

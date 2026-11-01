@@ -14,6 +14,7 @@ import threading
 import time
 
 import agent.thread_scoped_output as thread_output
+from agent.process_bootstrap import _install_safe_stdio
 from agent.thread_scoped_output import thread_scoped_silence
 
 
@@ -133,7 +134,6 @@ def test_temporary_global_redirects_do_not_allocate_new_sinks(monkeypatch):
 def test_agent_builds_keep_the_installed_routing_proxy(monkeypatch):
     """Agent builds between silences must not stack wrappers on sys.stdout/stderr (#139687)."""
     from agent.process_bootstrap import _install_safe_stdio
-
     monkeypatch.setattr(thread_output, "_installed", {})
     monkeypatch.setattr(sys, "stdout", io.StringIO())
     monkeypatch.setattr(sys, "stderr", io.StringIO())

@@ -52,12 +52,22 @@ def _skin_set(key: str, value: str, skin: str | None) -> int:
         resolved = load_skin(name)
         target = f"{name}-custom"
         path = _skins_dir() / f"{target}.yaml"
+        # The whole look, not just `colors`: anything left out falls back to `default` on the fork.
+        look = {"light_colors": dict(resolved.light_colors), "dark_colors": dict(resolved.dark_colors),
+                "spinner": dict(resolved.spinner), "tool_emojis": dict(resolved.tool_emojis),
+                "banner_logo": resolved.banner_logo, "banner_hero": resolved.banner_hero,
+                "customCSS": resolved.custom_css}
         data = {"name": target, "description": f"{name} + custom {key}",
                 "colors": dict(resolved.colors), "branding": dict(resolved.branding),
-                "tool_prefix": resolved.tool_prefix}
+                "tool_prefix": resolved.tool_prefix, **{k: v for k, v in look.items() if v}}
     if not isinstance(data.get("colors"), dict):
         data["colors"] = {}
     data["colors"][key] = value
+    # The paired palettes overlay `colors` per key, so the tweaked key leaves them or it would be
+    # masked on that terminal polarity: on a fork's first set and on every later in-place set.
+    for paired in ("light_colors", "dark_colors"):
+        if isinstance(data.get(paired), dict):
+            data[paired].pop(key, None)
     data.setdefault("name", target)
     # Atomic write: write_text truncates with no fsync; safe_load("") → None → {} would
     # permanently lose the palette on the next set.

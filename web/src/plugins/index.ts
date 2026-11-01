@@ -1,4 +1,10 @@
-export { exposePluginSDK, getPluginComponent, onPluginRegistered, getRegisteredCount } from "./registry";
+export {
+  exposePluginSDK,
+  getPluginComponent,
+  onPluginRegistered,
+  getRegisteredCount,
+  setChatSubmitHandler,
+} from "./registry";
 export { PluginPage } from "./PluginPage";
 export { usePlugins } from "./usePlugins";
 export { PluginSlot, KNOWN_SLOT_NAMES, registerSlot, getSlotEntries, onSlotRegistered, unregisterPluginSlots } from "./slots";

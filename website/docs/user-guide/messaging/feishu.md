@@ -88,7 +88,7 @@ In **Events and Callbacks**:
 1. Set the connection mode to **Long Connection (WebSocket)** (recommended) or configure a webhook URL
 2. In the **Event Configuration** tab, subscribe to:
    - `im.message.receive_v1` — required for receiving messages
-3. In the **Callback Configuration** tab (a separate tab from events), set the same connection mode and add the `card.action.trigger` callback — required for the approval / update-prompt buttons. See [Required Feishu App Configuration](#required-feishu-app-configuration).
+3. In the **Callback Configuration** tab (a separate tab from events), set the same connection mode and add the `card.action.trigger` callback — required for approval, update-prompt, and `/model` picker buttons. See [Required Feishu App Configuration](#required-feishu-app-configuration).
 
 ### Publish the App
 

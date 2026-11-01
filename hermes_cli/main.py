@@ -3149,16 +3149,20 @@ def _try_termux_fast_cli_launch() -> bool:
         _print_version_info(check_updates=True)
         return True
 
+    # `-z`/`--oneshot` already consume their prompt, so a leftover positional is a
+    # real subcommand (`hermes gateway --oneshot`), not the one-shot text. Unknown
+    # flags belong to full dispatch: the light parser must not SystemExit first.
     first = _first_positional_argv()
-    has_oneshot = any(
-        arg == "-z" or arg == "--oneshot" or arg.startswith("--oneshot=")
-        for arg in argv
-    )
-    if not has_oneshot and first not in {None, "chat"}:
+    if first not in {None, "chat"}:
         return False
 
     parser = _light_chat_parser()
-    args = parser.parse_args(_coalesce_session_name_args(argv))
+    try:
+        args, unknown = parser.parse_known_args(_coalesce_session_name_args(argv))
+    except SystemExit:
+        return False
+    if unknown:
+        return False
 
     if getattr(args, "version", False):
         _print_version_info(check_updates=True)

@@ -32,6 +32,30 @@ def _fmt_pending_list(subsystem: str) -> str:
     return "\n".join(lines)
 
 
+def _fmt_pending_json(subsystem: str) -> str:
+    """One JSON object with every pending record's full payload. The human list caps its
+    summaries at staging time (#143181), so a reviewer wanting the uncut new text — e.g. a
+    desktop pane — parses this instead of re-reading pending/<id>.json files."""
+    records = []
+    for r in wa.list_pending(subsystem):
+        payload = r.get("payload") or {}
+        rec = {
+            "id": r.get("id"),
+            "action": r.get("action") or payload.get("action") or "",
+            "origin": r.get("origin") or "foreground",
+            "summary": r.get("summary") or "",
+            "created_at": r.get("created_at"),
+            "target": payload.get("target"),
+            "content": payload.get("content"),
+            "old_text": payload.get("old_text"),
+            "operations": payload.get("operations") or [],
+        }
+        if subsystem == wa.MEMORY:
+            rec["matched_entries"] = _matched_entries(payload)
+        records.append(rec)
+    return json.dumps({"count": len(records), "records": records}, ensure_ascii=False)
+
+
 def handle_pending_subcommand(
     subsystem: str, args: list[str], *, memory_store=None, set_mode_fn=None) -> Optional[str]:
     """Dispatch a /memory or /skills write-approval subcommand.
@@ -45,6 +69,8 @@ def handle_pending_subcommand(
         return f"{_fmt_state(subsystem)}\n\n" + _fmt_pending_list(subsystem)
     sub, rest = args[0].lower(), args[1:]
     if sub == "pending":
+        if "--json" in rest:
+            return _fmt_pending_json(subsystem)
         return _fmt_pending_list(subsystem)
     if sub in {"approve", "apply"}:
         return _approve(subsystem, rest, memory_store)

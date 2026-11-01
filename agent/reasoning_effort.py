@@ -77,6 +77,12 @@ GLM52_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 # reasoning-token scaling (low=4, medium=11, : high=98, max=125 on the probe prompt).
 GLM53_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
 GLM53_OVERRIDES: dict[str, str] = {"xhigh": "max"}
+#: Z.AI's standard pay-as-you-go endpoint (api.z.ai/api/paas/v4) drops the ``medium`` rung
+#: from GLM-5.3's scale (HTTP 400 / code 1210, issue #133595); only the coding-plan endpoint
+#: serves the full graded ladder. ``medium`` keeps its rung position by rounding up to
+#: ``high`` — the same positional mapping as Kimi K3 — rather than down to the floor.
+GLM53_STANDARD_EFFORTS: tuple[str, ...] = ("low", "high", "max")
+GLM53_STANDARD_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max"}
 
 #: DeepSeek V4 OpenAI-compat endpoint; ``xhigh`` requests the top tier.
 DEEPSEEK_V4_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")

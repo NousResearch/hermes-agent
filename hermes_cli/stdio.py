@@ -49,7 +49,8 @@ def configure_windows_stdio() -> bool:
 
     Idempotent; returns ``True`` only when something actually changed. Set
     ``HERMES_DISABLE_WINDOWS_UTF8=1`` to opt out (forces the old cp1252 path for diagnosing
-    encoding bugs). Also sets a default ``EDITOR`` on Windows if none is set.
+    encoding bugs). On Windows, keeps prompt_toolkit's external-editor path
+    available using the same configured editor as ``/prompt``.
     """
     global _CONFIGURED
 
@@ -64,12 +65,13 @@ def configure_windows_stdio() -> bool:
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     os.environ.setdefault("PYTHONUTF8", "1")
 
-    # prompt_toolkit's ``open_in_editor`` falls back to POSIX-only paths (/usr/bin/nano, /usr/bin/vi)
-    # that don't exist on Windows — Ctrl+X Ctrl+E and ``/edit`` silently do nothing there
-    # otherwise, even with full Git for Windows installed.
-    _default_editor = _default_windows_editor()
-    if _default_editor and not os.environ.get("EDITOR") and not os.environ.get("VISUAL"):
-        os.environ["EDITOR"] = _default_editor
+    # prompt_toolkit reads only the process environment. Persist the resolved
+    # per-profile command for Ctrl+G / /edit, while preserving a user's explicit
+    # VISUAL or EDITOR choice. The resolver keeps notepad as the final fallback.
+    if not os.environ.get("EDITOR") and not os.environ.get("VISUAL"):
+        from hermes_cli.editor import resolve_editor_command
+
+        os.environ["EDITOR"] = resolve_editor_command()
 
     _augment_path_with_known_tools()
     # Flip the console code page first so any subprocess inheriting the console also sees CP_UTF8.
@@ -80,14 +82,6 @@ def configure_windows_stdio() -> bool:
         _reconfigure_stream(stream)
     _CONFIGURED = True
     return True
-
-
-def _default_windows_editor() -> str:
-    """Windows default for ``$EDITOR``: ``notepad`` (ships with every install, blocks until the
-    window closes). The bare name keeps prompt_toolkit's shlex split away from paths with spaces;
-    "" when even notepad is missing (WinPE, Nano Server) so prompt_toolkit's no-op applies."""
-    import shutil
-    return "notepad" if shutil.which("notepad") else ""
 
 
 def _augment_path_with_known_tools() -> None:

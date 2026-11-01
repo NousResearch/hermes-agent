@@ -3798,6 +3798,8 @@ export interface Translations extends NoticeTranslations {
     zoneMenuLabel: (title: string) => string
     lastTabKeptTitle: string
     lastTabKeptBody: string
+    enforcedDockLockedTitle: string
+    enforcedDockLockedBody: string
     toggleStripTab: (title: string) => string
     minimize: string
     restore: string

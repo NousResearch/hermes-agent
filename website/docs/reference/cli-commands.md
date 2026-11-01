@@ -260,16 +260,23 @@ jq .auxiliary.by_task ~/.hermes/cache/scratch/usage.json      # what did title g
 
 ```bash
 hermes infer "Classify this message" --json
-printf '%s' 'Message to classify' | hermes -p staging infer - --provider bubbles --model Qwen3.8-27B-GGUF --json
+printf '%s' 'Message to classify' | hermes infer - --json
 hermes infer - --schema ./classification.schema.json --json < ./message.txt
 ```
 
 `infer` sends one user prompt to the selected provider and prints its text to
 stdout. Pass `-` or omit the prompt to read standard input. `--json` prints an
-envelope with `text`, `parsed`, `provider`, `model`, and `usage`. An optional
-`--schema` file requests JSON output and validates the response; it requires
-the optional `jsonschema` package. An invalid response exits nonzero. Use
-`--max-tokens` and `--timeout` to bound a call.
+envelope with `ok`, `text`, `parsed`, `provider`, `model`, `usage`, and `error`.
+An optional `--schema` file requests JSON output and validates the response
+locally; it requires the optional `jsonschema` package. If the response is
+invalid JSON or does not match the schema, `--json` still prints the raw model
+text, route, usage, and a machine-readable `error.code` (`invalid_json` or
+`schema_mismatch`) and exits nonzero. Other request failures return an envelope
+with `text: null` and `error.code: request_failed`. Without `--json`, failures
+write only an error to stderr. Schema validation does not trigger a repair
+request; configured provider retries and fallbacks still apply. A script can
+inspect the returned text and apply a local transformation or alternate schema
+without another model request. Use `--max-tokens` and `--timeout` to bound a call.
 
 The command uses the profile's configured provider, model, credentials, and
 fallback policy, including Hermes model aliases. Supply both `--provider` and

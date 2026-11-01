@@ -97,32 +97,49 @@ def _infer(args) -> dict:
         route_info=route_info,
     )
     text = _extract_text(response)
-    if schema is not None:
-        parsed, content_type = _parse_structured_text(text=text, json_mode=True, json_schema=schema)
-        if content_type != "json":
-            raise ValueError("model did not return valid JSON for --schema")
-    else:
-        parsed = None
     actual_provider, actual_model = _resolve_attribution(
         provider_override=choice.provider, model_override=choice.model,
         response=response, route_info=route_info,
     )
-    return {"text": text, "parsed": parsed, "provider": actual_provider,
-            "model": actual_model, "usage": asdict(_extract_usage(response))}
+    result = {"ok": True, "text": text, "parsed": None,
+              "provider": actual_provider, "model": actual_model,
+              "usage": asdict(_extract_usage(response)), "error": None}
+    if schema is not None:
+        try:
+            parsed, content_type = _parse_structured_text(
+                text=text, json_mode=True, json_schema=schema)
+        except ValueError as exc:
+            result["ok"] = False
+            result["error"] = {"code": "schema_mismatch", "message": str(exc)}
+        else:
+            if content_type == "json":
+                result["parsed"] = parsed
+            else:
+                result["ok"] = False
+                result["error"] = {"code": "invalid_json", "message": "model did not return valid JSON for --schema"}
+    return result
 
 
 def cmd_infer(args) -> int:
-    """Print one response or a JSON envelope; failure never looks like output."""
+    """Print one response or a JSON envelope with the raw model text on validation failure."""
     try:
         result = _infer(args)
     except Exception as exc:
-        # Provider SDKs use their own exception families. Keep stdout clean so
-        # a failed script call cannot be mistaken for a model response.
+        # Provider SDKs use their own exception families; preserve the traceback
+        # for debugging while returning a stable error to a JSON caller.
         logging.getLogger(__name__).debug("infer request failed", exc_info=True)
-        print(f"hermes infer: {exc}", file=sys.stderr)
+        if args.json:
+            print(json.dumps({"ok": False, "text": None, "parsed": None,
+                              "provider": None, "model": None, "usage": None,
+                              "error": {"code": "request_failed", "message": str(exc)}},
+                             ensure_ascii=False))
+        else:
+            print(f"hermes infer: {exc}", file=sys.stderr)
         return 1
     if args.json:
         print(json.dumps(result, ensure_ascii=False))
-    else:
+    elif result["ok"]:
         print(result["text"])
-    return 0
+    else:
+        print(f"hermes infer: {result['error']['message']}", file=sys.stderr)
+    return 0 if result["ok"] else 1

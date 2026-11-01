@@ -54,6 +54,8 @@ def test_infer_uses_profile_model_and_prints_route_usage(configured_home, monkey
     monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
     assert cmd_infer(_args()) == 0
     output = json.loads(capsys.readouterr().out)
+    assert output["ok"] is True
+    assert output["error"] is None
     assert output["text"] == "answer"
     assert output["provider"] == "custom"
     assert output["model"] == "selected-model"
@@ -197,20 +199,62 @@ def test_infer_refuses_invalid_schema_before_model_call(configured_home, tmp_pat
     schema_path.write_text('{"type":"not-a-type"}', encoding="utf-8")
     monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **kw: pytest.fail("model called"))
     assert cmd_infer(_args(schema=str(schema_path))) == 1
-    assert capsys.readouterr().out == ""
+    output = json.loads(capsys.readouterr().out)
+    assert output["ok"] is False
+    assert output["text"] is None
+    assert output["error"]["code"] == "request_failed"
 
 
 def test_infer_reports_invalid_json_as_failure(configured_home, tmp_path, monkeypatch, capsys):
     schema_path = tmp_path / "schema.json"
     schema_path.write_text('{"type":"object"}', encoding="utf-8")
-    monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **kw: _response("not JSON"))
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("not JSON")
+
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
     assert cmd_infer(_args(schema=str(schema_path))) == 1
+    captured = capsys.readouterr()
+    output = json.loads(captured.out)
+    assert captured.err == ""
+    assert output["ok"] is False
+    assert output["text"] == "not JSON"
+    assert output["parsed"] is None
+    assert output["error"]["code"] == "invalid_json"
+    assert output["usage"]["total_tokens"] == 14
+    assert output["model"] == "selected-model"
+    assert len(calls) == 1
+
+
+def test_infer_returns_raw_schema_mismatch_for_local_recovery(configured_home, tmp_path, monkeypatch, capsys):
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text('{"type":"object","properties":{"label":{"type":"string"}},'
+                           '"required":["label"]}', encoding="utf-8")
+    raw = '{"label":7,"other":"keep this"}'
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **kw: _response(raw))
+    assert cmd_infer(_args(schema=str(schema_path))) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output["ok"] is False
+    assert output["text"] == raw
+    assert output["parsed"] is None
+    assert output["error"]["code"] == "schema_mismatch"
+    assert "string" in output["error"]["message"]
+    assert output["usage"]["total_tokens"] == 14
+
+
+def test_infer_plain_mode_keeps_invalid_output_off_stdout(configured_home, tmp_path, monkeypatch, capsys):
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text('{"type":"object"}', encoding="utf-8")
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **kw: _response("not JSON"))
+    assert cmd_infer(_args(schema=str(schema_path), json=False)) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "did not return valid JSON" in captured.err
 
 
-def test_infer_keeps_stdout_empty_on_provider_failure(configured_home, monkeypatch, capsys):
+def test_infer_returns_error_envelope_on_provider_failure(configured_home, monkeypatch, capsys):
     class ProviderError(Exception):
         pass
 
@@ -220,8 +264,11 @@ def test_infer_keeps_stdout_empty_on_provider_failure(configured_home, monkeypat
     monkeypatch.setattr("agent.auxiliary_client.call_llm", fail_call)
     assert cmd_infer(_args()) == 1
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "endpoint unavailable" in captured.err
+    output = json.loads(captured.out)
+    assert captured.err == ""
+    assert output["ok"] is False
+    assert output["text"] is None
+    assert output["error"] == {"code": "request_failed", "message": "endpoint unavailable"}
 
 
 @pytest.mark.parametrize("overrides", [
@@ -230,4 +277,7 @@ def test_infer_keeps_stdout_empty_on_provider_failure(configured_home, monkeypat
 def test_infer_rejects_invalid_request_without_model_call(configured_home, monkeypatch, capsys, overrides):
     monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **kw: pytest.fail("model called"))
     assert cmd_infer(_args(**overrides)) == 1
-    assert capsys.readouterr().out == ""
+    output = json.loads(capsys.readouterr().out)
+    assert output["ok"] is False
+    assert output["text"] is None
+    assert output["error"]["code"] == "request_failed"

@@ -3,28 +3,29 @@
 import sys
 
 from agent.i18n import t
-from hermes_cli.colors import Colors, color
+from hermes_cli.colors import Palette, semantic
 from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 def print_info(text: str) -> None:
-    print(color(f"  {text}", Colors.DIM))
+    print(semantic(f"  {text}", Palette.INFO))
 
 
 def print_success(text: str) -> None:
-    print(color(f"✓ {text}", Colors.GREEN))
+    print(semantic(f"✓ {text}", Palette.SUCCESS))
 
 
 def print_warning(text: str) -> None:
-    print(color(f"⚠ {text}", Colors.YELLOW))
+    print(semantic(f"⚠ {text}", Palette.WARNING))
 
 
 def print_error(text: str) -> None:
-    print(color(f"✗ {text}", Colors.RED))
+    print(semantic(f"✗ {text}", Palette.ERROR))
 
 
 def print_header(text: str) -> None:
-    print(color(f"\n  {text}", Colors.YELLOW))
+    """Section title in the shared cyan+bold heading style."""
+    print(semantic(f"\n  {text}", Palette.HEADING))
 
 
 def print_truncated(more: int | None, hint: str = "") -> None:
@@ -36,7 +37,7 @@ def print_truncated(more: int | None, hint: str = "") -> None:
     """
     count = t("cli.shared.n_more", count=str(more)) if more is not None else t("cli.shared.more_not_shown")
     suffix = f" ({hint})" if hint else ""
-    print(color(f"  … {count}{suffix}", Colors.DIM))
+    print(semantic(f"  … {count}{suffix}", Palette.MUTED))
 
 
 def line_input(prompt_text: str) -> str:
@@ -67,7 +68,7 @@ def line_input(prompt_text: str) -> str:
 def prompt(question: str, default: str | None = None, password: bool = False) -> str:
     """Prompt for input (stripped), or ``default`` on plain Enter; "" on Ctrl-C/EOF."""
     suffix = f" [{default}]" if default else ""
-    display = color(f"  {question}{suffix}: ", Colors.YELLOW)
+    display = semantic(f"  {question}{suffix}: ", Palette.PROMPT)
     try:
         value = (masked_secret_prompt(display) if password else line_input(display)).strip()
         return value if value else (default or "")

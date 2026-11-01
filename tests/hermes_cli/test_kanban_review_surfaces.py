@@ -344,6 +344,90 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
         assert cli_after.status == "running"
 
 
+def test_goal_mode_reviewer_completion_bypasses_goal_judge(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A claimed same-card reviewer, not the goal judge, decides final approval."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_PROFILE", "builder")
+    (home / "profiles" / "reviewer").mkdir(parents=True)
+    (home / "profiles" / "reviewer" / "config.yaml").write_text("{}\n")
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="Goal-mode review approval", assignee="builder", goal_mode=True,
+        )
+        implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+        assert implementation is not None
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(implementation.current_run_id))
+
+    from tools import kanban_tools as tools
+
+    requested = json.loads(tools._handle_request_review({
+        "summary": "Implemented and tested.", "reviewer": "reviewer",
+    }))
+    assert requested["ok"] is True
+    with kbc.connect() as conn:
+        review = kb.claim_review_task(conn, task_id, claimer="reviewer:1")
+        assert review is not None
+
+    monkeypatch.setenv("HERMES_PROFILE", "reviewer")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(review.current_run_id))
+    monkeypatch.setattr(tools, "_goal_judge_available", lambda: True)
+    monkeypatch.setattr(
+        tools,
+        "judge_goal",
+        lambda *args, **kwargs: pytest.fail("a reviewer completion must not be judged"),
+    )
+
+    completed = json.loads(tools._handle_complete({"summary": "Approved after review."}))
+    assert completed["ok"] is True
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "done"
+        run = kb.latest_run(conn, task_id)
+        assert run is not None
+        assert (run.profile, run.outcome) == ("reviewer", "completed")
+
+        cli_task_id = kb.create_task(
+            conn, title="Goal-mode CLI review approval", assignee="builder", goal_mode=True,
+        )
+        cli_implementation = kb.claim_task(conn, cli_task_id, claimer="builder:2")
+        assert cli_implementation is not None
+        assert kb.request_review(
+            conn, cli_task_id, summary="Implemented and tested.", reviewer="reviewer",
+            expected_run_id=cli_implementation.current_run_id,
+        )
+        cli_review = kb.claim_review_task(conn, cli_task_id, claimer="reviewer:2")
+        assert cli_review is not None
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", cli_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(cli_review.current_run_id))
+    monkeypatch.setattr(
+        kc,
+        "_goal_mode_handoff_rejection",
+        lambda *args, **kwargs: pytest.fail("a CLI reviewer completion must not be judged"),
+    )
+    assert f"Completed {cli_task_id}" in kc.run_slash(
+        f"complete {cli_task_id} --summary 'Approved after review.'"
+    )
+    with kbc.connect() as conn:
+        cli_task = kb.get_task(conn, cli_task_id)
+        assert cli_task is not None
+        assert cli_task.status == "done"
+        cli_run = kb.latest_run(conn, cli_task_id)
+        assert cli_run is not None
+        assert (cli_run.profile, cli_run.outcome) == ("reviewer", "completed")
+
+
 def test_goal_loop_stops_after_reviewer_requests_changes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

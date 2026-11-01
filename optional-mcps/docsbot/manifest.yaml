@@ -1,0 +1,38 @@
+manifest_version: 1
+
+name: docsbot
+description: >-
+  Manage DocsBot agents, knowledge sources, question logs, and team settings
+  through individually named administration tools.
+source: https://docsbot.ai/documentation/developer/mcp-server
+
+# Vendor-hosted Streamable HTTP MCP. OAuth discovery, Dynamic Client
+# Registration, and PKCE are handled by Hermes's native MCP client.
+transport:
+  type: http
+  url: https://mcp.docsbot.ai
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - docsbot
+  hosts:
+    - docsbot.ai
+
+post_install: |
+  A DocsBot account with access to a team is required. Available operations
+  depend on your DocsBot role and plan. Run `hermes mcp login docsbot`, sign
+  in to DocsBot in the browser, and authorize access. Then restart the
+  Hermes session so tools load.
+
+  This server includes tools that create, update, or delete bots and sources,
+  change team settings, and configure integrations. Review the tools you
+  enable during installation and confirm consequential changes with the user.
+  Metadata discovery tools describe the available operations and schemas.
+
+  Optional administration and bot-building workflow instructions are available
+  at https://github.com/uglyrobot/docsbot-agent-skills/tree/main/skills/docsbot-administration.
+  When configuring voice, prepare the voicePrompt and enable advanced voice
+  only when the user requests it or confirms that they want voice enabled.

@@ -162,6 +162,31 @@ def _legacy_session_model_ids(session: dict[str, Any], disabled: Callable[[dict[
     return _enabled_id_list((session.get("models") or {}).get("availableModels"), "modelId", disabled)
 
 
+# The CLI's channel error arrives as ordinary agent text, not a JSON-RPC error. These exact
+# phrases identify a rejected request without matching a legitimate answer that quotes it.
+_CHANNEL_BUDGET_ERROR_MARKERS = (
+    "error: execution failed: request exceeds the model's prompt budget after reserving output",
+)
+
+
+def _channel_prompt_budget_error(response_text: str) -> RuntimeError | None:
+    """Recognize a channel-level prompt-budget rejection that the CLI returns as agent text."""
+    if not response_text:
+        return None
+    head = response_text.lstrip()
+    # These CLI notices precede agent text without even a newline between chunks.
+    # Strip only their exact grammar, never arbitrary Info lines or quoted errors.
+    notice = re.compile(
+        r'\A(?:Info: Disabled tools: [A-Za-z0-9_, .:-]+(?=Info:|Error:|\s*$)'
+        r'|Info: Unknown tool name in the tool allowlist: "[^"\r\n]+")'
+    )
+    while match := notice.match(head):
+        head = head[match.end():].lstrip()
+    if not any(head.lower().startswith(marker) for marker in _CHANNEL_BUDGET_ERROR_MARKERS):
+        return None
+    return RuntimeError(response_text)
+
+
 def _model_selection_request(
     session: dict[str, Any], requested_model: str, *, placeholder: str = "",
     disabled: Callable[[dict[str, Any]], bool] = _never_disabled,
@@ -374,10 +399,19 @@ class ACPClient:
 
     def _create_chat_completion(
         self, *, model: str | None = None, messages: list[dict[str, Any]] | None = None, timeout: float | None = None,
-        tools: list[dict[str, Any]] | None = None, tool_choice: Any = None, stream: bool = False, **_: Any,
+        tools: list[dict[str, Any]] | None = None, tool_choice: Any = None, stream: bool = False,
+        extra_body: dict[str, Any] | None = None, **_: Any,
     ) -> Any:
+        tier = (extra_body or {}).get("copilot_context_tier")
+        if tier is not None and tier not in ("default", "long_context"):
+            raise ValueError(f"Unknown Copilot context tier: {tier!r}")
         prompt_text = _format_messages_as_prompt(messages or [], model=model, tools=tools, tool_choice=tool_choice)
-        response_text, reasoning = self._run_prompt(prompt_text, timeout_seconds=_effective_timeout(timeout), model=model)
+        tier_kw = {"context_tier": tier} if tier is not None else {}
+        response_text, reasoning = self._run_prompt(prompt_text, timeout_seconds=_effective_timeout(timeout), model=model, **tier_kw)
+        # Copilot emits this channel refusal as agent text with a normal stop reason.
+        # Preserve its numeric limit so the existing overflow handler can adopt it.
+        if channel_error := _channel_prompt_budget_error(response_text):
+            raise channel_error
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
         message = SimpleNamespace(
             content=cleaned_text, tool_calls=tool_calls, reasoning=reasoning or None, reasoning_content=reasoning or None,
@@ -390,7 +424,8 @@ class ACPClient:
         )
         return _completion_to_stream_chunks(completion) if stream else completion
 
-    def _spawn(self) -> subprocess.Popen[str]:
+    def _spawn(self, *, launch_args: list[str] | None = None) -> subprocess.Popen[str]:
+        process_args = self._acp_args if launch_args is None else launch_args
         # Fast-fail when the CLI rejects --acp (else the parent waits the full child timeout for stdout that
         # never arrives). ``None`` falls through to the spawn's established start error.
         if _acp_supported(self._acp_command, self._acp_args) is False:
@@ -406,7 +441,7 @@ class ACPClient:
             # Hide the console the CLI child would otherwise flash on Windows (#56747). Hide-only — stdio
             # pipes stay intact for the ACP wire.
             proc = subprocess.Popen(
-                [self._acp_command] + self._acp_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                [self._acp_command] + process_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding='utf-8', errors='replace', bufsize=1, cwd=self._acp_cwd, env=_build_subprocess_env(),
                 creationflags=windows_hide_flags(),
             )
@@ -423,10 +458,11 @@ class ACPClient:
 
     @contextlib.contextmanager
     def _session(
-        self, timeout_seconds: float, *, allow_file_requests: bool = True
+        self, timeout_seconds: float, *, allow_file_requests: bool = True,
+        launch_args: list[str] | None = None,
     ) -> Iterator[tuple[dict[str, Any], Callable[..., Any]]]:
         """Start one ACP process and yield its ``session/new`` result plus request callable."""
-        proc = self._spawn()
+        proc = self._spawn() if launch_args is None else self._spawn(launch_args=launch_args)
         inbox: queue.Queue[dict[str, Any]] = queue.Queue()
         stderr_tail: deque[str] = deque(maxlen=40)
 
@@ -500,13 +536,47 @@ class ACPClient:
         with self._session(timeout_seconds, allow_file_requests=False) as (session, _):
             return _session_model_ids(session, self.model_entry_disabled)
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float, model: str | None = None) -> tuple[str, str]:
-        # No `--model` spawn flag: agent CLIs may validate it (an unknown id aborts the spawn) yet ignore it
-        # for the session, so the model is applied over ACP after session/new instead.
+    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float, model: str | None = None,
+                    context_tier: str | None = None) -> tuple[str, str]:
+        # No `--model` spawn flag by default: agent CLIs may validate it (an unknown id aborts
+        # the spawn) yet ignore it for the session, so the model is applied over ACP after
+        # session/new instead. A request that also carries a channel context tier is the
+        # exception: newer Copilot CLIs honor --model/--context at startup while any in-session
+        # model set clears the tier, so both ride the spawn args, request-locally.
         requested_model = str(model or "").strip()
-        with self._session(timeout_seconds) as (session, _request):
+        session_kw = {}
+        if context_tier is not None:
+            # A request without its own model KEEPS a user-configured --model (e.g. from the
+            # client's configured args) — only an explicit model on this request replaces it.
+            override_model = bool(requested_model) and requested_model != self.placeholder_model
+            launch_args = []
+            original = iter(self._acp_args)
+            for arg in original:
+                if arg == "--context" or (arg == "--model" and override_model):
+                    next(original, None)
+                elif arg.startswith("--context=") or (arg.startswith("--model=") and override_model):
+                    continue
+                else:
+                    launch_args.append(arg)
+            launch_args += ["--context", context_tier]
+            if override_model:
+                launch_args += ["--model", requested_model]
+            session_kw["launch_args"] = launch_args
+        with self._session(timeout_seconds, **session_kw) as (session, _request):
             session_id = str(session.get("sessionId") or "").strip()
-            if requested_model and requested_model != self.placeholder_model:
+            # Vendor ``session/new`` payload drift (a non-list configOptions, a non-dict
+            # models block) raises in these parsers; the model choice then degrades to the
+            # session default exactly like the selection below.
+            try:
+                option = _model_config_option(session)
+                models_block = session.get("models")
+                current_model = str((option or {}).get("currentValue") or
+                                    (models_block.get("currentModelId") if isinstance(models_block, dict) else "")
+                                    or "").strip()
+            except (TypeError, AttributeError):
+                current_model = ""
+            # Copilot clears the context tier on *any* model set, even an unchanged model.
+            if requested_model and requested_model != self.placeholder_model and requested_model != current_model:
                 try:
                     selection = _model_selection_request(
                         session, requested_model, placeholder=self.placeholder_model, disabled=self.model_entry_disabled)

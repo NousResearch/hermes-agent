@@ -1248,11 +1248,27 @@ class TestGitDestructiveOps:
         for cmd, word in (
             ("git push --force origin main", "force"),
             ("git push -f origin main", "force"),
+            ("git push --force-with-lease origin main", "force"),
+            ("git push fork b && git push --force other b", "force"),
             ("git clean -fd", "clean"),
         ):
             dangerous, _, desc = detect_dangerous_command(cmd)
             assert dangerous is True, cmd
             assert word in desc.lower(), cmd
+
+    def test_force_push_flag_scoped_to_own_command_segment(self):
+        """A force flag in a later `&&`/`;`/pipeline command belongs to that command, not to an
+        earlier plain `git push` (#134615: `gh api -f` passes a GraphQL field, not git's -f)."""
+        for cmd in (
+            "git push fork fix/browser-state-contract && git rev-parse HEAD && "
+            'gh api graphql -f query=\'{repository(owner:"x",name:"y"){pullRequest(number:21){nodes{id}}}}\'',
+            "git push fork b && gh api -f q=1",
+            "git push fork b; gh api -f q=1",
+            "git push origin main 2>&1 | tee /tmp/push.log && gh api -f x=y",
+        ):
+            dangerous, key, desc = detect_dangerous_command(cmd)
+            assert dangerous is False, cmd
+            assert key is None and desc is None, cmd
 
 
     def test_safe_git_ops_not_flagged(self):

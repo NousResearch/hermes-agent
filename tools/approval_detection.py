@@ -444,8 +444,11 @@ DANGEROUS_PATTERNS = [
     # --ha, --har): --hard is the only reset mode starting with "h", and `--help` is special-cased
     # by git before mode resolution.
     (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
-    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    # Force flags belong to the `git push` segment itself: the lazy `[^;|&\n]*?` keeps the match
+    # inside one command segment, so a later `&&`-chained command's own flags (e.g. `gh api -f`
+    # GraphQL field passing, #134615) cannot masquerade as a force push.
+    (r'\bgit\s+push\b[^;|&\n]*?--forc[a-z]*\b', "git force push (rewrites remote history)"),
+    (r'\bgit\s+push\b[^;|&\n]*?-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     # `-D` = `-d --force`: only the capital short flag is force-delete, so the group opts out of
     # the module-wide re.IGNORECASE and relies on _lower_preserving_flags keeping dash-prefixed

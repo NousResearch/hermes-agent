@@ -445,13 +445,15 @@ export type Screen = Size & {
   written: Uint8Array
 
   /**
-   * Per-ROW soft-wrap continuation marker. softWrap[r]=N>0 means row r
+   * Per-ROW soft-wrap continuation marker. softWrap[r]=N means row r
    * is a word-wrap continuation of row r-1 (the `\n` before it was
    * inserted by wrapAnsi, not in the source), and row r-1's written
-   * content ends at absolute column N (exclusive — cells [0..N) are the
-   * fragment, past N is unwritten padding). 0 means row r is NOT a
+   * content ends at absolute column abs(N) (exclusive — cells [0..abs(N))
+   * are the fragment, past that is unwritten padding). A negative N also
+   * means wrap-trim removed one source whitespace character at the boundary.
+   * 0 means row r is NOT a
    * continuation (hard newline or first row). Selection copy checks
-   * softWrap[r]>0 to join row r onto row r-1 without a newline, and
+   * softWrap[r]!==0 to join row r onto row r-1 without a newline, and
    * reads softWrap[r+1] to know row r's content end when row r+1
    * continues from it. The content-end column is needed because an
    * unwritten cell and a written-unstyled-space are indistinguishable in

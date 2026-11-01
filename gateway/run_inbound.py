@@ -1403,6 +1403,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             # See #17916.
             if source.platform == Platform.SLACK and source.user_id:
                 _safe_user_name = f"{_safe_user_name} | Slack user <@{source.user_id}>"
+            # Google Chat: user_id is the sender's verified email (allowlists key on it), while display
+            # names repeat and are user-editable. Show it so the agent can tell people apart reliably.
+            elif (getattr(source.platform, "value", None) == "google_chat" and source.user_id
+                  and "@" in str(source.user_id)):
+                _safe_user_name = f"{_safe_user_name} | {neutralize_untrusted_inline_text(str(source.user_id))}"
             message_text = f"[{_safe_user_name}] {message_text}"
         # After the sender-prefix so the prefix applies only to the trigger message, not the backfill.
         if getattr(event, "channel_context", None):

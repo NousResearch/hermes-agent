@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Iterable
@@ -27,6 +28,28 @@ _SSH_MULTIPLEX = os.name != "nt"
 
 # Module-level binding: tests patch ``ssh._load_hermes_env_vars`` to fake the .env file.
 _load_hermes_env_vars = load_hermes_env_vars
+
+# Longest control dir whose sockets still bind: ssh binds ``<dir>/<16 hex>.sock`` plus a 17-byte
+# ``.XXXXXXXXXXXXXXXX`` suffix while the master starts, and sun_path holds 103 bytes on macOS, 107
+# on Linux (before the NUL).
+_CONTROL_DIR_MAX = (103 if sys.platform == "darwin" else 107) - len("/0123456789abcdef.sock") - 17
+
+
+def _control_dir() -> Path:
+    """``$TMPDIR/hermes-ssh`` when its sockets fit sun_path. A deeper temp root (a profile's scratch
+    dir under a long HERMES_HOME) gets a private 0700 ``hermes-ssh-<uid>`` dir under
+    $XDG_RUNTIME_DIR or the short socket temp root instead; the old dir stays the last resort."""
+    default = Path(tempfile.gettempdir()) / "hermes-ssh"
+    if _SSH_MULTIPLEX and len(os.fsencode(str(default))) > _CONTROL_DIR_MAX:
+        from hermes_constants import socket_safe_tmpdir
+        from tools.browser_harness_dirs import claim_private_dir, private_user_runtime_dir
+        name = f"hermes-ssh-{getattr(os, 'getuid', lambda: 0)()}"
+        for root in dict.fromkeys(r for r in (private_user_runtime_dir(), socket_safe_tmpdir()) if r):
+            short = os.path.join(root, name)
+            if len(os.fsencode(short)) <= _CONTROL_DIR_MAX and claim_private_dir(short):
+                return Path(short)
+    default.mkdir(parents=True, exist_ok=True)
+    return default
 
 
 def _ensure_ssh_available() -> None:
@@ -61,8 +84,7 @@ class SSHEnvironment(BaseEnvironment):
                  probe_only: bool = False, sync_files: bool = True, persistent: bool = True):
         super().__init__(cwd=cwd, timeout=timeout, persist_env=persistent)
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
-        self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
-        self.control_dir.mkdir(parents=True, exist_ok=True)
+        self.control_dir = _control_dir()
         # Short, deterministic socket name: the path must stay under macOS's 104-byte sun_path
         # limit (raw user@host:port + SSH's 16-byte suffix under a deep $TMPDIR exceeds it), and
         # stability across reconnects keeps ControlMaster reuse working. A probe gets its own

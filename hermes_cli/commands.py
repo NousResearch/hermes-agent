@@ -207,7 +207,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("staged", "all", "session")),
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
                "Configuration", cli_only=True, gateway_config_gate="display.tool_progress_command",
-               busy_policy="dispatch", desktop="terminal"),
+               busy_policy="dispatch"),
     CommandDef("focus", "Toggle focus view — show only your prompt and the final response",
                "Configuration", cli_only=True, args_hint="[on|off|status]",
                subcommands=("on", "off", "status")),

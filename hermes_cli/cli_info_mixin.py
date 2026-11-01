@@ -578,24 +578,36 @@ class CLIInfoMixin:
         except Exception:
             pass
 
-    def _toggle_verbose(self):
-        """Cycle tool progress mode: off → new → all → verbose → off.
+    def _toggle_verbose(self, cmd_original: str = ""):
+        """Set or cycle tool progress mode: ``/verbose off|new|all|verbose`` sets the mode
+        explicitly (same on-wire semantics as the gateway's ``config.set`` branch), bare
+        ``/verbose`` (or ``cycle``) advances off → new → all → verbose → off.
 
         Tool-progress display is INDEPENDENT of global DEBUG logging: this never changes
         ``self.verbose`` or the agent's ``verbose_logging`` / ``quiet_mode`` (those belong to
         ``-v`` and ``/verbose-logging``).
         """
         from cli import _cprint, save_config_value
-        try:
-            idx = _TOOL_PROGRESS_CYCLE.index(self.tool_progress_mode)
-        except ValueError:
-            idx = 2  # default to "all"
-        self.tool_progress_mode = _TOOL_PROGRESS_CYCLE[(idx + 1) % len(_TOOL_PROGRESS_CYCLE)]
+        from hermes_cli.cli_commands_session_tools import _command_arg
+        arg = _command_arg(cmd_original, lower=True)
+        if arg and arg != "cycle":
+            if arg not in _TOOL_PROGRESS_CYCLE:
+                _cprint(f"  unknown verbose mode: {arg} (use off|new|all|verbose or cycle)")
+                return
+            self.tool_progress_mode = arg
+        else:
+            try:
+                idx = _TOOL_PROGRESS_CYCLE.index(self.tool_progress_mode)
+            except ValueError:
+                idx = 2  # default to "all"
+            self.tool_progress_mode = _TOOL_PROGRESS_CYCLE[(idx + 1) % len(_TOOL_PROGRESS_CYCLE)]
 
-        # /verbose is the explicit tool-progress control, so cycling it takes ownership of the
-        # mode back from focus view (else a "focus" badge + hidden-line counts would show while
-        # tool lines visibly print). Display-only state change.
-        if getattr(self, "_focus_view_enabled", False):
+        # /verbose is the explicit tool-progress control, so moving to a VISIBLE mode takes
+        # ownership of the mode back from focus view (else the "focus" badge + hidden-line
+        # counts would show while tool lines visibly print). The release is announced —
+        # display.focus_view must never reset silently (#136058). ``/verbose off`` keeps
+        # focus on: both sides of that combination hide tool lines, so nothing contradicts.
+        if self.tool_progress_mode != "off" and getattr(self, "_focus_view_enabled", False):
             self._focus_view_enabled = False
             self._focus_saved_tool_progress = None
             self._focus_hidden_lines = 0
@@ -605,6 +617,8 @@ class CLIInfoMixin:
                 save_config_value(FOCUS_CONFIG_KEY, False)
             except Exception:
                 pass
+            from hermes_cli.focus_view import format_focus_toggle_message
+            _cprint(f"  {_Colors.DIM}{format_focus_toggle_message(False, self.tool_progress_mode)}{_Colors.RESET}")
 
         if self.agent:
             self.agent.reasoning_callback = self._current_reasoning_callback()

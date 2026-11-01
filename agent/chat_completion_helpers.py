@@ -1280,9 +1280,11 @@ def _consume_ephemeral_reasoning_off(agent) -> bool:
     visible content (thinking ate the output cap); continuation turns never replay
     prior reasoning, so thinking ON would re-burn the budget. When True the caller
     overrides the wire reasoning_config with ``{"enabled": False, "effort": "none"}``
-    for exactly the next call. Prompt-cache cost is bounded to ONE cold prefix write
-    on config-sensitive providers (Anthropic, OpenAI) — far cheaper than four futile
-    full-budget continuations.
+    for exactly the next call — or, on a route that has refused the disable but
+    takes a level (``agent._reasoning_floor_required``), with the floor effort (or the session's own if lower).
+    Prompt-cache cost is bounded to ONE cold prefix write on config-sensitive
+    providers (Anthropic, OpenAI) — far cheaper than four futile full-budget
+    continuations.
     """
     consumed = bool(getattr(agent, "_ephemeral_reasoning_off", False))
     if consumed:
@@ -1293,11 +1295,13 @@ def _consume_ephemeral_reasoning_off(agent) -> bool:
 def _reasoning_config_for_wire(agent):
     """``agent.reasoning_config`` with the one-shot reasoning-off override applied.
 
-    Once the route has answered a disable with "reasoning is mandatory"
-    (``agent._reasoning_disable_rejected``), every disable — configured or
-    the one-shot continuation override — is dropped for the rest of the
-    session: the request goes out without a reasoning config and the route
-    applies its own default.
+    Once the route has refused a disable (``agent._reasoning_disable_rejected``),
+    no disable goes out again this session. A route that takes a level
+    (``agent._reasoning_floor_required``: "reasoning is mandatory", a closed level
+    set, Claude Sonnet 5.5's ``between_tools`` 400) gets the floor effort where a
+    disable was asked for — a configured disable, or the one-shot continuation
+    override for that one call unless the session's effort is already lower; a relay that doesn't know the field gets no
+    reasoning config (route default).
     """
     cfg = agent.reasoning_config
     ephemeral_off = _consume_ephemeral_reasoning_off(agent)
@@ -1313,24 +1317,20 @@ def _reasoning_config_for_wire(agent):
         from agent.reasoning_params import unset_reasoning_default
         cfg = unset_reasoning_default(agent)
     if getattr(agent, "_reasoning_disable_rejected", False):
-        # The route rejects disables. Resend exactly what the session has
-        # been sending — the user's own config — so the retry lands on the
-        # same provider cache key as every prior request. Only a config that
-        # is itself a disable changes, and that session has never sent
-        # anything else, so nothing warm is lost: a route that said the
-        # disable is *mandatory-on* gets the floor effort (closest to what
-        # the user asked for); a relay that does not know the field gets
-        # nothing (route default).
-        if isinstance(cfg, dict) and (
-            cfg.get("enabled") is False or cfg.get("effort") == "none"
-        ):
-            if getattr(agent, "_reasoning_floor_required", False):
-                from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
-                floored = {**cfg, "enabled": True, "effort": REASONING_FLOOR_EFFORT}
-                agent._wire_reasoning_config = floored
-                return floored
-            agent._wire_reasoning_config = None
-            return None
+        # The route rejects disables. Resend exactly what the session has been sending — the
+        # user's own config — so the retry lands on the same provider cache key as every prior
+        # request. Only a disable changes. A route that said the disable is *mandatory-on* (it
+        # takes a level) gets the floor effort: for a configured disable (that session never sent
+        # anything else, so nothing warm is lost), and for the one-shot continuation (that call
+        # only) when the session's own effort ranks above the floor. A relay that does not know
+        # the field gets nothing (route default).
+        from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT, exceeds_reasoning_floor
+        is_disable = isinstance(cfg, dict) and (cfg.get("enabled") is False or cfg.get("effort") == "none")
+        if getattr(agent, "_reasoning_floor_required", False) and (
+                is_disable or (ephemeral_off and exceeds_reasoning_floor(cfg))):
+            cfg = {**(cfg or {}), "enabled": True, "effort": REASONING_FLOOR_EFFORT}
+        elif is_disable:
+            cfg = None
         agent._wire_reasoning_config = cfg
         return cfg
     if ephemeral_off:

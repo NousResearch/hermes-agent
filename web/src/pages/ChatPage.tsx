@@ -718,6 +718,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         return false;
       }
 
+      // Shift+Enter / Ctrl+Enter / Ctrl+J → insert a newline. xterm.js encodes
+      // them as a bare \r / \n, which the TUI reads as plain submit because the
+      // modifier never crosses the PTY (#139337). Send the same ESC \r that a
+      // native Alt+Enter produces — hermes-ink decodes it as meta+return, which
+      // shouldInsertNewlineOnReturn() already treats as an explicit newline.
+      if (shortcut === "insert-newline") {
+        ev.preventDefault();
+        sendPtyShortcutSequence(wsRef.current, ptyStateRef.current, "\x1b\r");
+        return false;
+      }
+
       if (pasteModifier && ev.key.toLowerCase() === "v") {
         // preventDefault suppresses the DOM paste event, so image paste must
         // be handled here via clipboard.read() — readText() alone misses

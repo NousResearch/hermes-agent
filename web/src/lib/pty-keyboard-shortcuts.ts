@@ -6,6 +6,7 @@ export type PtyKeyboardShortcut =
   | "copy"
   | "delete-word-backward"
   | "delete-word-forward"
+  | "insert-newline"
   | "pass";
 
 export function resolvePtyKeyboardShortcut(
@@ -40,6 +41,18 @@ export function resolvePtyKeyboardShortcut(
     ev.key === "Delete"
   ) {
     return "delete-word-forward";
+  }
+
+  // Modified Returns that the browser collapses to a bare CR/LF byte. xterm.js
+  // encodes Shift+Enter and Ctrl+Enter as plain \r and Ctrl+J as \n, so the
+  // TUI cannot see the modifier and submits instead of inserting a newline
+  // (#139337). Alt+Enter keeps xterm's native ESC \r (meta+return → newline).
+  if (ev.key === "Enter" && (ev.shiftKey || ev.ctrlKey) && !ev.altKey && !ev.metaKey) {
+    return "insert-newline";
+  }
+
+  if (ev.key === "j" && ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey) {
+    return "insert-newline";
   }
 
   return "pass";

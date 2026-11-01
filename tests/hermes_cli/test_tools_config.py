@@ -93,6 +93,19 @@ def test_null_platform_toolsets_fall_back_to_platform_default():
     assert enabled == default_enabled
 
 
+def test_explicit_empty_platform_toolsets_merge_no_mcp_servers():
+    """An explicitly saved empty list means zero toolsets and no MCP merge."""
+    config = {
+        "mcp_servers": {"claudius": {"url": "http://x"}, "evil": {"url": "http://y"}},
+        "platform_toolsets": {"cli": []},
+    }
+
+    assert _get_platform_tools(config, "cli") == set()
+
+    config["platform_toolsets"]["cli"] = ["no_mcp"]
+    assert _get_platform_tools(config, "cli") == set()
+
+
 def test_scalar_platform_toolsets_fall_back_to_platform_default():
     """A non-list platform value is ignored by the resolver."""
     config = {"platform_toolsets": {"cli": "bogus"}}

@@ -1,0 +1,5 @@
+﻿name: leanroute
+kind: model-provider
+version: 0.1.0
+description: "Leanroute AI Gateway: 100+ LLMs, smart routing, semantic caching, and failover behind a single endpoint"
+homepage: "https://leanroute.dev"

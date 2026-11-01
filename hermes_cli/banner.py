@@ -223,7 +223,17 @@ def format_banner_version_label() -> str:
             return f"{label} · installer"
         return label
 
-    base = f"Hermes Agent v{get_version_info().derived_version} ({RELEASE_DATE})"
+    live_version = get_version_info()
+    # A base resolved by the CalVer describe (no SemVer release tag reachable at
+    # all) is a guess that flips once release tags are fetched — one checkout
+    # truthfully printed 0.21.0+32768 before and 0.22.5+1710 after a single
+    # `hermes update` (#140329). Say so instead of presenting it in the same
+    # shape as a real release-based identity.
+    calver_note = (
+        " (calver-fallback; release tags not fetched)"
+        if live_version.base_version_source == "calver-fallback" else ""
+    )
+    base = f"Hermes Agent v{live_version.derived_version}{calver_note} ({RELEASE_DATE})"
     from hermes_cli.config import load_config
     from hermes_cli.update_channel import resolve_update_channel
 

@@ -167,6 +167,20 @@ class TestCapabilityProbe:
         assert not report.ok
         assert any("pre_tool_call" in f for f in report.failures)
 
+    def test_legacy_hooks_key_declares_hooks_like_the_loader(self, tmp_path):
+        # The loader reads ``hooks:`` when ``provides_hooks`` is absent (#108371); admission must agree.
+        manifest = dict(BASE_MANIFEST, hooks=["pre_tool_call", "post_llm_call"])
+        init = (
+            "def register(ctx):\n"
+            "    ctx.register_hook('pre_tool_call', lambda **kw: None)\n"
+            "    ctx.register_hook('post_llm_call', lambda **kw: None)\n"
+        )
+        d = _make_plugin(tmp_path, manifest=manifest, init_py=init)
+        report = validate_plugin_dir(d)
+        assert ("declared hooks", True, "matches registrations") in report.checks
+        assert report.ok, report.failures
+        assert any("provides_hooks" in w for w in report.warnings)
+
     def test_crashing_register_is_contained(self, tmp_path):
         init = "def register(ctx):\n    raise RuntimeError('boom')\n"
         d = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST), init_py=init)

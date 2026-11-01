@@ -1381,12 +1381,21 @@ def abort_turn_on_interrupt(
     agent._drop_trailing_empty_response_scaffolding(messages)
     close_interrupted_tool_sequence(messages, interrupt_text, stopped=True)
     agent._persist_session(messages, conversation_history)
+    # Capture the classified stop before hard-cancel wipes ``_tool_interrupt_reason``.
+    # An interrupt before any tool leaves a user tail, so the durable closer is the
+    # only writer of the user-visible notice — and it reads the result, not the agent.
+    from agent.interrupt_control import interrupt_issuer
+    issuer = interrupt_issuer(agent)
+    tool_reason = getattr(agent, "_tool_interrupt_reason", None)
+    turn_exit_reason = f"interrupted_by_system({issuer})" if issuer else "interrupted_by_user"
     # The turn was stopped, not rebuilt: a pending steer was aimed at this turn's next
     # tool iteration, which will no longer happen — drop it (hard-cancel semantics).
     agent.clear_interrupt(hard_cancel=True)
     return {
         "final_response": interrupt_text, "messages": messages, "api_calls": api_call_count,
         "completed": False, "interrupted": True,
+        "turn_exit_reason": turn_exit_reason,
+        "tool_interrupt_reason": tool_reason,
     }
 
 

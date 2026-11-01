@@ -95,6 +95,37 @@ def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
     return None
 
 
+# Site codes are classified but not provider-shaped, so they stay out of
+# FAILURE_CAUSE_GLOSS (cron treats every gloss key as a provider failure).
+# The Why clause still names them; anything else present is humanized below
+# so a classified reason is never dropped.
+_SITE_FAILURE_WHY: dict[str, str] = {
+    "loop_error": "Hermes hit repeated errors and stopped",
+    "truncated": "the model's reply was cut off before it finished",
+    "invalid_response": "the AI model service sent back an empty or broken reply",
+    "interpreter_shutdown": "Hermes was shutting down",
+    "empty_response": "the AI model service sent back an empty reply",
+    "session_busy": "this session was already busy with another turn",
+    "gateway_connection": "the connection to the gateway was lost",
+    "host_error": "the host stopped the turn",
+}
+
+
+def _why_for_unglossed_failure_reason(reason: str) -> str:
+    """Plain clause for a classified reason with no shared gloss.
+
+    Known site codes get a short clause. Any other present code is humanized
+    the same way ``humanize_turn_exit_reason`` humanizes snake_case, so the
+    Why line never drops a reason the caller already classified.
+    """
+    gloss = _SITE_FAILURE_WHY.get(reason)
+    if gloss:
+        return gloss
+    if reason.isidentifier() or "_" in reason:
+        return reason.replace("_", " ")
+    return reason
+
+
 def _failed_turn_why_clause(
     *,
     failure_reason: Any = None,
@@ -107,6 +138,10 @@ def _failed_turn_why_clause(
     gloss = failure_cause_gloss(failure_reason, subject="the turn", possessive="the turn's")
     if gloss:
         parts.append(gloss)
+    elif failure_reason:
+        raw = str(failure_reason).strip()
+        if raw:
+            parts.append(_why_for_unglossed_failure_reason(raw))
 
     # Interrupt / system stop reasons (reuse interrupt humanizer when available).
     try:

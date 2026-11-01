@@ -57,7 +57,7 @@ _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
-_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call"}
+_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call", "pre_tool_call_final"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
@@ -65,6 +65,7 @@ _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 # Live workers a hung callback may accumulate before it is skipped outright (#105223 / #98382).
 _HOOK_MAX_ABANDONED_WORKERS = 3
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
+_FINAL_POLICY_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call_final policy callback timed out or is still running"
 
 # The one hook whose callback rewrites the reply the user would otherwise see streaming.
 STREAM_HOLDING_HOOK = "transform_llm_output"
@@ -302,17 +303,23 @@ class PluginDispatchMixin:
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in callbacks:
+            callback_kwargs = copy.deepcopy(kwargs) if hook_name == "pre_tool_call_final" else kwargs
             try:
                 if use_timeout:
-                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
+                    ret = self._run_hook_callback_bounded(hook_name, cb, callback_kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
                         if failed is not None:
                             failed.append(cb)
                         if fail_closed:  # policy hook: fail closed with a block directive
-                            results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                            message = (
+                                _FINAL_POLICY_TIMEOUT_BLOCK_MESSAGE
+                                if hook_name == "pre_tool_call_final"
+                                else _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+                            )
+                            results.append({"action": "block", "message": message})
                         continue
                 else:
-                    ret = self._invoke_hook_callback(cb, kwargs)
+                    ret = self._invoke_hook_callback(cb, callback_kwargs)
                 if ret is not None:
                     results.append(ret)
             except (Exception, SystemExit) as exc:  # health: allow BLE001 -- moved from invoke_hook: plugin callbacks are untrusted; each failure is reported and isolated

@@ -11,6 +11,7 @@ and an ``__init__.py`` exposing ``register(ctx)``. Plugins register callbacks fo
 from __future__ import annotations
 
 import asyncio
+import copy
 import importlib.metadata
 import json
 import logging
@@ -107,7 +108,8 @@ def _install_plugin_debug_handler(force: bool = False) -> None:
 _install_plugin_debug_handler()
 
 VALID_HOOKS: set[str] = {
-    "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
+    "pre_tool_call", "pre_tool_call_final", "post_tool_call",
+    "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
@@ -2024,7 +2026,45 @@ def _dispatch_pre_tool_call_hooks(
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
     block_msg = _resolve_block_from_details(
         details, tool_name, **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
+    final_args = details.modified_args if details.modified_args is not None else args
+    if block_msg is None:
+        block_msg = _get_pre_tool_call_final_block_message(
+            tool_name,
+            final_args if isinstance(final_args, dict) else {},
+            **hook_kwargs,
+        )
     return (block_msg, details.modified_args)
+
+
+def _get_pre_tool_call_final_block_message(
+    tool_name: str, args: dict[str, Any], **hook_kwargs: Any
+) -> Optional[str]:
+    """Run final policy hooks against an isolated copy of the arguments that will dispatch.
+
+    This stage runs after all ``pre_tool_call`` modifications. It honors only ``block`` so a
+    final policy cannot rewrite the arguments it just inspected or use Hermes' auto-approval
+    paths. The dispatcher gives each callback its own detached payload.
+    """
+    from hermes_cli.lifecycle import invoke_hook as invoke_lifecycle_hook
+
+    results = invoke_lifecycle_hook(
+        "pre_tool_call_final",
+        tool_name=tool_name,
+        args=copy.deepcopy(args),
+        task_id=hook_kwargs.get("task_id", ""),
+        session_id=hook_kwargs.get("session_id", ""),
+        tool_call_id=hook_kwargs.get("tool_call_id", ""),
+        turn_id=hook_kwargs.get("turn_id", ""),
+        api_request_id=hook_kwargs.get("api_request_id", ""),
+        middleware_trace=list(hook_kwargs.get("middleware_trace", []) or []),
+    )
+    for result in results:
+        if not isinstance(result, dict) or result.get("action") != "block":
+            continue
+        message = result.get("message")
+        if isinstance(message, str) and message:
+            return message
+    return None
 
 
 def get_pre_verify_continue_message(

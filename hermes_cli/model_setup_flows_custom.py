@@ -93,6 +93,29 @@ def _pick_detected_model(detected_models: list) -> str:
     return line_input(manual).strip()
 
 
+def _key_for_endpoint(api_key: str, current_key: str, current_url: str, effective_url: str):
+    """The key to probe and save for *effective_url*; None when the user cancels.
+
+    The stored ``OPENAI_API_KEY`` belongs to ``OPENAI_BASE_URL`` (api.openai.com when unset).
+    A blank key prompt reuses it only for that same origin: a newly typed host gets asked
+    for its own key instead of receiving the old one."""
+    if api_key or not current_key:
+        return api_key
+    from utils import same_base_url_origin
+    key_url = current_url or "https://api.openai.com/v1"
+    if same_base_url_origin(key_url, effective_url):
+        return current_key
+    old, new = (urllib.parse.urlparse(u) for u in (key_url, effective_url))
+    new_origin = f"{new.scheme}://{new.netloc.rpartition('@')[2]}"
+    print(f"  The saved key is for {old.scheme}://{old.netloc.rpartition('@')[2]}; it is not sent to {new_origin}.")
+    from hermes_cli.secret_prompt import masked_secret_prompt
+    try:
+        return masked_secret_prompt(f"API key for {new_origin} [blank = no key]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return None
+
+
 def _model_flow_custom(config):
     """Custom endpoint: collect URL, API key, and model name; also saved to ``custom_providers`` so
     it appears in the provider menu on subsequent runs."""
@@ -124,7 +147,9 @@ def _model_flow_custom(config):
     if not effective_url.startswith(_HTTP):
         print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
         return
-    effective_key = api_key or current_key
+    effective_key = _key_for_endpoint(api_key, current_key, current_url, effective_url)
+    if effective_key is None:
+        return
 
     # Most local servers (Ollama, vLLM, llama.cpp) need /v1 for OpenAI-compatible
     # chat completions — offer to append it when the URL looks local without it.
@@ -175,6 +200,11 @@ def _model_flow_custom(config):
         print(f"  API key saved to .env as {custom_key_env}")
 
     def _apply_endpoint(model: dict) -> None:
+        from utils import same_base_url_origin
+        if not same_base_url_origin(str(model.get("base_url") or current_url), effective_url):
+            # An inline key (or its legacy ``api`` alias) was entered for the previous host.
+            model.pop("api_key", None)
+            model.pop("api", None)
         model["provider"] = "custom"
         model["base_url"] = effective_url
         # A previous endpoint's key_env pointer would outrank the credential written below.

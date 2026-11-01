@@ -863,6 +863,15 @@ def base_url_origin(base_url: str) -> tuple[str, str, int]:
     return (scheme, hostname, {"https": 443, "http": 80}.get(scheme, 0) if port is None else port)
 
 
+def same_base_url_origin(a: str, b: str) -> bool:
+    """True when both URLs parse to one origin, so a credential stored for *a* may go to *b*.
+
+    Hostnames are compared literally: ``localhost`` and ``127.0.0.1`` are different origins.
+    """
+    origin = base_url_origin(a)
+    return bool(origin[1]) and origin == base_url_origin(b)
+
+
 def base_url_host_matches(base_url: str, domain: str) -> bool:
     """True when the base URL's hostname is ``domain`` or a subdomain.
 

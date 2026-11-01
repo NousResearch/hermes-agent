@@ -67,6 +67,8 @@ import {
 import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
 
+import { useLiveWorkRoster } from './use-live-work-roster'
+
 interface ActiveTranscriptSession {
   ownerRoute?: SessionOwnerRoute
   profile?: string | null
@@ -1068,6 +1070,7 @@ export function useBackgroundSync({
   requestGateway,
   updateSessionState
 }: BackgroundSyncParams): void {
+  useLiveWorkRoster()
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
   const activeTranscriptRefreshPendingRef = useRef<string | null>(null)

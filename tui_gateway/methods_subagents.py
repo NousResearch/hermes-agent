@@ -63,6 +63,50 @@ def _(rid, params):
     })
 
 
+def _live_work_by_conversation():
+    """{durable conversation id: {"subagents": n, "background": m}} over the whole process: top-level live
+    children keyed by ``owner_agent_session_id`` (the same durable spine completion delivery routes by), running
+    background processes by their registry ``session_key``."""
+    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+    from tools.process_registry import process_registry
+
+    counts = {}
+    with _active_subagents_lock:
+        owners = [str(r.get("owner_agent_session_id") or "") for r in _active_subagents.values()
+                  if not r.get("depth")]
+    for sid in filter(None, owners):
+        counts.setdefault(sid, {"subagents": 0, "background": 0})["subagents"] += 1
+    for entry in process_registry.list_sessions():
+        proc = process_registry.get(entry.get("session_id"))
+        key = str(getattr(proc, "session_key", "") or "") if proc is not None else ""
+        if key and not getattr(proc, "exited", True):
+            counts.setdefault(key, {"subagents": 0, "background": 0})["background"] += 1
+    return counts
+
+
+@method("subagent.roster")
+def _(rid, params):
+    """App-wide sidebar feed: which conversations still have children or background processes running.
+    ``subagent.list`` needs the conversation's live, transport-attached session record, so it cannot answer
+    for a row that is not open or for any row right after a renderer reload; this read needs neither. One
+    process hosts several profiles, so only conversations stored in the requested profile's state.db are
+    returned — a caller never learns another profile's session ids."""
+    counts = _live_work_by_conversation()
+    if not counts:
+        return _ok(rid, {"sessions": []})
+    scope = params if isinstance(params, dict) else {}
+    if not str(scope.get("profile") or "").strip():
+        # A legacy-fallback socket ticketed to a non-launch profile answers for that profile only.
+        from tui_gateway.ws_legacy_fallback import connection_profile_home
+        if home := connection_profile_home():
+            scope = {"profile": Path(home).name}
+    with _profile_db(scope) as db:
+        if db is None:
+            return _ok(rid, {"sessions": []})
+        owned = [sid for sid in counts if db.get_session(sid)]
+    return _ok(rid, {"sessions": [{"session_id": sid, **counts[sid]} for sid in owned]})
+
+
 def _failed_delegations(session_id, owner):
     """Recently failed async delegation tasks for this session from the durable store (the live
     roster forgets ended children and dies with a renderer reload, #97202). Read under the session's

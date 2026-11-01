@@ -28,6 +28,7 @@ import { computed } from 'nanostores'
 import { stableArray, stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
+import { $liveWorkRoster, rosterLiveIds } from './live-work-roster'
 import { $pausedQueueSessionIds } from './owner-queue-reconcile'
 import { $messagingSessions, $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
 import {
@@ -50,18 +51,31 @@ import { $subagentsBySession, activeSubagentCount } from './subagents'
 // lineageAliases covers whichever tip of the conversation a surface holds.
 let delegatingIds: readonly string[] = []
 export const $delegatingSessionIds = computed(
-  [$subagentsBySession, $sessionStates, $sessions],
-  (bySession, states, sessions) => {
+  [$subagentsBySession, $sessionStates, $sessions, $liveWorkRoster],
+  (bySession, states, sessions, roster) => {
     const ids = new Set<string>()
+    const covered = new Set<string>()
 
     for (const [runtimeId, items] of Object.entries(bySession)) {
-      if (activeSubagentCount(items) === 0) {
+      if (items.length === 0) {
         continue
       }
 
-      for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) {
-        ids.add(alias)
+      const aliases = lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)
+      const active = activeSubagentCount(items) > 0
+
+      for (const alias of aliases) {
+        covered.add(alias)
+
+        if (active) {
+          ids.add(alias)
+        }
       }
+    }
+
+    // Rows no mounted tile feeds (off screen, or every row after a reload).
+    for (const alias of rosterLiveIds(roster, 'subagents', covered, sessions)) {
+      ids.add(alias)
     }
 
     return (delegatingIds = stableArray(delegatingIds, [...ids]))

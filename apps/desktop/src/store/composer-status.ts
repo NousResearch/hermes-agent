@@ -6,6 +6,7 @@ import { type TodoItem, type TodoStatus, todoTree } from '@/lib/todos'
 
 import { $gateway } from './gateway'
 import { $goalsBySession, type GoalStatus } from './goals'
+import { $liveWorkRoster, rosterLiveIds } from './live-work-roster'
 import { dispatchNativeNotification } from './native-notifications'
 import { notifyError } from './notifications'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone, noteRuntimeAlive } from './runtime-gone'
@@ -66,20 +67,32 @@ export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem
 // reference when unchanged so rows reading this don't re-render per token.
 let backgroundRunningIds: readonly string[] = []
 export const $backgroundRunningSessionIds = computed(
-  [$backgroundStatusBySession, $sessionStates, $sessions],
-  (bg, states, sessions) => {
+  [$backgroundStatusBySession, $sessionStates, $sessions, $liveWorkRoster],
+  (bg, states, sessions, roster) => {
     const ids = new Set<string>()
+    const covered = new Set<string>()
 
     for (const [runtimeId, items] of Object.entries(bg)) {
-      if (!items.some(i => i.state === 'running')) {
+      if (items.length === 0) {
         continue
       }
+
+      const running = items.some(i => i.state === 'running')
 
       // Same fresh-chat fallback as the working/attention projections: before a
       // conversation is persisted its runtime id is the id surfaces key on.
       for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) {
-        ids.add(alias)
+        covered.add(alias)
+
+        if (running) {
+          ids.add(alias)
+        }
       }
+    }
+
+    // Rows no mounted tile feeds (off screen, or every row after a reload).
+    for (const alias of rosterLiveIds(roster, 'background', covered, sessions)) {
+      ids.add(alias)
     }
 
     return (backgroundRunningIds = stableArray(backgroundRunningIds, [...ids]))

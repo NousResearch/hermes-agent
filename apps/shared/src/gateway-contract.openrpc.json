@@ -4075,6 +4075,24 @@
       }
     },
     {
+      "name": "subagent.roster",
+      "summary": "Per-conversation counts of live delegated children and running background processes, limited to conversations stored in the named profile (launch profile when omitted). Needs no attached session.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SubagentRosterResult"
+        }
+      }
+    },
+    {
       "name": "subagent.steer",
       "summary": "Queue steering text into a live delegated child owned by this session.",
       "params": [
@@ -42589,6 +42607,44 @@
           "is_error"
         ],
         "title": "SubagentOutputTailEntry",
+        "type": "object"
+      },
+      "SubagentRosterEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "subagents": {
+            "default": 0,
+            "title": "Subagents",
+            "type": "integer"
+          },
+          "background": {
+            "default": 0,
+            "title": "Background",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SubagentRosterEntry",
+        "type": "object"
+      },
+      "SubagentRosterResult": {
+        "additionalProperties": false,
+        "properties": {
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/SubagentRosterEntry"
+            },
+            "title": "Sessions",
+            "type": "array"
+          }
+        },
+        "title": "SubagentRosterResult",
         "type": "object"
       },
       "SubagentSnapshot": {

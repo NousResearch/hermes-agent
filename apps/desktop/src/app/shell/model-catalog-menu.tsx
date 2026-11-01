@@ -197,6 +197,10 @@ interface ModelCatalogMenuProps {
    *  key on model changes — a surface bound to a session must pass it or its
    *  menu goes stale. Detached surfaces (per-task overrides) omit it. */
   sessionId?: null | string
+  /** Show the built-in "edit models" curation row. Override surfaces with
+   *  their own header/footer (e.g. a plugin's per-task picker) may hide it —
+   *  the list itself already honors the user's visibility curation. */
+  showEditModels?: boolean
 }
 
 interface ProviderGroup {
@@ -250,7 +254,8 @@ export function ModelCatalogMenu({
   ownerConnectionId,
   profile = 'default',
   request,
-  sessionId = null
+  sessionId = null,
+  showEditModels = true
 }: ModelCatalogMenuProps): ReactElement {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
@@ -935,13 +940,15 @@ export function ModelCatalogMenu({
         <Codicon name="add" size="0.75rem" />
         {copyPicker.addCustomModelAction}
       </DropdownMenuItem>
-      <DropdownMenuItem
-        className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
-        onSelect={() => setModelVisibilityOpen(true)}
-      >
-        <Codicon name="settings-gear" size="0.75rem" />
-        {copy.editModels}
-      </DropdownMenuItem>
+      {showEditModels ? (
+        <DropdownMenuItem
+          className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+          onSelect={() => setModelVisibilityOpen(true)}
+        >
+          <Codicon name="settings-gear" size="0.75rem" />
+          {copy.editModels}
+        </DropdownMenuItem>
+      ) : null}
     </>
   )
 }

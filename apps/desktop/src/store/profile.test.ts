@@ -23,6 +23,7 @@ vi.mock('@/store/gateway', () => ({
   activeGatewayProfileKey: () => ensureGatewayForProfile.mock.lastCall?.[0] ?? $activeGatewayProfile.get(),
   ensureGatewayForAgent,
   ensureGatewayForProfile,
+  isActivePrimary: () => true,
   openGatewayForAgent,
   openGatewayForProfile,
   openSecondaryCount

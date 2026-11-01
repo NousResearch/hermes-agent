@@ -13,6 +13,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from agent.image_gen_provider import ImageGenProvider
+
 logger = logging.getLogger(__name__)
 
 # Providers that can ground generation on a reference image, in preference order.
@@ -29,11 +31,12 @@ class GenerationError(RuntimeError):
 
 @dataclass(frozen=True)
 class SpriteProvider:
-    """Resolved provider plus whether it can take reference images."""
+    """Logical provider choice, resolved backend, and model pinned for this generation."""
 
     name: str
-    provider: object
+    provider: ImageGenProvider
     supports_references: bool
+    model: str | None = None
 
 
 def _discover() -> None:
@@ -53,6 +56,30 @@ def _available(name: str):
     return provider if provider is not None and provider.is_available() else None
 
 
+def _sprite_provider(name: str, provider: ImageGenProvider) -> SpriteProvider:
+    """Keep the logical provider choice, but honor its managed model's gateway."""
+    from hermes_cli.config import load_config_readonly
+    from tools.image_generation_managed import KREA, managed_route
+
+    cfg = load_config_readonly().get("image_gen", {})
+    model = cfg.get("model")
+    model = model.strip() if isinstance(model, str) and model.strip() else None
+    if name == "nous" and managed_route(cfg.get("provider"), model) == KREA:
+        # Nous is one subscription choice spanning several gateways. Calling
+        # its Portal provider directly sends native Krea ids to the wrong API.
+        managed_provider = _available(KREA)
+        if managed_provider is None:
+            raise GenerationError(
+                "The selected Nous image model needs the Krea gateway, but that "
+                "backend is unavailable. Check Nous Subscription under "
+                "`hermes tools` → Image Generation."
+            )
+        provider = managed_provider
+    return SpriteProvider(
+        name=name, provider=provider, supports_references=True, model=model
+    )
+
+
 def resolve_provider(*, require_references: bool = True, prefer: str | None = None) -> SpriteProvider:
     """Pick the image provider for sprite work.
 
@@ -67,17 +94,17 @@ def resolve_provider(*, require_references: bool = True, prefer: str | None = No
     forced = os.environ.get("HERMES_PET_IMAGE_PROVIDER", "").strip().lower()
     for name in (forced, prefer):
         if name in _REF_CAPABLE and (chosen := _available(name)) is not None:
-            return SpriteProvider(name=name, provider=chosen, supports_references=True)
+            return _sprite_provider(name, chosen)
     try:
         active = get_active_provider()
     except Exception:
         active = None
     active_name = getattr(active, "name", "") if active is not None else ""
-    if active_name in _REF_CAPABLE and active.is_available():
-        return SpriteProvider(name=active_name, provider=active, supports_references=True)
+    if active is not None and active_name in _REF_CAPABLE and active.is_available():
+        return _sprite_provider(active_name, active)
     for name in _REF_CAPABLE:
         if (provider := _available(name)) is not None:
-            return SpriteProvider(name=name, provider=provider, supports_references=True)
+            return _sprite_provider(name, provider)
     if not require_references and active is not None and active.is_available():
         return SpriteProvider(name=getattr(active, "name", "unknown"), provider=active, supports_references=False)
     raise GenerationError(
@@ -146,10 +173,13 @@ def generate(
     # ``reference_images``, OpenAI's gpt-image-2 reads ``reference_image_urls``.
     # Send both; each ignores the other.
     ref_kwargs = {"reference_images": refs, "reference_image_urls": refs} if refs else {}
+    model_kwargs = {"model": sprite.model} if sprite.model else {}
 
     def _run(extra: dict) -> tuple[Path | None, str]:
         try:
-            result = sprite.provider.generate(prompt, aspect_ratio=aspect_ratio, **extra, **ref_kwargs)
+            result = sprite.provider.generate(
+                prompt, aspect_ratio=aspect_ratio, **extra, **ref_kwargs, **model_kwargs
+            )
         except Exception as exc:
             logger.debug("provider.generate crashed: %s", exc)
             return None, str(exc)

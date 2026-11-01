@@ -77,9 +77,14 @@ platforms:
       dm_policy: "open"          # open | allowlist | disabled
       allow_from:
         - "user_openid_1"
-      group_policy: "open"       # open | allowlist | disabled
+      group_policy: "open"       # open | allowlist | disabled | pairing
       group_allow_from:
         - "group_openid_1"
+      group_require_mention: true   # true = reply only when @-ed; false = every group message
+      group_history_limit: 20       # non-@ lines kept until the next @ (0 disables)
+      groups:
+        "group_openid_1":
+          require_mention: false    # this group overrides group_require_mention
       stt:
         provider: "zai"          # zai (GLM-ASR), openai (Whisper), etc.
         baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4"
@@ -118,7 +123,7 @@ This usually means:
 
 - Verify the bot's **intents** are enabled at q.qq.com
 - Check `QQ_ALLOWED_USERS` if DM access is restricted
-- For group messages, ensure the bot is **@mentioned** (group policy may require allowlisting)
+- For group messages, `group_policy` must admit the group (`open` or an allowlist entry). Mention mode (the default) replies only when the bot is **@mentioned**; set `group_require_mention: false` to reply to every group message. That mode also needs the QQ console permission that delivers `GROUP_MESSAGE_CREATE`.
 - Check `QQBOT_HOME_CHANNEL` for cron/notification delivery
 
 ### Connection errors

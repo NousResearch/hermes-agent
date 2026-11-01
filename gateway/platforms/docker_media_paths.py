@@ -27,7 +27,7 @@ def _cwd_mount_enabled() -> bool:
     return _tenv_bool("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
 
 
-def _docker_sandbox_dir_candidates(session_key: str = "", workspace_key: str = "") -> list[str]:
+def _docker_sandbox_dir_candidates(session_key: str = "", workspace_key: str = "", profile: str | None = None) -> list[str]:
     """Candidate host sandbox dir names, best first.
 
     Mirrors ``_resolve_container_task_id``: profile scope (``default``, else
@@ -35,14 +35,15 @@ def _docker_sandbox_dir_candidates(session_key: str = "", workspace_key: str = "
     that bound a host workspace also has ``<base>:ws:<digest>`` — a different
     directory from the shared profile sandbox — but only with the cwd mount on:
     without it every session keeps the profile sandbox, and a ``*_ws_*`` dir
-    left by an older build is not this session's. The digest is explicit because
-    an ambient lookup after the turn would collapse onto ``default``.
+    left by an older build is not this session's. The digest and ``profile`` are
+    explicit because an ambient lookup after the turn would collapse onto ``default``
+    (a cron job's profile is its own, not the delivering process's).
     """
     tenv, _persistent = _scope()
     try:
         from tools.environments.path_utils import sanitize_task_id_for_path
         from tools.terminal_tool_config import home_profile_name, profile_container_key
-        base = profile_container_key(home_profile_name())
+        base = profile_container_key(profile or home_profile_name())
     except Exception:  # health: allow BLE001 -- path translation fails closed; a miss is a 404, not a 500
         return ["default"]
     candidates: list[str] = []
@@ -61,7 +62,7 @@ def _docker_sandbox_dir_candidates(session_key: str = "", workspace_key: str = "
 
 
 def _docker_persistent_sandbox_roots(
-    session_key: str, leaf: str, workspace_key: str = "",
+    session_key: str, leaf: str, workspace_key: str = "", profile: str | None = None,
 ) -> list[Path]:
     """Existing ``<sandbox>/docker/<candidate>/<leaf>`` dirs, candidate order.
 
@@ -74,7 +75,7 @@ def _docker_persistent_sandbox_roots(
     try:
         from tools.environments.base import get_sandbox_dir
         base = get_sandbox_dir() / "docker"
-        return [cand for name in _docker_sandbox_dir_candidates(session_key, workspace_key)
+        return [cand for name in _docker_sandbox_dir_candidates(session_key, workspace_key, profile)
                 if (cand := (base / name / leaf).resolve(strict=False)).is_dir()]
     except Exception:  # health: allow BLE001 -- path translation fails closed; a miss is a 404, not a 500
         return []
@@ -130,7 +131,7 @@ def _shared_cwd_mount_guess(workspace_key: str) -> list[Path]:
 
 
 def _default_docker_workspace_host_roots(
-    session_key: str = "", workspace_key: str = "", workspace_cwd: str = "",
+    session_key: str = "", workspace_key: str = "", workspace_cwd: str = "", profile: str | None = None,
 ) -> list[Path]:
     """Host dirs that stand in for ``/workspace``.
 
@@ -154,7 +155,7 @@ def _default_docker_workspace_host_roots(
             roots.extend(_shared_cwd_mount_guess(workspace_key))
         else:
             roots.extend(_session_mounted_workspace(workspace_key, workspace_cwd))
-    for root in _docker_persistent_sandbox_roots(session_key, "workspace", workspace_key):
+    for root in _docker_persistent_sandbox_roots(session_key, "workspace", workspace_key, profile):
         if root not in roots:
             roots.append(root)
     return roots

@@ -238,3 +238,35 @@ describe('wake-word ear visibility', () => {
     expect((ear as HTMLButtonElement).disabled).toBe(true)
   })
 })
+
+// Codicons has no `mic-off` glyph (only `mic` / `mic-filled`), so a
+// `codicon-mic-off` span renders as an empty box: muting made the button look
+// like it vanished. The muted state must draw a real icon.
+describe('voice-conversation mute button', () => {
+  const conversation = (muted: boolean) => ({
+    active: true,
+    level: 0,
+    muted,
+    onEnd: vi.fn(),
+    onStart: vi.fn(),
+    onStopTurn: vi.fn(),
+    onToggleMute: vi.fn(),
+    status: 'listening' as const
+  })
+
+  it('keeps a visible icon on the button while muted', () => {
+    renderControls({ conversation: conversation(true) })
+
+    const button = screen.getByLabelText('Unmute microphone')
+
+    expect(button.getAttribute('aria-pressed')).toBe('true')
+    expect(button.querySelector('.codicon-mic-off')).toBeNull()
+    expect(button.querySelector('svg')).not.toBeNull()
+  })
+
+  it('shows the mic glyph while unmuted', () => {
+    renderControls({ conversation: conversation(false) })
+
+    expect(screen.getByLabelText('Mute microphone').querySelector('.codicon-mic')).not.toBeNull()
+  })
+})

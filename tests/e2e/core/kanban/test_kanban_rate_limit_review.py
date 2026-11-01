@@ -29,7 +29,6 @@ from typing import Any
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.kanban._helpers import Board
 from tests.fakes.fake_llm_provider import Error, FakeLLMServer, Text, ToolCall
 
@@ -47,17 +46,12 @@ REVIEW_MARK = "E2E_REVIEW_LANE_SKILL_5d21c9"
 RATE_LIMIT_EXIT_CODE = 75  # KANBAN_RATE_LIMIT_EXIT_CODE — documented worker exit contract
 MAX_TICKS = 6  # a healthy rate-limited card is done on tick 3; the rest prove "forever"
 
-# Scenario -> (pattern, reason) for ``known_gate``; it only matches ``ReviewerNeverSpawned``.
-KNOWN: dict[str, tuple[str, str]] = {
-    "rate_limited_then_review": (
-        r"reviewer attempts=0, respawn_guarded=\[[^\]]*'blocker_auth'",
-        "#119070 stale rate-limit stamp parks the review handoff as blocker_auth"),
-}
-
-
+# #119070 fixed: the stale quota stamp no longer parks the review handoff as
+# ``blocker_auth``. This scenario is no longer a known gate — the cell asserts
+# the contract directly, so a regression fails loudly (the reason string the
+# guard used to emit is asserted in ``guarded`` below).
 class ReviewerNeverSpawned(AssertionError):
-    """The card reached ``review`` but the review lane never started a reviewer (#119070); the only
-    type ``known_gate`` accepts here."""
+    """The card reached ``review`` but the review lane never started a reviewer (#119070)."""
 
 
 # fake provider -----------------------------------------------------------------------------------
@@ -238,12 +232,11 @@ def test_rate_limited_then_review_handoff_reaches_the_reviewer(rate_limited_flow
     assert f.run_outcomes()[:2] == ["rate_limited", "review_requested"], diag
     reviewers = f.model.by_role("review")
     guarded = [g for t in f.ticks for g in t["guarded"]]
-    with known_gate(KNOWN, scenario, raises=ReviewerNeverSpawned):
-        if not reviewers or b.task(tid)["status"] != "done":
-            raise ReviewerNeverSpawned(
-                f"{scenario}: status={b.task(tid)['status']} after {len(f.ticks)} ticks, "
-                f"reviewer attempts={len(reviewers)}, respawn_guarded={guarded}\n{diag}")
-    # Once fixed, the whole contract must hold, not just "something spawned".
+    if not reviewers or b.task(tid)["status"] != "done":
+        raise ReviewerNeverSpawned(
+            f"{scenario}: status={b.task(tid)['status']} after {len(f.ticks)} ticks, "
+            f"reviewer attempts={len(reviewers)}, respawn_guarded={guarded}\n{diag}")
+    # The whole contract must hold, not just "something spawned".
     assert f.run_outcomes() == ["rate_limited", "review_requested", "completed"], diag
     # The reviewer starts on the tick right after the handoff (cooldown 0), billed one tool turn.
     assert [a.tick for a in reviewers] == [3] and one_terminal_turn(reviewers[0], "kanban_complete"), diag

@@ -90,6 +90,74 @@ def _clear_provider_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
+class _NonTtyStdin:
+    def isatty(self):
+        return False
+
+
+class _TtyStdin:
+    def isatty(self):
+        return True
+
+
+def test_auth_add_api_key_fails_closed_on_non_tty_stdin(tmp_path, monkeypatch):
+    # A missing/blank --api-key must not fall through to the hidden prompt when
+    # stdin cannot answer it: getpass blocks forever on a non-interactive stdin
+    # (a pipe with no data, or /dev/tty when one exists), which shows up as the
+    # CLI hanging with zero output in CI, scripts and git-bash (#129429).
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    monkeypatch.setattr("sys.stdin", _NonTtyStdin())
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    from hermes_cli import auth_commands
+
+    class _Args:
+        provider = "openrouter"
+        auth_type = "api-key"
+        api_key = ""
+        label = "personal"
+
+    def _no_prompt(*_args, **_kwargs):
+        raise AssertionError("the hidden prompt must not be reached on a non-TTY stdin")
+
+    with patch.object(auth_commands, "masked_secret_prompt", _no_prompt):
+        with pytest.raises(SystemExit, match="--api-key"):
+            auth_commands.auth_add_command(_Args())
+
+
+def test_auth_add_api_key_still_prompts_on_tty(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    monkeypatch.setattr("sys.stdin", _TtyStdin())
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    from unittest.mock import MagicMock
+
+    from hermes_cli import auth_commands
+
+    prompted_key = "sk-" + "via-prompt"
+
+    class _Args:
+        provider = "openrouter"
+        auth_type = "api-key"
+        api_key = None
+        label = "personal"
+
+    with patch.object(auth_commands, "masked_secret_prompt",
+                      MagicMock(return_value=prompted_key)) as prompted:
+        auth_commands.auth_add_command(_Args())
+
+    assert prompted.call_count == 1
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entry = next(item for item in payload["credential_pool"]["openrouter"]
+                 if item["source"] == "manual")
+    assert entry["access_token"] == prompted_key
+    assert entry["label"] == "personal"
+
+
 def test_auth_add_api_key_persists_manual_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -282,6 +350,9 @@ def test_interactive_auth_add_normalizes_display_name_to_provider_key(
     from hermes_cli import auth_commands
 
     answers = iter(["Groq Enterprise", "primary"])
+    # The interactive flow ends in the hidden API-key prompt, which now refuses
+    # a non-TTY stdin — simulate the terminal the flow implies.
+    monkeypatch.setattr("sys.stdin", _TtyStdin())
     monkeypatch.setattr(auth_commands, "line_input", lambda _prompt: next(answers))
     monkeypatch.setattr(auth_commands, "masked_secret_prompt", lambda _prompt: "gsk-test")
 

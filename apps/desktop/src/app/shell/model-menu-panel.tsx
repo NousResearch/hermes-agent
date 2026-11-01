@@ -64,6 +64,10 @@ export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPane
 
       // The refreshed catalog is a hint list, never a reason to move the pick:
       // a custom slug the row lacks is still what the user selected.
+      // a cache-only read started on open may still be in flight. retire it
+      // before publishing the explicit refresh, or its older response can
+      // remove the prices and models we just fetched. other owners keep reading.
+      await queryClient.cancelQueries({ queryKey, exact: true })
       queryClient.setQueryData<ModelOptionsResult>(queryKey, next)
     } catch {
       // Network/backend hiccup — fall back to a plain invalidate so the next

@@ -5551,17 +5551,17 @@ Write only the summary body. Do not include any preamble or prefix."""
     def _assemble_compressed(
         self, messages: list[dict[str, Any]], compress_start: int, compress_end: int, scan: _HandoffScan, summary: str,
     ) -> list[dict[str, Any]]:
-        """Head + summary + tail from the pruned copy: its tool-result demotions are what let an oversized
-        head/tail compress at all (#61932); tool-call arguments are never rewritten by pruning."""
+        """Assemble the pruned head, handoff and tail; pruning preserves tool-call arguments (#61932)."""
+        from agent.context_compressor_plan_pointer import with_plan_pointer
         compressed = self._assemble_head(messages, compress_start)
         tail_messages = self._assemble_tail(messages, compress_end, scan.tail_start, scan.summary_indices)
+        summary = with_plan_pointer(summary, messages)
         summary, compressed, tail_messages = with_skill_safety_rule(summary, compressed, tail_messages)
         summary_role, merge_into_tail, force_user_leading, first_tail_visible_idx = (
             self._summary_placement(compressed, tail_messages, compress_start)
         )
         if not merge_into_tail:
-            # End marker stops weak models treating the quoted summary as fresh input (#11475) or
-            # regurgitating it (#33256).
+            # End marker prevents fresh-input confusion (#11475) and regurgitation (#33256).
             compressed.append({
                 "role": summary_role, "content": summary + "\n\n" + _SUMMARY_END_MARKER,
                 COMPRESSED_SUMMARY_METADATA_KEY: True,

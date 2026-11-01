@@ -58,7 +58,7 @@ async def test_concurrent_joins_do_not_double_connect():
     channel = MagicMock()
     channel.id = 111
     channel.guild.id = 42
-    channel.connect = lambda: slow_connect(channel)
+    channel.connect = lambda **_: slow_connect(channel)
 
     from plugins.platforms.discord import adapter as discord_mod
     with patch.object(discord_mod, "VoiceReceiver",

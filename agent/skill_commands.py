@@ -476,8 +476,10 @@ def skill_command_collision_note(name: str) -> Optional[str]:
     return f"slash command /{cmd_name} unavailable — name taken by built-in; use /skill {name}"
 
 
-def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dict[str, dict[str, Any]]) -> None:
-    """Register one SKILL.md in *commands* (no-op when filtered or colliding)."""
+def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dict[str, dict[str, Any]],
+                   load_name: str | None = None) -> None:
+    """Register one SKILL.md in *commands* (no-op when filtered or colliding). *load_name* is the
+    catalog name skill_view() resolves to exactly this file; the command loads by it when given."""
     from tools.skills_tool import _parse_frontmatter, skill_matches_apps, skill_matches_platform, skill_matches_environment
     if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
         return
@@ -511,6 +513,10 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dic
         return
     commands[cmd_key] = {"name": name, "description": description or f"Invoke the {name} skill",
                          "skill_md_path": str(skill_md), "skill_dir": str(skill_md.parent)}
+    if load_name:
+        # A skill whose directory IS its search root (a single-skill ``external_dirs`` entry)
+        # has the relative path ".", shared by every such root, so loading by path is ambiguous.
+        commands[cmd_key]["skill_identifier"] = load_name
 
 
 def scan_skill_commands() -> dict[str, dict[str, Any]]:
@@ -541,7 +547,7 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
         for entry in _skill_catalog():
             if entry["status"] == "unique":
                 try:
-                    _scan_skill_md(Path(entry["path"]), disabled, seen_names, commands)
+                    _scan_skill_md(Path(entry["path"]), disabled, seen_names, commands, entry.get("load_name"))
                 except Exception:
                     continue
     except Exception:

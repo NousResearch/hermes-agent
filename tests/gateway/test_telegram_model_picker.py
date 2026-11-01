@@ -8,6 +8,24 @@ from gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
+def _provider_rows():
+    # ``providers:`` config keys are user-chosen and may contain uppercase letters
+    # (e.g. ``providers: {Magpie: ...}``); the picker row slug preserves that case,
+    # while the shared group fold lowercases every slug.
+    return [
+        {"slug": "Magpie", "name": "Magpie", "total_models": 59,
+         "models": ["m1", "m2"], "is_current": True, "is_user_defined": True,
+         "api_url": "https://relay.example/v1"},
+        {"slug": "copilot", "name": "GitHub Copilot", "total_models": 44,
+         "models": ["c1"], "is_current": False},
+    ]
+
+
+def _keyboard_buttons(adapter, providers):
+    keyboard, _page_info = adapter._build_provider_keyboard(providers, 0)
+    return [b for row in keyboard.inline_keyboard for b in row]
+
+
 def _make_adapter():
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
     adapter._bot = AsyncMock()
@@ -127,5 +145,65 @@ async def test_group_model_picker_switch_follows_callback_allowlist(monkeypatch,
 
     assert on_model_selected.await_count == (1 if switches else 0)
     assert ("-100777" in adapter._model_picker_state) is not switches
+
+
+def _install_fake_keyboard(monkeypatch):
+    """Some gateway tests rebind/reload the telegram adapter module (the lazy-install
+    tests trigger PTB re-imports), so patch the globals of the module object that the
+    adapter CLASS actually resolves — not the name reached via ``import`` here. The
+    mocked telegram package otherwise provides a bare MagicMock markup/button.
+    """
+    class FakeButton:
+        def __init__(self, text=None, callback_data=None, **_kwargs):
+            self.text, self.callback_data = text, callback_data
+
+    class FakeMarkup:
+        def __init__(self, rows):
+            self.inline_keyboard = rows
+
+    adapter_globals = TelegramAdapter.__init__.__globals__
+    monkeypatch.setitem(adapter_globals, "InlineKeyboardButton", FakeButton)
+    monkeypatch.setitem(adapter_globals, "InlineKeyboardMarkup", FakeMarkup)
+
+
+def test_provider_keyboard_renders_mixed_case_user_provider(monkeypatch):
+    """A user-defined provider with an uppercase slug must not be dropped by the
+    lowercase-keyed group fold, and its button keeps the original slug/case."""
+    _install_fake_keyboard(monkeypatch)
+    adapter = _make_adapter()
+    buttons = _keyboard_buttons(adapter, _provider_rows())
+
+    callbacks = {b.callback_data for b in buttons}
+    assert "mp:Magpie" in callbacks
+    assert "mp:copilot" in callbacks
+    magpie = next(b for b in buttons if b.callback_data == "mp:Magpie")
+    assert "Magpie (59)" in magpie.text
+
+
+@pytest.mark.asyncio
+async def test_provider_button_tap_opens_mixed_case_provider_models(monkeypatch):
+    """Tapping ``mp:<MixedCase>`` selects that exact provider row and renders its models."""
+    _install_fake_keyboard(monkeypatch)
+    adapter = _make_adapter()
+    adapter._model_picker_state["12345"] = {
+        "providers": _provider_rows(),
+        "current_model": "m1",
+        "current_provider": "Magpie",
+        "session_key": "s",
+        "on_model_selected": AsyncMock(),
+        "msg_id": 42,
+    }
+    query = AsyncMock()
+    query.data = "mp:Magpie"
+    query.message = MagicMock()
+    query.message.chat_id = 12345
+
+    await adapter._handle_model_picker_callback(query, "mp:Magpie", "12345")
+
+    state = adapter._model_picker_state["12345"]
+    assert state["selected_provider"] == "Magpie"
+    assert state["selected_provider_name"] == "Magpie"
+    assert state["model_list"] == ["m1", "m2"]
+    assert query.edit_message_text.await_count == 1
 
 

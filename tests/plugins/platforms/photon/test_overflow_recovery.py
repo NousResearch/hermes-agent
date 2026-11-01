@@ -80,6 +80,69 @@ def test_structured_non_retryable_sidecar_error_not_legacy_retried() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("max_retries", [1, 3])
+async def test_structured_rate_limit_stays_retryable_with_bounded_backoff(
+    monkeypatch: pytest.MonkeyPatch, max_retries: int
+) -> None:
+    """A structured upstream rate-limit error (``upstream_transient`` +
+    ``retryable=True``, e.g. a 429 / ``reset reason: overflow``) must keep
+    retrying through the EXISTING bounded backoff loop and must never exceed
+    ``max_retries`` — no retry-limit bypass, no unbounded retry storm."""
+    adapter = _make_adapter(monkeypatch)
+    calls = 0
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    async def _fake_sidecar_call(path: str, body: dict[str, Any]) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        raise photon_adapter.PhotonSidecarError(
+            path=path,
+            status_code=500,
+            error="429 too many requests: reset reason: overflow",
+            error_class="upstream_transient",
+            retryable=True,
+        )
+
+    monkeypatch.setattr(photon_adapter.asyncio, "sleep", _fake_sleep)
+    monkeypatch.setattr(adapter, "_sidecar_call", _fake_sidecar_call)
+
+    result = await adapter._send_with_retry(
+        "space-1", "hello", max_retries=max_retries, base_delay=0.25
+    )
+
+    assert result.success is False
+    # Exactly max_retries retries after the first attempt: the loop is bounded.
+    assert calls == max_retries + 1
+    assert len(sleeps) == max_retries
+    # Exponential backoff: base_delay * 2**(attempt-1) plus up to 1s of jitter.
+    for attempt, delay in enumerate(sleeps, start=1):
+        lo = 0.25 * 2 ** (attempt - 1)
+        assert lo <= delay <= lo + 1.0, (attempt, delay)
+    # Still typed retryable so the delivery ledger owns redelivery (and no
+    # notice send re-entered the same rate limit — that would show as an extra
+    # _sidecar_call).
+    assert result.retryable is True
+
+
+def test_structured_rate_limit_response_parsed_retryable() -> None:
+    """The wire form of a structured rate-limit error stays retryable after the
+    adapter parses it, so ``_send_with_retry`` sees a retryable failure."""
+    err = photon_adapter._sidecar_error_from_response(
+        "/send",
+        500,
+        '{"ok":false,"error":"internal sidecar error",'
+        '"error_class":"upstream_transient","retryable":true}',
+    )
+
+    assert err.error_class == "upstream_transient"
+    assert err.retryable is True
+    assert PhotonAdapter._is_retryable_error(str(err)) is True
+
+
+@pytest.mark.asyncio
 async def test_send_with_retry_uses_structured_retryable_flag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

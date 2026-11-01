@@ -576,6 +576,15 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if not isinstance(d, dict):
             return
         msg_id = str(d.get("id", ""))
+        if event_type == "GROUP_MESSAGE_CREATE":
+            author = d.get("author") if isinstance(d.get("author"), dict) else {}
+            group = str(d.get("group_openid") or "")
+            if not group or not self._is_group_allowed(group, str(author.get("member_openid") or "")):
+                return
+            if not self._mentions_this_bot(d):
+                return
+            # A rejected full event must not claim the ID of a later legacy @
+            # event. Accepted events share the existing cross-event dedup cache.
         if not msg_id or self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate or missing message id: %s", self._log_tag, msg_id)
             return
@@ -759,14 +768,40 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             d, msg_id, content, attachments_raw, timestamp, verbose=True,
             chat_id=user_openid, qq_chat_type="c2c", user_id=user_openid, chat_type="dm")
 
-    async def _handle_group_message(self, d, msg_id, content, author, timestamp) -> None:
+    async def _handle_group_message(self, d, msg_id, content, author, timestamp, *, strip_mention=True) -> None:
         group_openid = str(d.get("group_openid", ""))
         member = str(author.get("member_openid", ""))
         if not group_openid or not self._is_group_allowed(group_openid, member):
             return
         await self._ingest(
-            d, msg_id, self._strip_at_mention(content), d.get("attachments"), timestamp,
+            d, msg_id, self._strip_at_mention(content) if strip_mention else content, d.get("attachments"), timestamp,
             chat_id=group_openid, qq_chat_type="group", user_id=member, chat_type="group")
+
+    def _mentions_this_bot(self, d: dict[str, Any]) -> bool:
+        return bool(self._self_mention_ids(d))
+
+    @staticmethod
+    def _self_mention_ids(d: dict[str, Any]) -> set[str]:
+        # Full-mode delivery marks the receiving bot in mentions. Its group
+        # OpenID differs from the ID in READY/users/@me; use this event's marker
+        # rather than guessing from AppID or retaining an identity across groups.
+        mentions = d.get("mentions")
+        if not isinstance(mentions, list):
+            return set()
+        identities = set()
+        for user in mentions:
+            if not isinstance(user, dict) or user.get("bot") is not True or user.get("is_you") is not True:
+                continue
+            identity = user.get("member_openid") or user.get("id")
+            if isinstance(identity, str) and identity and identity != "all" and not re.search(r"[<>\s]", identity):
+                identities.add(identity)
+        return identities
+
+    async def _handle_full_group_message(self, d, msg_id, content, author, timestamp) -> None:
+        # Remove only this bot's invocation; preserve mentions of other members.
+        for identity in self._self_mention_ids(d):
+            content = re.sub(r"<@!?" + re.escape(identity) + r">", "", content).strip()
+        await self._handle_group_message(d, msg_id, content, author, timestamp, strip_mention=False)
 
     async def _handle_guild_message(self, d, msg_id, content, author, timestamp) -> None:
         channel_id = str(d.get("channel_id", ""))
@@ -802,6 +837,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     _INBOUND_HANDLERS = {
         "C2C_MESSAGE_CREATE": "_handle_c2c_message",
         "GROUP_AT_MESSAGE_CREATE": "_handle_group_message",
+        "GROUP_MESSAGE_CREATE": "_handle_full_group_message",
         "GUILD_MESSAGE_CREATE": "_handle_guild_message",
         "GUILD_AT_MESSAGE_CREATE": "_handle_guild_message",
         "DIRECT_MESSAGE_CREATE": "_handle_dm_message"}

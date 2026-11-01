@@ -169,10 +169,21 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
 def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkeypatch):
     from hermes_cli import lifecycle
     import model_tools
+    from tools import daemon_pool
 
     agent = _make_agent(tmp_path)
+    agent._gateway_session_key = "agent:default:discord:dm:fixture"
     release_first = threading.Event()
-    first_returned = threading.Event()
+    futures = []
+    real_executor = daemon_pool.DaemonThreadPoolExecutor
+
+    class _ObservedExecutor(real_executor):
+        def submit(self, fn, *args, **kwargs):
+            future = super().submit(fn, *args, **kwargs)
+            futures.append(future)
+            return future
+
+    monkeypatch.setattr(daemon_pool, "DaemonThreadPoolExecutor", _ObservedExecutor)
     dispatch_count = 0
     terminal_events: list[dict] = []
 
@@ -181,7 +192,6 @@ def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkey
         dispatch_count += 1
         if dispatch_count == 1:
             release_first.wait()
-            first_returned.set()
             return "late result"
         return "second result"
 
@@ -205,7 +215,9 @@ def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkey
                 agent, SimpleNamespace(tool_calls=calls), messages, "task"
             )
             release_first.set()
-            assert first_returned.wait(timeout=1)
+            # Wait for the whole abandoned worker, including its late post-hook,
+            # while the hook observer is still installed.
+            futures[0].result(timeout=5)
     finally:
         release_first.set()
 
@@ -213,6 +225,8 @@ def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkey
         ("hung", "tool_timeout"),
         ("next", None),
     ]
+
+    assert all(event["gateway_session_key"] == agent._gateway_session_key for event in terminal_events)
 
 
 def test_sequential_tool_interrupt_hides_lifecycle_cancel_detail(tmp_path, monkeypatch):

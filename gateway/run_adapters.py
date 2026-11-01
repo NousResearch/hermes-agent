@@ -768,12 +768,16 @@ class GatewayAdapterLifecycleMixin:
     def _bump_reconnect_backoff(
         self, platform, info: dict, attempt: int, error_code, error_message: str
     ) -> int:
-        """Mark the platform retrying and record the failed attempt; returns the backoff applied."""
+        """Mark the platform retrying and record the failed attempt; returns the backoff applied.
+
+        ``retry_now`` still set here was raised DURING this attempt (the pass clears it when it starts):
+        what the attempt lacked arrived after it began (relay credentials), so the retry stays immediate.
+        """
         from gateway.run import _reconnect_backoff
         self._update_platform_runtime_status(
             platform.value, platform_state="retrying", error_code=error_code, error_message=error_message,
         )
-        backoff = _reconnect_backoff(attempt)
+        backoff = 0 if info.pop("retry_now", False) else _reconnect_backoff(attempt)
         info["attempts"] = attempt
         info["next_retry"] = time.monotonic() + backoff
         return backoff
@@ -805,6 +809,7 @@ class GatewayAdapterLifecycleMixin:
             return  # not time yet
         platform_config = info["config"]
         attempt = info["attempts"] + 1
+        info.pop("retry_now", None)  # this attempt already sees whatever the request was for
         # Empty-token primary configs can never reconnect; drop them so multiplex setups
         # where a secondary profile owns the bot do not spin forever.
         # See #64674.

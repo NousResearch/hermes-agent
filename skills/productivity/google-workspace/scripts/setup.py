@@ -61,7 +61,12 @@ SCOPES = [
 # OAuth redirect for "out of band" manual code copy flow.
 # Google deprecated OOB, so we use a localhost redirect and tell the user to
 # copy the code from the browser's URL bar (or the page body).
-REDIRECT_URI = "http://localhost:1"
+#
+# The port must stay off the browsers' blocked-port list. Port 1 (tcpmux) is on it: Chrome and
+# Firefox refuse to navigate there at all, so the consent screen hangs after "Allow" and the user
+# never sees a URL carrying ?code=. A normal high port is attempted, fails because nothing is
+# listening, and leaves the code in the address bar — which is what this flow needs.
+REDIRECT_URI = "http://localhost:8765"
 
 
 def _normalize_authorized_user_payload(payload: dict) -> dict:

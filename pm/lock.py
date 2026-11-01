@@ -161,7 +161,7 @@ class Facts:
 
     def refresh_digests(self, store_root: Path) -> int:
         """Publish all tool digests after packaging finishes changing their bytes."""
-        from pm.store import tree_digest
+        from pm.registry import get_package
 
         from pm.filesystem import long_root
 
@@ -187,7 +187,7 @@ class Facts:
             entry = root / entry_name
             if not entry.is_dir() or not entry.resolve().is_relative_to(root):
                 raise ValueError(f"incomplete payload tool: {name}")
-            fact["digest"] = tree_digest(entry)
+            fact["digest"] = get_package(name).digest(entry, fact["target"])
             count += 1
         if not count:
             raise ValueError(f"payload facts carry no tool entries: {self.path}")

@@ -150,7 +150,7 @@ docker exec <c> tail -n 50 /opt/data/logs/container-boot.log
 
 ### Change the per-profile gateway run command
 
-Edit `S6ServiceManager._render_run_script` in `hermes_cli/service_manager.py`. The function is also called by `hermes_cli/container_boot.py::_register_service` during boot reconciliation, so it's the single source of truth. Update the corresponding assertion in `tests/hermes_cli/test_service_manager.py::test_s6_register_creates_service_dir_and_triggers_scan`.
+Edit `S6ServiceManager._render_run_script` in `hermes_cli/service_manager.py`. The function is also called by `hermes_cli/container_boot.py::_register_service` during boot reconciliation, so it's the single source of truth. Update the corresponding assertion in `tests/hermes_cli/test_service_manager.py::test_render_run_script_uses_replace_to_take_over_stale_holder`.
 
 ### Run the docker test harness
 

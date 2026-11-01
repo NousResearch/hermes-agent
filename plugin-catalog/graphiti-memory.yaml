@@ -1,0 +1,17 @@
+name: graphiti-memory
+repo: https://github.com/xiaoyaner0201/hermes-graphiti-memory
+sha: fe4056ef4e2a393291770f4c2b81555327d97fd4
+description: "Graphiti-backed long-term memory provider with graphiti_memory operations and a unified recall tool for Graphiti facts/nodes and Hermes session history. Disclosure — when configured, it sends memory writes and recall queries to the user's Graphiti MCP endpoint; it can spool failed writes locally for explicit replay."
+maintainer: xiaoyaner0201
+tier: community
+category: memory
+requires_hermes: ">=0.19"
+docs_url: https://github.com/xiaoyaner0201/hermes-graphiti-memory
+readme: true
+capabilities:
+  provides_tools:
+    - graphiti_memory
+    - recall
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

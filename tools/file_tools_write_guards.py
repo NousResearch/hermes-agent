@@ -190,36 +190,89 @@ _PROTECTED_INSTRUCTION_BASENAMES = frozenset({
     "agents.md", "claude.md", "soul.md", ".cursorrules"})
 
 
-def _protected_instruction_config() -> tuple[bool, list[str]]:
-    """Return ``(enabled, extra_patterns)`` from ``security.protected_instruction_files`` /
-    ``security.protected_instruction_extra_patterns`` (fnmatch on basename). Config read
-    failures keep the gate ON — fail-safe for a security boundary."""
+def _protected_instruction_config() -> tuple[bool, list[str], list[str]]:
+    """Return ``(enabled, extra_patterns, allowlist_dirs)`` from
+    ``security.protected_instruction_files`` /
+    ``security.protected_instruction_extra_patterns`` (fnmatch on basename) /
+    ``security.protected_instruction_allowlist_dirs`` (realpaths of the trees that may hold these
+    files WITHOUT the always-ask prompt — a checkout being worked on, never a live surface).
+    Config read failures keep the gate ON and the allowlist EMPTY — fail-safe for a security
+    boundary.
+
+    An allowlist entry survives only as a real DIRECTORY name: non-strings, empty strings and
+    anything that is not absolute (after ``~`` expansion, exactly the treatment
+    ``_hermes_exempt_homes()`` gives the Hermes root) are dropped, so a typo can never be read as
+    a relative prefix. Each survivor is realpath'd once, HERE, so the comparison downstream is
+    resolved-path against resolved-path and a symlinked entry cannot smuggle a different tree in.
+    """
     try:
         from hermes_cli.config import load_config, cfg_get
         cfg = load_config()
         enabled = cfg_get(cfg, "security", "protected_instruction_files", default=True)
         extra = cfg_get(cfg, "security", "protected_instruction_extra_patterns", default=[])
+        allow = cfg_get(cfg, "security", "protected_instruction_allowlist_dirs", default=[])
     except Exception:
-        return True, []
+        return True, [], []
     if not isinstance(enabled, bool):
         enabled = True
     if not isinstance(extra, list):
         extra = []
-    return enabled, [str(p) for p in extra if p]
+    if not isinstance(allow, list):
+        allow = []
+    allowlist_dirs: list[str] = []
+    for entry in allow:
+        if not isinstance(entry, str) or not entry:
+            continue
+        try:
+            expanded = os.path.expanduser(entry)
+        except (OSError, ValueError, RuntimeError):
+            continue
+        if not os.path.isabs(expanded):
+            continue
+        try:
+            allowlist_dirs.append(os.path.realpath(expanded))
+        except (OSError, ValueError):
+            continue
+    return enabled, [str(p) for p in extra if p], allowlist_dirs
+
+
+def _in_allowlisted_dir(resolved: str, allowlist_dirs: list[str]) -> bool:
+    """True when ``resolved`` IS an allowlisted directory or lives inside one.
+
+    Same boundary rule as the Hermes-home exemption above: compare against ``root + os.sep``, so a
+    sibling that merely shares a STRING prefix (``/opt/hermes_prod_evil`` beside
+    ``/opt/hermes_prod``) is not inside it. Both sides are already realpaths.
+    """
+    for root in allowlist_dirs:
+        if resolved == root or resolved.startswith(root + os.sep):
+            return True
+    return False
 
 
 def _protected_instruction_reason(filepath: str, task_id: str = "default",
                                   *, enabled: bool | None = None,
-                                  extra_patterns: list[str] | None = None) -> str | None:
+                                  extra_patterns: list[str] | None = None,
+                                  allowlist_dirs: list[str] | None = None) -> str | None:
     """Return a short label when ``filepath`` targets a protected instruction file, else ``None``.
     Matches BOTH the normalized input and its realpath so no symlink direction escapes.
 
     Matching runs on BOTH the normalized input path and its realpath so neither a symlink pointing AT a
     protected file (#41351) nor a protected name that is itself a symlink escapes the gate. ``..`` traversal
     is neutralized by normpath/realpath before the basename compare.
+
+    TWO narrow exemptions run before the match: the Hermes home tree(s)
+    (``_hermes_exempt_homes`` — the agent's own store), and every directory named in
+    ``security.protected_instruction_allowlist_dirs`` — a checkout being WORKED ON (the sanctioned flow:
+    edit in /opt/hermes_sandbox/<domain>/work/<lane>/..., reach the live line through the update
+    routine), never a live surface. The allowlist exemption is scoped to the four BUILT-IN basenames and
+    is decided on the RESOLVED path only, so:
+      * an extra pattern still gates inside an allowlisted tree (a project's own rule is absolute);
+      * a ``.hermes`` component directory still gates inside an allowlisted tree;
+      * a symlink inside the tree that points OUT of it stays gated (resolved is outside);
+      * a symlink outside pointing INTO the tree is exempt, which is the whole point.
     """
-    if enabled is None or extra_patterns is None:
-        enabled, extra_patterns = _protected_instruction_config()
+    if enabled is None or extra_patterns is None or allowlist_dirs is None:
+        enabled, extra_patterns, allowlist_dirs = _protected_instruction_config()
     if not enabled:
         return None
 
@@ -238,15 +291,21 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
         if resolved == real_home or resolved.startswith(real_home + os.sep):
             return None
 
+    allowlisted = _in_allowlisted_dir(resolved, allowlist_dirs)
+
     for candidate in (normalized, resolved):
         base = os.path.basename(candidate)
         base_lower = base.lower()
-        if base_lower in _PROTECTED_INSTRUCTION_BASENAMES or any(
-                fnmatch.fnmatch(base_lower, pattern.lower()) for pattern in extra_patterns):
+        # An extra pattern is the project's OWN rule for this tree; the allowlist never overrides it.
+        if any(fnmatch.fnmatch(base_lower, pattern.lower()) for pattern in extra_patterns):
+            return base
+        if base_lower in _PROTECTED_INSTRUCTION_BASENAMES and not allowlisted:
             return base
         # Project-local .hermes config dirs (<repo>/.hermes/config.yaml) steer
         # behavior too. Only the IMMEDIATE parent counts — matching any ancestor
         # would gate every write inside a checkout living under ~/.hermes.
+        # NOT exempted by the allowlist: an allowlisted tree may hold a checkout whose
+        # .hermes/config.yaml is still a live steering surface.
         parts = candidate.replace("\\", "/").rstrip("/").split("/")
         if len(parts) >= 2 and parts[-2] == ".hermes":
             return candidate
@@ -346,10 +405,12 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
 def _check_protected_instruction_write(paths: list[str], task_id: str = "default") -> str | None:
     """Gate a write/patch touching protected instruction files. ONE protected file gates
     the ENTIRE multi-file patch (one prompt, all-or-nothing)."""
-    enabled, extra = _protected_instruction_config()
+    enabled, extra, allowlist_dirs = _protected_instruction_config()
     if not enabled:
         return None
-    reasons = [r for r in (_protected_instruction_reason(p, task_id, enabled=enabled, extra_patterns=extra)
+    reasons = [r for r in (_protected_instruction_reason(
+                               p, task_id, enabled=enabled, extra_patterns=extra,
+                               allowlist_dirs=allowlist_dirs)
                            for p in paths) if r]
     if not reasons:
         return None

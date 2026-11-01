@@ -47,6 +47,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | Command | Purpose |
 |---------|---------|
 | `hermes chat` | Interactive or one-shot chat with the agent. |
+| `hermes infer` | Make one model call using the selected profile, without starting an agent session. |
 | `hermes model` | Interactively choose the default provider and model. |
 | `hermes moa` | Configure named Mixture of Agents presets selectable from the model picker. |
 | `hermes fallback` | Manage fallback providers tried when the primary model errors. |
@@ -254,6 +255,30 @@ hermes -z "summarize this repo" --usage-file ~/.hermes/cache/scratch/usage.json
 jq .total_including_auxiliary.estimated_cost_usd ~/.hermes/cache/scratch/usage.json
 jq .auxiliary.by_task ~/.hermes/cache/scratch/usage.json      # what did title generation / vision cost?
 ```
+
+## `hermes infer`
+
+```bash
+hermes infer "Classify this message" --json
+printf '%s' 'Message to classify' | hermes -p staging infer - --provider bubbles --model Qwen3.8-27B-GGUF --json
+hermes infer - --schema ./classification.schema.json --json < ./message.txt
+```
+
+`infer` sends one user prompt to the selected provider and prints its text to
+stdout. Pass `-` or omit the prompt to read standard input. `--json` prints an
+envelope with `text`, `parsed`, `provider`, `model`, and `usage`. An optional
+`--schema` file requests JSON output and validates the response; it requires
+the optional `jsonschema` package. An invalid response exits nonzero. Use
+`--max-tokens` and `--timeout` to bound a call.
+
+The command uses the profile's configured provider, model, credentials, and
+fallback policy, including Hermes model aliases. Supply both `--provider` and
+`--model` to select another configured route. `-p` selects a named profile.
+No `AIAgent`, session, memory, skills, or tool schemas are loaded. The reported
+provider is the route used after any configured fallback; the model is the
+response's model ID when the provider supplies one, otherwise the selected
+route's model ID. A no-agent cron script can call this command and decide what
+to print for delivery.
 
 ## `hermes model`
 

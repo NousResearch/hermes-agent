@@ -438,6 +438,12 @@ def _home_env_lookup(env_var: str, suffix: str = "", *, strip: bool = False) -> 
         get_secret = None  # type: ignore
 
     def read(name: str) -> str:
+        # An unscoped read in a multiplex gateway raises UnscopedSecretError and MUST keep
+        # raising: it must not fall back to os.environ (that is another profile's value) and it
+        # must not degrade into "" (unset). "" would let the caller resolve an EMPTY target
+        # list, which books the receipt and deletes the journal while the output is never
+        # delivered - a silent drop, strictly worse than the loud deferral this bug had.
+        # The caller that owns the secret scope is responsible for binding one.
         value = (get_secret(name, "") or "") if get_secret is not None else os.getenv(name, "")
         return value.strip() if strip else value
 

@@ -10,6 +10,7 @@ refused.
 
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -48,6 +49,27 @@ def test_partial_reread_keeps_an_unchanged_full_read_or_write(tmp_path):
             assert path.read_text(encoding="utf-8") == "replacement\n"
         finally:
             clear_file_ops_cache(task)
+
+
+def test_gateway_turn_cleanup_keeps_session_write_baseline(tmp_path):
+    """A gateway session's next turn may overwrite only its unchanged own write."""
+    from agent.chat_completion_helpers import cleanup_task_resources
+
+    task = "gateway-session"
+    path = tmp_path / "written-by-agent.txt"
+    try:
+        assert "error" not in _call("write_file", path, task, content="first\n")
+
+        cleanup_task_resources(SimpleNamespace(verbose_logging=False, session_id=task), task)
+
+        written = _call("write_file", path, task, content="second\n")
+        assert "error" not in written, written
+
+        path.write_text("external\n", encoding="utf-8")
+        refused = _call("write_file", path, task, content="third\n")
+        assert refused.get("stale_write_blocked"), refused
+    finally:
+        clear_file_ops_cache(task)
 
 
 def test_partial_read_cannot_refresh_a_changed_full_baseline(tmp_path):

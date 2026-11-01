@@ -480,7 +480,7 @@ def _build_children(
             return [], str(exc)
         pin_child_service_tier(child, route.creds)
         if route.child_timeout_seconds is not None:
-            # _ChildRun.run reads this before the global delegation.child_timeout_seconds.
+            # _ChildRun.await_child reads this before the global delegation.child_timeout_seconds.
             child._delegate_child_timeout = route.child_timeout_seconds
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):

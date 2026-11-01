@@ -380,9 +380,8 @@ hermes webhook subscribe antenna-matches \
 |--------|---------|
 | `200 OK` | 投递成功。响应体：`{"status": "delivered", "route": "...", "target": "...", "delivery_id": "..."}` |
 | `200 OK`（status=duplicate） | 在幂等性 TTL（1 小时）内重复的 `X-GitHub-Delivery` ID。不重复投递。 |
-| `401 Unauthorized` | HMAC 签名无效或缺失。 |
 | `400 Bad Request` | JSON 请求体格式错误。 |
-| `404 Not Found` | 未知路由名称。 |
+| `404 Not Found` | 未知路由名称，或 HMAC 签名无效或缺失（响应相同，防止探测路由名）。 |
 | `413 Payload Too Large` | 请求体超过 `max_body_bytes`。 |
 | `429 Too Many Requests` | 路由速率限制已超出。 |
 | `502 Bad Gateway` | 目标适配器拒绝消息或抛出异常。错误记录在服务端日志中；响应体为通用的 `Delivery failed`，避免泄露适配器内部信息。 |

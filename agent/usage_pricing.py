@@ -71,6 +71,9 @@ class CanonicalUsage:
     reasoning_tokens: int = 0
     request_count: int = 1
     raw_usage: Optional[dict[str, Any]] = None
+    # The part of ``cache_write_tokens`` written with a 1-hour TTL (Anthropic reports it as
+    # ``cache_creation.ephemeral_1h_input_tokens``); it bills at the 1h write rate.
+    cache_write_1h_tokens: int = 0
 
     @property
     def prompt_tokens(self) -> int:
@@ -106,6 +109,9 @@ class PricingEntry:
     output_cost_per_million: Optional[Decimal] = None
     cache_read_cost_per_million: Optional[Decimal] = None
     cache_write_cost_per_million: Optional[Decimal] = None
+    # 1-hour-TTL cache writes (Anthropic: 2x base input vs 1.25x for the 5-minute tier).
+    # None bills 1h writes at ``cache_write_cost_per_million``.
+    cache_write_1h_cost_per_million: Optional[Decimal] = None
     request_cost: Optional[Decimal] = None
     source: CostSource = "none"
     source_url: Optional[str] = None
@@ -120,6 +126,7 @@ class PricingEntry:
     output_cost_per_million_above: Optional[Decimal] = None
     cache_read_cost_per_million_above: Optional[Decimal] = None
     cache_write_cost_per_million_above: Optional[Decimal] = None
+    cache_write_1h_cost_per_million_above: Optional[Decimal] = None
 
 
 @dataclass(frozen=True)
@@ -140,15 +147,23 @@ _INCLUDED_ENTRY = PricingEntry(
 )
 
 
+def _to_decimal(value: Any) -> Optional[Decimal]:
+    try:
+        return None if value is None else Decimal(str(value))
+    except Exception:
+        return None
+
+
 def _snap(
-    inp: str, out: str, cache_read: Optional[str] = None, cache_write: Optional[str] = None, *,
-    version: str, url: Optional[str] = None, **tiers: Any,
+    inp: str, out: str, cache_read: Optional[str] = None, cache_write: Optional[str] = None,
+    cache_write_1h: Optional[str] = None, *, version: str, url: Optional[str] = None, **tiers: Any,
 ) -> PricingEntry:
     """Build an official-docs snapshot entry from per-million USD rate strings."""
     return PricingEntry(
         input_cost_per_million=Decimal(inp), output_cost_per_million=Decimal(out),
-        cache_read_cost_per_million=Decimal(cache_read) if cache_read is not None else None,
-        cache_write_cost_per_million=Decimal(cache_write) if cache_write is not None else None,
+        cache_read_cost_per_million=_to_decimal(cache_read),
+        cache_write_cost_per_million=_to_decimal(cache_write),
+        cache_write_1h_cost_per_million=_to_decimal(cache_write_1h),
         source="official_docs_snapshot", source_url=url, pricing_version=version, **tiers,
     )
 
@@ -156,13 +171,18 @@ def _snap(
 # Official docs snapshot: models whose published pricing and cache semantics are
 # stable enough to encode exactly. Each snapshot is (provider, source_url,
 # pricing_version, {model-or-models: per-1M rates (input, output[, cache_read[,
-# cache_write]])}); a tuple key shares one rate row across several model ids.
+# cache_write[, cache_write_1h]]])}); a tuple key shares one rate row across several model ids.
 _BEDROCK_URL = "https://aws.amazon.com/bedrock/pricing/"
 _ANTHROPIC_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
 _GOOGLE_URL = "https://ai.google.dev/pricing"
-_OPUS = ("5.00", "25.00", "0.50", "6.25")
-_SONNET = ("3.00", "15.00", "0.30", "3.75")
-_OPUS_5_5 = ("4.00", "20.00", "0.20", "5.00")
+# Anthropic rows carry the 1h cache-write rate (2x base input) as a fifth column. Bedrock rows
+# reuse the first four: the 1h tier there is not in the snapshot, so it bills at the 5m rate.
+_OPUS = ("5.00", "25.00", "0.50", "6.25", "10.00")
+_SONNET = ("3.00", "15.00", "0.30", "3.75", "6.00")
+_OPUS_5_5 = ("4.00", "20.00", "0.20", "5.00", "8.00")
+# Fable/Mythos 5: $10/$50; the 5.1 refresh keeps the rates but cache hits drop to 0.025x input.
+_FABLE_5 = ("10.00", "50.00", "1.00", "12.50", "20.00")
+_FABLE_5_1 = ("10.00", "50.00", "0.25", "12.50", "20.00")
 _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     # OpenAI GPT-5.6 (Sol/Terra/Luna). Cache write = 1.25x input, cache read =
     # 0.10x input. "-pro" high-effort modes bill at the same per-token rates
@@ -177,24 +197,24 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
          "claude-opus-4-6-20250414", "claude-opus-4-5"): _OPUS,
         ("claude-sonnet-4-6", "claude-sonnet-4-6-20250414", "claude-sonnet-4-5", "claude-sonnet-4-20250514",
          "claude-3-5-sonnet-20241022"): _SONNET,
-        "claude-haiku-4-5": ("1.00", "5.00", "0.10", "1.25"),
-        ("claude-opus-4-20250514", "claude-3-opus-20240229"): ("15.00", "75.00", "1.50", "18.75"),
-        "claude-3-5-haiku-20241022": ("0.80", "4.00", "0.08", "1.00"),
+        "claude-haiku-4-5": ("1.00", "5.00", "0.10", "1.25", "2.00"),
+        ("claude-opus-4-1", "claude-opus-4-1-20250805", "claude-opus-4-20250514", "claude-3-opus-20240229"): ("15.00", "75.00", "1.50", "18.75", "30.00"),
+        "claude-3-5-haiku-20241022": ("0.80", "4.00", "0.08", "1.00", "1.60"),
         "claude-3-haiku-20240307": ("0.25", "1.25", "0.03", "0.30"),
     }),
     # Fast mode is a separate model id at a 2x premium.
     ("anthropic", "https://openrouter.ai/anthropic/claude-opus-4.8-fast", "anthropic-pricing-2026-05", {
-        "claude-opus-4-8-fast": ("10.00", "50.00", "1.00", "12.50"),
+        "claude-opus-4-8-fast": ("10.00", "50.00", "1.00", "12.50", "20.00"),
     }),
-    # Claude Sonnet 5: introductory $2/$10 through 2026-08-31, then $3/$15
-    # (matching Sonnet 4.6). Update this entry when the intro window closes.
-    ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-06-intro", {
-        "claude-sonnet-5": ("2.00", "10.00", "0.20", "2.50"),
-    }),
-    # Opus 5.5 cache hits are 0.05x input (every other Opus: 0.1x).
-    ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-09", {
+    # Opus 5.5 and Sonnet 5.5 cache hits are 0.05x input (every other Opus/Sonnet: 0.1x).
+    # Sonnet 5 kept its launch $2/$10 as the standard price.
+    ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-10", {
         "claude-opus-5": _OPUS,
         "claude-opus-5-5": _OPUS_5_5,
+        "claude-sonnet-5": ("2.00", "10.00", "0.20", "2.50", "4.00"),
+        "claude-sonnet-5-5": ("2.00", "10.00", "0.10", "2.50", "4.00"),
+        ("claude-fable-5", "claude-mythos-5"): _FABLE_5,
+        ("claude-fable-5-1", "claude-mythos-5-1"): _FABLE_5_1,
     }),
     ("openai", "https://openai.com/api/pricing/", "openai-pricing-2026-03-16", {
         "gpt-4o": ("2.50", "10.00", "1.25"), "gpt-4o-mini": ("0.15", "0.60", "0.075"),
@@ -227,14 +247,14 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     # through AWS. Current-gen Claude rows are commercial-list snapshots (the AWS
     # Price List API had not published these SKUs machine-readably).
     ("bedrock", _BEDROCK_URL, "anthropic-list-2026-07", {
-        ("anthropic.claude-opus-4-8", "anthropic.claude-opus-4-7", "anthropic.claude-opus-4-6"): _OPUS,
+        ("anthropic.claude-opus-4-8", "anthropic.claude-opus-4-7", "anthropic.claude-opus-4-6"): _OPUS[:4],
     }),
     ("bedrock", _BEDROCK_URL, "anthropic-list-2026-09", {
-        "anthropic.claude-opus-5": _OPUS, "anthropic.claude-opus-5-5": _OPUS_5_5,
+        "anthropic.claude-opus-5": _OPUS[:4], "anthropic.claude-opus-5-5": _OPUS_5_5[:4],
     }),
-    ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-06", {"anthropic.claude-sonnet-5": _SONNET}),
+    ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-06", {"anthropic.claude-sonnet-5": _SONNET[:4]}),
     ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-04", {
-        ("anthropic.claude-sonnet-4-6", "anthropic.claude-sonnet-4-5"): _SONNET,
+        ("anthropic.claude-sonnet-4-6", "anthropic.claude-sonnet-4-5"): _SONNET[:4],
         "anthropic.claude-haiku-4-5": ("0.80", "4.00", "0.08", "1.00"),
         "amazon.nova-pro": ("0.80", "3.20"), "amazon.nova-lite": ("0.06", "0.24"), "amazon.nova-micro": ("0.035", "0.14"),
     }),
@@ -338,17 +358,24 @@ _OFFICIAL_DOCS_PRICING[("google", "gemini-2.5-pro")] = _snap(
     tier_threshold_tokens=200_000, input_cost_per_million_above=Decimal("2.50"),
     output_cost_per_million_above=Decimal("15.00"),
 )
+# Claude Haiku 5.5 prices the whole request by prompt length (cache reads and writes count).
+_OFFICIAL_DOCS_PRICING[("anthropic", "claude-haiku-5-5")] = _snap(
+    "0.10", "0.50", "0.01", "0.125", "0.20", url=_ANTHROPIC_URL, version="anthropic-pricing-2026-10",
+    tier_threshold_tokens=100_000, input_cost_per_million_above=Decimal("0.50"),
+    output_cost_per_million_above=Decimal("2.50"), cache_read_cost_per_million_above=Decimal("0.05"),
+    cache_write_cost_per_million_above=Decimal("0.625"), cache_write_1h_cost_per_million_above=Decimal("1.00"),
+)
 # Anthropic fast mode (``speed: "fast"``): a premium on the whole context window, with the
 # prompt-caching multipliers applied on top. Selected per response by ``usage.speed``.
 _ANTHROPIC_FAST_MODE_PRICING: dict[str, PricingEntry] = {
     _model: _snap(*_rates, version="anthropic-fast-mode-2026-09", url=f"{_ANTHROPIC_URL}#fast-mode-pricing")
     for _models, _rates in (
-        (("claude-opus-4-8", "claude-opus-5"), ("10.00", "50.00", "1.00", "12.50")),
-        (("claude-opus-5-5",), ("8.00", "40.00", "0.40", "10.00")),
+        (("claude-opus-4-8", "claude-opus-5"), ("10.00", "50.00", "1.00", "12.50", "20.00")),
+        (("claude-opus-5-5",), ("8.00", "40.00", "0.40", "10.00", "16.00")),
     )
     for _model in _models
 }
-del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET, _OPUS_5_5
+del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET, _OPUS_5_5, _FABLE_5, _FABLE_5_1
 
 # GPT-5.6 / GPT-6 tier "-pro" high-effort variants bill at the base tier's per-token
 # rates (more tokens per task, not a higher rate); the Hermes-side "-900k" Codex
@@ -364,13 +391,6 @@ for _provider, _alias, _canonical in (
 ):
     _OFFICIAL_DOCS_PRICING[(_provider, _alias)] = _OFFICIAL_DOCS_PRICING[(_provider, _canonical)]
 del _provider, _alias, _canonical
-
-
-def _to_decimal(value: Any) -> Optional[Decimal]:
-    try:
-        return None if value is None else Decimal(str(value))
-    except Exception:
-        return None
 
 
 def _usage_field(obj: Any, *path: str) -> int:
@@ -477,6 +497,79 @@ def _normalize_anthropic_model_name(model: str) -> str:
 _MODEL_NORMALIZERS = {"anthropic": _normalize_anthropic_model_name, "bedrock": _normalize_bedrock_model_name}
 
 
+def _load_user_pricing_overrides() -> list:
+    """The ``pricing_overrides:`` list from the active profile's config.yaml (the loader caches
+    on the file signature, so a live edit applies on the next priced call)."""
+    from hermes_cli.config import load_config_readonly
+
+    raw = load_config_readonly().get("pricing_overrides")
+    return raw if isinstance(raw, list) else []
+
+
+_OVERRIDE_RATE_FIELDS = (
+    "input_per_million", "output_per_million", "cache_read_per_million", "cache_write_per_million",
+    "cache_write_1h_per_million", "request_cost",
+)
+
+
+def _entry_from_user_override(entry: dict[str, Any]) -> Optional[PricingEntry]:
+    """Build a ``PricingEntry`` from one ``pricing_overrides`` list item.
+
+    Requires ``input_per_million`` and ``output_per_million``. Other rate
+    fields are optional. A missing required rate, or any supplied rate that is
+    not a finite non-negative number (``"NaN"``, ``-1``), produces ``None``.
+    """
+    if not isinstance(entry, dict):
+        return None
+    rates = {key: _to_decimal(entry.get(key)) for key in _OVERRIDE_RATE_FIELDS}
+    if rates["input_per_million"] is None or rates["output_per_million"] is None:
+        return None
+    # is_finite() first: an ordered comparison on a Decimal NaN raises.
+    if any(entry.get(key) is not None and (rate is None or not rate.is_finite() or rate < 0)
+           for key, rate in rates.items()):
+        return None
+    source_url = entry.get("source_url")
+    pricing_version = entry.get("pricing_version")
+    return PricingEntry(
+        input_cost_per_million=rates["input_per_million"],
+        output_cost_per_million=rates["output_per_million"],
+        cache_read_cost_per_million=rates["cache_read_per_million"],
+        cache_write_cost_per_million=rates["cache_write_per_million"],
+        cache_write_1h_cost_per_million=rates["cache_write_1h_per_million"],
+        request_cost=rates["request_cost"],
+        source="user_override",
+        source_url=str(source_url) if isinstance(source_url, str) else None,
+        pricing_version=str(pricing_version) if isinstance(pricing_version, str) else None,
+    )
+
+
+def _lookup_user_override_pricing(route: BillingRoute) -> Optional[PricingEntry]:
+    """First ``pricing_overrides`` entry matching this route, else None.
+
+    ``provider`` matches the billing route's provider; ``custom:<name>`` also matches the
+    canonical name a recognized custom endpoint routes as (``custom:fireworks`` → ``fireworks``),
+    and an entry without ``provider`` matches every route. ``model`` matches the full id or its
+    last path segment on either side. An entry missing a required rate is skipped, so it never
+    masks a later valid one.
+    """
+    target_provider = (route.provider or "").lower()
+    target_model = (route.model or "").lower()
+    target_names = {target_model, target_model.rsplit("/", 1)[-1]}
+    for raw in _load_user_pricing_overrides():
+        if not isinstance(raw, dict):
+            continue
+        ep = str(raw.get("provider") or "").strip().lower()
+        em = str(raw.get("model") or "").strip().lower()
+        if not em or (ep and target_provider not in (ep, ep.removeprefix("custom:"))):
+            continue
+        if em not in target_names and em.rsplit("/", 1)[-1] != target_model:
+            continue
+        entry = _entry_from_user_override(raw)
+        if entry is not None:
+            return entry
+    return None
+
+
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
     model = route.model.lower()
     entry = _OFFICIAL_DOCS_PRICING.get((route.provider, model))
@@ -579,6 +672,13 @@ def get_pricing_entry(
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
         return _INCLUDED_ENTRY
+    # User-supplied overrides win over all auto-discovery sources. This is
+    # the supported escape hatch for providers without a pricing API
+    # (e.g. Fireworks) and for keeping rates current when the bundled
+    # ``_OFFICIAL_DOCS_PRICING`` snapshot lags behind a vendor change.
+    user_entry = _lookup_user_override_pricing(route)
+    if user_entry is not None:
+        return user_entry
     if route.provider == "openrouter":
         return _openrouter_pricing_entry(route)
 
@@ -672,9 +772,14 @@ def normalize_usage(
             cache_read_tokens, cache_write_tokens,
         )
 
+    # Anthropic splits writes by TTL under ``cache_creation``; the 1h part bills at 2x input.
+    cache_write_1h_tokens = min(cache_write_tokens, _usage_field(u, "cache_creation", "ephemeral_1h_input_tokens")) if (
+        shape is _ANTHROPIC_USAGE_SHAPE) else 0
+
     return CanonicalUsage(
         input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens, reasoning_tokens=reasoning_tokens,
+        cache_write_1h_tokens=cache_write_1h_tokens,
         raw_usage=dict(u) if isinstance(u, dict) else (u.model_dump() if callable(getattr(u, 'model_dump', None)) else None),
     )
 
@@ -700,11 +805,13 @@ def estimate_usage_cost(
         )
 
     entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
-    if route.provider == "anthropic" and _served_fast(usage):
+    # A declared ``pricing_overrides`` rate is final: the served-speed tables only replace bundled prices.
+    overridden = entry is not None and entry.source == "user_override"
+    if not overridden and route.provider == "anthropic" and _served_fast(usage):
         entry = _anthropic_fast_mode_entry(route.model)
         if not entry:
             return _unknown_cost("official_docs_snapshot", "fast-mode pricing unavailable for model")
-    if route.provider == "openai" and _served_openai_tier(usage) == "ultrafast":
+    if not overridden and route.provider == "openai" and _served_openai_tier(usage) == "ultrafast":
         entry = _OPENAI_ULTRAFAST_PRICING.get(route.model)
         if not entry:
             return _unknown_cost("official_docs_snapshot", "ultrafast pricing unavailable for model")
@@ -714,14 +821,21 @@ def estimate_usage_cost(
     # Whole-request context tier (e.g. Gemini Pro >200k prompts): above the
     # threshold the *_above rates apply to the entire request; None falls back.
     above = entry.tier_threshold_tokens is not None and usage.prompt_tokens > entry.tier_threshold_tokens
+    # 1h-TTL writes bill at the 1h rate; a route without one bills them like 5m writes.
+    write_1h = min(usage.cache_write_1h_tokens, usage.cache_write_tokens)
+    has_1h_rate = entry.cache_write_1h_cost_per_million is not None
+    write_note = ("cache-write pricing unavailable for route",)
     amount = _ZERO
     for tokens, rate, rate_above, note in (
         (usage.input_tokens, entry.input_cost_per_million, entry.input_cost_per_million_above, ()),
         (usage.output_tokens, entry.output_cost_per_million, entry.output_cost_per_million_above, ()),
         (usage.cache_read_tokens, entry.cache_read_cost_per_million, entry.cache_read_cost_per_million_above,
          ("cache-read pricing unavailable for route",)),
-        (usage.cache_write_tokens, entry.cache_write_cost_per_million, entry.cache_write_cost_per_million_above,
-         ("cache-write pricing unavailable for route",)),
+        (usage.cache_write_tokens - write_1h, entry.cache_write_cost_per_million,
+         entry.cache_write_cost_per_million_above, write_note),
+        (write_1h, entry.cache_write_1h_cost_per_million if has_1h_rate else entry.cache_write_cost_per_million,
+         entry.cache_write_1h_cost_per_million_above if has_1h_rate else entry.cache_write_cost_per_million_above,
+         write_note),
     ):
         if above and rate_above is not None:
             rate = rate_above

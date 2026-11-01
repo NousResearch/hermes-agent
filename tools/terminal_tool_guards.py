@@ -333,8 +333,11 @@ def gateway_lifecycle_block(
             "Blocked: command or referenced script cannot restart, stop, or "
             "uninstall the gateway from inside the gateway process. The gateway would "
             "kill this command before it could complete (SIGTERM propagates "
-            "to child processes). Run `hermes gateway restart` from a "
-            "separate shell outside the running gateway.",
+            "to child processes). From a chat, ask the user to send `/restart`, which "
+            "drains active runs and restarts without cutting the conversation. From a "
+            "terminal, run `hermes gateway restart` in a separate shell outside the "
+            "running gateway. Do not work around this guard with systemd-run, timers, "
+            "or a detached helper.",
             "error",
         )
     return None

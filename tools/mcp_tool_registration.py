@@ -470,7 +470,10 @@ def _connection_identity(config: dict) -> tuple:
     def _frozen(value):
         return json.dumps(value or {}, sort_keys=True, default=str)
 
-    return (config_fingerprint(config), _frozen(config.get("env")), _frozen(config.get("headers")),
+    # Tool selection is a per-profile registration policy, not a connection route.
+    # Keep the schema-cache fingerprint filter-sensitive; only drop filters here.
+    route = {k: v for k, v in config.items() if k != "tools"}
+    return (config_fingerprint(route), _frozen(config.get("env")), _frozen(config.get("headers")),
             _auth_type(config), _frozen(config.get("client_cert")), _frozen(config.get("client_key")),
             config.get("ssl_verify", True), bool(config.get("strict_redirect_headers")))
 
@@ -625,6 +628,100 @@ def _register_connected_into_current_scope(servers: dict) -> int:
                 server._registered_tool_names = sorted(
                     set(getattr(server, "_registered_tool_names", []) or ()) | set(names))
     return registered_servers
+
+
+
+def reapply_tool_filters(servers: dict[str, dict]) -> int:
+    """Reconcile live MCP *native* tools against this profile's current filters.
+
+    Do not restart a shared connection, alter generated resource/prompt/event utilities,
+    or modify an editor's frozen MCP manifest. The registry is authoritative: session
+    discovery and call dispatch both use its current per-profile overlay.
+    """
+    from tools.registry import registry
+
+    scope = _core._mcp_registry_scope()
+    if (scope or "").startswith("editor-session:"):
+        return 0
+
+    changed = 0
+    with _SCOPE_REFRESH_LOCKS[hash(scope) % len(_SCOPE_REFRESH_LOCKS)]:
+        for name, config in servers.items():
+            if not mcp_server_enabled(config):
+                continue
+            with _core._lock:
+                key = _resolve_server_key(name, scope, current=False)
+                server = _core._servers.get(key)
+            if server is None or getattr(server, "session", None) is None:
+                continue
+
+            borrowed = _key_scope(key) != scope
+            resolved = None
+            if borrowed:
+                from tools.mcp_tool_discovery import _owner_secret_scope
+                with _owner_secret_scope():
+                    resolved = _adopter_identity_digest(name, config)
+            if not _same_server_route(server, config, cross_profile=borrowed,
+                                      resolved_identity=resolved):
+                continue
+
+            # Only the native tools are governed by include/exclude. Generated
+            # utilities have their own resources/prompts/events selection policy.
+            utility = _utility_candidates(
+                name, _select_utility_schemas(name, server, config), server.tool_timeout)
+            utility_names = {item.registry_name for item in utility}
+            should_register = _make_tool_filter(name, config)
+            all_native = {_schema._convert_mcp_schema(name, tool)["name"] for tool in server._tools}
+            selectable = all_native - utility_names
+            desired = {
+                _schema._convert_mcp_schema(name, tool)["name"]
+                for tool in server._tools if should_register(tool.name)
+            } - utility_names
+
+            current = set(registry.get_tool_names_for_toolset(f"mcp-{name}"))
+            remove = sorted((current & selectable) - desired)
+            missing = desired - current
+            if not remove and not missing:
+                continue
+
+            # The existing collision guard handles two different MCP-native names
+            # normalizing to one registry name. Never silently choose a handler.
+            candidates = _resolve_name_collisions(
+                name, _tool_candidates(name, server._tools, should_register, server.tool_timeout)
+                + utility)
+            additions = [item for item in candidates
+                         if not item.is_utility and item.registry_name in missing]
+            with _core._lock:
+                if _core._servers.get(key) is not server:
+                    continue  # connection replaced during the reconciliation
+            for tool_name in remove:
+                registry.deregister(tool_name, scope=scope)
+            added = _register_candidates(
+                name, additions, check_fn=_make_check_fn(name),
+                scope=lambda: scope, lazy=False, key=key,
+                execution_timeout=config.get("timeout"))
+            if not remove and not added:
+                continue
+
+            with _core._lock:
+                serving_scopes = set(_core._server_tool_scopes.get(key, ()))
+            scopes = serving_scopes or {scope}
+            old_names = set(getattr(server, "_registered_tool_names", ()) or ())
+            server._registered_tool_names = sorted(
+                tool_name for tool_name in old_names | set(added)
+                if any(registry.snapshot_registration(tool_name, scope=owner) is not None
+                       for owner in scopes))
+            for tool_name in remove:
+                if not any(registry.snapshot_registration(tool_name, scope=owner) is not None
+                           for owner in scopes):
+                    _forget_mcp_tool_server(tool_name)
+            _restore_server_toolset_alias(key)
+            _write_schema_cache(name, server, config, should_register)
+            logger.info("MCP server '%s': reconciled live native tools for this profile "
+                        "(+%d, -%d); existing sessions keep their pinned prompt tool list",
+                        name, len(added), len(remove))
+            changed += 1
+    return changed
 
 
 def _register_from_cache_sync(name: str, config: dict, entry: dict) -> list[str]:

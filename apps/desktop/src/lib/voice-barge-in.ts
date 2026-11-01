@@ -50,8 +50,8 @@ const PRE_ROLL_RESTART_MS = 5_000 // cap pre-roll: restart the recorder while qu
 const UTTERANCE_MAX_MS = 30_000
 
 export interface BargeMonitorCallbacks {
-  /** Sustained speech detected — cut playback / interrupt the turn now. */
-  onSpeech: () => void
+  /** Cut playback / interrupt now; the flag describes capture, not delivery time. */
+  onSpeech: (duringPlayback: boolean) => void
   /**
    * The interrupting utterance, complete from its first syllable (pre-roll
    * included), delivered once the user goes quiet. `null` when capture was
@@ -368,7 +368,7 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
           tripped = true
           trippedAt = now
           quietSince = null
-          callbacks.onSpeech()
+          callbacks.onSpeech(playing || now <= playbackStoppedAt)
 
           if (disposed) {
             return

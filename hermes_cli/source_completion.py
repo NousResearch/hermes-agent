@@ -160,6 +160,30 @@ def _bootstrap_command(root: Path, argv: list[str]) -> list[str]:
             str(Path(__file__).resolve()), "--source", str(root), *argv, _PREPARED]
 
 
+def _finish_announcement(root: Path) -> str:
+    """The post-build banner for an interrupted-update finish.
+
+    "✓ Code updated!" states that the checkout MOVED since the last completed
+    install/update — the same claim ``hermes update``'s HEAD gate refuses to
+    make against a stale tree (#79678). A lazy finish also runs against the
+    exact tree the last completion stamped (a same-commit update that failed
+    its tail, a marker left by an interrupted dependency sync): the code did
+    not move, only the tail does, and the banner must not read as a fresh
+    version change on top of the maintenance line's checkout version
+    (#139518: users parsed the pair as a downgrade).
+    """
+    from hermes_cli.steward import read_install_stamp
+    from hermes_cli.version_info import _run_git
+
+    stamp = read_install_stamp(root)
+    completed = stamp.get("commit")
+    if (isinstance(completed, str) and completed
+            and "adoptedAt" not in stamp and stamp.get("dirty") is False):
+        if _run_git(root, "rev-parse", "HEAD") == completed:
+            return "\n✓ Finished an interrupted source update."
+    return "\n✓ Code updated!"
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     prepared = _PREPARED in argv
@@ -194,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
             owed: list[tuple[str, str]] = []
             complete_source_checkout(
                 root, desktop=args.desktop, assume_yes=True,
-                completion_message=None, announce="\n✓ Code updated!", followups=owed,
+                completion_message=None, announce=_finish_announcement(root), followups=owed,
             )
             ok = not owed
         else:

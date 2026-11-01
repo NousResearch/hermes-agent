@@ -33,6 +33,7 @@ export function newestLogTimestamp(lines: readonly string[]): number | null {
     }
 
     const [, year, month, day, hour, minute, second, fraction] = match
+
     // Local wall-clock on both sides of the comparison; only the ORDER matters here, so a
     // single fixed interpretation keeps two files comparable without a timezone guess.
     const at = Date.UTC(

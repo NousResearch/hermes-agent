@@ -37,6 +37,9 @@ def test_channel_lanes_refuse_what_a_channel_build_cannot_run():
     # is stable's and canary's.
     assert {"install-e2e", "upgrade"} <= lanes.select(policy="channel")
     assert "windows-store" not in lanes.select(policy="channel")
+    for selection in ({"with_": ["windows-store"]}, {"only": ["windows", "windows-store"]}):
+        with pytest.raises(ValueError, match="channel claim cannot run windows-store"):
+            lanes.select(policy="channel", **selection)
 
 
 def test_dispatch_runs_stable_release_on_a_commit_or_channel_claim_only():

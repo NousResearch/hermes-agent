@@ -133,12 +133,6 @@ def canary_windows_version(tag: str) -> str:
         raise ChannelError("Invalid canary release identity") from error
 
 
-# The canary's controller is stable-release.yml: its publish-canary job runs after the accepted
-# candidate manifest, so only admission and that manifest stand between the build and the head.
-# Every other suite still runs in the same run and turns it red; a canary does not wait for them.
-CANARY_CONTROLLER_NEEDS = ("admit", "candidate-manifest")
-
-
 def admit_transaction(policy: str, env: dict, *, require_published: bool = False,
                       run=stable.output) -> tuple[str, str]:
     """A callable CLI is not permission to bypass the existing workflow gate."""
@@ -184,18 +178,10 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
         # A canary publishes only from the Stable Release controller, after its accepted candidate:
         # the one pipeline. desktop-bundled-release has no dispatch of its own.
         expected = f"{repository}/.github/workflows/{stable.CONTROLLER_WORKFLOW}@refs/heads/{default}"
-        required = CANARY_CONTROLLER_NEEDS
-        # A claim that requires green publishes only once every suite passed (admission's
-        # require-green output; stable-release.yml publish-canary gates on the same flag).
-        if env.get("REQUIRE_GREEN", "true") != "false":
-            required = (*required, "acceptance")
     else:
         raise ChannelError("Invalid protected release policy")
     if env.get("GITHUB_WORKFLOW_REF") != expected:
         raise ChannelError("Protected publication requires its existing release workflow")
-    needs = json.loads(env.get("RELEASE_NEEDS", "{}"))
-    stable.require_success(needs, list(required))
-    stable.require_upgrade_arms(needs)  # stable-release.yml publish-canary gates the same
     commit = require_commit(env.get("RELEASE_COMMIT"))
     expected_object = require_commit(env.get("RELEASE_TAG_OBJECT"))
     try:
@@ -397,8 +383,12 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
         release_epoch, accepted_lanes = final_claim["claim_epoch"], final_claim["lanes"]
     else:
         # admit_transaction pinned this tag object; its message is the claim admission read.
-        canary_lanes = stable.canary_claim(stable.output(["git", "tag", "-l", tag, "--format=%(contents)"]),
-                                           tag=tag, commit=commit)["lanes"]
+        claim = stable.canary_claim(stable.output(["git", "tag", "-l", tag, "--format=%(contents)"]),
+                                    tag=tag, commit=commit)
+        # publish-canary's needs, judged by the claim's own green policy (stable-release.yml gates the same).
+        stable.require_publication(json.loads(env.get("RELEASE_NEEDS", "{}")),
+                                   {"policy": "canary", "require_green": claim["requireGreen"]})
+        canary_lanes = claim["lanes"]
         if not lane_set.advances_desktop(canary_lanes):
             raise ChannelError("A canary that did not build every desktop package the channel serves "
                                "cannot advance a protected head")

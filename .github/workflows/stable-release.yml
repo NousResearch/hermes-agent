@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Exact annotated claim tag (rc.N-vX.Y.Z), or a canary tag (canary.<stamp>-vX.Y.Z). Admission resolves it to the commit under test
+        description: Exact annotated claim tag (rc.N-vX.Y.Z, canary.<stamp>-vX.Y.Z, commit.<stamp>-vX.Y.Z or channel.<stamp>-vX.Y.Z). Admission resolves it to the commit under test
         required: true
         type: string
       baseline-manifest:
@@ -41,8 +41,8 @@ permissions:
 # PR-controlled code and must stay secret-free.
 # A canary takes hours; it must never queue a stable release behind it, nor share the stable
 # publication reconciler's lock.
-# Commit builds publish nowhere and never share state, so each runs on its own (its claim tag is
-# the group).
+# Commit and channel builds share no state with a release (a channel build moves only its own
+# channel, through the channel CAS), so each runs on its own: its claim tag is the group.
 concurrency:
   group: ${{ startsWith(inputs.tag, 'canary.') && 'canary-release-pipeline' || (startsWith(inputs.tag, 'commit.') || startsWith(inputs.tag, 'channel.')) && inputs.tag || 'stable-release' }}
   cancel-in-progress: false
@@ -78,7 +78,8 @@ jobs:
       lanes: ${{ steps.admit.outputs.lanes }}
       jobs: ${{ steps.admit.outputs.jobs }}
       # Whether the policy's publication job also waits for acceptance (every suite green).
-      # Always true for a stable release; a canary claim chooses (release.py --[no-]require-green).
+      # Always true for a stable release; a canary, commit or channel claim chooses
+      # (release.py --[no-]require-green).
       require-green: ${{ steps.admit.outputs.require-green }}
       # A commit or channel build's baked bundle defaults (its claim's bundleEnv); `{}` for every
       # release. Each candidate call passes it on and its validate re-checks it against the claim.
@@ -614,6 +615,30 @@ jobs:
           LANES: ${{ needs.admit.outputs.lanes }}
           POLICY: ${{ needs.admit.outputs.policy }}
 
+  upgrade-arms:
+    name: Every signed-package upgrade arm that ran passed
+    # The policies it gates are lanes.POLICY_JOBS's (canary and channel): whatever its green policy,
+    # such a build publishes only if each upgrade arm (the last published build of its kind -> this
+    # one) passed, or was skipped because its lane is off or there is no baseline. Its publication
+    # job needs this one job, and custody (stable.require_publication) re-requires it.
+    needs: [admit, transitions-darwin-arm64, transitions-darwin-x64, transitions-win32,
+            macos-packaged-arm64, macos-packaged-x64, windows-packaged]
+    if: >-
+      !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['upgrade-arms']
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ github.sha }}
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - run: python -m scripts.releases.stable gate transitions-darwin-arm64 transitions-darwin-x64 transitions-win32 macos-packaged-arm64 macos-packaged-x64 windows-packaged
+        env:
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
+          LANES: ${{ needs.admit.outputs.lanes }}
+          POLICY: ${{ needs.admit.outputs.policy }}
+
   publish-docker:
     name: Publish tested Docker image
     # B5: this job pushes only the immutable attempt-ref image tags; the
@@ -660,22 +685,16 @@ jobs:
     # candidate pointer and the protected R2 canary head (channel_releases canary). Its claim
     # decides what it waits for: with require-green it publishes only once acceptance passes
     # (every suite green), like a stable release; without it, only the accepted candidate
-    # (built and smoked) and the signed-package upgrade arms gate it: each arm that ran
-    # (last published canary -> this one) passed, or was skipped (lane off, no baseline). A red
-    # suite reports without holding the canary back. The Store bundle is staged in the archive and
+    # (built and smoked) and the upgrade-arms gate hold it: each arm that ran (last published
+    # canary -> this one) passed, or was skipped (lane off, no baseline). A red suite reports
+    # without holding the canary back. The Store bundle is staged in the archive and
     # never submitted.
-    needs: [admit, candidate-manifest, acceptance, transitions-darwin-arm64, transitions-darwin-x64,
-            transitions-win32, macos-packaged-arm64, macos-packaged-x64, windows-packaged]
+    needs: [admit, candidate-manifest, acceptance, upgrade-arms]
     if: >-
       !cancelled() && fromJSON(needs.admit.outputs.jobs)['publish-canary']
       && needs.candidate-manifest.result == 'success'
       && (needs.admit.outputs.require-green != 'true' || needs.acceptance.result == 'success')
-      && contains(fromJSON('["success", "skipped"]'), needs.transitions-darwin-arm64.result)
-      && contains(fromJSON('["success", "skipped"]'), needs.transitions-darwin-x64.result)
-      && contains(fromJSON('["success", "skipped"]'), needs.transitions-win32.result)
-      && contains(fromJSON('["success", "skipped"]'), needs.macos-packaged-arm64.result)
-      && contains(fromJSON('["success", "skipped"]'), needs.macos-packaged-x64.result)
-      && contains(fromJSON('["success", "skipped"]'), needs.windows-packaged.result)
+      && needs.upgrade-arms.result == 'success'
     runs-on: blacksmith-32vcpu-ubuntu-2404
     environment: release-signing
     timeout-minutes: 120
@@ -692,9 +711,8 @@ jobs:
       HERMES_ARCHIVE_TAG: ${{ needs.admit.outputs.claim-tag }}
       CANDIDATE_MANIFEST_URL: ${{ needs.candidate-manifest.outputs.manifest-url }}
       CANDIDATE_MANIFEST_SHA256: ${{ needs.candidate-manifest.outputs.manifest-sha256 }}
+      # Custody (stable.require_publication) re-judges these needs by the claim's own green policy.
       RELEASE_NEEDS: ${{ toJSON(needs) }}
-      # channel_releases custody re-requires the upgrade arms, and acceptance when the claim requires green.
-      REQUIRE_GREEN: ${{ needs.admit.outputs.require-green }}
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
       CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
       CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
@@ -786,20 +804,14 @@ jobs:
     # releases/channel-builds/<id>/ and CASes the preview channel head
     # (scripts/releases/channel_claims.py publish). Never a stable or canary head, feed, Docker tag,
     # GitHub release or Store. With require-green it waits for every suite; without, for the
-    # accepted candidate and, like publish-canary, every upgrade arm that ran (its channel's head ->
-    # this build) passed or was skipped (lane off, no head yet).
-    needs: [admit, candidate-manifest, acceptance, transitions-darwin-arm64, transitions-darwin-x64,
-            transitions-win32, macos-packaged-arm64, macos-packaged-x64, windows-packaged]
+    # accepted candidate and, like publish-canary, the upgrade-arms gate (every arm that ran, its
+    # channel's head -> this build, passed or was skipped: lane off, no head yet).
+    needs: [admit, candidate-manifest, acceptance, upgrade-arms]
     if: >-
       !cancelled() && fromJSON(needs.admit.outputs.jobs)['publish-channel']
       && needs.candidate-manifest.result == 'success'
       && (needs.admit.outputs.require-green != 'true' || needs.acceptance.result == 'success')
-      && contains(fromJSON('["success", "skipped"]'), needs.transitions-darwin-arm64.result)
-      && contains(fromJSON('["success", "skipped"]'), needs.transitions-darwin-x64.result)
-      && contains(fromJSON('["success", "skipped"]'), needs.transitions-win32.result)
-      && contains(fromJSON('["success", "skipped"]'), needs.macos-packaged-arm64.result)
-      && contains(fromJSON('["success", "skipped"]'), needs.macos-packaged-x64.result)
-      && contains(fromJSON('["success", "skipped"]'), needs.windows-packaged.result)
+      && needs.upgrade-arms.result == 'success'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release-signing
     permissions:
@@ -809,7 +821,7 @@ jobs:
       CANDIDATE_MANIFEST_SHA256: ${{ needs.candidate-manifest.outputs.manifest-sha256 }}
       CHANNEL_BUILD: ${{ needs.admit.outputs.channel-build }}
       CHANNEL_REQUEST_SHA256: ${{ needs.admit.outputs.channel-request-sha256 }}
-      # channel_claims custody re-requires the upgrade arms.
+      # Custody (stable.require_publication) re-judges these needs by the claim's own green policy.
       RELEASE_NEEDS: ${{ toJSON(needs) }}
       GH_TOKEN: ${{ github.token }}
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}

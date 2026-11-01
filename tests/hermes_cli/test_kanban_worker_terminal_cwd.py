@@ -13,7 +13,9 @@ Pinning ``TERMINAL_CWD`` to the workspace fixes both.
 
 from __future__ import annotations
 
+import os
 import subprocess
+from pathlib import Path
 
 
 def _make_task(kb, *, assignee: str = "w"):
@@ -77,5 +79,28 @@ def test_terminal_cwd_pinned_to_workspace(monkeypatch, tmp_path):
     # The subprocess cwd and TERMINAL_CWD must agree — both anchor the workspace.
     assert captured["cwd"] == str(workspace)
     assert captured["env"]["HERMES_KANBAN_WORKSPACE"] == str(workspace)
+
+
+def test_worker_does_not_import_python_packages_from_workspace(monkeypatch, tmp_path):
+    """A source checkout used as cwd cannot shadow the pinned Hermes install."""
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "w").mkdir(parents=True)
+    (root / "profiles" / "w" / "config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    workspace = tmp_path / "other-hermes-checkout"
+    workspace.mkdir()
+    (workspace / "hermes_cli").mkdir()
+
+    captured = _capture_spawn_env(kb, monkeypatch, str(workspace))
+
+    assert captured["cwd"] == str(workspace)
+    assert captured["env"]["PYTHONSAFEPATH"] == "1"
+    pinned_root = Path(captured["env"]["PYTHONPATH"].split(os.pathsep)[0]).resolve()
+    assert pinned_root == Path(kbd.__file__).resolve().parent.parent
 
 

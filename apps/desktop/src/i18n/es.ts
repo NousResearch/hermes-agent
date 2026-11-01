@@ -4,6 +4,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
+import { esCloudSignIn } from './es_cloud_sign_in'
 import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
 import { esCronControl } from './es_cron_control'
@@ -1721,10 +1722,8 @@ export const esOverrides = {
       cloudNeedsSignIn: 'Inicia sesión en Hermes Cloud para descubrir los agentes de tu cuenta.',
       cloudSignedInDesc: 'Has iniciado sesión. Elige un agente de abajo; la sesión se actualiza automáticamente.',
       cloudAgentsTitle: 'Tus agentes',
-      cloudOrgPickerTitle: 'Elige una organización',
-      cloudOrgSelect: 'Seleccionar',
       cloudOrgChange: 'Cambiar organización',
-      cloudOrgRole: role => `Rol: ${role}`,
+      ...esCloudSignIn,
       cloudLoadingAgents: 'Cargando tus agentes…',
       cloudNoAgents: {
         before: 'No se encontraron agentes en esta cuenta. Crea uno en el ',

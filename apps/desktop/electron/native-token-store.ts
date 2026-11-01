@@ -163,3 +163,68 @@ export function loadNativeTokenSet(baseUrl: string, io: NativeTokenStoreIo): Nat
     return null
   }
 }
+
+/**
+ * Every base URL with a stored entry (keys only — nothing is decrypted).
+ */
+export function listNativeTokenStoreUrls(io: NativeTokenStoreIo): string[] {
+  return Object.keys(readStore(io))
+}
+
+/**
+ * The decrypted in-memory cache main.ts keeps in front of the encrypted
+ * store, keyed by normalized base URL.
+ *
+ * store() updates memory FIRST, then persists. A server-rotated refresh token
+ * is single-use: if encrypting it for disk fails (keychain gone mid-session),
+ * throwing before the cache was updated would lose the only live copy and
+ * sign the user out on the next refresh. Instead the failure is logged and
+ * the in-memory set keeps this run working; the previous disk entry is left
+ * untouched (persistNativeTokenSet fails before writing).
+ */
+export function createNativeTokenCache(io: NativeTokenStoreIo, normalizeBaseUrl: (url: string) => string) {
+  const memory = new Map<string, NativeTokenSet>()
+
+  return {
+    load(rawUrl: string): NativeTokenSet | null {
+      const baseUrl = normalizeBaseUrl(rawUrl)
+      const cached = memory.get(baseUrl)
+
+      if (cached) {
+        return cached
+      }
+
+      const tokens = loadNativeTokenSet(baseUrl, io)
+
+      if (tokens) {
+        memory.set(baseUrl, tokens)
+      }
+
+      return tokens
+    },
+    store(rawUrl: string, tokens: NativeTokenSet): void {
+      const baseUrl = normalizeBaseUrl(rawUrl)
+
+      memory.set(baseUrl, tokens)
+
+      try {
+        persistNativeTokenSet(baseUrl, tokens, io)
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
+
+        io.rememberLog?.(
+          `[native-oauth] failed to persist tokens for ${redactGatewayUrl(baseUrl)}; keeping them in memory for this session: ${detail}`
+        )
+      }
+    },
+    clear(rawUrl: string): void {
+      const baseUrl = normalizeBaseUrl(rawUrl)
+
+      memory.delete(baseUrl)
+      persistNativeTokenSet(baseUrl, null, io)
+    },
+    urls(): string[] {
+      return [...new Set([...memory.keys(), ...listNativeTokenStoreUrls(io)])]
+    }
+  }
+}

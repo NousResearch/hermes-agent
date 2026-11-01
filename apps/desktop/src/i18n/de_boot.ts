@@ -74,6 +74,7 @@ export const deBoot = {
       signedInMessage: 'Wird mit dem Remote-Gateway neu verbunden…',
       signInIncompleteTitle: 'Sign-in unvollständig',
       signInIncompleteMessage: 'Das Anmeldefenster wurde geschlossen, bevor die Authentifizierung abgeschlossen war.',
+      browserSignInIncompleteMessage: 'Die Anmeldung wurde im Browser nicht abgeschlossen.',
       signInFailed: 'Sign-in fehlgeschlagen',
       signInToRemoteGateway: 'Beim Remote-Gateway anmelden',
       signInWithProvider: provider => `Mit ${provider} anmelden`,

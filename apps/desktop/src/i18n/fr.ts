@@ -4,6 +4,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
+import { frCloudSignIn } from './fr_cloud_sign_in'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
 import { frCronControl } from './fr_cron_control'
@@ -1728,10 +1729,8 @@ export const frOverrides = {
       cloudSignedInDesc:
         'Vous êtes connecté. Choisissez un agent ci-dessous ; la session se rafraîchit automatiquement.',
       cloudAgentsTitle: 'Vos agents',
-      cloudOrgPickerTitle: 'Choisir une organisation',
-      cloudOrgSelect: 'Sélectionner',
       cloudOrgChange: "Changer d'organisation",
-      cloudOrgRole: role => `Rôle : ${role}`,
+      ...frCloudSignIn,
       cloudLoadingAgents: 'Chargement de vos agents…',
       cloudNoAgents: {
         before: 'Aucun agent trouvé sur ce compte… Créez-en un dans le ',

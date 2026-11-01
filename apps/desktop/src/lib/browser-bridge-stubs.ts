@@ -49,8 +49,10 @@ export const BROWSER_BRIDGE_STUBS = {
   claimAmbientCue: async () => true,
   cloud: {
     agentSignIn: async (dashboardUrl: string) => ({ baseUrl: dashboardUrl, connected: false }),
+    cancelLogin: async () => ({ cancelled: false }),
     discover: async () => ({ agents: [] }),
     login: async () => ({ ok: false, portalBaseUrl: '', signedIn: false }),
+    loginUrl: async () => ({ url: null }),
     logout: async () => ({ ok: true, portalBaseUrl: '', signedIn: false }),
     status: async () => ({ portalBaseUrl: '', signedIn: false })
   },

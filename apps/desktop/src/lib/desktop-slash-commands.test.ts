@@ -98,6 +98,8 @@ describe('desktop slash command curation', () => {
     // allowlisted invocation execs, everything else renders the gate message.
     expect(isDesktopSlashCommand('/skills', 'pending')).toBe(true)
     expect(isDesktopSlashCommand('/skills', '  approve 9f2c1a ')).toBe(true)
+    // approve echoes the review token shown by /skills pending or /skills diff.
+    expect(isDesktopSlashCommand('/skills', `approve 9f2c1a ${'a'.repeat(64)}`)).toBe(true)
 
     for (const sub of ['reject 9f2c1a', 'diff 9f2c1a', 'approval on']) {
       expect(isDesktopSlashCommand('/skills', sub)).toBe(true)

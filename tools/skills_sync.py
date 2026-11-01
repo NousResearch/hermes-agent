@@ -110,6 +110,16 @@ def _build_external_skill_index() -> set[str]:
     return external_names
 
 
+def _build_local_skill_index() -> dict[str, set[Path]]:
+    """Directories of every skill already in the local tree, by directory and frontmatter name,
+    so sync_skills never seeds a bundled copy beside a same-name skill the user installed."""
+    local: dict[str, set[Path]] = {}
+    for skill_md in _iter_active_skill_mds():
+        for name in {skill_md.parent.name, read_skill_name(skill_md, "")} - {""}:
+            local.setdefault(name, set()).add(skill_md.parent)
+    return local
+
+
 def _read_manifest() -> dict[str, str]:
     """``{skill_name: origin_hash}``; v1 plain-name lines get an empty hash (migrates next sync)."""
     try:
@@ -272,6 +282,7 @@ class _SyncState:
     suppressed: list[str] = field(default_factory=list)
     relocated: list[str] = field(default_factory=list)
     shadowed_by_external: list[str] = field(default_factory=list)
+    shadowed_by_local: list[str] = field(default_factory=list)
     active_index: Optional[dict[str, list[Path]]] = None  # rename-recovery indexes are expensive on
     hub_paths: set[str] = field(default_factory=set)  # bind mounts: built lazily, only when needed
 
@@ -292,13 +303,15 @@ def _recover_orphan_backup(dest: Path) -> None:
             logger.warning("Could not recover orphaned skill backup %s", orphan, exc_info=True)
 
 
-def _defer_to_external(st: _SyncState, skill_name: str, dest: Path, bundled_hash: str) -> None:
-    """An external_dirs source provides this skill; a local copy would be a name collision the
-    loader refuses. Defer for ALL manifest states; remove a stale local shadow from an earlier
-    sync only when byte-identical (a user's own skill differs)."""
-    st.shadowed_by_external.append(skill_name)
+def _defer(st: _SyncState, skill_name: str, dest: Path, bundled_hash: str, *, external: bool) -> None:
+    """An external_dirs source, or a same-name skill elsewhere in the local tree, provides this
+    skill; a bundled copy would be a name collision the loader refuses. Defer for ALL manifest
+    states; remove a stale bundled copy from an earlier sync only when byte-identical (a user's
+    own skill differs)."""
+    (st.shadowed_by_external if external else st.shadowed_by_local).append(skill_name)
     st.skipped += 1
-    st.say(f"  ⇢ {skill_name} (deferred to external_dirs, not written to local tree)")
+    owner = "external_dirs" if external else "a local skill of the same name"
+    st.say(f"  ⇢ {skill_name} (deferred to {owner}, not written to local tree)")
     if dest.exists() and dir_hash(dest) == bundled_hash:
         _rmtree_writable(dest)
         st.say(f"  ✓ removed stale shadow of {skill_name}")
@@ -410,6 +423,8 @@ def sync_skills(quiet: bool = False) -> dict:
         bundled_skills = [(name, src) for name, src in bundled_skills if name in ESSENTIAL_SKILLS]
     suppressed = _read_suppressed_names()
     external_index = _build_external_skill_index()
+    local_index = _build_local_skill_index()
+    bundled_dests = {_compute_relative_dest(src, bundled_dir) for _, src in bundled_skills}
     st = _SyncState(manifest=_read_manifest(), quiet=quiet)
 
     for skill_name, skill_src in bundled_skills:
@@ -423,8 +438,10 @@ def sync_skills(quiet: bool = False) -> dict:
         _recover_orphan_backup(dest)
         if not dest.exists() and skill_name in st.manifest and _recover_renamed_skill(st, skill_name, dest):
             st.relocated.append(skill_name)
-        if skill_name in external_index:
-            _defer_to_external(st, skill_name, dest, bundled_hash)
+        # Checked after recovery: a relocated copy has left its old path, which no longer counts.
+        local_elsewhere = any(d not in bundled_dests and d.exists() for d in local_index.get(skill_name, ()))
+        if skill_name in external_index or local_elsewhere:
+            _defer(st, skill_name, dest, bundled_hash, external=skill_name in external_index)
         elif skill_name not in st.manifest:
             _install_new_skill(st, skill_name, skill_src, dest, bundled_hash)
         elif dest.exists():
@@ -454,6 +471,7 @@ def sync_skills(quiet: bool = False) -> dict:
         "total_bundled": len(bundled_skills),
         "optional_provenance_backfilled": _backfill_optional_provenance(quiet=quiet),
         "shadowed_by_external": st.shadowed_by_external,
+        "shadowed_by_local": st.shadowed_by_local,
         "skipped_opt_out": essential_only}  # lets callers report "opted out", not a normal sync
 
 

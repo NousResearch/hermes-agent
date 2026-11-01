@@ -66,6 +66,9 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
         if dest.is_symlink() or dest.exists():  # never write through a planted link
             return None
         shutil.copy2(config_path, dest)  # config-reader: ok — file tooling, gated above
+        # copy2 inherits the source's permission bits (e.g. 0640 after a bad rewrite);
+        # backups hold the full config, so force owner-only regardless of source mode.
+        dest.chmod(0o600)
         for stale in [dest, *existing][keep:]:
             stale.unlink(missing_ok=True)
         return dest

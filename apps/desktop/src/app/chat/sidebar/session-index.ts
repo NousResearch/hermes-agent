@@ -1,4 +1,7 @@
+import { sessionTitle } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
+
+import { compareAlphabetically } from './alphabetical'
 
 /**
  * Index sessions by every id a pin might be stored under.
@@ -59,7 +62,8 @@ export function resolvePinnedSessions(
   pinnedSessionIds: readonly string[],
   sessionByAnyId: Map<string, SessionInfo>,
   allSessions: readonly SessionInfo[],
-  unconfirmedPinWrites: ReadonlySet<string>
+  unconfirmedPinWrites: ReadonlySet<string>,
+  alphabetical = false
 ): SessionInfo[] {
   const seen = new Set<string>()
   const out: SessionInfo[] = []
@@ -91,5 +95,16 @@ export function resolvePinnedSessions(
     out.push(session)
   }
 
-  return out
+  return alphabetical ? sortSessionsByTitle(out) : out
+}
+
+/**
+ * The Pinned section for the opt-in alphabetical sidebar: A→Z by the title the
+ * row shows, id as the tiebreak. The stored pin order (drag-to-reorder) is
+ * left untouched and applies again when the preference is switched off.
+ */
+export function sortSessionsByTitle(sessions: readonly SessionInfo[]): SessionInfo[] {
+  return [...sessions].sort(
+    (a, b) => compareAlphabetically(sessionTitle(a), sessionTitle(b)) || a.id.localeCompare(b.id)
+  )
 }

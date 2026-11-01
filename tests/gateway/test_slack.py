@@ -2490,6 +2490,33 @@ class TestFormatMessage:
     def test_italic_asterisk_conversion(self, adapter):
         assert adapter.format_message("*hello*") == "_hello_"
 
+    @pytest.mark.parametrize("source,expected", [
+        # Unspaced scripts: Slack only honours a delimiter that touches whitespace
+        # or a string boundary, so a zero-width space is inserted outside it.
+        ("これは**太字**です", "これは\u200b*太字*\u200bです"),
+        ("**ゼロ**。", "*ゼロ*\u200b。"),
+        ("これは*斜体*だ", "これは\u200b_斜体_\u200bだ"),
+        ("これは~~取消~~線", "これは\u200b~取消~\u200b線"),
+        ("値は`x`です", "値は\u200b`x`\u200bです"),
+        ("粗利**+12%**を確保", "粗利\u200b*+12%\u200b*\u200bを確保"),
+    ])
+    def test_emphasis_flush_against_unspaced_text_is_padded(self, adapter, source, expected):
+        assert adapter.format_message(source) == expected
+
+    @pytest.mark.parametrize("source,expected", [
+        ("**bold** here", "*bold* here"),
+        ("say *hi* now", "say _hi_ now"),
+        ("use `x` here", "use `x` here"),
+        ("~~gone~~", "~gone~"),
+        ("日本語 **太字** です", "日本語 *太字* です"),
+        # Neighbouring placeholders restore to their own delimiters, which Slack
+        # already accepts as a boundary.
+        ("`code`**bold**", "`code`*bold*"),
+        ("[link](https://example.com)**太字**", "<https://example.com|link>*太字*"),
+    ])
+    def test_emphasis_already_bounded_by_whitespace_is_unchanged(self, adapter, source, expected):
+        assert adapter.format_message(source) == expected
+
 
     def test_header_with_bold_content(self, adapter):
         # **bold** inside a header should not double-wrap

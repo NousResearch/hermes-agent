@@ -906,10 +906,54 @@ class GatewayTurnProgressMixin:
 
     def _event_callback_sync(self, event_type: str, context: dict) -> None:
         ctx = self._ctx
+        if event_type == "session:compress":
+            self._carry_live_compression_count(context)
         try:
             asyncio.run_coroutine_threadsafe(ctx._hooks_ref.emit(event_type, context), ctx._loop_for_step)
         except Exception as e:
             logger.debug("event_callback hook error: %s", e)
+
+    def _carry_live_compression_count(self, context: dict) -> None:
+        """An in-turn auto-compaction increments the agent's compressor and emits ``session:compress``,
+        but only the manual ``/compress`` receipt ever wrote the count onto the live session
+        (``session_mutations`` -> ``note_compression``). Without this the count dies with the agent
+        the gateway evicts, and the successor seeded from ``live`` starts at 0 (#146153). ``max``: a
+        late event must not lower a count a manual compress already carried forward."""
+        owner = self._approval_owner
+        count = context.get("compression_count")
+        if owner is None or not isinstance(count, int) or isinstance(count, bool):
+            return
+        authority, owner_id, generation = owner
+        # Two fences, because a late ``session:compress`` can outlive its turn in two ways: the claim
+        # that emitted it has ended (``executing``, the fence ``publish_execution`` applies), or
+        # ``/new`` zeroed the count and bumped the generation while the old thread was still
+        # summarizing. Neither may put the previous conversation's count on the fresh one.
+        with suppress(Exception):
+            if authority.executing.get(owner_id) != generation:
+                return
+            current = authority.db.get_session(owner_id)
+            if current is None or current["runtime_generation"] != generation:
+                return
+            live = authority.sessions.get(owner_id)
+            if live is None:
+                return
+            carried = getattr(live, "compression_count", 0)
+            live.compression_count = max(carried if isinstance(carried, int) else 0, count)
+
+    def _adopt_turn_agent(self, agent) -> None:
+        """Hand the turn's agent to its running claim and seed it from the live session.
+
+        The seed runs for every authority-owned turn, not only local viewers
+        (``local_viewer_events.wire`` seeds that path): a messaging route or a muted turn whose
+        agent was evicted on ``/stop`` or ``/model`` otherwise starts its successor's compressor
+        at 0 (#146153)."""
+        if self._approval_owner is None:
+            return
+        authority, owner_id, generation = self._approval_owner
+        authority.adopt_agent(owner_id, generation, agent)
+        from gateway.session_usage import seed_compression_count
+        with suppress(Exception):
+            seed_compression_count(authority.sessions.get(owner_id), agent)
 
     def _local_notice_callback_sync(self, notice) -> None:
         """``AgentNotice`` -> ``notification.show`` for local viewers (the TUI's payload)."""

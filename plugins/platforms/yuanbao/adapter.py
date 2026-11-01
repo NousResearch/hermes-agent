@@ -65,6 +65,9 @@ from plugins.platforms.yuanbao.yuanbao_proto import (
     encode_send_private_heartbeat, encode_send_group_heartbeat, encode_query_group_info,
     encode_get_group_member_list, next_seq_no,
 )
+from plugins.platforms.yuanbao.inbound_capacity import (
+    BoundedDispatchMixin, GroupDispatchState, InboundAdmission,
+)
 from gateway.session_transcript import TranscriptReadError
 
 logger = logging.getLogger(__name__)
@@ -1670,77 +1673,12 @@ class PatchAnchorsMiddleware(InboundMiddleware):
         await next_fn()
 
 
-class DispatchMiddleware(InboundMiddleware):
+class DispatchMiddleware(BoundedDispatchMixin, InboundMiddleware):
     """Build the MessageEvent and dispatch it (groups: serialised per session via a queue)."""
     name = "dispatch"
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
-        adapter = ctx.adapter
-        # The adapter seam: keyed in the owner profile's namespace, same as ``handle_message``.
-        _sk = adapter._source_session_key(ctx.source)
-
-        async def _dispatch_inbound_event() -> None:
-            if any(mt.startswith(("application/", "text/")) for mt in ctx.media_types):
-                # Classification: DOCUMENT wins over PHOTO/VIDEO/AUDIO for mixed attachments — run.py's
-                # image handling keys off the per-path image/* mime types regardless of message_type, but
-                # document-context injection gates strictly on MessageType.DOCUMENT (same precedence as
-                # Email/Signal, PR #44695).
-                msg_type = MessageType.DOCUMENT
-            else:  # yuanbao-local subtypes (CHAT_RECORD) are deep-parsed into text → TEXT downstream
-                msg_type = ctx.msg_type if isinstance(ctx.msg_type, MessageType) else MessageType.TEXT
-            event = MessageEvent(
-                text=ctx.raw_text, message_type=msg_type, source=ctx.source, message_id=ctx.msg_id or None,
-                raw_message=ctx.push, media_urls=list(ctx.media_urls), media_types=list(ctx.media_types),
-                reply_to_message_id=ctx.reply_to_message_id, reply_to_text=ctx.reply_to_text,
-                channel_prompt=ctx.channel_prompt,
-            )
-            if _sk and ctx.msg_id:
-                adapter._processing_msg_ids[_sk] = ctx.msg_id
-                adapter._processing_msg_texts[_sk] = ctx.raw_text or ""
-            if ctx.msg_id and ctx.raw_text:
-                cache = adapter._msg_content_cache
-                cache[ctx.msg_id] = ctx.raw_text
-                for k in list(cache)[:max(0, len(cache) - 200)]:  # bounded: drop oldest
-                    del cache[k]
-            await adapter.handle_message(event)
-        if ctx.chat_type == "group":
-            is_new = _sk not in adapter._group_queues
-            queue = adapter._group_queues.setdefault(_sk, asyncio.Queue())
-            queue.put_nowait(_dispatch_inbound_event)
-            logger.info("[%s] Group message enqueued (qsize=%d) for %s", adapter.name, queue.qsize(), (_sk or "")[:50])
-            if is_new:
-                self._track_inbound(adapter, self._consume_group_queue(adapter, _sk), f"yuanbao-group-consumer-{(_sk or '')[:30]}")
-        else:
-            self._track_inbound(adapter, _dispatch_inbound_event(), f"yuanbao-inbound-{ctx.msg_id or 'unknown'}")
-        await next_fn()
-
-    @staticmethod
-    def _track_inbound(adapter, coro, name: str) -> None:
-        task = asyncio.create_task(coro, name=name)
-        adapter._inbound_tasks.add(task)
-        task.add_done_callback(adapter._inbound_tasks.discard)
-
-    @staticmethod
-    async def _consume_group_queue(adapter: YuanbaoAdapter, session_key: str) -> None:
-        """Drain the group queue one dispatch at a time, waiting for each to finish; exits after 2s idle."""
-        queue = adapter._group_queues.get(session_key)
-        if not queue:
-            return
-        try:
-            while True:
-                try:
-                    dispatch_fn = await asyncio.wait_for(queue.get(), timeout=2.0)
-                except TimeoutError:
-                    break
-                logger.debug("[%s] Group queue: dispatching for %s (remaining=%d)", adapter.name, (session_key or "")[:50], queue.qsize())
-                try:
-                    await dispatch_fn()
-                    while session_key in adapter._active_sessions:
-                        await asyncio.sleep(0.1)
-                except Exception:
-                    logger.exception("[%s] Group queue consumer error", adapter.name)
-        finally:
-            adapter._group_queues.pop(session_key, None)
+        await self.handle_bounded(ctx, next_fn)
 
 
 class InboundPipelineBuilder:
@@ -1776,9 +1714,11 @@ class ConnectionManager:
         self._pending_pong: Optional[asyncio.Future] = None
         self._consecutive_hb_timeouts = self._reconnect_attempts = 0
         self._reconnecting: bool = False
-        # Debounce buffer aggregating multi-part inbound messages: sender key -> frames / timer
-        self._inbound_buffer: dict[str, list] = {}
-        self._inbound_timers: dict[str, asyncio.TimerHandle] = {}
+        self._inbound_admission = InboundAdmission(
+            adapter, self._extract_sender_key, self._extract_dispatch_key,
+            lambda frames: InboundContext(adapter=adapter, raw_frames=frames),
+            lambda: self._DEBOUNCE_WINDOW,
+        )
 
     @property
     def ws(self):
@@ -1798,6 +1738,7 @@ class ConnectionManager:
     async def open(self) -> bool:
         """sign-token → WS connect → AUTH_BIND → start loops. Returns True on success."""
         adapter = self._adapter
+        self._inbound_admission.reopen()
         if not WEBSOCKETS_AVAILABLE:
             msg = "Yuanbao startup failed: 'websockets' package not installed"
             adapter._set_fatal_error("yuanbao_missing_dependency", msg, retryable=True)
@@ -1876,6 +1817,7 @@ class ConnectionManager:
             if not fut.done():
                 fut.set_exception(disc_exc)
         self._pending_acks.clear()
+        await self._inbound_admission.close()
         SignManager.clear_locks()  # avoid stale locks bound to a previous event loop
         await self._cleanup_ws()
 
@@ -1978,10 +1920,11 @@ class ConnectionManager:
     async def _receive_loop(self) -> None:
         """Read WS frames and dispatch by cmd_type; schedule reconnect unless the close code is permanent."""
         adapter = self._adapter
+        source_ws = self._ws
         try:
-            async for raw in self._ws:  # type: ignore[union-attr]
+            async for raw in source_ws:  # type: ignore[union-attr]
                 if isinstance(raw, (bytes, bytearray)):
-                    await self._handle_frame(bytes(raw))
+                    await self._handle_frame(bytes(raw), source_ws=source_ws)
         except asyncio.CancelledError:
             pass
         except websockets.exceptions.ConnectionClosed as close_exc:  # type: ignore[union-attr]
@@ -1996,7 +1939,7 @@ class ConnectionManager:
             logger.warning("[%s] receive_loop exited: %s", adapter.name, exc)
             self.schedule_reconnect()
 
-    async def _handle_frame(self, raw: bytes) -> None:
+    async def _handle_frame(self, raw: bytes, *, source_ws=None) -> None:
         adapter = self._adapter
         try:
             msg = decode_conn_msg(raw)
@@ -2029,11 +1972,6 @@ class ConnectionManager:
             return
         if cmd_type == CMD_TYPE["Push"]:
             logger.info("[%s] Push received: cmd=%s msg_id=%s data_len=%d", adapter.name, cmd, msg_id, len(data))
-            if head.get("need_ack", False) and self._ws is not None:
-                try:
-                    await self._ws.send(encode_push_ack(head))
-                except Exception as ack_exc:
-                    logger.debug("[%s] Failed to send PushAck: %s", adapter.name, ack_exc)
             if msg_id and msg_id in self._pending_acks:
                 fut = self._pop_pending(msg_id)
                 if fut is not None:
@@ -2041,10 +1979,16 @@ class ConnectionManager:
                         fut.set_result(decode_inbound_push(data) if data else {"head": head})
                     except Exception as exc:
                         fut.set_exception(exc)
-                return
-            if data:  # genuine inbound message — dispatch to AI
+            elif data:  # genuine inbound message — admit before acknowledging it to the transport
                 logger.info("[%s] WS received inbound push, decoding and dispatching: cmd=%s, data_len=%d", adapter.name, cmd, len(data))
-                self._push_to_inbound(data)
+                if not await self._push_to_inbound(data):
+                    return
+            ack_ws = source_ws or self._ws
+            if head.get("need_ack", False) and ack_ws is not None and ack_ws is self._ws:
+                try:
+                    await ack_ws.send(encode_push_ack(head))
+                except Exception as ack_exc:
+                    logger.debug("[%s] Failed to send PushAck: %s", adapter.name, ack_exc, exc_info=True)
             return
         logger.debug("[%s] Ignoring frame: cmd_type=%d cmd=%s msg_id=%s", adapter.name, cmd_type, cmd, msg_id)
 
@@ -2062,27 +2006,29 @@ class ConnectionManager:
                 return f"{push.get('from_account', '')}:{push.get('group_code', '')}"
         return f"__unknown_{id(raw_data)}"
 
-    def _push_to_inbound(self, raw_data: bytes) -> None:
-        """Debounced dispatch: frames from one sender within _DEBOUNCE_WINDOW run as ONE pipeline
-        execution, merging multi-part messages (e.g. image + text pushed separately)."""
-        key = self._extract_sender_key(raw_data)
-        existing_timer = self._inbound_timers.pop(key, None)
-        if existing_timer:
-            existing_timer.cancel()
-        self._inbound_buffer.setdefault(key, []).append(raw_data)
-        logger.debug("[%s] Debounce: buffered frame for key=%s, count=%d", self._adapter.name, key, len(self._inbound_buffer[key]))
-        self._inbound_timers[key] = asyncio.get_running_loop().call_later(self._DEBOUNCE_WINDOW, self._flush_inbound_buffer, key)
+    def _extract_dispatch_key(self, raw_data: bytes) -> str:
+        """Serialize pipeline work by destination while retaining sender-scoped debounce."""
+        with contextlib.suppress(Exception):
+            parsed = json.loads(raw_data.decode("utf-8"))
+            if isinstance(parsed, dict):
+                from_account, group_code = DecodeMiddleware.json_sender_fields(parsed)
+                if from_account:
+                    return f"group:{group_code}" if group_code else f"dm:{from_account}"
+        with contextlib.suppress(Exception):
+            push = decode_inbound_push(raw_data)
+            if push:
+                from_account = push.get("from_account", "")
+                group_code = push.get("group_code", "")
+                return f"group:{group_code}" if group_code else f"dm:{from_account}"
+        return f"__unknown_{id(raw_data)}"
+
+    async def _push_to_inbound(self, raw_data: bytes) -> bool:
+        """Admit a raw frame into the bounded debounce/pipeline budget."""
+        return await self._inbound_admission.admit(raw_data)
 
     def _flush_inbound_buffer(self, key: str) -> None:
-        """Run the pipeline over the buffered frames for *key*."""
-        self._inbound_timers.pop(key, None)
-        data_list = self._inbound_buffer.pop(key, [])
-        if not data_list:
-            return
-        adapter = self._adapter
-        logger.info("[%s] Debounce flush: key=%s, aggregated %d frames", adapter.name, key, len(data_list))
-        adapter._track_task(asyncio.create_task(
-            adapter._inbound_pipeline.execute(InboundContext(adapter=adapter, raw_frames=data_list)), name=f"yuanbao-pipeline-{key}"))
+        """Flush one sender's current debounce batch into fixed workers."""
+        self._inbound_admission.flush(key)
 
     async def send_biz_request(self, encoded_conn_msg: bytes, req_id: str, timeout: float = DEFAULT_SEND_TIMEOUT) -> dict:
         """Send a business request and await its response future (pending_acks[req_id]), cleaning up on exit."""
@@ -2119,6 +2065,9 @@ class ConnectionManager:
             wait = min(2 ** attempt, 60)
             logger.info("[%s] Reconnect attempt %d/%d in %ds", adapter.name, attempt + 1, MAX_RECONNECT_ATTEMPTS, wait)
             await asyncio.sleep(wait)
+            if self._recv_task is not None:
+                await cancel_task(self._recv_task)
+                self._recv_task = None
             await self._cleanup_ws()
             try:
                 token_data = await SignManager.force_refresh(
@@ -2648,7 +2597,8 @@ class YuanbaoAdapter(BasePlatformAdapter):
         self._member_cache: dict[str, tuple[float, list]] = {}
         self.MEMBER_CACHE_TTL_S: float = 300.0
         self._dedup = MessageDeduplicator(ttl_seconds=300)  # WS reconnect / network jitter
-        self._group_queues: dict[str, asyncio.Queue] = {}  # session_key → sequential dispatch queue
+        self._group_dispatch = GroupDispatchState()
+        self._group_queues = self._group_dispatch.queues  # compatibility seam used by routing/tests
         # Recall support: msg_id/text being processed per session_key (RecallGuardMiddleware), plus a
         # bounded msg_id → content cache for content-match redaction when rows lack a message_id.
         self._processing_msg_ids: dict[str, str] = {}
@@ -2719,7 +2669,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
             if not task.done():
                 task.cancel()
         self._inbound_tasks.clear()
-        self._group_queues.clear()
+        self._group_dispatch.clear()
         logger.info("[%s] Disconnected", self.name)
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,

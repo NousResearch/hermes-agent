@@ -292,10 +292,18 @@ The following connection parameters are built into the adapter with sensible def
 | Reconnect backoff | 1s → 60s (exponential) | Wait time between reconnect attempts |
 | Reply heartbeat interval | 2 seconds | RUNNING status send frequency |
 | Send timeout | 30 seconds | Timeout for outbound WS messages |
+| Raw inbound budget | 64 frames / 4 MiB | Applies WebSocket backpressure before acknowledging more work |
+| Per-group pending backlog | 32 messages / 1 MiB | Rejects excess work with a rate-limited retry notice |
+| Aggregate group work | 256 messages / 8 MiB / 64 active groups | Bounds retained events and group-consumer tasks process-wide |
 
 :::note
 These values are currently not configurable via environment variables. They are optimized for typical Yuanbao deployments.
 :::
+
+When a group is already at its pending limit, Hermes does not claim that the new message was
+queued. It sends a rate-limited notice asking the sender to retry after the current turn. Accepted
+messages keep FIFO order within each admitted group queue. Authenticated owner controls such as `/stop`, `/new`, `/reset`,
+`/approve`, and `/deny` remain available while the ordinary group backlog is full.
 
 ### Verbose Logging
 

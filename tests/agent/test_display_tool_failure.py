@@ -180,6 +180,17 @@ class TestDetectToolFailureStructured:
             assert _detect_tool_failure("delegate_task", result)[0] is True, result
             assert classify_tool_failure("delegate_task", result)[0] is True, result
 
+    def test_skill_view_dedup_control_result_not_flagged(self):
+        result = json.dumps({
+            "success": False,
+            "status": "deduplicated",
+            "dedup": True,
+            "content_returned": False,
+            "error": "already loaded",
+        })
+        assert _detect_tool_failure("skill_view", result) == (False, "")
+
+
 
 class TestGetCuteToolMessageFailureSuffix:
     """End-to-end: failure suffix is appended by get_cute_tool_message."""

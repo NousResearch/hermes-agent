@@ -174,8 +174,9 @@ class TestNativeImageAttach:
         assert url.startswith("data:image/jpeg;base64,") and len(url) <= resolve_embed_target_bytes()
         assert "MEDIA:" in out["text_summary"]
         # Screenshot pixels are screen coordinates: the model is told how to map the embed back.
-        assert "downscaled from 3000x2000 to 1500x1000" in out["content"][1]["text"]
-        assert "multiply any coordinates you report by 2.00" in out["content"][1]["text"]
+        # The embed fills the 1568px cap, so the coordinate map factor is 1.91x.
+        assert "downscaled from 3000x2000 to 1568x1045" in out["content"][1]["text"]
+        assert "multiply any coordinates you report by 1.91" in out["content"][1]["text"]
 
     def test_scale_note_survives_spilling_an_oversized_tool_text(self, tmp_path, monkeypatch):
         """The agent loop spills an over-limit text part to a file and keeps only its head. The coordinate map
@@ -188,7 +189,7 @@ class TestNativeImageAttach:
         bounded = _persist_multimodal_text_parts(out, "mcp__srv__snap", "call-1", None, BudgetConfig())
         texts = [p["text"] for p in bounded["content"] if p.get("type") == "text"]
         assert len(texts[0]) < 50_000  # the tool text was spilled ...
-        assert any("multiply any coordinates you report by 2.00" in t for t in texts)  # ... the map was not
+        assert any("multiply any coordinates you report by 1.91" in t for t in texts)  # ... the map was not
         assert bounded["content"][-1]["type"] == "image_url"
 
         # A tiny tool_budget.mcp_result_size_chars spills BOTH text parts: each gets its own file, so the notes'
@@ -254,7 +255,8 @@ class TestNativeImageAttach:
         truncated = self._call(monkeypatch, tmp_path, {}, image=buf.getvalue()[: len(buf.getvalue()) // 2],
                                mime="image/jpeg")
         assert isinstance(truncated, str) and "MEDIA:" in truncated
-        # A 60000x64 strip: the resizer's 64 px short-edge floor cannot bring the long edge under 1568.
+        # A 60000x64 strip: the cap fit is two pixels tall, below the resizer's 64 px floor, so
+        # _mcp_native_image_part skips it and the MEDIA: path carries the strip.
         buf = io.BytesIO()
         Image.new("RGB", (60000, 64), (20, 90, 200)).save(buf, "PNG")
         strip = self._call(monkeypatch, tmp_path, {}, image=buf.getvalue())

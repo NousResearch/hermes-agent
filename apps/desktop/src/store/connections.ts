@@ -36,6 +36,7 @@ import {
   setActiveSessionId,
   setSelectedStoredSessionId
 } from '@/store/session'
+import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
 const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
@@ -97,7 +98,13 @@ const $activeConnectionProfile = computed(
 // applyActive publishes only after the tag moved, so the refetch lands on the
 // backend the tags now name. `listen` (not `subscribe`) skips the mount-time
 // fire, and the computed dedupes equal ids, so this only runs on a real switch.
-$activeConnectionId.listen(() => invalidateProfileScopedQueries())
+$activeConnectionId.listen(() => {
+  invalidateProfileScopedQueries()
+  // The star map is a scan of one backend's skills and memory; same-named
+  // profiles on two gateways are different graphs.
+  resetStarmapGraph()
+  reloadOpenStarmapGraph()
+})
 
 // Remember one profile per source, so switching machines is a re-home rather
 // than a reset to `default`. The map is local UI preference only; Electron
@@ -463,9 +470,9 @@ export async function selectConnection(connectionId: string, options: SelectConn
       $showAllProfiles.set(false)
     }
 
-    // Project ids name rows in one backend's projects.db; leave before the
-    // fresh draft copies the project's folder into its cwd.
-    if (currentConnectionId !== connectionId) {
+    // Projects belong to one profile on one backend; leave before the fresh
+    // draft copies the project's folder into its cwd.
+    if (currentConnectionId !== connectionId || currentProfile !== targetProfile) {
       exitProjectScope()
     }
 

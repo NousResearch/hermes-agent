@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import type { GatewayClient } from '../gatewayClient.js'
 import { messages } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
+import { promptGlyph } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -84,7 +85,7 @@ export function AgentSteerForm({
       </Text>
       <Text color={t.color.muted}>{T.steerIntro}</Text>
       <Box marginTop={1}>
-        <Text color={t.color.accent}>❯ </Text>
+        <Text color={t.color.accent}>{promptGlyph()} </Text>
         <TextInput
           color={t.color.text}
           columns={Math.max(1, cols - 6)}

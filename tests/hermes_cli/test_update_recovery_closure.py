@@ -58,6 +58,10 @@ def _killed_mid_write(tmp_path: Path, rel: str, committed: dict[str, str] | None
     git("init", "-q", "-b", "main")
     git("config", "user.name", "t")
     git("config", "user.email", "t@example.invalid")
+    # The tests rewrite or read loose objects by path; git 2.54+ auto-maintenance (geometric) packs
+    # them away in the background after a commit.
+    git("config", "maintenance.auto", "false")
+    git("config", "gc.auto", "0")
     git("add", "-A")
     git("commit", "-qm", "before")
     pre = git("rev-parse", "HEAD")

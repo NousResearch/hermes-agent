@@ -198,6 +198,12 @@ class GatewayTurnProgressMixin:
             or self._agent_interrupted()
         ):
             return
+        call_id = kwargs.get("call_id")
+        if call_id is not None:
+            call_id = str(call_id)
+            if call_id in ctx.progress_event_ids:
+                return
+            ctx.progress_event_ids.add(call_id)
         # "new" mode: only report when tool changes
         if ctx.progress_mode == "new" and tool_name == ctx.last_tool[0]:
             return

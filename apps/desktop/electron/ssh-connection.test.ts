@@ -23,6 +23,7 @@ import {
   hostArgs,
   redactSecrets,
   REMOTE_PROBE_TIMEOUT_SECS,
+  resolveSshBudgetMs,
   runSsh,
   SSH_ERROR,
   SshConnection,
@@ -1646,4 +1647,73 @@ test('#103288: every spawn uses the injected sshBinary; the default stays bare s
   const plain = createSshProbeConnection({ host: 'box', user: 'me' }, { spawnFn })
   await plain.open()
   assert.deepEqual([...new Set(commands)], ['ssh'])
+})
+
+test('resolveSshBudgetMs honours the env override with a 120s clamp', () => {
+  assert.equal(resolveSshBudgetMs({}, 'HERMES_SSH_CONNECT_TIMEOUT_MS', 15_000), 15_000)
+  assert.equal(
+    resolveSshBudgetMs({ HERMES_SSH_CONNECT_TIMEOUT_MS: '' }, 'HERMES_SSH_CONNECT_TIMEOUT_MS', 15_000),
+    15_000
+  )
+  assert.equal(
+    resolveSshBudgetMs({ HERMES_SSH_CONNECT_TIMEOUT_MS: '45000' }, 'HERMES_SSH_CONNECT_TIMEOUT_MS', 15_000),
+    45_000
+  )
+  assert.equal(
+    resolveSshBudgetMs({ HERMES_SSH_CONNECT_TIMEOUT_MS: '0' }, 'HERMES_SSH_CONNECT_TIMEOUT_MS', 15_000),
+    15_000
+  )
+  assert.equal(
+    resolveSshBudgetMs({ HERMES_SSH_CONNECT_TIMEOUT_MS: '-5' }, 'HERMES_SSH_CONNECT_TIMEOUT_MS', 15_000),
+    15_000
+  )
+  assert.equal(
+    resolveSshBudgetMs({ HERMES_SSH_CONNECT_TIMEOUT_MS: 'nope' }, 'HERMES_SSH_CONNECT_TIMEOUT_MS', 15_000),
+    15_000
+  )
+  assert.equal(
+    resolveSshBudgetMs({ HERMES_SSH_CONNECT_TIMEOUT_MS: '999999' }, 'HERMES_SSH_CONNECT_TIMEOUT_MS', 15_000),
+    120_000
+  )
+  assert.equal(
+    resolveSshBudgetMs({ HERMES_SSH_FORWARD_TIMEOUT_MS: '60000' }, 'HERMES_SSH_FORWARD_TIMEOUT_MS', 15_000),
+    60_000
+  )
+})
+
+test('connect/forward budgets read the environment; explicit constructor opts win (#132508)', () => {
+  const noopSpawn = () => {
+    throw new Error('constructor must not spawn')
+  }
+
+  const previousConnect = process.env.HERMES_SSH_CONNECT_TIMEOUT_MS
+  const previousForward = process.env.HERMES_SSH_FORWARD_TIMEOUT_MS
+  process.env.HERMES_SSH_CONNECT_TIMEOUT_MS = '45000'
+  process.env.HERMES_SSH_FORWARD_TIMEOUT_MS = '60000'
+
+  try {
+    const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn: noopSpawn })
+    assert.equal(conn._connectTimeoutMs, 45_000, 'env connect budget must flow into the connection')
+    assert.equal(conn._forwardTimeoutMs, 60_000, 'env forward budget must flow into the connection')
+
+    const explicit = new SshConnection(
+      { host: 'box', user: 'me' },
+      { spawnFn: noopSpawn, connectTimeoutMs: 5_000, forwardTimeoutMs: 6_000 }
+    )
+
+    assert.equal(explicit._connectTimeoutMs, 5_000, 'explicit opts must beat the env override')
+    assert.equal(explicit._forwardTimeoutMs, 6_000, 'explicit opts must beat the env override')
+  } finally {
+    if (previousConnect === undefined) {
+      delete process.env.HERMES_SSH_CONNECT_TIMEOUT_MS
+    } else {
+      process.env.HERMES_SSH_CONNECT_TIMEOUT_MS = previousConnect
+    }
+
+    if (previousForward === undefined) {
+      delete process.env.HERMES_SSH_FORWARD_TIMEOUT_MS
+    } else {
+      process.env.HERMES_SSH_FORWARD_TIMEOUT_MS = previousForward
+    }
+  }
 })

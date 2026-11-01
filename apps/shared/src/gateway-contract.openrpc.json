@@ -24044,6 +24044,30 @@
             ],
             "default": null,
             "title": "Can Disable Reasoning"
+          },
+          "reasoning_efforts": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "minimal",
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning Efforts"
           }
         },
         "required": [

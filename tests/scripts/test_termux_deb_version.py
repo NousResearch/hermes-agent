@@ -35,7 +35,7 @@ def test_apt_readers_accept_bom_and_keep_archive_bytes(tmp_path, bom):
     ("v26.8.31", "26.8.31-1", "stable"),
     ("v126.8.31", "126.8.31-1", "stable"),
     ("v1.234.567", "1.234.567-1", "stable"),
-    ("v0.20.6+canary.20260831T120000Z", "0.20.6~canary.20260831T120000Z-1", "canary"),
+    ("canary.20260831T120000Z-v0.20.6", "0.20.6~canary.20260831T120000Z-1", "canary"),
 ])
 def test_tag_mapping(tag, version, channel):
     assert deb_version_for_tag(tag) == version
@@ -49,7 +49,7 @@ def test_canary_shape_matches_the_stable_shape_on_every_component():
     from hermes_cli.update_channel import _CANARY_TAG_RE
     from scripts.releases.semver import is_release_version
 
-    assert _CANARY_TAG_RE.fullmatch("v1.9.15+canary.20260916T120000Z")
+    assert _CANARY_TAG_RE.fullmatch("canary.20260916T120000Z-v1.9.15")
     assert is_release_version("1.9.15+canary.20260916T120000Z")
     assert not is_release_version("2026.9.15+canary.20260916T120000Z")
     assert not is_release_version("1.9.15-canary.20260916120000")
@@ -69,7 +69,7 @@ def test_malformed_tags_rejected_by_both_mappings(tag):
 @pytest.mark.parametrize("args,status,output", [
     (["v9.8.7"], 0, "9.8.7-1"),
     (["--channel", "v9.8.7"], 0, "stable"),
-    (["--channel", "v9.8.7+canary.20260831T120000Z"], 0, "canary"),
+    (["--channel", "canary.20260831T120000Z-v9.8.7"], 0, "canary"),
 
     (["v1.2"], 1, ""), (["--channel", "v1.2"], 1, ""),
 ])
@@ -83,7 +83,38 @@ def test_cli_dispatch(args, status, output):
 
 @pytest.mark.skipif(shutil.which("dpkg") is None, reason="requires native dpkg")
 def test_dpkg_orders_canary_and_numeric_versions():
-    tags = ["v1.2.3+canary.20260831T000000Z", "v1.2.3+canary.20260831T235959Z", "v1.2.3", "v1.2.10"]
+    tags = ["canary.20260831T000000Z-v1.2.3", "canary.20260831T235959Z-v1.2.3", "v1.2.3", "v1.2.10"]
     versions = list(map(deb_version_for_tag, tags))
     for earlier, later in itertools.pairwise(versions):
         subprocess.run(["dpkg", "--compare-versions", earlier, "lt", later], check=True)
+
+
+def _release_commit_version_heredoc() -> str:
+    """The Python build_deb.sh runs to stamp the payload version on a pinned-commit build (the path
+    the release candidate job takes: --tag plus --release-commit)."""
+    script = (SCRIPT.parent / "build_deb.sh").read_text(encoding="utf-8")
+    opener = 'PY_VERSION="$(python3 - "$REPO_ROOT" "$REPO_ABS" "$COMMIT" "$TAG" <<\'PY\'\n'
+    assert script.count(opener) == 1
+    body = script.split(opener, 1)[1]
+    return body[:body.index("\nPY\n")] + "\n"
+
+
+@pytest.mark.parametrize("tag,version", [
+    ("v1.2.3", "1.2.3"),
+    ("canary.20261021T064100Z-v1.2.3", "1.2.3+canary.20261021T064100Z"),
+])
+def test_a_pinned_commit_build_stamps_the_tags_release_version(tag, version):
+    """The install stamp's base/display version is the tag's release version, never the tag with
+    its first character cut off (which turns a canary tag into 'anary.<stamp>-v1.2.3')."""
+    root = str(SCRIPT.parents[2])
+    result = subprocess.run([sys.executable, "-", root, root, "a" * 40, tag],
+                            input=_release_commit_version_heredoc(), capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == version
+
+
+def test_a_pinned_commit_build_refuses_a_malformed_tag():
+    root = str(SCRIPT.parents[2])
+    result = subprocess.run([sys.executable, "-", root, root, "a" * 40, "v1.2.3+canary.20261021T064100Z"],
+                            input=_release_commit_version_heredoc(), capture_output=True, text=True, check=False)
+    assert result.returncode != 0 and "malformed release tag" in result.stderr

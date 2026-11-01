@@ -21,7 +21,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
-import { appIdentity } from './msix-shared.mjs'
+import { appIdentity, releaseVersion } from './msix-shared.mjs'
 import { ensureWindowsBundleTools } from '../apps/desktop/scripts/windows-bundle-tools.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -31,7 +31,8 @@ const { values } = parseArgs({ options: {
   'output-file': { type: 'string' },
 } })
 const tag = values.tag || process.env.HERMES_PAYLOAD_TAG
-if (!/^v\d+\.\d+\.\d+$/.test(tag || '') || process.env.HERMES_BUILD_COMMIT) {
+// A canary assembles its Store bundle exactly as stable does; only stable ever submits one.
+if (!releaseVersion(tag) || process.env.HERMES_BUILD_COMMIT) {
   throw new Error('Store packaging requires a stable release tag')
 }
 process.env.HERMES_PAYLOAD_TAG = tag

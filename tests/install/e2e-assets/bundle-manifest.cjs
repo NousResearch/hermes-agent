@@ -2,7 +2,13 @@
 const fs = require('node:fs')
 const semver = require('semver')
 
-const TAG = /^v\d+\.\d+\.\d+(?:\+canary\.20\d{6}T\d{6}Z)?$/
+// vX.Y.Z or canary.<UTC stamp>-vX.Y.Z (hermes_cli/update_channel.py); a canary publishes X.Y.Z+canary.<stamp>.
+const TAG = /^(?:canary\.(20\d{6}T\d{6}Z)-)?v(\d+\.\d+\.\d+)$/
+const releaseVersion = tag => {
+  const match = TAG.exec(tag || '')
+  return match ? (match[1] ? `${match[2]}+canary.${match[1]}` : match[2]) : null
+}
+const isCanary = tag => String(tag || '').startsWith('canary.')
 const COMMIT = /^[0-9a-f]{40}$/
 const SHA256 = /^[0-9a-f]{64}$/
 const FORMATS = { windows: '.msixbundle', macos: '.zip' }
@@ -48,7 +54,7 @@ function validateSide(item, slot, platform) {
     if (['publisher', 'applicationId'].some(key => typeof item[key] !== 'string' || !item[key])) throw new Error(`${slot}: publisher and applicationId are required`)
   } else {
     if (!/^[A-Za-z][A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/.test(item.identity)) throw new Error(`${slot}: identity must be a CFBundleIdentifier`)
-    if (!semver.valid(item.version) || item.version !== item.tag.slice(1)) throw new Error(`${slot}: macOS version must match its release tag`)
+    if (!semver.valid(item.version) || item.version !== releaseVersion(item.tag)) throw new Error(`${slot}: macOS version must match its release tag`)
     // SAFETY: teamId must be a JSON string, not an array coerced by RegExp.test.
     // eslint-disable-next-line anti-slop/no-runtime-typeof -- Decode untrusted manifest JSON at its input boundary.
     if (typeof item.teamId !== 'string' || !/^[A-Z0-9]{10}$/.test(item.teamId)) throw new Error(`${slot}: macOS signing teamId is required`)
@@ -78,7 +84,7 @@ function validateBundleInputs(value, platform, arch) {
   } else {
     if (value.new.teamId !== value.old.teamId) throw new Error('Update must preserve signing team')
     if (!semver.gt(value.new.version, value.old.version)) throw new Error('New package version must increase')
-    if (value.old.tag.includes('+canary.') !== value.new.tag.includes('+canary.')) throw new Error('Bundle transition must stay on one update channel')
+    if (isCanary(value.old.tag) !== isCanary(value.new.tag)) throw new Error('Bundle transition must stay on one update channel')
   }
   return value
 }

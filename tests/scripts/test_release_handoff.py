@@ -9,7 +9,7 @@ from scripts.releases import handoff, r2
 from tests.scripts.test_release_r2 import r2_server
 
 
-@pytest.mark.parametrize('tag', ['v1.2.3', 'v1.2.3+canary.20260908T232538Z', 'rc.1-v1.2.3', None])
+@pytest.mark.parametrize('tag', ['v1.2.3', 'canary.20260908T232538Z-v1.2.3', 'rc.1-v1.2.3', None])
 def test_stage_and_fetch_bind_tag_commit_and_files_without_feed_writes(tmp_path, monkeypatch, r2_server, tag):
     commit = "a" * 40
     identity = ['--tag', tag, '--commit', commit] if tag else ['--commit-build', commit]

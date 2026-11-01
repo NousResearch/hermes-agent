@@ -8,7 +8,8 @@ import * as stamps from './write-build-stamp.mjs'
 import * as msix from './before-build.mjs'
 const { appExecutionAliasExtensions } = msix
 
-test('the Store bundler rejects nonstable selectors before platform tools or staging', () => {
+test('the Store bundler rejects non-release selectors before platform tools or staging', () => {
+  // A canary tag is a release selector: it assembles (never submits) a Store bundle like stable.
   for (const args of [['--commit', 'a'.repeat(40)], ['--tag', 'v0.28.0+canary.20260818T000000Z']]) {
     const result = spawnSync(process.execPath, [path.resolve(import.meta.dirname, '../../../scripts/bundle-store-msixbundle.mjs'), ...args], {
       encoding: 'utf8', env: { ...process.env, HERMES_BUILD_COMMIT: '', HERMES_PAYLOAD_TAG: '' }

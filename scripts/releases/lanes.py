@@ -45,6 +45,16 @@ LANES = (
 )
 NAMES = tuple(lane.name for lane in LANES)
 DEFAULT = frozenset(lane.name for lane in LANES if lane.default)
+# A canary is a run of the stable pipeline with every lane on but one: it has no claim to narrow
+# it, so macOS Intel and Termux run too, and a lane added above runs in the canary with no other
+# edit. The exception is `upgrade`, the signed-package arms: the canary is its own app (Hermes
+# Canary), so no signed package of it can upgrade a stable install, and canary-to-canary says
+# nothing about what stable users get. Old stable to this commit is install-e2e's job, which
+# installs released stable tags and updates them to the commit under test, with no bundle.
+# Beyond that a canary differs from a stable release only in policy (POLICY_JOBS). CANARY is the
+# base a canary claim starts from; --only/--with/--without narrow or widen it exactly as they do
+# DEFAULT for a stable claim.
+CANARY = frozenset(NAMES) - {"upgrade"}
 
 DESKTOP = ("windows", "macos-arm64", "macos-intel")
 WINDOWS = ("windows", "windows-store")
@@ -78,6 +88,8 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
     "candidates-termux": ("termux",),
     "candidate-manifest": ("bundles",),
     "publish-bundles": ("bundles",),
+    # A canary only advances channels, so it publishes only the full desktop set they serve.
+    "publish-canary": ("desktop-channel",),
     "transitions-darwin-arm64": ("macos-arm64", "upgrade"),
     "transitions-darwin-x64": ("macos-intel", "upgrade"),
     "transitions-win32": ("windows", "upgrade"),
@@ -87,6 +99,17 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
 }.items()}
 
 CANDIDATE_CALLS = tuple(job for job in JOB_LANES if job.startswith("candidates-"))
+
+# The release policies stable-release.yml runs. Every build and test job is shared; only these
+# publication jobs belong to one policy, and each runs only under its own. A stable release
+# publishes its bundles to the stable channels and the Store; a canary publishes the same accepted
+# candidate to the canary channels and never touches a stable head or the Store.
+POLICIES = ("stable", "canary")
+POLICY_JOBS = {"publish-bundles": "stable", "publish-canary": "canary"}
+# The lane set a claim of each policy starts from, and the lanes it can never run: a canary is its
+# own app identity, so no signed package of it can upgrade anything (see CANARY).
+POLICY_BASE = {"stable": DEFAULT, "canary": CANARY}
+POLICY_REFUSED = {"stable": frozenset(), "canary": frozenset({"upgrade"})}
 
 # Candidate handoff group and manifest target, each with the lane that builds it.
 HANDOFF_LANE = {"win32-x64": "windows-build", "win32-arm64": "windows-build", "windows-universal": "windows-build",
@@ -104,12 +127,24 @@ LEFT_OUT = {
 
 
 def select(*, only: Iterable[str] | None = None, with_: Iterable[str] = (),
-           without: Iterable[str] = ()) -> frozenset[str]:
-    """The lane set a ``release`` command asks for. ``only`` replaces DEFAULT as the base."""
-    base, added, removed = (_known(group) for group in (DEFAULT if only is None else only, with_, without))
+           without: Iterable[str] = (), policy: str = "stable") -> frozenset[str]:
+    """The lane set a claim asks for. ``only`` replaces the policy's base (POLICY_BASE)."""
+    if policy not in POLICIES:
+        raise ValueError(f"unknown release policy {policy!r}")
+    base, added, removed = (_known(group) for group in (POLICY_BASE[policy] if only is None else only,
+                                                         with_, without))
     if added & removed:
         raise ValueError(f"--with and --without both name {', '.join(sorted(added & removed))}")
-    return frozenset((base | added) - removed)
+    lanes = frozenset((base | added) - removed)
+    require_allowed(lanes, policy)
+    return lanes
+
+
+def require_allowed(lanes: Iterable[str], policy: str) -> None:
+    """Refuse a lane the policy can never run (POLICY_REFUSED)."""
+    refused = frozenset(lanes) & POLICY_REFUSED[policy]
+    if refused:
+        raise ValueError(f"a {policy} claim cannot run {', '.join(sorted(refused))}")
 
 
 def _known(names: Iterable[str]) -> frozenset[str]:
@@ -148,10 +183,17 @@ def from_flags(raw: object) -> frozenset[str]:
     return frozenset(name for name in NAMES if raw[name])
 
 
-def jobs_to_run(lanes: Iterable[str]) -> dict[str, bool]:
-    """Whether each lane-controlled job runs. Every ``if`` in the workflow reads this."""
+def jobs_to_run(lanes: Iterable[str], policy: str = "stable") -> dict[str, bool]:
+    """Whether each lane-controlled job runs. Every ``if`` in the workflow reads this.
+
+    ``policy`` only removes the other policy's publication job (POLICY_JOBS); it never adds or
+    removes a build or test job, so a canary and a stable release with the same lanes run the
+    same graph."""
+    if policy not in POLICIES:
+        raise ValueError(f"unknown release policy {policy!r}")
     on = effective(lanes)
-    return {job: needs <= on for job, needs in JOB_LANES.items()}
+    return {job: needs <= on and POLICY_JOBS.get(job, policy) == policy
+            for job, needs in JOB_LANES.items()}
 
 
 def handoffs(lanes: Iterable[str], names: Iterable[str]) -> tuple[str, ...]:

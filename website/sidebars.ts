@@ -289,6 +289,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/software-development/software-development-dogfood',
                     'user-guide/skills/bundled/software-development/software-development-github',
                     'user-guide/skills/bundled/software-development/software-development-requesting-code-review',
+                    'user-guide/skills/bundled/software-development/software-development-sandboxed-prototyping',
                     'user-guide/skills/bundled/software-development/software-development-simplify-code',
                     'user-guide/skills/bundled/software-development/software-development-spike',
                     'user-guide/skills/bundled/software-development/software-development-systematic-debugging',

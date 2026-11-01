@@ -19,6 +19,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 from contextlib import suppress
 from pathlib import Path
 from typing import Optional
@@ -497,7 +498,17 @@ def read_target_files(git_cmd, root: Path, target_ref: str, relpaths) -> dict[st
     names = list(dict.fromkeys(relpaths))
     found: dict[str, bytes | None] = dict.fromkeys(names)
     request = "".join(f"{target_ref}:{rel}\n" for rel in names).encode("utf-8")
-    cp = run_git(git_cmd, ["cat-file", "--batch"], cwd=str(root), input=request, capture_output=True, timeout=120)
+    # Feed the request from a file, never a pipe this parent must write: cat-file streams blob
+    # bodies into stdout while the request is still being written, and subprocess's ``input=``
+    # path writes PIPE_BUF-sized chunks on a possibly-blocking fd — a write that lands when the
+    # stdin pipe has under 512 bytes free parks the updater inside write(), where ``timeout=``
+    # can never fire and ``hermes update`` hangs at "Fetching updates..." (#138672). stdin-as-file
+    # leaves the parent only reading, so neither the deadlock nor the stuck-timeout window exists.
+    with tempfile.TemporaryFile() as feed:
+        feed.write(request)
+        feed.seek(0)
+        cp = run_git(git_cmd, ["cat-file", "--batch"], cwd=str(root), stdin=feed,
+                     capture_output=True, timeout=120)
     out, pos = (cp.stdout or b"") if cp.returncode == 0 else b"", 0
     for rel in names:
         end = out.find(b"\n", pos)

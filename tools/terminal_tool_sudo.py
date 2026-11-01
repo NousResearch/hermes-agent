@@ -108,19 +108,23 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
     return output + f"\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to {_dhh()}/.env on the agent machine."
 
 
-# sudo -S rejects a bad cached/interactive password with these messages.
-_SUDO_WRONG_PASSWORD_MARKERS = (
-    "sudo: authentication failed",
-    "sudo: incorrect password attempt",
-    "sudo: maximum 3 incorrect authentication attempts",
-    "sudo: 3 incorrect password attempts",
+# sudo -S rejects a bad cached/interactive password with messages matching this pattern.
+# A regex, not substrings: sudo >= 1.9 counts the attempts ("sudo: 1 incorrect password
+# attempt") and sudo-rs (Ubuntu's default sudo) says "Incorrect authentication attempt" /
+# "Authentication failed, try again." under its own prefix, so a fixed English substring
+# missed the first rejection and the wrong password stayed cached.
+_SUDO_WRONG_PASSWORD_RE = re.compile(
+    r"incorrect (?:password|authentication) attempts?"
+    r"|sudo: authentication failed"
+    r"|authentication failed, try again"
+    r"|sorry, try again",
+    re.IGNORECASE,
 )
 
 
 def _sudo_wrong_password_failure(output: str) -> bool:
     """Return True when sudo rejected a piped password."""
-    lowered = (output or "").lower()
-    return any(marker in lowered for marker in _SUDO_WRONG_PASSWORD_MARKERS)
+    return bool(_SUDO_WRONG_PASSWORD_RE.search(output or ""))
 
 
 def _invalidate_cached_sudo_on_auth_failure(command: str | None, output: str) -> bool:

@@ -262,6 +262,7 @@ jq .auxiliary.by_task ~/.hermes/cache/scratch/usage.json      # what did title g
 hermes infer "Classify this message" --json
 printf '%s' 'Message to classify' | hermes infer - --json
 hermes infer - --schema ./classification.schema.json --json < ./message.txt
+hermes infer "Explain this result" --json --include-response
 ```
 
 `infer` sends one user prompt to the selected provider and prints its text to
@@ -277,6 +278,13 @@ write only an error to stderr. Schema validation does not trigger a repair
 request; configured provider retries and fallbacks still apply. A script can
 inspect the returned text and apply a local transformation or alternate schema
 without another model request. Use `--max-tokens` and `--timeout` to bound a call.
+
+For provider diagnostics, `--json --include-response` adds `response`: a JSON
+snapshot of the completion object returned to Hermes by its model client. It
+can expose fields such as `finish_reason`, refusal data, or additional choices
+that are not represented in `text`. The shape varies by provider and adapter;
+it is not the original upstream HTTP payload. The ordinary envelope fields are
+the stable interface for scripts. If no response arrives, `response` is `null`.
 
 The command uses the profile's configured provider, model, credentials, and
 fallback policy, including Hermes model aliases. Supply both `--provider` and

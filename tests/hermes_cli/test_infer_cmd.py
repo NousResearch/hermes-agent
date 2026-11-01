@@ -18,7 +18,7 @@ from hermes_cli.infer_cmd import cmd_infer
 
 def _args(**overrides):
     values = dict(prompt="Classify this", provider=None, model=None, schema=None,
-                  json=True, max_tokens=None, timeout=None)
+                  json=True, include_response=False, max_tokens=None, timeout=None)
     return argparse.Namespace(**(values | overrides))
 
 
@@ -97,7 +97,7 @@ def test_infer_calls_configured_local_endpoint_without_agent_context(
             "model:\n  provider: custom\n  default: selected-model\n"
             f"  base_url: http://127.0.0.1:{server.server_port}/v1\n"
             "  api_key: test-key\n", encoding="utf-8")
-        assert cmd_infer(_args()) == 0
+        assert cmd_infer(_args(include_response=True)) == 0
     finally:
         server.shutdown()
         server.server_close()
@@ -105,6 +105,9 @@ def test_infer_calls_configured_local_endpoint_without_agent_context(
     output = json.loads(capsys.readouterr().out)
     assert output["text"] == "answer"
     assert output["usage"]["total_tokens"] == 4
+    assert output["response"]["choices"][0]["finish_reason"] == "stop"
+    assert output["response"]["choices"][0]["message"]["content"] == "answer"
+    assert output["response"]["usage"]["total_tokens"] == 4
     assert len(requests) == 1
     assert requests[0][0] == "/v1/chat/completions"
     assert requests[0][1]["messages"] == [{"role": "user", "content": "Classify this"}]
@@ -149,7 +152,7 @@ def test_cli_rehydrates_profile_key_for_sanitized_script(configured_home):
         env["HERMES_HOME"] = str(configured_home)
         env["PYTHONIOENCODING"] = "utf-8"
         run = subprocess.run(
-            [sys.executable, "-m", "hermes_cli.main", "infer", "from script", "--json"],
+            [sys.executable, "-m", "hermes_cli.main", "infer", "from script", "--json", "--include-response"],
             env=env, capture_output=True, text=True, timeout=90, check=False,
         )
     finally:
@@ -157,7 +160,9 @@ def test_cli_rehydrates_profile_key_for_sanitized_script(configured_home):
         server.server_close()
         thread.join(timeout=2)
     assert run.returncode == 0, run.stderr
-    assert json.loads(run.stdout)["text"] == "done"
+    output = json.loads(run.stdout)
+    assert output["text"] == "done"
+    assert output["response"]["choices"][0]["message"]["content"] == "done"
     assert len(requests) == 1
     assert requests[0][0] == "/v1/chat/completions"
     assert requests[0][1] == "Bearer profile-test-key"
@@ -177,6 +182,28 @@ def test_infer_resolves_configured_model_alias(configured_home, monkeypatch, cap
     assert capsys.readouterr().out == "ok\n"
     assert seen["model"] == "triage-model"
     assert seen["provider"] == "custom"
+
+
+def test_infer_includes_non_text_response_fields_on_request(configured_home, monkeypatch, capsys):
+    response = _response("")
+    response.choices[0].finish_reason = "length"
+    response.choices[0].message.refusal = "cannot answer"
+    response.provider_detail = SimpleNamespace(code="partial", data=b"two bytes")
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **kw: response)
+    assert cmd_infer(_args(include_response=True)) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["text"] == ""
+    assert output["response"]["choices"][0]["finish_reason"] == "length"
+    assert output["response"]["choices"][0]["message"]["refusal"] == "cannot answer"
+    assert output["response"]["provider_detail"] == {"code": "partial", "data": {"base64": "dHdvIGJ5dGVz"}}
+
+
+def test_infer_requires_json_for_full_response(configured_home, monkeypatch, capsys):
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **kw: pytest.fail("model called"))
+    assert cmd_infer(_args(json=False, include_response=True)) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "--include-response requires --json" in captured.err
 
 
 def test_infer_schema_validates_and_returns_parsed_json(configured_home, tmp_path, monkeypatch, capsys):
@@ -234,10 +261,11 @@ def test_infer_returns_raw_schema_mismatch_for_local_recovery(configured_home, t
                            '"required":["label"]}', encoding="utf-8")
     raw = '{"label":7,"other":"keep this"}'
     monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **kw: _response(raw))
-    assert cmd_infer(_args(schema=str(schema_path))) == 1
+    assert cmd_infer(_args(schema=str(schema_path), include_response=True)) == 1
     output = json.loads(capsys.readouterr().out)
     assert output["ok"] is False
     assert output["text"] == raw
+    assert output["response"]["choices"][0]["message"]["content"] == raw
     assert output["parsed"] is None
     assert output["error"]["code"] == "schema_mismatch"
     assert "string" in output["error"]["message"]
@@ -262,12 +290,13 @@ def test_infer_returns_error_envelope_on_provider_failure(configured_home, monke
         raise ProviderError("endpoint unavailable")
 
     monkeypatch.setattr("agent.auxiliary_client.call_llm", fail_call)
-    assert cmd_infer(_args()) == 1
+    assert cmd_infer(_args(include_response=True)) == 1
     captured = capsys.readouterr()
     output = json.loads(captured.out)
     assert captured.err == ""
     assert output["ok"] is False
     assert output["text"] is None
+    assert output["response"] is None
     assert output["error"] == {"code": "request_failed", "message": "endpoint unavailable"}
 
 

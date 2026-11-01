@@ -86,9 +86,26 @@ def test_allowlisted_user_api_post_is_human():
     assert adapter._event_declares_bot_sender({"app_id": "A_frontend", "text": "hi"}) is True
 
 
-def test_bot_markers_win_over_allowlist():
-    """Allowlisting a user never admits genuine bot posts, so the app's own
-    ``xoxb`` traffic (bot_id / subtype=bot_message) cannot loop back in."""
+def test_bot_message_subtype_wins_over_allowlist():
+    """``subtype: bot_message`` is bot-authored no matter what — allowlisting a user
+    never admits classic bot posts, so ``xoxb`` traffic cannot loop back in."""
     adapter = _make_adapter({"api_human_users": HUMAN_ID})
     assert adapter._event_declares_bot_sender(_api_post(subtype="bot_message")) is True
-    assert adapter._event_declares_bot_sender(_api_post(bot_id="B_stamp")) is True
+
+
+def test_bot_profile_stamped_user_token_post_is_human():
+    """Slack also stamps ``bot_id``/``bot_profile`` (not just ``app_id``) on some
+    user-token posts — observed live: ``chat.postMessage`` with ``xoxp-`` delivered as
+    ``{user: U_human, bot_id: B..., bot_profile: {...}, app_id: A..., no client_msg_id}``.
+    The allowlist must be consulted before the bot short-circuit or those human posts
+    are silently dropped. Loop safety holds: an app's own ``xoxb`` posts carry the
+    *bot's* user id, which is never in a human allowlist."""
+    adapter = _make_adapter({"api_human_users": HUMAN_ID})
+    stamped = _api_post(bot_id="B_stamp", bot_profile={"id": "B_stamp", "name": "Front-end"})
+    assert adapter._event_declares_bot_sender(stamped) is False
+    # A non-allowlisted user with the same stamps stays bot-classified.
+    assert adapter._event_declares_bot_sender(
+        _api_post(user="U_stranger", bot_id="B_stamp")) is True
+    # The bot's own posts (bot user id, or no user at all) stay bot-classified.
+    assert adapter._event_declares_bot_sender(
+        {"type": "message", "bot_id": "B_stamp", "app_id": "A_frontend", "text": "hi"}) is True

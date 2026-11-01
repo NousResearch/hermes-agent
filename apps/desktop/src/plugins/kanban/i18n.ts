@@ -175,6 +175,12 @@ type KanbanMessages = {
    *  text is the board's own name and reads as a static label otherwise. */
   switchBoard: string
   newBoardDots: string
+  // board-header dispatcher toggles
+  headerDispatch: string
+  headerDecompose: string
+  headerReview: string
+  headerEstimate: string
+  headerEnforcementPendingHint: string
   // Menu labels are bare verbs — the board they act on is the one named in the
   // switcher's trigger. The nouns come back for the native file-dialog and
   // in-app dialog titles, which stand alone.
@@ -407,6 +413,11 @@ export const en: KanbanMessages = {
   newBoard: 'New board',
   switchBoard: 'Switch board',
   newBoardDots: 'New board…',
+  headerDispatch: 'Dispatch',
+  headerDecompose: 'Decompose',
+  headerReview: 'Review',
+  headerEstimate: 'Auto estimate',
+  headerEnforcementPendingHint: 'Not yet enforced — toggling this has no effect on dispatch/decompose/review yet.',
   exportDots: 'Export…',
   importDots: 'Import…',
   renameDots: 'Rename…',
@@ -634,6 +645,11 @@ const ja: KanbanMessages = {
   newBoard: '新しいボード',
   switchBoard: 'ボードを切り替え',
   newBoardDots: '新しいボード…',
+  headerDispatch: 'ディスパッチ',
+  headerDecompose: '分解',
+  headerReview: 'レビュー',
+  headerEstimate: '自動見積もり',
+  headerEnforcementPendingHint: 'Not yet enforced.',
   exportDots: 'エクスポート…',
   importDots: 'インポート…',
   renameDots: '名前を変更…',
@@ -859,6 +875,11 @@ const zh: KanbanMessages = {
   newBoard: '新建面板',
   switchBoard: '切换面板',
   newBoardDots: '新建面板…',
+  headerDispatch: '调度',
+  headerDecompose: '分解',
+  headerReview: '审查',
+  headerEstimate: '自动估算',
+  headerEnforcementPendingHint: 'Not yet enforced.',
   exportDots: '导出…',
   importDots: '导入…',
   renameDots: '重命名…',
@@ -1083,6 +1104,11 @@ const zhHant: KanbanMessages = {
   newBoard: '新增面板',
   switchBoard: '切換面板',
   newBoardDots: '新增面板…',
+  headerDispatch: '調度',
+  headerDecompose: '分解',
+  headerReview: '審查',
+  headerEstimate: '自動估算',
+  headerEnforcementPendingHint: 'Not yet enforced.',
   exportDots: '匯出…',
   importDots: '匯入…',
   renameDots: '重新命名…',

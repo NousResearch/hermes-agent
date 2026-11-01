@@ -552,7 +552,19 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if translate_path:
             arg = _bash_safe_path(arg)
         elif _IS_WINDOWS and getattr(self.env, "is_local", False):
-            arg = arg.replace("\\", "\\\\")
+            # Git Bash folds `\\`→`\` inside the double quotes
+            # subprocess.list2cmdline wraps the -c payload in, so a backslash
+            # run NOT ending at a double quote must be doubled to survive.
+            # A run that DOES end at one is already escaped MSVCRT-style by
+            # list2cmdline (run doubled + `\"`) and comes back verbatim;
+            # doubling it too turns a regex `\"` (a plain `"`) into `\\` +
+            # quote handling, silently changing the pattern rg compiles
+            # (#142111).
+            arg = re.sub(
+                r"\\+",
+                lambda m: m.group(0) if m.string[m.end() : m.end() + 1] == '"' else m.group(0) * 2,
+                arg,
+            )
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 

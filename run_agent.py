@@ -243,6 +243,7 @@ class AIAgent(
         enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None,
         save_trajectories: bool = False, verbose_logging: bool = False, quiet_mode: bool = False,
         tool_progress_mode: str = "all", ephemeral_system_prompt: str | None = None,
+        preloaded_skills_prompt: str | None = None,
         log_prefix_chars: int = 100, log_prefix: str = "",
         providers_allowed: list[str] | None = None, providers_ignored: list[str] | None = None, providers_order: list[str] | None = None,
         provider_sort: str | None = None, provider_require_parameters: bool = False, provider_data_collection: str | None = None,

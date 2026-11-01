@@ -232,6 +232,22 @@ def _prompt_parts(agent):
         return build_system_prompt_parts(agent)
 
 
+def test_preloaded_skills_are_stable_before_context_and_volatile():
+    agent = _make_agent(
+        preloaded_skills_prompt="EXPLICIT CLI SKILL",
+        ephemeral_system_prompt="EPHEMERAL PERSONALITY",
+    )
+
+    parts = _prompt_parts(agent)
+    rendered = "\n\n".join(parts.values())
+
+    assert "EXPLICIT CLI SKILL" in parts["stable"]
+    from agent.launch_skills import frame_launch_skills
+    assert parts["stable"].endswith(frame_launch_skills("EXPLICIT CLI SKILL"))
+    assert rendered.count("EXPLICIT CLI SKILL") == 1
+    assert "EPHEMERAL PERSONALITY" not in rendered
+
+
 def _init_code_repo(path):
     """A git repo that actually holds code — the coding posture requires a source
     file (or manifest), not a bare ``.git`` (a prose/notes repo stays general)."""
@@ -325,6 +341,20 @@ def test_stored_prompt_stamped_for_another_session_is_not_restored(monkeypatch, 
     parent_prompt = build_system_prompt(_make_agent(session_id="parent-sid", **fields))
     assert _stored_prompt_matches_runtime(_make_agent(session_id="parent-sid", **fields), parent_prompt)
     assert not _stored_prompt_matches_runtime(_make_agent(session_id="child-sid", **fields), parent_prompt)
+
+
+def test_stored_prompt_without_launch_skills_is_not_restored(monkeypatch, tmp_path):
+    """`--resume <id> -s X` on a session persisted without X must rebuild: launch skills live in
+    the stable tier, so reusing the stored bytes would never send them."""
+    from agent.conversation_loop import _stored_prompt_matches_runtime
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    fields = dict(platform="cli", model="test-model", provider="test-provider")
+    stored = build_system_prompt(_make_agent(**fields))
+    with_skill = _make_agent(preloaded_skills_prompt="LAUNCH SKILL BODY", **fields)
+    assert not _stored_prompt_matches_runtime(with_skill, stored)
+    assert _stored_prompt_matches_runtime(with_skill, build_system_prompt(with_skill))
 
 
 class TestExecutionGuidanceInjection:
@@ -544,7 +574,7 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
         prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
 
     assert prompt == expected
-    assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:4])
+    assert agent._cached_system_prompt_static == expected.partition("\n\nSYSTEM_MESSAGE")[0]
 
 
 class TestTelegramRichMessagesHint:

@@ -111,7 +111,8 @@ async def _admit_folded_completion(authority, adapter, event, evt, identity):
         unfolded = event.text, dict(event.metadata)
         _fold_completion(event, waiting, identity)
         try:
-            return await authority.admit_automation(adapter, event, identity, replaces=waiting['admission_id'])
+            return await authority.admit_automation(adapter, event, identity, replaces=waiting['admission_id'],
+                                                    fold=True)
         except RuntimeStoreError as exc:
             if exc.reason != 'stale_generation':
                 raise
@@ -226,6 +227,29 @@ def _replace_queued(admission_id, session_id, replaced):
         if changed != 1:
             raise RuntimeStoreError('stale_generation')
         replaced[:] = [admission_id]
+    return guard
+
+
+_FOLDED_TEXT = '[folded into a later completion batch]'
+
+
+def _fold_queued(admission_id, session_id, replaced):
+    """``_replace_queued`` for a completion fold, which must still be the FIFO tail when it commits
+    (a prompt admitted since the tail was read keeps the earlier result ahead of it), and whose
+    replaced row drops its text: the batch carries it, so each fold must not store it again."""
+    replace = _replace_queued(admission_id, session_id, replaced)
+
+    def guard(conn):
+        row = conn.execute("SELECT seq, payload_json FROM session_admissions WHERE admission_id=? "
+                           "AND target_session_id=? AND status='queued'", (admission_id, session_id)).fetchone()
+        if row is None or conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? "
+                                       "AND status='queued' AND seq>?", (session_id, row[0])).fetchone():
+            raise RuntimeStoreError('stale_generation')
+        replace(conn)
+        payload = json.loads(row[1])
+        payload['text'] = _FOLDED_TEXT
+        conn.execute('UPDATE session_admissions SET payload_json=? WHERE admission_id=?',
+                     (json.dumps(payload, separators=(',', ':'), ensure_ascii=False), admission_id))
     return guard
 
 
@@ -569,7 +593,7 @@ def restore_local_automation(authority, ref, row):
     return event
 
 
-async def admit_automation(authority, adapter, event, identity, replaces=None):
+async def admit_automation(authority, adapter, event, identity, replaces=None, fold=False):
     """``replaces``: a queued automation row of the same session this input supersedes (a liveness
     tick carrying the output of the one still waiting). Its cancellation commits in this admission's
     own transaction, so neither lands without the other."""
@@ -596,7 +620,8 @@ async def admit_automation(authority, adapter, event, identity, replaces=None):
     return await tracked_write(authority, partial(
         admit_session_input, authority.db, epoch=authority.epoch, principal_id='automation:' + entry.session_key,
         session_id=ref.session_id, request_id=identity, payload=deepcopy(payload),
-        _authorize_write=authority._admission_gate(replaces and _replace_queued(replaces, ref.session_id, replaced))),
+        _authorize_write=authority._admission_gate(replaces and (_fold_queued if fold else _replace_queued)(
+            replaces, ref.session_id, replaced))),
         then=admitted, ordered=True, after=partial(authority._schedule_admitted, ref))
 
 

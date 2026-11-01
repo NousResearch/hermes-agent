@@ -42,6 +42,9 @@ async def _discord_session(tmp_path, monkeypatch):
 
     def queued():
         return [row for row in list_session_admissions(authority.db, session_id=owner) if row['status'] == 'queued']
+    def history():
+        return list_session_admissions(authority.db, session_id=owner, pending_only=False)
+    complete.history = history
     return authority, human, complete, queued
 
 
@@ -59,15 +62,24 @@ async def test_completions_queued_behind_a_turn_fold_into_one_turn(tmp_path, mon
         assert all(f'{name} finished' in text for name in ('proc_a', 'proc_b', 'proc_c'))
         assert text.count('INTERNAL NOTIFICATION') == 1
         assert len(rows[-1]['payload']['native_text_v1']['automation']['identities']) == 3
+        # Each replaced row drops its text (the batch carries it): storage grows with N, not N^2.
+        folded = [row for row in complete.history() if row['outcome'] == 'cancelled']
+        assert [row['payload']['text'] for row in folded] == ['[folded into a later completion batch]'] * 2
     finally:
         authority.db.close()
 
 
 @pytest.mark.asyncio
-async def test_a_prompt_queued_between_completions_keeps_them_apart(tmp_path, monkeypatch):
+@pytest.mark.parametrize('stale_read', [False, True])
+async def test_a_prompt_queued_between_completions_keeps_them_apart(tmp_path, monkeypatch, stale_read):
+    """``stale_read``: the prompt commits after the tail was read but before the fold is written."""
+    from gateway import session_automation
     authority, human, complete, queued = await _discord_session(tmp_path, monkeypatch)
     try:
         await complete('proc_a')
+        if stale_read:
+            tail = queued()[-1]
+            monkeypatch.setattr(session_automation, '_waiting_completion', lambda *args: tail)
         await human('queued follow-up')
         await complete('proc_b')
         rows = queued()

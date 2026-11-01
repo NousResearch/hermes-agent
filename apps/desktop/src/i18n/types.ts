@@ -1887,9 +1887,14 @@ export interface Translations extends NoticeTranslations {
     disableAll: string
     disableUnused: string
     bulkUpdated: (count: number) => string
+        categoryEnableAll: (name: string, count: number) => string
+        categoryDisableAll: (name: string, count: number) => string
+        groupEnableAll: (name: string, count: number) => string
+        groupDisableAll: (name: string, count: number) => string
+        toolsetGroupName: (key: string) => string
     bulkNoChange: string
     usageCount: (count: number | string) => string
-    provenance: Record<'agent' | 'bundled' | 'hub', string>
+    provenance: Record<'agent' | 'bundled' | 'hub' | 'plugin', string>
     emptyNoneFound: (noun: string) => string
     emptyNothingMatches: (query: string) => string
     emptyNoneAvailable: (noun: string) => string

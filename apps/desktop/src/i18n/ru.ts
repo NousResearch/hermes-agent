@@ -1462,12 +1462,18 @@ export const ruOverrides = {
     disableAll: 'Отключить все',
     disableUnused: 'Отключить неиспользуемые',
     bulkUpdated: count => `Обновлено ${count} ${RU_NOUN(count, 'элемент', 'элемента', 'элементов')} для новых сеансов.`,
+    categoryEnableAll: (name, count) => `Включить все навыки «${name}» (${count})`,
+    categoryDisableAll: (name, count) => `Отключить все навыки «${name}» (${count})`,
+    groupEnableAll: (name, count) => `Включить все наборы «${name}» (${count})`,
+    groupDisableAll: (name, count) => `Отключить все наборы «${name}» (${count})`,
+    toolsetGroupName: key => ({ web: 'Веб и поиск', system: 'Система и файлы', media: 'Медиа и голос', knowledge: 'Знания и агенты', integrations: 'Интеграции', plugins: 'Плагины', other: 'Другое' })[key] ?? key,
     bulkNoChange: 'Менять нечего.',
     usageCount: count => `использован ${count}×`,
     provenance: {
       agent: 'Научен',
       bundled: 'Встроенный',
-      hub: 'Хаб'
+      hub: 'Хаб',
+      plugin: 'Плагин'
     },
     emptyNoneFound: noun => `Не найдено: ${noun}`,
     emptyNothingMatches: query => `Ничего не подходит под «${query}».`,

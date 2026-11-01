@@ -2450,12 +2450,18 @@ export const frOverrides = {
     disableAll: 'Tout désactiver',
     disableUnused: 'Désactiver les inutilisés',
     bulkUpdated: count => `${count} ${count === 1 ? 'élément' : 'éléments'} mis à jour pour les nouvelles sessions.`,
+    categoryEnableAll: (name, count) => `Activer toutes les compétences ${name} (${count})`,
+    categoryDisableAll: (name, count) => `Désactiver toutes les compétences ${name} (${count})`,
+    groupEnableAll: (name, count) => `Activer tous les toolsets ${name} (${count})`,
+    groupDisableAll: (name, count) => `Désactiver tous les toolsets ${name} (${count})`,
+    toolsetGroupName: key => ({ web: 'Web et recherche', system: 'Système et fichiers', media: 'Médias et voix', knowledge: 'Connaissances et agents', integrations: 'Intégrations', plugins: 'Plugins', other: 'Autres' })[key] ?? key,
     bulkNoChange: 'Rien à changer.',
     usageCount: count => `utilisé ${count}×`,
     provenance: {
       agent: 'Appris',
       bundled: 'Intégrés',
-      hub: 'Hub'
+      hub: 'Hub',
+      plugin: 'Plugin'
     },
     emptyNoneFound: noun => `Aucun ${noun} trouvé`,
     emptyNothingMatches: query => `Rien ne correspond à « ${query} ».`,

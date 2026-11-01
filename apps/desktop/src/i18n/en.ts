@@ -2083,12 +2083,18 @@ export const en: Translations = {
     disableAll: 'Disable all',
     disableUnused: 'Disable unused',
     bulkUpdated: count => `Updated ${count} ${count === 1 ? 'item' : 'items'} for new sessions.`,
+    categoryEnableAll: (name, count) => `Enable all ${name} skills (${count})`,
+    categoryDisableAll: (name, count) => `Disable all ${name} skills (${count})`,
+    groupEnableAll: (name, count) => `Enable all ${name} toolsets (${count})`,
+    groupDisableAll: (name, count) => `Disable all ${name} toolsets (${count})`,
+    toolsetGroupName: key => ({ web: 'Web & Search', system: 'System & Files', media: 'Media & Voice', knowledge: 'Knowledge & Agents', integrations: 'Integrations', plugins: 'Plugins', other: 'Other' })[key] ?? key,
     bulkNoChange: 'Nothing to change.',
     usageCount: count => `used ${count}×`,
     provenance: {
       agent: 'Learned',
       bundled: 'Built-in',
-      hub: 'Hub'
+      hub: 'Hub',
+      plugin: 'Plugin'
     },
     emptyNoneFound: noun => `No ${noun} found`,
     emptyNothingMatches: query => `Nothing matches “${query}”.`,

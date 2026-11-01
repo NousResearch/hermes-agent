@@ -22,6 +22,8 @@ export interface CatalogSurfaceSection {
   id: string
   label: string
   blurb?: string
+  /** Header-level action (a section's bulk switch), rendered beside the heading. */
+  action?: ReactNode
   /** `feature` is the tall-card row; `list` is the two-up small-banner list. */
   layout: 'feature' | 'list'
   items: CatalogSurfaceItem[]
@@ -72,6 +74,7 @@ export function CatalogSurface({ sections, kind, actions }: { sections: CatalogS
                 <h2>{section.label}</h2>
                 {section.blurb && <p>{section.blurb}</p>}
               </div>
+              {section.action}
             </header>
             <div className={section.layout === 'feature' ? 'catalog-feature-row' : 'catalog-banner-list'}>
               {section.items.map((item, index) => (

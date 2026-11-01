@@ -1368,12 +1368,18 @@ export const jaOverrides = {
     disableAll: 'すべて無効化',
     disableUnused: '未使用を無効化',
     bulkUpdated: count => `${count} 件を新しいセッション向けに更新しました。`,
+    categoryEnableAll: (name, count) => `${name}のスキルをすべて有効化 (${count})`,
+    categoryDisableAll: (name, count) => `${name}のスキルをすべて無効化 (${count})`,
+    groupEnableAll: (name, count) => `${name}のツールセットをすべて有効化 (${count})`,
+    groupDisableAll: (name, count) => `${name}のツールセットをすべて無効化 (${count})`,
+    toolsetGroupName: key => ({ web: 'ウェブと検索', system: 'システムとファイル', media: 'メディアと音声', knowledge: 'ナレッジとエージェント', integrations: '統合', plugins: 'プラグイン', other: 'その他' })[key] ?? key,
     bulkNoChange: '変更するものはありません。',
     usageCount: count => `${count} 回使用`,
     provenance: {
       agent: '学習済み',
       bundled: '組み込み',
-      hub: 'ハブ'
+      hub: 'ハブ',
+      plugin: 'プラグイン'
     },
     emptyNoneFound: noun => `${noun} が見つかりません`,
     emptyNothingMatches: query => `「${query}」に一致するものはありません。`,

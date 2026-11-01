@@ -26,7 +26,7 @@ import { CapabilityScopeSelector, useCapabilityScope } from './scope-selector'
 import { SKILLS_QUERY_KEY, useSkillsQuery } from './skills/skills-data'
 import { SkillsTab } from './skills/skills-tab'
 import { refreshToolCalls } from './toolsets/tool-calls'
-import { TOOLSETS_QUERY_KEY, toolsetSearchTerms, useToolsetsQuery, visibleToolsetCount } from './toolsets/toolsets-data'
+import { TOOLSETS_QUERY_KEY, toolsetSearchTerms, useToolsetsQuery, visibleToolsetMeta } from './toolsets/toolsets-data'
 import { ToolsetsTab } from './toolsets/toolsets-tab'
 
 // Skills Hub browsing lives inside the Skills tab. Legacy `?tab=hub`
@@ -174,10 +174,15 @@ export function CapabilitiesView({
       // Every tab renders the shared CapabilitySearch beside its own results.
       searchHidden
       tabs={[
-        { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
+        // Pill meta is `enabled/total` — installed alone hides how much is on.
+        {
+          id: 'skills',
+          label: t.skills.tabSkills,
+          meta: skills ? `${skills.filter(skill => skill.enabled).length}/${skills.length}` : null
+        },
         { id: 'plugins', label: t.skills.tabPlugins },
         { id: 'connectors', label: t.connectorsPage.title },
-        { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null }
+        { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetMeta(toolsets) : null }
       ]}
       tabsAlign="start"
     >

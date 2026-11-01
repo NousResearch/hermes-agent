@@ -2046,12 +2046,18 @@ export const zhOverrides = {
     disableAll: '全部停用',
     disableUnused: '禁用未使用',
     bulkUpdated: count => `已为新会话更新 ${count} 项。`,
+    categoryEnableAll: (name, count) => `启用全部 ${name} 技能（${count}）`,
+    categoryDisableAll: (name, count) => `禁用全部 ${name} 技能（${count}）`,
+    groupEnableAll: (name, count) => `启用全部 ${name} 工具集（${count}）`,
+    groupDisableAll: (name, count) => `禁用全部 ${name} 工具集（${count}）`,
+    toolsetGroupName: key => ({ web: '网页与搜索', system: '系统与文件', media: '媒体与语音', knowledge: '知识与智能', integrations: '集成', plugins: '插件', other: '其他' })[key] ?? key,
     bulkNoChange: '没有需要更改的内容。',
     usageCount: count => `已使用 ${count} 次`,
     provenance: {
       agent: '习得',
       bundled: '内置',
-      hub: '技能中心'
+      hub: '技能中心',
+      plugin: '插件'
     },
     emptyNoneFound: noun => `未找到${noun}`,
     emptyNothingMatches: query => `没有匹配“${query}”的内容。`,

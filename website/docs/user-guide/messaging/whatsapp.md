@@ -167,6 +167,29 @@ To use the pairing flow instead, remove both variables and rely on the
 [DM pairing system](../security.md#dm-pairing-system).
 :::
 
+### Outbound recipient gate
+
+The allowlist above controls who may **message Hermes**. Egress is gated by
+default too: the bridge only sends to the linked account itself, the numbers
+in `WHATSAPP_ALLOWED_USERS`, `WHATSAPP_HOME_CHANNEL`, groups in
+`WHATSAPP_GROUP_ALLOWED_USERS`, and any entry of `WHATSAPP_OUTBOUND_ALLOWED`.
+This stops local processes (a debug script, a stray curl on the loopback
+bridge port) from messaging arbitrary contacts of the linked phone number —
+the Python gateway enforces its own routing policy, but the transport used to
+trust any `chatId` handed directly to `/send`.
+
+```bash
+# Extra recipients the gateway is allowed to deliver to (cron → group chats, etc.)
+WHATSAPP_OUTBOUND_ALLOWED=120363001122334455@g.us
+# Escape hatch: restore the previous behaviour of sending anywhere asked
+# WHATSAPP_OUTBOUND_ALLOW_ALL=1
+```
+
+Blocked sends return `403 outbound_not_allowed` and are logged as an
+`outbound_blocked` debug event. Deployments that intentionally deliver to
+arbitrary chats (multi-user bots with per-chat routing above the bridge)
+should set `WHATSAPP_OUTBOUND_ALLOW_ALL=1`.
+
 Optional behavior settings in `~/.hermes/config.yaml`:
 
 ```yaml

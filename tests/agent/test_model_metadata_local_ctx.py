@@ -6,6 +6,7 @@ All tests use synthetic inputs — no filesystem or live server required.
 
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 
@@ -543,9 +544,9 @@ class TestDetectLocalServerTypeAuth:
             result = detect_local_server_type("http://localhost:1234/v1", api_key="lm-token")
 
         assert result == "lm-studio"
-        assert mock_client.call_args.kwargs["headers"] == {
+        assert httpx.Headers(mock_client.call_args.kwargs["headers"]) == httpx.Headers({
             "Authorization": "Bearer lm-token"
-        }
+        })
 
     def test_native_api_base_url_is_not_doubled(self):
         from agent.model_metadata import detect_local_server_type
@@ -646,9 +647,9 @@ class TestFetchEndpointModelMetadataLmStudio:
 
         assert mock_get.call_count == 1
         assert mock_get.call_args[0][0] == "http://localhost:1234/api/v1/models"
-        assert mock_get.call_args.kwargs["headers"] == {
+        assert httpx.Headers(mock_get.call_args.kwargs["headers"]) == httpx.Headers({
             "Authorization": "Bearer lm-token"
-        }
+        })
         assert result["lmstudio-community/Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf"]["context_length"] == 131072
         assert result["Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf"]["context_length"] == 131072
 

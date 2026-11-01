@@ -5,7 +5,7 @@ import type { HermesTerminalSession } from '@/global'
 import { translateNow } from '@/i18n'
 import { hostHas } from '@/lib/host-capabilities'
 
-import { defaultTerminalGateway, terminalGatewayOf } from './terminal-gateway'
+import { defaultTerminalGateway, runsOverSsh, terminalGatewayOf } from './terminal-gateway'
 import { $terminals, adoptTerminalGateway, markTerminalPersistent, removeExitedTerminal } from './terminals'
 
 type TerminalApi = Window['hermesDesktop']['terminal']
@@ -282,10 +282,12 @@ export function createSessionAttemptController(
         } else if (signal === 'expired') {
           resumeOnly = false
           armRetry(TERMINAL_EXIT_MESSAGES.expired)
-        } else if (hostHas('retryTerminalSpawn')) {
+        } else if (hostHas('retryTerminalSpawn') || runsOverSsh(gateway)) {
+          // A browser host or an SSH gateway can come back (host offline,
+          // tunnel still connecting): Enter tries again.
           armRetry(`Terminal failed to start: ${message}. Press Enter to retry.`)
         } else {
-          // Native Desktop spawns a local shell: a failed spawn shows its error
+          // A local shell on native Desktop: a failed spawn shows its error
           // and the tab stays closed, as on main. Retrying it fails the same way.
           setStatus('closed')
           term.write(`Terminal failed to start: ${message}\r\n`)

@@ -38,6 +38,11 @@ export function shellGatewayFor(
 export const defaultTerminalGateway = () =>
   shellGatewayFor($activeConnectionId.get(), $activeGatewayProfile.get(), $connectionsRegistry.get())
 
+/** The tab's shell rides an SSH gateway's tunnel (only SSH gateways keep a
+ *  connection id other than This device on a tab). */
+export const runsOverSsh = (gateway: TerminalGateway | undefined): boolean =>
+  Boolean(gateway && gateway.connectionId !== LOCAL_CONNECTION_ID)
+
 export const terminalGatewayOf = (term: TerminalEntry | undefined): TerminalGateway | undefined =>
   term?.connectionId ? { connectionId: term.connectionId, ...(term.profile ? { profile: term.profile } : {}) } : undefined
 

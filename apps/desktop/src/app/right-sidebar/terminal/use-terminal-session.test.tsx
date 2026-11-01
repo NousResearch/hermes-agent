@@ -470,3 +470,46 @@ it("native Desktop: xterm's reply to the shell's cursor query is not activity; t
 
   await waitFor(() => expect(saved()).toContain('$ make'), { timeout: 2000 })
 })
+
+// An SSH gateway tab survives its host going away: after teardown, Enter re-dials the gateway, and
+// while the host is still offline each failed start arms Enter again until the host is back.
+it('native Desktop: an SSH tab keeps Enter armed while its gateway is offline', async () => {
+  let exit: ((payload: { code: null | number; signal: null | string }) => void) | null = null
+
+  const start = vi
+    .fn()
+    .mockResolvedValueOnce({ connectionId: 'nas', id: 'pty-1', shell: 'ssh' })
+    .mockRejectedValueOnce(new Error('NAS is offline'))
+    .mockResolvedValueOnce({ connectionId: 'nas', id: 'pty-2', shell: 'ssh' })
+
+  delete window.document.documentElement.dataset.hermesDesktopHost
+  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    terminal: {
+      attach: vi.fn(async () => true),
+      cwd: vi.fn(async () => null),
+      dispose: vi.fn(async () => true),
+      onData: vi.fn(() => () => {}),
+      onExit: vi.fn((_id: string, callback: typeof exit) => {
+        exit = callback
+
+        return () => {}
+      }),
+      resize: vi.fn(async () => true),
+      start,
+      write: vi.fn(async () => true)
+    }
+  }
+  const id = createTerminal('/work', { connectionId: 'nas', profile: 'default' })
+  render(<Harness id={id} />)
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+
+  act(() => exit!({ code: null, signal: 'disconnected' }))
+  act(() => emulator.input('\r'))
+  await waitFor(() => expect(emulator.output).toContain('Terminal failed to start: NAS is offline. Press Enter to retry.'))
+  expect(screen.getByText('closed')).toBeTruthy()
+
+  act(() => emulator.input('\r'))
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+  expect(start).toHaveBeenCalledTimes(3)
+  expect(start.mock.calls[2][0]).toMatchObject({ connectionId: 'nas', profile: 'default' })
+})

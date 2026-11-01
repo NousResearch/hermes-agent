@@ -63,6 +63,13 @@ class ProcessingOutcome(Enum):
     CANCELLED = "cancelled"
 
 
+class DeferredResponse(str):
+    """Empty handler result whose completion belongs to a later queue replay."""
+
+    def __new__(cls):
+        return super().__new__(cls, "")
+
+
 @dataclass
 class MessageEvent:
     """Incoming message from a platform — the normalized shape all adapters produce."""

@@ -121,13 +121,136 @@ def _denial_breaker_addendum(session_key: str) -> str:
 # instead of only hearing "denied". Ported from qwibitai/nanoclaw#2832.
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+# Recovery is an authority boundary, not a second approval queue. Keep the terminal
+# identity long enough to answer a late card explicitly; never resurrect the command
+# after the original waiter has timed out or settled.
+_approval_recovery_records: dict[str, dict] = {}
+_approval_recovery_used_tokens: set[str] = set()
+# session_key -> (SessionDB, authenticated principal, durable session id)
+_gateway_recovery_stores: dict[str, tuple[object, str, str]] = {}
 
 
-def register_gateway_notify(session_key: str, cb) -> None:
-    """Register ``cb(approval_data: dict) -> None`` for sending approval requests. The callback
-    bridges sync→async: it runs in the agent thread and must schedule the send on the loop."""
+def _approval_command_digest(command: str) -> str:
+    return hashlib.sha256(command.encode("utf-8")).hexdigest()
+
+
+def _record_approval_recovery(entry, session_key: str, status: str) -> None:
+    """Snapshot and durably persist the exact lifecycle identity for a recovery decision."""
+    request_id = str(entry.data.get("request_id") or "")
+    if not request_id:
+        return
+    record = {
+        "session_key": session_key,
+        "request_id": request_id,
+        "command_digest": entry.data.get("command_digest") or _approval_command_digest(
+            str(entry.data.get("command") or "")),
+        "command_snapshot": str(entry.data.get("command") or ""),
+        "recovery_token": entry.data.get("recovery_token"),
+        "execution_generation": entry.data.get("execution_generation"),
+        "turn_id": entry.data.get("turn_id"),
+        "status": status,
+    }
+    _approval_recovery_records[request_id] = record
+    store = _gateway_recovery_stores.get(session_key)
+    if store is None or not record["recovery_token"]:
+        return
+    db, principal_id, durable_session_id = store
+    try:
+        from hermes_state_runtime import record_approval_recovery
+        persisted = record_approval_recovery(
+            db,            principal_id=principal_id, session_id=durable_session_id, request_id=request_id,
+            recovery_token=record["recovery_token"], payload_digest=record["command_digest"],
+            command_snapshot=record["command_snapshot"], status=status,
+            execution_generation=record["execution_generation"], turn_id=record["turn_id"])
+        record["seq"] = persisted.get("seq")
+    except Exception:
+        logger.warning("failed to persist approval recovery %s", request_id, exc_info=True)
+
+
+def recover_gateway_approval(session_key: str, request_id: str, *, command_digest: str,
+                             recovery_token: str, execution_generation: int | None = None,
+                             turn_id: str | None = None, recovery_db=None,
+                             principal_id: str | None = None, durable_session_id: str | None = None) -> dict:
+    """Reserve one expired approval for a fresh normal prompt turn, or replay its result."""
+    store = _gateway_recovery_stores.get(session_key)
+    if recovery_db is not None:
+        store = (recovery_db, principal_id or session_key, durable_session_id or session_key)
+    if store is not None:
+        db, principal, durable_sid = store
+        try:
+            from hermes_state_runtime import claim_approval_recovery
+            return claim_approval_recovery(
+                db, principal_id=principal, session_id=durable_sid, request_id=request_id,
+                recovery_token=recovery_token, payload_digest=command_digest,
+                execution_generation=execution_generation, turn_id=turn_id)
+        except Exception:
+            logger.warning("durable approval recovery lookup failed for %s", request_id, exc_info=True)
+    with _lock:
+        record = _approval_recovery_records.get(request_id)
+        if record is None:
+            return {"status": "stale", "blocker": "unknown approval request"}
+        if record["session_key"] != session_key:
+            return {"status": "stale", "blocker": "session identity mismatch"}
+        if record["command_digest"] != command_digest:
+            return {"status": "stale", "blocker": "command digest mismatch"}
+        if record.get("execution_generation") != execution_generation:
+            return {"status": "stale", "blocker": "execution generation mismatch"}
+        if record.get("turn_id") != turn_id:
+            return {"status": "stale", "blocker": "turn identity mismatch"}
+        if record.get("recovery_token") != recovery_token:
+            return {"status": "stale", "blocker": "recovery token mismatch"}
+        if recovery_token in _approval_recovery_used_tokens:
+            return {"status": "duplicate", "blocker": "recovery token already consumed"}
+        if record["status"] == "pending":
+            return {"status": "stale", "blocker": "approval is still pending"}
+        if record["status"] == "expired":
+            record["status"] = "admitting"
+            return {"status": "admitting", "command_snapshot": record["command_snapshot"]}
+        if record["status"] in ("accepted", "queued", "streaming", "failed"):
+            return {"status": "replay", "result": record.get("result")}
+        if record["status"] == "admitting":
+            return {"status": "failed", "blocker": "recovery admission is already in progress"}
+        return {"status": "stale", "blocker": "approval is no longer recoverable"}
+
+
+def finish_gateway_approval_recovery(session_key: str, request_id: str, *, status: str,
+                                     result: dict, recovery_db=None, principal_id: str | None = None,
+                                     durable_session_id: str | None = None,
+                                     seq: int | None = None) -> dict:
+    """Persist the result of the normal prompt path for replay-safe retries."""
+    record = _approval_recovery_records.get(request_id)
+    if record is not None and record.get("session_key") != session_key:
+        return {"status": "failed", "blocker": "unknown approval request"}
+    store = _gateway_recovery_stores.get(session_key)
+    if recovery_db is not None:
+        store = (recovery_db, principal_id or session_key, durable_session_id or session_key)
+    if store is not None:
+        try:
+            from hermes_state_runtime import finish_approval_recovery
+            db, _, _ = store
+            target_seq = seq if seq is not None else (record or {}).get("seq")
+            if target_seq is None:
+                return {"status": "failed", "blocker": "recovery result identity is unavailable"}
+            persisted = finish_approval_recovery(db, seq=target_seq, status=status, result=result)
+            if record is not None and persisted.get("status") == status:
+                record["status"], record["result"] = status, result
+            return persisted
+        except Exception:
+            logger.warning("failed to persist approval recovery result %s", request_id, exc_info=True)
+            return {"status": "failed", "blocker": "recovery result could not be persisted"}
+    if record is not None:
+        record["status"], record["result"] = status, result
+    return {"status": status, "result": result}
+
+
+def register_gateway_notify(session_key: str, cb, *, recovery_db=None,
+                            principal_id: str | None = None, durable_session_id: str | None = None) -> None:
+    """Register ``cb(approval_data: dict) -> None`` and its durable recovery store."""
     with _lock:
         _gateway_notify_cbs[session_key] = cb
+        if recovery_db is not None:
+            _gateway_recovery_stores[session_key] = (
+                recovery_db, principal_id or session_key, durable_session_id or session_key)
 
 
 def unregister_gateway_notify(session_key: str) -> None:
@@ -136,7 +259,9 @@ def unregister_gateway_notify(session_key: str) -> None:
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
         for entry in _gateway_queues.pop(session_key, []):
+            _record_approval_recovery(entry, session_key, "cancelled")
             entry.event.set()
+        _gateway_recovery_stores.pop(session_key, None)
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -309,6 +434,7 @@ def clear_session(session_key: str) -> None:
             # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
             # the prompt was withdrawn, nobody denied it.
             entry.cancelled = "the session ended before the prompt was answered"
+            _record_approval_recovery(entry, session_key, "cancelled")
             entry.event.set()
     _release_permission_mode_dependents(session_key)
     # Session-persistent code kernels (local and remote) share this owner key and die at the same boundary so a
@@ -871,6 +997,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             data = {
                 "command": display_command, "pattern_key": pattern_key,
                 "pattern_keys": pattern_keys, "description": display_description,
+                "command_digest": _approval_command_digest(display_command),
+                "command_snapshot": display_command,
                 "allow_permanent": not smart_denied,
                 "allow_session": not smart_denied,
             }

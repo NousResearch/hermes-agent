@@ -47,7 +47,7 @@ import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { $interfaceMode, shownInMode } from '@/store/interface-mode'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
 import {
   $onboardingChatOpener,
@@ -132,6 +132,7 @@ import { useContextSuggestions } from '../session/hooks/use-context-suggestions'
 import { useCwdActions } from '../session/hooks/use-cwd-actions'
 import { useHermesConfig } from '../session/hooks/use-hermes-config'
 import { useMessageStream } from '../session/hooks/use-message-stream'
+import type { TimedOutApprovalRecovery } from '../session/hooks/use-message-stream/gateway-event/types'
 import { useModelControls } from '../session/hooks/use-model-controls'
 import { useOwnerQueueReconcile } from '../session/hooks/use-owner-queue-reconcile'
 import { usePreviewRouting } from '../session/hooks/use-preview-routing'
@@ -507,6 +508,42 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [activeSessionIdRef, busyRef, selectedStoredSessionIdRef, updateSessionState]
   )
 
+  const retryTimedOutApproval = useCallback(
+    async (recovery: TimedOutApprovalRecovery) => {
+      if (!recovery.requestId || !recovery.commandDigest || !recovery.recoveryToken) {
+        notify({ kind: 'warning', message: translateNow('assistant.approval.retryStale') })
+
+        return false
+      }
+
+      try {
+        const result = await requestGateway<{ status?: string }>('approval.recover', {
+          command_digest: recovery.commandDigest,
+          ...(recovery.executionGeneration !== undefined
+            ? { execution_generation: recovery.executionGeneration }
+            : {}),
+          recovery_token: recovery.recoveryToken,
+          request_id: recovery.requestId,
+          session_id: recovery.sessionId,
+          ...(recovery.turnId ? { turn_id: recovery.turnId } : {})
+        })
+
+        if (!['accepted', 'queued', 'replay', 'streaming'].includes(result?.status ?? '')) {
+          notify({ kind: 'warning', message: translateNow('assistant.approval.retryStale') })
+
+          return false
+        }
+
+        return true
+      } catch {
+        notify({ kind: 'warning', message: translateNow('assistant.approval.retryStale') })
+
+        return false
+      }
+    },
+    [requestGateway]
+  )
+
   const { handleGatewayEvent, handleServerRequest } = useMessageStream({
     activeGatewayProfile,
     activeSessionIdRef,
@@ -514,6 +551,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     queryClient,
     refreshHermesConfig,
     refreshSessions,
+    retryTimedOutApproval,
     sessionStateByRuntimeIdRef,
     updateSessionState
   })

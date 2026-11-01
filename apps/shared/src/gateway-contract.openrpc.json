@@ -61,6 +61,24 @@
       }
     },
     {
+      "name": "approval.recover",
+      "summary": "Validate one exact approval recovery attempt; expired approvals remain terminal and are never replayed.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ApprovalRecoverParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ApprovalRecoverResult"
+        }
+      }
+    },
+    {
       "name": "approval.respond",
       "summary": "Deliver the user's decision on a dangerous command (falls back to durable identity on a stale sid).",
       "params": [
@@ -5384,6 +5402,125 @@
         ],
         "title": "ApprovalReceivedResult",
         "type": "object"
+      },
+      "ApprovalRecoverParams": {
+        "additionalProperties": false,
+        "description": "Exact identity for a timed-out approval recovery attempt.\n\nRecovery is deliberately not an alias for ``approval.respond``: the backend must\nauthenticate the original request, session, execution binding, command digest, and\none-time token before it can ever admit work.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "command_digest": {
+            "title": "Command Digest",
+            "type": "string"
+          },
+          "recovery_token": {
+            "title": "Recovery Token",
+            "type": "string"
+          },
+          "execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Execution Generation"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Id"
+          }
+        },
+        "required": [
+          "session_id",
+          "request_id",
+          "command_digest",
+          "recovery_token"
+        ],
+        "title": "ApprovalRecoverParams",
+        "type": "object"
+      },
+      "ApprovalRecoverResult": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/ApprovalRecoverStatus"
+          },
+          "blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Blocker"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Result"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "ApprovalRecoverResult",
+        "type": "object"
+      },
+      "ApprovalRecoverStatus": {
+        "enum": [
+          "accepted",
+          "queued",
+          "streaming",
+          "replay",
+          "failed",
+          "expired",
+          "stale",
+          "duplicate",
+          "unsupported"
+        ],
+        "title": "ApprovalRecoverStatus",
+        "type": "string"
       },
       "ApprovalRequestParams": {
         "additionalProperties": true,
@@ -25484,6 +25621,30 @@
             ],
             "default": null,
             "title": "Tool Name"
+          },
+          "command_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Command Digest"
+          },
+          "recovery_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Recovery Token"
           }
         },
         "title": "PendingApproval",

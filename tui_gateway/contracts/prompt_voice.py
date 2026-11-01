@@ -346,6 +346,43 @@ method("approval.respond", params=ApprovalRespondParams, result=ApprovalRespondR
        doc="Deliver the user's decision on a dangerous command (falls back to durable identity on a stale sid).")
 
 
+class ApprovalRecoverParams(SessionParams):
+    """Exact identity for a timed-out approval recovery attempt.
+
+    Recovery is deliberately not an alias for ``approval.respond``: the backend must
+    authenticate the original request, session, execution binding, command digest, and
+    one-time token before it can ever admit work.
+    """
+
+    request_id: str
+    command_digest: str
+    recovery_token: str
+    execution_generation: int | None = None
+    turn_id: str | None = None
+
+
+class ApprovalRecoverStatus(WireEnum):
+    accepted = "accepted"
+    queued = "queued"
+    streaming = "streaming"
+    replay = "replay"
+    failed = "failed"
+    expired = "expired"
+    stale = "stale"
+    duplicate = "duplicate"
+    unsupported = "unsupported"
+
+
+class ApprovalRecoverResult(Result):
+    status: ApprovalRecoverStatus
+    blocker: str | None = None
+    result: dict | None = None
+
+
+method("approval.recover", params=ApprovalRecoverParams, result=ApprovalRecoverResult,
+       doc="Validate one exact approval recovery attempt; expired approvals remain terminal and are never replayed.")
+
+
 # ── voice ─────────────────────────────────────────────────────────────────────────────────────
 
 

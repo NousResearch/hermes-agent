@@ -49,6 +49,7 @@ import {
 } from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
+import type { TimedOutApprovalRecovery } from './gateway-event/types'
 import { bindStoppedTurnReceipt, extendInterruptedReply } from './interrupted-reply'
 import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
@@ -66,6 +67,7 @@ interface MessageStreamOptions {
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
   refreshSessions: () => Promise<void>
+  retryTimedOutApproval?: (recovery: TimedOutApprovalRecovery) => Promise<boolean>
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
   updateSessionState: (
     sessionId: string,
@@ -149,6 +151,7 @@ export function useMessageStream({
   queryClient,
   refreshHermesConfig,
   refreshSessions,
+  retryTimedOutApproval,
   sessionStateByRuntimeIdRef,
   updateSessionState
 }: MessageStreamOptions) {
@@ -1268,6 +1271,7 @@ export function useMessageStream({
     queryClient,
     refreshHermesConfig,
     scheduleSessionsRefresh,
+    retryTimedOutApproval: retryTimedOutApproval ?? (async () => false),
     sessionInterrupted,
     sessionStateByRuntimeIdRef,
     updateSessionState,

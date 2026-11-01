@@ -89,6 +89,10 @@ export interface ApprovalRequest extends KeyedPrompt {
   description: string
   requestId?: string
   serverRequestId?: string
+  commandDigest?: string
+  recoveryToken?: string
+  executionGeneration?: number
+  turnId?: string
   smartDenied?: boolean
 }
 
@@ -102,6 +106,10 @@ interface PendingApprovalPayload {
   command?: unknown
   description?: unknown
   request_id?: unknown
+  command_digest?: unknown
+  recovery_token?: unknown
+  execution_generation?: unknown
+  turn_id?: unknown
   smart_denied?: boolean
 }
 
@@ -328,10 +336,15 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
           ? pending.choices.filter(choice => typeof choice === 'string')
           : undefined,
         command: typeof pending.command === 'string' ? pending.command : '',
+        commandDigest: typeof pending.command_digest === 'string' ? pending.command_digest : undefined,
         description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
+        executionGeneration:
+          typeof pending.execution_generation === 'number' ? pending.execution_generation : undefined,
+        recoveryToken: typeof pending.recovery_token === 'string' ? pending.recovery_token : undefined,
         requestId: pending.request_id,
         sessionId,
-        smartDenied: pending.smart_denied === true
+        smartDenied: pending.smart_denied === true,
+        turnId: typeof pending.turn_id === 'string' ? pending.turn_id : undefined
       })
     })
   )

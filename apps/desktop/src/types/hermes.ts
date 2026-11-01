@@ -827,9 +827,13 @@ export interface SessionResumeResult {
     allow_permanent?: boolean
     choices?: string[]
     command?: string
+    command_digest?: string
     description?: string
+    execution_generation?: number
+    recovery_token?: string
     request_id?: string
     smart_denied?: boolean
+    turn_id?: string
   }
   // Server→client requests still unanswered for this session (clarify, sudo,
   // vault prompts, …). The shared channel re-delivers them to the request

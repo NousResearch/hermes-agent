@@ -106,8 +106,16 @@ def _now() -> int:
 
 
 def _normalize_path(path: str) -> str:
-    """Absolute, user-expanded, separator-normalized path (no trailing sep)."""
-    p = os.path.abspath(os.path.expanduser(str(path).strip()))
+    """Absolute, user-expanded, separator-normalized path (no trailing sep).
+
+    On Windows, a POSIX-absolute path addresses a remote terminal backend's filesystem (ssh /
+    container), which this host cannot stat: resolve it against the current drive and every folder
+    turns into a ``C:\\home\\...`` path that exists nowhere."""
+    raw = str(path).strip()
+    if os.name == "nt" and raw.startswith("/"):
+        collapsed = re.sub(r"/{2,}", "/", raw)
+        return collapsed.rstrip("/") or "/"
+    p = os.path.abspath(os.path.expanduser(raw))
     return p.rstrip("/\\") or p
 
 

@@ -165,7 +165,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                 reverse=True,
             )
             latest_output = ""
-            for output_file in output_files:
+            for skipped_runs, output_file in enumerate(output_files):
                 candidate = output_file.read_text(encoding="utf-8-sig")
                 # Only the run header describes suppression; script/agent payloads can
                 # quote these markers. Keep error documents useful for recovery context.
@@ -185,12 +185,20 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
             if not latest_output:
                 continue  # silent skip — no archive with a usable answer
             latest_output = _clip_to_context_budget(latest_output)
+            intro = _SELF_CONTEXT_INTRO if is_self else _UPSTREAM_CONTEXT_INTRO
+            if skipped_runs:
+                intro += (
+                    f" Continuity freshness: skipped {skipped_runs} newer archives with no reusable output."
+                    " This is historical context, not evidence of current task state or progress."
+                    " Recheck any historical blocker before repeating it or dispatching more work."
+                    " Tool activity and silent completion alone do not establish task progress."
+                )
             if is_self:
                 prompt = _prepend_context_block(
-                    prompt, "Your previous run's output", _SELF_CONTEXT_INTRO, latest_output)
+                    prompt, "Your previous run's output", intro, latest_output)
             else:
                 prompt = _prepend_context_block(
-                    prompt, f"Output from job '{source_job_id}'", _UPSTREAM_CONTEXT_INTRO,
+                    prompt, f"Output from job '{source_job_id}'", intro,
                     latest_output,
                 )
             injected = True

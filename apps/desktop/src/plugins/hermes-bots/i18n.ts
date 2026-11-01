@@ -1793,7 +1793,8 @@ export const BOTS_LOCALES: PluginLocaleBundles = {
   ru: { canonical: CANONICAL_GROUP_LOCALES.ru },
   fr: { canonical: CANONICAL_GROUP_LOCALES.fr },
   de: { canonical: CANONICAL_GROUP_LOCALES.de },
-  es: { canonical: CANONICAL_GROUP_LOCALES.es }
+  es: { canonical: CANONICAL_GROUP_LOCALES.es },
+  tr: { canonical: CANONICAL_GROUP_LOCALES.tr }
 }
 
 export type BotsText = Bound<BotsMessages>

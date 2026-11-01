@@ -1,0 +1,38 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: geistra
+connector_slug: geistra
+description: "Read and update your Geistra Spaces: records, files, plans and handoffs shared across your AI apps and with the people you invite."
+source: https://github.com/LittlejohnPartners/geistra-mcp
+
+# Geistra is a hosted remote MCP server with native OAuth 2.1 + Dynamic Client
+# Registration over Streamable HTTP (sign-in is handled by Geistra's Supabase
+# auth server). Nothing to install locally.
+transport:
+  type: http
+  url: https://mcp.geistra.com/mcp
+
+auth:
+  type: oauth
+  # No `provider:`: native MCP OAuth. The browser sign-in starts on first connect.
+
+suggest:
+  keywords:
+    - geistra
+  hosts:
+    - geistra.com
+    - app.geistra.com
+  examples:
+    - "Find my open work items in Geistra and update the status of the one I just finished."
+    - "Save these meeting notes to my Geistra Space and hand the follow-ups to a teammate."
+    - "What changed in my Geistra Space since I last looked?"
+
+post_install: |
+  On first connection, Hermes will open a browser to sign in to Geistra
+  (or create a free account) and click Allow on Geistra's consent page.
+  After that, restart your Hermes session so the Geistra tools are loaded.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure geistra

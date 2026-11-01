@@ -577,11 +577,11 @@ def review_create_pr(cwd: str) -> dict:
 
 
 def worktree_list(cwd: str) -> list[dict]:
-    """``git worktree list --porcelain`` -> one dict per tree (main tree first)."""
+    """NUL-delimited worktree porcelain -> one dict per tree (main tree first)."""
     trees: list[dict] = []
-    for line in _git_out(cwd, ["worktree", "list", "--porcelain"]).split("\n"):
+    for line in _git_out(cwd, ["worktree", "list", "--porcelain", "-z"]).split("\0"):
         if line.startswith("worktree "):
-            trees.append({"path": line[9:].strip(), "branch": None, "isMain": not trees,
+            trees.append({"path": line[9:], "branch": None, "isMain": not trees,
                           "detached": False, "locked": False})
         elif not trees:
             continue

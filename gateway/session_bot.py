@@ -698,10 +698,14 @@ async def _migrate(authority, actor, home, root):
             continue
         if authority.db.get_compression_tip(owner['session_id']) != entry.session_id:
             continue
-        from hermes_cli.active_sessions import active_session_liveness_guard
-        with active_session_liveness_guard(owner['session_id'], registry_home=home) as active:
-            if active:
-                raise RuntimeStoreError('runtime_coordination_required')
+        from gateway.session_local_migration import registry_unprovable, writer_held
+        from hermes_cli.active_sessions import ActiveSessionRegistryError, active_session_holders_guard
+        try:
+            with active_session_holders_guard(owner['session_id'], registry_home=home) as holders:
+                if holders:
+                    raise writer_held(holders[0])
+        except ActiveSessionRegistryError as exc:
+            raise registry_unprovable() from exc
         if record['status'] == 'claimed':
             record.update(status='ambiguous', reason='unknown_execution')
             await write_receipt(home, record, expect='claimed')
@@ -926,11 +930,20 @@ async def _held_by_another_writer(home, key, exc):
     Chat, a live CLI). Nothing was admitted under this id when it still has no receipt: ``_admit``
     pins one before it admits and withdraws it only when nothing committed. That holds only while
     this request has the lock, so ``admitted=False`` is a hint, not the verdict: the sender asks
-    ``settle`` before it reports a no-send. Any other refusal keeps its unknown outcome."""
+    ``settle`` before it reports a no-send. Any other refusal keeps its unknown outcome.
+
+    A registry that cannot prove the holder is refused as such (``field='session_registry'``), not as
+    a held chat: there is no session to close. A named holder rides along so the sender can say which."""
     if exc.reason != HELD_NOT_SENT or (await read_receipt(home, key))[1] is not None:
         return None
-    held = RuntimeStoreError(exc.reason, field='session_writer',
-                             detail='another session writer holds the Bot Chat; nothing was admitted yet')
+    if getattr(exc, 'field', None) == 'session_registry':
+        held = RuntimeStoreError(exc.reason, field='session_registry',
+                                 detail='the active-session registry is unreadable; nothing was admitted yet')
+    else:
+        held = RuntimeStoreError(exc.reason, field='session_writer',
+                                 detail='another session writer holds the Bot Chat; nothing was admitted yet')
+        if getattr(exc, 'holder', None):
+            held.holder = exc.holder
     held.admitted = False
     return held
 

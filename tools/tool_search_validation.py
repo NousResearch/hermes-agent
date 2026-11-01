@@ -76,6 +76,8 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
     deferred tools "blind" (schema unseen) and omit required args; without this, the opaque
     downstream failure makes cheap models loop. Required-field probe first, then the same
     schema-guided coercion normal dispatch applies, then jsonschema on the repaired copy.
+    Unsupported top-level arguments are omitted from this probe; dispatch reports them
+    as unused. Existing value and nested-schema checks remain in effect.
     Missing/malformed schemas, no validator, and external refs all fail OPEN. Returns a JSON
     error string when invalid, ``None`` when the call should dispatch.
 
@@ -107,7 +109,9 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
         # normalize in place (dispatch re-coerces canonically).
         try:
             from model_tools import coerce_tool_args
-            candidate_args = coerce_tool_args(name, dict(args))
+            from tools.arg_validation import split_tool_args
+            accepted_args, _ = split_tool_args(name, args)
+            candidate_args = coerce_tool_args(name, dict(accepted_args))
         except Exception:
             logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)
             candidate_args = dict(args)

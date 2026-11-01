@@ -3657,6 +3657,28 @@ def _set_reset_from_vendor_headers(context: dict[str, Any], headers: Any) -> Non
             return
 
 
+# Rate-limit response headers worth keeping on a refusal. Prefix match: the unified
+# subscription headers carry one family per window (anthropic-ratelimit-unified-5h-*,
+# -7d-*, ...), and new windows must not need a code change to be recorded.
+_RATELIMIT_HEADER_PREFIXES = ("anthropic-ratelimit-", "x-ratelimit-")
+_RATELIMIT_HEADER_NAMES = ("retry-after",)
+_RATELIMIT_VALUE_MAX = 120
+
+
+def ratelimit_headers(headers: Any) -> dict[str, str]:
+    """The rate-limit headers of a provider response, lower-cased and sorted, values capped."""
+    out: dict[str, str] = {}
+    try:
+        items = list(headers.items())
+    except Exception:
+        return out
+    for name, value in items:
+        key = str(name).strip().lower()
+        if key in _RATELIMIT_HEADER_NAMES or key.startswith(_RATELIMIT_HEADER_PREFIXES):
+            out[key] = str(value).strip()[:_RATELIMIT_VALUE_MAX]
+    return dict(sorted(out.items()))
+
+
 def extract_api_error_context(error: Exception) -> dict[str, Any]:
     """Extract structured rate-limit details from provider errors."""
     context: dict[str, Any] = {}
@@ -3681,6 +3703,13 @@ def extract_api_error_context(error: Exception) -> dict[str, Any]:
         _set_reset_from_retry_after(context, payload.get("retry_after"))
     headers = getattr(getattr(error, "response", None), "headers", None)
     if headers:
+        limits = ratelimit_headers(headers)
+        if limits:
+            # Counters, limits, statuses and reset times only: which window refused the call
+            # (5-hour, weekly, per-minute) is otherwise unrecorded once the 429 is gone.
+            context["ratelimit_headers"] = limits
+            logger.info("Rate-limit headers on %s: %s", getattr(error, "status_code", "error"),
+                        "; ".join(f"{k}={v}" for k, v in limits.items()))
         _set_reset_from_retry_after(context, headers)
         ratelimit_reset = headers.get("x-ratelimit-reset")
         if ratelimit_reset and "reset_at" not in context:

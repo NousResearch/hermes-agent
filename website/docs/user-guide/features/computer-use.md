@@ -421,6 +421,28 @@ Screenshots are expensive. Hermes applies four layers of optimisation:
 A 20-action session on a 1568×900 display typically costs ~30K tokens
 of screenshot context, not ~600K.
 
+## Screenshot coordinates
+
+For window-targeted actions, `coordinate=[x, y]` and drag's
+`from_coordinate` / `to_coordinate` use pixels in the captured window image,
+with `(0, 0)` at its top left. Pass points measured on that image unchanged:
+the driver handles window position, display backing scale and its own image
+resizing. Prefer fresh element indices when available. Raw accessibility
+bounds can use a different origin or scale; their extents do not establish a
+valid conversion to screenshot coordinates.
+
+When the driver supplies `screenshot_bounds=[x, y, width, height]`, Hermes
+preserves that rectangle in capture-image pixels separately from the raw
+accessibility `bounds`. Its center can ground a pixel click without inferring
+a scale from accessibility geometry. Hermes keeps element indices stable at
+its public tool boundary and uses fresh snapshot tokens for drivers that
+require them.
+
+If auxiliary vision receives a further resized copy, its scale note maps
+reported points back to the **original capture image**, which remains the
+coordinate frame accepted by the action. Full-screen captures require a fresh
+window capture before window-targeted input.
+
 ## Limitations
 
 - **Performance.** Background mode is slower than foreground —

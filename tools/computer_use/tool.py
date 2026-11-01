@@ -603,37 +603,27 @@ def _element_to_dict(e: UIElement) -> dict[str, Any]:
     # A zero rect is "geometry unknown", not a position — null it so no coordinate= is ever derived from it (the index still works).
     return {"index": e.index, "role": e.role, "label": e.label[:_MAX_ELEMENT_LABEL_CHARS],
             "bounds": None if _bounds_unknown(e.bounds) else list(e.bounds), "app": e.app,
+            **({"screenshot_bounds": e.attributes["screenshot_bounds"]} if e.attributes.get("screenshot_bounds") else {}),
             **({"label_truncated": True} if len(e.label) > _MAX_ELEMENT_LABEL_CHARS else {})}
 
 def _format_elements(elements: list[UIElement], max_lines: int = 40) -> list[str]:
     out = [f"  #{e.index} {e.role} {e.label.replace(chr(10), ' ')[:60]!r} "
            + ("@ bounds-unknown (click by element index)" if _bounds_unknown(e.bounds) else f"@ {e.bounds}")
+           + (f"; screenshot pixels @ {e.attributes['screenshot_bounds']}" if e.attributes.get("screenshot_bounds") else "")
            + (f" [{e.app}]" if e.app else "") for e in elements[:max_lines]]
     return out + ([f"  ... +{len(elements) - max_lines} more (call capture with app= to narrow)"] if len(elements) > max_lines else [])
 
-def _bounds_hints(elements: list[UIElement], image_width: int, image_height: int) -> tuple[Optional[float], Optional[str]]:
-    """(scale, note) when element bounds live in a different coordinate space than the screenshot, else (None, None).
-    On HiDPI displays AX bounds are native while the screenshot is downscaled, so coordinate= clicks read off the
-    screenshot miss by the scale factor. 5% slack: window chrome can hang a few px past the captured frame without
-    implying a different space. Scale heuristic: larger axis ratio wins."""
-    if not elements or image_width <= 0 or image_height <= 0:
-        return None, None
-    max_x = max_y = 0
-    for e in elements:
-        try:
-            x, y, w, h = e.bounds
-        except (TypeError, ValueError):
-            continue
-        max_x, max_y = max(max_x, int(x) + int(w)), max(max_y, int(y) + int(h))
-    if max_x <= image_width * 1.05 and max_y <= image_height * 1.05:
-        return None, None
-    note = (f"element bounds are in native desktop coordinates (extend to ~{max_x}x{max_y}), "
-            f"NOT screenshot pixels ({image_width}x{image_height}). coordinate= clicks expect the native "
-            "space — derive click points from element bounds, or scale screenshot positions up accordingly")
-    return round(max(max_x / image_width, max_y / image_height), 2), note
+def _screenshot_coordinate_note(image_width: int, image_height: int) -> Optional[str]:
+    """Keep screenshot input units explicit; AX extents cannot reveal an image transform.
 
-_bounds_scale = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[0]
-_bounds_space_note = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[1]
+    A window offset (including negative monitor origins), clipping or sparse AX geometry
+    can look like a scale mismatch. The driver owns screenshot-to-window conversion.
+    """
+    if image_width <= 0 or image_height <= 0:
+        return None
+    return ("For window-targeted actions, coordinate=, from_coordinate= and to_coordinate= use pixels in the captured window screenshot "
+            "(top-left origin); pass screenshot positions unchanged. screenshot_bounds, when present, use these same pixels. Element bounds may use a different "
+            "origin or scale; prefer element indices and do not infer a screenshot scale from element extents.")
 
 def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
     """One capture's derived facts, computed once for every response branch: ``visible`` is the capped element list,
@@ -642,7 +632,7 @@ def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
     with contextlib.suppress(Exception):  # (width, height) of the inline PNG/JPEG screenshot, else the backend's
         dims = image_dimensions_from_bytes(base64.b64decode(cap.png_b64, validate=False)) if cap.png_b64 else None
     width, height = dims or (cap.width, cap.height)
-    scale, note = _bounds_hints(visible, width, height)
+    note = _screenshot_coordinate_note(width, height)
     # Capped labels / capped element array: spill the complete tree for on-demand reads.
     lost_detail = len(cap.elements) > len(visible) or any(len(e.label) > _MAX_ELEMENT_LABEL_CHARS for e in visible)
     too_small = bool(dims) and min(dims) < _MIN_PROVIDER_IMAGE_DIMENSION
@@ -651,7 +641,7 @@ def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
     # NOT the full tree, and the hint must not promise one.
     ax_capped = len(cap.elements) >= cap.ax_max_elements > 0
     return SimpleNamespace(cap=cap, visible=visible, total=len(cap.elements), width=width, height=height,
-                           truncated=len(cap.elements) - len(visible), bounds_scale=scale, bounds_note=note,
+                           truncated=len(cap.elements) - len(visible), bounds_note=note,
                            ax_capped=cap.ax_max_elements if ax_capped else 0,
                            elements_file=_spill_elements_to_file(cap) if lost_detail else None,
                            screenshot_path=_persist_capture_image(cap) if has_image else None,
@@ -661,8 +651,7 @@ def _capture_summary_lines(v: SimpleNamespace) -> list[str]:
     """Human-readable capture summary; line ORDER is contract. Lists only what `elements` surfaces, otherwise the
     summary names indices the model can't find."""
     notes = (
-        v.bounds_note and v.bounds_note + (f"; estimated scale ~{v.bounds_scale}x (screenshot position x "
-                                           f"{v.bounds_scale} ≈ native coordinate)" if v.bounds_scale else ""),
+        v.bounds_note,
         v.screenshot_path and f"shareable screenshot saved to {v.screenshot_path}",
         v.cap.note,
         v.elements_file and (f"{'' if v.ax_capped else 'full '}element tree with untruncated labels "
@@ -687,8 +676,7 @@ def _text_capture_payload(v: SimpleNamespace, summary: str, extra: Optional[dict
         "mode": v.cap.mode, "width": v.width, "height": v.height, "app": v.cap.app, "window_title": v.cap.window_title,
         "elements": [_element_to_dict(e) for e in v.visible], "total_elements": v.total, "summary": summary,
         **(extra or {}),
-        **_present(truncated_elements=v.truncated, elements_file=v.elements_file, screenshot_path=v.screenshot_path,
-                   bounds_scale=v.bounds_scale),
+        **_present(truncated_elements=v.truncated, elements_file=v.elements_file, screenshot_path=v.screenshot_path),
     })
 
 def _capture_digest(cap: CaptureResult) -> str:
@@ -718,7 +706,7 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
                             {"type": "image_url", "image_url": {"url": f"data:{_capture_image_format(cap)[0]};base64,{cap.png_b64}"}}],
                 "text_summary": summary,
                 "meta": {"mode": cap.mode, "width": v.width, "height": v.height, "elements": v.total, "png_bytes": cap.png_bytes_len,
-                         **_present(screenshot_path=v.screenshot_path, elements_file=v.elements_file, bounds_scale=v.bounds_scale)},
+                         **_present(screenshot_path=v.screenshot_path, elements_file=v.elements_file)},
             }
         # Decide whether to hand the screenshot to the auxiliary.vision pipeline (text-only result) or keep
         # the multimodal envelope (main model handles vision natively). Issue #24015: previously the
@@ -869,7 +857,7 @@ _MAX_VISION_DIM = 1456  # longest image side handed to the aux vision model: ful
 def _shrink_capture_for_vision(raw: bytes, ext: str, max_dim: int = _MAX_VISION_DIM) -> tuple[bytes, Optional[str]]:
     """Downscale encoded image bytes so the longest side is <= max_dim -> ``(bytes, scale_note)``. note is None when
     unchanged (fits, or Pillow unavailable/failed), else it tells the vision model the factor so reported
-    coordinates map back to the real screen instead of being silently wrong."""
+    coordinates map back to the original capture screenshot instead of being silently wrong."""
     try:
         from io import BytesIO
         from PIL import Image
@@ -881,8 +869,8 @@ def _shrink_capture_for_vision(raw: bytes, ext: str, max_dim: int = _MAX_VISION_
         new_w, new_h = img.size
         img.save(out, format="JPEG" if ext == ".jpg" else "PNG")
         fx, fy = (orig_w / new_w if new_w else 1.0), (orig_h / new_h if new_h else 1.0)
-        factor_clause = (f"multiply any coordinates you report by {fx:.2f} to map back to the real screen." if f"{fx:.2f}" == f"{fy:.2f}"
-                         else f"multiply any x coordinates you report by {fx:.2f} and any y coordinates by {fy:.2f} to map back to the real screen.")
+        factor_clause = (f"multiply any coordinates you report by {fx:.2f} to map back to the original capture screenshot pixels." if f"{fx:.2f}" == f"{fy:.2f}"
+                         else f"multiply any x coordinates you report by {fx:.2f} and any y coordinates by {fy:.2f} to map back to the original capture screenshot pixels.")
         return out.getvalue(), f"Screenshot downscaled from {orig_w}x{orig_h} to {new_w}x{new_h} for vision; {factor_clause}"
     except Exception as exc:
         logger.debug("computer_use: vision downscale skipped: %s", exc)
@@ -962,7 +950,7 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str, *, visib
     # exactly for non-vision main models. Dimensions are the backend's on this branch.
     view = SimpleNamespace(cap=cap, visible=cap.elements if visible_elements is None else visible_elements,
                            total=len(cap.elements), width=cap.width, height=cap.height, truncated=truncated_elements,
-                           elements_file=elements_file, screenshot_path=screenshot_path, bounds_scale=None)
+                           elements_file=elements_file, screenshot_path=screenshot_path)
     return _text_capture_payload(view, summary, {"vision_analysis": analysis_text,
                                                  "vision_analysis_routed_via": "auxiliary.vision"})
 

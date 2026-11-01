@@ -95,7 +95,12 @@ def _sorted_windows(out: dict[str, Any]) -> list[dict[str, Any]]:
 def _tree_and_title(out: dict[str, Any]) -> tuple[str, str]:
     """``(tree_markdown, window_title)`` from a get_window_state result."""
     tree = _split_tree_text(data if isinstance((data := out.get("data")), str) else "")[1]
-    return tree, (match.group(1) if (match := re.search(r'AXWindow\s+"([^"]+)"', tree)) else "")
+    structured = out.get("structuredContent") or {}
+    if isinstance(structured.get("tree_markdown"), str):
+        tree = structured["tree_markdown"]
+    title = structured.get("window_title")
+    return tree, (title if isinstance(title, str) else
+                  match.group(1) if (match := re.search(r'AXWindow\s+"([^"]+)"', tree)) else "")
 
 def _gws_is_empty(out: dict[str, Any]) -> bool:
     """True when a get_window_state result carries neither a screenshot nor a parseable tree. Modern
@@ -252,6 +257,11 @@ class _CaptureMixin:
         """
         args: dict[str, Any] = {"pid": self._active_pid, "window_id": self._active_window_id,
                                 "session": self._session_id}
+        session = getattr(self, "_session", None)
+        if session is not None and session.supports_input_property("get_window_state", "full_output"):
+            # Compact-only reads omit frames and tokens; do not replace structured
+            # observations with the geometry-free markdown compatibility parser.
+            args["full_output"] = True
         from tools.computer_use import cua_backend as _cb  # lazy: cua_backend imports this module at import time
         if capped := _cb._cua_configured_ax_max_elements():
             args["max_elements"] = capped

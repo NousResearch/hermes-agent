@@ -1,0 +1,21 @@
+name: artil
+title: Artil
+repo: https://github.com/artilai/plugins
+sha: 8dce90c47a7b0d9e9c5edcb3dd2dd09227fe6fea
+subdir: plugins/hermes
+description: >-
+  Give Hermes agents their own email inbox, phone number,
+  and workspace accounts to work directly with customers,
+  teammates, and other agents.
+maintainer: artil
+tier: community
+category: platform
+requires_hermes: ">=0.21.5"
+docs_url: https://docs.artil.ai/hermes
+version: "0.4.0"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

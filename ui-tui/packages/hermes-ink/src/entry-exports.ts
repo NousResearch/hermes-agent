@@ -37,7 +37,7 @@ export {
   terminalForegroundHex
 } from './ink/terminal.js'
 export type { MouseTrackingMode } from './ink/termio/dec.js'
-export { wrapAnsi } from './ink/wrapAnsi.js'
+export { unbreakableUnits, wrapAnsi } from './ink/wrapAnsi.js'
 
 // NOTE: Do not re-export from 'ink-text-input' here.
 //

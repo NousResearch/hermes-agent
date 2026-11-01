@@ -1029,6 +1029,125 @@ class TestRunJobSessionPersistence:
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
         assert fake_db.close.call_count == 2
 
+    def test_run_job_guardrail_halt_is_a_failure_not_a_report(self, tmp_path):
+        """A guardrail halt must fail the run, not be delivered as its output.
+
+        The turn ends with an explanation of the halt in `final_response` while
+        `failed`/`completed` stay untouched, so without this the halt text is
+        delivered to the recipient and the run is recorded as a success.
+        """
+        job = {
+            "id": "guardrail-job",
+            "name": "guardrail job",
+            "prompt": "use a guarded tool",
+        }
+
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+            mock_agent_cls.return_value.run_conversation.return_value = {
+                "final_response": (
+                    "I stopped retrying search_records because it hit the "
+                    "tool-call guardrail (same_tool_failure_halt)."
+                ),
+                "completed": True,
+                "failed": False,
+                "turn_exit_reason": "guardrail_halt",
+                "guardrail": {
+                    "action": "halt",
+                    "code": "same_tool_failure_halt",
+                    "message": "Stopped search_records: it failed 8 times this turn.",
+                    "tool_name": "search_records",
+                    "count": 8,
+                },
+            }
+
+            success, _output, final_response, error = _run_owned_job(job, tmp_path, fake_db)
+
+        assert success is False
+        assert final_response == "", (
+            "the guardrail explanation must not be handed over as the report"
+        )
+        assert error is not None
+        assert "guardrail" in error
+        # The guardrail's own code and tool travel with the error so a failed
+        # run can be diagnosed without re-reading the agent transcript.
+        assert "same_tool_failure_halt" in error
+        assert "search_records" in error
+
+    def test_run_job_guardrail_halt_without_metadata_still_fails(self, tmp_path):
+        """The classification must not depend on the metadata being present."""
+        job = {
+            "id": "guardrail-bare-job",
+            "name": "guardrail bare job",
+            "prompt": "use a guarded tool",
+        }
+
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+            mock_agent_cls.return_value.run_conversation.return_value = {
+                "final_response": "halted",
+                "completed": True,
+                "failed": False,
+                "turn_exit_reason": "guardrail_halt",
+            }
+
+            success, _output, final_response, error = _run_owned_job(job, tmp_path, fake_db)
+
+        assert success is False
+        assert final_response == ""
+        assert error is not None and "guardrail" in error
+
+    def test_run_job_guardrail_metadata_without_exit_reason_still_fails(self, tmp_path):
+        """The halt metadata alone marks the halt, whatever exit reason the turn ended on."""
+        job = {
+            "id": "guardrail-metadata-job",
+            "name": "guardrail metadata job",
+            "prompt": "use a guarded tool",
+        }
+
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+            mock_agent_cls.return_value.run_conversation.return_value = {
+                "final_response": "I stopped retrying search_records.",
+                "completed": True,
+                "failed": False,
+                "guardrail": {"action": "halt", "code": "same_tool_failure_halt", "tool_name": "search_records"},
+            }
+
+            success, _output, final_response, error = _run_owned_job(job, tmp_path, fake_db)
+
+        assert success is False
+        assert final_response == ""
+        assert error is not None and "same_tool_failure_halt" in error
+
+    def test_run_job_guardrail_halt_keeps_its_usage_in_the_audit(self, tmp_path):
+        """A halted run spent tokens: its audit row must carry them, not an empty usage."""
+        job = {
+            "id": "guardrail-usage-job",
+            "name": "guardrail usage job",
+            "prompt": "use a guarded tool",
+        }
+        audit = MagicMock()
+
+        with self._run_job_patches(tmp_path, extra=[patch("cron.scheduler._write_usage_audit", audit)]) as (
+            fake_db,
+            mock_agent_cls,
+        ):
+            mock_agent_cls.return_value.run_conversation.return_value = {
+                "final_response": "halted",
+                "completed": True,
+                "failed": False,
+                "turn_exit_reason": "guardrail_halt",
+                "prompt_tokens": 1200,
+                "completion_tokens": 300,
+                "total_tokens": 1500,
+            }
+
+            success, _output, _final_response, error = _run_owned_job(job, tmp_path, fake_db)
+
+        assert success is False
+        record = audit.call_args.args[0]
+        assert (record["prompt_tokens"], record["completion_tokens"], record["total_tokens"]) == (1200, 300, 1500)
+        assert record["error"] == error
+
+
 class TestRunJobConfigEnvVarExpansion:
     """Verify that ${VAR} references in config.yaml are expanded when running cron jobs."""
 

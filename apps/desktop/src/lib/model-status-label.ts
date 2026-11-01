@@ -178,9 +178,15 @@ function splitTrailingTags(base: string): { base: string; variant: string; quant
 
 /** Split a model id into a clean display name plus an optional grayed variant
  *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
-export function modelDisplayParts(model: string): { name: string; tag: string } {
+export function compactQuantizationLabel(raw?: string): string {
+  const match = String(raw || '').trim().match(/^(?:UD-)?(Q\d+|IQ\d+|F16|BF16)(?:[_-].*)?$/i)
+  return match ? match[1].toUpperCase() : ''
+}
+
+export function modelDisplayParts(model: string, options?: { quantization?: string }): { name: string; tag: string } {
   let { base, variant, quant } = splitTrailingTags(modelBaseId(model))
 
+  if (!variant && !quant) quant = compactQuantizationLabel(options?.quantization)
   const tags = [variant, quant].filter(Boolean)
 
   // Anthropic's `[1m]` route suffix selects the 1M-context window. It is a

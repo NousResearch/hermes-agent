@@ -58,6 +58,7 @@ from hermes_cli.models_local import (
     _OLLAMA_LOCAL_MODELS_CACHE_TTL,
     _OLLAMA_LOCAL_PROBE_FAILURE_CACHE,
     _OLLAMA_LOCAL_PROBE_REACHABLE,
+    _OLLAMA_LOCAL_QUANTIZATION_CACHE,
     _get_ollama_base_url,
     _get_ollama_native_headers,
     _ollama_local_catalog,
@@ -2074,6 +2075,7 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         clear_fetch_backoff()  # a recovered catalog is fetched now, not after the offline backoff
         # Native Ollama tags are keyed by root URL, not provider slug: clear them on every refresh.
         _OLLAMA_LOCAL_MODELS_CACHE.clear()
+        _OLLAMA_LOCAL_QUANTIZATION_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
         # Provider-owned in-process memos (e.g. an external CLI's session catalog) must re-probe so a

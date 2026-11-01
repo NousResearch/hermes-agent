@@ -924,3 +924,54 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+def test_router_sentinel_pricing_is_unpriceable_not_negative(monkeypatch):
+    """OpenRouter router pseudo-models publish ``-1`` for "billed at whatever the
+    router picks". Multiplying tokens by it bills about -$1/token, so one session
+    books five-figure negative spend and corrupts every total it reaches."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda *_args, **_kwargs: {
+            "auto": {"pricing": {"prompt": "-1", "completion": "-1"}},
+            "real/model": {"pricing": {"prompt": "0.000001", "completion": "0.000002"}},
+        },
+    )
+
+    assert get_pricing_entry("auto", provider="openrouter") is None
+
+    result = estimate_usage_cost(
+        "auto", CanonicalUsage(input_tokens=25_304, output_tokens=48), provider="openrouter"
+    )
+    assert result.amount_usd is None
+    assert result.status == "unknown"
+
+    # A genuinely priced route alongside it is untouched.
+    priced = estimate_usage_cost(
+        "real/model", CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000), provider="openrouter"
+    )
+    assert priced.amount_usd == Decimal(3)
+    assert priced.status == "estimated"
+
+
+def test_router_sentinel_does_not_hide_a_real_rate_on_the_other_field(monkeypatch):
+    """A -1 on one field alone must not be read as a rate, and must not silently
+    price the request from the surviving field only."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda *_args, **_kwargs: {
+            "half/sentinel": {"pricing": {"prompt": "-1", "completion": "0.000002"}},
+        },
+    )
+
+    entry = get_pricing_entry("half/sentinel", provider="openrouter")
+    assert entry is not None
+    assert entry.input_cost_per_million is None
+    assert entry.output_cost_per_million == Decimal(2)
+
+    # Input tokens exist but have no rate, so the whole request is unpriceable.
+    result = estimate_usage_cost(
+        "half/sentinel", CanonicalUsage(input_tokens=1_000, output_tokens=1_000), provider="openrouter"
+    )
+    assert result.amount_usd is None
+    assert result.status == "unknown"

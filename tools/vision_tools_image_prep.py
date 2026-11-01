@@ -181,6 +181,31 @@ def rasterize_svg_data_url(url: str) -> Optional[str]:
                 path.unlink()
 
 
+_EXIF_ORIENTATION = 0x0112
+
+
+def upright_image_bytes(data: bytes, mime: str) -> tuple[bytes, str]:
+    """``(data, mime)`` with any EXIF rotation/mirror baked into the pixels. Providers differ on
+    honouring the Orientation tag, and region crops index the upright image, so every path that
+    hands image bytes to a model sends upright pixels. Untagged images come back unchanged (no
+    re-encode); so does anything Pillow cannot read."""
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(BytesIO(data)) as img:
+            if img.getexif().get(_EXIF_ORIENTATION, 1) in (0, 1):
+                return data, mime
+            upright = ImageOps.exif_transpose(img)
+            fmt = img.format if img.format in ("JPEG", "PNG", "WEBP") else "PNG"
+            if fmt == "JPEG" and upright.mode not in ("RGB", "L"):
+                upright = upright.convert("RGB")
+            buf = BytesIO()
+            upright.save(buf, format=fmt, **({"quality": 95} if fmt != "PNG" else {}))
+            return buf.getvalue(), f"image/{fmt.lower()}"
+    except Exception as exc:
+        logger.debug("EXIF orientation not applied: %s", exc)
+        return data, mime
+
+
 def _normalize_to_supported_image(
     image_path: Path, detected_mime: str) -> tuple[Optional[Path], Optional[str], Optional[str]]:
     """Ensure an image is in a provider-supported format. Returns ``(path, mime, error)``: the input
@@ -213,8 +238,10 @@ def _normalize_to_supported_image(
         except Exception:
             logger.debug("pillow-heif unavailable; relying on Pillow for %s", detected_mime)
     try:
-        from PIL import Image as _PILImage
-        with _PILImage.open(image_path) as _img:
+        from PIL import Image as _PILImage, ImageOps as _PILImageOps
+        with _PILImage.open(image_path) as _src:
+            # PNG output carries no EXIF, so a rotated TIFF/HEIC must be stored upright.
+            _img = _PILImageOps.exif_transpose(_src)
             if _img.mode not in ("RGB", "RGBA", "L"):
                 _img = _img.convert("RGBA")
             _img.save(out_path, format="PNG")
@@ -305,7 +332,7 @@ def _crop_image_region(
     mime, None)`` — caller owns cleanup — or ``(None, None, error)``.
     Ported from QwenLM/qwen-code zoom-image.ts (Apache-2.0)."""
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
     except ImportError:
         return None, None, (
             "region cropping requires Pillow (run `hermes pm repair`); "
@@ -316,7 +343,7 @@ def _crop_image_region(
             "Invalid region: expected [x1, y1, x2, y2] as four numbers "
             "(pixel coordinates in the original image).")
     try:
-        with Image.open(image_path) as img:
+        with Image.open(image_path) as source_img, ImageOps.exif_transpose(source_img) as img:
             width, height = img.size
             x1, y1, x2, y2 = (int(v) for v in region)
             cx1, cy1, cx2, cy2 = (max(0, min(v, b)) for v, b in zip((x1, y1, x2, y2), (width, height) * 2))

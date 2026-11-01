@@ -207,6 +207,8 @@ powershell.exe -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms;
 
 `vision_analyze` 工具本身遵循相同的路由逻辑。当当前主模型支持视觉，**且**其提供商支持在工具结果中包含图像内容（目前为 Anthropic、OpenAI、Azure-OpenAI 和 Gemini 3.x 技术栈），`vision_analyze` 会跳过辅助描述器，直接将原始图像像素作为多模态工具结果信封返回。主模型在下一轮会原生看到图像——无辅助调用、无文本摘要信息损失、无额外延迟。
 
+把旋转信息存放在 EXIF Orientation 标签里的手机照片，在送达任何模型之前都会先被旋转为正向——无论是作为附件、通过 `vision_analyze`，还是在 `region` 裁剪中；没有该标签的图像按原字节发送。因此 `region` 使用的是你所看到的图像的坐标。
+
 对于纯文本主模型（或工具结果通道不支持图像的提供商），`vision_analyze` 回退到旧路径：请求已配置的辅助视觉模型描述图像，并以纯文本形式返回描述。无论哪种情况，调用工具的签名相同——工具在运行时根据当前模型决定采用哪条路径。
 
 ### 原生嵌入伴随整个会话：`vision.embed_target_bytes` 与 `vision.max_calls_per_image`

@@ -8,13 +8,14 @@ import pytest
 
 from pm import network
 from pm.downloader import Download, DownloadPaused, DownloadTransportError, HashError, Source
-from tests.pm._range_server import RangeHandler, dl_server, url
+from tests.pm._range_server import RangeHandler, dl_server as dl_server, url  # noqa: PLC0414 -- pytest fixture re-export
 
 
-@pytest.mark.parametrize("failure,phase", [
-    (failure, phase) for failure in ("503", "404", "403") for phase in ("probe", "ranged", "single")
-] + [("hash", "ranged"), ("hash", "single"), ("disk", "probe")])
-def test_download_failure_never_publishes_partial_bytes(tmp_path, dl_server, monkeypatch, failure, phase):
+@pytest.mark.parametrize("failure,phase,keep_retrying", [
+    (failure, phase, False) for failure in ("503", "404", "403") for phase in ("probe", "ranged", "single")
+] + [("hash", "ranged", False), ("hash", "single", False), ("disk", "probe", False),
+     ("404", "probe", True), ("hash", "ranged", True), ("disk", "probe", True), ("503", "single", True)])
+def test_download_failure_never_publishes_partial_bytes(tmp_path, dl_server, monkeypatch, failure, phase, keep_retrying):
     payload = b"verified bytes"
     RangeHandler.payloads["/tool"] = payload
     RangeHandler.no_range = phase == "single"
@@ -35,7 +36,7 @@ def test_download_failure_never_publishes_partial_bytes(tmp_path, dl_server, mon
     dest = tmp_path / "tool"
     digest = "0" * 64 if failure == "hash" else hashlib.sha256(payload).hexdigest()
     dl = Download([Source(url(dl_server, "/tool"), dest, digest)],
-                  partials_dir=tmp_path / "partials", connections=1)
+                  partials_dir=tmp_path / "partials", connections=1, keep_retrying=keep_retrying)
     monkeypatch.setattr(dl, "_wait_retry", waits.append)
     if failure == "disk":
         dest.mkdir()
@@ -63,7 +64,8 @@ def test_download_failure_never_publishes_partial_bytes(tmp_path, dl_server, mon
 
 
 @pytest.mark.parametrize("phase", ["probe", "ranged", "single"])
-def test_pause_interrupts_real_http_retry_backoff(tmp_path, dl_server, monkeypatch, phase):
+@pytest.mark.parametrize("keep_retrying", [False, True])
+def test_pause_interrupts_real_http_retry_backoff(tmp_path, dl_server, monkeypatch, phase, keep_retrying):
     payload = b"keep these bytes"
     RangeHandler.payloads["/tool"] = payload
     RangeHandler.no_range = phase == "single"
@@ -86,7 +88,7 @@ def test_pause_interrupts_real_http_retry_backoff(tmp_path, dl_server, monkeypat
     monkeypatch.setattr(RangeHandler, "do_GET", respond)
     dest = tmp_path / "tool"
     dl = Download([Source(url(dl_server, "/tool"), dest)],
-                  partials_dir=tmp_path / "partials")
+                  partials_dir=tmp_path / "partials", keep_retrying=keep_retrying)
     original_wait = dl._wait_retry
 
     def wait(delay):
@@ -105,5 +107,5 @@ def test_pause_interrupts_real_http_retry_backoff(tmp_path, dl_server, monkeypat
         finally:
             dl.pause()
     assert len([value for value in requests if (value == "bytes=0-0") == (phase == "probe")]) == 1
-    assert waits == [network._MAX_DELAY]
+    assert len(waits) == 1 and 0 < waits[0] <= network._MAX_DELAY
     assert not dest.exists()

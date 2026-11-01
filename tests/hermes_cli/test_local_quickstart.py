@@ -156,7 +156,7 @@ def test_quickstart_runs_all_three_legs(client, capable_hardware, monkeypatch, t
         lambda backend, **kwargs: calls.append("install"))
 
     # Leg 2: nothing staged; the download writes the files the plan names.
-    def _fake_download(job, plan):
+    def _fake_download(job, plan, **kwargs):
         for _url, dest, _size in plan:
             Path(dest).parent.mkdir(parents=True, exist_ok=True)
             Path(dest).write_bytes(b"GGUF\x00")

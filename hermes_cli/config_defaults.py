@@ -119,6 +119,12 @@ DEFAULT_CONFIG = {
         # whole call; the OpenAI SDK also retries transient errors (max_retries=2). Set 1 for fast
         # failover to fallback providers; raise to tolerate longer provider hiccups.
         "api_max_retries": 3,
+        # Failed attempts a transport failure (connect/read timeout, provider overloaded) gets on the
+        # PRIMARY before the fallback chain is walked. Raising it keeps a short network blip on the
+        # current model: every switch re-reads the whole prompt on another backend (prompt cache lost)
+        # and changes the model mid-task. Waits come from the normal retry backoff (2s->4s->8s... capped
+        # at 60s), so 7 rides out roughly two minutes. 2 = historical eager switch; 0/1 switch at once.
+        "transport_failover_retries": 2,
         # Once api_max_retries AND the fallback chain are spent on a transient outage (5xx,
         # overloaded/529, connect/read timeouts) with nothing delivered yet, wait and retry this many
         # more cycles (jittered 15/30/60/60/60s; a provider Retry-After wins up to 120s) with a

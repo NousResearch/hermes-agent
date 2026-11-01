@@ -1707,6 +1707,29 @@ _RATE_LIMIT_REASONS = frozenset({
 })
 _TRANSPORT_FAILURE_REASONS = frozenset({FailoverReason.timeout, FailoverReason.overloaded})
 
+# How many failed attempts a transport failure (connect/read timeout, provider overload) gets on the
+# primary before the fallback chain is walked. Each switch re-reads the whole prompt on a different
+# backend (prompt cache lost) and changes the model mid-task, so a few seconds of network blip should
+# not be enough to trigger one. ``agent.transport_failover_retries`` (default 2 = historical eager
+# switch); waits come from ``compute_error_backoff`` (2s->4s->8s... capped at 60s), so N retries rides
+# out roughly sum(2,4,...) seconds. The retry loop stops at ``max_retries``, so a raised budget also
+# raises this turn's ceiling (see ``route_classified_error``) - otherwise the turn would end before
+# the switch.
+_DEFAULT_TRANSPORT_FAILOVER_RETRIES = 2
+
+
+def transport_failover_retry_budget() -> int:
+    """``agent.transport_failover_retries``; default 2. Invalid/missing config keeps the default."""
+    try:
+        from hermes_cli.config import load_config
+        raw = ((load_config() or {}).get("agent") or {}).get("transport_failover_retries")
+    except Exception:
+        return _DEFAULT_TRANSPORT_FAILOVER_RETRIES
+    try:
+        return max(int(raw), 0)
+    except (TypeError, ValueError):
+        return _DEFAULT_TRANSPORT_FAILOVER_RETRIES
+
 
 _LONG_CONTEXT_TIER_CAP = 200000
 
@@ -1820,8 +1843,9 @@ def route_classified_error(
     """Ordered (load-bearing) recovery steps between classification and overflow handling:
     compaction-disabled overflow → terminal error (output-cap errors exempt); Anthropic
     long-context tier 429 → cap at 200k and compress; eager fallback for rate-limit/billing
-    (immediately) and transport failures (after 1 retry) unless credential-pool rotation may
-    still recover (upstream-aggregator 429s always fall back); persistent 401/403 → fallback
+    (immediately) and transport failures (after ``agent.transport_failover_retries`` failed attempts,
+    default 2) unless credential-pool rotation may still recover (upstream-aggregator 429s always fall
+    back); persistent 401/403 → fallback
     chain once; genuine Nous 429 → cross-session breaker + re-enter the loop exactly once."""
     from agent.conversation_compression import conversation_history_after_compression
     from agent.conversation_loop import _arm_fallback_restart, _ra
@@ -1928,6 +1952,12 @@ def route_classified_error(
         if classified.reason == FailoverReason.rate_limit else None
     )
     _is_transport_failure = classified.reason in _TRANSPORT_FAILURE_REASONS
+    # A network blip should ride out on the primary: the budget decides how many attempts a transport
+    # failure gets before the fallback chain is walked, and the loop ceiling has to reach it (the loop
+    # stops at max_retries, so without this the turn would end on the last retry instead of switching).
+    _transport_retry_budget = transport_failover_retry_budget() if _is_transport_failure else 0
+    if _is_transport_failure:
+        max_retries = max(max_retries, _transport_retry_budget + 1)
     # Z.AI overload 429s classify `overloaded`, which `is_rate_limited` excludes. Detect
     # directly so the long backoff runs, and raise the ceiling to reach it.
     _is_zai_coding_overload = is_zai_coding_overload_error(base_url=str(base_url), model=model, error=api_error)
@@ -1935,7 +1965,7 @@ def route_classified_error(
         max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
     _should_fallback = (
         (is_rate_limited and _wrapped_output_cap_budget is None)
-        or (_is_transport_failure and retry_count >= 2)
+        or (_is_transport_failure and retry_count >= _transport_retry_budget)
     ) and not (getattr(classified, "error_context", None) or {}).get("usage_window")  # never switch models on a plan limit
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
         # No eager fallback while credential pool rotation may recover. Exception: an

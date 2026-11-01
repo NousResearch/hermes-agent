@@ -46,6 +46,29 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _stable_tunnel_port() -> int:
+    """A tunnel port OUTSIDE the OS ephemeral range whose +1 (http) and +2
+    (management) siblings are also free.  ``_free_port`` draws from the
+    sequential ephemeral allocator, so iron-proxy's ``https_listen: 127.0.0.1:0``
+    frequently lands exactly on ``tunnel_port + 2`` and the management
+    listener then dies with "address already in use" (an intermittent skip,
+    not a proxy defect)."""
+    import random
+    for _ in range(20):
+        port = random.randint(20000, 32000)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+            try:
+                for cand in (port, port + 1, port + 2):
+                    s.bind(("127.0.0.1", cand))
+                    s.close()
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            except OSError:
+                continue
+            return port
+    pytest.skip("could not find a stable tunnel port triple")
+
+
 class _CaptureHandler(BaseHTTPRequestHandler):
     """Records the Authorization header of every incoming request."""
 
@@ -274,6 +297,98 @@ def test_iron_proxy_swaps_x_api_key_header_end_to_end(hermes_home, monkeypatch):
             pass
         server.shutdown()
         server.server_close()
+
+
+def test_iron_proxy_connect_tunnel_to_mapped_host_end_to_end(hermes_home, monkeypatch):
+    """HTTPS CONNECT path — the one sandboxes actually use via HTTPS_PROXY.
+
+    A CONNECT to a mapped host is first evaluated against a synthetic,
+    header-less CONNECT (the tunnel does not exist yet, so the proxy token
+    cannot be carried).  The generated ``require: false`` must let that
+    synthetic request through so the tunnel is established and MITM'd; the
+    swap then fires on the post-MITM request, where the token really lives.
+    Regression for #81281 (Finding 2): with ``require: true``, iron-proxy
+    v0.39 rejects every mapped-host CONNECT pre-MITM (403, rejected_by
+    secrets), making credential injection unreachable on every topology.
+    The allowlist transform still default-denies unmapped hosts."""
+
+    # ----- fake upstream port (never dialed — only the CONNECT verdict matters)
+    upstream_port = _free_port()
+
+    try:
+        # ----- iron-proxy install + CA + config ---------------------------
+        binary = ip.install_iron_proxy()
+        assert binary.exists()
+        ca_crt, ca_key = ip.ensure_ca_cert()
+        assert ca_crt.exists()
+
+        real_secret = "sk-real-connect-value-f00dfeed"
+        monkeypatch.setenv("TEST_CONNECT_KEY", real_secret)
+        proxy_token = ip.mint_proxy_token("connect")
+
+        mapping = ip.TokenMapping(
+            proxy_token=proxy_token,
+            real_env_name="TEST_CONNECT_KEY",
+            upstream_hosts=("127.0.0.1",),
+        )
+
+        tunnel_port = _stable_tunnel_port()
+        cfg = ip.build_proxy_config(
+            mappings=[mapping],
+            ca_cert=ca_crt,
+            ca_key=ca_key,
+            tunnel_port=tunnel_port,
+            allowed_hosts=["127.0.0.1"],
+            # Test target is on loopback — clear the default IMDS+loopback
+            # deny list so iron-proxy will dial 127.0.0.1.  Hermetic loopback
+            # bind, same as the plain-forward tests above.
+            upstream_deny_cidrs=[],
+            http_listen=[f"127.0.0.1:{tunnel_port}"],
+        )
+        ip.write_proxy_config(cfg)
+        ip.write_mappings([mapping])
+
+        # ----- start the proxy --------------------------------------------
+        try:
+            status = ip.start_proxy()
+        except RuntimeError as exc:
+            pytest.skip(f"iron-proxy could not start in this environment: {exc}")
+        assert status.pid is not None
+
+        for _ in range(50):
+            if ip._port_listening("127.0.0.1", tunnel_port):
+                break
+            time.sleep(0.2)
+        else:
+            pytest.fail("iron-proxy never started listening on the tunnel port")
+
+        # Raw CONNECT against the tunnel listener — exactly what HTTPS_PROXY
+        # emits.  The synthetic request carries no Authorization header, so it
+        # can only pass when the secrets ``require`` guard steps aside.
+        def _connect_status(host_to_dial: str) -> int:
+            with socket.create_connection(("127.0.0.1", tunnel_port), timeout=10) as sock:
+                sock.sendall(f"CONNECT {host_to_dial} HTTP/1.1\r\nHost: {host_to_dial}\r\n\r\n".encode())
+                status_line = sock.recv(4096).split(b"\r\n", 1)[0].decode()
+            return int(status_line.split()[1])
+
+        # Mapped + allowlisted host: the tunnel must be established (this is
+        # the 403 "rejected_by: secrets" of the bug report turning into 200).
+        assert _connect_status(f"127.0.0.1:{upstream_port}") == 200, (
+            "synthetic CONNECT to a mapped host was rejected — the secrets "
+            "require guard is killing mapped-provider tunnels pre-MITM (#81281)"
+        )
+
+        # Not allowlisted: the default-deny allowlist verdict must survive.
+        assert _connect_status("denied.invalid:443") == 403, (
+            "CONNECT to a non-allowlisted host must stay denied"
+        )
+
+    finally:
+        # ----- cleanup ------------------------------------------------------
+        try:
+            ip.stop_proxy()
+        except Exception:
+            pass
 
 
 def test_iron_proxy_management_reload_end_to_end(hermes_home, monkeypatch):

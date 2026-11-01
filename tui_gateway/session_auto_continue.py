@@ -632,7 +632,7 @@ def _sweep_interrupted_turn_markers(home: Path | str | None = None) -> list[str]
         if not marker.get("auto_continue", True):
             continue
         writer_state = marker_writer_state(marker)
-        if writer_state == "alive" and marker.get("writer_pid") != os.getpid():
+        if writer_state == "alive":
             continue
         age = now - marker["started_at"]
         if age > freshness_secs or marker["attempts"] >= max_attempts:
@@ -692,4 +692,13 @@ def _schedule_startup_auto_continue_sweep() -> None:
 
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
-    bind_module(globals(), server, skip=("_",))
+    prior_ran = getattr(server, "_startup_auto_continue_sweep_ran", False)
+    prior_lock = getattr(server, "_startup_auto_continue_sweep_lock", None)
+    bind_module(
+        globals(),
+        server,
+        skip=("_", "_startup_auto_continue_sweep_ran", "_startup_auto_continue_sweep_lock"),
+    )
+    server._startup_auto_continue_sweep_ran = prior_ran
+    if prior_lock is not None:
+        server._startup_auto_continue_sweep_lock = prior_lock

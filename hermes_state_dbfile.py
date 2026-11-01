@@ -238,6 +238,8 @@ _DARWIN_LIBPROC = None
 # can bound it: the whole pass runs in a daemon thread and is abandoned on
 # expiry, failing open per the guard's contract.
 _DARWIN_FD_SCAN_TIMEOUT_SECONDS = 5.0
+_DARWIN_PROC_PIDPATHINFO_MAXSIZE = 4096
+_DARWIN_SYSTEM_EXEC_PREFIXES = ("/System/Library/", "/usr/libexec/", "/usr/sbin/")
 
 
 def _darwin_libproc():
@@ -258,6 +260,8 @@ def _darwin_libproc():
     lib.proc_pidinfo.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int)
     lib.proc_pidfdinfo.restype = ctypes.c_int
     lib.proc_pidfdinfo.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int)
+    lib.proc_pidpath.restype = ctypes.c_int
+    lib.proc_pidpath.argtypes = (ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32)
     _DARWIN_LIBPROC = lib
     return lib
 
@@ -282,11 +286,27 @@ def _iter_darwin_fd_targets():
 
     The pathname and the identity both stay readable after the path is unlinked, which is what
     makes an orphaned WAL generation visible at all on macOS.  Processes that cannot be inspected
-    (gone, or not ours) and descriptors that are not vnodes are skipped silently."""
+    (gone, or not ours) and descriptors that are not vnodes are skipped silently.  Apple system
+    daemons under ``_DARWIN_SYSTEM_EXEC_PREFIXES`` are pre-filtered via ``proc_pidpath`` so
+    ``proc_pidfdinfo(PROC_PIDFDVNODEPATHINFO)`` never probes their Data Vault descriptors (which
+    otherwise emit kernel ``Sandbox: python3(...) deny(1) file-read-metadata`` log storms)."""
     import ctypes
 
     lib = _darwin_libproc()
+    self_pid = os.getpid()
+    pidpath_fn = getattr(lib, "proc_pidpath", None)
+    path_buf = (
+        ctypes.create_string_buffer(_DARWIN_PROC_PIDPATHINFO_MAXSIZE)
+        if pidpath_fn is not None
+        else None
+    )
     for pid in _darwin_all_pids(lib):
+        if pid != self_pid and pidpath_fn is not None and path_buf is not None:
+            path_len = pidpath_fn(pid, path_buf, _DARWIN_PROC_PIDPATHINFO_MAXSIZE)
+            if path_len > 0:
+                exec_path = path_buf.raw[:path_len].split(b"\x00", 1)[0].decode("utf-8", "replace")
+                if exec_path.startswith(_DARWIN_SYSTEM_EXEC_PREFIXES):
+                    continue
         size = 4096
         while True:
             listing = ctypes.create_string_buffer(size)

@@ -359,11 +359,8 @@ def _write_entries(path: Path, entries: list[dict[str, Any]]) -> None:
 def _process_start_time(pid: int) -> Optional[float]:
     # Pair pid with create_time when psutil can read it, so a recycled pid does not
     # keep a stale lease alive indefinitely.
-    try:
-        import psutil  # type: ignore
-        return float(psutil.Process(pid).create_time())
-    except Exception:
-        return None
+    from hermes_cli.process_identity import _process_create_time
+    return _process_create_time(pid)
 
 
 _OWN_START: tuple[int, float] | None = None  # (pid, create_time); published atomically, re-read after fork

@@ -307,7 +307,7 @@ Each user runs the flow once, in their own DM with the bot:
    step.
 2. They send `/setup-files start`. The bot replies with an OAuth URL.
 3. They open the URL, click **Allow**, and watch the browser fail to load
-   `http://localhost:1/?...&code=...`. That failure is expected — the auth
+   `http://localhost:8765/?...&code=...`. That failure is expected — the auth
    code is in the URL bar.
 4. They copy the failed URL (or just the `code=...` value) and paste it back
    into chat as `/setup-files <PASTED_URL>`. The bot exchanges it for a

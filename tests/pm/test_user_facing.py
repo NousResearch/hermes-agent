@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pm.install
 import pm.user_facing
@@ -32,6 +33,7 @@ def test_user_tools_come_before_hermes_and_python_stops_at_the_store_stub(tmp_pa
 def test_a_sealed_windows_payload_swaps_packaged_tools_for_writable_copies(tmp_path, monkeypatch):
     """cmd.exe cannot start an exe inside WindowsApps; a verified copy outside it can."""
     from pm import paths, registry
+    from pm.filesystem import native
     from pm.lock import Facts, Lockfile
     from pm.packages import Nodejs, Python
     from pm.store import current_target, tree_digest
@@ -42,7 +44,10 @@ def test_a_sealed_windows_payload_swaps_packaged_tools_for_writable_copies(tmp_p
     lock, facts = Lockfile(tmp_path / "lock.json"), Facts(shipped / "facts.json")
     bins = {}
     for package in (Nodejs(), Python()):
-        package.verify = lambda entry, target: ""
+        # The source cannot execute inside WindowsApps. Only the writable copy
+        # can pass the executable probe, even though the source bytes are valid.
+        package.verify = lambda entry, target: (
+            "Access is denied" if Path(native(entry)).is_relative_to(shipped) else "")
         monkeypatch.setitem(registry._packages, package.name, package)
         lock.set_pin(package.name, "test", {target: {"url": "https://test.invalid", "sha256": digest}})
         entry = shipped / package.store_entry("test", target)

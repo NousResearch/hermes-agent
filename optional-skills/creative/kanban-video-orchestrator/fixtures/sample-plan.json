@@ -1,0 +1,92 @@
+{
+  "title": "Fixture Product Teaser",
+  "slug": "fixture-product-teaser",
+  "tenant": "fixture-product-teaser",
+  "duration_s": 12,
+  "aspect": "16:9",
+  "resolution": "1280x720",
+  "fps": 24,
+  "team": [
+    {
+      "profile": "director",
+      "role": "director",
+      "toolsets": ["kanban", "terminal", "file"],
+      "skills": ["kanban-orchestrator"],
+      "responsibilities": "decompose the video into specialist tasks without executing renderer work",
+      "inputs": "brief.md, TEAM.md, taste/",
+      "outputs": "kanban child tasks for each specialist"
+    },
+    {
+      "profile": "ascii-renderer",
+      "role": "renderer-ascii",
+      "toolsets": ["terminal", "file"],
+      "skills": ["ascii-video"],
+      "responsibilities": "render the title card and product beat as deterministic ASCII frames",
+      "inputs": "brief.md, TEAM.md, scenes/scene-01/",
+      "outputs": "scenes/scene-01/clip.mp4 and checkpoints"
+    },
+    {
+      "profile": "editor",
+      "role": "editor",
+      "toolsets": ["terminal", "file"],
+      "skills": [],
+      "responsibilities": "assemble rendered scenes into the final video artifact",
+      "inputs": "scene clips and audio assets",
+      "outputs": "output/final.mp4 and validation notes"
+    },
+    {
+      "profile": "reviewer",
+      "role": "reviewer",
+      "toolsets": ["terminal", "file"],
+      "skills": [],
+      "responsibilities": "verify artifact duration, resolution, and brief compliance",
+      "inputs": "output/final.mp4, brief.md, TEAM.md",
+      "outputs": "review.md with pass/fail findings"
+    }
+  ],
+  "scenes": [
+    {
+      "n": 1,
+      "time": "0:00-0:06",
+      "content": "ASCII title card: Fixture Product Teaser",
+      "tool": "ascii-renderer",
+      "audio": "soft launch sting",
+      "notes": "deterministic fixture scene"
+    },
+    {
+      "n": 2,
+      "time": "0:06-0:12",
+      "content": "Product silhouette resolves into call to action",
+      "tool": "ascii-renderer",
+      "audio": "resolve sting",
+      "notes": "same renderer for fixture simplicity"
+    }
+  ],
+  "audio": {
+    "approach": "silent fixture with placeholder cues",
+    "vo": "n/a",
+    "music": "n/a",
+    "sfx": "text cues only"
+  },
+  "deliverables": [
+    {
+      "format": "mp4",
+      "resolution": "1280x720",
+      "notes": "primary fixture deliverable"
+    }
+  ],
+  "api_keys_required": [],
+  "brief_extra": {
+    "concept_one_liner": "A tiny deterministic teaser used to validate the video orchestration skill.",
+    "emotional_north_star": "clear, mechanical, safe",
+    "platforms": "internal test fixture",
+    "deadline": "none",
+    "quality_bar": "fixture-valid",
+    "visual_refs": "monospace title card",
+    "tone": "crisp",
+    "brand_constraints": "none",
+    "aesthetic_rules": "deterministic text outputs only",
+    "ext_deps": "Python 3.11+",
+    "source_assets": "none"
+  }
+}

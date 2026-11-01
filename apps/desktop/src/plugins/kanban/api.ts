@@ -27,6 +27,7 @@ import {
   useValue
 } from '@hermes/plugin-sdk'
 
+import { type DeltaCursor, deltaCursor, isBoardDelta, mergeBoardDelta, stampSnapshot } from './board-delta'
 // Native completion notification.
 import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame } from './completion-notify'
 import type {
@@ -35,6 +36,7 @@ import type {
   BoardMeta,
   BoardsResponse,
   KanbanBoard,
+  KanbanBoardDelta,
   KanbanProfile,
   KanbanProject,
   KanbanTask,
@@ -126,8 +128,28 @@ function eventsUrl(slug: string, since: number | undefined): string {
   return query ? `/events?${query}` : '/events'
 }
 
-function boardSnapshotPath(slug: string): string {
-  return slug ? `/board?board=${encodeURIComponent(slug)}` : '/board'
+/** The board read: a full snapshot, plus the cursor and etag when a delta is allowed. The server half
+ *  takes board, include_archived, since and etag; ctx.rest returns parsed JSON only, so the whole
+ *  request is in the URL. */
+function boardPath(slug: string, archived: boolean, cursor: DeltaCursor | null): string {
+  const params: Record<string, string> = {}
+
+  if (slug) {
+    params.board = slug
+  }
+
+  if (archived) {
+    params.include_archived = 'true'
+  }
+
+  if (cursor) {
+    params.since = String(cursor.since)
+    params.etag = cursor.etag
+  }
+
+  const query = new URLSearchParams(params).toString()
+
+  return query ? `/board?${query}` : '/board'
 }
 
 /** Cache-scope id for the active connection — the segment every query key
@@ -268,7 +290,9 @@ export function bindApi(
       // with no since — the server starts at the tail rather than replaying.
       void queryClient
         .fetchQuery({
-          queryFn: () => r<KanbanBoard>(boardSnapshotPath(slug)),
+          // Same door as the page: with the board already held this is a delta, otherwise a full
+          // snapshot. Either way the socket opens at the tail the board reports.
+          queryFn: () => fetchBoard(false, scope, slug),
           queryKey: boardKey(scope, slug, false)
         })
         .then(board => {
@@ -385,8 +409,43 @@ export const orchestrationKey = (scope: string) => ['kanban', 'orchestration', s
 
 // ── reads ─────────────────────────────────────────────────────────────────────
 
-export const fetchBoard = (archived: boolean) =>
-  call<KanbanBoard>(withBoard('/board', archived ? { include_archived: 'true' } : {}))
+/**
+ * One board read, the single path for both callers (the page's useQuery and bindApi's first
+ * snapshot). Reads the board this query key already holds and asks the server for a delta against it
+ * when that board is fresh enough to trust (see deltaCursor); otherwise, and whenever the answer is
+ * not a usable delta, it asks for a full snapshot.
+ *
+ * A merged board carries the previous objects for every card the delta did not send, so a memoized
+ * card does not repaint. `scope`/`slug` name the query key the caller holds the board under; pass the
+ * same ones it passes to `boardKey`.
+ */
+export const fetchBoard = async (archived: boolean, scope: string, slug: string): Promise<KanbanBoard> => {
+  const key = boardKey(scope, slug, archived)
+  const held = queryClient.getQueryData<KanbanBoard>(key)
+  const cursor = deltaCursor(held, Date.now())
+  const answer = await call<KanbanBoard | KanbanBoardDelta>(boardPath(slug, archived, cursor))
+
+  // A gateway that answers the request with no body (a 304 it decided on its own) still means the held
+  // board is current. Nothing to merge, nothing to replace.
+  if (held && (answer === null || answer === undefined || typeof answer !== 'object')) {
+    return held
+  }
+
+  if (held && cursor && isBoardDelta(answer)) {
+    const merged = mergeBoardDelta(held, answer)
+
+    if (merged) {
+      return merged
+    }
+
+    // Out of sync: the delta names a card this client does not hold. Discard and ask in full, now.
+    return stampSnapshot(await call<KanbanBoard>(boardPath(slug, archived, null)), Date.now())
+  }
+
+  // A full snapshot, which is also what a server that predates deltas answers a since request with
+  // (no `delta` key): replace the held board rather than throw the app against an older gateway.
+  return stampSnapshot(answer as KanbanBoard, Date.now())
+}
 
 export const fetchTask = async (id: string) => {
   const downloadAttachment = captureGatewayFileDownload()

@@ -28,6 +28,22 @@ See the per-platform docs for examples — the structure is identical across pla
 
 If `allow_admin_from` is unset for a scope, that scope stays in unrestricted backward-compat mode — every allowed user can run every command.
 
+### Tool-tier whitelist for non-admin users
+
+The same `allow_admin_from` gate also drives an **opt-in tool-tier split** for agent turns (RFC #20744, Phase 1). When `allow_admin_from` is set for a platform, non-admin users' turns are resolved through `gateway/user_tier.py`, which:
+
+- restricts the agent's `enabled_toolsets` to a conservative default (web-style tools only; `memory`, `terminal`, `skills`, `cronjob`, delegation, and messaging are excluded), and
+- optionally clamps `max_iterations` to `user_max_iterations`.
+
+Configure these in the same platform `extra:` block that holds the slash-command controls:
+
+| Key | Effect |
+|-----|--------|
+| `user_toolsets` (alias `user_tools`) | Explicit list of toolsets non-admin users may use, overriding the conservative default. |
+| `user_max_iterations` | Upper bound on agent iterations for non-admin turns. |
+
+Admins (and any scope where `allow_admin_from` is unset) keep the full toolset surface and uncapped iterations, so this is fully backward-compatible. This tool tiering is distinct from the slash-command `user_allowed_commands` split above: one gates which slash commands are dispatchable, the other gates which tools an agent turn may call.
+
 ## Interactive CLI slash commands
 
 Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-insensitive.

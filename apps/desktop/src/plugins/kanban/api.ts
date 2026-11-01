@@ -385,8 +385,20 @@ export const orchestrationKey = (scope: string) => ['kanban', 'orchestration', s
 
 // ── reads ─────────────────────────────────────────────────────────────────────
 
-export const fetchBoard = (archived: boolean) =>
-  call<KanbanBoard>(withBoard('/board', archived ? { include_archived: 'true' } : {}))
+export const fetchBoard = async (archived: boolean) => {
+  const board = await call<KanbanBoard>(withBoard('/board', archived ? { include_archived: 'true' } : {}))
+
+  // Stamp the payload's own clock onto every card, so the freshness arc ages a
+  // heartbeat against the server that recorded it (see arcState) rather than this
+  // machine's clock. One number per board, so the copy is free.
+  return {
+    ...board,
+    columns: board.columns.map(column => ({
+      ...column,
+      tasks: column.tasks.map(task => ({ ...task, heartbeat_now: board.now }))
+    }))
+  }
+}
 
 export const fetchTask = async (id: string) => {
   const downloadAttachment = captureGatewayFileDownload()

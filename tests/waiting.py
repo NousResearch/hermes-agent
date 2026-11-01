@@ -74,3 +74,27 @@ async def async_wait_until(predicate: Callable[[], T], timeout: float = DEFAULT_
         if time.monotonic() >= deadline:
             raise _timed_out(what, timeout)
         await asyncio.sleep(interval)
+
+
+def pid_gone(pid: int) -> bool:
+    """True once ``pid`` has exited (gone, or a zombie nobody reaped yet).
+
+    ``pid_exists(pid) and Process(pid)...`` is a check-then-act race: an exited child's zombie can
+    be reaped between the two calls, and ``Process(pid)`` then raises ``NoSuchProcess``.
+    """
+    import psutil
+
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
+def kill_if_alive(pid: int) -> None:
+    """SIGKILL ``pid`` for test cleanup; a process that exited (or was reaped) meanwhile is fine."""
+    import psutil
+
+    try:
+        psutil.Process(pid).kill()
+    except psutil.NoSuchProcess:
+        pass

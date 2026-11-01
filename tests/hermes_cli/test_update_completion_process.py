@@ -678,9 +678,9 @@ def test_interactive_configuration_keeps_terminal_input(transition):
 @pytest.mark.live_system_guard_bypass
 def test_interrupt_reaps_completion_descendants_before_return(transition, monkeypatch):
     import io
-    import psutil
     import time
     from hermes_cli import update_completion
+    from tests.waiting import kill_if_alive, pid_gone
 
     root, _git, _old, _new, request = transition
     (root / "hermes_cli/update_completion.py").write_text(
@@ -705,15 +705,14 @@ def test_interrupt_reaps_completion_descendants_before_return(transition, monkey
         assert pids
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
-            if not psutil.pid_exists(pids[0]) or psutil.Process(pids[0]).status() == psutil.STATUS_ZOMBIE:
+            if pid_gone(pids[0]):
                 break
             time.sleep(0.02)
         else:
             pytest.fail("completion descendant survived parent cancellation")
     finally:
         for pid in pids:
-            if psutil.pid_exists(pid):
-                psutil.Process(pid).kill()
+            kill_if_alive(pid)
 
 
 @pytest.mark.platforms("windows")

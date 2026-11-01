@@ -452,9 +452,13 @@ auxiliary:
 ```
 
 When the key is unset, the budget is derived from the review model's resolved
-context window: 75% of the window, capped at 600,000 tokens — so it also binds
-on small local models (a 65,536-token model gets 49,152), where a fixed
-cloud-scale default would never bite. If the window cannot be resolved, a
+context window: 5× the window, capped at 600,000 tokens — so it still binds on
+small local models (a 65,536-token model gets 327,680), where a fixed
+cloud-scale default would never bite. The multiple exists because the budget
+counts the SUM across the review's requests while the window bounds a single
+request: a routed review's first request alone replays a large share of the
+window, so a sub-window default cut reviews off after 2-3 of the 16 allowed
+iterations. If the window cannot be resolved, a
 conservative 120,000-token fallback applies. Note the key lives under
 `auxiliary:`; a top-level `background_review:` block is not read.
 

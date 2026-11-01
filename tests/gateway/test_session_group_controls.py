@@ -177,6 +177,40 @@ def test_profiles_list_names_every_profile_on_disk_and_its_install(tmp_path, mon
     assert 'canonical_session' not in rows['writer'] and 'last_session' not in rows['writer']
 
 
+def test_profiles_list_discovered_rows_keep_the_profiles_own_metadata(tmp_path, monkeypatch):
+    """#143215: a discovered row hardcoded ``description: ''``, sent the handle as
+    ``display_name`` and carried neither ``has_avatar`` nor ``ui_meta_revisions``, so Desktop's
+    Bots tab read every un-named profile as untouched art with a blank description and the Edit
+    profile dialog seeded that blank over the stored one. The pre-authority handler sent the
+    profile's own description and an empty override, so the regression is the row shape."""
+    home = tmp_path / 'state'
+    for name in ('helper', 'writer'):
+        (home / 'profiles' / name).mkdir(parents=True)
+        (home / 'profiles' / name / 'config.yaml').write_text('model:\n  default: m\n')
+    writer = home / 'profiles' / 'writer'
+    (writer / 'profile.yaml').write_text(
+        'description: Writes the release notes\n'
+        'display_name: Writer Bot\n'
+        'ui_meta:\n  hermes-bots:\n    title: Writer\n'
+        '_ui_meta_revisions:\n  hermes-bots: 3\n')
+    (writer / 'assets').mkdir()
+    (writer / 'assets' / 'avatar.png').write_bytes(b'\x89PNG\r\n\x1a\n')
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setenv('HOME', str(tmp_path / 'user'))
+    (home / 'config.yaml').write_text('model:\n  default: fixture-model\n')
+    rows = {row['name']: row for row in _list_profiles(home)['result']['profiles']}
+    assert rows['writer']['description'] == 'Writes the release notes'
+    assert rows['writer']['display_name'] == 'Writer Bot'
+    assert rows['writer']['has_avatar'] is True
+    assert rows['writer']['ui_meta_revisions'] == {'hermes-bots': 3}
+    # No ``display_name`` in profile.yaml means no override at all: Desktop title-cases the
+    # handle itself only while the field is empty.
+    assert rows['helper']['display_name'] == ''
+    assert rows['helper']['description'] == ''
+    assert rows['helper']['has_avatar'] is False
+    assert rows['helper']['ui_meta_revisions'] == {}
+
+
 def _roster_home(tmp_path, monkeypatch):
     home = tmp_path / 'state'
     for name in ('helper', 'writer'):
@@ -210,7 +244,9 @@ def test_profiles_list_survives_an_undecodable_sibling_profile_yaml(tmp_path, mo
     assert 'result' in reply, reply
     rows = {row['name']: row for row in reply['result']['profiles']}
     assert list(rows) == ['default', 'helper', 'writer']
-    assert rows['helper']['display_name'] == 'helper'
+    # An unreadable profile.yaml carries no override at all — the row does not invent one from
+    # the handle (#143215); Desktop title-cases the name when ``display_name`` is empty.
+    assert rows['helper']['display_name'] == ''
     assert rows['writer']['display_name'] == 'Writer Bot'
     assert any('helper' in record.getMessage() and 'profile.yaml' in record.getMessage()
                for record in caplog.records)

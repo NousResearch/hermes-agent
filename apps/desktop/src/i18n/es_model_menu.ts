@@ -35,6 +35,7 @@ export const esModelMenu = {
   poolAccount: (number: number) => `Cuenta ${number}`,
   poolUnknown: 'Uso no disponible',
   poolUnavailable: 'Vuelve a iniciar sesión',
+  poolIdle: 'Inactiva: token caducado',
   usageTip: (provider: string) => `${provider} está cerca de su límite de uso.`,
   usageWindow: (label: string, percent: number, time: null | string) =>
     time ? `${label}: queda ${percent} %, se restablece ${time}` : `${label}: queda ${percent} %`

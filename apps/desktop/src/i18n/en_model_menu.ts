@@ -37,6 +37,7 @@ export const enModelMenu: Translations['shell']['modelMenu'] = {
   poolAccount: (number: number) => `Account ${number}`,
   poolUnknown: 'Usage unavailable',
   poolUnavailable: 'Sign in again',
+  poolIdle: 'Idle: token expired',
   usageTip: (provider: string) => `${provider} is close to its usage limit.`,
   usageWindow: (label: string, percent: number, time: null | string) =>
     time ? `${label}: ${percent}% left, resets ${time}` : `${label}: ${percent}% left`

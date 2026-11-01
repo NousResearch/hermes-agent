@@ -284,6 +284,7 @@ export const zhHantChrome = {
       poolAccount: (number: number) => `帳戶 ${number}`,
       poolUnknown: '用量暫時無法取得',
       poolUnavailable: '請重新登入',
+      poolIdle: '閒置：權杖已過期',
       usageTip: (provider: string) => `${provider} 即將達到用量上限。`,
       usageWindow: (label: string, percent: number, time: null | string) =>
         time ? `${label}：剩餘 ${percent}%，${time} 重設` : `${label}：剩餘 ${percent}%`

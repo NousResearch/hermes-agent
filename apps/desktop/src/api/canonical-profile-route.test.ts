@@ -55,3 +55,48 @@ test('a sibling profile route survives canonical request translation', async () 
     await new Promise<void>(resolve => server.close(() => resolve()))
   }
 })
+
+// RT-26 (#139298) fixed creation; the authority's per-request routing applies to every later verb
+// too: an omitted `profile` means the socket's launch profile — which on a named-profile host is
+// not `default`. A session learned on the default profile (attached/acknowledged as `default`) must
+// therefore keep that name on every later RPC that the renderer sends untagged; dropping it as
+// "the implicit route" silently moves those RPCs to the launch profile.
+test('a session learned on the default profile keeps that route on later RPCs', async () => {
+  const wsPackage = 'ws'
+  const { WebSocketServer } = await import(wsPackage)
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+  await new Promise<void>(resolve => server.once('listening', resolve))
+  const sent: any[] = []
+  server.on('connection', (socket: any) => {
+    socket.on('message', (bytes: Buffer) => {
+      const frame = JSON.parse(bytes.toString())
+      sent.push(frame)
+
+      const result = frame.method === 'session.resume'
+        ? { session_id: 's', stored_session_id: 's', revision: 2, execution_generation: 5, messages: [], prompts: [] }
+        : { session_id: 's', revision: 3, operation: frame.params.operation, branched_session_id: 'c', copied_messages: 1 }
+
+      socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result }))
+    })
+  })
+  const client = new HermesGateway()
+
+  try {
+    const address = server.address() as { port: number }
+    await client.connect(`ws://127.0.0.1:${address.port}/api/ws?native_dial=fixture&ticket=one-use`)
+    // Learn the session's default-profile ownership, then fire an untagged CAS mutation —
+    // the sidebar path that relies on the route learned from the successful attachment.
+    await client.request('session.resume', { session_id: 's', profile: 'default' })
+    await client.request('session.branch_stored', { parent_session_id: 's', title: 'Cut' })
+
+    expect(sent.map(frame => [frame.method, frame.params.profile])).toEqual([
+      ['session.resume', 'default'],
+      ['session.mutate', 'default']
+    ])
+  } finally {
+    client.close()
+
+    for (const socket of server.clients) { socket.terminate() }
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})

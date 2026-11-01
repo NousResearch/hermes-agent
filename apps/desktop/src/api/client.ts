@@ -373,9 +373,12 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
     if (params.profile === undefined && profiles?.size) {
       if (profiles.size !== 1) { throw new Error('Session ID belongs to several profiles; select its owner profile before continuing') }
-      const profile = profiles.values().next().value!
 
-      if (profile !== 'default') { params = { ...params, profile } }
+      // RT-26 (#139298) established that a socket launched as a named profile reads an omitted
+      // profile as its own launch home — on creation. The authority routes every request that way,
+      // so a learned owner always rides the frame, `default` included: an untagged follow-up RPC
+      // for a default-owned session would otherwise execute on the launch profile.
+      params = { ...params, profile: profiles.values().next().value! }
     }
 
     if (typeof sid === 'string' && ['session.resume', 'session.activate'].includes(method)) {

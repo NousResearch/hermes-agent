@@ -652,6 +652,16 @@ class GatewayBusySessionMixin:
                     _approval_handler = (
                         self._handle_approve_command if _verb == "approve" else self._handle_deny_command
                     )
+                    # A bare word is shorthand for /approve or /deny, so it
+                    # must pass the same admin gate as the slash form.
+                    _denied = self._check_slash_access(event.source, _verb)
+                    if _denied is not None:
+                        _adapter = self._delivery_adapter_for(event.source)
+                        if _adapter:
+                            _text, _eph_ttl = _adapter._unwrap_ephemeral(_denied)
+                            if _text:
+                                await self._send_busy_reply(event, _adapter, _text, plain_anchor=True)
+                        return True
                     # Synthesize "/approve [args]" / "/deny" so the slash handlers parse modifiers via
                     # event.get_command_args(). Always a literal "/": is_command()/get_command_args()
                     # don't recognize per-platform display prefixes ("!" on Slack/Matrix).

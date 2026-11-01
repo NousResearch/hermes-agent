@@ -63,3 +63,47 @@ def test_stage_processes_restore_pinned_git_and_never_fall_back(tmp_path):
     refused = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                               "-Command", probe], env=env, capture_output=True, text=True, timeout=240, check=False)
     assert refused.returncode == 0, refused.stdout + refused.stderr
+
+
+@pytest.mark.platforms("windows")
+def test_python_deps_stage_restores_pinned_git_before_pm(tmp_path):
+    """python-deps launches pm.cli, whose Windows build can clone with git; it must
+    restore PM's pinned Git just like the other separately launched stages."""
+    powershell = shutil.which("powershell.exe")
+    system_git = shutil.which("git")
+    assert powershell and system_git
+
+    home = tmp_path / "home"
+    store = tmp_path / "tools"
+    env = dict(os.environ, HERMES_HOME=str(home), HERMES_RUNTIME_DIR=str(store))
+
+    prereq = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(INSTALLER), "-Stage", "prerequisites", "-Json"],
+        env=env, capture_output=True, text=True, timeout=240,
+    )
+    assert prereq.returncode == 0, prereq.stdout + prereq.stderr
+    staged = list(store.glob("git-*/cmd/git.exe"))
+    assert len(staged) == 1
+
+    poison = tmp_path / "poison"
+    poison.mkdir()
+    (poison / "git.cmd").write_text(
+        "@echo unpinned git invoked 1>&2 & exit /b 73\r\n", encoding="utf-8"
+    )
+    env["PATH"] = str(poison) + os.pathsep + env["PATH"]
+
+    resolved = tmp_path / "resolved-git.txt"
+    command = (
+        f". '{INSTALLER}'; "
+        f"function Invoke-BootstrapPm {{ (Get-Command git).Source | "
+        f"Set-Content -LiteralPath '{resolved}' -Encoding ascii }}; "
+        "Stage-PythonDeps"
+    )
+    ran = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-Command", command],
+        env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+    assert resolved.read_text(encoding="ascii").strip().lower() == str(staged[0]).lower()

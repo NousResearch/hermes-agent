@@ -75,7 +75,15 @@ describe('approval request.cancel', () => {
 
     expect(toast?.secondaryAction?.label).toMatch(/ask Hermes to try again/i)
     toast?.secondaryAction?.onClick()
-    expect(retryTimedOutApproval).toHaveBeenCalledWith('s1', 'rm -rf build')
+    expect(retryTimedOutApproval).toHaveBeenCalledWith({
+      command: 'rm -rf build',
+      commandDigest: undefined,
+      executionGeneration: undefined,
+      recoveryToken: undefined,
+      requestId: 'req-1',
+      sessionId: 's1',
+      turnId: undefined
+    })
   })
 
   it('withdraws a queued request without dropping the front approval', () => {

@@ -191,6 +191,101 @@ def find_session_admission(db, *, principal_id: str, session_id: str, request_id
                                  'AND request_id=?', (principal_id, session_id, request_id)).fetchone())
 
 
+def record_approval_recovery(db, *, principal_id: str, session_id: str, request_id: str,
+                             recovery_token: str, payload_digest: str, status: str,
+                             command_snapshot: str | None = None,
+                             execution_generation: int | None = None, turn_id: str | None = None) -> dict:
+    """Create or advance one restart-safe approval recovery record.
+
+    The identity and payload/token fence are checked in the same write transaction;
+    a retry with the same values replays the row, while a changed token or digest is
+    an explicit conflict. This table never admits executable work.
+    """
+    values = (principal_id, session_id, request_id, recovery_token, payload_digest)
+    if any(not isinstance(value, str) or not value for value in values) or status not in (
+            'pending', 'resolved', 'expired', 'cancelled', 'consumed'):
+        raise RuntimeStoreError('invalid_params')
+
+    def write(conn):
+        old = conn.execute('''SELECT * FROM approval_recovery_admissions
+            WHERE principal_id=? AND session_id=? AND request_id=?''',
+                           (principal_id, session_id, request_id)).fetchone()
+        if old is not None:
+            if old['recovery_token'] != recovery_token or old['payload_digest'] != payload_digest:
+                raise RuntimeStoreError('recovery_conflict', field='request_id',
+                                        detail='approval recovery identity has another token or payload')
+            conn.execute('''UPDATE approval_recovery_admissions
+                SET status=?, command_snapshot=COALESCE(?, command_snapshot),
+                    execution_generation=?, turn_id=? WHERE seq=?''',
+                         (status, command_snapshot, execution_generation, turn_id, old['seq']))
+        else:
+            try:
+                conn.execute('''INSERT INTO approval_recovery_admissions
+                    (principal_id,session_id,request_id,recovery_token,payload_digest,
+                     command_snapshot,execution_generation,turn_id,status) VALUES(?,?,?,?,?,?,?,?,?)''',
+                             (*values, command_snapshot, execution_generation, turn_id, status))
+            except Exception as exc:
+                if 'UNIQUE' in str(exc).upper():
+                    raise RuntimeStoreError('recovery_conflict', field='recovery_token',
+                                            detail='recovery token is already bound to another request') from exc
+                raise
+        return dict(conn.execute('''SELECT * FROM approval_recovery_admissions
+            WHERE principal_id=? AND session_id=? AND request_id=?''',
+                                 (principal_id, session_id, request_id)).fetchone())
+    return db._execute_write(write)
+
+
+def claim_approval_recovery(db, *, principal_id: str, session_id: str, request_id: str,
+                            recovery_token: str, payload_digest: str,
+                            execution_generation: int | None = None,
+                            turn_id: str | None = None) -> dict:
+    """Atomically reserve one expired approval or replay its durable result."""
+    def write(conn):
+        row = conn.execute('''SELECT * FROM approval_recovery_admissions
+            WHERE principal_id=? AND session_id=? AND request_id=?''',
+                           (principal_id, session_id, request_id)).fetchone()
+        if row is None:
+            return {'status': 'stale', 'blocker': 'unknown approval request'}
+        if row['recovery_token'] != recovery_token or row['payload_digest'] != payload_digest:
+            return {'status': 'stale', 'blocker': 'recovery identity mismatch'}
+        if row['execution_generation'] != execution_generation or row['turn_id'] != turn_id:
+            return {'status': 'stale', 'blocker': 'turn identity mismatch'}
+        if row['status'] == 'pending':
+            return {'status': 'stale', 'blocker': 'approval is still pending'}
+        if row['status'] == 'expired' and row['recovery_status'] is None:
+            conn.execute("UPDATE approval_recovery_admissions SET recovery_status='admitting' WHERE seq=?", (row['seq'],))
+            return {'status': 'admitting', 'command_snapshot': row['command_snapshot'], 'seq': row['seq']}
+        if row['recovery_status'] in ('accepted', 'queued', 'streaming', 'failed') and row['result_json']:
+            return {'status': 'replay', 'result': json.loads(row['result_json'])}
+        if row['recovery_status'] == 'admitting':
+            return {'status': 'failed', 'blocker': 'recovery admission is already in progress'}
+        return {'status': 'stale', 'blocker': 'approval is no longer recoverable'}
+    return db._execute_write(write)
+
+
+def finish_approval_recovery(db, *, seq: int, status: str, result: dict) -> dict:
+    """Persist the exact normal prompt.submit result before returning it to the caller."""
+    if status not in ('accepted', 'queued', 'streaming', 'failed'):
+        raise RuntimeStoreError('invalid_params')
+    encoded = _json(result)
+    def write(conn):
+        conn.execute('''UPDATE approval_recovery_admissions SET recovery_status=?, result_json=?
+                        WHERE seq=? AND recovery_status='admitting' ''', (status, encoded, seq))
+        row = conn.execute('SELECT recovery_status,result_json FROM approval_recovery_admissions WHERE seq=?', (seq,)).fetchone()
+        if row is None:
+            raise RuntimeStoreError('unknown_recovery')
+        return {'status': row['recovery_status'], 'result': json.loads(row['result_json']) if row['result_json'] else None}
+    return db._execute_write(write)
+
+
+def consume_approval_recovery(db, **kwargs) -> dict:
+    """Compatibility wrapper for callers of the pre-admission ledger API."""
+    claimed = claim_approval_recovery(db, **kwargs)
+    if claimed.get('status') == 'admitting':
+        return {'status': 'expired', 'blocker': 'approval expired; user consent was not received'}
+    return claimed
+
+
 def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -> list[dict]:
     with db._read_ctx() as conn:
         # Pending is an explicit index-range IN, not ``!='terminal'``: a negated status cannot

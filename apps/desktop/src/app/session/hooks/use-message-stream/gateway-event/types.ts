@@ -8,6 +8,16 @@ import type { ErrorSurface } from '@/lib/error-surface'
 import type { ClientSessionState } from '../../../../types'
 import type { SegmentStamp } from '../segment-identity'
 
+export interface TimedOutApprovalRecovery {
+  command: string
+  commandDigest?: string
+  executionGeneration?: number
+  recoveryToken?: string
+  requestId?: string
+  sessionId: string
+  turnId?: string
+}
+
 export interface GatewayEventDeps {
   activeGatewayProfile: string
   activeSessionIdRef: MutableRefObject<string | null>
@@ -49,7 +59,7 @@ export interface GatewayEventDeps {
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
   scheduleSessionsRefresh: () => void
-  retryTimedOutApproval?: (sessionId: string, command: string) => Promise<boolean>
+  retryTimedOutApproval?: (recovery: TimedOutApprovalRecovery) => Promise<boolean>
   sessionInterrupted: (sessionId: string) => boolean
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
   updateSessionState: (

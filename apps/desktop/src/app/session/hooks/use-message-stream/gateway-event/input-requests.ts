@@ -212,7 +212,16 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     // see; the tool row then shows a model-facing "BLOCKED" result. Say what
     // happened in human terms and point at the setting that controls the wait.
     if (payload?.reason === 'timeout' && sessionId) {
-      const timedOutApproval = { command: approval.command, sessionId }
+      const timedOutApproval = {
+        command: approval.command,
+        commandDigest: approval.commandDigest,
+        executionGeneration: approval.executionGeneration,
+        recoveryToken: approval.recoveryToken,
+        requestId: approval.requestId,
+        sessionId,
+        turnId: approval.turnId
+      }
+
       const line = translateNow('assistant.approval.timedOutSystemLine')
 
       deps.flushQueuedDeltas(sessionId)
@@ -234,7 +243,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         secondaryAction: {
           label: translateNow('assistant.approval.askHermesToTryAgain'),
           onClick: () => {
-            void deps.retryTimedOutApproval?.(timedOutApproval.sessionId, timedOutApproval.command)
+            void deps.retryTimedOutApproval?.(timedOutApproval)
           }
         }
       })

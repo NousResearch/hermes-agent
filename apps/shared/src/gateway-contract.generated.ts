@@ -2933,6 +2933,8 @@ export interface PendingApproval {
   smart_denied?: boolean | null
   choices?: string[] | null
   tool_name?: string | null
+  command_digest?: string | null
+  recovery_token?: string | null
   [key: string]: unknown
 }
 export interface ApprovalReceivedParams {
@@ -2954,6 +2956,22 @@ export interface ApprovalRespondParams {
 export interface ApprovalRespondResult {
   resolved: number
 }
+/** Exact identity for a timed-out approval recovery attempt. Recovery is deliberately not an alias for ``approval.respond``: the backend must authenticate the original request, session, execution binding, command digest, and one-time token before it can ever admit work. */
+export interface ApprovalRecoverParams {
+  session_id: string
+  profile?: string | null
+  request_id: string
+  command_digest: string
+  recovery_token: string
+  execution_generation?: number | null
+  turn_id?: string | null
+}
+export interface ApprovalRecoverResult {
+  status: ApprovalRecoverStatus
+  blocker?: string | null
+  result?: Record<string, unknown> | null
+}
+export type ApprovalRecoverStatus = 'accepted' | 'queued' | 'streaming' | 'replay' | 'failed' | 'expired' | 'stale' | 'duplicate' | 'unsupported'
 export interface VoiceToggleParams {
   action?: VoiceToggleAction
   profile?: string | null
@@ -6045,6 +6063,8 @@ export interface RpcMethods {
   'approval.pending': { params: ApprovalPendingParams; result: ApprovalPendingResult }
   /** Tell the backend the card is on screen, so its timeout clock starts. */
   'approval.received': { params: ApprovalReceivedParams; result: ApprovalReceivedResult }
+  /** Validate one exact approval recovery attempt; expired approvals remain terminal and are never replayed. */
+  'approval.recover': { params: ApprovalRecoverParams; result: ApprovalRecoverResult }
   /** Deliver the user's decision on a dangerous command (falls back to durable identity on a stale sid). */
   'approval.respond': { params: ApprovalRespondParams; result: ApprovalRespondResult }
   /** Enable/disable auto top-up with its threshold and reload amount (billing:manage). */
@@ -6559,6 +6579,7 @@ export const RPC_METHODS = [
   'agents.list',
   'approval.pending',
   'approval.received',
+  'approval.recover',
   'approval.respond',
   'billing.auto_reload',
   'billing.charge',

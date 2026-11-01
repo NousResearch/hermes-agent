@@ -69,6 +69,22 @@ failure retains that CAS payload; an explicit revision conflict requires a fresh
 snapshot before retry. Existing REST metadata writers are not migrated by this
 RPC adapter and do not yet provide universal revision fencing.
 
+## Timed-out approval recovery
+
+A timed-out Desktop approval remains terminal and is never revived or answered
+implicitly. The recovery action calls `approval.recover` with the server-issued
+request ID, command digest, recovery token, and optional turn/generation fences.
+The gateway validates ownership and current relevance, then admits one fresh
+server-generated user prompt through the ordinary `prompt.submit` path; that
+prompt must request approval again before the command can run. The command text
+is taken from the gateway's stored snapshot, not from a client-resubmitted value.
+
+Recovery is durable and idempotent. Reconnects or duplicate clicks replay the
+same accepted/queued/streaming result, while stale, unauthorized, conflicting,
+unsupported, or failed attempts are rejected without direct tool execution.
+Clients should treat only `accepted`, `queued`, `streaming`, and `replay` as
+successful outcomes and keep the original timeout visible in the transcript.
+
 ## Cutover limits
 
 The canonical authority currently exposes a narrower RPC set than the full

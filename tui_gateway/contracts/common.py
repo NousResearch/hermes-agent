@@ -219,6 +219,8 @@ class PendingApproval(OpenModel):
     smart_denied: bool | None = None
     choices: list[str] | None = None
     tool_name: str | None = None
+    command_digest: str | None = None
+    recovery_token: str | None = None
 
 
 class MessageReaction(OpenModel):

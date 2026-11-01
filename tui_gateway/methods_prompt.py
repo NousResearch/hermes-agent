@@ -818,7 +818,7 @@ from gateway.session_surface import SURFACES as _CLIENT_SURFACES
 
 
 @method("prompt.submit")
-def _(rid, params: dict) -> dict:
+def prompt_submit(rid, params: dict) -> dict:
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
@@ -1344,6 +1344,77 @@ def _(rid, params: dict) -> dict:
         lambda a: a.resolve_gateway_approval(
             session["session_key"], params.get("choice", "deny"),
             resolve_all=params.get("all", False), request_id=params.get("request_id")))
+
+
+@method("approval.recover")
+def approval_recover(rid, params: dict) -> dict:
+    """Admit a fresh user-originated recovery prompt through the normal submit path."""
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    required = ("request_id", "command_digest", "recovery_token")
+    if any(not isinstance(params.get(key), str) or not params[key] for key in required):
+        return _err(rid, 4006, "request_id, command_digest, and recovery_token required")
+    execution_generation = params.get("execution_generation")
+    if execution_generation is not None and (
+        isinstance(execution_generation, bool) or not isinstance(execution_generation, int)
+    ):
+        return _err(rid, 4006, "execution_generation must be an integer")
+    turn_id = params.get("turn_id")
+    if turn_id is not None and (not isinstance(turn_id, str) or not turn_id):
+        return _err(rid, 4006, "turn_id must be a non-empty string")
+    with _session_db(session) as recovery_db:
+        claim = {}
+        from tools import approval
+        try:
+            claim = approval.recover_gateway_approval(
+                session["session_key"], params["request_id"],
+                command_digest=params["command_digest"], recovery_token=params["recovery_token"],
+                execution_generation=execution_generation, turn_id=turn_id,
+                recovery_db=recovery_db,
+                principal_id=session.get("auth_user_id") or session["session_key"],
+                durable_session_id=session["session_key"])
+            if claim.get("status") == "replay":
+                return _ok(rid, {"status": "replay", "result": claim.get("result")})
+            if claim.get("status") != "admitting":
+                return _ok(rid, claim)
+            command = claim.get("command_snapshot")
+            if not isinstance(command, str) or not command:
+                result = {"status": "failed", "blocker": "stored command snapshot is unavailable"}
+                return _ok(rid, approval.finish_gateway_approval_recovery(
+                    session["session_key"], params["request_id"], status="failed", result=result,
+                    recovery_db=recovery_db, principal_id=session.get("auth_user_id") or session["session_key"],
+                    durable_session_id=session["session_key"], seq=claim.get("seq")))
+            recovery_text = (
+                "The previous approval expired before consent was received. Re-evaluate this exact command "
+                "and, only if it is still needed, request approval again:\n\n" + command)
+            normal = prompt_submit(
+                f"{rid}:recovery", {"session_id": params["session_id"], "text": recovery_text})
+            if normal.get("error"):
+                result = {"status": "failed", "error": normal["error"]}
+                stored = approval.finish_gateway_approval_recovery(
+                    session["session_key"], params["request_id"], status="failed", result=result,
+                    recovery_db=recovery_db, principal_id=session.get("auth_user_id") or session["session_key"],
+                    durable_session_id=session["session_key"], seq=claim.get("seq"))
+                return _ok(rid, stored)
+            normal_result = normal.get("result") or {}
+            prompt_status = normal_result.get("status")
+            recovery_status = prompt_status if prompt_status in ("queued", "streaming") else "accepted"
+            stored = approval.finish_gateway_approval_recovery(
+                session["session_key"], params["request_id"], status=recovery_status,
+                result=normal_result, recovery_db=recovery_db,
+                principal_id=session.get("auth_user_id") or session["session_key"],
+                durable_session_id=session["session_key"], seq=claim.get("seq"))
+            return _ok(rid, {"status": recovery_status, "result": stored.get("result", normal_result)})
+        except Exception as exc:
+            if claim.get("status") == "admitting" and approval is not None:
+                with contextlib.suppress(Exception):
+                    approval.finish_gateway_approval_recovery(
+                        session["session_key"], params["request_id"], status="failed",
+                        result={"status": "failed", "error": str(exc)}, recovery_db=recovery_db,
+                        principal_id=session.get("auth_user_id") or session["session_key"],
+                        durable_session_id=session["session_key"], seq=claim.get("seq"))
+            return _err(rid, 5004, str(exc))
 
 
 # ── attachments ─────────────────────────────────────────────────────────────

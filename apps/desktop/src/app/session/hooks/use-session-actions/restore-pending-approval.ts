@@ -17,10 +17,14 @@ export function restorePendingApproval(response: SessionResumeResult, sessionId:
     allowPermanent: pending.allow_permanent !== false,
     choices: pending.choices,
     command: pending.command ?? '',
+    commandDigest: pending.command_digest,
     description: pending.description ?? 'dangerous command',
+    executionGeneration: pending.execution_generation,
+    recoveryToken: pending.recovery_token,
     requestId: typeof pending.request_id === 'string' ? pending.request_id : undefined,
     sessionId,
-    smartDenied: pending.smart_denied === true
+    smartDenied: pending.smart_denied === true,
+    turnId: pending.turn_id
   })
   void replayPendingApproval($gateway.get(), sessionId).catch(() => undefined)
 

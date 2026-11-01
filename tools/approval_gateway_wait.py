@@ -11,6 +11,7 @@ call time.
 """
 
 import logging
+import secrets
 import threading
 import time
 import uuid
@@ -30,6 +31,7 @@ class _ApprovalEntry:
         self.event = threading.Event()
         self.data = dict(data)
         self.data.setdefault("request_id", uuid.uuid4().hex)
+        self.data.setdefault("recovery_token", secrets.token_urlsafe(32))
         self.acknowledged = False
         # Surface hook run once when the wait ends by ANY path (answer, timeout, interrupt, /approve from
         # another client): the tui_gateway withdraws its open server→client request through it.
@@ -172,6 +174,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     def _enqueue() -> None:
         register_prepared_approval(session_key, entry)
         _approval._gateway_queues.setdefault(session_key, []).append(entry)
+        _approval._record_approval_recovery(entry, session_key, "pending")
 
     # The leader lookup and our enqueue are ONE critical section: split, two identical requests both
     # miss each other, both enqueue and the user gets duplicate prompts. A ``once`` releases the
@@ -206,6 +209,10 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
                 _approval._gateway_queues.pop(session_key, None)
             settle, entry.settle = entry.settle, None
             observers, entry.observers = entry.observers, []
+            if choice is None and state == "timeout":
+                _approval._record_approval_recovery(entry, session_key, "expired")
+            elif choice is not None:
+                _approval._record_approval_recovery(entry, session_key, "resolved")
             if choice is None and state in ("timeout", "notify_failed"):
                 # Coalesced followers block on this event: wake them with the leader's outcome rather than
                 # leaving them waiting their own full timeout on a prompt that no longer exists.

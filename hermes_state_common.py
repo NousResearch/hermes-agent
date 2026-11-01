@@ -286,7 +286,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
 # (schema_read_probe_statements), never by this number, and its catch-up is the declarative
 # executescript(SCHEMA_SQL) + _reconcile_columns() every writable open already runs (additive,
 # idempotent). The bump only records that the declared shape changed; a new table or column needs no bump.
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA
@@ -607,6 +607,27 @@ CREATE TABLE IF NOT EXISTS session_admissions (
 );
 CREATE INDEX IF NOT EXISTS session_admissions_pending
     ON session_admissions(target_session_id, status, seq);
+-- Approval recovery is an authority ledger, not executable turn state. It survives
+-- gateway reconnects/restarts while keeping the original request identity and payload
+-- digest fenced by the authenticated principal and session.
+CREATE TABLE IF NOT EXISTS approval_recovery_admissions (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    principal_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    recovery_token TEXT NOT NULL,
+    payload_digest TEXT NOT NULL,
+    command_snapshot TEXT,
+    execution_generation INTEGER,
+    turn_id TEXT,
+    status TEXT NOT NULL CHECK (status IN ('pending','resolved','expired','cancelled','consumed')),
+    recovery_status TEXT,
+    result_json TEXT,
+    UNIQUE (principal_id, session_id, request_id),
+    UNIQUE (principal_id, recovery_token)
+);
+CREATE INDEX IF NOT EXISTS idx_approval_recovery_session
+    ON approval_recovery_admissions(principal_id, session_id, request_id);
 -- Cron run history finds a job's unified-runtime runs by the scheduler principal's request ids
 -- (``cron:<job>:<execution>``); without this a lookup walked
 -- every cron admission of every job. Partial: interactive turns, the bulk of admissions, pay

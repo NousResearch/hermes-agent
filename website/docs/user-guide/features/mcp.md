@@ -217,6 +217,14 @@ understands, the picker will surface a warning (`⚠ '<name>' requires a newer
 Hermes`) for that entry instead of silently hiding it. Run `hermes update`
 to install the latest Hermes when you see that.
 
+Version 2 adds `trust`. An entry that declares `trust: untrusted` installs
+with that key in its `mcp_servers.<name>` block, so Hermes asks you before
+every call to a tool the server doesn't annotate `readOnlyHint: true` (see
+[`trust`](../../reference/mcp-config-reference.md#server-keys)). A Hermes
+that only understands version 1 shows the warning above for such an entry
+instead of installing it without the prompts. Reinstalling the entry writes
+the key again.
+
 ### Runtime `${ENV_VAR}` substitution
 
 Inside an entry's `transport.command`, `transport.args`, `transport.url`,

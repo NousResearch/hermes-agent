@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 from agent.display import KawaiiSpinner
-from agent.interrupt_control import interrupt_issuer, interrupted_during_api_call_reason
+from agent.interrupt_control import interrupt_issuer
 from agent.turn_context_compaction import _reanchor
 from agent.turn_truncation import boosted_output_cap
 
@@ -178,7 +178,9 @@ def prepare_iteration(
     # break the prompt cache — same contract as apply_pending_steer_to_tool_results).
     _pre_api_steer = agent._drain_pending_steer()
     if _pre_api_steer:
-        _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer)
+        _inject_steer_after_newest_tool_result(
+            agent, messages, _pre_api_steer, current_turn_user_idx=current_turn_user_idx,
+        )
 
     # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, appended to the
     # newest tool result; off with no budget.
@@ -281,10 +283,35 @@ def _previous_tool_round(messages: Any) -> list:
     return []
 
 
-def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:
-    """Append the steer marker as a standalone user row after the newest tool message; with no
-    tool message, put the text back so the post-tool-execution drain delivers it later."""
-    for _si in range(len(messages) - 1, -1, -1):
+def _inject_steer_after_newest_tool_result(
+    agent: Any, messages: Any, steer_text: str, *, current_turn_user_idx: Any = None,
+) -> None:
+    """Append the steer marker as a standalone user row after the newest *in-turn*
+    tool message; with no in-turn tool, put the text back so the post-tool drain
+    delivers it later.
+
+    Only ``role==tool`` rows with index strictly greater than the current-turn
+    user floor are eligible. A prior-turn tool must not receive the insertion —
+    that would place the steer *before* the current user message and treat it
+    as historical context rather than a correction to the active turn.
+    """
+    if not steer_text:
+        return
+    floor = current_turn_user_idx
+    n = len(messages)
+    if not isinstance(floor, int) or not (0 <= floor < n):
+        from agent.prompt_builder import STEER_DISPLAY_KIND
+        floor = -1
+        for _ui in range(n - 1, -1, -1):
+            _um = messages[_ui]
+            if (
+                isinstance(_um, dict)
+                and _um.get("role") == "user"
+                and _um.get("display_kind") != STEER_DISPLAY_KIND
+            ):
+                floor = _ui
+                break
+    for _si in range(n - 1, floor, -1):
         _sm = messages[_si]
         if isinstance(_sm, dict) and _sm.get("role") == "tool":
             from agent.prompt_builder import steer_user_row
@@ -490,7 +517,10 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if interrupted:
-        _turn_exit_reason = interrupted_during_api_call_reason(agent)
+        _issuer = interrupt_issuer(agent)
+        _turn_exit_reason = (
+            f"interrupted_during_api_call({_issuer})" if _issuer else "interrupted_during_api_call"
+        )
         return _verdict("break")
 
     if _retry.restart_with_compressed_messages:

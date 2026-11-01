@@ -4041,6 +4041,11 @@ export interface ToolsetRow {
   enabled: boolean
   tools?: string[] | null
 }
+/** ``tools.show`` is ALSO served by the session owner (``gateway/session_ancillary.show_tools``), which routes on ``profile`` and refuses nothing else; the sidecar handler ignores it. Kept off ``_SessionScoped`` so ``tools.list`` / ``toolsets.list`` stay as narrow as their handlers, which resolve no profile. */
+export interface ToolsShowParams {
+  session_id?: string | null
+  profile?: string | null
+}
 export interface ToolsShowResult {
   sections: ToolShowSection[]
   total: number
@@ -4077,12 +4082,13 @@ export interface ReloadEnvParams {
 export interface ReloadEnvResult {
   updated: number
 }
-/** Without ``confirm`` the handler may answer ``confirm_required`` (per ``approvals.mcp_reload_confirm``); ``always`` persists the opt-out; ``rev`` is the config revision the caller wants loaded (coalescing). */
+/** Without ``confirm`` the handler may answer ``confirm_required`` (per ``approvals.mcp_reload_confirm``); ``always`` persists the opt-out; ``rev`` is the config revision the caller wants loaded (coalescing). ``profile`` is the owner's routing key: the sidecar handler ignores it, the authority routes on it. ``always`` is the SIDECAR's opt-out only — the authority has none and refuses the key (``CANONICAL_METHODS['reload.mcp']``). */
 export interface ReloadMcpParams {
   session_id?: string | null
   confirm?: boolean
   always?: boolean
   rev?: string | null
+  profile?: string | null
 }
 /** ``session``: what the calling local session's MCP servers did (a new policy generation, nothing to change, or deferred while a turn runs or waits); ``unavailable``: configured servers that did not connect beside what did apply; ``session_servers``: the MCP servers that session's committed policy runs. */
 export interface ReloadMcpResult {
@@ -4966,6 +4972,13 @@ export interface WorkerPersistParams {
 }
 /** The operation's durable receipt (``message_id`` for an append, delegation results, …). */
 export type WorkerPersistResult = Record<string, unknown>
+/** The authority's ``reload.mcp`` (``gateway/session_ancillary.reload_mcp``) reconciles THIS profile's servers and moves the calling session to a new tool policy generation when it is idle. It has no persistent opt-out, so ``always`` — the sidecar's own confirm opt-out — is not part of this wire (the handler refuses it, ``4001 invalid_params``), and ``profile`` is its routing key. */
+export interface CanonicalReloadMcpParams {
+  session_id?: string | null
+  confirm?: boolean
+  rev?: string | null
+  profile?: string | null
+}
 export interface CanonicalCreateParams {
   profile?: string | null
   request_id?: string | null
@@ -6525,7 +6538,7 @@ export interface RpcMethods {
   /** Every toolset with its resolved tool names, flagged against the session's (or config's) enabled set. */
   'tools.list': { params: _SessionScoped; result: ToolsetsListResult }
   /** The /tools listing grouped by toolset, including tools deferred behind the tool_search bridge. */
-  'tools.show': { params: _SessionScoped; result: ToolsShowResult }
+  'tools.show': { params: ToolsShowParams; result: ToolsShowResult }
   /** Toolset summaries (no tool names) for the desktop Toolsets tab. */
   'toolsets.list': { params: _SessionScoped; result: ToolsetsListResult }
   /** Two-bar dollar usage view shared by /usage, /topup and /subscription; fail-open to unavailable. */
@@ -6874,6 +6887,8 @@ export interface CanonicalRpcMethods {
   /** Hand a still-queued admission's text to the running turn's agent as a steer. The admission reads 'started' with that turn (pending snapshots mark it 'steering') and never runs on its own; it settles terminal 'steered' when the turn completes with its text, else 'interrupted' (its completion frame says 'cancelled', as an interrupted turn's does); a text the turn never consumed goes back to its queue place. Refusals: admission_started, session_idle, steer_unavailable (no agent to take it: the admission stays queued), unsupported_control, not_found. */
   'prompt.steer_queued': { params: CanonicalSteerQueuedParams; result: AdmissionStatus }
   'prompt.submit': { params: CanonicalSubmitParams; result: CanonicalSubmitResult }
+  /** Reconcile this profile's live MCP servers with its config; this chat's tools change as a new policy generation (deferred while a turn runs). */
+  'reload.mcp': { params: CanonicalReloadMcpParams; result: ReloadMcpResult }
   /** The classic CLI's /diff session: everything changed since the session's earliest retained checkpoint, as data for its terminal renderer. */
   'rollback.session_diff': { params: RollbackSessionDiffParams; result: RollbackSessionDiffResult }
   /** Owner identity and the canonical capabilities a client may rely on. */
@@ -6938,6 +6953,7 @@ export const CANONICAL_RPC_METHODS = [
   'prompt.resolve_unknown',
   'prompt.steer_queued',
   'prompt.submit',
+  'reload.mcp',
   'rollback.session_diff',
   'runtime.describe',
   'session.automation',

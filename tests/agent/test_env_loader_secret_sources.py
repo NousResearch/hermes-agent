@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -478,6 +479,86 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
     env_loader.reset_secret_source_cache()
     env_loader._apply_external_secret_sources(tmp_path)
     assert call_count["n"] == 2
+
+
+def _race_a_fetching_pass(monkeypatch, home, second_call) -> int:
+    """Hold one pass for *home* inside its fetch, run *second_call* on another thread until it waits on
+    the secret-source lock, enters a fetch of its own, or returns; then let the first pass finish.
+    Returns how many fetches ran."""
+    from agent.secret_sources.base import FetchResult
+    from agent.secret_sources.registry import ApplyReport, SourceReport
+    from agent.secret_sources import registry as reg_module
+
+    (home / "config.yaml").write_text(
+        "secrets:\n  test-source:\n    enabled: true\n", encoding="utf-8"
+    )
+    fetching, release, progressed = threading.Event(), threading.Event(), threading.Event()
+    calls = []
+
+    def _fake_apply_all(_cfg, home_path):
+        calls.append(home_path)
+        if len(calls) == 1:
+            fetching.set()
+            release.wait(timeout=10)
+        else:
+            progressed.set()
+        return ApplyReport(
+            sources=[SourceReport(name="test-source", label="Test Source", result=FetchResult())]
+        )
+
+    lock = env_loader._SECRET_SOURCE_CACHE_LOCK
+
+    class _ContentionReportingLock:
+        def __enter__(self):
+            if not lock.acquire(blocking=False):
+                progressed.set()
+                lock.acquire()
+
+        def __exit__(self, *_exc):
+            lock.release()
+
+    def _second():
+        second_call()
+        progressed.set()
+
+    monkeypatch.setattr(reg_module, "apply_all", _fake_apply_all)
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCE_CACHE_LOCK", _ContentionReportingLock())
+    threads = [
+        threading.Thread(target=env_loader._apply_external_secret_sources, args=(home,)),
+        threading.Thread(target=_second),
+    ]
+    threads[0].start()
+    try:
+        assert fetching.wait(timeout=10)
+        threads[1].start()
+        assert progressed.wait(timeout=10)
+    finally:
+        release.set()
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=10)
+    assert not any(t.is_alive() for t in threads), "secret-source worker did not finish"
+    return len(calls)
+
+
+def test_concurrent_loads_for_one_home_fetch_once(tmp_path, monkeypatch):
+    """The home is marked applied only after its fetch, so a second load arriving mid-fetch must wait
+    for that pass instead of passing the guard and fetching (and printing) again."""
+    fetches = _race_a_fetching_pass(
+        monkeypatch, tmp_path, lambda: env_loader._apply_external_secret_sources(tmp_path)
+    )
+
+    assert fetches == 1
+    assert str(tmp_path.resolve()) in env_loader._APPLIED_HOMES
+
+
+def test_reset_during_fetch_still_forces_next_pull(tmp_path, monkeypatch):
+    """A reset issued while a pass is fetching must not be undone when that pass marks the home."""
+    _race_a_fetching_pass(
+        monkeypatch, tmp_path, lambda: env_loader.reset_secret_source_cache(tmp_path)
+    )
+
+    assert str(tmp_path.resolve()) not in env_loader._APPLIED_HOMES
 
 
 def test_apply_external_secret_sources_status_line_suppresses_secret_names(

@@ -132,7 +132,18 @@ def _resolve_mcp_invocation(driver_cmd: str, *, timeout: float = 6.0) -> tuple[s
     # a concrete (path-bearing) command replaces the one we verified — and THAT binary is probed for `--no-overlay`,
     # not the system one.
     command = _wsl_windows_path_to_posix(command) if isinstance(command, str) and command else ""
-    command = command if command and _has_path_separator(command) else driver_cmd
+    # An explicit environment override may be a transport wrapper (for example,
+    # SSH to a remote Mac). The remote manifest correctly reports its own
+    # absolute executable, but that path must not replace the local wrapper.
+    configured_raw = os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip()
+    configured = os.path.expanduser(configured_raw)
+    resolved_configured = resolve_cua_driver_cmd(configured_raw) if configured_raw else None
+    is_configured_wrapper = bool(
+        configured and (os.path.expanduser(driver_cmd) == configured or
+                        os.path.expanduser(driver_cmd) == resolved_configured)
+    )
+    command = (driver_cmd if is_configured_wrapper else
+               command if command and _has_path_separator(command) else driver_cmd)
     return command, _mcp_args_with_overlay_flag(args, driver_cmd=command)
 
 def _manifest_contract_reason(manifest: Optional[dict[str, Any]]) -> str:

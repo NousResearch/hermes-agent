@@ -97,8 +97,17 @@ it('leaves Linux alone and reports a missing framework without failing packaging
     // win32 is not a no-op here: the same hook sanitizes and batch-signs the PE tree.
     const linuxCtx = { appOutDir: root, electronPlatformName: 'linux' }
     await seedPackagedMain(linuxCtx)
+    // The completeness guard (#102013) wants the Chromium payload next to the app; remove it
+    // again so the darwin half below still sees only the files it asserts on.
+    const chromium = ['icudtl.dat', 'resources.pak', 'locales']
+    await writeFile(path.join(root, 'icudtl.dat'), 'x')
+    await writeFile(path.join(root, 'resources.pak'), 'x')
+    await mkdir(path.join(root, 'locales'), { recursive: true })
+    await writeFile(path.join(root, 'locales', 'en-US.pak'), 'x')
+    await writeFile(path.join(`${resolvePackagedAsarPath(linuxCtx)}.unpacked`, 'dist', 'index.html'), '<html></html>')
     await configuredHook(linuxCtx)
     expect(warn).not.toHaveBeenCalled()
+    await Promise.all(chromium.map(name => rm(path.join(root, name), { recursive: true, force: true })))
     const ctx = context(root)
     await seedPackagedMain(ctx)
     await configuredHook(ctx)

@@ -249,3 +249,27 @@ class TestSearXNGOnlyExtractCrawlErrors:
         result = json.loads(result_str)
         assert result["success"] is False
         assert "search-only" in result["error"].lower() or "SearXNG" in result["error"]
+
+
+class TestSearXNGTimeoutOverride:
+    """SEARXNG_TIMEOUT env override for _searxng_timeout()."""
+
+    def test_default_is_15_when_unset(self, monkeypatch):
+        monkeypatch.delenv("SEARXNG_TIMEOUT", raising=False)
+        from plugins.web.searxng.provider import _searxng_timeout
+        assert _searxng_timeout() == 15.0
+
+    def test_env_override_applies(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_TIMEOUT", "60")
+        from plugins.web.searxng.provider import _searxng_timeout
+        assert _searxng_timeout() == 60.0
+
+    def test_unparseable_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_TIMEOUT", "not-a-number")
+        from plugins.web.searxng.provider import _searxng_timeout
+        assert _searxng_timeout() == 15.0
+
+    def test_floored_at_5s(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_TIMEOUT", "0.1")
+        from plugins.web.searxng.provider import _searxng_timeout
+        assert _searxng_timeout() == 5.0

@@ -1,7 +1,8 @@
 """SearXNG search via a user-hosted instance (``/search?format=json``).
 
 Search-only — SearXNG aggregates upstream engines but does not fetch URLs.
-Env: ``SEARXNG_URL=http://localhost:8080``.
+Env: ``SEARXNG_URL=http://localhost:8080``; optional ``SEARXNG_TIMEOUT``
+(seconds, default 15) overrides the request deadline.
 """
 
 from __future__ import annotations
@@ -12,6 +13,20 @@ from typing import Any, Dict
 from plugins.web._common import BaseWebSearchProvider, http_get_json, provider_env, search_fail, search_ok, setup_schema, titled_rows
 
 logger = logging.getLogger(__name__)
+
+def _searxng_timeout() -> float:
+    """Request deadline in seconds — ``SEARXNG_TIMEOUT`` env override.
+
+    Useful for private SearXNG instances behind slow upstream paths
+    (e.g. Tor exits, where an engine round can take 5-25s). Defaults
+    to 15s when unset or unparseable; floored at 5s so a nonsensical
+    low value can't wedge every query.
+    """
+    raw = provider_env("SEARXNG_TIMEOUT")
+    try:
+        return max(5.0, float(raw)) if raw else 15.0
+    except (TypeError, ValueError):
+        return 15.0
 
 
 class SearXNGWebSearchProvider(BaseWebSearchProvider):
@@ -27,7 +42,7 @@ class SearXNGWebSearchProvider(BaseWebSearchProvider):
             return search_fail("SEARXNG_URL is not set")
         data, failure = http_get_json(
             "SearXNG", f"{base_url}/search", params={"q": query, "format": "json", "pageno": 1},
-            headers={"Accept": "application/json"}, timeout=15, logger=logger, reach_target=f"SearXNG at {base_url}",
+            headers={"Accept": "application/json"}, timeout=_searxng_timeout(), logger=logger, reach_target=f"SearXNG at {base_url}",
         )
         if failure is not None:
             return failure

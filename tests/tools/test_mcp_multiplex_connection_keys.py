@@ -459,6 +459,16 @@ def test_filter_change_preserves_live_connection_and_reconciles_native_tools(two
     assert reg.reapply_tool_filters({"x": narrowed}) == 0
     assert core._servers[(scope, "x")] is server
 
+    # Explicitly disabling every native tool must revoke it from the live
+    # registry, and widening the filter later must restore it without a reconnect.
+    none = {**cfg, "tools": {"include": []}}
+    assert reg.reapply_tool_filters({"x": none}) == 1
+    assert registry.get_tool_names_for_toolset("mcp-x") == []
+    assert reg.reapply_tool_filters({"x": none}) == 0
+    assert reg.reapply_tool_filters({"x": cfg}) == 1
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+    assert core._servers[(scope, "x")] is server
+
 
 def test_filter_reconcile_never_reuses_other_credentials(two_profiles):
     """A filter edit must not make a differently authenticated route share tools."""

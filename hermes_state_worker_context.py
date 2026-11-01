@@ -46,7 +46,7 @@ def worker_sidecars(db, conn, session_id, payload):
 
 def worker_tool_names(db, conn, session_id, payload):
     """The tools[] pin, same contract as ``SessionDB.update_session_tool_names``: any JSON pin
-    (``{"version", "tools"}`` today; a legacy name list) content-addressed through ``system_prompts``,
+    (``{"version", "tools"[, "delegation_backend"]}`` today; a legacy name list) content-addressed through ``system_prompts``,
     ``None`` clears. Bounded so a worker cannot write an unbounded blob into the shared table."""
     if set(payload) != {'tool_names'}:
         raise RuntimeStoreError('invalid_params')
@@ -56,8 +56,11 @@ def worker_tool_names(db, conn, session_id, payload):
             raise RuntimeStoreError('invalid_params')
         if isinstance(pin, list) and not all(isinstance(n, str) and 0 < len(n) <= 256 for n in pin):
             raise RuntimeStoreError('invalid_params')
-        if isinstance(pin, dict) and (set(pin) != {'version', 'tools'} or not isinstance(pin['version'], str)
-                                      or not isinstance(pin['tools'], list)):
+        # ``delegation_backend``: the backend the pinned delegate_task was built from (agent/delegation_backends.py).
+        backend = pin.get('delegation_backend', '') if isinstance(pin, dict) else ''
+        if isinstance(pin, dict) and (not {'version', 'tools'} <= set(pin) <= {'version', 'tools', 'delegation_backend'}
+                                      or not isinstance(pin['version'], str) or not isinstance(pin['tools'], list)
+                                      or not isinstance(backend, str) or len(backend) > 64):
             raise RuntimeStoreError('invalid_params')
     encoded = None if pin is None else json.dumps(pin)
     if encoded is not None and len(encoded) > 4 * 1024 * 1024:

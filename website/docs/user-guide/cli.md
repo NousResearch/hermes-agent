@@ -63,9 +63,20 @@ hermes -w -z "Fix issue #123"     # Single query in worktree
 
 `hermes -w` sessions create disposable worktrees under `<repo>/.worktrees/`.
 With `hermes --tui -w`, closing the terminal detaches from the gateway-owned
-session. Its worktree is retained even when clean: the turn may still be running
-there, and resuming the session uses the same working directory. Review and prune
-it after the session's work is finished.
+session. A clean worktree is removed with its branch on quit unless something
+still needs it. It is retained when it has uncommitted changes or unpushed
+commits, when the gateway still has a turn queued or running there, when a
+session in it has an active `/loop`, `/heartbeat` or `/goal`, when an enabled
+cron job runs in it or is bound to such a session, or when another viewer (a
+Desktop window, say) still holds that session. Resuming a session uses its
+working directory: if quit removed the worktree, `hermes --tui --resume <id>`,
+`hermes --tui -c` and the classic `hermes --resume`/`-c` recreate it at the same
+path before attaching (on its branch if that still exists, else on a new branch
+of the same name from the repo's current `HEAD`). Only worktrees that
+`hermes --tui -w` itself created are recreated. The quit-time check reads the
+session store and then removes the tree; a viewer that attaches and submits in
+the moment between the two is not seen, so that turn can find its directory
+gone.
 A sweep runs automatically at `hermes -w` startup and every 6 hours from the
 cron ticker: idle clean+merged trees are removed, and idle trees with
 uncommitted changes or unpushed commits are **archived, then removed**
@@ -173,11 +184,41 @@ acknowledge it before continuing. Do not resend the queued input.
 <img className="docs-terminal-figure" src="/docs/img/docs/cli-layout.svg" alt="Stylized preview of the Hermes CLI layout showing the banner, conversation area, and fixed input prompt." />
 <p className="docs-figure-caption">The Hermes CLI banner, conversation stream, and fixed input prompt rendered as a stable docs figure instead of fragile text art.</p>
 
+### Layout styles
+
+`display.cli_layout` picks how the classic CLI draws. The default, `modern`, prints everything in the scrollback as plain rows that start with one glyph and never depend on the terminal width, so resizing the window can't garble earlier output:
+
+```
+❯ add a multiply function and run the tests
+∴ Thought for 3s · Planning the change
+📖 Read calc.py
+🔧 Patch  0.2s
+│ calc.py
+│ @@ -1,2 +1,6 @@
+│ +def multiply(a, b):
+│ +    return a * b
+✗ $ pytest -q  0.4s [exit 1]
+☤ Hermes
+Added multiply; pytest isn't installed here, so I ran the tests directly: 2 passed.
+─ 15.0s · edited 1 file +4 -0 · read 2 files · 8:27 AM
+── ⠹ Running tests · 14s ─────────────────────────── Add multiply to calc.py ─
+❯ type to redirect this turn · Tab queues it for after
+──────────────────────────────────────────────────────────────────────────────
+ gpt-5-mini · ctx [░░░░░░░░] 4% · ~/project (main)     enter interrupt · tab queue · ctrl+c stop
+```
+
+- A 40-column bar opens each user message and answer (accent) and each reasoning block (dim); reasoning streams live as in classic and ends with a `∴ Thought for 3s · <title>` line. `❯` your message, a finished tool call led by its emoji (`📖 Read`, `💻 $`; `✗` in red when it failed, with its exit code; a refused `skill_manage` write keeps its emoji and shows the reason dim, since the agent retries it itself), `│` an edit's diff under its row, `☤` the answer, and `─` the turn's summary line.
+- The composer's top rule carries the live activity (spinner, what's running, elapsed time, streamed tokens) on the left and the session title on the right; no spinner row is printed into the scrollback.
+- The status line sits under the composer: the same fields as the classic status bar (model, context, cache hit, latency, tokens/s, background work, goal, duration, YOLO…) plus the working directory (with git branch) on the left; the keys that do something right now on the right.
+- The welcome banner is the same in both layouts.
+
+Set `display.cli_layout: classic` to keep the boxed reasoning and answer panels and the status bar above the input.
+
 The welcome banner shows your model, terminal backend, working directory, available tools, and installed skills at a glance.
 
 ### Status Bar
 
-A persistent status bar sits above the input area, updating in real time:
+In the `classic` layout a persistent status bar sits above the input area, updating in real time (the `modern` layout's status line under the composer reads the same data; an explicit `display.status_bar.fields` list chooses its left side too):
 
 ```
  ☤ claude-sonnet-4-20250514 │ 12.4K/200K │ [██████░░░░] 6% │ $0.06 │ 15m
@@ -235,7 +276,7 @@ On macOS, `F6`/`F7` mean the physical function keys, not the media/system contro
 | `Ctrl+R` / `F7` | Toggle the live work dock between its multi-row preview and a single summary line without moving composer focus. `Ctrl+R` is the reliable fallback when macOS reserves the function-key row. Besides subagents and background processes, the dock shows a standing `/goal` (active, parked or paused, with turns used) on its top row and the prompts waiting in `/queue` on its bottom rows. |
 | `Ctrl+D` | Exit (on an empty prompt; with text it deletes under the cursor). While the gateway runs a turn, it exits and leaves the turn running: the gateway finishes it, ends the session afterwards, and `hermes --resume` shows the reply. A turn that asks a question (approval or clarify) meanwhile waits for its timeout or for you to resume. Use `Ctrl+C` to stop the turn instead. |
 | `Ctrl+Z` | Suspend Hermes to background (Unix only). Run `fg` in the shell to resume. |
-| `Tab` | Accept auto-suggestion (ghost text) or autocomplete slash commands |
+| `Tab` | Accept auto-suggestion (ghost text) or autocomplete slash commands. While the agent is working in the `modern` layout, `Tab` on a typed message queues it for the next turn |
 | `!<command>` | **Shell mode** — run a shell command yourself without spending a model turn (e.g. `!git status`, `!pytest -x`). See below. |
 
 **Multiline paste preview.** When you paste a multi-line block, the CLI echoes a compact single-line preview (`[pasted: 47 lines, 1,842 chars — press Enter to send]`) instead of dumping the whole payload into the scrollback. The full content is still what gets sent; this is just display polish.
@@ -343,7 +384,7 @@ Each entry is a skill name. The list is resolved once when a session's system pr
 Every installed skill in `~/.hermes/skills/` is automatically registered as a slash command. The skill name becomes the command:
 
 ```
-/gif-search funny cats
+/excalidraw sketch the request flow for our API
 /axolotl help me fine-tune Llama 3 on my dataset
 /github-pr-workflow create a PR for the auth refactor
 
@@ -431,7 +472,7 @@ The `display.busy_input_mode` config key controls what happens when you press En
 | Mode | Behavior |
 |------|----------|
 | `"interrupt"` (default) | Your message redirects the active turn. Model generation restarts with displayed reasoning and completed work preserved. A running foreground terminal command is moved to the background (not killed — you get a completion notification) so your message is read immediately; other running tools finish first |
-| `"queue"` | Your message is queued as the next turn after the agent finishes. The queue lives on the gateway (crash-durable, visible to every attached client). Classic `hermes chat` always behaves this way: every line typed during a turn queues at the gateway, whatever this key says; `interrupt` and `steer` are TUI and Desktop behaviours |
+| `"queue"` | Your message is queued as the next turn after the agent finishes. The queue lives on the gateway (crash-durable, visible to every attached client). |
 | `"steer"` | Your message is injected into the current run via `/steer`, arriving at the agent after the next tool call — no interrupt, no new turn |
 
 ```yaml
@@ -445,6 +486,8 @@ display:
 `"steer"` has two automatic fallbacks: if the agent hasn't started yet, or if images are attached, the message falls back to `"queue"` behavior so nothing is lost.
 
 Whatever the mode, `/queue <prompt>` queues a follow-up turn explicitly, and `/queue list`, `/queue rm N`, `/queue edit N …` and `/queue move A B` act on the pending queue immediately, even mid-run. The live work dock lists what is waiting.
+
+When the CLI runs on the gateway's session (the default local setup), a prompt queued while a turn runs, by `/queue` or by queue-mode Enter, goes into the gateway's own queue for the session. It survives a gateway restart and runs once, in the order you entered it. Image follow-ups still wait in the CLI. That queue is shared: `/queue list`, `rm`, `edit` and `clear` show and change every prompt queued on the session, including ones another window or an automation queued. The gateway runs its queue in order and cannot reorder it, so `/queue move` refuses to move a prompt the gateway holds. A slash command typed while busy after your own `/queue` prompt runs after that prompt's turn starts; it waits at most a couple of seconds, so a paused queue never blocks typing.
 
 You can also change it inside the CLI:
 

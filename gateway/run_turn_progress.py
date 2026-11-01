@@ -872,6 +872,9 @@ class GatewayTurnProgressMixin:
             # Task state is application data, not tool chrome: the full snapshot, as the TUI gateway emits it.
             self._publish_execution("todo.updated", {"todos": payload["todos"], "revision": payload.get("revision", 0)})
         self._publish_api_tool("tool.complete", call_id, tool_name, args, result)
+        if local_viewer_turn(self):
+            from gateway import local_viewer_events
+            local_viewer_events.publish_control_if_changed(self)
         if self._ctx._native_slack_task_cards:
             self.native_tool_complete_callback(call_id, tool_name, args, result)
 
@@ -1006,9 +1009,11 @@ class GatewayTurnProgressMixin:
 
 def local_viewer_turn(runner) -> bool:
     """A local route's viewers read the canonical event stream; ``LocalSessionAdapter.send``
-    publishes nothing, so status and notices go to that stream instead."""
-    return (getattr(runner, "_approval_owner", None) is not None
-            and getattr(getattr(runner._ctx, "source", None), "platform", None) == Platform.LOCAL)
+    publishes nothing, so status and notices go to that stream instead. So does a conversation its
+    chat moved past (gateway/session_detached.py): it delivers through that same adapter."""
+    source = getattr(runner._ctx, "source", None) if getattr(runner, "_approval_owner", None) is not None else None
+    from gateway.session_detached import detached_route_of
+    return getattr(source, "platform", None) == Platform.LOCAL or detached_route_of(source) is not None
 
 
 def _viewer_status_kind(kind, text):

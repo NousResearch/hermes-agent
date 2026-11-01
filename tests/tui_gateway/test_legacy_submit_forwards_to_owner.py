@@ -283,7 +283,49 @@ def test_a_receipt_lost_after_the_owner_queued_it_is_unconfirmed_not_resendable(
         db.close()
 
 
-@pytest.mark.parametrize("case", ["owner_refused", "rewind"])
+def test_an_owner_error_after_its_commit_is_unconfirmed_not_resendable(monkeypatch, tmp_path):
+    """The owner publishes its pending list AFTER the durable write, and a SQLite error there reaches
+    serve as a structured ``storage_unavailable``, the same answer a refused write gets. The prompt is
+    in the owner's FIFO and survives a restart, so "Nothing was sent. Send it again" would queue a
+    second copy under a fresh submission id: only a refusal raised before the write may say so."""
+    import sqlite3
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key, turns, _emitted = _legacy(monkeypatch, db)
+    try:
+        db.create_session(key, "test")
+        epoch = begin_runtime_epoch(db, instance_id="gateway")
+        admit_session_input(db, epoch=epoch, principal_id="bot", session_id=key, request_id="dm-1",
+                            payload={"text": "a DM"})
+        claim_session_input(db, epoch=epoch, session_id=key)
+        authority = _owner(monkeypatch, db, key, epoch)
+        publish, failed = authority._publish_pending, []
+
+        def publish_fails_once(ref):  # the admission's publication, after its commit
+            if not failed:
+                failed.append(ref)
+                raise sqlite3.OperationalError("disk I/O error")
+            return publish(ref)
+        monkeypatch.setattr(authority, "_publish_pending", publish_fails_once)
+
+        reply = server.handle_request({"id": "p", "method": "prompt.submit",
+                                       "params": {"session_id": sid, "text": "my question"}})
+        mine = [row for row in list_session_admissions(db, session_id=key)
+                if row["payload"].get("text") == "my question"]
+        assert failed and len(mine) == 1  # the owner holds it
+        recover_session_inputs(db, epoch=begin_runtime_epoch(db, instance_id="gateway-2"))
+        after = {row["admission_id"]: row["status"] for row in list_session_admissions(db, session_id=key)}
+        assert after[mine[0]["admission_id"]] == "queued"  # it survives the restart and will run
+        assert reply["error"]["code"] == 4090
+        assert reply["error"]["data"] == {"reason": "SESSION_OWNER_UNCONFIRMED"}
+        message = reply["error"]["message"]
+        assert "Nothing was sent" not in message and "check the chat" in message
+        assert turns == []
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+@pytest.mark.parametrize("case", ["owner_refused", "owner_queue_full", "rewind"])
 def test_a_prompt_the_owner_cannot_queue_is_refused_with_why_and_when(monkeypatch, tmp_path, case):
     """Where admission is impossible the refusal names why and says to send when the turn ends,
     with a transient reason (not SESSION_NOT_OWNED, whose card offers a new chat)."""
@@ -305,13 +347,18 @@ def test_a_prompt_the_owner_cannot_queue_is_refused_with_why_and_when(monkeypatc
                 raise owner_forward.OwnerUnavailable("the gateway answered with another protocol")
                 yield
             monkeypatch.setattr(owner_forward, "connect_owner", refused)
+        elif case == "owner_queue_full":
+            # Sent, and refused by the owner's ledger inside its write: nothing was queued.
+            import hermes_state_runtime
+            monkeypatch.setattr(hermes_state_runtime, "ADMISSION_QUEUE_MAX", 0)
         else:
             params.update(truncate_before_user_ordinal=0, confirm_truncate=True)
         reply = server.handle_request({"id": "p", "method": "prompt.submit", "params": params})
         assert reply["error"]["code"] == 4090 and reply["error"]["data"] == {"reason": "SESSION_OWNER_BUSY"}
         message = reply["error"]["message"]
         assert "when the current turn ends" in message and "Nothing was sent" in message
-        assert ("another protocol" in message) if case == "owner_refused" else ("rewind" in message)
+        assert {"owner_refused": "another protocol", "owner_queue_full": "the gateway refused it",
+                "rewind": "rewind"}[case] in message
         assert len(list_session_admissions(db, session_id=key)) == 1 and turns == []
     finally:
         server._sessions.pop(sid, None)

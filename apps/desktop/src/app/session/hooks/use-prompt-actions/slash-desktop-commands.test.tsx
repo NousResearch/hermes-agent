@@ -308,7 +308,7 @@ describe('/config', () => {
                 s: { headers: { Authorization: `Bearer ${S}`, 'X-Api-Key': S, Cookie: `sid=${S}` }, env: { X: S } }
               },
               FAL_KEY: S,
-              browser: { camofox: { session_key: S } },
+              browser: { cdp_url: `ws://u:${S}@127.0.0.1:9222/`, session_key: S },
               terminal: {
                 ssh_private_key: S,
                 docker_shared_container_key: S,

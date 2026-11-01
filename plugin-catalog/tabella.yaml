@@ -1,6 +1,6 @@
 name: tabella
 repo: https://github.com/dyiapanis/tabella
-sha: b70f2097e551d16adfc2239ed3340956577aa161
+sha: 449e75462dc227789ef5c64e828c4db577f40ee5
 description: >-
   Document lifecycle for agents in one package: create .docx/.xlsx/.pptx/.pdf/.odt/.ods/.odp
   from structured JSON or raw HTML/CSS, convert between formats via pandoc + LaTeX, and read
@@ -23,22 +23,28 @@ description: >-
   deps (python-docx, openpyxl, python-pptx, weasyprint, odfpy, Pillow, lxml, PyMuPDF,
   firecrawl-anydoc, liteparse — 10 direct packages, transitives included in a 25-package
   closure) are pinned to exact versions with sha256 hashes in requirements-pinned.txt and
-  installed by scripts/setup.sh with --require-hashes into a venv under PLUGIN_DATA or
-  ~/.venvs/docs; system packages pandoc and texlive-xetex are required for PDF conversion
-  (weasyprint for HTML->PDF); OCR needs the tesseract binary; all conversion, reading, OCR
+  installed with --require-hashes into a venv under PLUGIN_DATA or ~/.venvs/docs
+  (scripts/setup.sh on Linux/macOS; on Windows the venv is built with the standard
+  library's venv module — no bash or MSYS2 needed); system pandoc is required for
+  conversion, a TeX engine (e.g. texlive-xetex) only when the output format is PDF
+  (weasyprint for HTML->PDF); OCR needs the tesseract binary (UB-Mannheim build on
+  Windows); all conversion, reading, OCR
   and PDF editing run locally with no network or telemetry; nothing is uploaded; read,
   convert, and PDF-edit tools access exactly the filesystem paths you pass; doc_create_document
   additionally containment-checks its output paths against the configured output directory
-  (escape warns). Linux is the tested platform.
+  (escape warns). Linux and Windows are CI-tested platforms (five-lane smoke battery on
+  windows-latest: stdio lifecycle through a natively bootstrapped venv, create, read,
+  pdf-from-html via the GTK runtime, pandoc convert).
 maintainer: dyiapanis
 tier: community
 category: tools
 requires_hermes: ">=0.21"
 docs_url: https://github.com/dyiapanis/tabella#readme
-version: "2.0.1"
+version: "2.0.2"
 readme: true
 platforms:
   - linux
+  - windows
 capabilities:
   provides_tools:
     - doc_read

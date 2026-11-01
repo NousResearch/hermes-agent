@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import { deriveUpdateStatus } from '@/components/update-status'
+import { en } from '@/i18n/en'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
 
 import { mapBackendCheck } from './updates'
@@ -36,6 +38,22 @@ describe('mapBackendCheck', () => {
     expect(status.error).toBeUndefined()
     expect(status.behind).toBe(0)
     expect(status.updateAvailable).not.toBe(true)
+  })
+
+  it('names a held backend instead of calling it the latest version', () => {
+    const status = mapBackendCheck(response({ held: 'downgrade', source_version: '0.22.2' }))
+
+    const view = deriveUpdateStatus({
+      apply: { applying: false, stage: 'idle', message: '', percent: null, error: null, command: null, log: [] },
+      checking: false,
+      held: en.settings.about.channel.heldBody,
+      status,
+      target: 'backend',
+      u: en.updates
+    })
+
+    expect(view.updateAvailable).toBe(false)
+    expect(view.line).toBe(en.settings.about.channel.heldBody('v0.22.2'))
   })
 
   it('keeps a real gap intact', () => {

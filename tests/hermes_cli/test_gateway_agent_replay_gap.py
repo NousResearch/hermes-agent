@@ -158,3 +158,23 @@ def test_gap_completes_the_voice_stream_without_terminal_streaming(agents):
     result = agent.run_conversation("q", stream_callback=spoken.append)
     assert not result["failed"] and result["final_response"] == final
     assert "".join(spoken) == final
+
+
+@pytest.mark.parametrize("pending", [{"op_id": "op1", "seq": 3, "targets": [{"name": "linear", "state": "initiated"}]}, None])
+def test_gap_recovery_restores_or_clears_the_connection_card(agents, monkeypatch, pending):
+    """A gap can eat the card's connection.request or its settling update: the resume snapshot's
+    pending_connection re-opens the card, and its absence closes a stale one."""
+    opened, updates, final = [], [], "done"
+    agent, client = agents([GAP], result={"final_response": final, "completed": True},
+                           connection_callback=opened.append, connection_update_callback=updates.append)
+    original = client.rpc
+
+    async def rpc(method, **params):
+        if method == "session.resume":
+            await client.events.put(frame("message.complete", {"text": final, "outcome": "completed"}))
+            return {"pending": [{"admission_id": "adm-1", "status": "started"}], "pending_connection": pending}
+        return await original(method, **params)
+
+    monkeypatch.setattr(client, "rpc", rpc)
+    assert run_turn(agent, "connect linear", 5) is not None
+    assert (opened, updates) == (([pending], []) if pending else ([], [{"settled": True}]))

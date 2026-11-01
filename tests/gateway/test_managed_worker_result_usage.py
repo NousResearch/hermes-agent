@@ -144,3 +144,17 @@ def test_settled_usage_ignores_the_worker_reported_session_id(tmp_path):
         for claimed in ('sibling', 'foreign'):
             settled = _settled_session_usage(SimpleNamespace(db=db), 'mine', {'model': 'm', 'session_id': claimed})['session_usage']
             assert (settled['input_tokens'], settled['api_calls']) == (10, 1)
+
+
+def test_worker_result_frame_carries_the_usage_window_refusal():
+    """A managed turn stopped by a usage-window limit keeps its refusal marker, so the owner's error card is the
+    window card (which allowance, when it resets) rather than the generic out-of-credits card."""
+    from agent.error_surface import build_error_surface_from_result
+    message = "You've hit your daily limit · resets 15:56 · /topup to add credits"
+    raw = {**_run_conversation_result(), 'failed': True, 'completed': False, 'failure_reason': 'billing',
+           'failure_resets_at': 1_900_000_000.0, 'usage_window_message': message, 'error': message}
+    wire = read_frame(io.BytesIO(encode_frame({'type': 'result', 'result': result_frame(raw)})))
+    result, _usage = accept_result(wire['result'])
+    surface = build_error_surface_from_result(result, 'nous', 'm')
+    assert surface['code'] == 'usage_window' and surface['message'] == message
+    assert surface['resets_at'] == 1_900_000_000.0

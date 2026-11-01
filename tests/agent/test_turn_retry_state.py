@@ -1,34 +1,39 @@
-"""Copilot provider detection used by the turn-retry recovery gates."""
+"""Provider detection used by the turn-retry credential-refresh gates."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import patch
 
-def test_copilot_provider_check_accepts_alias_spellings():
-    """`/model` and profile configs can leave `github-copilot` / `github` as
-    the provider spelling; the recovery gates must not silently skip them."""
-    from agent.conversation_loop import _is_copilot_provider
-    from run_agent import AIAgent
+from providers.base import ProviderProfile
 
-    class _Agent:
-        # Reuse the real single-owner check unbound; only provider/_base_url
-        # state is faked.
-        _is_copilot_provider = AIAgent._is_copilot_provider
-        _is_copilot_url = AIAgent._is_copilot_url
 
-        def __init__(self, provider, base_url=""):
-            self.provider = provider
-            self._base_url_lower = base_url.lower()
+class _RefreshingProfile(ProviderProfile):
+    def refresh_runtime_credentials(self, *, reason: str):
+        return None
 
-    assert _is_copilot_provider(_Agent("copilot"))
-    assert _is_copilot_provider(_Agent("github-copilot"))
-    assert _is_copilot_provider(_Agent("GitHub-Copilot"))
-    assert _is_copilot_provider(_Agent("github"))
-    # URL fallback: unnormalized provider but a Copilot base URL.
-    assert _is_copilot_provider(_Agent("custom", "https://api.githubcopilot.com"))
-    assert not _is_copilot_provider(_Agent("openrouter", "https://openrouter.ai/api/v1"))
 
-    class _NoMethod:
-        provider = "github-copilot"
+def test_refresh_provider_check_accepts_alias_spellings():
+    """`/model` and profile configs can leave an alias (any case) as the
+    provider spelling; the recovery gates must not silently skip them."""
+    import providers
+    from agent.conversation_loop import _credential_refresh_profile
 
-    # Fallback path when the agent object lacks the method entirely.
-    assert _is_copilot_provider(_NoMethod())
+    providers.list_providers()  # discover first so the patched registry restores to the real one
+    acme = _RefreshingProfile(name="acme-refresh", aliases=("acme-cloud-refresh", "acme"),
+                              base_url="https://api.acme-refresh.test", hostnames=("acme-refresh.test",))
+
+    def _owner(provider, base_url=""):
+        profile = _credential_refresh_profile(SimpleNamespace(provider=provider, base_url=base_url))
+        return profile.name if profile else None
+
+    with patch.dict(providers._REGISTRY, {acme.name: acme}), \
+            patch.dict(providers._ALIASES, {alias: acme.name for alias in acme.aliases}), \
+            patch.object(providers, "_PROVIDER_LIST_CACHE", None):
+        assert _owner("acme-refresh") == "acme-refresh"
+        assert _owner("acme-cloud-refresh") == "acme-refresh"
+        assert _owner("ACME-Cloud-Refresh") == "acme-refresh"
+        assert _owner("acme") == "acme-refresh"
+        # URL fallback: unnormalized provider but the profile's base URL.
+        assert _owner("custom", "https://api.acme-refresh.test") == "acme-refresh"
+        assert _owner("openrouter", "https://openrouter.ai/api/v1") is None

@@ -445,13 +445,15 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             return
         try:
             from model_tools import get_tool_definitions
-            from agent.memory_manager import inject_memory_provider_tools
+            from agent.memory_manager_tools import inject_memory_provider_tools
 
             agent = state.agent
             agent.enabled_toolsets = _expand_acp_enabled_toolsets(
                 getattr(agent, "enabled_toolsets", None),
                 mcp_server_names=[s.name for s in mcp_servers],
             )
+            from agent.delegation_backends import saved_backend
+            agent._delegation_backend = saved_backend()  # the session routes on what its delegate_task is built from
             agent.tools = get_tool_definitions(
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None), quiet_mode=True,
@@ -651,11 +653,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             state.cancel_event.set()
             try:
                 if state.agent:
-                    request_hard_interrupt(state.agent)
-                    # Background delegations are detached from the turn's fan-out; they end with the cancel.
-                    from tools.async_delegation import interrupt_for_session
-                    interrupt_for_session(parent_session_id=str(getattr(state.agent, "session_id", "") or ""),
-                                          reason="acp_cancel")
+                    request_hard_interrupt(state.agent)  # this turn only: background delegations keep running
             except Exception:
                 logger.debug("Failed to interrupt ACP session %s", session_id, exc_info=True)
         logger.info("Cancelled session %s", session_id)

@@ -9,7 +9,7 @@ import { map, type MapStore } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
 
-import { CANONICAL_GATEWAY_PROTOCOL, CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, canonicalSessionKey, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
+import { CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, canonicalSessionKey, openGatewaySocket, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -327,6 +327,10 @@ export class HermesGateway extends JsonRpcGatewayClient {
     })
   }
 
+  protected override isDesktopLocal(): boolean {
+    return this.canonical
+  }
+
   override async connect(wsUrl: string): Promise<void> {
     this.connectionGeneration++
     this.canonical = new URL(wsUrl).searchParams.has('native_dial')
@@ -413,6 +417,17 @@ export class HermesGateway extends JsonRpcGatewayClient {
     // The attach may have identified the named launch profile behind an
     // implicit route. Its revision and generation are cached under that owner.
     params = this.routeCanonicalParams(method, params)
+
+    // Answered locally only once the owner's route is known: a named launch profile's
+    // retained rewind is keyed under its name, which a redial forgets until the attach.
+    const local = this.protocol.localAnswer(method, params)
+
+    if (local) { return local as T }
+
+    // The clarify card answers a whole question set as one form: declared, the owner asks the
+    // turn's multi-question clarify as ONE request; undeclared, one card per question. An older
+    // owner refuses the unknown key, so it rides only where `client.capabilities` advertised it.
+    if (method === 'prompt.submit' && this.backendClarifyBatch) { params = { ...params, clarify_batch: true } }
 
     let prepared = this.protocol.prepare(method, params)
     const wireMethod = this.protocol.wire(method, prepared)
@@ -518,17 +533,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
       onUnhandledRequest: request =>
         console.warn(`[gateway] Hermes Desktop has no server-request registry for ${request.method} (${request.id})`),
       requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
-      socketFactory: url => {
-        const parsed = new URL(url)
-
-        if (!parsed.searchParams.has('native_dial')) {return new WebSocket(url)}
-        const ticket = parsed.searchParams.get('ticket')
-
-        if (!ticket) {throw new Error('Native gateway requires a fresh private ticket')}
-        parsed.searchParams.delete('ticket')
-
-        return new WebSocket(parsed.toString(), [CANONICAL_GATEWAY_PROTOCOL, `hermes-gateway-ticket.${ticket}`])
-      }
+      socketFactory: openGatewaySocket
     })
     this.onEvent(event => {
       if (!this.canonical) { return }
@@ -808,4 +813,33 @@ export function sessionReadOwnerPin(id: string, profile?: ProfileScope): { conne
     connectionId,
     ...(profile == null && ownerProfile ? { profile: ownerProfile } : {})
   }
+}
+
+/** The backend a gateway FILE request naming session `id` must go to: the owner's
+ *  backend-facing profile, plus its connection when that is not the ambient one.
+ *  Null when no owner profile is known. A file route looks `session_id` up in
+ *  the profile the request names, so the id must never travel with another
+ *  profile: a caller that gets null names no session at all. */
+export function sessionFileOwnerScope(id: string): { connectionId?: string; profile: string } | null {
+  const owner = _sessionOwnerResolver?.(id)
+
+  if (!owner) {
+    return null
+  }
+
+  if (typeof owner === 'string') {
+    const profile = owner.trim()
+
+    return profile ? { profile } : null
+  }
+
+  const profile = String(owner.targetProfile || owner.profile || '').trim()
+
+  if (!profile) {
+    return null
+  }
+
+  const connectionId = String(owner.connectionId ?? '').trim()
+
+  return connectionId && connectionId !== (ambientOwnerConnectionId() ?? 'local') ? { connectionId, profile } : { profile }
 }

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesReadDirResult } from '@/global'
 import type * as HermesModule from '@/hermes'
+import { $previewScriptGrants, grantPreviewScript } from '@/store/plugin-preview-grants'
 
 import { emitGatewayEvent } from './events'
 import { $pluginRecords, publishPlugin, setPluginEnabled } from './plugins-store'
@@ -451,8 +452,11 @@ describe('uninstallDiskPlugin (Plugins hub trash button)', () => {
     try {
       await seedStandalone()
       removeDesktopPlugin.mockResolvedValue({ ok: true })
+      grantPreviewScript('gone', 'https://mail.example.com')
 
       expect(await uninstallDiskPlugin('gone')).toEqual({ ok: true })
+      // A later plugin reusing the id asks again instead of inheriting the grant.
+      expect($previewScriptGrants.get().gone).toBeUndefined()
 
       // The folder name, never a path — Electron resolves it under the root.
       expect(removeDesktopPlugin).toHaveBeenCalledWith({ name: 'gone-soon' })

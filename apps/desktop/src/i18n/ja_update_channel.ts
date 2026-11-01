@@ -16,6 +16,8 @@ export const jaUpdateChannel = {
   rollbackTitle: (v: string) => `安定版リリース ${v} に戻す`,
   rollbackBody: (v: string) =>
     `このビルドは安定版リリース ${v} より新しいです。インストールすると Hermes はそのリリースに戻ります。`,
+  heldBody: (v: string) =>
+    `このビルドは安定版 ${v} より新しく、セッションはすでに ${v} では開けないゲートウェイ ランタイムを使っています。新しい安定版が出るまで、Hermes はこのビルドのままです。`,
   rollbackAction: (v: string) => `${v} に戻す`,
   allChanges: 'すべての変更を見る'
 }

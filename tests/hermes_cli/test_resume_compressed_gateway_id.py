@@ -59,11 +59,13 @@ def _gateway_store(loop, authority, tmp_path):
     the real read-only state.db reader, as the classic CLI's does."""
     from gateway.session_controls import AuthorityConnection
     from hermes_cli.gateway_client import GatewayClientError
-    from hermes_cli.gateway_connection import SessionState
+    from hermes_cli.gateway_connection import GatewayConnection, SessionState
     from hermes_cli.gateway_session_store import GatewaySessionStore
     from hermes_state import SessionDB
     states = {}
-    connection = types.SimpleNamespace(final=False, state=lambda sid: states.setdefault(sid, SessionState(sid)))
+    connection = types.SimpleNamespace(final=False, launch_api_key=None, launch_api_key_typed=False,
+                                       state=lambda sid: states.setdefault(sid, SessionState(sid)))
+    connection.resume = types.MethodType(GatewayConnection.resume, connection)  # the store's attach helper
     gateway = AuthorityConnection(authority, object(), {
         'provider': 'local', 'user_id': 'owner', 'profile_id': 'fixture', 'instance_id': authority.instance_id,
         'capabilities': ['session:create', 'session:read', 'session:control']})

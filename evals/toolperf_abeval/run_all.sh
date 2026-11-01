@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full A/B eval: N models x 2 arms x 9 tasks x R reps.
+# Full A/B eval: N models x 2 code arms x guidance arms x tasks x R reps.
 #
 # Usage:
 #   ./run_all.sh <baseline-tree> <fixes-tree> [reps] [model ...]
@@ -26,12 +26,20 @@ fi
 PY=${PYTHON:-python3}
 EVAL="$(cd "$(dirname "$0")" && pwd)/ab_eval.py"
 export ABEVAL_ROOT=${ABEVAL_ROOT:-$PWD/abeval-workspace}
+GUIDANCE_ARMS=${ABEVAL_GUIDANCE_ARMS:-all_on,tool_use_off,execution_off,all_off}
+IFS=, read -r -a GUIDANCE_ARM_LIST <<< "$GUIDANCE_ARMS"
 
 for model in "${MODELS[@]}"; do
-  echo "=== $model / baseline ==="
-  "$PY" "$EVAL" run --arm baseline --model "$model" --reps "$REPS" --pythonpath "$BASE"
-  echo "=== $model / fixes ==="
-  "$PY" "$EVAL" run --arm fixes --model "$model" --reps "$REPS" --pythonpath "$FIXES"
+  for guidance_arm in "${GUIDANCE_ARM_LIST[@]}"; do
+    echo "=== $model / baseline-$guidance_arm ==="
+    "$PY" "$EVAL" run --arm "baseline-$guidance_arm" --guidance-arm "$guidance_arm" --model "$model" --reps "$REPS" --pythonpath "$BASE"
+    echo "=== $model / fixes-$guidance_arm ==="
+    "$PY" "$EVAL" run --arm "fixes-$guidance_arm" --guidance-arm "$guidance_arm" --model "$model" --reps "$REPS" --pythonpath "$FIXES"
+  done
 done
 echo "=== ALL RUNS DONE ==="
-"$PY" "$EVAL" report --models "$(IFS=,; echo "${MODELS[*]}")"
+REPORT_ARMS=()
+for guidance_arm in "${GUIDANCE_ARM_LIST[@]}"; do
+  REPORT_ARMS+=("baseline-$guidance_arm" "fixes-$guidance_arm")
+done
+"$PY" "$EVAL" report --models "$(IFS=,; echo "${MODELS[*]}")" --arms "$(IFS=,; echo "${REPORT_ARMS[*]}")"

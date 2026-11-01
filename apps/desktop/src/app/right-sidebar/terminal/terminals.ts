@@ -383,6 +383,21 @@ const terminalCwd = (term: TerminalEntry) => normalizePath(term.restoreCwd || te
 // one, and never reveals the pane; a detached session (empty cwd) or a cwd no
 // tab lives in leaves the tabs exactly where they were. `listen` (not
 // `subscribe`) so boot keeps the persisted active tab.
+//
+// A path names a directory on one host: `/repo` on the NAS is not `/repo` here,
+// so only tabs on the session's gateway (or a fresh tab that has not recorded
+// one yet) can match.
+type SessionShellHost = () => string | undefined
+
+// The registry-backed resolver lives in terminal-gateway.ts, which binds it on
+// load; this module stays free of the connection stores. Until then (or with no
+// registry, like the Webapp) there is one host and the path alone decides.
+let sessionShellHost: SessionShellHost = () => undefined
+
+export function bindTerminalSessionHost(resolve: SessionShellHost): void {
+  sessionShellHost = resolve
+}
+
 $currentCwd.listen(cwd => {
   const target = normalizePath(cwd)
 
@@ -390,14 +405,20 @@ $currentCwd.listen(cwd => {
     return
   }
 
-  const list = $terminals.get()
-  const active = list.find(term => term.id === $activeTerminalId.get())
+  const host = sessionShellHost()
 
-  if (active?.kind === 'user' && terminalCwd(active) === target) {
+  const linked = (term: TerminalEntry | undefined) =>
+    term?.kind === 'user' &&
+    terminalCwd(term) === target &&
+    (!host || !term.connectionId || term.connectionId === host)
+
+  const list = $terminals.get()
+
+  if (linked(list.find(term => term.id === $activeTerminalId.get()))) {
     return
   }
 
-  const match = list.find(term => term.kind === 'user' && terminalCwd(term) === target)
+  const match = list.find(linked)
 
   if (match) {
     $activeTerminalId.set(match.id)

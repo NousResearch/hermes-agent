@@ -228,6 +228,29 @@ describe('session cwd → terminal tab linking', () => {
     $currentCwd.set('/repo')
     expect($activeTerminalId.get()).toBe(first)
   })
+
+  it("selects the session's own host's tab when two hosts share the path", async () => {
+    const { $activeTerminalId, $currentCwd, bindTerminalSessionHost, createTerminal } = await loadTerminalStore()
+    let host = 'nas'
+    bindTerminalSessionHost(() => host)
+
+    const nasTab = createTerminal('/repo', { connectionId: 'nas', profile: 'default' })
+    const localTab = createTerminal('/repo', { connectionId: 'local' })
+    createTerminal('/elsewhere', { connectionId: 'local' })
+
+    // The NAS session's /repo is the NAS tab, never This device's /repo.
+    $currentCwd.set('/repo')
+    expect($activeTerminalId.get()).toBe(nasTab)
+
+    // An active tab on the wrong host with the same path does not keep focus.
+    host = 'local'
+    $currentCwd.set('/repo/')
+    expect($activeTerminalId.get()).toBe(localTab)
+
+    host = 'nas'
+    $currentCwd.set('/repo')
+    expect($activeTerminalId.get()).toBe(nasTab)
+  })
 })
 
 describe('shared WebGL atlas refresh fan-out', () => {

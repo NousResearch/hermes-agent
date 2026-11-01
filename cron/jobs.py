@@ -1188,6 +1188,51 @@ def get_timezone_migration_catchup_stats() -> dict[str, Any]:
     }
 
 
+def _fall_back_repeat_match(expr: str, zone: Any, base_time: datetime,
+                            candidate: datetime) -> Optional[str]:
+    """Earliest match inside a DST fall-back's repeated hour, or ``None`` (#147553).
+
+    croniter matches a *naive* wall clock, so once the base sits late in the first occurrence of a
+    repeated hour (01:55 PDT) its next match is 02:00 — 65 minutes away — while the entire second
+    pass through 01:00–01:59 happens *behind* the base on the wall clock and is never generated.
+    Rescan that window with ``fold=1`` and return an earlier instant when one exists.
+    """
+    if zone is None or candidate.utcoffset() is None:
+        return None
+    # Only a transition this close can hide matches; a distant candidate merely crosses a DST edge.
+    if not timedelta(0) < candidate - base_time <= timedelta(hours=25):
+        return None
+    # Compare offsets **in the job's zone**: the base may carry another tzinfo (UTC, server-local),
+    # and comparing raw utcoffsets would read that difference as a fall-back.
+    old_off = base_time.astimezone(zone).utcoffset()
+    new_off = candidate.utcoffset()
+    if old_off is None or new_off is None or new_off >= old_off:
+        return None  # no fall-back between base and candidate
+
+    def _offset_at(ts: float) -> timedelta:
+        # Resolve through UTC: the instant is unambiguous even where the wall clock repeats.
+        return datetime.fromtimestamp(ts, UTC).astimezone(zone).utcoffset()
+
+    lo, hi = base_time.timestamp(), candidate.timestamp()
+    while hi - lo > 1:
+        mid = (lo + hi) / 2
+        if _offset_at(mid) == old_off:
+            lo = mid
+        else:
+            hi = mid
+    transition = datetime.fromtimestamp(hi, UTC)
+    start_wall = (transition + new_off).replace(tzinfo=None)
+    end_wall = (transition + old_off).replace(tzinfo=None)  # exclusive
+    scan = croniter(expr, start_wall - timedelta(seconds=1))
+    while True:
+        wall = scan.get_next(datetime)
+        if wall >= end_wall:
+            return None
+        second_pass = wall.replace(tzinfo=zone, fold=1)
+        if second_pass.timestamp() > base_time.timestamp():
+            return second_pass.isoformat()
+
+
 def compute_next_run(
     schedule: dict[str, Any], last_run_at: Optional[str] = None, *, timezone: Any = None,
 ) -> Optional[str]:
@@ -1252,7 +1297,8 @@ def compute_next_run(
             for fold in (0, 1):
                 candidate = next_wall.replace(tzinfo=zone, fold=fold)
                 if candidate.timestamp() > base_ts:
-                    return candidate.isoformat()
+                    # A fall-back can hide earlier matches inside its repeated hour (#147553).
+                    return _fall_back_repeat_match(expr, zone, base_time, candidate) or candidate.isoformat()
             next_wall = it.get_next(datetime)
         return next_wall.replace(tzinfo=zone).isoformat()
     return None

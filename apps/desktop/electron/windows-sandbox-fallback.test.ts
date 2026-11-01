@@ -10,11 +10,14 @@ import {
   alreadyHasNoSandbox,
   BOOT_ABORTS_BEFORE_FALLBACK,
   buildIcaclsGrantArgs,
+  BOOT_INSTANT_TOLERANCE_SECONDS,
   buildNoSandboxRelaunchArgs,
+  currentBootIdentity,
   decideWindowsSandboxLaunch,
   fallbackMarker,
   GPU_CHILD_SANDBOX_SIGTERM_EXIT,
   grantAllApplicationPackagesAcl,
+  isSameBootWitness,
   isWindowsSandboxBreakpointExit,
   markerAfterSuccessfulBoot,
   parseSandboxMarker,
@@ -473,4 +476,332 @@ test('linux GPU SIGTERM signature triggers the one-shot relaunch; other exits do
     }),
     false
   )
+})
+
+test('a booting witness from an earlier machine boot is not an aborted boot', () => {
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: { state: 'booting', bootAborts: 1, boot: 'linux:boot-a' },
+    bootIdentity: 'linux:boot-b',
+    appVersion: '0.0.0'
+  })
+
+  assert.equal(decision.enable, false)
+  assert.equal(decision.reason, null)
+  assert.deepEqual(decision.nextMarker, { state: 'booting', boot: 'linux:boot-b' })
+})
+
+test('aborts inside the same boot still reach the two-strike ladder', () => {
+  const first = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: { state: 'booting', boot: 'linux:boot-a' },
+    bootIdentity: 'linux:boot-a',
+    appVersion: '0.0.0'
+  })
+
+  assert.equal(first.enable, false)
+  assert.deepEqual(first.nextMarker, { state: 'booting', bootAborts: 1, boot: 'linux:boot-a' })
+
+  const second = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: first.nextMarker,
+    bootIdentity: 'linux:boot-a',
+    appVersion: '0.0.0'
+  })
+
+  assert.equal(second.enable, true)
+  assert.equal(second.reason, 'boot-loop')
+})
+
+test('repeated power-loss boots never arm --no-sandbox', () => {
+  let marker: Record<string, unknown> | null = { state: 'booting', boot: 'linux:boot-1' }
+
+  for (const boot of ['linux:boot-2', 'linux:boot-3', 'linux:boot-4', 'linux:boot-5']) {
+    const decision = decideWindowsSandboxLaunch({
+      platform: 'linux',
+      marker: marker as never,
+      bootIdentity: boot,
+      appVersion: '0.0.0'
+    })
+
+    assert.equal(decision.enable, false)
+    assert.equal(decision.reason, null)
+    assert.equal(decision.nextMarker.boot, boot)
+    marker = decision.nextMarker as never
+  }
+})
+
+test('a fallback written by another build re-probes once', () => {
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: {
+      state: 'fallback',
+      reason: 'boot-loop',
+      version: '0.0.0',
+      build: '0.0.0+gdeadbeef@2026-10-01T00:00:00+00:00'
+    },
+    bootIdentity: 'linux:boot-a',
+    buildIdentity: '0.0.0+gfeedface@2026-10-29T00:00:00+00:00',
+    appVersion: '0.0.0'
+  })
+
+  assert.equal(decision.enable, false)
+  assert.equal(decision.nextMarker.state, 'booting')
+  assert.equal(decision.nextMarker.reprobe, true)
+})
+
+test('a fallback from this same build stays sticky', () => {
+  const build = '0.0.0+gfeedface@2026-10-29T00:00:00+00:00'
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: { state: 'fallback', reason: 'boot-loop', version: '0.0.0', build },
+    bootIdentity: 'linux:boot-a',
+    buildIdentity: build,
+    appVersion: '0.0.0'
+  })
+
+  assert.equal(decision.enable, true)
+  assert.equal(decision.reason, 'sticky-fallback')
+})
+
+test('an aborted post-update re-probe records the build so the next launch stops probing', () => {
+  const build = '0.0.0+gfeedface@2026-10-29T00:00:00+00:00'
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: { state: 'booting', reprobe: true, bootAborts: 0, boot: 'linux:boot-a' },
+    bootIdentity: 'linux:boot-a',
+    buildIdentity: build,
+    appVersion: '0.0.0'
+  })
+
+  assert.equal(decision.enable, true)
+  assert.equal(decision.reason, 'reprobe-failed')
+  assert.equal(decision.nextMarker.build, build)
+})
+
+test('a legacy 0.0.0 fallback re-probes when the checkout carries a build identity', () => {
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: { state: 'fallback', reason: 'boot-loop', version: '0.0.0' },
+    bootIdentity: 'linux:boot-a',
+    buildIdentity: '0.0.0+gfeedface@2026-10-29T00:00:00+00:00',
+    appVersion: '0.0.0'
+  })
+
+  assert.equal(decision.enable, false)
+  assert.equal(decision.nextMarker.state, 'booting')
+  assert.equal(decision.nextMarker.reprobe, true)
+})
+
+test('currentBootIdentity prefers the kernel boot id and trims it', () => {
+  assert.equal(currentBootIdentity({ platform: 'linux', readFileSync: () => ' 0f3c-aa11 \n' }), 'linux:0f3c-aa11')
+})
+
+test('currentBootIdentity falls back to the boot instant, stable across relaunches', () => {
+  const first = currentBootIdentity({ platform: 'win32', nowMs: 1_700_000_000_000, uptimeSeconds: 1000 })
+  const relaunch = currentBootIdentity({ platform: 'win32', nowMs: 1_700_000_060_000, uptimeSeconds: 1060 })
+
+  assert.equal(first, 'at:1699999000')
+  assert.equal(relaunch, first)
+  assert.equal(
+    currentBootIdentity({
+      platform: 'linux',
+      readFileSync: () => {
+        throw new Error('no /proc')
+      },
+      nowMs: 1_700_000_000_000,
+      uptimeSeconds: 1000
+    }),
+    'at:1699999000'
+  )
+})
+
+test('write and read round-trip the boot and build witnesses', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sandbox-witness-'))
+
+  try {
+    writeSandboxMarker(dir, { state: 'booting', bootAborts: 1, boot: 'linux:boot-a', build: '0.0.0+gfeedface@x' })
+
+    assert.deepEqual(readSandboxMarker(dir), {
+      state: 'booting',
+      bootAborts: 1,
+      boot: 'linux:boot-a',
+      build: '0.0.0+gfeedface@x'
+    })
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a boot-bearing witness still counts when the launch has no identity', () => {
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: { state: 'booting', bootAborts: 1, boot: 'linux:boot-a' },
+    appVersion: '1.0.0'
+  })
+
+  assert.equal(decision.enable, true)
+  assert.equal(decision.reason, 'boot-loop')
+})
+
+test('a boot-less witness still counts when the launch has an identity', () => {
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: { state: 'booting', bootAborts: 1 },
+    bootIdentity: 'linux:boot-b',
+    appVersion: '1.0.0'
+  })
+
+  assert.equal(decision.enable, true)
+  assert.equal(decision.reason, 'boot-loop')
+})
+
+test('an unclean shutdown during a post-update re-probe returns to the fallback', () => {
+  const build = '0.0.0+gfeedface@2026-10-29T00:00:00+00:00'
+  const dropped = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: { state: 'booting', reprobe: true, bootAborts: 0, boot: 'linux:boot-a' },
+    bootIdentity: 'linux:boot-b',
+    buildIdentity: build,
+    appVersion: '0.0.0'
+  })
+
+  assert.equal(dropped.enable, false)
+  assert.equal(dropped.reason, null)
+  assert.equal(dropped.nextMarker.reprobe, true)
+
+  const next = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: dropped.nextMarker,
+    bootIdentity: 'linux:boot-b',
+    buildIdentity: build,
+    appVersion: '0.0.0'
+  })
+
+  assert.equal(next.enable, true)
+  assert.equal(next.reason, 'reprobe-failed')
+  assert.equal(next.nextMarker.build, build)
+})
+
+test('a wall-clock step inside one boot is not a stale witness', () => {
+  const boot = currentBootIdentity({ platform: 'win32', nowMs: 1_700_000_000_000, uptimeSeconds: 1000 })
+  const drifted = currentBootIdentity({ platform: 'win32', nowMs: 1_700_000_002_000, uptimeSeconds: 1000 })
+  const nextBoot = currentBootIdentity({ platform: 'win32', nowMs: 1_700_000_600_000, uptimeSeconds: 1000 })
+
+  assert.equal(boot, 'at:1699999000')
+  assert.equal(drifted, 'at:1699999002')
+  assert.equal(isSameBootWitness(boot, drifted), true)
+  assert.equal(isSameBootWitness(boot, nextBoot), false)
+  assert.equal(isSameBootWitness('at:1699999000', 'at:1699999003'), false)
+  assert.equal(isSameBootWitness('linux:x', 'linux:x'), true)
+  assert.equal(isSameBootWitness('linux:x', 'linux:y'), false)
+  assert.equal(isSameBootWitness('linux:x', boot), false)
+  assert.equal(isSameBootWitness('', boot), false)
+  assert.equal(BOOT_INSTANT_TOLERANCE_SECONDS, 2)
+})
+
+test('a drifted boot instant still counts the abort instead of dropping it', () => {
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'booting', bootAborts: 1, boot: 'at:1699999000' },
+    bootIdentity: 'at:1699999002',
+    appVersion: '1.0.0'
+  })
+
+  assert.equal(decision.enable, true)
+  assert.equal(decision.reason, 'boot-loop')
+})
+
+test('a drift beyond the tolerance is treated as a new boot', () => {
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'booting', bootAborts: 1, boot: 'at:1699999000' },
+    bootIdentity: 'at:1699999003',
+    appVersion: '1.0.0'
+  })
+
+  assert.equal(decision.enable, false)
+  assert.equal(decision.nextMarker.boot, 'at:1699999003')
+  assert.equal(decision.nextMarker.bootAborts, undefined)
+})
+
+test('a booting decision records the build identity it was written by', () => {
+  const build = '0.0.0+gfeedface@2026-10-29T00:00:00+00:00'
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: null,
+    bootIdentity: 'linux:boot-a',
+    buildIdentity: build,
+    appVersion: '0.0.0'
+  })
+
+  assert.equal(decision.enable, false)
+  assert.equal(decision.nextMarker.build, build)
+
+  const sticky = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: { state: 'fallback', reason: 'boot-loop', version: '0.0.0', build },
+    bootIdentity: 'linux:boot-a',
+    buildIdentity: build,
+    appVersion: '0.0.0'
+  })
+
+  assert.equal(sticky.enable, true)
+  assert.equal(sticky.nextMarker.build, build)
+})
+
+test('a dropped witness round-trips through the marker file and restarts the count', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sandbox-drop-'))
+
+  try {
+    const dropped = decideWindowsSandboxLaunch({
+      platform: 'linux',
+      marker: { state: 'booting', bootAborts: 1, boot: 'linux:boot-a' },
+      bootIdentity: 'linux:boot-b',
+      appVersion: '0.0.0'
+    })
+
+    writeSandboxMarker(dir, dropped.nextMarker)
+    const reloaded = readSandboxMarker(dir)
+
+    assert.deepEqual(reloaded, { state: 'booting', boot: 'linux:boot-b' })
+
+    const next = decideWindowsSandboxLaunch({
+      platform: 'linux',
+      marker: reloaded,
+      bootIdentity: 'linux:boot-b',
+      appVersion: '0.0.0'
+    })
+
+    assert.equal(next.enable, false)
+    assert.equal(next.nextMarker.bootAborts, 1)
+
+    // A re-probe witness written in the boot that was cut short: dropped, but
+    // its re-probe intent survives the file round-trip.
+    const reprobe = decideWindowsSandboxLaunch({
+      platform: 'linux',
+      marker: { state: 'booting', reprobe: true, bootAborts: 0, boot: 'linux:boot-a' },
+      bootIdentity: 'linux:boot-b',
+      buildIdentity: '0.0.0+gfeedface@2026-10-29T00:00:00+00:00',
+      appVersion: '0.0.0'
+    })
+
+    writeSandboxMarker(dir, reprobe.nextMarker)
+
+    const reloadedReprobe = readSandboxMarker(dir)
+
+    assert.equal(reloadedReprobe?.reprobe, true)
+
+    const afterProbe = decideWindowsSandboxLaunch({
+      platform: 'linux',
+      marker: reloadedReprobe,
+      bootIdentity: 'linux:boot-b',
+      buildIdentity: '0.0.0+gfeedface@2026-10-29T00:00:00+00:00',
+      appVersion: '0.0.0'
+    })
+
+    assert.equal(afterProbe.reason, 'reprobe-failed')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

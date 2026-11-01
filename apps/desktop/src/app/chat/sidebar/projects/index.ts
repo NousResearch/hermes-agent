@@ -1,5 +1,5 @@
 // Public surface of the project/worktree sidebar, consumed by the sidebar root.
-export { EnteredProjectContent } from './entered-content'
+export { EnteredMainSessionButton, EnteredProjectContent } from './entered-content'
 export {
   orderProjectsByIds,
   PROJECT_PREVIEW_COUNT,

@@ -924,3 +924,45 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+@pytest.mark.parametrize(("model", "rates"), [
+    ("claude-fable-5", ("10.00", "50.00", "1.00", "12.50")),
+    ("claude-fable-5-1", ("10.00", "50.00", "0.25", "12.50")),
+    ("claude-haiku-5-5", ("0.10", "0.50", "0.01", "0.125")),
+])
+def test_current_claude_models_price_from_the_official_snapshot(model, rates):
+    """Direct Anthropic sessions on these models must not record ``unknown`` / $0 cost."""
+    entry = get_pricing_entry(model, provider="anthropic")
+    assert entry is not None
+    assert entry.source == "official_docs_snapshot"
+    assert entry.pricing_version == "anthropic-pricing-2026-10"
+    assert (
+        entry.input_cost_per_million, entry.output_cost_per_million,
+        entry.cache_read_cost_per_million, entry.cache_write_cost_per_million,
+    ) == tuple(Decimal(r) for r in rates)
+    # Vendor-prefixed, dotted ids resolve to the same row.
+    dotted = "anthropic/" + model.replace("-5-5", "-5.5").replace("-5-1", "-5.1")
+    assert get_pricing_entry(dotted, provider="anthropic") is entry
+    cost = estimate_usage_cost(model, _anthropic_usage(), provider="anthropic")
+    assert cost.status == "estimated" and cost.amount_usd > 0
+
+
+def test_claude_haiku_5_5_prompts_over_100k_bill_the_whole_request_at_the_higher_rates():
+    """Haiku 5.5's prompt length counts cache reads and writes; over 100k tokens every
+    bucket bills at the >100k rates ($0.50 / $2.50 / $0.05 / $0.625 per million)."""
+    at_threshold = estimate_usage_cost(
+        "claude-haiku-5-5",
+        CanonicalUsage(input_tokens=80_000, output_tokens=10_000, cache_read_tokens=20_000),
+        provider="anthropic",
+    )
+    # prompt = 100k (not over) → 80k * $0.10/M + 10k * $0.50/M + 20k * $0.01/M
+    assert at_threshold.amount_usd == Decimal("0.0132")
+
+    above = estimate_usage_cost(
+        "claude-haiku-5-5",
+        CanonicalUsage(input_tokens=80_000, output_tokens=10_000, cache_read_tokens=20_000, cache_write_tokens=1),
+        provider="anthropic",
+    )
+    # prompt = 100,001 → 80k * $0.50/M + 10k * $2.50/M + 20k * $0.05/M + 1 * $0.625/M
+    assert above.amount_usd == Decimal("0.066000625")

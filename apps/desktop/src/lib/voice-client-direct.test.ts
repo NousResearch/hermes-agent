@@ -120,6 +120,88 @@ describe('transcribeAudioClientDirect', () => {
     expect(form.get('response_format')).toBe('text')
   })
 
+  it('honours the gateway-resolved response_format for the multipart wire', async () => {
+    mockDesktopApi({ ok: true, stt: { ...directStt, response_format: 'json' }, tts: relay })
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ text: 'json transcript' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await transcribeAudioClientDirect(new Blob(['x'], { type: 'audio/webm' }))).toBe('json transcript')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect((init.body as FormData).get('response_format')).toBe('json')
+  })
+
+  it('retries once with json when the endpoint rejects text (OpenRouter 400)', async () => {
+    // No response_format on the config = an older backend, so the client asks
+    // for its historical `text` and OpenRouter refuses it.
+    mockDesktopApi({
+      ok: true,
+      stt: { ...directStt, provider: 'openrouter', base_url: 'https://openrouter.ai/api/v1' },
+      tts: relay
+    })
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: { message: 'Unsupported response_format "text". Only "json" and "verbose_json" are supported.' }
+          }),
+          { status: 400 }
+        )
+      )
+      .mockResolvedValueOnce(new Response('  retried transcript  ', { status: 200 }))
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await transcribeAudioClientDirect(new Blob(['x'], { type: 'audio/webm' }))).toBe('retried transcript')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    const [, first] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const [, second] = fetchMock.mock.calls[1] as unknown as [string, RequestInit]
+    expect((first.body as FormData).get('response_format')).toBe('text')
+    expect((second.body as FormData).get('response_format')).toBe('json')
+  })
+
+  it('does not retry a 400 that does not mention response_format', async () => {
+    mockDesktopApi({ ok: true, stt: directStt, tts: relay })
+
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ error: { message: 'Audio file could not be decoded' } }), { status: 400 })
+    )
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(transcribeAudioClientDirect(new Blob(['x']))).rejects.toThrow(
+      /groq STT error \(HTTP 400\): Audio file could not be decoded/
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('surfaces the retry detail when both response_format attempts 400', async () => {
+    mockDesktopApi({ ok: true, stt: directStt, tts: relay })
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message: 'Unsupported response_format "text".' } }), { status: 400 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message: 'Unsupported response_format "json" — use verbose_json.' } }), {
+          status: 400
+        })
+      )
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(transcribeAudioClientDirect(new Blob(['x']))).rejects.toThrow(
+      /groq STT error \(HTTP 400\): Unsupported response_format "json" — use verbose_json\./
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('unwraps Mistral Voxtral JSON instead of dumping it into the composer', async () => {
     mockDesktopApi({
       ok: true,

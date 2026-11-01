@@ -434,6 +434,90 @@ def test_stalled_event_carries_structured_stall_metadata(monkeypatch):
         gate.set()
 
 
+def test_batch_progress_token_ignores_collected_childs_clock():
+    """#113222: once a child's terminal result/error has been collected, only parent-side
+    teardown remains — its still-ticking activity clock must not read as batch progress.
+    A turn-in-flight clock still counts (the #71508/#116001 liveness signal)."""
+    from tools.delegate_tool_dispatch import _batch_progress_token
+
+    now = {"ts": 1000.0}
+
+    class _ClockChild:
+        _delegate_result_collected = True
+
+        def get_activity_summary(self):
+            now["ts"] += 1.0  # the clock keeps ticking after collection
+            return {"api_call_count": 5, "current_tool": None, "last_activity_ts": now["ts"]}
+
+    child = _ClockChild()
+    assert _batch_progress_token([child]) == _batch_progress_token([child])
+
+    child._delegate_result_collected = False  # a turn in flight: the tick IS progress
+    assert _batch_progress_token([child]) != _batch_progress_token([child])
+
+
+def test_collected_child_ticking_clock_does_not_refresh_stall(monkeypatch):
+    """#113222 end-to-end: a detached batch whose last child finished (result collected)
+    but whose join is wedged in teardown still gets closed by the stale monitor, even
+    though the collected child's activity clock keeps ticking."""
+    _fast_stale_monitor(monkeypatch)
+    from tools.delegate_tool_dispatch import _batch_progress_token
+
+    gate = threading.Event()
+    now = {"ts": 1000.0}
+
+    class _ClockChild:
+        _delegate_result_collected = True  # await_child returned; only teardown remains
+
+        def get_activity_summary(self):
+            now["ts"] += 1.0
+            return {"api_call_count": 5, "current_tool": None, "last_activity_ts": now["ts"]}
+
+    fake = _ClockChild()
+
+    res = ad.dispatch_async_delegation_batch(
+        goals=["wedge in teardown"], context=None, toolsets=None, role="leaf", model="m",
+        session_key="", max_async_children=1,
+        runner=lambda: (gate.wait(timeout=10), {"results": [], "total_duration_seconds": 1.0})[1],
+        progress_fn=lambda: _batch_progress_token([fake]),
+    )
+    assert res["status"] == "dispatched"
+    try:
+        evt = _drain_for(res["delegation_id"], timeout=5.0)
+        assert evt is not None
+        assert evt["status"] == "stalled"
+    finally:
+        gate.set()
+
+
+def test_stalled_batch_keeps_recorded_children(monkeypatch):
+    """#113222: force-finalizing a stalled batch must not overwrite children the join
+    already recorded durably — they replay with their real results, only the rest go
+    unknown (same shape as owner-death recovery)."""
+    _fast_stale_monitor(monkeypatch)
+    gate = threading.Event()
+
+    res = ad.dispatch_async_delegation_batch(
+        delegation_id="deleg-partial-keep", goals=["a", "b"], context=None, toolsets=None,
+        role="leaf", model="m", session_key="", max_async_children=1,
+        runner=lambda: (gate.wait(timeout=10), {"results": [], "total_duration_seconds": 1.0})[1],
+        progress_fn=lambda: ((0, None), False),
+    )
+    assert res["status"] == "dispatched"
+    ad.record_unit_child(
+        "deleg-partial-keep", {"task_index": 0, "status": "completed", "summary": "done"})
+    try:
+        evt = _drain_for("deleg-partial-keep", timeout=5.0)
+        assert evt is not None
+        assert evt["status"] == "stalled"
+        by_index = {r["task_index"]: r for r in evt["results"]}
+        assert by_index[0]["status"] == "completed"  # recorded child kept
+        assert by_index[0]["summary"] == "done"
+        assert by_index[1]["status"] == "unknown"  # never-recorded child marked unknown
+    finally:
+        gate.set()
+
+
 def test_list_async_delegations_exposes_live_activity(monkeypatch):
     """list_async_delegations must expose per-child live activity sampled
     from progress_fn plus seconds_since_progress, for /agents UIs (#51690)."""

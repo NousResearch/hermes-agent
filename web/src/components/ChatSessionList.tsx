@@ -19,6 +19,7 @@
  */
 
 import { Button } from "@nous-research/ui/ui/components/button";
+import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { AlertCircle, MessageSquarePlus, RefreshCw } from "lucide-react";
@@ -28,6 +29,7 @@ import { useSearchParams } from "react-router";
 import { ChatWorkspacePicker } from "@/components/ChatWorkspacePicker";
 import { useI18n } from "@/i18n";
 import { api, type SessionInfo } from "@/lib/api";
+import { AUTOMATION_SESSION_SOURCES } from "@/pages/SessionsPage_sources";
 import { cn, timeAgo } from "@/lib/utils";
 
 const SESSION_LIMIT = 30;
@@ -82,6 +84,9 @@ export function ChatSessionList({
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Automation runs (cron/tool/oneshot/…) drown out human conversations in
+  // this list; off by default, surfaced through the toggle below.
+  const [showAutomation, setShowAutomation] = useState(false);
   // Bumped to force a refetch (after switching, on Refresh, on mount).
   const [reloadNonce, setReloadNonce] = useState(0);
 
@@ -100,7 +105,16 @@ export function ChatSessionList({
     setLoading(true);
     setError(null);
     api
-      .getSessions(SESSION_LIMIT, 0, scopeKey, "recent")
+      .getSessions(
+        SESSION_LIMIT,
+        0,
+        {
+          profile: scopeKey,
+          order: "recent",
+          excludeSources: showAutomation ? [] : AUTOMATION_SESSION_SOURCES,
+        },
+        "recent",
+      )
       .then((res) => {
         if (reqRef.current !== myReq) return;
         setSessions(res.sessions);
@@ -112,7 +126,7 @@ export function ChatSessionList({
       .finally(() => {
         if (reqRef.current === myReq) setLoading(false);
       });
-  }, [scopeKey]);
+  }, [scopeKey, showAutomation]);
 
   const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
 
@@ -288,6 +302,21 @@ export function ChatSessionList({
       >
         {t.sessions.newChat}
       </Button>
+
+      <div className="flex items-center gap-2 px-2 pb-1 text-xs text-text-secondary">
+        <Checkbox
+          checked={showAutomation}
+          onClick={() => setShowAutomation((v) => !v)}
+          aria-label={t.sessions.showAutomationSessions}
+        />
+        <button
+          type="button"
+          className="cursor-pointer select-none text-left"
+          onClick={() => setShowAutomation((v) => !v)}
+        >
+          {t.sessions.showAutomationSessions}
+        </button>
+      </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 pb-1">
         {content}

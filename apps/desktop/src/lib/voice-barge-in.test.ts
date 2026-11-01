@@ -148,6 +148,31 @@ describe('monitorSpeechDuringPlayback — voice.barge_in_threshold_multiplier (#
     }
   })
 
+  it('keeps the playback threshold for speaker bleed queued before a sentence gap', async () => {
+    let playing = false
+    const onSpeech = vi.fn()
+    const stop = monitorSpeechDuringPlayback({ isPlaying: () => playing, onSpeech })
+
+    try {
+      await flushMicrotasks()
+      advance(600)
+      playing = true
+      advance(700)
+      // Playback ends before its queued, low-level speaker bleed is delivered.
+      captureClock = now + 512
+      playing = false
+      micLevel = HFP_SPEECH_LEVEL
+      advance(512)
+      expect(onSpeech).not.toHaveBeenCalled()
+
+      // The same level is genuine speech once captured in the quiet gap.
+      advance(320)
+      expect(onSpeech).toHaveBeenCalledOnce()
+    } finally {
+      stop()
+    }
+  })
+
   it('invalid multipliers keep the stock trigger levels', () => {
     for (const value of [null, undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(bargeInTriggerLevels(value)).toEqual(bargeInTriggerLevels(DEFAULT_BARGE_IN_THRESHOLD_MULTIPLIER))

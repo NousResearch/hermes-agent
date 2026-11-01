@@ -91,6 +91,34 @@ def _rich_item_text(item: Any) -> str:
     return getattr(item, "text", "") or ""
 
 
+def _quoted_text(message: Any) -> str:
+    """引用回复：钉钉把被引用消息放在 ``extensions['content'].repliedMsg``。
+
+    报文形态（实测 2026-10-30）：``content = {"isReplyMsg": true, "repliedMsg":
+    {"msgId": ..., "msgType": "text", "content": {"text": "..."}}, "richText": [...]}``。
+    注意这是 ``content`` 子字段，不是顶层字段，SDK 的 ChatbotMessage 不认识它，只落进 extensions。
+    """
+    ext = _ext_content(message) or {}
+    if not ext.get("isReplyMsg"):
+        return ""
+    replied = ext.get("repliedMsg") or {}
+    if not isinstance(replied, dict):
+        return ""
+    inner = replied.get("content") or {}
+    text = ""
+    if isinstance(inner, dict):
+        text = (inner.get("text") or "").strip()
+        if not text:
+            rich = inner.get("richText") or inner.get("rich_text") or []
+            if isinstance(rich, list):
+                text = " ".join(
+                    str(item.get("text", "")).strip() for item in rich if isinstance(item, dict)
+                ).strip()
+    elif isinstance(inner, str):
+        text = inner.strip()
+    return text
+
+
 def extract_text(message: Any) -> str:
     """Extract plain text from a DingTalk chatbot message. Handles both SDK shapes: legacy ``message.text`` dict ``{"content": ...}`` and >= 0.20 ``TextContent``
     (whose ``__str__`` is ``"TextContent(content=...)"`` — always read ``.content`` first)."""
@@ -102,7 +130,11 @@ def extract_text(message: Any) -> str:
     fallback = _EMPTY_TEXT_FALLBACKS.get(getattr(message, "message_type", "")) if not content else None
     # Do NOT strip "@bot": the mention is routed structurally (callback ``isInAtList``), and
     # regex-stripping @handles would damage e-mails, SSH URLs and literal "@openai" references.
-    return fallback(message) if fallback else content
+    body = fallback(message) if fallback else content
+    quoted = _quoted_text(message)
+    if quoted and body:
+        return f"[引用] {quoted}\n\n{body}"
+    return body or (f"[引用] {quoted}" if quoted else "")
 
 
 def extract_media(message: Any) -> tuple[MessageType, list[str], list[str]]:

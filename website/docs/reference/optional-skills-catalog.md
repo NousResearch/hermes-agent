@@ -266,6 +266,7 @@ hermes skills uninstall <skill-name>
 |-------|-------------|
 | [**ast-grep**](../user-guide/skills/optional/software-development/software-development-ast-grep.md) | AST-aware structural code search and rewrite via ast-grep. |
 | [**code-wiki**](../user-guide/skills/optional/software-development/software-development-code-wiki.md) | Generate wiki docs + Mermaid diagrams for any codebase. |
+| [**elephant-goldfish**](../user-guide/skills/optional/software-development/software-development-elephant-goldfish.md) | Draft specs with full context, review with fresh subagents. |
 | [**grill-me**](../user-guide/skills/optional/software-development/software-development-grill-me.md) | Adversarial plan interview before implementation. |
 | [**hermes-agent-skill-authoring**](../user-guide/skills/optional/software-development/software-development-hermes-agent-skill-authoring.md) | Author in-repo SKILL.md files: frontmatter and structure. |
 | [**inspecting-hermes-desktop-dom**](../user-guide/skills/optional/software-development/software-development-inspecting-hermes-desktop-dom.md) | Read the live Hermes desktop DOM/CSS over CDP. |

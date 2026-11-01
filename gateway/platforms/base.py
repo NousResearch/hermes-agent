@@ -3483,21 +3483,8 @@ class BasePlatformAdapter(ABC):
         return response.text, int(ttl or 0)
 
     async def _dispatch_inline_reply(self, event: MessageEvent, *, log_cmd: Optional[str] = None) -> None:
-        """Call the handler and send its reply inline, with retry, threading and
-        ephemeral deletion — no session lifecycle (active-session bypass paths)."""
-        thread_meta = _thread_metadata_for_event(event)
-        response = await self._message_handler(event)
-        text, eph_ttl = self._unwrap_ephemeral(response)
-        if not text:
-            return
-        if log_cmd is not None:
-            logger.info("[%s] Sending command '/%s' response (%d chars) to %s", self.name, log_cmd,
-                        len(text), event.source.chat_id)
-        result = await self._send_with_retry(
-            chat_id=event.source.chat_id, content=text, reply_to=_reply_anchor_for_event(event),
-            metadata=_mark_notify_metadata(thread_meta))
-        if eph_ttl > 0 and result.success and result.message_id:
-            self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
+        from gateway.platforms.base_inline import dispatch_inline_reply
+        await dispatch_inline_reply(self, event, log_cmd=log_cmd)
 
     def _media_delivery_scope(self, source: Optional[SessionSource]):
         """Routed home + terminal policy for post-handler text, media and error delivery;
@@ -4082,6 +4069,7 @@ class BasePlatformAdapter(ABC):
                          "debouncing follow-up (busy_text_mode=queue, window=%.2fs)", self.name,
                          session_key, self._busy_text_debounce_seconds)
             await self._queue_text_debounce(session_key, event)
+            event._gateway_accepted = True
         else:
             logger.debug("[%s] New message while session %s is active — queuing follow-up "
                          "(no interrupt, will cascade after current turn)", self.name, session_key)

@@ -1300,12 +1300,24 @@ def _classify_image_tool_422(c: _Ctx) -> Verdict:
     return _first_match(c.msg, _IMAGE_TOOL_RULES) or _V_FORMAT_ERROR
 
 
-# 401 not retryable on its own: rotation/refresh run before the retryability
+def _status_401(c: _Ctx) -> Verdict:
+    # Some gateways wrap upstream overload as authentication failure. Match the
+    # observed wrapper, not arbitrary mentions of a 503 in an auth error.
+    body_error = c.body.get("error")
+    messages = (c.msg, body_error.lower() if isinstance(body_error, str) else "")
+    if any(p in msg for msg in messages for p in _RATE_LIMIT_PATTERNS) or (
+        "authentication failed (status=503):" in c.msg
+    ):
+        return _V_RATE_LIMIT
+    return _V_AUTH_ROTATE
+
+
+# Plain 401 not retryable on its own: rotation/refresh run before the retryability
 # check, then the client-error abort path (fallback first) is correct. 408 is
 # retry-safe (RFC 9110 §15.5.9; proxies emit it when generation outruns the
 # read window). Unlisted 4xx → format_error, 5xx → server_error.
 _STATUS_HANDLERS: dict[int, Callable[[_Ctx], Verdict]] = {
-    400: _classify_400, 401: lambda c: _V_AUTH_ROTATE,
+    400: _classify_400, 401: _status_401,
     402: lambda c: _classify_402(c.msg, dict, c.code if _is_nous_route(c) else "", c.body),
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
     422: lambda c: _classify_image_tool_422(c),

@@ -3165,7 +3165,7 @@ class TestAssistantThreadLifecycle:
             "user_id": "U_USER",
             # Triggering ts: lets the reply_in_thread=false path tell this synthetic
             # thread key (thread_id == own ts) from a real thread.
-            "message_id": "171.111",
+            "message_id": "171.111", "parent_chat_id": "D123",  # a thread anchors to its channel
         }
 
     @pytest.mark.asyncio

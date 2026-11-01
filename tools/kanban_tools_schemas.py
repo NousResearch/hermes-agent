@@ -236,9 +236,9 @@ KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
                 "the whole diff; the reviewer has the board and the PR."
         )),
         "reviewer": _prop("string", (
-                "Optional reviewer profile; must exist and carry the sdlc-review "
-                "skill. The task is reassigned to it first. Refused on a card with "
-                "a required reviewer (the saved reviewer is used)."
+                "Reviewer profile; required unless the card already has a saved "
+                "reviewer. Must exist and carry the sdlc-review skill, and must not "
+                "be the implementer. The task is reassigned to it first."
         )),
         "metadata": {
             "type": "object",

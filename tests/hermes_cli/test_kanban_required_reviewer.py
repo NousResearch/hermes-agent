@@ -226,7 +226,7 @@ def test_external_shared_skill_is_accepted(board: Path) -> None:
     profile_dir = board / "profiles" / "worker"
     profile_dir.mkdir(parents=True, exist_ok=True)
     (profile_dir / "config.yaml").write_text(
-        "skills:\n  external_dirs:\n    - {}\n".format(shared), encoding="utf-8",
+        f"skills:\n  external_dirs:\n    - {shared}\n", encoding="utf-8",
     )
     _seed_skill(board, "sdlc-review")  # non-empty -> strict mode
     with kbc.connect() as conn:
@@ -320,6 +320,158 @@ def test_review_changes_cycle_retains_the_gate(board: Path) -> None:
         ok, why = kb.request_review(conn, tid, summary="second pass", with_reason=True)
         assert ok is True, why
         assert kb.get_task(conn, tid).assignee == "reviewer"
+
+
+# ---------------------------------------------------------------------------
+# request_review with NO reviewer on a card with no saved and no prior reviewer:
+# the card would stay assigned to its current holder, so that profile must pass
+# the same capability and independence gates a named reviewer does.
+# ---------------------------------------------------------------------------
+
+
+def _pin_skills(monkeypatch: pytest.MonkeyPatch, skills_by_profile: dict) -> None:
+    """Decide "carries sdlc-review" per profile, independent of any bundled tree."""
+    monkeypatch.setattr(
+        kv, "profile_skill_names",
+        lambda profile: set(skills_by_profile.get(profile, ())),
+    )
+
+
+def _claim_unreviewed(conn, *, assignee: str):
+    """A plain ungated card claimed by ``assignee``; returns (task id, run id)."""
+    tid = kb.create_task(conn, title="ungated work", assignee=assignee)
+    run = kb.claim_task(conn, tid)
+    assert run is not None
+    return tid, run.current_run_id
+
+
+def test_first_handoff_without_reviewer_refused_when_holder_lacks_review_skill(
+    board: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _pin_skills(monkeypatch, {"worker": {"some-other-skill"}, "qa": {"sdlc-review"}})
+    with kbc.connect() as conn:
+        tid, run_id = _claim_unreviewed(conn, assignee="worker")
+        before = _frozen(conn, tid)
+        ok, why = kb.request_review(
+            conn, tid, summary="done", expected_run_id=run_id, with_reason=True,
+        )
+        assert ok is False
+        assert "worker" in why and "sdlc-review" in why
+        assert "reviewer=<profile>" in why or "reviewer=" in why
+        assert why.endswith("Nothing changed.")
+        assert _frozen(conn, tid) == before
+
+
+def test_first_handoff_without_reviewer_refused_when_holder_is_the_implementer(
+    board: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The holder carries the skill, so only the independence gate can refuse it.
+    _pin_skills(monkeypatch, {"worker": {"sdlc-review"}})
+    with kbc.connect() as conn:
+        tid, run_id = _claim_unreviewed(conn, assignee="worker")
+        before = _frozen(conn, tid)
+        ok, why = kb.request_review(
+            conn, tid, summary="done", expected_run_id=run_id, with_reason=True,
+        )
+        assert ok is False
+        assert "worker" in why and "cannot review its own work" in why
+        assert why.endswith("Nothing changed.")
+        assert _frozen(conn, tid) == before
+
+
+def test_retry_with_a_qualified_other_reviewer_succeeds_on_the_same_run(
+    board: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _pin_skills(monkeypatch, {"worker": {"some-other-skill"}, "qa": {"sdlc-review"}})
+    with kbc.connect() as conn:
+        tid, run_id = _claim_unreviewed(conn, assignee="worker")
+        ok, why = kb.request_review(
+            conn, tid, summary="done", expected_run_id=run_id, with_reason=True,
+        )
+        assert ok is False
+        ok, why = kb.request_review(
+            conn, tid, summary="done", reviewer="qa",
+            expected_run_id=run_id, with_reason=True,
+        )
+        assert ok is True, why
+        task = kb.get_task(conn, tid)
+        assert task.status == "review"
+        assert task.assignee == "qa"
+
+
+def test_saved_reviewer_path_is_unchanged_by_the_first_handoff_gate(
+    board: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The holder lacks the skill, but a saved reviewer decides the lane: no refusal.
+    _pin_skills(monkeypatch, {"worker": {"some-other-skill"}, "reviewer": {"sdlc-review"}})
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="gated work", assignee="worker", reviewer="reviewer",
+        )
+        run = kb.claim_task(conn, tid)
+        ok, why = kb.request_review(
+            conn, tid, summary="done", expected_run_id=run.current_run_id, with_reason=True,
+        )
+        assert ok is True, why
+        assert kb.get_task(conn, tid).assignee == "reviewer"
+
+
+def test_rereview_after_changes_requested_uses_the_prior_reviewer_without_an_arg(
+    board: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Prior reviewer provenance wins; the holder gate must not run on a re-review.
+    _pin_skills(monkeypatch, {"worker": {"some-other-skill"}, "qa": {"sdlc-review"}})
+    with kbc.connect() as conn:
+        tid, run_id = _claim_unreviewed(conn, assignee="worker")
+        ok, why = kb.request_review(
+            conn, tid, summary="first", reviewer="qa",
+            expected_run_id=run_id, with_reason=True,
+        )
+        assert ok is True, why
+        assert kb.claim_review_task(conn, tid) is not None
+        ok, _ = kb.request_changes(conn, tid, reason="needs tests")
+        assert ok is True
+        assert kb.get_task(conn, tid).assignee == "worker"
+        run2 = kb.claim_task(conn, tid)
+        assert run2 is not None
+        ok, why = kb.request_review(
+            conn, tid, summary="second", expected_run_id=run2.current_run_id,
+            with_reason=True,
+        )
+        assert ok is True, why
+        assert kb.get_task(conn, tid).assignee == "qa"
+
+
+def test_disabled_policy_refusal_is_unchanged_by_the_first_handoff_gate(
+    board: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _pin_skills(monkeypatch, {"worker": {"sdlc-review"}})
+    with kbc.connect() as conn:
+        tid, run_id = _claim_unreviewed(conn, assignee="worker")
+        conn.execute("UPDATE tasks SET review_policy = 'disabled' WHERE id = ?", (tid,))
+        conn.commit()
+        ok, why = kb.request_review(
+            conn, tid, summary="done", expected_run_id=run_id, with_reason=True,
+        )
+        assert ok is False
+        assert "review_policy=disabled" in why and why.endswith("Nothing changed.")
+
+
+def test_force_does_not_widen_the_reviewerless_gate(
+    board: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``force=True`` only overrides the live-claim check. It must not clear the
+    reviewer gate: a reviewer-less handoff to an unfit holder is still refused."""
+    _pin_skills(monkeypatch, {"worker": {"some-other-skill"}})
+    with kbc.connect() as conn:
+        tid, _run_id = _claim_unreviewed(conn, assignee="worker")
+        before = _frozen(conn, tid)
+        ok, why = kb.request_review(
+            conn, tid, summary="done", force=True, with_reason=True,
+        )
+        assert ok is False
+        assert "lacks sdlc-review" in why and why.endswith("Nothing changed.")
+        assert _frozen(conn, tid) == before
 
 
 # ---------------------------------------------------------------------------

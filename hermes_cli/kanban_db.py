@@ -3654,6 +3654,13 @@ def request_review(
                 "latest changes_requested event is missing or "
                 "malformed); pass reviewer= explicitly",
             )
+        if reviewer is None:
+            # First review with nothing saved or supplied: the card would stay
+            # assigned to its holder, so that holder must pass the same gates a
+            # named reviewer does. Read-only; refused before any write.
+            refusal = _unreviewed_holder_refusal(conn, task_id)
+            if refusal is not None:
+                return _ret(False, refusal)
     if reviewer:
         reviewer = _canonical_assignee(reviewer)
         # Capability, not just existence: routing review to a profile without
@@ -3769,6 +3776,44 @@ def request_review(
             _discard_staged_copies(staged_copies, staged_copies[0].parent)
         raise
     return _ret(True)
+
+
+def _unreviewed_holder_refusal(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Why a reviewer-less first handoff would land on an unfit holder, else ``None``.
+
+    With no saved, supplied, or prior reviewer the review lane is the card's
+    current assignee. The gates a named reviewer gets apply to that holder:
+    it must carry the review skill, and it must not be the implementer that
+    did the work (the same derivation :func:`request_review` uses). Every
+    failing gate is named, so the retry knows the whole fix.
+    """
+    row = conn.execute(
+        "SELECT assignee, current_run_id FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    holder = _canonical_assignee(row["assignee"]) if row and row["assignee"] else None
+    if not holder:
+        return None
+    implementer = None
+    if row["current_run_id"] is not None:
+        arow = conn.execute(
+            "SELECT profile FROM task_runs WHERE id = ?", (row["current_run_id"],),
+        ).fetchone()
+        implementer = arow["profile"] if arow else None
+    problems: list[str] = []
+    if implementer is not None and holder == implementer:
+        problems.append("cannot review its own work")
+    try:
+        _require_review_phase_skills(holder)
+    except ValueError:
+        problems.append("lacks sdlc-review")
+    if not problems:
+        return None
+    return (
+        f"cannot request review for {task_id}: no reviewer is saved, supplied, or previously "
+        f"used, and the card would stay assigned to {holder!r}, which {' and '.join(problems)}. "
+        f"Retry kanban_request_review with reviewer=<profile> (see kanban_discover). "
+        f"Nothing changed."
+    )
 
 
 def _prior_reviewer(conn: sqlite3.Connection, task_id: str):

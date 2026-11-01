@@ -294,6 +294,33 @@ def test_request_review_rejects_unknown_reviewer_without_mutation(monkeypatch, w
         assert kb.list_events(conn, worker_env) == before_events
 
 
+def test_reviewerless_request_review_is_refused_and_leaves_the_card_alone(
+    monkeypatch, worker_env, tmp_path,
+):
+    """No reviewer supplied, none saved, none prior: the card would stay with its
+    holder (the implementer). The model sees the refusal and nothing changes."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_validation as kv
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(kv, "profile_skill_names", lambda profile: set())
+    with kbc.connect() as conn:
+        before = kb.get_task(conn, worker_env)
+        before_events = kb.list_events(conn, worker_env)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(before.current_run_id))
+
+    out = json.loads(kt._handle_request_review({"summary": "Ready for review."}))
+
+    assert "cannot request review" in out["error"]
+    assert "reviewer=<profile>" in out["error"]
+    assert out["error"].endswith("Nothing changed.")
+    with kbc.connect() as conn:
+        after = kb.get_task(conn, worker_env)
+        assert (after.status, after.assignee, after.current_run_id) == ("running", "test-worker", before.current_run_id)
+        assert kb.list_events(conn, worker_env) == before_events
+
+
 def test_request_review_accepts_installed_profile(monkeypatch, worker_env, tmp_path):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc

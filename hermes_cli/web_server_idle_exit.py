@@ -101,6 +101,31 @@ def _session_work_in_flight(session: dict) -> bool:
                if (thread := session.get(key)) is not None)
 
 
+def _gateway_runner_turns() -> list[str]:
+    """Session keys of turns the in-process ``gateway run`` host is driving.
+
+    A Desktop attached to the canonical gateway runs its turns as the runner's
+    ``_running_agents`` (what ``gateway_state.json`` counts as ``active_agents``), not as rows in the
+    TUI session table above, so a ledger that read only that table answered "idle" mid-turn and an
+    in-app update handed off over the live turn. No runner in this process (plain ``serve``) = none.
+    """
+    import sys
+
+    runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
+    runner = runner_ref() if callable(runner_ref) else None
+    if runner is None:
+        return []
+    from gateway.session_authorities import all_authorities
+    from gateway.session_runtime_workers import executing_sessions
+
+    running = getattr(runner, "_running_agents", None) or {}
+    # A claimed admission (messaging, API, Desktop) is executing from its claim stamp on, before
+    # (or without) an entry in the agent map: session_claim_fence releases the update fence there.
+    claimed = [sid for authority in all_authorities(runner)
+               for sid, live, _ in executing_sessions(authority) if live.route not in running]
+    return [str(key) for key in [*list(running), *claimed]]
+
+
 def busy_ledger() -> Optional[str]:
     """Name the ledger that holds work — ``"retirement_admission"``, ``"session:<id>"``,
     ``"delegation"``, ``"cron:<job ids>"`` — ``""`` when every ledger is empty, ``None`` when one
@@ -121,6 +146,7 @@ def busy_ledger() -> Optional[str]:
             return "retirement_admission"
         with gateway._sessions_lock:
             busy_sessions = [sid for sid, s in gateway._sessions.items() if _session_work_in_flight(s)]
+        busy_sessions += _gateway_runner_turns()
         if busy_sessions:
             return "session:" + ",".join(str(sid) for sid in busy_sessions)
         from tools.async_delegation import active_count

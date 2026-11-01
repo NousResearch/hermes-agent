@@ -25,6 +25,7 @@ import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
 import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
+import { zhUpdateWhenIdle } from './zh_update_when_idle'
 
 export const zhOverrides = {
   catalog: zhCatalog,
@@ -3558,6 +3559,7 @@ export const zhOverrides = {
   },
 
   updates: {
+    whenIdle: zhUpdateWhenIdle,
     discontinuedTitle: '此版本的 Hermes 已停止支持',
     discontinuedBody: '此版本的 Hermes 已停止支持，可能无法正常运行——请卸载。您的数据仍保留在磁盘上。',
     channels: { stable: '稳定版', canary: '预览版' },

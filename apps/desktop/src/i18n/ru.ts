@@ -24,6 +24,7 @@ import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
 import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
+import { ruUpdateWhenIdle } from './ru_update_when_idle'
 
 export const ruOverrides = {
   catalog: ruCatalog,
@@ -2886,6 +2887,7 @@ export const ruOverrides = {
     }
   },
   updates: {
+    whenIdle: ruUpdateWhenIdle,
     discontinuedTitle: 'Эта сборка Hermes больше не поддерживается',
     discontinuedBody:
       'Эта сборка Hermes больше не поддерживается и может перестать работать — удалите её. Ваши данные останутся на диске.',

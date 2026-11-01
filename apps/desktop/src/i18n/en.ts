@@ -31,6 +31,7 @@ import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
 import { enUpdateChannel } from './en_update_channel'
+import { enUpdateWhenIdle } from './en_update_when_idle'
 import type { Translations } from './types'
 
 export const en: Translations = {
@@ -3673,6 +3674,7 @@ export const en: Translations = {
   },
 
   updates: {
+    whenIdle: enUpdateWhenIdle,
     discontinuedTitle: 'This build of Hermes is no longer supported',
     discontinuedBody:
       'This build of Hermes is no longer supported and may break — uninstall it. Your data stays on disk.',

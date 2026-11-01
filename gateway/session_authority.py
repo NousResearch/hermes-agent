@@ -1113,18 +1113,9 @@ class SessionAuthority:
                 # a claim now would hand this row to its busy path and settle it unrun. The head
                 # waits queued, as main's pending slot did; /stop and /new still cancel it.
                 return 'classic_busy', first
-            self._require_admission_open()
-            from gateway.session_runtime_workers import tracked_write
-            live.rescan = False  # a _schedule from here on may not be visible to this claim's read
-            # The row these checks validated, never whichever is first when the write runs: a
-            # cancellation commits from a worker thread and can advance the FIFO at any point.
-            row = await tracked_write(self, partial(claim_session_input, self.db, epoch=self.epoch,
-                                                    session_id=ref.session_id, _guard=self._admission_gate(),
-                                                    head=first['admission_id'] if first is not None else None),
-                                      then=partial(self._stamp_claim, ref, live))
-            # Input scheduled while this claim's transaction ran may postdate its read: re-read
-            # instead of letting the drain exit idle over a committed admission.
-            return (False if row is None and live.rescan else row), first
+            # An in-app update holding the process fence parks the head queued (UPDATE_HOLD).
+            from gateway.session_claim_fence import claim_head
+            return await claim_head(self, ref, live, first)
 
     def _stamp_claim(self, ref, live, row):
         """The claim's execution stamp, in the same tracked task as its commit: no observer (or
@@ -1229,7 +1220,8 @@ class SessionAuthority:
                 await asyncio.sleep(backoff)
                 continue
             backoff = 0.0
-            if row != 'classic_busy':
+            # classic_busy / update_hold: the head waits queued until the slot or the update permit ends.
+            if row not in ('classic_busy', 'update_hold'):
                 return row, first
             if self._drain_stopping(ref, live):
                 return None

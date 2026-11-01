@@ -24,6 +24,7 @@ import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
 import { deThemePicker } from './de_theme_picker'
 import { deUpdateChannel } from './de_update_channel'
+import { deUpdateWhenIdle } from './de_update_when_idle'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
@@ -4107,6 +4108,7 @@ export const deOverrides = {
     }
   },
   updates: {
+    whenIdle: deUpdateWhenIdle,
     discontinuedTitle: 'Dieser Hermes-Build wird nicht mehr unterstützt',
     discontinuedBody:
       'Dieser Hermes-Build wird nicht mehr unterstützt und funktioniert möglicherweise nicht mehr — deinstallieren Sie ihn. Ihre Daten bleiben auf dem Datenträger.',

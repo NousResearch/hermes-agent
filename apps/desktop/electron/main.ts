@@ -180,6 +180,7 @@ import {
   withTransientRetries
 } from './connection-config'
 import { applyConnectionConfigAtomically } from './connection-config-apply'
+import { sanitizeConnectionProfiles } from './connection-profiles-sanitize'
 import {
   backendScopeKey,
   backendScopePrefix,
@@ -613,6 +614,17 @@ import {
 } from './update-marker'
 import { heldWaitMessage, holdTicker } from './update-marker-gate'
 import { updateConnectionsBeforeLocal } from './update-order'
+import { UpdateWhenIdle } from './update-readiness'
+import {
+  applyUpdatesWhenIdle,
+  type BusyApplyResult,
+  busyApplyResult,
+  cancelUpdateWhenIdle,
+  createUpdateReadinessGate,
+  updateApplyMode,
+  type UpdateFreeze
+} from './update-readiness-gate'
+import { normalizeWorkOwners, type OwnedChat, updateWorkSources } from './update-work-owners'
 import {
   resolveUpdaterMechanism,
   type UpdaterApplyResultWire,
@@ -4347,10 +4359,36 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
 //
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
-async function applyUpdates(): Promise<UpdaterApplyResultWire> {
+async function applyUpdates(payload?: unknown): Promise<UpdaterApplyResultWire> {
+  const mode = updateApplyMode(payload)
+
+  if (mode !== 'when-idle') {
+    return applyUpdatesGated(mode === 'now')
+  }
+
+  return applyUpdatesWhenIdle<UpdaterApplyResultWire>({
+    scheduler: updateWhenIdle,
+    read: () => updateReadiness.read(),
+    applyGated: stillWanted => applyUpdatesGated(false, stillWanted),
+    emitWaiting: (reasons, deadlineAt) =>
+      emitUpdateProgress({ stage: 'waiting', message: '', waitingFor: reasons, deadlineAt }),
+    emitEnded: emitUpdateProgress,
+    log: rememberLog
+  })
+}
+
+// Without consent (`interruptWork`), the hand-off only proceeds once every
+// local backend froze admission and proved idle and no renderer reports a turn;
+// otherwise nothing is touched and the busy reasons go back to the overlay.
+// Only past this gate may isQuittingForHandoff skip the quit guard.
+async function applyUpdatesGated(
+  interruptWork: boolean,
+  stillWanted: () => boolean = () => true
+): Promise<UpdaterApplyResultWire | BusyApplyResult> {
   return updateOperation.apply(async (): Promise<UpdaterApplyResultWire> => {
     updateInFlight = true
     let handedOff: boolean = false
+    let freeze: UpdateFreeze | null = null
 
     try {
       // The local handoff asks the window to exit and the update scripts only
@@ -4367,6 +4405,26 @@ async function applyUpdates(): Promise<UpdaterApplyResultWire> {
         return managedBusy
       }
 
+      if (interruptWork) {
+        rememberLog('[updates] user chose to update now; active work will be interrupted')
+      } else {
+        freeze = await updateReadiness.freeze()
+
+        if (!freeze.ok) {
+          const busy = busyApplyResult(freeze.reasons)
+          rememberLog(`[updates] hand-off held: ${busy.message}`)
+
+          return busy
+        }
+      }
+
+      // Cancelled while the gate awaited its backends: nothing is torn down (finally releases the fences).
+      if (!stillWanted()) {
+        rememberLog('[updates] update-when-idle cancelled before the hand-off')
+
+        return { ok: false, error: 'cancelled' }
+      }
+
       const packaged: UpdaterStrategy | null = await resolvePackagedUpdateStrategy()
       const strategy: UpdaterStrategy = packaged ?? resolveCheckoutUpdateStrategy()
       const result: UpdaterApplyResultWire = await desktopMetrics.trackUpdateApply(packaged, strategy)
@@ -4376,6 +4434,8 @@ async function applyUpdates(): Promise<UpdaterApplyResultWire> {
     } finally {
       if (!handedOff) {
         updateInFlight = false
+
+        await freeze?.release()
       }
     }
   })
@@ -8280,109 +8340,6 @@ function installRemoteHeaderRulesOnSession(sess) {
 
 function installRemoteHeaderRules() {
   installRemoteHeaderRulesOnSession(session.defaultSession)
-}
-
-// Validate + normalize the per-profile remote overrides map read from disk.
-// Drops malformed names/entries and keeps only the recognized fields so a
-// hand-edited or stale connection.json can't inject junk into resolution.
-function sanitizeConnectionProfiles(raw: Record<string, any>) {
-  if (!raw || typeof raw !== 'object') {
-    return {}
-  }
-
-  const out = {}
-
-  for (const [name, entry] of Object.entries(raw)) {
-    if (!entry || typeof entry !== 'object') {
-      continue
-    }
-
-    if (name !== 'default' && !PROFILE_NAME_RE.test(name)) {
-      continue
-    }
-
-    if (entry.mode === 'ssh') {
-      const ssh = normalizeSshConfig(entry)
-
-      if (ssh) {
-        if (entry.token && typeof entry.token === 'object') {
-          ssh.token = entry.token
-        }
-
-        out[name] = ssh
-      }
-
-      continue
-    }
-
-    const cleaned: {
-      mode: 'remote' | 'local' | 'cloud'
-      url?: string
-      authMode?: string
-      token?: object
-      headers?: object
-      org?: string
-      name?: string
-      remoteProfile?: string
-      savedSsh?: object
-    } = {
-      mode: modeIsRemoteLike(entry.mode) ? entry.mode : 'local'
-    }
-
-    if (cleaned.mode === 'local') {
-      const savedSsh = normalizeSshConfig(entry.savedSsh)
-
-      if (savedSsh) {
-        cleaned.savedSsh = savedSsh
-      }
-    }
-
-    const url = String(entry.url || '').trim()
-
-    if (url) {
-      cleaned.url = url
-    }
-
-    cleaned.authMode = normAuthMode(entry.authMode)
-
-    if ((entry as any).token && typeof entry.token === 'object') {
-      cleaned.token = entry.token
-    }
-
-    // A URL-remote/cloud per-profile override can map its Desktop routing label
-    // onto the backend's profile namespace (same contract as SSH remoteProfile).
-    const remoteProfileName = normalizeRemoteProfileName((entry as any).remoteProfile)
-
-    if (remoteProfileName) {
-      cleaned.remoteProfile = remoteProfileName.remoteProfile
-    }
-
-    const headers = normalizeRemoteHeaders((entry as any).headers)
-
-    if (Object.keys(headers).length > 0) {
-      cleaned.headers = headers
-    }
-
-    // Preserve the Hermes Cloud org tag on cloud-mode entries so Settings can
-    // reopen into the same org for a per-profile cloud connection.
-    if (cleaned.mode === 'cloud') {
-      const cloudName = String(entry.name || '').trim()
-
-      if (cloudName) {
-        cleaned.name = cloudName
-      }
-
-      const org = String(entry.org || '').trim()
-
-      if (org) {
-        cleaned.org = org
-      }
-    }
-
-    out[name] = cleaned
-  }
-
-  return out
 }
 
 function readDesktopConnectionConfig() {
@@ -16545,6 +16502,8 @@ ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWat
 // Each renderer reports the turns it has in flight; the quit guard reads the
 // merged picture. Keyed by webContents id so a closed window stops counting.
 const activeWorkByWebContents = new Map<number, ActiveWork>()
+// Beside each window's report: who runs each working chat (an update ignores chats on a URL/cloud remote).
+const activeWorkOwnersByWebContents = new Map<number, OwnedChat[]>()
 
 // Synchronous, webContents-independent cache of the most recent active-work
 // summary we heard from *any* renderer. The per-webContents map above is
@@ -16577,6 +16536,31 @@ function isAnyTurnInFlight() {
   return mergeActiveWork(activeWorkByWebContents.values()).count > 0
 }
 
+// What a local update interrupts: the local backend (restarted) and SSH-managed ones (stopped with
+// the app). A remote-served app's turns survive the update unless a backend the app manages goes down.
+const updateWork = updateWorkSources({
+  connections: () => [backendConnectionState.getPromise(), ...[...backendPool.values()].map(entry => entry?.connectionPromise)],
+  reports: () => [...activeWorkByWebContents].map(([id, work]) => ({ ...work, sessions: activeWorkOwnersByWebContents.get(id) })),
+  remoteOnly: () => globalRemoteActive() && !quitStopsBackendWork(),
+  registryConnections: () => readDesktopConnectionsRegistry().connections,
+  profileRouteKind: profile =>
+    resolveDesktopRemoteRoute({
+      config: readDesktopConnectionConfig(),
+      env: { token: process.env.HERMES_DESKTOP_REMOTE_TOKEN, url: process.env.HERMES_DESKTOP_REMOTE_URL },
+      profile,
+      registry: readDesktopConnectionsRegistry()
+    })?.kind
+})
+
+const updateReadiness = createUpdateReadinessGate<any>({
+  activeWork: updateWork.activeWork,
+  localBackends: updateWork.localBackends,
+  request: (backend, path, opts) => fetchJsonForBackend(backend, path, opts),
+  log: rememberLog
+})
+
+const updateWhenIdle = new UpdateWhenIdle<UpdaterApplyResultWire>()
+
 function updateStreamThrottleFromActiveWork() {
   const working = isAnyTurnInFlight()
 
@@ -16596,6 +16580,7 @@ ipcMain.on('hermes:active-work', (event, payload) => {
       event.sender.off('destroyed', forget)
       event.sender.off('render-process-gone', forget)
       activeWorkByWebContents.delete(id)
+      activeWorkOwnersByWebContents.delete(id)
       updateStreamThrottleFromActiveWork()
     }
 
@@ -16610,6 +16595,13 @@ ipcMain.on('hermes:active-work', (event, payload) => {
   activeWorkByWebContents.set(id, work)
   lastActiveWorkSeen = work
   updateStreamThrottleFromActiveWork()
+})
+
+// Sent right after 'hermes:active-work' (same ordered channel), so its window's forget handler exists.
+ipcMain.on('hermes:active-work-owners', (event, payload) => {
+  if (activeWorkByWebContents.has(event.sender.id)) {
+    activeWorkOwnersByWebContents.set(event.sender.id, normalizeWorkOwners(payload))
+  }
 })
 
 ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
@@ -17138,12 +17130,14 @@ ipcMain.handle(
 )
 
 ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
-  applyUpdates().catch(error => ({
+  applyUpdates(payload).catch(error => ({
     ok: false,
     error: 'apply-failed',
     message: error?.message || String(error)
   }))
 )
+
+ipcMain.handle('hermes:updates:cancel-when-idle', () => cancelUpdateWhenIdle(updateWhenIdle, emitUpdateProgress))
 
 // About ▸ Updates channel selector; source checkouts only (packages bake their channel).
 ipcMain.handle('hermes:updates:channel:set', async (_event, name: unknown): Promise<UpdaterStatusWire> => {

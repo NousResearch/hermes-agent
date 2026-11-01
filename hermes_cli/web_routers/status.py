@@ -166,8 +166,8 @@ async def post_health_retirement(request: Request):
         body = await request.json()
     except ValueError:
         raise HTTPException(status_code=400, detail="JSON body required")
-    if not isinstance(body, dict) or body.get("action") not in ("prepare", "commit", "cancel"):
-        raise HTTPException(status_code=400, detail="action must be prepare, commit, or cancel")
+    if not isinstance(body, dict) or body.get("action") not in ("prepare", "renew", "commit", "cancel"):
+        raise HTTPException(status_code=400, detail="action must be prepare, renew, commit, or cancel")
     action = body["action"]
     if action == "prepare":
         return await run_in_threadpool(retirement.prepare)

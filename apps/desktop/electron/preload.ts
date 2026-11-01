@@ -398,6 +398,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   watchDirectory: dir => ipcRenderer.invoke('hermes:watchDirectory', dir),
   stopPreviewFileWatch: id => ipcRenderer.invoke('hermes:stopPreviewFileWatch', id),
   setActiveWork: payload => ipcRenderer.send('hermes:active-work', payload),
+  setActiveWorkOwners: payload => ipcRenderer.send('hermes:active-work-owners', payload),
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
@@ -696,6 +697,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   updates: {
     check: opts => ipcRenderer.invoke('hermes:updates:check', opts),
     apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),
+    cancelWhenIdle: () => ipcRenderer.invoke('hermes:updates:cancel-when-idle'),
     setChannel: name => ipcRenderer.invoke('hermes:updates:channel:set', name),
     onProgress: callback => {
       const listener = (_event, payload) => callback(payload)

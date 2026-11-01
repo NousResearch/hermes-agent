@@ -46,6 +46,7 @@ import {
   $updateStatus,
   applyBackendUpdate,
   applyUpdates,
+  cancelUpdateWhenIdle,
   checkBackendUpdates,
   checkUpdates,
   dismissDiscontinuedNotice,
@@ -56,6 +57,7 @@ import {
 } from '@/store/updates'
 
 import { DiscontinuedNotice } from './retirement-view'
+import { UpdateBusyView, UpdateWaitingView } from './update-work-gate-views'
 
 function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
@@ -167,6 +169,35 @@ function UpdateChangeList({
   )
 }
 
+type OverlayPhase = 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' | 'busy' | 'waiting'
+
+// Terminal stages a close dismisses for good (the next open starts fresh).
+const CLOSE_RESETS_STAGE = new Set<DesktopUpdateStage>(['error', 'restart', 'manual', 'guiSkew', 'busy'])
+
+// Stage → view. The work-gate stages only exist for the client update.
+const STAGE_PHASE: Partial<Record<DesktopUpdateStage, OverlayPhase>> = {
+  manual: 'manual',
+  guiSkew: 'guiSkew',
+  restart: 'applying',
+  error: 'error',
+  busy: 'busy',
+  waiting: 'waiting'
+}
+
+function overlayPhase(apply: UpdateApplyState, isBackend: boolean): OverlayPhase {
+  const phase = STAGE_PHASE[apply.stage]
+
+  if (phase === 'manual' || phase === 'guiSkew') {
+    return phase
+  }
+
+  if (apply.applying) {
+    return 'applying'
+  }
+
+  return phase && !(isBackend && (phase === 'busy' || phase === 'waiting')) ? phase : 'idle'
+}
+
 export function UpdatesOverlay() {
   const open = useStore($updateOverlayOpen)
   const target = useStore($updateOverlayTarget)
@@ -195,16 +226,7 @@ export function UpdatesOverlay() {
   const behind = status?.behind ?? 0
   const updateAvailable = status?.updateAvailable || behind > 0
 
-  const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
-    apply.stage === 'manual'
-      ? 'manual'
-      : apply.stage === 'guiSkew'
-        ? 'guiSkew'
-        : apply.applying || apply.stage === 'restart'
-          ? 'applying'
-          : apply.stage === 'error'
-            ? 'error'
-            : 'idle'
+  const phase = overlayPhase(apply, isBackend)
 
   const handleClose = (next: boolean) => {
     if (phase === 'applying') {
@@ -213,10 +235,7 @@ export function UpdatesOverlay() {
 
     setUpdateOverlayOpen(next)
 
-    if (
-      !next &&
-      (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual' || apply.stage === 'guiSkew')
-    ) {
+    if (!next && CLOSE_RESETS_STAGE.has(apply.stage)) {
       resetUpdateApplyState()
     }
   }
@@ -249,6 +268,23 @@ export function UpdatesOverlay() {
         )}
 
         {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
+
+        {phase === 'busy' && (
+          <UpdateBusyView
+            onLater={() => handleClose(false)}
+            onUpdateNow={() => void applyUpdates({ mode: 'now' })}
+            onUpdateWhenIdle={() => void applyUpdates({ mode: 'when-idle' })}
+            reasons={apply.waitingFor ?? []}
+          />
+        )}
+
+        {phase === 'waiting' && (
+          <UpdateWaitingView
+            deadlineAt={apply.deadlineAt ?? null}
+            onCancel={() => void cancelUpdateWhenIdle()}
+            reasons={apply.waitingFor ?? []}
+          />
+        )}
 
         {phase === 'error' ? (
           <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />

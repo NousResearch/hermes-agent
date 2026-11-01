@@ -9,6 +9,7 @@ import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
 import type { KeepAwakeMode } from '../electron/power-save'
 import type { UpdateHoldWire } from '../electron/update-hold-types'
+import type { UpdateBusyReason } from '../electron/update-readiness'
 import type { UpdateRunReport } from '../electron/updater/update-metrics'
 import type { WindowSizeMode } from '../electron/window-size-types'
 
@@ -406,6 +407,7 @@ declare global {
       watchDirectory?: (dir: string) => Promise<HermesPreviewWatch>
       stopPreviewFileWatch: (id: string) => Promise<boolean>
       setActiveWork?: (payload: HermesActiveWork) => void
+      setActiveWorkOwners?: (payload: readonly HermesActiveWorkOwner[]) => void
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       /** Main-process fact: this OS can back glass with a native material. */
@@ -729,6 +731,8 @@ declare global {
       updates: {
         check: (opts?: { force?: boolean }) => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
+        /** Stop a pending "update when idle". Absent on older shells. */
+        cancelWhenIdle?: () => Promise<{ cancelled: boolean }>
         /** Persist this source install's update channel and return the fresh check. */
         setChannel?: (name: 'main' | 'stable') => Promise<DesktopUpdateStatus>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
@@ -1008,7 +1012,13 @@ export type DesktopUpdateDirtyStrategy = 'abort' | 'stash' | 'force'
 
 export interface DesktopUpdateApplyOptions {
   dirtyStrategy?: DesktopUpdateDirtyStrategy
+  /** Absent: refuse (`active-work`) when agent work is running. `now`: the user
+   *  consented to interrupting it. `when-idle`: wait for it to finish first. */
+  mode?: 'now' | 'when-idle'
 }
+
+/** One named thing an in-app update would interrupt. */
+export type DesktopUpdateBusyReason = UpdateBusyReason
 
 export interface DesktopUpdateApplyResult {
   ok: boolean
@@ -1044,6 +1054,8 @@ export interface DesktopUpdateApplyResult {
   /** True when a detached relauncher took over (macOS bundle swap / Linux
    *  re-exec): the app is about to quit and reopen itself. */
   handedOff?: boolean
+  /** `active-work` / `idle-timeout`: what the update would interrupt. */
+  waitingFor?: DesktopUpdateBusyReason[]
 }
 
 export type DesktopUpdateStage =
@@ -1061,6 +1073,10 @@ export type DesktopUpdateStage =
    *  changed — the user must update/reinstall the desktop app. Terminal,
    *  closeable; never claims the GUI was updated. (#45205) */
   | 'guiSkew'
+  /** Agent work is running: the user picks "update now" or "update when idle". */
+  | 'busy'
+  /** "Update when idle" is waiting on `waitingFor`; cancellable. */
+  | 'waiting'
   | 'error'
 
 export interface DesktopUpdateProgress {
@@ -1069,6 +1085,9 @@ export interface DesktopUpdateProgress {
   percent: number | null
   error: string | null
   at: number
+  /** stage 'waiting': what the update still waits for, and when it gives up (epoch ms). */
+  waitingFor?: DesktopUpdateBusyReason[]
+  deadlineAt?: number
 }
 
 export interface DesktopPluginProfileRoute {
@@ -1133,6 +1152,12 @@ export interface HermesTitleBarTheme {
 export interface HermesActiveWork {
   count: number
   titles: string[]
+}
+
+/** Per working chat: the backend that runs it, so a local update ignores chats on a URL/cloud remote. */
+export interface HermesActiveWorkOwner {
+  title: string
+  owner: null | { connectionId?: string; profile?: string }
 }
 
 export interface HermesWindowState {

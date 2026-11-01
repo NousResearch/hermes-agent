@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+  <title id="title">Separate The Plugin From The Build</title>
+  <desc id="desc">Conceptual architecture. Generated Dashboard files live in the Hermes installation. The user plugin lives separately under the Dashboard profile home. The same host loads both. Replacing the build output does not reinstall or back up the plugin.</desc>
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#94a3b8"/></marker>
+    <style>text{font-family:Arial,Helvetica,sans-serif;fill:#e2e8f0}.mono{font-family:"DejaVu Sans Mono",monospace}.muted{fill:#a8b7cb}.small{font-size:16px}.label{font-size:17px;font-weight:700;letter-spacing:1px}.title{font-size:34px;font-weight:700}</style>
+  </defs>
+  <rect width="1200" height="680" rx="18" fill="#020617"/>
+  <rect width="1200" height="680" rx="18" fill="url(#grid)"/>
+  <text x="44" y="43" class="label" style="fill:#22d3ee">HERMES / DASHBOARD PLUGIN RECIPE</text>
+  <text x="44" y="93" class="title">Separate The Plugin From The Build</text>
+  <text x="44" y="126" font-size="18" class="muted">Keep the profile home outside the source checkout. Use the existing host, not a second server.</text>
+  <!-- Connections sit behind the directory panels. -->
+  <path d="M300 467V510" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M900 467V510" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="44" y="166" width="510" height="302" rx="12" fill="#0f172a"/>
+  <rect x="44" y="166" width="510" height="302" rx="12" fill="#78350f" fill-opacity="0.18" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="8 5"/>
+  <text x="68" y="203" class="label" style="fill:#fbbf24">HERMES INSTALLATION</text>
+  <text x="68" y="243" class="mono" font-size="23">hermes_cli/web_dist/</text>
+  <text x="68" y="281" class="small muted">Official generated Dashboard output</text>
+  <rect x="68" y="305" width="462" height="75" rx="8" fill="#182235" stroke="#334155"/>
+  <text x="88" y="335" class="mono" font-size="18">index.html   assets/   fonts/</text>
+  <text x="88" y="362" class="small muted">Owned by the build and update process</text>
+  <text x="68" y="416" font-size="19" style="fill:#fbbf24">Replaceable output, not custom-page storage</text>
+  <text x="68" y="444" class="small muted">Do not patch its HTML or copy an app into it.</text>
+  <rect x="634" y="166" width="522" height="302" rx="12" fill="#0f172a"/>
+  <rect x="634" y="166" width="522" height="302" rx="12" fill="#064e3b" fill-opacity="0.23" stroke="#34d399" stroke-width="1.5"/>
+  <text x="658" y="203" class="label" style="fill:#34d399">DASHBOARD PROFILE HOME</text>
+  <text x="658" y="243" class="mono" font-size="19">$HERMES_HOME/plugins/my-plugin/</text>
+  <text x="658" y="281" class="small muted">Trusted, explicitly enabled user plugin</text>
+  <rect x="658" y="305" width="474" height="75" rx="8" fill="#10272c" stroke="#235b52"/>
+  <text x="678" y="335" class="mono" font-size="18">dashboard/manifest.json + dist/index.js</text>
+  <text x="678" y="362" class="mono" font-size="16">dashboard/plugin_api.py + pages/page.html</text>
+  <text x="658" y="416" font-size="19" style="fill:#34d399">Installed separately from the generated output</text>
+  <text x="658" y="444" class="small muted">Keep its source, release and backup separately.</text>
+  <rect x="44" y="518" width="1112" height="86" rx="12" fill="#0f172a" stroke="#22d3ee" stroke-width="1.5"/>
+  <text x="70" y="551" font-size="22" font-weight="700">One Existing Dashboard Host</text>
+  <text x="70" y="580" font-size="17" class="muted">Official UI + plugin discovery + existing authentication + enabled-plugin gates</text>
+  <text x="44" y="643" class="small muted">CONCEPTUAL DIAGRAM · Not a live screenshot or a guarantee of future SDK/API compatibility.</text>
+</svg>

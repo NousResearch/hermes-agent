@@ -414,6 +414,8 @@ def apply_plugin_yaml_hooks(
         try:
             seeded = entry.apply_yaml_config_fn(yaml_cfg, effective)
         except Exception as e:
+            from gateway.platforms._shared import cancel_yaml_env_refresh
+            cancel_yaml_env_refresh()
             logger.debug("apply_yaml_config_fn for %s raised: %s", entry.name, e)
             continue
         if isinstance(seeded, dict) and seeded:
@@ -438,9 +440,10 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     sets ``GATEWAY_ALLOW_ALL_USERS`` in its own ``.env`` like every other scoped authorization gate.
     """
     global _BRIDGED_ALLOW_ALL_USERS
-    from gateway.platforms._shared import profile_scoped
+    from gateway.platforms._shared import profile_scoped, yaml_env_setter
 
     skip_env_bridge = profile_scoped()
+    set_env = yaml_env_setter(fallback=True)
     gateway_section = yaml_cfg.get("gateway")
     allow_all = yaml_cfg.get("allow_all_users")
     if allow_all is None and isinstance(gateway_section, dict):
@@ -469,8 +472,7 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
         # require_mention (not a telegram: block), so the telegram plugin's apply_yaml_config_fn hook —
         # which only runs when a telegram config block exists — can't cover the no-telegram-block case
         # (#3979).
-        if not skip_env_bridge and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
-            os.environ["TELEGRAM_REQUIRE_MENTION"] = str(tl_require_mention).lower()
+        set_env("TELEGRAM_REQUIRE_MENTION", str(tl_require_mention).lower())
 
     # Telegram settings → env vars / extra: migrated to the telegram plugin's apply_yaml_config_fn hook
     # (plugins/platforms/telegram/adapter.py). #41112 / #3823.
@@ -480,8 +482,7 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     if isinstance(signal_cfg, dict) and "require_mention" in signal_cfg:
         sig_plat = platforms_data.setdefault(Platform.SIGNAL.value, {})
         sig_plat.setdefault("extra", {}).setdefault("require_mention", signal_cfg["require_mention"])
-        if not skip_env_bridge and not os.getenv("SIGNAL_REQUIRE_MENTION"):
-            os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
+        set_env("SIGNAL_REQUIRE_MENTION", str(signal_cfg["require_mention"]).lower())
 
 
 def read_yaml_layers(home: Path) -> dict:
@@ -515,6 +516,14 @@ def read_yaml_layers(home: Path) -> dict:
 
 
 def load_yaml_layer(home: Path, gw_data: dict) -> None:
+    """Overlay YAML and retract missing bridge-owned settings only after a successful load."""
+    from gateway.platforms._shared import yaml_env_refresh
+
+    with yaml_env_refresh():
+        _load_yaml_layer(home, gw_data)
+
+
+def _load_yaml_layer(home: Path, gw_data: dict) -> None:
     """Overlay ``read_yaml_layers`` onto *gw_data* in place. Raises on any failure (caller warns + falls back)."""
     yaml_cfg = read_yaml_layers(home)
     if not yaml_cfg:
@@ -530,7 +539,9 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry as registry
     except Exception as e:
-        logger.debug("plugin discovery skipped: %s", e)
+        from gateway.platforms._shared import cancel_yaml_env_refresh
+        cancel_yaml_env_refresh()
+        logger.debug("plugin discovery skipped: %s", e, exc_info=True)
         registry = None
 
     # Only platforms this profile configures (a block above, a gateway.json row, their env/.env) are

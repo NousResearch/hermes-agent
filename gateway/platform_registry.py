@@ -396,7 +396,15 @@ class PlatformRegistry:
         (or a test stub); entries that are already loaded are always returned."""
         self._resolve_all(wanted)
         with self._lock:
-            return list({**self._entries, **self._scoped_entries.get(self.current_scope_key(), {})}.values())
+            scope = self.current_scope_key()
+            entries = list({**self._entries, **self._scoped_entries.get(scope, {})}.values())
+            unresolved = {name for (owner, name) in self._consumed_loaders if owner in (None, scope)}
+            unresolved.difference_update(entry.name for entry in entries)
+        if any(wanted(name) for name in unresolved):
+            # Failed lazy loaders stay consumed on later passes; absence is not key deletion.
+            from gateway.platforms._shared import cancel_yaml_env_refresh
+            cancel_yaml_env_refresh()
+        return entries
 
     def loaded_entries(self) -> list[PlatformEntry]:
         """Entries already materialized (never imports a deferred adapter)."""

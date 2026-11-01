@@ -96,6 +96,72 @@ describe('syncRepositoryIncrementally', () => {
     expect(result.map(item => item.id)).toEqual(['a', 'b'])
   })
 
+  it('keeps a visible live assistant row when a rewrite transiently omits it', () => {
+    const prompt = message('user-1', 'question')
+
+    const live = fromThreadMessageLike(
+      { role: 'assistant', content: [{ type: 'text', text: 'Working through the tools…' }] },
+      'assistant-stream-1',
+      { type: 'running' }
+    )
+
+    const runtime = runtimeWith(chain([prompt, live]))
+
+    const result = syncRepositoryIncrementally(runtime, exported(chain([prompt])))
+
+    expect(result.map(item => item.id)).toEqual(['user-1', 'assistant-stream-1'])
+  })
+
+  it('removes a settled stream row when an authoritative rewrite omits it', () => {
+    const prompt = message('user-1', 'question')
+    const settled = fromThreadMessageLike(
+      { role: 'assistant', content: [{ type: 'text', text: 'Finished answer' }] },
+      'assistant-stream-1',
+      STATUS
+    )
+    const runtime = runtimeWith(chain([prompt, settled]))
+
+    const result = syncRepositoryIncrementally(runtime, exported(chain([prompt])))
+
+    expect(result.map(item => item.id)).toEqual(['user-1'])
+  })
+
+  it('shows an authoritative completed replacement instead of a missing live stream tail', () => {
+    const prompt = message('user-1', 'question')
+    const live = fromThreadMessageLike(
+      { role: 'assistant', content: [{ type: 'text', text: 'Partial answer' }] },
+      'assistant-stream-1',
+      { type: 'running' }
+    )
+    const completed = message('assistant-final-1', 'Completed answer')
+    const runtime = runtimeWith(chain([prompt, live]))
+
+    const result = syncRepositoryIncrementally(runtime, {
+      headId: completed.id,
+      messages: chain([prompt, completed])
+    })
+
+    expect(result.map(item => item.id)).toEqual(['user-1', 'assistant-final-1'])
+  })
+
+  it('honours an explicit branch rewind instead of retaining a missing live stream tail', () => {
+    const prompt = message('user-1', 'question')
+    const live = fromThreadMessageLike(
+      { role: 'assistant', content: [{ type: 'text', text: 'Partial answer' }] },
+      'assistant-stream-1',
+      { type: 'running' }
+    )
+    const alternative = message('assistant-branch-1', 'Earlier branch')
+    const runtime = runtimeWith(chain([prompt, live]))
+
+    const result = syncRepositoryIncrementally(runtime, {
+      headId: prompt.id,
+      messages: chain([prompt, alternative])
+    })
+
+    expect(result.map(item => item.id)).toEqual(['user-1'])
+  })
+
   it('rebuilds cleanly when a disjoint transcript is swapped in', () => {
     const runtime = runtimeWith(chain([message('old-1', 'one'), message('old-2', 'two')]))
 

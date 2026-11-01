@@ -242,13 +242,20 @@ with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "op.log"), "a
     log.write(json.dumps(argv) + "\n")
 if argv[:2] == ["item", "list"]:
     print(json.dumps([{"id": i, "title": i, "vault": {"id": "vault-" + i[-1]},
-                       "urls": [{"href": "https://example.com/login"}]} for i in ("item-a", "item-b", "item-c")])); sys.exit(0)
+                       "urls": [{"href": "https://example.com/login"}]} for i in ("item-a", "item-b", "item-c", "item-q")])); sys.exit(0)
 if argv[:2] == ["item", "get"]:
     if os.environ.get("OP_SERVICE_ACCOUNT_TOKEN") and "--vault" not in argv:
         sys.stderr.write("a vault query must be provided when this command is called by a service account\n"); sys.exit(1)
     if "item-c" in argv:  # a revoked/garbled token: op's own wording mentions a session
         sys.stderr.write("error initializing client: Validation: (failed to session.DecodeSACredentials)\n"); sys.exit(1)
-    print("123456" if "--otp" in argv else "dummy-password"); sys.exit(0)
+    if "--otp" in argv:
+        print("123456"); sys.exit(0)
+    secret = 'pa"ss,word 1' if "item-q" in argv else "dummy-password"
+    if "--format" in argv:  # real op: `--fields ... --format json` prints the field object
+        print(json.dumps({"id": "password", "label": "password", "type": "CONCEALED", "value": secret}))
+    else:  # the plain form CSV-quotes values holding `"` or `,`
+        print('"' + secret.replace('"', '""') + '"' if any(c in secret for c in '",') else secret)
+    sys.exit(0)
 sys.exit(2)
 '''
 
@@ -275,7 +282,7 @@ def test_onepassword_service_account_reads_name_the_items_own_vault(fake_op_serv
     assert fill.resolve_password("op:item-b") == "dummy-password"
     assert new_backend().resolve_otp("op:item-a") == "123456"  # a code read on a fresh backend lists once
     calls = [a[:2] if a[:2] == ["item", "list"] else a for a in map(json.loads, log.read_text(encoding="utf-8-sig").splitlines())]
-    assert calls == [["item", "list"], ["item", "get", "item-b", "--vault", "vault-b", "--fields", "label=password", "--reveal"],
+    assert calls == [["item", "list"], ["item", "get", "item-b", "--vault", "vault-b", "--fields", "label=password", "--reveal", "--format", "json"],
                      ["item", "list"], ["item", "get", "item-a", "--vault", "vault-a", "--otp"]]
 
 
@@ -289,3 +296,20 @@ def test_onepassword_service_account_refusals_name_the_real_cause(fake_op_servic
     assert all(json.loads(a)[:2] != ["item", "get"] for a in log.read_text(encoding="utf-8-sig").splitlines())
     with pytest.raises(RuntimeError, match="DecodeSACredentials"):
         new_backend().resolve_password("op:item-c")
+
+
+def test_onepassword_password_with_quote_or_comma_is_resolved_exactly(fake_op_service_account):
+    """A password containing `"` or `,` must reach the page unchanged. Plain `--fields` output
+    CSV-quotes it (`"pa""ss,word 1"`), so resolution reads op's JSON field instead."""
+    new_backend, _log = fake_op_service_account
+    assert new_backend().resolve_password("op:item-q") == 'pa"ss,word 1'
+
+
+def test_onepassword_password_resolution_refuses_a_missing_field():
+    """No password field in op's answer is an error, never an empty or partial secret."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    backend = OnePasswordLoginBackend({"enabled": True})
+    backend._item_vaults = {"item123": "v1"}
+    with patch.object(backend, "_run", return_value="[]"), pytest.raises(RuntimeError, match="no password field"):
+        backend.resolve_password("op:item123")

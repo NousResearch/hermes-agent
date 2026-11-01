@@ -1129,7 +1129,6 @@ export const zhHantSettings = {
       tasks: {
         vision: { label: '視覺', hint: '圖片分析' },
         compression: { label: '壓縮', hint: '上下文壓縮' },
-        skills_hub: { label: '技能中心', hint: '技能搜尋' },
         approval: { label: '核准', hint: '智慧自動核准' },
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '標題生成', hint: '工作階段標題' },

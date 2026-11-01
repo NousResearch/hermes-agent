@@ -750,7 +750,8 @@ DEFAULT_CONFIG = {
         # retry/fallback; None = built-in 60s default. Independent of "timeout" (the overall request
         # budget) — raising "timeout" alone does not widen this window. See #108104.
         "compression": _aux(120, no_progress_timeout=None),
-        "skills_hub": _aux(30),
+        # skills_hub no longer uses an aux LLM either (#40703): Skills Hub search/install is
+        # deterministic (tools/skills_hub*.py, hermes_cli/skills_hub.py). Leftover blocks are ignored.
         "approval": _aux(30),   # classifier — a fast/cheap model is recommended
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like
         # delegation.provider pins. "auto" + "" = main agent's model. api_mode forces transport:

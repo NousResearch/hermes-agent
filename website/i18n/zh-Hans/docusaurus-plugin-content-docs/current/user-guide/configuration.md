@@ -891,14 +891,6 @@ auxiliary:
     #     base_url: ""
     #     api_key: ""
 
-  # 技能中心 —— 技能匹配和搜索
-  skills_hub:
-    provider: "auto"
-    model: ""
-    base_url: ""
-    api_key: ""
-    timeout: 30
-
   # MCP 工具调度
   mcp:
     provider: "auto"
@@ -954,7 +946,7 @@ auxiliary:
 | `model` | 该 provider 的模型名称 |
 | `base_url` | （可选）自定义 OpenAI 兼容端点 |
 
-`fallback_chain` 适用于任何辅助任务 —— `compression`、`vision`、`approval`、`skills_hub`、`mcp` 等。
+`fallback_chain` 适用于任何辅助任务 —— `compression`、`vision`、`approval`、`mcp` 等。
 
 ### OpenRouter 路由和辅助任务的 Pareto Code
 

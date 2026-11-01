@@ -2478,7 +2478,13 @@ class FeishuAdapter(BasePlatformAdapter):
         return False
 
     async def _handle_card_action_event(self, data: Any) -> None:
-        """Route Feishu interactive card button clicks as synthetic COMMAND events."""
+        """Route Feishu interactive card button clicks as synthetic TEXT events.
+
+        The synthetic text deliberately does NOT start with ``/``: the gateway's slash layer
+        answers unknown commands (``/card …``) with an unknown-command notice instead of
+        forwarding them to the agent. A ``card:…`` prefix mirrors the reaction-routing
+        channel (``reaction:added:…``), which is delivered to the session as a plain message.
+        """
         event = getattr(data, "event", None)
         token = str(getattr(event, "token", "") or "")
         if token and self._is_card_action_duplicate(token):
@@ -2494,17 +2500,27 @@ class FeishuAdapter(BasePlatformAdapter):
         action = getattr(event, "action", None)
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
-        synthetic_text = f"/card {action_tag}"
+        form_value = getattr(action, "form_value", None) or {}
+        synthetic_text = f"card:{action_tag}"
         if action_value:
             try:
                 synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
             except Exception:
                 pass
-        logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
+        if form_value:
+            try:
+                synthetic_text += f" FORM {json.dumps(form_value, ensure_ascii=False)}"
+            except Exception:
+                pass
+        logger.info("[Feishu] Routing card action %r from %s in %s as synthetic event", action_tag, open_id, chat_id)
+        # The card's own message id (context.open_message_id) anchors the agent's reply onto
+        # the card. A card-action token (c-…) is NOT a valid open_message_id and would make
+        # every send fail with #99992354 (found live 2026-09-23). Empty → no reply anchor.
+        card_message_id = str(getattr(context, "open_message_id", "") or "")
         await self._dispatch_synthetic_event(
-            text=synthetic_text, message_type=MessageType.COMMAND, chat_id=chat_id,
-            sender_id=SimpleNamespace(open_id=open_id, user_id=None, union_id=None), event_chat_type="group",
-            raw_message=data, message_id=token or str(uuid.uuid4()),
+            text=synthetic_text, message_type=MessageType.TEXT, chat_id=chat_id,
+            sender_id=SimpleNamespace(open_id=open_id, user_id=None, union_id=None), event_chat_type="",
+            raw_message=data, message_id=card_message_id,
         )
 
     async def _dispatch_synthetic_event(
@@ -2514,6 +2530,10 @@ class FeishuAdapter(BasePlatformAdapter):
         """Wrap a reaction/card click as a MessageEvent and run it through the guarded pipeline."""
         sender_profile = await self._resolve_sender_profile(sender_id)
         chat_info = await self.get_chat_info(chat_id)
+        if not event_chat_type:
+            # Callers that don't know the chat flavor (card actions) inherit it from chat_info;
+            # _resolve_source_chat_type() needs the raw "p2p" token to label a DM correctly.
+            event_chat_type = "p2p" if str(chat_info.get("type") or "").strip().lower() == "dm" else "group"
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",

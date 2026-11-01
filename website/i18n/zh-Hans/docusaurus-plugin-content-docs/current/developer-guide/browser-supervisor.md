@@ -9,7 +9,7 @@
 原生 JS 对话框（`alert`/`confirm`/`prompt`/`beforeunload`）和 iframe 是我们浏览器工具中最大的两个缺口：
 
 1. **对话框会阻塞 JS 线程。** 页面上的任何操作都会挂起，直到对话框被处理。在此工作之前，agent 无法感知对话框是否已打开——后续的工具调用会挂起或抛出不透明的错误。
-2. **iframe 不可见。** Agent 可以在 DOM 快照中看到 iframe 节点，但无法在其中点击、输入或执行 eval——尤其是运行在独立 Chromium 进程中的跨域（OOPIF）iframe。
+2. **iframe 不可见。** Agent 可以在 DOM 中看到 iframe 节点，但无法在其中点击、输入或执行 eval——尤其是运行在独立 Chromium 进程中的跨域（OOPIF）iframe。
 
 [PR #12550](https://github.com/NousResearch/hermes-agent/pull/12550) 提出了一个无状态的 `browser_dialog` 包装器。该方案无法解决检测问题——它只是在 agent 已经（通过症状）知道对话框已打开时，提供了一个更简洁的 CDP 调用。已作为被取代方案关闭。
 
@@ -19,15 +19,14 @@
 
 | 后端 | 对话框检测 | 对话框响应 | 框架树 | OOPIF `Runtime.evaluate`（通过 `browser_cdp(frame_id=...)`） |
 |---|---|---|---|---|
-| 本地 Chrome（`--remote-debugging-port`）/ `/browser connect` | ✓ | ✓ 完整流程 | ✓ | ✓ |
+| 本地 Chromium（由 Hermes 为 `browser_exec` 启动）/ `/browser connect` | ✓ | ✓ 完整流程 | ✓ | ✓ |
 | Browserbase | ✓（通过 bridge） | ✓ 完整流程（通过 bridge） | ✓ | ✓（`document.title = "Example Domain"` 已在真实跨域 iframe 上验证） |
-| Camofox | ✗ 无 CDP（仅 REST） | ✗ | 通过 DOM 快照部分支持 | ✗ |
 
 **Browserbase 响应的工作原理。** Browserbase 的 CDP 代理在内部使用 Playwright，并在约 10ms 内自动关闭原生对话框，因此 `Page.handleJavaScriptDialog` 无法跟上。为解决此问题，supervisor 通过 `Page.addScriptToEvaluateOnNewDocument` 注入一个 bridge 脚本，将 `window.alert`/`confirm`/`prompt` 覆盖为向魔法主机（`hermes-dialog-bridge.invalid`）发起的同步 XHR。`Fetch.enable` 在这些 XHR 触达网络之前将其拦截——对话框变成 supervisor 捕获的 `Fetch.requestPaused` 事件，`respond_to_dialog` 通过 `Fetch.fulfillRequest` 以 JSON 响应体完成请求，注入的脚本对其进行解码。
 
 最终效果：从页面角度看，`prompt()` 仍然返回 agent 提供的字符串。从 agent 角度看，无论哪种方式，都是同一套 `browser_dialog(action=...)` API。已针对真实 Browserbase 会话进行端到端测试——4/4（alert/prompt/confirm-accept/confirm-dismiss）全部通过，包括值回传到页面 JS 的验证。
 
-Camofox 在本 PR 中暂不支持；计划在 `jo-inc/camofox-browser` 提交上游 issue，请求添加对话框轮询端点。
+Camofox 目录插件（`hermes plugins install camofox`）驱动的是仅支持 REST、没有 CDP 接口的浏览器，因此 supervisor 不适用于它。
 
 ## 架构
 
@@ -49,7 +48,7 @@ Camofox 在本 PR 中暂不支持；计划在 `jo-inc/camofox-browser` 提交上
 
 ### 生命周期
 
-- **启动：** `SupervisorRegistry.get_or_start(task_id, cdp_url)` — 由 `browser_navigate`、Browserbase 会话创建、`/browser connect` 调用。幂等。
+- **启动：** `SupervisorRegistry.get_or_start(task_id, cdp_url)` — 在 `browser_exec` 附加到会话（本地、云端提供商或 CDP 覆盖）时以及执行 `/browser connect` 时调用。幂等。
 - **停止：** 会话拆除或 `/browser disconnect`。取消 asyncio task，关闭 WebSocket，丢弃状态。
 - **重新绑定：** 若 CDP URL 变更（用户重新连接到新的 Chrome），停止旧 supervisor 并重新启动——绝不跨端点复用状态。
 
@@ -57,8 +56,8 @@ Camofox 在本 PR 中暂不支持；计划在 `jo-inc/camofox-browser` 提交上
 
 通过 `config.yaml` 中的 `browser.dialog_policy` 配置：
 
-- **`must_respond`**（默认）— 捕获，在 `browser_snapshot` 中呈现，等待显式的 `browser_dialog(action=...)` 调用。在 300s 安全超时后若无响应，则自动关闭并记录日志。防止有缺陷的 agent 永久挂起。
-- `auto_dismiss` — 记录并立即关闭；agent 事后通过 `browser_snapshot` 内的 `browser_state` 查看。
+- **`must_respond`**（默认）— 捕获，在 `pending_dialogs` 中呈现，等待显式的 `browser_dialog(action=...)` 调用。在 300s 安全超时后若无响应，则自动关闭并记录日志。防止有缺陷的 agent 永久挂起。
+- `auto_dismiss` — 记录并立即关闭；事后会出现在 `recent_dialogs` 中。
 - `auto_accept` — 记录并接受（适用于用户希望干净导航离开时的 `beforeunload`）。
 
 策略按 task 配置；v1 不支持按对话框覆盖。
@@ -75,11 +74,11 @@ browser_dialog(action, prompt_text=None, dialog_id=None)
 - `prompt_text=...` → 向 `prompt()` 对话框提供的文本
 - `dialog_id=...` → 当多个对话框排队时用于消歧（罕见）
 
-该工具仅用于响应。Agent 在调用前从 `browser_snapshot` 输出中读取待处理对话框。
+该工具仅用于响应。只有一个待处理对话框时可省略 `dialog_id`。
 
-### `browser_snapshot` 扩展
+### Supervisor 快照
 
-当 supervisor 已附加时，在现有快照输出中新增三个可选字段：
+supervisor 附加期间，`CDPSupervisor.snapshot()` 包含三个字段：
 
 ```json
 {
@@ -107,25 +106,15 @@ browser_dialog(action, prompt_text=None, dialog_id=None)
 
 - **`frame_tree`**：框架结构，包括跨域（OOPIF）子框架。上限为 30 条 + OOPIF 深度 2，以限制广告密集页面上的快照大小。当达到限制时，`truncated: true` 会出现；需要完整树的 agent 可使用 `browser_cdp` 配合 `Page.getFrameTree`。
 
-以上均不新增工具 schema 接口——agent 从其已请求的快照中读取。
-
 ### 可用性门控
 
-两个接口均通过 `_browser_cdp_check` 进行门控（supervisor 只能在 CDP 端点可达时运行）。在 Camofox / 无后端会话中，对话框工具被隐藏，快照省略新字段——不产生 schema 膨胀。
+`browser_dialog` 和 `browser_cdp` 均按 CDP 可达性进行门控（supervisor 只能在 CDP 端点可达时运行）。没有 CDP 端点时，对话框工具被隐藏——不产生 schema 膨胀。
 
 ## 跨域 iframe 交互
 
-在对话框检测工作的基础上，`browser_cdp(frame_id=...)` 通过 supervisor 已连接的 WebSocket，使用 OOPIF 的子 `sessionId` 路由 CDP 调用（尤其是 `Runtime.evaluate`）。Agent 从 `browser_snapshot.frame_tree.children[]` 中 `is_oopif=true` 的条目获取 frame_id，并将其传递给 `browser_cdp`。对于同源 iframe（无专用 CDP 会话），agent 改用顶层 `Runtime.evaluate` 中的 `contentWindow`/`contentDocument`——当 `frame_id` 属于非 OOPIF 时，supervisor 会返回指向该回退方案的错误。
+在对话框检测工作的基础上，`browser_cdp(frame_id=...)` 通过 supervisor 已连接的 WebSocket，使用 OOPIF 的子 `sessionId` 路由 CDP 调用（尤其是 `Runtime.evaluate`）。Agent 从 supervisor 的 `frame_tree.children[]` 中 `is_oopif=true` 的条目（或通过 `browser_cdp` 调用 `Page.getFrameTree`）获取 frame_id，并将其传递给 `browser_cdp`。对于同源 iframe（无专用 CDP 会话），agent 改用顶层 `Runtime.evaluate` 中的 `contentWindow`/`contentDocument`——当 `frame_id` 属于非 OOPIF 时，supervisor 会返回指向该回退方案的错误。
 
 在 Browserbase 上，这是 iframe 交互的**唯一**可靠路径——无状态 CDP 连接（每次 `browser_cdp` 调用时打开）会遭遇签名 URL 过期，而 supervisor 的长连接则保持有效会话。
-
-## Camofox（后续跟进）
-
-计划向 `jo-inc/camofox-browser` 提交 issue，添加：
-- 每个会话的 Playwright `page.on('dialog', handler)`
-- `GET /tabs/:tabId/dialogs` 轮询端点
-- `POST /tabs/:tabId/dialogs/:id` 用于接受/关闭
-- 框架树内省端点
 
 ## 涉及文件（PR 1）
 
@@ -139,17 +128,13 @@ browser_dialog(action, prompt_text=None, dialog_id=None)
 ### 修改
 
 - `toolsets.py` — 在 `browser`、`hermes-acp`、`hermes-api-server`、核心工具集中注册 `browser_dialog`（通过 CDP 可达性门控）
-- `tools/browser_tool.py`
-  - `browser_navigate` 启动钩子：若 CDP URL 可解析，调用 `SupervisorRegistry.get_or_start(task_id, cdp_url)`
-  - `browser_snapshot`（约第 1536 行）：将 supervisor 状态合并到返回载荷
-  - `/browser connect` 处理器：以新端点重启 supervisor
-  - `_cleanup_browser_session` 中的会话拆除钩子
+- `tools/browser_session_cdp.py` — `ensure_cdp_supervisor` / `stop_cdp_supervisor`、`/browser connect` 重新附加、对话框策略配置
+- `tools/browser_session_lifecycle.py` — 按会话拆除（先停止 supervisor）
 - `hermes_cli/config.py` — 向 `DEFAULT_CONFIG` 添加 `browser.dialog_policy` 和 `browser.dialog_timeout_s`
 - 文档：`website/docs/user-guide/features/browser.md`、`website/docs/reference/tools-reference.md`、`website/docs/reference/toolsets-reference.md`
 
 ## 非目标
 
-- Camofox 的检测/交互（上游缺口；单独跟踪）
 - 向用户实时流式传输对话框/框架事件（需要 gateway 钩子）
 - 跨会话持久化对话框历史（仅内存）
 - 按 iframe 配置对话框策略（agent 可通过 `dialog_id` 表达）

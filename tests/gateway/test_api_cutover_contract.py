@@ -142,3 +142,37 @@ def test_compressed_api_conversation_keeps_its_root_queue_and_follows_the_tip(ap
     assert {r['target_session_id'] for r in list_session_admissions(owner.db, session_id=ref.session_id,
                                                                      pending_only=False)} == {ref.session_id}
     assert first['target_session_id'] == ref.session_id
+
+
+@pytest.mark.asyncio
+async def test_a_turn_queued_with_browser_control_recovers_and_runs_without_it(api, owner, monkeypatch):
+    """Admissions queued before browser-extension control was removed carry ``browser_control`` in their
+    stored payload. After the upgrade, startup recovery accepts them and they run; the key reaches nothing."""
+    from gateway.session_api_turn import recover_api_turns
+    from gateway.session_ingress import execute_admission
+    from gateway.session_results import execution_result
+    from hermes_state_runtime import list_session_admissions
+    _, ref, row = admit_api_turn(api, session_id='legacy-browser-control', request_id='queued-turn',
+                                 user_message='hello', conversation_history=[])
+    stored = json.loads(json.dumps(row['payload']))
+    stored['api_turn_v1']['browser_control'] = {'principal': 'principal:default:abc', 'transport_family': 'local-api'}
+    owner.db._execute_write(lambda conn: conn.execute(
+        'UPDATE session_admissions SET payload_json=? WHERE admission_id=?', (json.dumps(stored), row['admission_id'])))
+    owner.sessions.clear()  # the upgraded gateway knows the session only from its store
+    scheduled = []
+    monkeypatch.setattr(owner, '_schedule', lambda ref: scheduled.append(ref.session_id))
+    recover_api_turns(api)
+    assert scheduled == [ref.session_id]
+
+    [legacy] = list_session_admissions(owner.db, session_id=ref.session_id)
+    assert 'browser_control' in legacy['payload']['api_turn_v1']
+    seen = []
+
+    async def handle(event):
+        seen.append((event.text, dict(api_execution.get())))
+        execution_result.get()['result'] = {'final_response': 'ok'}
+        return 'ok'
+    owner.runner._handle_message = handle
+    assert await execute_admission(owner, ref, legacy) == 'ok'
+    [(text, execution)] = seen
+    assert text == 'hello' and 'browser_control' not in execution

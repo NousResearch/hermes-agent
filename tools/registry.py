@@ -267,10 +267,6 @@ _check_fn_core_drop_warned: set[tuple[Callable, Optional[str]]] = set()  # once-
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
 _NO_CACHE_CHECK_FNS: set[Callable] = set()
-_BROWSER_IDENTITY_KEYS = (
-    "HERMES_SESSION_ID",
-    "HERMES_BROWSER_CONTROL_PRINCIPAL",
-    "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY")
 
 
 def no_cache_check_fn(fn: Callable) -> Callable:
@@ -296,23 +292,9 @@ def _prune_check_fn_caches(now: float) -> None:
 
 
 def check_fn_cache_scope() -> Optional[str]:
-    """Return the active profile key when availability is profile-scoped. Browser-controller
-    availability is request-bound (changes on every attach/detach), so a fully bound
-    browser-control request bypasses this cache AND model_tools' outer definition cache (same
-    sentinel) — one Browser session's live tools must not leak into another. Single-profile
+    """Return the active profile key when availability is profile-scoped. Single-profile
     processes keep the process-wide cache; a multiplex gateway installs a Hermes-home override
     per profile turn, so the canonical profile key is the boundary."""
-    try:
-        from gateway.session_context import get_session_env
-        if all(str(get_session_env(k, "") or "").strip() for k in _BROWSER_IDENTITY_KEYS):
-            # api_server binds a server-derived principal + transport family on EVERY request, so
-            # identity-present != controller-attached; only bypass when the extension-control
-            # feature is actually on (#79047).
-            from gateway.browser_control_broker import browser_control_enabled
-            if browser_control_enabled():
-                return CHECK_FN_CACHE_BYPASS
-    except Exception:
-        pass
     try:
         from agent.secret_scope import serves_routed_profile
         from hermes_constants import get_hermes_home_override

@@ -512,15 +512,15 @@ ctx.register_tool(
 
 ### 覆盖内置工具
 
-要用你自己的实现替换内置工具（例如将默认浏览器工具替换为有头 Chrome CDP 后端，或将 `web_search` 替换为自定义企业索引），传入 `override=True`：
+要用你自己的实现替换内置工具（例如将 `web_search` 替换为自定义企业索引），传入 `override=True`：
 
 ```python
 def register(ctx):
     ctx.register_tool(
-        name="browser_navigate",             # 与内置工具同名
-        toolset="plugin_my_browser",         # 你自己的 toolset 命名空间
+        name="web_search",                   # 与内置工具同名
+        toolset="plugin_my_search",          # 你自己的 toolset 命名空间
         schema={...},
-        handler=my_custom_navigate,
+        handler=my_corporate_search,
         override=True,                       # 显式启用覆盖
     )
 ```

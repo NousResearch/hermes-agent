@@ -118,7 +118,7 @@ def browser_send_payload(broker: dict, body_text: str, to: str | None = None) ->
 
     No network and no credentials: the deterministic part (recipient-lock to the broker's own
     declared address, subject/body split) happens here; the agent then composes and sends it in
-    the operator's logged-in webmail with browser_* tools. Same recipient guard as `send()`, so
+    the operator's logged-in webmail with browser_exec. Same recipient guard as `send()`, so
     the browser lane cannot be pointed at an arbitrary person either.
     """
     allowed = broker_addresses(broker)

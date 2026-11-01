@@ -100,7 +100,7 @@ browser:
 1. **网页工具** — `web_search` / `web_extract` 走网关的托管搜索端点  
 2. **文生图** — `image_generate` 走网关的 FAL 端点  
 3. **TTS** — `text_to_speech` 走网关的 OpenAI Audio 端点  
-4. **浏览器** — `browser_navigate` 等走网关的 Browser Use 端点  
+4. **浏览器** — `browser_exec` 等浏览器工具驱动网关 Browser Use 端点提供的云端浏览器会话  
 
 网关使用 Nous Portal 凭据认证（在 `hermes model` 完成后写入 `~/.hermes/auth.json`）。
 

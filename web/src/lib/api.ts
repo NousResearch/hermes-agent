@@ -7,7 +7,7 @@ import { createDashboardSessionMutations } from "./session-mutations";
 
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
 
-import type { AuxiliaryModelsResponse } from "./api-aux";
+import type { AuxiliaryModelsResponse, ModelAssignmentResponse } from "./api-aux";
 import type { AgentPluginUpdateResponse } from "./api-plugins";
 import type {
   WhatsAppOnboardingApplyResponse,
@@ -2557,29 +2557,6 @@ export interface ModelAssignmentRequest {
   base_url?: string;
   /** For auxiliary: task slot name, "" for all, "__reset__" to reset all. */
   task?: string;
-}
-
-/** An auxiliary task still pinned to a provider that differs from the
- *  newly-selected main provider after a main-model switch. */
-export interface StaleAuxAssignment {
-  task: string;
-  provider: string;
-  model: string;
-}
-
-export interface ModelAssignmentResponse {
-  confirm_message?: string;
-  confirm_required?: boolean;
-  ok: boolean;
-  scope?: string;
-  provider?: string;
-  model?: string;
-  tasks?: string[];
-  reset?: boolean;
-  /** Auxiliary slots still pinned to a different provider than the new main.
-   *  Switching main never clears aux pins; this lets the UI warn the user
-   *  their helper tasks aren't following the switch. Only set on scope:'main'. */
-  stale_aux?: StaleAuxAssignment[];
 }
 
 // ── OAuth provider types ────────────────────────────────────────────────

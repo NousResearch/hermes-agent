@@ -28,6 +28,7 @@ import { ReasoningMenuPanel } from '@/app/shell/reasoning-menu-panel'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
+import type { TabActionsMenu, TabActionsMenuProps } from '@/components/pane-shell/tree/renderer/track-model'
 import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupTabStrip } from '@/components/pane-shell/tree/store'
 import {
   $workspaceOwnerLabels,
@@ -83,7 +84,7 @@ import { SessionStatusDot } from './session-status-dot'
 import { useSessionTileActions } from './session-tile-actions'
 import { tileOwnerRoute } from './session-tile-owner'
 import { reasoningEffortPending, type SessionView, SessionViewProvider } from './session-view'
-import { SessionContextMenu } from './sidebar/session-actions-menu'
+import { SessionActionsMenu, SessionContextMenu } from './sidebar/session-actions-menu'
 import { lastVisibleMessageIsUser } from './thread-loading'
 
 import { ChatView } from '.'
@@ -867,19 +868,7 @@ function useTileMenuRow(storedSessionId: string): {
   })
 }
 
-/** A session TAB's context menu: the full session verb set (pin, copy id, new
- *  window, branch, rename, archive, delete) — the SAME menu a sidebar row
- *  gets, targeted through the tile delegate (whose verbs are generic over
- *  stored ids, primary included). The wrapper stops the contextmenu from also
- *  opening the zone strip's menu. Shared by tile tabs AND the main tab. */
-export function SessionTabMenu({
-  children,
-  onClose,
-  onHideTabBar,
-  storedSessionId,
-  tabPaneId
-}: {
-  children: React.ReactElement
+interface SessionTabMenuTarget {
   /** Close this tab (tiles; the main tab passes nothing). */
   onClose?: () => void
   /** Hide the zone's tab bar (main tab only — the sticky bar's off switch). */
@@ -887,33 +876,74 @@ export function SessionTabMenu({
   storedSessionId: string
   /** Layout-tree pane id — powers the Close-others/right/all verbs. */
   tabPaneId: string
-}) {
+}
+
+/** The session verbs a TAB offers, wired to the tile delegate (whose verbs are
+ *  generic over stored ids, primary included). One source for the right-click
+ *  menu and the phone picker's button menu, so the two never drift. */
+function useSessionTabActions({ onClose, onHideTabBar, storedSessionId, tabPaneId }: SessionTabMenuTarget) {
   const { pinId, profile, renameable, title } = useTileMenuRow(storedSessionId)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinned = pinnedSessionIds.includes(pinId)
 
+  return {
+    onArchive: () => void sessionTileDelegate()?.archiveSession(storedSessionId),
+    onBranch: () => void sessionTileDelegate()?.branchSession(storedSessionId),
+    onClose,
+    onDelete: () => void sessionTileDelegate()?.deleteSession(storedSessionId),
+    onHideTabBar,
+    onPin: () => (pinned ? unpinSession(pinId) : pinSession(pinId)),
+    pinned,
+    profile,
+    renameable,
+    sessionId: storedSessionId,
+    surface: 'tab' as const,
+    tabPaneId,
+    title
+  }
+}
+
+/** A session TAB's context menu: the full session verb set (pin, copy id, new
+ *  window, branch, rename, archive, delete) — the SAME menu a sidebar row
+ *  gets. The wrapper stops the contextmenu from also opening the zone strip's
+ *  menu. Shared by tile tabs AND the main tab. */
+export function SessionTabMenu({ children, ...target }: SessionTabMenuTarget & { children: React.ReactElement }) {
+  const actions = useSessionTabActions(target)
+
   return (
     <span className="contents" onContextMenu={event => event.stopPropagation()}>
-      <SessionContextMenu
-        onArchive={() => void sessionTileDelegate()?.archiveSession(storedSessionId)}
-        onBranch={() => void sessionTileDelegate()?.branchSession(storedSessionId)}
-        onClose={onClose}
-        onDelete={() => void sessionTileDelegate()?.deleteSession(storedSessionId)}
-        onHideTabBar={onHideTabBar}
-        onPin={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
-        pinned={pinned}
-        profile={profile}
-        renameable={renameable}
-        sessionId={storedSessionId}
-        surface="tab"
-        tabPaneId={tabPaneId}
-        title={title}
-      >
-        {children}
-      </SessionContextMenu>
+      <SessionContextMenu {...actions}>{children}</SessionContextMenu>
     </span>
   )
 }
+
+/** The same tab menu opened from a button — the phone tab picker, where no
+ *  strip exists to right-click (#145774). */
+function SessionTabActionsMenu({ onOpenChange, open, trigger, ...target }: SessionTabMenuTarget & TabActionsMenuProps) {
+  const actions = useSessionTabActions(target)
+
+  return (
+    <SessionActionsMenu {...actions} align="start" onOpenChange={onOpenChange} open={open}>
+      {trigger}
+    </SessionActionsMenu>
+  )
+}
+
+const hideWorkspaceTabBar = () => {
+  const tree = $layoutTree.get()
+  const group = tree ? findGroupOfPane(tree, 'workspace') : null
+
+  if (group) {
+    setTreeGroupTabStrip(group.id, 'never')
+  }
+}
+
+const workspaceTabTarget = (storedSessionId: string): SessionTabMenuTarget => ({
+  onClose: () => closeTreePane('workspace'),
+  onHideTabBar: hideWorkspaceTabBar,
+  storedSessionId,
+  tabPaneId: 'workspace'
+})
 
 /** The MAIN tab's menu: the same session verbs targeting the primary's loaded
  *  session, plus Close (the tab empties to a fresh draft — the workspace pane
@@ -923,30 +953,26 @@ export function SessionTabMenu({
 export function WorkspaceTabMenu({ children }: { children: React.ReactElement }) {
   const selected = useStore($selectedStoredSessionId)
 
-  const hideTabBar = () => {
-    const tree = $layoutTree.get()
-    const group = tree ? findGroupOfPane(tree, 'workspace') : null
-
-    if (group) {
-      setTreeGroupTabStrip(group.id, 'never')
-    }
-  }
-
   if (!selected) {
     return children
   }
 
-  return (
-    <SessionTabMenu
-      onClose={() => closeTreePane('workspace')}
-      onHideTabBar={hideTabBar}
-      storedSessionId={selected}
-      tabPaneId="workspace"
-    >
-      {children}
-    </SessionTabMenu>
-  )
+  return <SessionTabMenu {...workspaceTabTarget(selected)}>{children}</SessionTabMenu>
 }
+
+/** The main tab's button menu (see `PaneChrome.tabActions`); none on a fresh
+ *  draft, same as the right-click menu. */
+export const workspaceTabActions = (): TabActionsMenu | undefined => {
+  const selected = $selectedStoredSessionId.get()
+
+  return selected ? props => <SessionTabActionsMenu {...props} {...workspaceTabTarget(selected)} /> : undefined
+}
+
+const tileTabTarget = (storedSessionId: string): SessionTabMenuTarget => ({
+  onClose: () => requestCloseSessionTile(storedSessionId),
+  storedSessionId,
+  tabPaneId: `session-tile:${storedSessionId}`
+})
 
 /** Keep pane contributions mirroring `$sessionTiles` (+ titles from
  *  `$sessions`). Tiles dock against main on the chosen edge, flex width. */
@@ -983,15 +1009,8 @@ export const watchSessionTiles = paneMirror<SessionTile>({
       <SessionDraftTitle scope={storedSessionId} />
     ),
   render: storedSessionId => <SessionTilePane storedSessionId={storedSessionId} />,
-  tabWrap: (storedSessionId, tab) => (
-    <SessionTabMenu
-      onClose={() => requestCloseSessionTile(storedSessionId)}
-      storedSessionId={storedSessionId}
-      tabPaneId={`session-tile:${storedSessionId}`}
-    >
-      {tab}
-    </SessionTabMenu>
-  ),
+  tabWrap: (storedSessionId, tab) => <SessionTabMenu {...tileTabTarget(storedSessionId)}>{tab}</SessionTabMenu>,
+  tabActions: storedSessionId => props => <SessionTabActionsMenu {...props} {...tileTabTarget(storedSessionId)} />,
   // A tile's tab drags like a sidebar row — stack / split / drop-to-link — with
   // its tap (activate) preserved. Always takes the drag.
   tabDrag: (storedSessionId, event, onTap) => {

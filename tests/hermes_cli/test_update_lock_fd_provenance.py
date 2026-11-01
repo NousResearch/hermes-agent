@@ -26,7 +26,7 @@ def test_checkout_custody_never_borrows_a_local_readers_descriptor(tmp_path, des
 
     def observe():
         def pause(frame, event, arg):
-            if event == "call" and frame.f_code is update_lock._try_lock.__code__:
+            if event == "call" and frame.f_code is update_lock._try_shared_lock.__code__:
                 sys.settrace(None)
                 opened.set()
                 assert resume.wait(20), "acquisition never released the status reader"

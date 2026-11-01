@@ -24,6 +24,7 @@ vi.mock('@/hermes', async importActual => ({
   getLatestSessionMessages: vi.fn(async () => ({ messages: [], session_id: '' })),
   getSession: vi.fn()
 }))
+vi.mock('@/store/confirm', () => ({ confirm: vi.fn(async () => false) }))
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
   requestGatewayForAgent: vi.fn(),
@@ -32,6 +33,7 @@ vi.mock('@/store/gateway', async importActual => ({
 
 const { getLatestSessionMessages, getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } = await import('@/hermes')
 const { requestGatewayForAgent, requestGatewayForProfile } = await import('@/store/gateway')
+const { confirm } = await import('@/store/confirm')
 
 const row = (over: Partial<SessionInfo>): SessionInfo =>
   ({
@@ -631,7 +633,15 @@ describe('useSessionTileDelegate resumeTile', () => {
     setSessions([row({ id: 'stored-c', profile: 'default' })])
 
     const liveState = { busy: false, messages: [{ id: 'm1' }], storedSessionId: 'stored-c' }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-c', 'runtime-dead']]) }
+
+    const runtimeIdByStoredSessionIdRef = {
+      current: new Map([
+        ['stored-c', 'runtime-dead'],
+        // A canonical binding: the runtime id IS the durable id, which no backend can re-mint.
+        ['local-open', 'local-open']
+      ])
+    }
+
     const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', liveState]]) }
 
     const requestGateway = vi.fn(async () => ({}) as never)
@@ -642,7 +652,7 @@ describe('useSessionTileDelegate resumeTile', () => {
 
     // Gateway reconnect (what resetTileRuntimeBindings calls on wake):
     sessionTileDelegate()!.invalidateRuntimeBindings!()
-    expect(runtimeIdByStoredSessionIdRef.current.size).toBe(0)
+    expect([...runtimeIdByStoredSessionIdRef.current]).toEqual([['local-open', 'local-open']])
 
     // The next resume goes cold instead of reusing the dead binding.
     const runtimeId = await sessionTileDelegate()!.resumeTile('stored-c')
@@ -682,6 +692,28 @@ describe('useSessionTileDelegate resumeTile', () => {
 
     await expect(sessionTileDelegate()!.branchSessionAtMessage('stored-x', 'runtime-gone', 'a1')).resolves.toBe(false)
     expect(branchLoadedSession).not.toHaveBeenCalled()
+  })
+})
+
+describe('useSessionTileDelegate switchSessionModel', () => {
+  it('answers applied only after a guarded target is confirmed, and never on "keep current model"', async () => {
+    const asked = { key: 'model', session_id: 'rt-1', value: 'example/model-a --provider nous --session' }
+
+    const requestGateway = vi.fn(async (_method: string, params: Record<string, unknown>) =>
+      params.confirm_expensive_model ? {} : { confirm_message: 'Large model', confirm_required: true }
+    )
+
+    renderTile(requestGateway)
+    const switchSessionModel = sessionTileDelegate()!.switchSessionModel!
+
+    vi.mocked(confirm).mockResolvedValueOnce(false)
+    await expect(switchSessionModel('rt-1', 'example/model-a', 'nous')).resolves.toBe(false)
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect(requestGateway).toHaveBeenCalledWith('config.set', asked)
+
+    vi.mocked(confirm).mockResolvedValueOnce(true)
+    await expect(switchSessionModel('rt-1', 'example/model-a', 'nous')).resolves.toBe(true)
+    expect(requestGateway).toHaveBeenLastCalledWith('config.set', { ...asked, confirm_expensive_model: true })
   })
 })
 

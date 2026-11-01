@@ -87,7 +87,6 @@ async def test_cli_surface_snapshot_carries_main_cli_toolsets_and_startup_warnin
     from gateway.session_controls import AuthorityConnection
     from hermes_cli import banner
     from hermes_cli.tools_config import _get_platform_tools
-    from tools import browser_use_cli
 
     home = tmp_path / 'home'
     home.mkdir()
@@ -96,7 +95,6 @@ async def test_cli_surface_snapshot_carries_main_cli_toolsets_and_startup_warnin
     monkeypatch.setenv('HERMES_HOME', str(home))
     monkeypatch.setattr(run, '_hermes_home', home)
     monkeypatch.setattr(banner, '_available_skills_cache', None)
-    monkeypatch.setattr(browser_use_cli, 'default_downgrade_notice', lambda: 'browser-harness is missing')
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
@@ -113,9 +111,9 @@ async def test_cli_surface_snapshot_carries_main_cli_toolsets_and_startup_warnin
     cli = (await call('session.create', request_id='cli', source='cli', cwd=str(repo)))['info']
     assert cli['enabled_toolsets'] == sorted(_get_platform_tools(load_config(), 'cli'))
     assert isinstance(cli['tool_availability_warnings'], list)
-    assert cli['browser_backend_notice'] == 'browser-harness is missing'
+    assert 'browser_backend_notice' not in cli
     tui = (await call('session.create', request_id='tui', source='tui', cwd=str(repo)))['info']
-    assert 'tool_availability_warnings' not in tui and 'browser_backend_notice' not in tui
+    assert 'tool_availability_warnings' not in tui
 
 
 @pytest.mark.asyncio

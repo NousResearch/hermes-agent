@@ -244,9 +244,9 @@ def _cfg_get_thinking_mode(params):
 
 
 def _cfg_get_mtime(params):
-    cfg_path = _hermes_home / "config.yaml"
+    from hermes_cli.config_backend import config_version_or_none, version_token
     try:
-        mtime = cfg_path.stat().st_mtime if cfg_path.exists() else 0
+        mtime = version_token(config_version_or_none(_hermes_home / "config.yaml"))
     except Exception:
         return {"mtime": 0}
     # mcp_rev: hash of the MCP-relevant sections so the poller reloads MCP servers only when
@@ -467,7 +467,9 @@ def _(rid, params: dict) -> dict:
             api_key_text = "" if callable(api_key) else str(api_key or "").strip()
             if not (callable(api_key) or api_key_text in {"aws-sdk", "no-key-required"}
                     or has_usable_secret(api_key_text) or bool(runtime.get("command"))):
-                return fail(f"No usable credentials found for {blamed}.", runtime.get("source"))
+                from hermes_cli.runtime_readiness import missing_credentials_suffix
+                return fail(f"No usable credentials found for {blamed}.{missing_credentials_suffix(blamed)}",
+                            runtime.get("source"))
             from hermes_cli.anon_auth import route_is_welcome_host
             # free_tier_route is keyed on the SELECTED route (the welcome host serves only nous/welcome), not
             # on profile state: a paid Nous key beside a free-tier identity must not read as free.
@@ -478,7 +480,8 @@ def _(rid, params: dict) -> dict:
         return _readiness_check(rid, params, probe, probe_key=f"runtime:{requested or ''}",
                                 wait_seconds=_READINESS_SHARE_WAIT_SECONDS)
     except Exception as e:
-        return _ok(rid, {"ok": False, "error": str(e)})
+        from hermes_cli.runtime_readiness import readiness_failure
+        return _ok(rid, readiness_failure(e))
 
 
 def _redact_client_text(text: str, cap: int) -> str:

@@ -575,7 +575,7 @@ class TestDuplicateNamesAgreeAcrossSurfaces:
 
         ambiguous = "Ambiguous skill name dup-demo: use one of a/one, b/two"
         assert sorted(s["name"] for s in json.loads(skills_list())["skills"]) == ["a/one", "b/two", "xdup"]
-        index = [ln.strip() for ln in pb.build_skills_system_prompt().splitlines() if ln.startswith("    - ")]
+        index = [ln.strip() for ln in pb.build_skills_system_prompt().splitlines() if ln.lstrip().startswith("- ")]
         assert index == ["- a/one: Description for dup-demo.", "- b/two: Description for dup-demo.",
                          "- xdup: Description for xdup."]
         assert sorted(scan_skill_commands()) == ["/xdup"]
@@ -603,7 +603,7 @@ class TestDuplicateNamesAgreeAcrossSurfaces:
         monkeypatch.setattr(skills_tool_module, "_SKILLS_CACHE", {})
         pb.clear_skills_system_prompt_cache()
         assert sorted(s["name"] for s in json.loads(skills_list())["skills"]) == ["b/two", "other", "xdup"]
-        index = [ln.strip() for ln in pb.build_skills_system_prompt().splitlines() if ln.startswith("    - ")]
+        index = [ln.strip() for ln in pb.build_skills_system_prompt().splitlines() if ln.lstrip().startswith("- ")]
         assert index == ["- other: Description for other.", "- b/two: Description for dup-demo.",
                          "- xdup: Description for xdup."]
         for ident in ("a/one", "one"):  # refused by any alias, as list/index hide it

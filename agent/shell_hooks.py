@@ -493,6 +493,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
     t0 = time.monotonic()
     # Own process group on POSIX so a timed-out hook's descendants are reaped with it (Windows: kill_process_tree
     # / taskkill /T). Hooks that finish in time keep detached helpers alive.
+    # detached-spawn: ok — awaited hook; its timeout kills the whole group (kill_process_tree)
     popen_kwargs: dict[str, Any] = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
     # HERMES_HOME follows the routed profile (the import-time environ holds the launch profile's), and
     # under multiplexing os.environ carries the DEFAULT profile's secrets, which a secondary's hook
@@ -666,7 +667,17 @@ def _parse_context(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     return {"context": context} if isinstance(context, str) and context.strip() else None
 
 
-_RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = {"pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify}
+def _parse_pre_llm_call(data: dict[str, Any]) -> Optional[dict[str, Any]]:
+    # A turn veto before any inference request, in either dialect (as for pre_tool_call); else context.
+    for verb, primary, secondary, _ in _PRE_TOOL_DIALECTS:
+        if data.get(verb) == "block":
+            return {"action": "block", "message": _block_message(data.get(primary), data.get(secondary))}
+    return _parse_context(data)
+
+
+_RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = {
+    "pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify, "pre_llm_call": _parse_pre_llm_call,
+}
 
 
 def _parse_response(event: str, stdout: str) -> Optional[dict[str, Any]]:

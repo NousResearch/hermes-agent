@@ -1,6 +1,6 @@
 name: hermes-pets-all
 repo: https://github.com/poponline63/hermes-pets-all
-sha: 2130957d3d84d68f2e367c7aa2f52a61bf3c8064
+sha: 4ea8dfab97fe591f598886d699c3076ea1bb58ad
 description: Browse every pet installed for this Hermes profile in its own desktop pane
   (thumbnails, search, click-to-adopt), plus a read-only list_pets tool for the agent.
 maintainer: poponline63

@@ -3,11 +3,23 @@
 // single subscriber (telemetry, cross-window sync, an audit log) can observe all
 // of it without instrumenting each call site. No listeners by default → no cost.
 
+import { isSharedPreferenceKey } from './ui-preferences/keys'
+
 export interface PersistenceEvent {
   key: string
   op: 'read' | 'remove' | 'write'
+  /** A value this client stored for itself (a migration or a default), not a
+   *  choice the user made: the machine's shared preferences never take it. */
+  provisional?: boolean
   value: null | string
 }
+
+// A write's or removal's value before it, beside the event rather than in it
+// so every observer keeps the event shape it matches on.
+const previousValues = new WeakMap<PersistenceEvent, null | string>()
+
+/** The stored value a write or removal replaced (undefined for a read). */
+export const previousValueOf = (event: PersistenceEvent) => previousValues.get(event)
 
 type PersistenceListener = (event: PersistenceEvent) => void
 
@@ -41,8 +53,32 @@ export function readKey(key: string): null | string {
   return value
 }
 
-/** Raw write. A null value removes the key. Best-effort. */
-export function writeKey(key: string, value: null | string) {
+export interface WriteOptions {
+  /** With `provisional`: the value is the store's default, so it stays
+   *  provisional even when it is already stored (an older build wrote it). */
+  isDefault?: boolean
+  /** A value this client derives for itself (a default, a heal, a migration
+   *  that only fills a default), not a choice the user made. */
+  provisional?: boolean
+}
+
+// Shared preference keys whose value here is provisional. Kept at the choke
+// point, not in the sync, because stores write their load-time value while
+// their module evaluates, before the sync is listening: the machine's shared
+// store never takes such a value, by seed or by write, so a fresh client's
+// defaults cannot fill it ahead of the client that holds the user's choices
+// (#145536 review). Not a shared key itself.
+export const PROVISIONAL_PREFERENCES_KEY = 'hermes:ui-preferences:provisional'
+
+function rawRead(key: string): null | string {
+  try {
+    return window.localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function rawWrite(key: string, value: null | string) {
   try {
     if (value === null) {
       window.localStorage.removeItem(key)
@@ -52,8 +88,72 @@ export function writeKey(key: string, value: null | string) {
   } catch {
     // Storage is best-effort; never let a quota/permission error break the UI.
   }
+}
 
-  emitPersistence({ key, op: value === null ? 'remove' : 'write', value })
+export function provisionalPreferenceKeys(): Set<string> {
+  try {
+    const parsed = JSON.parse(rawRead(PROVISIONAL_PREFERENCES_KEY) ?? '[]') as unknown
+
+    return new Set(Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+export function markProvisionalPreference(key: string, provisional: boolean) {
+  const keys = provisionalPreferenceKeys()
+
+  if (keys.has(key) === provisional) {
+    return
+  }
+
+  if (provisional) {
+    keys.add(key)
+  } else {
+    keys.delete(key)
+  }
+
+  rawWrite(PROVISIONAL_PREFERENCES_KEY, keys.size === 0 ? null : JSON.stringify([...keys]))
+}
+
+/** Raw write. A null value removes the key. Best-effort. A provisional write
+ *  that changes nothing is skipped, and one that rewrites the user's own value
+ *  (a heal, a migration from a real value) keeps it theirs. */
+export function writeKey(
+  key: string,
+  value: null | string,
+  { isDefault = false, provisional = false }: WriteOptions = {}
+) {
+  const shared = isSharedPreferenceKey(key)
+  const previous = rawRead(key)
+
+  if (provisional) {
+    if (previous === value) {
+      if (shared && isDefault && value !== null) {
+        markProvisionalPreference(key, true)
+      }
+
+      return
+    }
+
+    provisional = value !== null && (isDefault || !shared || previous === null || provisionalPreferenceKeys().has(key))
+  }
+
+  rawWrite(key, value)
+
+  if (shared) {
+    markProvisionalPreference(key, provisional)
+  }
+
+  const event: PersistenceEvent = {
+    key,
+    op: value === null ? 'remove' : 'write',
+    value,
+    ...(provisional && { provisional })
+  }
+
+  previousValues.set(event, previous)
+  emitPersistence(event)
 }
 
 /** Parsed JSON read. Returns null on absence, unavailable storage, OR malformed
@@ -83,16 +183,16 @@ export function storedBoolean(key: string, fallback: boolean): boolean {
   return value === null ? fallback : value === 'true'
 }
 
-export function persistBoolean(key: string, value: boolean) {
-  writeKey(key, String(value))
+export function persistBoolean(key: string, value: boolean, options?: WriteOptions) {
+  writeKey(key, String(value), options)
 }
 
 export function storedString(key: string): null | string {
   return readKey(key)
 }
 
-export function persistString(key: string, value: null | string) {
-  writeKey(key, value)
+export function persistString(key: string, value: null | string, options?: WriteOptions) {
+  writeKey(key, value, options)
 }
 
 export function storedStringArray(key: string): string[] {
@@ -115,8 +215,8 @@ export function storedStringArray(key: string): string[] {
   }
 }
 
-export function persistStringArray(key: string, value: string[]) {
-  writeKey(key, value.length === 0 ? null : JSON.stringify(value))
+export function persistStringArray(key: string, value: string[], options?: WriteOptions) {
+  writeKey(key, value.length === 0 ? null : JSON.stringify(value), options)
 }
 
 export function storedStringRecord(key: string): Record<string, string> {
@@ -141,8 +241,8 @@ export function storedStringRecord(key: string): Record<string, string> {
   }
 }
 
-export function persistStringRecord(key: string, value: Record<string, string>) {
-  writeKey(key, JSON.stringify(value))
+export function persistStringRecord(key: string, value: Record<string, string>, options?: WriteOptions) {
+  writeKey(key, JSON.stringify(value), options)
 }
 
 export function arraysEqual(left: string[], right: string[]) {

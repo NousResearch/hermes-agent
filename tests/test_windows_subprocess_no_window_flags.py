@@ -277,6 +277,7 @@ def test_lsp_client_spawn_hides_console_window(monkeypatch):
     captured = []
 
     class _FakeProc:
+        pid = 424242
         stdin = None
         stdout = None
         stderr = None
@@ -286,6 +287,9 @@ def test_lsp_client_spawn_hides_console_window(monkeypatch):
         return _FakeProc()
 
     monkeypatch.setattr(lsp_client, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    # No real child: keep the fake pid away from the owner-death supervisor and the spawn ledger.
+    monkeypatch.setattr(lsp_client, "own_process_groups", lambda pgids: None)
+    monkeypatch.setattr(lsp_client, "register_child", lambda pid, purpose: None)
     monkeypatch.setattr(
         lsp_client.asyncio, "create_subprocess_exec", fake_exec
     )

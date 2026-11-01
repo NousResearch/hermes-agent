@@ -1,3 +1,4 @@
+import { arPluginPreviewAccess } from './ar_plugin_preview_access'
 import type { TranslationOverrides } from './define-locale'
 
 export const arCapabilities = {
@@ -14,7 +15,21 @@ export const arCapabilities = {
   },
   skills: {
     plugins: {
-      pageBlurb: 'يمكن للإضافة توسيع هذا التطبيق أو الوكيل أو كليهما — ولكل جزء مفتاح تشغيل مستقل.'
+      ...arPluginPreviewAccess,
+      pageBlurb: 'يمكن للإضافة توسيع هذا التطبيق أو الوكيل أو كليهما — ولكل جزء مفتاح تشغيل مستقل.',
+      folderAccess: {
+        title: 'الوصول إلى المجلدات',
+        hint: (name: string) => `يمكن لـ ${name} قراءة الملفات وتعديلها في هذه المجلدات. يسري الإلغاء فورًا.`,
+        revoke: 'إلغاء',
+        revokeLabel: (path: string) => `إلغاء الوصول إلى ${path}`,
+        revoked: (name: string, path: string) => `لم يعد بإمكان ${name} استخدام ${path}.`,
+        revokeFailed: (name: string) => `تعذر إلغاء وصول ${name} إلى المجلدات`,
+        pickerTitle: (name: string) => `اختر مجلدًا لـ ${name}`,
+        pickerButton: 'السماح بالوصول',
+        refusedProtected: (name: string) =>
+          `لا يمكن لـ ${name} استخدام هذا المجلد: فهو يحتوي على إعدادات Hermes أو مفاتيحه أو بيانات الإضافات. اختر مجلدًا لا يحتويها.`,
+        loadFailed: (name: string) => `تعذّر تحميل المجلدات المشتركة مع ${name}.`
+      }
     },
     tabSkills: 'المهارات',
     tabToolsets: 'مجموعات الأدوات',

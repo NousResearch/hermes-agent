@@ -1,0 +1,105 @@
+{
+  "fixtureVersion": 2,
+  "name": "multi-group-higher-child-lock-strips-lower-ancestor-scalar",
+  "description": "Proves d5-lock, r7, r9: A higher group locks a.b with no value while a lower group locks a with a scalar; the scalar would clobber a.b, so it is stripped and the inherited a (including a.b) stays frozen.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {
+        "a": {
+          "b": "inherited",
+          "c": "tenant"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-low",
+      "priority": 1,
+      "values": {
+        "a": 5
+      },
+      "locks": [
+        "a"
+      ]
+    },
+    {
+      "kind": "group",
+      "groupId": "g-high",
+      "priority": 2,
+      "values": {},
+      "locks": [
+        "a.b"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "a": {
+        "b": "inherited",
+        "c": "tenant"
+      }
+    },
+    "provenance": {
+      "a.b": "tenant",
+      "a.c": "tenant"
+    },
+    "groupProvenance": {},
+    "locks": [
+      {
+        "path": "a",
+        "level": "group",
+        "groupId": "g-low"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "a.b",
+      "value": "p",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "a",
+        "lockedBy": "group",
+        "lockedByGroupId": "g-low"
+      }
+    },
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "a.c",
+      "value": "p",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "a",
+        "lockedBy": "group",
+        "lockedByGroupId": "g-low"
+      }
+    }
+  ]
+}

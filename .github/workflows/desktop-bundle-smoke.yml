@@ -245,7 +245,10 @@ jobs:
     name: Windows install and chat
     needs: validate
     if: inputs.platform == 'win32'
-    runs-on: ${{ inputs.arch == 'arm64' && 'windows-latest-32-arm-core' || 'blacksmith-32vcpu-windows-2025' }}
+    # GitHub-hosted for both arches: on blacksmith Windows runners the installed MSIX app exits
+    # before Playwright attaches (every x64 smoke there failed; the same commit's arm64 MSIX on a
+    # GitHub-hosted runner chats), as the install/update GUI legs did (f1b290e7734).
+    runs-on: ${{ inputs.arch == 'arm64' && 'windows-latest-32-arm-core' || 'windows-latest-32-core' }}
     # windows-11-arm runners are much slower (npm ci alone runs 12+ minutes and
     # the MSIX leg exceeds 30 total); x64 legs complete in ~14.
     timeout-minutes: 45

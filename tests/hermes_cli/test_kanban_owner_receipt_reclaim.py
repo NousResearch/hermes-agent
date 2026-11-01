@@ -34,7 +34,7 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_diagnostics as kd
 from hermes_cli import kanban_owner_recovery
-from hermes_cli.process_identity import process_birth
+from hermes_cli.process_identity import worker_birth
 from hermes_cli.kanban_owner_recovery import (
     bound_interpreter_gone,
     owner_attempt_provably_over,
@@ -185,12 +185,16 @@ def test_dead_attempt_behind_an_unresolved_receipt_is_named_and_reclaimed(board)
     dict(worker_pid=os.getpid(), worker_fingerprint=kbd._process_fingerprint(os.getpid())),  # live worker
     dict(worker_bound=True, worker_pid=os.getpid(),
          worker_fingerprint=kbd._process_fingerprint(os.getpid())),                          # live bound interpreter
-    dict(heartbeat_age=300),                                                                 # fresh heartbeat
-    dict(expires_age_seconds=-3600),                                                         # live claim
+    # A settled admission is proof on its own (see the next test), so these model an attempt
+    # that may still be executing: its admission is still ``started``.
+    dict(heartbeat_age=300, admission=("started", None)),                                    # fresh heartbeat
+    dict(expires_age_seconds=-3600, admission=("started", None)),                            # live claim
     dict(lock_host="some-other-host"),                                                       # foreign host
-    dict(owner_pid=os.getpid(), owner_birth=None),                                           # live, uncomparable owner
-    dict(record_worker_pid=False),                                                           # no pid recorded
-], ids=["live-worker", "live-bound", "fresh-heartbeat", "live-claim", "foreign-host", "live-owner", "no-pid"])
+    dict(owner_pid=os.getpid(), owner_birth=None, admission=("started", None)),               # live owner in flight
+    dict(record_worker_pid=False, admission=("started", None)),                              # no pid recorded
+    dict(record_worker_pid=False, expires_age_seconds=-3600),                                # no pid yet, settled
+], ids=["live-worker", "live-bound", "fresh-heartbeat", "live-claim", "foreign-host", "live-owner", "no-pid",
+        "no-pid-live-claim"])
 def test_the_pause_still_holds_every_attempt_that_may_be_alive(board, shape):
     """Missing evidence is never proof: reclaiming beside a possibly-live attempt repeats its effects."""
     board.dead_attempt("t_ghost", **shape)
@@ -198,6 +202,29 @@ def test_the_pause_still_holds_every_attempt_that_may_be_alive(board, shape):
     assert kb.release_stale_claims(board.conn) == 0
     assert kbd.detect_crashed_workers(board.conn) == []
     assert board.state("t_ghost")["status"] == "running"
+
+
+def test_a_settled_admission_is_proof_even_while_the_owner_gateway_is_alive(board):
+    """The owner is the long-lived gateway (alive by design): its settled admission, not its
+    death, proves a lost managed worker's attempt over. A bound run stays the crash sweep's."""
+    board.dead_attempt("t_ghost2")  # admission=("terminal", "interrupted"), dead owner pid
+    board.dead_attempt("t_gateway", owner_pid=os.getpid(), owner_birth=None,
+                       admission=("terminal", "interrupted"))
+    board.dead_attempt("t_bound", worker_bound=True, owner_pid=os.getpid(), owner_birth=None,
+                       admission=("terminal", "interrupted"))
+    assert owner_reclaim_paused(board.conn, "t_gateway") is True   # effects still uncertain
+    assert owner_attempt_provably_over(board.conn, "t_gateway") is True
+    assert owner_attempt_provably_over(board.conn, "t_bound") is False
+    assert kb.release_stale_claims(board.conn) == 2
+    row = board.state("t_gateway")
+    assert (row["status"], row["claim_lock"], row["worker_pid"]) == ("ready", None, None)
+    run = board.conn.execute(
+        "SELECT outcome, error FROM task_runs WHERE task_id = 't_gateway'").fetchone()
+    assert run["outcome"] == "reclaimed"
+    assert "owner admission settled interrupted" in run["error"]
+    # Booked against the breaker like any other non-completing attempt (A3).
+    assert board.state("t_gateway")["consecutive_failures"] == 1
+    assert board.state("t_bound")["status"] == "running"
 
 
 # --- the gate is decided under the same write lock as the release ---------------------------
@@ -268,7 +295,7 @@ def test_a_timed_out_managed_run_is_booked_timed_out_not_left_for_the_crash_swee
     try:
         run = board.dead_attempt(
             "t_slow", worker_pid=worker.pid, worker_fingerprint=kbd._process_fingerprint(worker.pid),
-            owner_pid=os.getpid(), owner_birth=process_birth(psutil.Process()), admission=("started", None))
+            owner_pid=os.getpid(), owner_birth=worker_birth(psutil.Process()), admission=("started", None))
         board.event("t_slow", run, "worker_bound", {"pid": interpreter.pid,
                     "started_at": kbd._process_fingerprint(interpreter.pid)}, NOW)
         board.conn.execute("UPDATE tasks SET max_runtime_seconds = 1 WHERE id = 't_slow'")
@@ -296,7 +323,7 @@ def test_an_exited_unreaped_owner_no_longer_holds_the_slot(board):
     """A zombie keeps its birth until reaped, but it has exited: it cannot be executing anything."""
     child = subprocess.Popen([sys.executable, "-c", "input()"], stdin=subprocess.PIPE)
     try:
-        birth = process_birth(psutil.Process(child.pid))
+        birth = worker_birth(psutil.Process(child.pid))
         child.stdin.close()
         deadline = time.time() + 10
         while psutil.Process(child.pid).status() != psutil.STATUS_ZOMBIE:

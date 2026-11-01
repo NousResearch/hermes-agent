@@ -59,12 +59,8 @@ class TestPostSetupGate:
 
 
 class TestBrowserBackendPrompt:
-    """Regression: `_toolset_needs_configuration_prompt` for the browser toolset
-    only checked `browser.cloud_provider` (set by `browser_provider` rows),
-    ignoring `browser.backend` (set by the `browser_backend` "Browser Use" row).
-    This made the provider picker re-appear every time `hermes tools` was
-    opened, even when Browser Use was already configured.
-    """
+    """`_toolset_needs_configuration_prompt` for the browser toolset keys on `browser.cloud_provider`
+    (written by every Browser Automation row), so a configured browser never re-prompts."""
 
 
     def test_browser_cloud_provider_set_skips_provider_picker(self, monkeypatch, tmp_path):
@@ -82,22 +78,13 @@ class TestBrowserBackendPrompt:
         config = {"browser": None}
         assert tools_config._toolset_needs_configuration_prompt("browser", config) is True
 
-    def test_browser_backend_off_still_skips_prompt(self, monkeypatch, tmp_path):
-        """YAML 1.1 parses unquoted `off` as boolean False — the helper must
-        normalise it, and the gate should still treat it as 'configured'."""
-        from hermes_cli import tools_config
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        config = {"browser": {"backend": False}}  # what YAML `off` becomes
-        assert tools_config._toolset_needs_configuration_prompt("browser", config) is False
-
 
 class TestBrowserBackendPromptThroughLoader:
     """The browser gate must hold through the real config loader.
 
-    `load_config()` merges ``DEFAULT_CONFIG``, where ``browser.backend`` is ``""`` — so the key is
-    present on every install and a presence test would suppress the picker everywhere. These pin the
-    behaviour against the merged dict a real ``hermes tools`` run feeds the gate.
+    `load_config()` merges ``DEFAULT_CONFIG``; a selection key the defaults filled in would suppress the
+    picker everywhere. These pin the behaviour against the merged dict a real ``hermes tools`` run feeds
+    the gate.
     """
 
     def _home(self, tmp_path, body: str):
@@ -110,13 +97,12 @@ class TestBrowserBackendPromptThroughLoader:
 
         monkeypatch.setenv("HERMES_HOME", str(self._home(tmp_path, "cli: {}\n")))
         config = load_config()
-        assert config["browser"]["backend"] == ""  # defaults merge fills the key
         assert tools_config._toolset_needs_configuration_prompt("browser", config) is True
 
-    def test_explicit_backend_skips_prompt(self, monkeypatch, tmp_path):
+    def test_explicit_cloud_provider_skips_prompt(self, monkeypatch, tmp_path):
         from hermes_cli import tools_config
         from hermes_cli.config import load_config
 
-        monkeypatch.setenv("HERMES_HOME", str(self._home(tmp_path, "browser:\n  backend: browser-use\n")))
+        monkeypatch.setenv("HERMES_HOME", str(self._home(tmp_path, "browser:\n  cloud_provider: browser-use\n")))
         config = load_config()
         assert tools_config._toolset_needs_configuration_prompt("browser", config) is False

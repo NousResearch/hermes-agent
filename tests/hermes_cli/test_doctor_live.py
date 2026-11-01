@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -18,10 +19,9 @@ from hermes_cli.doctor_live import (
     maybe_run_live_checks,
     run_live_checks,
 )
-from tools import browser_tool_install as bt_install
 
 # Captured before the autouse fixture below stubs doctor_live._browser_available
-# to a constant, so TestBrowserAvailableNpxRung can exercise the real function.
+# to a constant, so TestBrowserAvailable can exercise the real function.
 _real_browser_available = doctor_live._browser_available
 
 # The exact environment Clash Verge / mihomo exports (issue #118159): a bracketed-IPv6
@@ -256,29 +256,42 @@ def test_run_live_checks_leaves_a_clean_environment_untouched(monkeypatch):
 
 
 class TestBrowserAvailable:
-    """Live probes use the same passive selection as browser execution."""
+    """Live probes use the launcher's own Chromium selection."""
 
-    def _block_path_and_node_modules_checks(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("shutil.which", lambda *a, **k: None)
-        monkeypatch.setattr("hermes_cli.doctor.HERMES_HOME", tmp_path / "home")
-        monkeypatch.setattr("hermes_cli.doctor.PROJECT_ROOT", tmp_path / "root")
+    @pytest.mark.parametrize("found,available", [("/pm/chromium/chrome", True), (None, False)])
+    def test_follows_chromium_selection(self, monkeypatch, found, available):
+        monkeypatch.setattr(doctor_live, "chromium_executable", lambda **_kw: found)
 
-    def test_true_when_installed_browser_resolves(self, monkeypatch, tmp_path):
-        self._block_path_and_node_modules_checks(monkeypatch, tmp_path)
+        assert _real_browser_available() is available
 
-        monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kw: "/pm/agent-browser")
 
-        assert _real_browser_available() is True
+class TestLaunchBrowserProbe:
+    """The probe launches through browser_exec's launcher and always stops what it started."""
 
-    def test_false_when_nothing_resolves(self, monkeypatch, tmp_path):
-        self._block_path_and_node_modules_checks(monkeypatch, tmp_path)
+    def _fake_launcher(self, monkeypatch, result):
+        calls = []
+        fake = ModuleType("tools.browser_launcher")
+        fake.launch_chromium = lambda key, **kw: calls.append(("launch", key, kw)) or result
+        fake.stop_browser = lambda key: calls.append(("stop", key))
+        monkeypatch.setitem(sys.modules, "tools.browser_launcher", fake)
+        return calls
 
-        def _raise(**_kw):
-            raise FileNotFoundError("agent-browser CLI not found")
+    def test_success_stops_the_browser(self, monkeypatch):
+        calls = self._fake_launcher(monkeypatch, (SimpleNamespace(cdp_url="ws://x"), None))
 
-        monkeypatch.setattr(bt_install, "_find_agent_browser", _raise)
+        ok, detail = doctor_live._launch_browser_probe(5.0)
 
-        assert _real_browser_available() is False
+        assert ok is True and "CDP ready" in detail
+        assert [c[0] for c in calls] == ["launch", "stop"]
+        assert calls[0][2]["timeout"] == 5.0 and calls[0][2]["ephemeral"] is True
+
+    def test_launch_error_is_reported_and_still_stopped(self, monkeypatch):
+        calls = self._fake_launcher(monkeypatch, (None, "Chromium exited: missing libnss3"))
+
+        ok, detail = doctor_live._launch_browser_probe(5.0)
+
+        assert ok is False and "libnss3" in detail
+        assert [c[0] for c in calls] == ["launch", "stop"]
 
 
 class TestFailureIsolation:

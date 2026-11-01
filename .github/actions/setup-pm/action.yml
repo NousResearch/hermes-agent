@@ -222,3 +222,14 @@ runs:
         if [ "$_PM_TEST_ENVIRONMENT" = true ]; then args+=(--test-environment); fi
         "$HERMES_PYTHON" -S "$_PM_ACTION/../../../scripts/ci/setup_toolchain.py" dependencies \
           --toolchain "$_PM_TOOLCHAIN" --extras "$_PM_EXTRAS" --home "$HERMES_HOME" "${args[@]}"
+
+    - name: Log PM cache restore results and save policy
+      if: always()
+      shell: bash
+      env:
+        _PM_ACTION: ${{ github.action_path }}
+        _PM_CACHE_INPUTS: ${{ toJSON(inputs) }}
+        _PM_CACHE_STEPS: ${{ toJSON(steps) }}
+      run: |
+        if [ "$RUNNER_OS" = Windows ]; then bootstrap=python; else bootstrap=python3; fi
+        "$bootstrap" -S "$_PM_ACTION/../../../scripts/ci/pm_cache_log.py"

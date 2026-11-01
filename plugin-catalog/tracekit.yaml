@@ -1,0 +1,16 @@
+name: tracekit
+repo: https://github.com/Cygnux-Labs/Tracekit
+sha: d41c68e335a0986100b8747729659798bcf9d949
+subdir: integrations/hermes
+description: "Tracekit's signer decides every tool call before it runs (deny blocks, ask waits for a person) and signs each call and its outcome into a run you can verify offline. Disclosure — every tool call's name and arguments, plus its result (in full for tools Tracekit's policy marks untrusted, otherwise a SHA-256 digest), go to a Tracekit signer: by default a same-user dev signer (`python -m tracekit signer serve --dev`) that the plugin starts on first use as a detached background process, which keeps running after Hermes exits until 15 minutes idle and stores signed runs plus each call's redacted arguments and results (encrypted, kept 7 days) under your user's data directory (~/.local/share/tracekit on Linux), or a remote signer when you set TRACEKIT_SIGNER to an https:// URL. The plugin fails closed: when tracekit-ai can't load or the signer refuses or can't be reached, tool calls are blocked (including every tool an execute_code script calls), and an `ask` decision holds the call until someone approves it in Tracekit or Hermes's hook timeout runs out."
+maintainer: Cygnux-Labs
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Hermes
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, post_tool_call]
+  provides_middleware: []
+  requires_env: [TRACEKIT_SIGNER_TOKEN]

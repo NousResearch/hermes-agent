@@ -3,6 +3,7 @@ import asyncio
 from functools import partial
 import hashlib
 import json
+import logging
 
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource, _is_path_unsafe
@@ -170,7 +171,8 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
         if expected != session_id:
             raise RuntimeStoreError('admission_conflict')
         storage_source, title = 'bot_room', f'Group: {dispatch.room_id}'
-    if session_id in authority.sessions:
+    from gateway.session_history_mount import is_history_mount
+    if session_id in authority.sessions and not is_history_mount(authority.sessions[session_id]):
         if (authority.sessions[session_id].source.platform != Platform.API_SERVER
                 or authority.db.get_session(session_id)['source'] != storage_source):
             raise RuntimeStoreError('permission_denied')
@@ -249,7 +251,8 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
             receipt['declared_key'] = legacy_key
         existing = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?",
                                 (route,)).fetchone()
-        if existing is not None and json.loads(existing[0])['session_id'] != session_id:
+        held = json.loads(existing[0])['session_id'] if existing is not None else session_id
+        if held != session_id and not _heal_replacement(conn, session_id, held):
             raise RuntimeStoreError('admission_conflict')
         conn.execute('''INSERT INTO sessions(id,source,title,hidden,started_at) VALUES(?,?,?,?,?)
                         ON CONFLICT(id) DO NOTHING''', (session_id, storage_source, title,
@@ -263,6 +266,26 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
                      (_BINDING_PREFIX + session_id, _json(receipt)))
     yield partial(authority.db._execute_write, write)
     return restore_api_session(authority, session_id)
+
+
+def _heal_replacement(conn, caller, holder):
+    """The route is derived from the caller's id, so only the stale-route heal (#54878) names another
+    session on it, one with no binding of its own: the caller takes the route back, used or not, and
+    the replacement keeps its transcript under its own id. A holder with its own binding refuses."""
+    if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (_BINDING_PREFIX + holder,)).fetchone():
+        return False
+    logging.getLogger(__name__).warning('API route of %s taken back from heal replacement %s', caller, holder)
+    return True
+
+
+def reopen_api_session(authority, ref):
+    """The drain's admitted turn reopens a finalized API row, as ``reopen_local_session`` does a
+    local one: the binding keeps the route on it (``SessionStore._api_bound``). So does a turn of a
+    conversation its chat moved past (gateway/session_detached.py), whose row the chat's /new ended."""
+    target = authority.physical_target(ref)
+    row = authority.db.get_session(target)
+    if row is not None and row.get('end_reason') is not None:
+        authority.db.reopen_session(target)
 
 
 def api_storage_source(db, session_id, fallback):
@@ -306,7 +329,16 @@ def restore_api_session(authority, session_id):
         store._ensure_loaded_locked()
         current = store._entries.get(entry.session_key)
         if current is not None and current.session_id not in authority.db.get_compression_lineage(session_id):
-            raise RuntimeStoreError('admission_conflict')
+            with authority.db._read_ctx() as conn:
+                if not _heal_replacement(conn, session_id, current.session_id):
+                    raise RuntimeStoreError('admission_conflict')
         store._entries[entry.session_key] = current if current is not None and current.session_id == target else entry
-    authority.sessions.setdefault(session_id, LiveSession(source, entry.session_key))
+    from gateway.session_history_mount import is_history_mount
+    live = authority.sessions.get(session_id)
+    if live is None:
+        authority.sessions[session_id] = LiveSession(source, entry.session_key)
+    elif is_history_mount(live):
+        # A read-only view opened while the row had no binding becomes the bound conversation in place,
+        # so its viewers keep their subscriptions and event stream.
+        live.source, live.route = source, entry.session_key
     return SessionRef(authority.profile_id, session_id)

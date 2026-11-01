@@ -41,6 +41,11 @@ def refusal_text(error: BaseException | str) -> str:
     (``gateway/session_controls.py``), and ``hermes_cli.gateway_client.rpc_error`` carries the
     bounded scalars onto ``GatewayRPCError.data``. A refusal from anywhere else has no ``data`` and
     reads exactly as before."""
+    if str(error) == "launch_credentials_unavailable":
+        # The chat's launch key changed: every retry repeats the refusal, so name the way out.
+        from agent.turn_failure_copy import launch_credentials_copy
+
+        return launch_credentials_copy(error)
     data = getattr(error, "data", None)
     data = data if isinstance(data, dict) else {}
     field, detail = str(data.get("field") or "").strip(), str(data.get("detail") or "").strip()

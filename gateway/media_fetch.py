@@ -5,7 +5,7 @@ is ssh / daytona / vercel (any backend that reports its ``_remote_home``), the a
 on another filesystem, so the tag was silently dropped. This module pulls the file through the
 active environment's ``fetch_file`` into the document cache (already an allowlisted delivery root)
 and hands back the host copy. Backends without a known remote home (docker outside its mounts,
-modal, singularity) still get the conservative any-component denylist, so a ``/root/...`` artifact
+modal, plugin sandboxes) still get the conservative any-component denylist, so a ``/root/...`` artifact
 there is not fetched — set ``_remote_home`` on the environment to opt in.
 
 The remote path is screened against the same denylist as local deliveries BEFORE any bytes move,

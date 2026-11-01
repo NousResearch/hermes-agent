@@ -132,11 +132,8 @@ def main() -> int:
         return 0
     finally:
         SUPERVISOR_REGISTRY.stop_all()
-        try:
-            from tools.browser_tool_lifecycle import cleanup_all_browsers
-            cleanup_all_browsers()
-        except Exception:
-            pass
+        from tools.browser_session_lifecycle import cleanup_all_browsers
+        cleanup_all_browsers()
         srv.shutdown()
 
 

@@ -62,7 +62,9 @@ describe('terminal store persistence', () => {
     const { $terminals, ensureAgentTerminal, updateTerminalReviveBuffer } = await loadTerminalStore()
 
     const agentId = ensureAgentTerminal('proc-1', 'background task')!
+    const before = $terminals.get()
     updateTerminalReviveBuffer(agentId, 'should be ignored')
+    expect($terminals.get()).toBe(before)
 
     expect($terminals.get().find(term => term.id === agentId)?.reviveBuffer).toBeUndefined()
     expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull()
@@ -79,6 +81,44 @@ describe('terminal store persistence', () => {
     expect(stored.length).toBeGreaterThan(0)
     expect(stored.length).toBeLessThan(huge.length)
     expect(stored).toBe(huge.slice(-stored.length))
+  })
+
+  it('does not republish an identical retained tail, including changes outside the cap', async () => {
+    const { $terminals, createTerminal, updateTerminalReviveBuffer } = await loadTerminalStore()
+    const id = createTerminal('/repo')
+    const output = 'ANSI \u001b[32m界 café\u001b[0m\r\n'.repeat(4_000)
+    updateTerminalReviveBuffer(id, output)
+    const before = $terminals.get()
+    const persisted = window.localStorage.getItem(STORAGE_KEY)
+
+    updateTerminalReviveBuffer(id, output)
+    expect($terminals.get()).toBe(before)
+    updateTerminalReviveBuffer(id, `discarded prefix\r\n${output}`)
+    expect($terminals.get()).toBe(before)
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(persisted)
+
+    updateTerminalReviveBuffer(id, 'new output')
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '{}').terminals[0].reviveBuffer).toBe('new output')
+  })
+
+  it('ignores late snapshots after persistence negotiation or terminal closure', async () => {
+    const { $terminals, closeTerminal, createTerminal, markTerminalPersistent, updateTerminalReviveBuffer } =
+      await loadTerminalStore()
+
+    const id = createTerminal('/repo')
+    updateTerminalReviveBuffer(id, 'renderer history')
+    markTerminalPersistent(id)
+    const persistent = $terminals.get()
+    const saved = window.localStorage.getItem(STORAGE_KEY)
+    updateTerminalReviveBuffer(id, 'late local snapshot')
+    expect($terminals.get()).toBe(persistent)
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(saved)
+
+    closeTerminal(id)
+    const closed = $terminals.get()
+    updateTerminalReviveBuffer(id, 'late closed snapshot')
+    expect($terminals.get()).toBe(closed)
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull()
   })
 
   it('clears remembered tabs when all terminals close', async () => {

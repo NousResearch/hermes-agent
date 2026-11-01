@@ -514,7 +514,7 @@ from tools.registry import registry, tool_error
 
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",
-    "description": "Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
+    "description": "Search the web: returns titles, URLs and snippets (5 by default). Read pages with web_extract. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -536,7 +536,7 @@ WEB_SEARCH_SCHEMA = {
 
 WEB_EXTRACT_SCHEMA = {
     "name": "web_extract",
-    "description": "Extract content from web page URLs. Returns clean page content in markdown/text (no LLM summarization — fast). Also works with PDF URLs (arxiv papers, documents) — pass the PDF link directly. Pages within the char budget (default 15000) return whole; larger pages return a head+tail window with a footer telling you the full text's saved file path and the read_file call to page through the omitted middle. Inline images appear as [IMAGE: alt] placeholders; real image URLs are kept as links. If a URL fails or times out, use the browser tool instead.",
+    "description": "Extract content from web page URLs. Returns clean page content in markdown/text (no LLM summarization — fast). Also works with PDF URLs (arxiv papers, documents) — pass the PDF link directly. Pages within the char budget (default 15000) return whole; larger pages return a head+tail window with a footer telling you the full text's saved file path and the read_file call to page through the omitted middle. Inline images appear as [IMAGE: alt] placeholders; real image URLs are kept as links. If a URL fails, times out, or needs JS, login or clicks, use a browser tool instead.",
     "parameters": {
         "type": "object",
         "properties": {

@@ -9,6 +9,7 @@ export interface CanonicalGroupMessages {
   turnDeferred: string
   memberUnavailable: string
   refreshGroups: string
+  openGroup: string
   loadingGroup: string
   loadingGroups: string
   emptyGroups: string
@@ -25,6 +26,9 @@ export interface CanonicalGroupMessages {
   attachFiles: string
   removeAttachment: string
   uploadFailed: string
+  memberWorking: string
+  memberQueued: string
+  groupWorking: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -39,6 +43,7 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnavailable: 'Member unavailable',
     members: 'Members',
     refreshGroups: 'Refresh gateway groups',
+    openGroup: 'Open Group Chat',
     loadingGroup: 'Loading group…',
     loadingGroups: 'Loading gateway groups…',
     emptyGroups: 'No gateway groups found.',
@@ -54,7 +59,10 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Group message',
     attachFiles: 'Attach files',
     removeAttachment: 'Remove attachment',
-    uploadFailed: 'Upload failed'
+    uploadFailed: 'Upload failed',
+    memberWorking: 'Working',
+    memberQueued: 'Queued',
+    groupWorking: 'The group is working…'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -67,6 +75,7 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnavailable: 'メンバーは利用できません',
     members: 'メンバー',
     refreshGroups: 'ゲートウェイのグループを更新',
+    openGroup: 'グループチャットを開く',
     loadingGroup: 'グループを読み込み中…',
     loadingGroups: 'ゲートウェイのグループを読み込み中…',
     emptyGroups: 'ゲートウェイのグループが見つかりません。',
@@ -82,7 +91,10 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'グループメッセージ',
     attachFiles: 'ファイルを添付',
     removeAttachment: '添付ファイルを削除',
-    uploadFailed: 'アップロードに失敗しました'
+    uploadFailed: 'アップロードに失敗しました',
+    memberWorking: '作業中',
+    memberQueued: '待機中',
+    groupWorking: 'グループが作業中です…'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -95,6 +107,7 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnavailable: '成员不可用',
     members: '成员',
     refreshGroups: '刷新网关群组',
+    openGroup: '打开群聊',
     loadingGroup: '正在加载群组…',
     loadingGroups: '正在加载网关群组…',
     emptyGroups: '未找到网关群组。',
@@ -110,7 +123,10 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: '群组消息',
     attachFiles: '附加文件',
     removeAttachment: '移除附件',
-    uploadFailed: '上传失败'
+    uploadFailed: '上传失败',
+    memberWorking: '工作中',
+    memberQueued: '排队中',
+    groupWorking: '群组正在处理…'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -123,6 +139,7 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnavailable: '成員無法使用',
     members: '成員',
     refreshGroups: '重新整理閘道群組',
+    openGroup: '開啟群組聊天',
     loadingGroup: '正在載入群組…',
     loadingGroups: '正在載入閘道群組…',
     emptyGroups: '找不到閘道群組。',
@@ -138,7 +155,10 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: '群組訊息',
     attachFiles: '附加檔案',
     removeAttachment: '移除附件',
-    uploadFailed: '上傳失敗'
+    uploadFailed: '上傳失敗',
+    memberWorking: '工作中',
+    memberQueued: '排隊中',
+    groupWorking: '群組正在處理…'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -151,6 +171,7 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnavailable: 'العضو غير متاح',
     members: 'الأعضاء',
     refreshGroups: 'تحديث مجموعات البوابة',
+    openGroup: 'فتح الدردشة الجماعية',
     loadingGroup: 'جارٍ تحميل المجموعة…',
     loadingGroups: 'جارٍ تحميل مجموعات البوابة…',
     emptyGroups: 'لم يتم العثور على مجموعات في البوابة.',
@@ -166,7 +187,10 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'رسالة المجموعة',
     attachFiles: 'إرفاق ملفات',
     removeAttachment: 'إزالة المرفق',
-    uploadFailed: 'فشل الرفع'
+    uploadFailed: 'فشل الرفع',
+    memberWorking: 'يعمل',
+    memberQueued: 'في الانتظار',
+    groupWorking: 'المجموعة تعمل…'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -179,6 +203,7 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnavailable: 'Участник недоступен',
     members: 'Участники',
     refreshGroups: 'Обновить группы шлюза',
+    openGroup: 'Открыть групповой чат',
     loadingGroup: 'Загрузка группы…',
     loadingGroups: 'Загрузка групп шлюза…',
     emptyGroups: 'Группы шлюза не найдены.',
@@ -197,7 +222,10 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Сообщение группе',
     attachFiles: 'Прикрепить файлы',
     removeAttachment: 'Удалить вложение',
-    uploadFailed: 'Не удалось загрузить файл'
+    uploadFailed: 'Не удалось загрузить файл',
+    memberWorking: 'Работает',
+    memberQueued: 'В очереди',
+    groupWorking: 'Группа работает…'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -210,6 +238,7 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnavailable: 'Membre indisponible',
     members: 'Membres',
     refreshGroups: 'Actualiser les groupes de la passerelle',
+    openGroup: 'Ouvrir la discussion de groupe',
     loadingGroup: 'Chargement du groupe…',
     loadingGroups: 'Chargement des groupes de la passerelle…',
     emptyGroups: 'Aucun groupe de passerelle trouvé.',
@@ -227,7 +256,10 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Message de groupe',
     attachFiles: 'Joindre des fichiers',
     removeAttachment: 'Retirer la pièce jointe',
-    uploadFailed: 'Échec du téléversement'
+    uploadFailed: 'Échec du téléversement',
+    memberWorking: 'En cours',
+    memberQueued: 'En attente',
+    groupWorking: 'Le groupe travaille…'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -240,6 +272,7 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnavailable: 'Mitglied nicht verfügbar',
     members: 'Mitglieder',
     refreshGroups: 'Gateway-Gruppen aktualisieren',
+    openGroup: 'Gruppenchat öffnen',
     loadingGroup: 'Gruppe wird geladen…',
     loadingGroups: 'Gateway-Gruppen werden geladen…',
     emptyGroups: 'Keine Gateway-Gruppen gefunden.',
@@ -258,7 +291,10 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Gruppennachricht',
     attachFiles: 'Dateien anhängen',
     removeAttachment: 'Anhang entfernen',
-    uploadFailed: 'Hochladen fehlgeschlagen'
+    uploadFailed: 'Hochladen fehlgeschlagen',
+    memberWorking: 'Arbeitet',
+    memberQueued: 'In der Warteschlange',
+    groupWorking: 'Die Gruppe arbeitet…'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -271,6 +307,7 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnavailable: 'Miembro no disponible',
     members: 'Miembros',
     refreshGroups: 'Actualizar grupos de la pasarela',
+    openGroup: 'Abrir chat de grupo',
     loadingGroup: 'Cargando grupo…',
     loadingGroups: 'Cargando grupos de la pasarela…',
     emptyGroups: 'No se encontraron grupos de la pasarela.',
@@ -288,6 +325,9 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Mensaje de grupo',
     attachFiles: 'Adjuntar archivos',
     removeAttachment: 'Quitar adjunto',
-    uploadFailed: 'Error al subir'
+    uploadFailed: 'Error al subir',
+    memberWorking: 'Trabajando',
+    memberQueued: 'En cola',
+    groupWorking: 'El grupo está trabajando…'
   }
 } satisfies Record<string, CanonicalGroupMessages>

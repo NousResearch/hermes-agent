@@ -93,6 +93,26 @@ beforeEach(() => {
 })
 
 describe('the registry row wins, always', () => {
+  it('passes explicit tab intent to the stored canonical chat without creating another session', async () => {
+    const calls = respondWith(method => {
+      if (method === 'session.list') {
+        return { sessions: [{ id: 'root', resolved_id: 'tip', message_count: 10, title: 'Bot Chat' }] }
+      }
+
+      return {}
+    })
+
+    const { openBotCanonicalChat } = await loadModule()
+
+    await expect(openBotCanonicalChat('ops', { intent: 'tab' })).resolves.toEqual({
+      openedId: 'tip', registryId: 'root'
+    })
+    expect(hostMock.openSession).toHaveBeenCalledWith('tip', expect.objectContaining({
+      intent: 'tab', profile: 'ops', workspaceMode: 'bots', workspaceOwnerKey: 'bot:ops'
+    }))
+    expect(calls.map(call => call.method)).toEqual(['session.list'])
+  })
+
   it('resolves the profile\u2019s "Bot Chat" row by exact title and opens it', async () => {
     const calls = respondWith(method => {
       if (method === 'session.list') {

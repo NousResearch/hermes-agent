@@ -247,7 +247,7 @@ class GatewayHeartbeatManager(_Remote):
     def due_prompt(self, now=None):
         s = self._state
         if s is None or not s.is_due(now):
-            return None  # main's cheap local check first: the idle poll costs no round trip
+            return None  # main's cheap local check first (the watchdog refreshes the state each poll)
         return self._rpc("due_prompt")
 
     def abandon_fire(self):

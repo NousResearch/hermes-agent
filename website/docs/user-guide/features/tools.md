@@ -27,7 +27,7 @@ High-level categories:
 | **Web** | `web_search`, `web_extract` | Search the web and extract page content. |
 | **X Search** | `x_search` | Search X (Twitter) posts and threads via xAI's built-in `x_search` Responses tool — gated on xAI credentials (SuperGrok OAuth or `XAI_API_KEY`); off by default, opt in via `hermes tools` → 🐦 X (Twitter) Search. |
 | **Terminal & Files** | `terminal`, `process`, `read_file`, `patch` | Execute commands and manipulate files. |
-| **Browser** | `browser_navigate`, `browser_snapshot`, `browser_vision` | Interactive browser automation with text and vision support. |
+| **Browser** | `browser_exec`, `browser_cdp`, `browser_dialog`, `browser_vault` | Browser automation: `browser_exec` drives Chromium with Python over CDP (screenshots included). The Camofox browser is a separate catalog plugin (`hermes plugins install camofox`). |
 | **Media** | `vision_analyze`, `image_generate`, `text_to_speech` | Multimodal analysis and generation. |
 | **Agent orchestration** | `todo`, `clarify`, `execute_code`, `delegate_task` | Planning, clarification, code execution, and subagent delegation. |
 | **Memory & recall** | `memory`, `session_search` | Persistent memory and session search. |
@@ -73,7 +73,7 @@ The terminal tool can execute commands in different environments:
 | `local` | Run on your machine (default) | Development, trusted tasks |
 | `docker` | Isolated containers | Security, reproducibility |
 | `ssh` | Remote server | Sandboxing, keep agent away from its own code |
-| `singularity` | HPC containers | Cluster computing, rootless |
+| `singularity` (plugin) | HPC containers | Cluster computing, rootless |
 | `modal` | Cloud execution | Serverless, scale |
 | `daytona` | Cloud sandbox workspace | Persistent remote dev environments |
 | `vercel_sandbox` | Vercel Sandbox cloud microVM | Cloud execution with snapshot-backed filesystem persistence |
@@ -83,7 +83,7 @@ The terminal tool can execute commands in different environments:
 ```yaml
 # In ~/.hermes/config.yaml
 terminal:
-  backend: local    # or: docker, ssh, singularity, modal, daytona, vercel_sandbox
+  backend: local    # or: docker, ssh, modal, daytona, vercel_sandbox, or a plugin backend (singularity)
   cwd: "."          # Working directory
   timeout: 180      # Command timeout in seconds
 ```
@@ -143,7 +143,11 @@ TERMINAL_SSH_KEY=~/.ssh/id_rsa
 
 ### Singularity/Apptainer
 
+An official plugin ([`singularity`](https://github.com/NousResearch/hermes-official-plugins/tree/main/singularity)), formerly built in; `hermes update` installs it for profiles that already use it.
+
 ```bash
+hermes plugins install singularity
+
 # Pre-build SIF for parallel workers
 apptainer build ~/python.sif docker://python:3.11-slim
 
@@ -194,7 +198,7 @@ Configure CPU, memory, disk, and persistence for all container backends:
 
 ```yaml
 terminal:
-  backend: docker  # or singularity, modal, daytona, vercel_sandbox
+  backend: docker  # or modal, daytona, vercel_sandbox, singularity (plugin)
   container_cpu: 1              # CPU cores (default: 1)
   container_memory: 5120        # Memory in MB (default: 5GB)
   container_disk: 51200         # Disk in MB (default: 50GB)

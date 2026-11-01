@@ -1,0 +1,21 @@
+name: terraform-drift
+repo: https://github.com/TakeshiTGAL/hermes-plugin-terraform-drift
+sha: 787dd77e63a5f9b593034fa13fccb12fdece6cb1
+description: Compare pinned Terraform provider and module versions with the public registry. Disclosure — tools are on for every Hermes surface, including the gateway. Stop a surface with hermes tools disable --platform <name> terraform-drift, or the plugin with hermes plugins disable terraform-drift. Nothing is written under plugin-data/terraform-drift, and there is no key. Only the directory you name is read, and only .tf, .tf.json, and .terraform.lock.hcl. Symlinks and .. are refused, and .env, tfvars, .terraform, backend values, and hashes are not returned. The provider pin is the lock version, not the required_providers constraint. A module pin is an exact version only. GET calls only registry.terraform.io and, for a github.com source, raw.githubusercontent.com CHANGELOG.md. Redirects and proxy variables are ignored. A timeout or failed read leaves latest empty and is not called current. Semver orders versions, so 1.10.0 is newer than 1.9.0. The digest text is not sent and no cron job is created. known keeps newer versions, and omitting it does not call rows new today. There is no approval card. Before the call, name the directory and say there is no init, plan, apply, or state write. Cron, yolo, and approvals off can still run this read. MIT, no daily cap, requires Hermes >=0.21.4.
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+requires_hermes: '>=0.21.4'
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-terraform-drift#readme
+version: 0.1.0
+platforms:
+- linux
+- macos
+- windows
+capabilities:
+  provides_tools:
+  - terraform_drift
+  - terraform_drift_digest
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

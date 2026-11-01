@@ -35,7 +35,7 @@ describe('settings helpers', () => {
     })
 
     it('treats built-in aliases and empty values as not external', () => {
-      for (const value of ['', 'builtin', 'built-in', 'Builtin', 'none', '  ', undefined, null, 7]) {
+      for (const value of ['', 'builtin', 'built-in', 'Builtin', 'none', 'Default', '  ', undefined, null, 7]) {
         expect(isExternalMemoryProvider(value)).toBe(false)
       }
     })

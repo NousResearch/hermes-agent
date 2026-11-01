@@ -10,7 +10,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { PACKAGE_MARKER } from './desktop-plugins-root'
+import { PACKAGE_MARKER, withDesktopPluginsRoot } from './desktop-plugins-root'
+import { stripLikePython } from './plugin-files-guards'
 
 export interface RemoveDesktopPluginResult {
   ok: boolean
@@ -19,14 +20,35 @@ export interface RemoveDesktopPluginResult {
   path?: string
 }
 
-export async function removeDesktopPlugin(appRoot: string, rawName: unknown): Promise<RemoveDesktopPluginResult> {
-  const name = String(rawName ?? '').trim()
+export function removeDesktopPlugin(appRoot: string, rawName: unknown): Promise<RemoveDesktopPluginResult> {
+  // Under the root's writer lock: a reconcile pass adopting this folder (it
+  // stamps the marker) must not land between the marker check and the delete.
+  return withDesktopPluginsRoot(appRoot, () => removeFolder(appRoot, rawName))
+}
 
-  if (!name || name === '.' || name === '..' || /[\\/]/.test(name)) {
+function isSingleSegment(name: string): boolean {
+  return Boolean(name) && name !== '.' && name !== '..' && !/[\\/]/.test(name)
+}
+
+async function removeFolder(appRoot: string, rawName: unknown): Promise<RemoveDesktopPluginResult> {
+  const root = path.resolve(appRoot)
+  const raw = String(rawName ?? '')
+
+  // An existing folder's exact name removes that folder (one an older version named differently, or copied in
+  // by hand); any other name is trimmed as the installer trims the folder name it creates.
+  const exists =
+    isSingleSegment(raw) &&
+    (await fs.promises.lstat(path.join(root, raw)).then(
+      () => true,
+      () => false
+    ))
+
+  const name = exists ? raw : stripLikePython(raw)
+
+  if (!isSingleSegment(name)) {
     return { ok: false, error: 'invalid plugin folder name' }
   }
 
-  const root = path.resolve(appRoot)
   const target = path.resolve(root, name)
 
   if (path.relative(root, target) !== name) {

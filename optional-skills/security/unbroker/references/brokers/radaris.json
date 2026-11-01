@@ -42,7 +42,7 @@
       "profile_url",
       "contact_email"
     ],
-    "notes": "Multi-step control-privacy wizard: step 1 NEXT -> step 2 'identify your personal page' (paste the NUMBERED profile URL into the 'Or Enter URL of your page' field; typing reveals a NEXT submit button) -> then user_email + Google reCAPTCHA -> emailed verification link. If there is no View Profile button for the subject, email customer-service@radaris.com and reply to the auto-response until removed.",
+    "notes": "Multi-step control-privacy wizard: step 1 NEXT -> step 2 'identify your personal page' (paste the NUMBERED profile URL into the 'Or Enter URL of your page' field; typing reveals a NEXT submit button) -> then user_email + Google reCAPTCHA -> emailed verification link. If there is no View Profile button for the subject, email customer-service@radaris.com and reply to the auto-response until removed. DEFUNCT since 2026-08-27: domain seized via Atlas Data Privacy Corp (NJ Daniel's Law, final judgment 2026-08-27). Excluded from all planning/scanning/re-checks; close any open case as not_found citing this record.",
     "email": "customer-service@radaris.com",
     "quirks": [
       "CAPTCHA: the form carries a Google reCAPTCHA (hidden field g-recaptcha-response) plus anti-bot fingerprint tokens (jfp, token). Tier is T2 without a captcha-clearing browser backend (T1 with Browserbase). (Record previously mis-declared captcha:false.)",
@@ -53,6 +53,10 @@
     "est_processing_days": 14,
     "reappearance_risk": "high"
   },
-  "last_verified": "2026-06-30",
-  "source": "BADBOOL"
+  "last_verified": "2026-10-26",
+  "source": "BADBOOL",
+  "defunct": {
+    "since": "2026-08-27",
+    "evidence": "domain seized via Atlas Data Privacy Corp (NJ Daniel's Law, final judgment 2026-08-27)"
+  }
 }

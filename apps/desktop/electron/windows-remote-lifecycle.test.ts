@@ -14,11 +14,13 @@ import {
   atomicWindowsSpawnCommand,
   buildWindowsInteractiveCommand,
   connectWindowsRemote,
+  decodePowerShellCommand,
   detectRemotePlatform,
   encodedPowerShell,
   helper,
   helperCommand,
   powerShellCommand,
+  probeWindowsFiles,
   probeWindowsRemote,
   psLiteral,
   reusableWindowsLock,
@@ -34,8 +36,7 @@ test('Windows spawn holds the update mutex across marker check and helper spawn'
     python: 'C:\\Users\\andre\\.hermes\\python.exe'
   })
 
-  const encoded = command.match(/-EncodedCommand\s+([^\s]+)$/)?.[1]
-  const script = encoded ? Buffer.from(encoded, 'base64').toString('utf16le') : ''
+  const script = decodePowerShellCommand(command)
   assert.match(script, /\.hermes-update-in-progress/)
   assert.match(
     script,
@@ -61,8 +62,7 @@ test('Windows spawn publishes the initial ownership record before releasing the 
     }
   )
 
-  const encoded = command.split(' ').at(-1) || ''
-  const script = encoded ? Buffer.from(encoded, 'base64').toString('utf16le') : ''
+  const script = decodePowerShellCommand(command)
 
   assert.match(script, /read-lock/)
   assert.match(script, /write-lock/)
@@ -134,10 +134,10 @@ function sshWith(exec) {
 type SshExecOptions = { stdinData?: string | Buffer }
 
 function scriptFromInvocation(command: string, options: SshExecOptions = {}) {
-  const encoded = command.match(/-EncodedCommand\s+([^\s]+)$/)?.[1]
+  const decoded = decodePowerShellCommand(command)
 
-  if (encoded) {
-    return Buffer.from(encoded, 'base64').toString('utf16le')
+  if (decoded) {
+    return decoded
   }
 
   return Buffer.from(String(options.stdinData || '').trim(), 'base64').toString('utf16le')
@@ -201,7 +201,7 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
       const script = scriptFromInvocation(command, options)
       scripts.push(script)
 
-      if (script.includes('Get-Command hermes.exe')) {
+      if (script.includes('Get-Command hermes -CommandType Application')) {
         return JSON.stringify({
           os: 'Windows',
           arch: 'AMD64',
@@ -316,7 +316,7 @@ test('Windows probe validates Hermes and Python topology before selection', asyn
   )
 
   const explicitCheck = script.indexOf('if($explicit){Assert-NoReparse $explicit $false;')
-  const explicitPythonCheck = script.indexOf('Assert-NoReparse $explicitPython $false')
+  const explicitPythonCheck = script.indexOf('Assert-NoReparse $explicitPython $true')
   const envHome = script.indexOf('$hermesHome=$env:HERMES_HOME')
   // #118988: HERMES_HOME is trusted only when it is a directory on the remote; anything else
   // (stale User-scope value, client path leaked over SSH) falls back to the remote default.
@@ -462,14 +462,16 @@ test('helper parsing ignores CLIXML progress blocks around its JSON line', async
   }
 })
 
-test('Windows platform probe streams long PowerShell scripts over stdin', async () => {
-  let command = ''
-  let stdinData = ''
+test('Windows platform probe and marker gate send their scripts without stdin', async () => {
+  let probeCommand = ''
+  let probeStdinData: string | Buffer | undefined
+  let markerCommand = ''
+  let markerStdinData: string | Buffer | undefined
 
   const result = await probeWindowsRemote({
     async exec(nextCommand: string, options: SshExecOptions = {}) {
-      command = nextCommand
-      stdinData = String(options.stdinData || '')
+      probeCommand = nextCommand
+      probeStdinData = options.stdinData
 
       return JSON.stringify({
         os: 'Windows',
@@ -481,22 +483,36 @@ test('Windows platform probe streams long PowerShell scripts over stdin', async 
     }
   })
 
+  await assertWindowsRemoteInstallUpdateClear(
+    {
+      async exec(nextCommand: string, options: SshExecOptions = {}) {
+        markerCommand = nextCommand
+        markerStdinData = options.stdinData
+
+        return 'CLEAR'
+      }
+    },
+    'C:\\\\h',
+    'C:\\\\h\\\\python.exe'
+  )
+
   assert.equal(result.os, 'Windows')
-  assert.match(command, /-Command \[ScriptBlock\]::Create/)
-  assert.doesNotMatch(command, /-EncodedCommand/)
-  assert.ok(command.length < 1024)
-  assert.match(stdinData, /^[A-Za-z0-9+/=\r\n]+$/)
-  const decodedScript = Buffer.from(stdinData.trim(), 'base64').toString('utf16le')
-  assert.match(decodedScript, /Assert-NoReparse/)
+  assert.equal(probeStdinData, undefined)
+  assert.equal(markerStdinData, undefined)
+  assert.match(probeCommand, /-EncodedCommand [A-Za-z0-9+/=]+$/)
+  assert.match(markerCommand, /-EncodedCommand [A-Za-z0-9+/=]+$/)
+  assert.doesNotMatch(probeCommand, /-Command /)
+  assert.match(decodePowerShellCommand(probeCommand), /Assert-NoReparse/)
+  assert.match(decodePowerShellCommand(markerCommand), /HermesMarkerNoFollow/)
 })
 
-test('Windows platform probe preserves Unicode paths in its UTF-16LE stdin payload', async () => {
-  let stdinData = ''
+test('Windows platform probe preserves Unicode paths in its compressed command', async () => {
+  let command = ''
 
   await probeWindowsRemote(
     {
-      async exec(_command: string, options: SshExecOptions = {}) {
-        stdinData = String(options.stdinData || '')
+      async exec(nextCommand: string) {
+        command = nextCommand
 
         return JSON.stringify({
           os: 'Windows',
@@ -510,16 +526,15 @@ test('Windows platform probe preserves Unicode paths in its UTF-16LE stdin paylo
     'C:\\Users\\한글\\hermes.exe'
   )
 
-  const decodedScript = Buffer.from(stdinData.trim(), 'base64').toString('utf16le')
-  assert.ok(decodedScript.includes('C:\\Users\\한글\\hermes.exe'))
+  assert.ok(decodePowerShellCommand(command).includes('C:\\Users\\한글\\hermes.exe'))
 })
 
-test('every Windows probe command fits the cmd.exe 8191-char limit (#106716)', async () => {
+test('every Windows remote command fits the cmd.exe 8191-char limit (#106716)', async () => {
   // cmd.exe (the default OpenSSH shell on Windows) rejects command lines of
   // 8192+ chars with "The command line is too long", which used to surface as
   // a misleading unsupported-platform error. Every command the Windows remote
-  // lifecycle sends must stay under that limit; long probe scripts travel
-  // over stdin instead.
+  // lifecycle sends must stay under that limit without streaming scripts over
+  // stdin.
   const commands: string[] = []
 
   const ssh = sshWith(async (command, options) => {
@@ -546,18 +561,36 @@ test('every Windows probe command fits the cmd.exe 8191-char limit (#106716)', a
   const longExplicit = `C:\\${'h'.repeat(200)}\\hermes.exe`
 
   await probeWindowsRemote(ssh, longExplicit)
-  await assertWindowsRemoteInstallUpdateClear(ssh, longHome)
+  await assertWindowsRemoteInstallUpdateClear(ssh, longHome, `${longHome}\\python.exe`)
   commands.push(
+    atomicWindowsSpawnCommand(
+      { hermesHome: longHome, python: `${longHome}\\python.exe` },
+      {
+        ownershipId: 'f'.repeat(32),
+        spawnNonce: '0123456789abcdef',
+        profile: 'p'.repeat(64),
+        hermesPath: longExplicit,
+        hermesHome: longHome,
+        tokenFingerprint: 'a'.repeat(32),
+        startedAt: '2026-07-14T00:00:00.000Z'
+      },
+      JSON.stringify({
+        ownershipId: 'f'.repeat(32),
+        spawnNonce: '0123456789abcdef',
+        profile: 'p'.repeat(64),
+        hermesPath: longExplicit
+      })
+    ),
     helperCommand({ python: `${longHome}\\python.exe` }, 'inspect', [longExplicit]),
     buildWindowsInteractiveCommand(longHome)
   )
 
-  assert.ok(commands.length >= 4)
+  assert.ok(commands.length >= 5)
 
   for (const command of commands) {
     assert.ok(
       command.length < 8191,
-      `probe command is ${command.length} chars (limit 8191): ${command.slice(0, 80)}...`
+      `Windows command is ${command.length} chars (limit 8191): ${command.slice(0, 80)}...`
     )
   }
 })
@@ -595,7 +628,7 @@ test.skipIf(process.platform !== 'win32')('Windows platform probe executes in re
     fs.writeFileSync(hermesPath, '')
     fs.writeFileSync(path.join(tempDir, 'python.exe'), '')
 
-    const result = await probeWindowsRemote(
+    const result = await probeWindowsFiles(
       {
         exec: (command: string, options: SshExecOptions = {}) => runLocalWindowsCommand(command, options.stdinData)
       },
@@ -609,6 +642,51 @@ test.skipIf(process.platform !== 'win32')('Windows platform probe executes in re
     fs.rmSync(tempDir, { recursive: true, force: true })
   }
 })
+
+test.skipIf(process.platform !== 'win32')(
+  'Windows marker gate finishes in real PowerShell when end of input never arrives',
+  async () => {
+    // Windows OpenSSH does not always deliver the client's end of input to the remote PowerShell.
+    const runWithOpenStdin = (command: string, stdinData?: string | Buffer) =>
+      new Promise<string>((resolve, reject) => {
+        const child = spawn('cmd.exe', ['/d', '/s', '/c', command], { windowsHide: true })
+        const stdout: Buffer[] = []
+
+        const timer = setTimeout(() => {
+          spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], { windowsHide: true })
+          reject(new Error('remote script was still waiting after 20 s'))
+        }, 20_000)
+
+        child.stdout.on('data', chunk => stdout.push(chunk))
+        child.once('error', reject)
+        child.once('close', code => {
+          clearTimeout(timer)
+
+          if (code === 0) {
+            resolve(Buffer.concat(stdout).toString('utf8'))
+          } else {
+            reject(new Error(`command exited with ${code}`))
+          }
+        })
+
+        if (stdinData != null) {
+          child.stdin.write(stdinData)
+        }
+      })
+
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-marker-'))
+
+    try {
+      await assertWindowsRemoteInstallUpdateClear(
+        { exec: (command: string, options: SshExecOptions = {}) => runWithOpenStdin(command, options.stdinData) },
+        home
+      )
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  },
+  30_000
+)
 
 test('platform detection preserves POSIX and falls back to Windows PowerShell', async () => {
   assert.deepEqual(await detectRemotePlatform(sshWith(async () => 'Linux\nx86_64\n')), { os: 'Linux', arch: 'x86_64' })
@@ -633,7 +711,7 @@ test('platform detection preserves POSIX and falls back to Windows PowerShell', 
   )
 
   assert.equal(result.os, 'Windows')
-  assert.match(calls[1], /-Command \[ScriptBlock\]::Create/)
+  assert.match(calls[1], /-EncodedCommand [A-Za-z0-9+/=]+$/)
 })
 
 test('platform detection surfaces transport failures as themselves, not unsupported-platform', async () => {
@@ -662,6 +740,24 @@ test('platform detection surfaces transport failures as themselves, not unsuppor
       })
     ),
     (err: any) => err.kind === 'unsupported-platform' && /Hermes is not installed/.test(err.message)
+  )
+
+  await assert.rejects(
+    detectRemotePlatform(
+      sshWith(async command => {
+        if (command.startsWith('uname ')) {
+          throw new Error('not recognized')
+        }
+
+        throw new Error(
+          '#< CLIXML <Objs><S S="progress">module load</S><S S="Error">The remote Hermes Python runtime was not found._x000D__x000A_</S></Objs>'
+        )
+      })
+    ),
+    (err: any) =>
+      err.kind === 'unsupported-platform' &&
+      /probe: The remote Hermes Python runtime was not found\./.test(err.message) &&
+      !/CLIXML|module load/.test(err.message)
   )
 })
 
@@ -698,14 +794,15 @@ test('platform detection preserves typed Windows probe failures', async () => {
   }
 })
 
-test('helper command uses the fixed remote Python entry point and quotes path data', () => {
-  const command = helperCommand({ python: "C:\\Program Files\\Hermes's\\python.exe" }, 'inspect', [
+test('helper command enters through the launcher module dispatch and quotes path data', () => {
+  // The shape update drain and bootstrap rollback rebuild from stored state: no runtime command.
+  const command = helperCommand({ hermesPath: "C:\\Program Files\\Hermes's\\bin\\hermes.exe", hermesHome: 'C:\\h', python: '' }, 'inspect', [
     'C:\\x y\\hermes.exe'
   ])
 
   const encoded = command.split(' ').pop()!
   const script = Buffer.from(encoded, 'base64').toString('utf16le')
-  assert.match(script, /-m' 'hermes_cli\.windows_ssh_runtime' 'inspect'/)
+  assert.match(script, /bin\\hermes\.exe' '--run-module' 'hermes_cli\.windows_ssh_runtime' 'inspect'/)
   assert.match(script, /Hermes''s/)
   assert.match(script, /C:\\x y\\hermes\.exe/)
 })

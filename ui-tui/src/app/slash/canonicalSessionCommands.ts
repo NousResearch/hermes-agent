@@ -8,13 +8,14 @@ import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
 
 import { CANONICAL_REASONING_EFFORTS } from '../../domain/slash.js'
 import { usageFromTick } from '../../domain/usage.js'
+import type { BillingStateResponse } from '../../gatewayTypes.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
 import { patchUiState } from '../uiStore.js'
 
 import { mutateCanonical, type MutationSnapshot } from './canonicalSessionControls.js'
 import type { SlashRunCtx } from './types.js'
-import { usageTotalsSections } from './usagePanel.js'
+import { planUsageLines, usageTotalsSections } from './usagePanel.js'
 
 const COMPACTION_MARKERS = ['[CONTEXT COMPACTION', '[CONTEXT SUMMARY]:', '[END OF PRIOR CONTEXT']
 
@@ -231,13 +232,21 @@ export function canonicalUsage(ctx: SlashRunCtx) {
       if (!usage?.calls) {
         ctx.transcript.sys(t('slashCmd.session.usage.noCalls'))
         ctx.transcript.sys(t('slashCmd.session.usage.cta'))
-
-        return
+      } else {
+        patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
+        ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(usage))
+        ctx.transcript.sys(t('slashCmd.session.usage.cta'))
       }
 
-      patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
-      ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(usage))
-      ctx.transcript.sys(t('slashCmd.session.usage.cta'))
+      // Usage-window plans: the allowance bars, after the lines above (every other account: nothing).
+      void ctx.gateway
+        .rpc<BillingStateResponse>('billing.state', {})
+        .then(r => {
+          if (!ctx.stale()) {
+            planUsageLines(r?.plan_usage).forEach(line => ctx.transcript.sys(line))
+          }
+        })
+        .catch(() => undefined)
     })
     .catch(ctx.guardedErr)
 }

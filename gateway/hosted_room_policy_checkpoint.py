@@ -19,12 +19,17 @@ from gateway.hosted_rooms_common import DbPath, compact_json, fenced_update
 
 
 MAX_ACTIVE_POLICY_EVENTS = 64
+# ``turn.deferred`` receipts come from explicit user retries, not from the configured reply
+# budget, so they are bounded on their own: sizing the reply budget exactly must leave room.
+MAX_ACTIVE_RETRY_RECEIPTS = 64
 MAX_THREAD_TRANSCRIPT_EVENTS = 24
 _TRANSCRIPT_SCHEMA_VERSION = 4
 MAX_TRANSCRIPT_POLICY_EVENTS = MAX_THREAD_TRANSCRIPT_EVENTS * (MAX_ACTIVE_POLICY_EVENTS + 2)
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 
 _SCHEMA_DDL = (
+    """CREATE TABLE IF NOT EXISTS hosted_room_policy_capacity (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1), max_active_events INTEGER NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS hosted_room_policy_cursors (
         room_id TEXT PRIMARY KEY, through_seq INTEGER NOT NULL DEFAULT 0,
         stopped_through_seq INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL DEFAULT 0)""",
@@ -108,11 +113,23 @@ def _settled_message(
 
 class HostedRoomPolicyCheckpoint:
     """Incrementally index room policy without compacting visible history."""
-    def __init__(self, db_path: DbPath) -> None:
+    def __init__(self, db_path: DbPath, *, max_active_events: int = MAX_ACTIVE_POLICY_EVENTS) -> None:
+        if isinstance(max_active_events, bool) or not isinstance(max_active_events, int) or max_active_events < 1:
+            raise ValueError("max_active_events must be a positive integer")
         self.db_path = Path(db_path)
+        # LIMIT also reads one overflow sentinel; keep its parameter inside SQLite's integer range.
+        capacity = min(2**63 - 2, max(MAX_ACTIVE_POLICY_EVENTS, max_active_events))
         with self._transaction() as conn:
             for ddl in _SCHEMA_DDL:
                 conn.execute(ddl)
+            # Preserve replay capacity across restarts with a lower scheduling budget.
+            conn.execute("""INSERT INTO hosted_room_policy_capacity(singleton, max_active_events)
+                VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET
+                max_active_events=MAX(max_active_events, excluded.max_active_events)""", (capacity,))
+            self.max_active_events = int(conn.execute(
+                "SELECT max_active_events FROM hosted_room_policy_capacity WHERE singleton=1").fetchone()[0])
+        self.max_transcript_policy_events = min(
+            2**63 - 2, MAX_THREAD_TRANSCRIPT_EVENTS * (self.max_active_events + MAX_ACTIVE_RETRY_RECEIPTS + 2))
 
     def _connect(self) -> sqlite3.Connection:
         # Late import: a gateway that outlives an on-disk upgrade has the OLD sqlite_util cached.
@@ -156,14 +173,20 @@ class HostedRoomPolicyCheckpoint:
         self, conn: sqlite3.Connection, *, room_id: str, thread_id: str, discussion_event_id: str, bound_error: str
     ) -> list[dict[str, Any]]:
         """Merge the thread transcript with the active projection, ordered by seq."""
-        active_rows = conn.execute("""SELECT event_json FROM hosted_room_policy_events
-               WHERE room_id=? AND discussion_event_id=? ORDER BY seq LIMIT ?""",
-            (room_id, discussion_event_id, MAX_ACTIVE_POLICY_EVENTS + 1)).fetchall()
-        if len(active_rows) > MAX_ACTIVE_POLICY_EVENTS:
-            raise RuntimeError(bound_error)
+        active_rows = []
+        for receipts, bound in ((0, self.max_active_events), (1, MAX_ACTIVE_RETRY_RECEIPTS)):
+            rows = conn.execute("""SELECT event_json FROM hosted_room_policy_events
+                   WHERE room_id=? AND discussion_event_id=?
+                     AND (json_extract(event_json, '$.kind') = 'turn.deferred') = ?
+                   ORDER BY seq LIMIT ?""",
+                (room_id, discussion_event_id, receipts, bound + 1)).fetchall()
+            if len(rows) > bound:
+                raise RuntimeError(bound_error)
+            active_rows.extend(rows)
         rows = conn.execute(_TRANSCRIPT_EVENTS_SQL,
-                            (room_id, thread_id, room_id, thread_id, room_id, MAX_TRANSCRIPT_POLICY_EVENTS + 1)).fetchall()
-        if len(rows) > MAX_TRANSCRIPT_POLICY_EVENTS:
+                            (room_id, thread_id, room_id, thread_id, room_id,
+                             self.max_transcript_policy_events + 1)).fetchall()
+        if len(rows) > self.max_transcript_policy_events:
             raise RuntimeError("thread policy transcript exceeded its bound")
         events_by_seq = {
             int(event["seq"]): event

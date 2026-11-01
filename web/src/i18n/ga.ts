@@ -92,6 +92,14 @@ export const ga: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Soláthraí cuimhne gníomhach",
+    noProvider: "dada — ionsuite amháin",
+    builtinLayer: "Ciseal ionsuite",
+    builtinNote: "Is iad MEMORY.md agus USER.md cuimhne Hermes féin, ar leith ó aon soláthraí seachtrach. Luchtaítear an dá cheann i seisiúin de réir réamhshocraithe; múchann na lasca cumraíochta (memory.memory_enabled / memory.user_profile_enabled) gach ceann acu. Cuireann soláthraí leo; ní chuireann sé ina n-áit riamh.",
+  },
+
   status: {
     actionFailed: "Theip ar an ngníomh",
     actionFinished: "Críochnaithe",

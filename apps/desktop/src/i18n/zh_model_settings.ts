@@ -2,6 +2,7 @@ import type { TranslationOverride } from '@hermes/shared/i18n'
 
 import type { ModelSettingsTranslations } from './types_model_settings'
 import { zhAuxTasks } from './zh_aux_tasks'
+import { zhDelegationRouting } from './zh_delegation_routing'
 
 export const zhModelSettings: TranslationOverride<ModelSettingsTranslations> = {
   setupProviderFallback: '提供方',
@@ -72,6 +73,7 @@ export const zhModelSettings: TranslationOverride<ModelSettingsTranslations> = {
     directActive: '直接端点已启用，优先于保存的提供商。选择此模式会保留其端点和凭证。',
     directClear: '应用此路由会清除直接端点及其保存的密钥。其他请求设置保持不变。',
     catalogFailed: '模型目录不可用。请手动输入提供商和模型，或重试。',
-    draftHint: '应用前，更改仅保留在本地。'
+    draftHint: '应用前，更改仅保留在本地。',
+    routing: zhDelegationRouting
   }
 }

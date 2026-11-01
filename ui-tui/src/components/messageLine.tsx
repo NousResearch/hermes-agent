@@ -12,6 +12,7 @@ import { ROLE } from '../domain/roles.js'
 import { useT } from '../i18n/useT.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import { boundedLiveRenderText, compactPreview, isPasteBackedText } from '../lib/text.js'
+import { type GaugeStyle, hasUsageGauge, splitUsageGaugeLine } from '../lib/usageGauge.js'
 import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
@@ -175,6 +176,13 @@ export const MessageLine = memo(function MessageLine({
       return <Text color={t.color.muted}>{msg.text}</Text>
     }
 
+    // ── `/usage` gauge row: one line with a `[||||    ]` bar, colored like the
+    // model picker. Only these rows take this path; every other system message
+    // keeps its collapse / ANSI / truncation handling below.
+    if (isUsageGaugeRow(msg)) {
+      return <UsageGaugeRow t={t} text={msg.text} />
+    }
+
     // ── Collapsible long system message (system prompt, AGENTS.md, etc.) ──
     // MUST come before the hasAnsi check — system messages from the backend
     // contain Rich markup escape codes that would otherwise hit <Ansi> full render.
@@ -319,6 +327,26 @@ export const MessageLine = memo(function MessageLine({
     </Box>
   )
 })
+
+const gaugeThemeColor = (t: Theme, style: GaugeStyle): string =>
+  style === 'red' ? t.color.error : style === 'yellow' ? t.color.warn : t.color.ok
+
+const isUsageGaugeRow = (msg: Msg): boolean =>
+  msg.role === 'system' && !msg.kind && !msg.text.includes('\n') && hasUsageGauge(msg.text)
+
+// wrap-ansi treats a colored `[||||||||  ]` as a broken CSI sequence and
+// prints `?[32m`, so each segment is its own <Text> with no wrapping.
+function UsageGaugeRow({ t, text }: { t: Theme; text: string }) {
+  return (
+    <Box>
+      {splitUsageGaugeLine(stripAnsi(text)).map((seg, j) => (
+        <Text color={seg.style ? gaugeThemeColor(t, seg.style) : t.color.muted} key={j}>
+          {seg.text}
+        </Text>
+      ))}
+    </Box>
+  )
+}
 
 export const shouldShowResponseSeparator = (msg: Msg, showDetails: boolean): boolean =>
   msg.role === 'assistant' && showDetails && /\S/.test(msg.text)

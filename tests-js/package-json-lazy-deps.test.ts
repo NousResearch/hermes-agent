@@ -11,32 +11,20 @@
  *
  * The contract:
  *
- * - ``agent-browser`` is NOT a root dependency. It used to be eager (see
- *   #27055, which reasoned its postinstall was small enough to keep eager
- *   unlike Camofox's) but #43564 found that keeping ANY dependency in root
- *   ``package.json`` — however small its postinstall — entangles it with
- *   the ui-tui/web workspace install and risks it being pruned. It now
- *   resolves at runtime via ``npx agent-browser`` (see
- *   ``tools/browser_tool.py::_find_agent_browser``), which sidesteps the
- *   workspace graph entirely. ``hermes update`` and ``hermes doctor --fix``
- *   both fire-and-forget ``warm_agent_browser_npx_cache()`` to keep npx's
- *   own cache warm, preserving the "available before any session starts"
- *   property #27055 cared about without re-entangling the dependency.
- *
- * - ``@streamdown/math`` is NOT a root dependency either. It's imported only
+ * - ``@streamdown/math`` is NOT a root dependency. It's imported only
  *   by desktop's own TS code (``apps/desktop/src/...``), so it belongs in
  *   ``apps/desktop/package.json`` (alongside its sibling ``@streamdown/code``)
  *   — not root, where it was subject to the exact same pruning risk.
  *
- * - ``@askjo/camofox-browser`` is NOT eager. It is an explicit opt-in
- *   alternative browser backend, selected by the user via
- *   ``hermes tools`` → Browser Automation → Camofox, and only used at
- *   runtime when ``CAMOFOX_URL`` is set. Its postinstall fetches a ~300MB
- *   Firefox-fork binary, which silently blocked ``hermes update`` for
- *   multi-minute stretches on slow / network-restricted connections
- *   (notably users in China running through a VPN). The package is
- *   installed on demand by ``tools_config.py`` ``post_setup_key ==
- *   "camofox"`` when the user actually selects Camofox.
+ * - ``@askjo/camofox-browser`` is NOT eager. Camofox is an opt-in browser
+ *   backend that ships as the ``camofox`` catalog plugin (Hermes core carries
+ *   no Camofox code). Its postinstall fetches a ~300MB Firefox-fork binary,
+ *   which silently blocked ``hermes update`` for multi-minute stretches on
+ *   slow / network-restricted connections (notably users in China running
+ *   through a VPN), so it installs only when the user sets the plugin up.
+ *
+ * (agent-browser, once listed here, is no longer used by Hermes in any form:
+ * browser_exec launches the pm-pinned Chromium itself.)
  *
  * If a future PR re-adds any of these to root ``dependencies``, this test
  * fails — read the lazy-install guidance in the ``hermes-agent-dev`` skill
@@ -61,22 +49,8 @@ test('camofox is not in root dependencies (must stay opt-in)', () => {
   assert.ok(
     !('@askjo/camofox-browser' in deps),
     'Camofox is a ~300MB binary-postinstall backend that must stay ' +
-      'out of root package.json dependencies. It belongs in the ' +
-      'Camofox post_setup handler in hermes_cli/tools_config.py so it ' +
-      'only installs when the user explicitly selects Camofox via ' +
-      '`hermes tools` → Browser Automation → Camofox.'
-  )
-})
-
-test('agent-browser is not in root dependencies (resolves via npx, #43564)', () => {
-  const deps = (rootPackageJson().dependencies ?? {}) as Record<string, string>
-  assert.ok(
-    !('agent-browser' in deps),
-    'agent-browser must not be a root package.json dependency — it ' +
-      'resolves lazily via `npx agent-browser` instead (see ' +
-      'tools/browser_tool.py::_find_agent_browser and ' +
-      'warm_agent_browser_npx_cache). Putting it back in root ' +
-      'dependencies re-entangles it with the ui-tui/web workspace ' +
-      'install graph and reintroduces #43564.'
+      'out of root package.json dependencies. It ships as the camofox ' +
+      'catalog plugin, which installs it only when the user sets that ' +
+      'plugin up.'
   )
 })

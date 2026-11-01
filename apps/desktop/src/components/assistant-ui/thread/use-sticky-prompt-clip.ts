@@ -2,6 +2,10 @@ import { type ReactNode, type RefObject, useLayoutEffect, useRef } from 'react'
 
 const GROUP = '[data-slot="aui_message-group"]'
 const PROMPT = '[data-slot="aui_user-message-root"]'
+// Registered as a non-inherited <length> in styles.css. That registration is
+// load-bearing: this is written once per scroll frame onto elements that are
+// whole turns, and an unregistered property forces Blink to restyle every
+// descendant on each write. See the @property block there before changing it.
 const CLIP = '--sticky-prompt-clip'
 
 interface StickyPromptClipOptions {

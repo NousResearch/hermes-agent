@@ -1,11 +1,10 @@
-"""Terminal-backend setup wizard (local/docker/singularity/modal/daytona/vercel/ssh/plugin).
+"""Terminal-backend setup wizard (local/docker/modal/daytona/vercel/ssh/plugin).
 setup.py names are resolved through the module object so test patches on ``hermes_cli.setup.<name>``
 take effect; setup.py re-exports the public entry points."""
 
 import json
 import logging
 import os
-import shutil
 from pathlib import Path
 from tools import tool_backend_helpers
 from tools.environments.docker import docker_runtime_name, find_docker
@@ -142,7 +141,7 @@ def _setup_backend_docker(config: dict) -> None:
     _setup._info(None, "Docker sandboxes can be protected with the egress credential firewall.",
                  "It routes sandbox traffic through iron-proxy so containers receive "
                  "proxy tokens instead of real API keys.",
-                 "   Docker only for now; Modal, SSH, Daytona, and Singularity are not wired yet.")
+                 "   Docker only for now; Modal, SSH, Daytona and plugin backends are not wired yet.")
     if _setup.prompt_yes_no("  Enable egress firewall for Docker sandboxes?", False):
         proxy_cfg = config.setdefault("proxy", {})
         proxy_cfg["enabled"] = True
@@ -152,14 +151,6 @@ def _setup_backend_docker(config: dict) -> None:
             "Run `hermes egress setup` then `hermes egress start` to mint tokens and launch the proxy.")
     else:
         _setup.print_info("Skipping egress firewall. You can enable it later with `hermes egress setup`.")
-
-
-def _setup_backend_singularity(config: dict) -> None:
-    _setup.print_success("Terminal backend: Singularity/Apptainer")
-    _report_binary(shutil.which("apptainer") or shutil.which("singularity"),
-                   "Singularity/Apptainer not found in PATH!",
-                   "Install: https://apptainer.org/docs/admin/main/installation.html")
-    config["terminal"].setdefault("singularity_image", f"docker://{_SANDBOX_IMAGE}")
 
 
 def _setup_backend_modal(config: dict) -> None:
@@ -270,9 +261,8 @@ _BUILTIN_TERMINAL_BACKENDS = [
     ("daytona", "Daytona - persistent cloud development environment"),
     ("vercel_sandbox", "Vercel Sandbox - cloud microVM with snapshot filesystem persistence")]
 _TERMINAL_BACKEND_SETUP = {
-    "local": _setup_backend_local, "docker": _setup_backend_docker, "singularity": _setup_backend_singularity,
-    "modal": _setup_backend_modal, "daytona": _setup_backend_daytona, "vercel_sandbox": _setup_backend_vercel,
-    "ssh": _setup_backend_ssh}
+    "local": _setup_backend_local, "docker": _setup_backend_docker, "modal": _setup_backend_modal,
+    "daytona": _setup_backend_daytona, "vercel_sandbox": _setup_backend_vercel, "ssh": _setup_backend_ssh}
 # Backend -> env var mirrored from config after setup (config.yaml is the source of truth, but
 # terminal_tool reads these from .env).
 _BACKEND_ENV_MIRROR = {"modal": ("TERMINAL_MODAL_MODE", "modal_mode", "auto"),
@@ -281,15 +271,12 @@ _BACKEND_ENV_MIRROR = {"modal": ("TERMINAL_MODAL_MODE", "modal_mode", "auto"),
 
 def setup_terminal_backend(config: dict):
     """Configure the terminal execution backend."""
-    import platform as _platform
     _setup.print_header("Terminal Backend")
     _setup._info("Choose where Hermes runs shell commands and code.",
                  "This affects tool execution, file access, and isolation.",
                  f"   Guide: {_setup._DOCS_BASE}/user-guide/configuration#terminal-backend-configuration", None)
     current_backend = _setup.cfg_get(config, "terminal", "backend", default="local")
     backends = list(_BUILTIN_TERMINAL_BACKENDS)
-    if _platform.system() == "Linux":
-        backends.append(("singularity", "Singularity/Apptainer - HPC-friendly container"))
     # Plugin-registered backends (~/.hermes/plugins/). Fail-soft: a broken plugin must not take
     # the wizard down.
     plugin_backend_names = []

@@ -38,6 +38,46 @@ def owner_for_home(home):
     return None
 
 
+async def _admit_local_delivery(authority, chat_id, text, metadata):
+    from gateway.config import Platform
+    from gateway.session_authorities import owner_scope
+    from gateway.session_automation import admit_route_wake
+    from gateway.session_local_recovery import local_adapter_map, restore_local_session
+    from gateway.session_route_recovery import mountable, restore_routed_session
+    with owner_scope(authority):
+        live = authority.sessions.get(chat_id)
+        if live is None and mountable(authority, chat_id):
+            # A messaging conversation a reminder set from the app names (gateway/session_detached.py),
+            # not mounted (a restart): it mounts off the chat, or on it when the chat names it again.
+            restore_routed_session(authority, chat_id)
+        elif live is None or live.source is None or live.source.platform == Platform.LOCAL:
+            restore_local_session(authority, chat_id)  # a chat closed before this fire, as for completions
+        source = authority.sessions[chat_id].source
+        # Off the chat its app viewers take it (as a note); back on the chat (its /resume) it is that
+        # conversation's own turn there.
+        adapter = (local_adapter_map(authority)[Platform.LOCAL] if source.platform == Platform.LOCAL
+                   else authority.runner._adapter_for_source(source))
+        return await admit_route_wake(authority.runner, adapter, source, text, 'cron', metadata)
+
+
+def deliver_to_local_chat(home, chat_id, text, *, diagnostic=False):
+    """Admit a cron result into local chat *chat_id*'s FIFO; at the head it is written into the chat's
+    history as a note, never a turn (``session_completion_notes``). A local chat has no push transport
+    (``LocalSessionAdapter.send`` only acknowledges a turn's own output), so only the owner in this
+    process can deliver. Called off the owner loop; None once admitted, else the error."""
+    owner = owner_for_home(home)
+    if owner is None:
+        return f"local chat {chat_id}: no gateway in this process owns its session"
+    authority, loop = owner
+    metadata = {'notification_category': 'diagnostic'} if diagnostic else {}
+    try:
+        admitted = asyncio.run_coroutine_threadsafe(
+            _admit_local_delivery(authority, chat_id, text, metadata), loop).result(timeout=60)
+    except (RuntimeStoreError, KeyError, TimeoutError) as exc:  # unknown chat, refused admission, stalled owner
+        return f"local chat {chat_id}: delivery not confirmed: {exc!r}"
+    return None if admitted else f"local chat {chat_id}: delivery refused: the chat has no committed route"
+
+
 def current_execution():
     return _execution.get()
 
@@ -135,7 +175,8 @@ async def operation(authority, name, params, actor=None):
         sid = local_identity(authority.profile_id, actor.subject, request_id)
         from hermes_state_runtime import list_session_admissions
         rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
-        row = next((r for r in rows if r['request_id'] == request_id and r['principal_id'] == actor.subject), None)
+        from gateway.owner_identity import same_owner
+        row = next((r for r in rows if r['request_id'] == request_id and same_owner(r['principal_id'], actor.subject)), None)
         if row is None:
             return {'status': 'missing', 'result': None}
         state = await operation(authority, 'status', {'session_id': sid, 'admission_id': row['admission_id']}, actor)
@@ -176,7 +217,8 @@ async def operation(authority, name, params, actor=None):
     ref = SessionRef(authority.profile_id, params['session_id'])
     authority.authorize(actor, ref, 'session:submit')
     row = get_session_admission(authority.db, admission_id=params['admission_id'])
-    if row is None or row['target_session_id'] != ref.session_id or row['principal_id'] != actor.subject:
+    from gateway.owner_identity import same_owner
+    if row is None or row['target_session_id'] != ref.session_id or not same_owner(row['principal_id'], actor.subject):
         raise RuntimeStoreError('permission_denied')
     if name == 'cancel':
         if row['status'] == 'queued':
@@ -254,10 +296,15 @@ async def execute(authority, ref, row, policy):
     job = dict(data['cron_job'], execution_id=execution_id)
     token = bind_execution(authority, ref.session_id, job['id'], execution_id)
     try:
+        from cron.cancellation import CancelRequest, _CombinedCancelEvent
+
         db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
         with _profile_runtime_scope(db_path.parent):
+            # The forwarded ``cron.cancel`` carries no reason, so the operator's marker is read here
+            # first: a stopped agent run reports "cancelled on request", not a lost fire claim.
+            stop = _CombinedCancelEvent(CancelRequest(execution_id), cancel)
             result = await asyncio.to_thread(_run_identified, run_job, job, execution_id,
-                                             extra_prompt=data['extra_prompt'], cancel_event=cancel)
+                                             extra_prompt=data['extra_prompt'], cancel_event=stop)
         # run_job stamps run-side verdicts on ITS job copy (quota hold, unreachable model); the
         # firing scheduler's bookkeeping reads them off its own dict, so they ride the result.
         flags = {key: job[key] for key in RUN_JOB_FLAGS if key in job}

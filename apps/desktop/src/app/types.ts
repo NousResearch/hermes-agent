@@ -52,8 +52,6 @@ export interface BrowserManageResponse {
   connected?: boolean
   url?: string
   messages?: string[]
-  /** `status` / `use`: new chats on this profile get browser_exec (Browser Use mode). */
-  browser_use?: boolean
 }
 
 /** Response from the `session.compress` RPC. `messages` is the post-compress
@@ -190,6 +188,9 @@ export interface ClientSessionState {
    *  heartbeat (#119569); when it lands it settles onto this bubble instead of
    *  appending a duplicate. Cleared by the next message.start or complete. */
   heartbeatSettledStreamId?: null | string
+  /** `turn_id` of the newest message.start (tui_gateway/stream_segments.py): a
+   *  re-sent start of the same turn is not a new occurrence. */
+  streamTurnId?: null | string
   /** A blocking clarify prompt is waiting on the user for this session. Drives
    *  the sidebar "needs input" indicator; cleared when the turn resumes/ends. */
   needsInput: boolean

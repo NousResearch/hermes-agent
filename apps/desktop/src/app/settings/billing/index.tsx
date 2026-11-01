@@ -28,6 +28,7 @@ import { clampAmount, formatMoney } from './billing-amounts'
 import { CurrentPlanCard } from './current-plan-card'
 import { type BillingDevFixtureName, billingDevFixtures } from './dev-fixtures'
 import { StepUpInlineAction } from './inline-feedback'
+import { KeepGoingOnCreditsRow } from './keep-going-on-credits-row'
 import { openExternal } from './open-external'
 import { BillingPlansView } from './plans-view'
 import { createSimulatedBillingApi } from './simulated-api'
@@ -337,13 +338,25 @@ function UsageBar({ bar, fallbackLabel }: { bar?: BillingUsageRowView['bar']; fa
   // Plain shared primitive — no bespoke track chrome. Only the fill tone carries
   // billing meaning: destructive when over-limit, green for healthy remaining
   // credits, muted otherwise. Color rides the sanctioned `fillClassName` override.
-  const isOk = resolvedBar.state === 'ok' && (resolvedBar.tone === 'subscription' || resolvedBar.tone === 'topup')
+  // Window gauges add the picker's middle rung: yellow once more than half is used.
+  const isOk =
+    resolvedBar.state === 'ok' &&
+    (resolvedBar.tone === 'subscription' || resolvedBar.tone === 'topup' || resolvedBar.tone === 'window')
+
+  const fillClassName =
+    resolvedBar.state === 'danger'
+      ? undefined
+      : resolvedBar.state === 'warn'
+        ? 'bg-(--ui-yellow)'
+        : isOk
+          ? 'bg-(--ui-green)'
+          : 'bg-muted-foreground/45'
 
   return (
     <Progress
       aria-label={resolvedBar.label}
       destructive={resolvedBar.state === 'danger'}
-      fillClassName={resolvedBar.state === 'danger' ? undefined : isOk ? 'bg-(--ui-green)' : 'bg-muted-foreground/45'}
+      fillClassName={fillClassName}
       fillStyle={{ minWidth: resolvedBar.value > 0 ? 4 : undefined }}
       size="lg"
       value={resolvedBar.value}
@@ -369,7 +382,11 @@ function UsageRow({ row }: { row: BillingUsageRowView }) {
         <div
           className={cn(
             'min-w-0 whitespace-nowrap text-[length:var(--conversation-text-font-size)] font-medium tabular-nums @2xl:w-[220px] @2xl:flex-none @2xl:text-right',
-            row.bar?.state === 'danger' ? 'text-destructive' : 'text-foreground'
+            row.bar?.state === 'danger'
+              ? 'text-destructive'
+              : row.bar?.state === 'warn'
+                ? 'text-(--ui-yellow)'
+                : 'text-foreground'
           )}
         >
           {row.value}
@@ -548,7 +565,7 @@ function BillingSettingsContent({
         </SettingsSection>
       )}
 
-      {(paymentRow || accountRows.length > 0) && (
+      {(paymentRow || accountRows.length > 0 || billing?.keep_going_on_credits != null) && (
         <SettingsSection
           aside={paymentRow ? <PaymentMethodAside row={paymentRow} /> : undefined}
           icon={CreditCard}
@@ -557,11 +574,13 @@ function BillingSettingsContent({
           {accountRows.map(row => (
             <AccountRow billing={billing} key={row.id} row={row} />
           ))}
+          {/* Window plans only (null for other plans and non-admins). */}
+          {billing?.keep_going_on_credits != null && <KeepGoingOnCreditsRow enabled={billing.keep_going_on_credits} />}
         </SettingsSection>
       )}
 
       {view.usageRows.length > 0 && (
-        <SettingsSection icon={BarChart3} title={b.sections.usage}>
+        <SettingsSection icon={BarChart3} meta={view.usagePlanName} title={b.sections.usage}>
           <div className="@container">
             {view.usageRows.map(row => (
               <UsageRow key={row.id} row={row} />

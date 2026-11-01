@@ -722,7 +722,7 @@ briefs are labelled user turns appended at a turn boundary, preserving role alte
 `GatewayLoginCommandsMixin` (`gateway/slash_commands_login.py`). It refuses outside a paired DM:
 `chat_type in {"dm","private"}`, a truthy `chat_id`, and a platform whose `"dm"` really is a paired
 conversation — ntfy, raft and a2a all report `chat_type="dm"` for a broadcast topic, a channel and
-an agent peer, so posting a consent link there would publish it.
+an agent peer, so posting a sign-in link and code there would publish them.
 
 **It binds the whole install.** The sign-in writes the singleton `providers.nous`, so whoever
 approves the code owns this gateway's inference and connectors for every chat it serves. Slash
@@ -730,15 +730,15 @@ gating is opt-in (`gateway/slash_access.py`): with no `allow_admin_from` set, ev
 DM the bot can run it. Operators of shared gateways must set it.
 
 The handler returns its ack at once and drains `anon_auth.run_sign_in` on a **private single-worker
-executor** (`_login_executor`), never the shared 10-thread gateway pool — a promotion wait can last
+executor** (`_login_executor`), never the shared 10-thread gateway pool — the token poll can last
 the code's full expiry, and a live worker in the shared pool makes shutdown skip the SessionDB
 close/checkpoint. One attempt per process, stamped with the identity that started it: the same
-identity's second `/login` supersedes (the loser ends with the superseded copy pushed into its own
-chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside a
-worker thread, so shutdown and supersede both work through `attempt.cancelled`, which
-`wait_for_promotion` now polls on a ≤1 s tick. A shutdown-cancelled attempt pushes nothing — the
-task is dying and its adapters may already be gone — but if the server had already completed the
-transfer it still persists, because that transfer is irreversible.
+identity's second `/login` cancels the first (the loser ends with the cancelled copy pushed into its
+own chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside
+a worker thread, so shutdown and the replacement both work through `attempt.cancelled`, which the
+token poll checks on a ≤1 s tick and once more before the save. A cancelled attempt saves nothing.
+A shutdown-cancelled attempt pushes nothing — the task is dying and its adapters may already be
+gone. The completion copy carries what the free tier's handoff moved.
 
 On completion the handler **evicts** every cached agent still on `nous/welcome` and clears any
 session model override pinned to it. It does not switch agents in place and does not write a model

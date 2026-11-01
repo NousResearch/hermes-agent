@@ -111,7 +111,7 @@ def test_active_reinstall_does_not_overwrite_a_later_disable(plugin_world, monke
     second = version(origin, pin="2.0")
     watched = [world.home / "config.yaml", paths.runtime_facts_path()]
     acknowledged = {}
-    def disable_after_publication(*args):
+    def disable_after_publication(*args, **kwargs):
         world.command("disable", name="plugin-worker-proof")
         acknowledged.update({path: path.read_bytes() for path in watched})
     monkeypatch.setattr(plugins_cmd, "_display_after_install", disable_after_publication)

@@ -188,7 +188,7 @@ class GatewayInboundHooksMixin:
                 env=build_subprocess_env(), cwd=cwd,
                 # Its own process group, so cleanup can reach what the shell started (POSIX;
                 # Windows ignores it and _stop_exec_tree walks the tree with taskkill /T).
-                start_new_session=True,
+                start_new_session=True,  # detached-spawn: ok — awaited; the timeout/cancel path kills its group
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_EXEC_QUICK_COMMAND_TIMEOUT)
             output = (stdout or stderr).decode().strip()
@@ -211,7 +211,7 @@ class GatewayInboundHooksMixin:
     ) -> tuple[bool, Optional[str], Optional[str]]:
         """Drain gate, user-defined quick commands (exec/alias) and plugin slash commands →
         ``(handled, result, command)``; an alias quick command rewrites ``command``."""
-        if self._draining:
+        if self._draining and getattr(event, "_admitted_before_drain", False) is not True:
             return True, t("gateway.busy.drain_rejected_new_work", action=self._status_action_gerund()), command
 
         # User-defined quick commands (bypass agent loop, no LLM call)
@@ -284,12 +284,15 @@ class GatewayInboundHooksMixin:
         user_args = event.get_command_args().strip() if args is None else args
         from hermes_cli.plugin_command_dispatch import invoke_plugin_command
         from gateway.plugin_messages import bind_live_source
+        from gateway.plugin_command_choice import chat_choices
         call = functools.partial(
             invoke_plugin_command, plugin_handler, user_args, source=source,
             session_id=_plugin_context.session_id or "", session_key=_plugin_context.session_key or "",
             platform=source.platform.value)
-        # ctx.post_message from the handler reaches this chat even before its session is stored.
-        with self._session_env_scope(_plugin_context), bind_live_source(source):
+        # ctx.post_message from the handler reaches this chat even before its session is stored;
+        # ctx.ask_choice asks it with the clarify prompt.
+        with (self._session_env_scope(_plugin_context), bind_live_source(source),
+              chat_choices(self, source, self._session_key_for_source(source))):
             if inspect.iscoroutinefunction(plugin_handler):
                 result = await call()
             else:

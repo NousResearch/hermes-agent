@@ -208,3 +208,22 @@ export function planLaunchSwitches(cfg: DesktopLaunchConfig, argv: readonly stri
 
   return planned
 }
+
+/** Apply {@link planLaunchSwitches} to the browser's command line, logging each switch. */
+export function applyLaunchSwitches(
+  commandLine: { appendSwitch(name: string, value?: string): void },
+  cfg: DesktopLaunchConfig,
+  argv: readonly string[]
+): void {
+  for (const planned of planLaunchSwitches(cfg, argv)) {
+    if (planned.value === undefined) {
+      commandLine.appendSwitch(planned.name)
+    } else {
+      commandLine.appendSwitch(planned.name, planned.value)
+    }
+
+    console.log(
+      `[hermes] desktop launch switch from config.yaml: --${planned.name}${planned.value === undefined ? '' : `=${planned.value}`}`
+    )
+  }
+}

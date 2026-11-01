@@ -10,10 +10,19 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from agent.compression_marker import elide
+from agent.verification_evidence import last_unattributed_run
 
 
 _MAX_CHANGED_PATHS_IN_NUDGE = 8
 _MAX_STATUS_SUMMARY_CHARS = 1200
+
+_MAX_UNATTRIBUTED_COMMAND_CHARS = 200
+_UNATTRIBUTED_RUN_WARNING = (
+    " Your last check run (`{command}`) did not count: the shell could not tell the "
+    "check's own exit status apart from the commands around it. Run the check directly; "
+    "if you pipe it, keep the check as the first command in the pipeline. The terminal "
+    "already truncates long output and spills the rest to a file."
+)
 
 # Prose/data extensions and extension-less prose filenames (case-insensitive) with
 # no verifiable runtime behavior: a turn touching ONLY these suppresses the nudge
@@ -172,6 +181,11 @@ def build_verify_on_stop_nudge(
     status, facts = snapshot
     if str(status.get("status") or "unverified") == "passed":
         return None
+    unattributed = last_unattributed_run(
+        session_id=status.get("session_id"), root=status.get("root"),
+        since=(status.get("evidence") or {}).get("created_at"))
+    run_warning = _UNATTRIBUTED_RUN_WARNING.format(
+        command=elide(unattributed, _MAX_UNATTRIBUTED_COMMAND_CHARS)) if unattributed else ""
     verify_commands = [str(cmd).strip() for cmd in (facts.get("verifyCommands") or []) if str(cmd).strip()]
     has_recipe = _workspace_has_runnable_recipe(facts.get("root"))
 
@@ -221,8 +235,8 @@ def build_verify_on_stop_nudge(
         "fresh passing verification evidence yet.\n\n"
         f"Verification status: {_status_detail(status)}\n\n"
         f"Changed paths:\n{_format_changed_paths(paths)}\n\n"
-        f"{command_instruction} If verification is not possible, explain the "
-        "concrete blocker instead of claiming the work is fully verified."
+        f"{command_instruction}{run_warning} If verification is not possible, "
+        "explain the concrete blocker instead of claiming the work is fully verified."
         f"{addendum}]"
     )
 

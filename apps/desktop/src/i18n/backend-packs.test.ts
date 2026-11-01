@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { type BackendLocaleRequest, syncBackendLocalePacks } from './backend-packs'
 import { TRANSLATIONS } from './catalog'
-import { languageOptions } from './languages'
+import { isSupportedLocaleValue, languageOptions } from './languages'
 import { isRegisteredLocale, registerAppLocale, resetAppLocaleRegistry, resolveTranslations } from './registry'
 
 afterEach(() => {
@@ -63,6 +63,53 @@ describe('syncBackendLocalePacks', () => {
 
     expect(calls).toEqual([['i18n.languages', {}]])
     expect(isRegisteredLocale('uk')).toBe(true)
+  })
+
+  it('leaves out a language the backend has no Desktop strings for, and keeps rows from older backends', async () => {
+    const request = backend(
+      {
+        languages: [
+          { id: 'ko', endonym: '한국어', rtl: false, source: 'bundled', surfaces: ['core', 'tui'] },
+          { id: 'it', endonym: 'Italiano', rtl: false, source: 'plugin:hermes-lang-it', surfaces: ['core', 'desktop'] },
+          { id: 'ja', endonym: '日本語', rtl: false, source: 'bundled', surfaces: ['core', 'tui'] },
+          { id: 'uk', endonym: 'Українська' }
+        ]
+      },
+      {}
+    )
+
+    await syncBackendLocalePacks(request, 'ko')
+
+    // Picking ko here would only paint English: it is not offered and not renderable.
+    expect(isRegisteredLocale('ko')).toBe(false)
+    expect(isSupportedLocaleValue('ko')).toBe(false)
+    expect(languageOptions().map(option => option.id)).not.toContain('ko')
+    // A pack with Desktop strings, a Desktop-bundled language, and a row without `surfaces` stay.
+    expect(isRegisteredLocale('it')).toBe(true)
+    expect(isRegisteredLocale('ja')).toBe(true)
+    expect(isRegisteredLocale('uk')).toBe(true)
+  })
+
+  it('offers a language once its Desktop pack arrives', async () => {
+    const request = backend(
+      {
+        languages: [
+          {
+            id: 'ko',
+            endonym: '한국어',
+            rtl: false,
+            source: 'plugin:hermes-lang-ko',
+            surfaces: ['core', 'tui', 'desktop']
+          }
+        ]
+      },
+      { ko: { 'settings.appearance.modelPricingTitle': '모델 가격' } }
+    )
+
+    await syncBackendLocalePacks(request, 'ko')
+
+    expect(languageOptions().find(option => option.id === 'ko')).toMatchObject({ endonym: '한국어', source: 'backend' })
+    expect(resolveTranslations('ko').settings.appearance.modelPricingTitle).toBe('모델 가격')
   })
 
   it('is silent on a backend that predates the i18n methods and leaves the registry alone', async () => {

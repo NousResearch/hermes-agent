@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Collect CI job/step timings from the GitHub API and generate an HTML diff report.
+"""Collect CI timings and cache transfers from GitHub and generate an HTML diff report.
 
 In CI, the script reads GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_RUN_ID, and
 GITHUB_SHA from the environment to collect timings via the REST API.
 
 If a baseline JSON file (ci-timings-baseline.json by default) exists, the
-report includes a diff with per-job and per-step deltas, plus a gantt chart
-overlaying current vs baseline bars.
+report includes per-job/step timing deltas, per-cache archive-byte comparisons,
+and a gantt chart overlaying current vs baseline bars.
 
 Usage:
     # Collect from API (CI mode):
@@ -28,6 +28,12 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from html import escape
+from pathlib import Path
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from scripts.ci.cache_report import cache_review_status, parse_cache_log, render_cache_html, render_cache_summary
 
 API_BASE = "https://api.github.com"
 
@@ -141,6 +147,40 @@ def api_get(path: str, token: str, params: dict | None = None,
         url = next_url
 
     return results
+
+
+def _job_log(job_id: int, repo: str, token: str) -> str:
+    request = urllib.request.Request(f"{API_BASE}/repos/{repo}/actions/jobs/{job_id}/logs", headers={
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "ci-timings-report",
+    })
+    request.add_unredirected_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read().decode("utf-8-sig", errors="replace")
+    except urllib.error.HTTPError as error:
+        # Do not retain signed blob URLs in the public report.
+        raise OSError(f"job log HTTP {error.code}") from error
+
+
+def _collect_cache_data(jobs: list[dict], repo: str, token: str) -> dict:
+    entries, unavailable = [], []
+    seen: set[int] = set()
+    for job in jobs:
+        job_id = job.get("job_id")
+        if is_skipped(job) or not job_id or job_id in seen:
+            continue
+        seen.add(job_id)
+        name = " / ".join(part for part in (job["workflow_name"], job["name"]) if part)
+        try:
+            parsed = parse_cache_log(_job_log(job_id, repo, token), job["steps"])
+        except OSError as error:
+            print(f"Cache data unavailable for {name}: {error}", file=sys.stderr)
+            unavailable.append(name)
+            continue
+        entries.extend(dict(entry, job=name, job_id=job_id, job_url=job["html_url"]) for entry in parsed)
+    return {"entries": entries, "unavailable_jobs": unavailable}
 
 
 def parse_ts(ts: str | None) -> datetime | None:
@@ -287,7 +327,11 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
         "run_id": run_id,
         "head_sha": head_sha,
         "created_at": created_at,
+        "is_main": (run_info.get("head_branch") == "main"
+                    and bool(run_info.get("event"))
+                    and run_info["event"] not in ("pull_request", "pull_request_target")),
         "jobs": all_jobs,
+        "cache_data": _collect_cache_data(all_jobs, repo, token),
     }
 
 
@@ -849,6 +893,7 @@ def generate_html(timings: dict, baseline: dict | None = None) -> str:
     html += '<h2>Step Details</h2>\n'
     html += _step_details(timings, baseline)
 
+    html += render_cache_html(timings, baseline)
     html += '</body>\n</html>\n'
     return html
 
@@ -891,7 +936,7 @@ def generate_summary(timings: dict, baseline: dict | None = None) -> str:
     lines.append(f"| Jobs without baseline | {stats['no_baseline']} | — | — |")
     lines.append("")
 
-    return "\n".join(lines)
+    return "\n".join(lines) + render_cache_summary(timings, baseline)
 
 
 # ---------------------------------------------------------------------------
@@ -971,7 +1016,7 @@ def generate_review_status(
         result["link"] = report_url
         result["link_label"] = "View report"
 
-    return [{"source": "ci timing", "results": [result]}]
+    return [{"source": "ci timing", "results": [result]}] + cache_review_status(timings, baseline, report_url)
 
 
 # ---------------------------------------------------------------------------

@@ -118,12 +118,15 @@ def server_message(value: Any) -> str:
 
 def client_surface() -> str:
     """``gateway`` in the process that holds the messaging gateway's runtime lock (nobody is at its
-    console), ``desktop`` for the backend the desktop app spawned, else ``cli``. ``HERMES_DESKTOP``
+    console) unless it is serving the local Desktop app, ``desktop`` for that and for the backend the
+    desktop app spawned, else ``cli``. ``HERMES_DESKTOP``
     alone is inherited by every terminal-pane shell, so desktop ownership needs the spawn credential."""
+    from hermes_cli.process_identity import is_desktop_owned_backend, serves_local_desktop_now
+    if serves_local_desktop_now():
+        return "desktop"
     status = sys.modules.get("gateway.status")
     if status is not None and status.owns_gateway_runtime_lock():
         return "gateway"
-    from hermes_cli.process_identity import is_desktop_owned_backend
     return "desktop" if is_desktop_owned_backend() else "cli"
 
 

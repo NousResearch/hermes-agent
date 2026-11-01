@@ -6,7 +6,7 @@ refresh; this module supplies ``HermesTokenStorage`` (on-disk persistence), the 
 listener and ``build_oauth_auth()`` (legacy entry point). client_id is Hermes' Client ID Metadata
 Document URL (CIMD) when the server supports it, else RFC 7591 DCR. ``mcp_servers.<name>.oauth`` keys
 (all optional): client_id, client_secret, scope, redirect_port, redirect_uri (proxy callback),
-redirect_host, client_name, client_metadata_url, cimd, user_agent, timeout."""
+redirect_host, client_name, client_metadata_url, cimd, user_agent, authorization_params, timeout."""
 
 from pm import install_hint
 import asyncio

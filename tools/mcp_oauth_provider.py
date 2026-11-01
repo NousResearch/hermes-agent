@@ -87,9 +87,12 @@ class HermesProviderMixin:
 
     _hermes_logger: logging.Logger = logger
 
-    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser", **kwargs: Any):
+    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser",
+                 authorization_params: dict[str, str] | None = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._hermes_oauth_flow = oauth_flow
+        # oauth.authorization_params — extra query parameters for the browser authorization URL only.
+        self._hermes_authorization_params = dict(authorization_params or {})
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
         # reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
@@ -104,7 +107,7 @@ class HermesProviderMixin:
                 "MCP device authorization requires `hermes mcp login <server> --flow device`; "
                 "background reconnects cannot start a device login")
         self._tolerate_missing_iss_for_known_server()
-        self._request_google_offline_access()
+        self._extend_authorization_url()
         return await super()._perform_authorization()
 
     def _tolerate_missing_iss_for_known_server(self) -> None:
@@ -127,32 +130,48 @@ class HermesProviderMixin:
 
         self.context.callback_handler = _fill_iss
 
-    def _request_google_offline_access(self) -> None:
-        """Wrap the redirect handler so Google's authorization URL asks for a refresh token (#117510).
+    def _extend_authorization_url(self) -> None:
+        """Wrap the redirect handler so the SDK-built authorization URL carries the extra parameters
+        the SDK cannot express: Google's offline access (#117510) and ``oauth.authorization_params``.
 
-        ``access_type=offline`` is what makes Google issue one at all, and ``prompt=consent`` is what
-        makes it re-issue one on repeat logins (the first consent already spent the grant); MCP
-        discovery advertises neither. The SDK builds the URL itself, so the two parameters are
-        appended here — never overwriting values already present in the query. Wraps once: every
-        authorization runs through here, and the wrapper reads the issuer at call time."""
+        Google: ``access_type=offline`` is what makes Google issue a refresh token at all, and
+        ``prompt=consent`` is what makes it re-issue one on repeat logins (the first consent already
+        spent the grant); MCP discovery advertises neither.
+
+        ``oauth.authorization_params``: provider-specific parameters such as ArtifactBridge's
+        ``agent=1`` (connect as an agent of the signing-in person, which the person still confirms on
+        the consent screen) or Dropbox's ``token_access_type=offline``. They are only ever added: a key
+        already present in the SDK-built query (``client_id``, ``redirect_uri``, ``state``,
+        ``code_challenge``, ``scope``, ``resource`` …) is never overwritten, so configuration cannot
+        weaken PKCE, redirect or state handling. Applied to the browser flow only.
+
+        Wraps once: every authorization runs through here, and the wrapper reads the issuer at call
+        time."""
         inner = self.context.redirect_handler
         if inner is None or getattr(inner, "_hermes_offline_access", False):
             return
         from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-        async def _with_offline_access(authorization_url: str) -> None:
+        async def _with_extra_params(authorization_url: str) -> None:
             params = google_offline_access_params(self.context)
-            if not params:
+            configured = getattr(self, "_hermes_authorization_params", None) or {}
+            if not params and not configured:
                 await inner(authorization_url)
                 return
             parts = urlsplit(authorization_url)
             query = dict(parse_qsl(parts.query, keep_blank_values=True))
             query.update(params)
-            query.setdefault("prompt", "consent")
+            if params:
+                query.setdefault("prompt", "consent")
+            for key, value in configured.items():
+                query.setdefault(key, value)
             await inner(urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)))
 
-        _with_offline_access._hermes_offline_access = True  # type: ignore[attr-defined]
-        self.context.redirect_handler = _with_offline_access
+        _with_extra_params._hermes_offline_access = True  # type: ignore[attr-defined]
+        self.context.redirect_handler = _with_extra_params
+
+    # Kept for callers and tests that use the earlier name.
+    _request_google_offline_access = _extend_authorization_url
 
     async def _hermes_accept_origin_issued_metadata(self, response):
         """Accept a path-scoped authorization server's metadata document whose ``issuer`` is the origin
@@ -613,6 +632,32 @@ def prepare_oauth_config(server_name: str, server_url: str, oauth_config: dict |
     return cfg, mo.HermesTokenStorage(server_name)
 
 
+def authorization_params(cfg: dict) -> dict[str, str]:
+    """Configured ``oauth.authorization_params``: extra query parameters for the browser
+    authorization URL. Only a mapping of non-empty string keys to string (or number/bool) values
+    is accepted; anything else is ignored with a warning, never sent half-parsed. Booleans become
+    ``"1"``/``"0"`` so ``agent: true`` reads as ArtifactBridge's ``agent=1``."""
+    raw = cfg.get("authorization_params")
+    if raw is None or raw == {}:
+        return {}
+    if not isinstance(raw, dict):
+        logger.warning("MCP OAuth: oauth.authorization_params must be a mapping; ignored")
+        return {}
+    params: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not key.strip():
+            logger.warning("MCP OAuth: oauth.authorization_params has an empty or non-string key; ignored")
+            return {}
+        if isinstance(value, bool):
+            params[key] = "1" if value else "0"
+        elif isinstance(value, (str, int, float)):
+            params[key] = str(value)
+        else:
+            logger.warning("MCP OAuth: oauth.authorization_params.%s must be a string; ignored", key)
+            return {}
+    return params
+
+
 def build_provider_kwargs(cfg: dict, storage: HermesTokenStorage, *, ssh_proxy_hint: bool) -> dict[str, Any]:
     """Resolve the callback port and return the shared provider constructor kwargs. Order
     matters: metadata needs the resolved port, pre-registration needs the metadata.
@@ -632,4 +677,5 @@ def build_provider_kwargs(cfg: dict, storage: HermesTokenStorage, *, ssh_proxy_h
         "callback_handler": mo._make_callback_waiter(port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))),
         "token_user_agent": mo.token_request_user_agent(cfg),
         "oauth_flow": cfg.get("flow", "browser"),
+        "authorization_params": authorization_params(cfg),
         **mo.cimd_provider_kwargs(cfg)}

@@ -600,9 +600,11 @@ export function ProfileRail() {
             onImport={() => void runImportProfileFlow()}
             onSelect={selectProfile}
             onSelectRest={switchToRest}
-            // Fleet drops the home pill, so the menu is the active default's
-            // only door; every at-rest group already lists its own (#106017, #131632).
-            profiles={fleet && defaultProfile ? [defaultProfile, ...named] : named}
+            // The default profile is a row like any other, always first
+            // (#106017, #131632 for fleet). The statusbar switcher already
+            // pins default first; the rail menu agreed everywhere except the
+            // non-fleet condensed path, where it vanished behind the home pill.
+            profiles={defaultProfile ? [defaultProfile, ...named] : named}
             restGroups={restGroups}
             unserved={unserved}
           />

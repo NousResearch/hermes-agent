@@ -383,7 +383,7 @@ def register(ctx):
     ctx.register_hook("post_llm_call", my_sync_callback)
     ctx.register_hook("on_session_start", my_init_callback)
     ctx.register_hook("on_session_end", my_cleanup_callback)
-    # Kanban board lifecycle (dependency-wait blocking may fire inside its transaction):
+    # Kanban board lifecycle (each fires after its board write commits):
     ctx.register_hook("kanban_task_claimed", my_claim_callback)     # dispatcher process
     ctx.register_hook("kanban_task_completed", my_done_callback)    # worker process
     ctx.register_hook("kanban_task_blocked", my_blocked_callback)   # worker process
@@ -453,7 +453,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
-| `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
+| `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message; the first valid `{"action": "block", "message": ...}` ends the turn before any inference request. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform`, `side_question_token` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
@@ -488,7 +488,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_room_member_activity` | Observer | While a hosted Group Chat member turn runs on the Bot Mode gateway, once per runtime event the member session emits (tool start/complete, approval request, message/reasoning deltas, errors); queued per consumer off the token path; return ignored. | `room_id`, `thread_id`, `member_id`, `turn_id`, `task_id`, `execution_generation`, `kind`, `seq`, `payload` | `payload` is the client-safe session event body: tool args and results, redacted approval commands, streamed member text. |
 | `kanban_task_claimed` | Observer | After claim commit, in dispatcher process before worker spawn; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id` | Board/task/profile/assignee identifiers. |
 | `kanban_task_completed` | Observer | After completion and cleanup, usually in worker process; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `summary` | Summary may contain project/user content. |
-| `kanban_task_blocked` | Observer | After a blocked transition; the dependency-wait path fires before its transaction exits. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `reason` | Reason may contain project/user content. |
+| `kanban_task_blocked` | Observer | After a blocked transition commits, dependency waits included. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `reason` | Reason may contain project/user content. |
 | `on_kanban_worker_spawned` | Observer | After `spawn_fn` returns and the worker PID is persisted; runs inside the dispatch lock, keep callbacks fast. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `worker_pid`, `workspace_path` | `workspace_path` is a filesystem path and may reveal project layout or usernames. |
 | `on_kanban_worker_exited` | Observer | Tick-derived: after `detect_crashed_workers` reclaims a dead-PID task and the reclaim commits. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `worker_pid`, `exit_kind`, `exit_code`, `outcome`, `retry_status` | Identifiers and exit metadata only. |
 | `on_kanban_worker_stale_claim` | Observer | After a TTL-expired claim is reclaimed; live-PID extensions don't fire. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `worker_pid`, `heartbeat_stale`, `retry_status` | Identifiers and claim metadata only. |
@@ -698,6 +698,12 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 **Fires:** In `agent/turn_context.py` (turn preparation for `run_conversation()` in `agent/conversation_loop.py`), after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
 
 **Return value:** If the callback returns a dict with a `"context"` key, or a plain non-empty string, the text is appended to the current turn's user message. Return `None` for no injection.
+
+A `{"action": "block", "message": "..."}` return vetoes the turn **before any inference request**: the message is shown to the user in place of a model reply and saved as the assistant reply (so the transcript keeps a normal `user → assistant` pair and `--resume` works), the turn makes zero model calls, and the result carries `turn_exit_reason: "blocked_by_plugin_pre_llm_call"`. The first block wins; a block without a message is ignored.
+
+The blocked prompt is stored as `[Message withheld: a pre_llm_call policy hook blocked it.]`. That placeholder is what later turns replay and what compaction summaries, `session_search`, external memory providers and the background memory review read, so the prompt never reaches a model in this turn or a later one. What the user typed is kept only as display metadata, so the CLI `--resume` recap, the TUI, the desktop app and the dashboard still show it. The hook runs before turn-start compaction, and a blocked turn skips compaction, titling and external-memory prefetch/sync.
+
+A block applies only when a callback returns it. A callback that raises, or runs past `plugins.hook_callback_timeout` (30 s by default), is logged and skipped, and the turn goes ahead. A policy hook should therefore catch its own errors and return a block when it can't decide. Model metadata lookups (such as a `/models` context-length probe on a fresh session) can still run before the hook; they carry no message content.
 
 ```python
 # Inject context
@@ -1860,7 +1866,7 @@ Fires after completion and cleanup, usually in the worker process. Its `summary`
 
 #### `kanban_task_blocked`
 
-Fires after a normal blocked transition. The dependency-wait path invokes it before that write transaction exits. Its `reason` can contain project or user content.
+Fires after a blocked transition commits, dependency waits included, so the callback can read and write the board. Its `reason` can contain project or user content.
 
 All three kanban hooks are observer-only and carry `task_id`, `profile_name`, `board`, `assignee`, and `run_id`; completed adds `summary`, and blocked adds `reason`.
 
@@ -1962,6 +1968,10 @@ profile's `HERMES_HOME`. `tool_name` and `tool_input` are `null` for non-tool ev
 
 // Inject context for pre_llm_call:
 {"context": "Today is Friday, 2026-04-17"}
+
+// Block the turn before any inference request (pre_llm_call); both shapes accepted:
+{"action": "block", "message": "Blocked by policy: prompt contains a customer ID"}
+{"decision": "block", "reason": "Blocked by policy: prompt contains a customer ID"}
 
 // Keep the agent going at the verify gate (pre_verify); both shapes accepted:
 {"action": "continue", "message": "Run the formatter, then finish."}

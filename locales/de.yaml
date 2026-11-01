@@ -772,6 +772,16 @@ gateway:
     target_subagents: "Lauf und seine aktiven Subagenten"
     target_run: "Lauf"
     queued: "⏩ Steer in aktuellen {target} eingereiht — kommt nach dem nächsten Tool-Aufruf an: '{preview}'"
+  fyi:
+    usage: "Verwendung: /fyi <Kontext>"
+    usage_idle: "Verwendung: /fyi <Kontext>  (kein aktiver Agent — wird als normale Nachricht gesendet)"
+    queued_starting: "Agent startet noch — /fyi für den nächsten Zug vorgemerkt."
+    queued_no_agent: "kein aktiver Agent — /fyi für den nächsten Zug vorgemerkt."
+    failed: "⚠️ FYI fehlgeschlagen: {error}"
+    rejected_empty: "FYI abgelehnt (leere Nutzlast)."
+    queued: "💡 FYI in den aktuellen {target} übernommen — nur Kontext, der Agent arbeitet weiter: '{preview}'"
+
+
   suggestions:
     failed: "Vorschlagsbefehl fehlgeschlagen: {error}"
   blueprint:
@@ -1098,6 +1108,11 @@ platform:
       steer:
         description: "Eine Nachricht nach dem nächsten Tool-Aufruf einfügen (ohne Unterbrechung)"
         arg_prompt: "Text, der in das nächste Tool-Ergebnis des Agenten eingefügt wird"
+      fyi:
+        description: "Zusätzlichen Kontext mit dem laufenden Agent teilen (kein Unterbrechen, kein Umleiten)"
+        arg_context: "Kontext für die laufende Arbeit des Agenten"
+
+
       plan:
         description: "Einen Implementierungsplan in Markdown schreiben (ohne Ausführung)"
         arg_task: "Was geplant werden soll. Leer lassen, um es aus der Konversation abzuleiten."
@@ -2430,6 +2445,14 @@ cli:
     queued: "⏩ Steer eingereiht — kommt nach dem nächsten Tool-Aufruf an: {preview}"
     rejected_empty: "Steer abgelehnt (leere Nutzlast)."
     no_agent_queued: "Kein Agent läuft; als nächster Zug eingereiht: {preview}"
+  fyi:
+    usage: "Verwendung: /fyi <Kontext>"
+    failed: "FYI fehlgeschlagen: {error}"
+    queued: "💡 FYI vorgemerkt — nur Kontext, der Agent arbeitet weiter: {preview}"
+    rejected_empty: "FYI abgelehnt (leere Nutzlast)."
+    no_agent_queued: "kein Agent aktiv; als nächster Zug vorgemerkt: {preview}"
+
+
   title:
     session_id: "Sitzungs-ID: {session_id}"
     current: "Titel: {title}"

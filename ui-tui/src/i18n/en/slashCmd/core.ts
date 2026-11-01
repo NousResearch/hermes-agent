@@ -140,6 +140,12 @@ export const slashCmdCoreEn = {
       queued: (preview: string) => `steer queued — arrives after next tool call: "${preview}"`,
       rejected: 'steer rejected — no active turn, queued for next turn'
     },
+    fyi: {
+      usage: 'usage: /fyi <context>',
+      noActiveTurnQueued: (preview: string) => `no active turn — queued for next: "${preview}"`,
+      queued: (preview: string) => `fyi queued — context only, the agent keeps working: "${preview}"`,
+      rejected: 'fyi rejected — no active turn, queued for next turn'
+    },
     undo: {
       nothing: 'nothing to undo',
       undidOne: (count: string) => `undid ${count} message`,

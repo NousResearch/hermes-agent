@@ -104,6 +104,11 @@ const PREVIEW_CHARS = 50
 /** Clip a queued/steered prompt for the confirmation line. */
 const previewOf = (text: string): string => `${text.slice(0, PREVIEW_CHARS)}${text.length > PREVIEW_CHARS ? '…' : ''}`
 
+// /fyi frames its payload as context-only before it rides the steer channel. Keep byte-equivalent
+// with agent/prompt_builder.FYI_CONTEXT_LEAD — the CLI/gateway frame server-side; the TUI sends raw
+// text over `session.steer`, so it owns this copy.
+const FYI_CONTEXT_LEAD = 'FYI — additional context from the user. This is NOT a new task or a redirect: fold it into the work already in progress, adjust the details it affects, and keep going until that work is finished.'
+
 export const coreCommands: SlashCommand[] = [
   {
     help: 'list commands + hotkeys',
@@ -872,6 +877,49 @@ export const coreCommands: SlashCommand[] = [
               // The turn ended before the steer landed (#64578): keep the words as the next turn.
               ctx.composer.enqueue(payload)
               ctx.transcript.sys(t('slashCmd.core.steer.rejected'))
+            }
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'share context with the running agent (no interrupt, no redirect)',
+    name: 'fyi',
+    run: (arg, ctx) => {
+      const payload = arg?.trim() ?? ''
+
+      if (!payload) {
+        return ctx.transcript.sys(t('slashCmd.core.fyi.usage'))
+      }
+
+      // Same delivery channel as /steer (no interrupt), but framed as context-only: the agent
+      // folds it into the work in progress instead of treating it as a redirect.
+      const framed = `${FYI_CONTEXT_LEAD}\n${payload}`
+
+      if (!ctx.ui.busy || !ctx.sid) {
+        ctx.composer.enqueue(framed)
+        ctx.transcript.sys(t('slashCmd.core.fyi.noActiveTurnQueued', previewOf(payload)))
+
+        return
+      }
+
+      ctx.gateway
+        .rpc<SessionSteerResponse>('session.steer', {
+          session_id: ctx.sid,
+          text: framed,
+          ...(ctx.gateway.gw.isCanonical && ctx.ui.info?.execution_generation !== undefined
+            ? { execution_generation: ctx.ui.info.execution_generation }
+            : {})
+        })
+        .then(
+          ctx.guarded<SessionSteerResponse>(r => {
+            if (r?.status === 'queued') {
+              ctx.transcript.sys(t('slashCmd.core.fyi.queued', previewOf(payload)))
+            } else {
+              ctx.composer.enqueue(framed)
+              ctx.transcript.sys(t('slashCmd.core.fyi.rejected'))
             }
           })
         )

@@ -772,6 +772,16 @@ gateway:
     target_subagents: "실행과 활성 서브에이전트"
     target_run: "실행"
     queued: "⏩ 현재 {target}에 조정 메시지를 대기시켰어요 — 다음 도구 호출 뒤에 도착해요: '{preview}'"
+  fyi:
+    usage: "사용법: /fyi <컨텍스트>"
+    usage_idle: "사용법: /fyi <컨텍스트> (실행 중인 에이전트가 없어요 — 일반 메시지로 보내요)"
+    queued_starting: "에이전트가 아직 시작 중이에요 — /fyi를 다음 턴에 전달할게요."
+    queued_no_agent: "활성 에이전트가 없어요 — /fyi를 다음 턴에 전달할게요."
+    failed: "⚠️ fyi 실패: {error}"
+    rejected_empty: "fyi가 거부됐어요 (내용이 비어 있어요)."
+    queued: "💡 fyi를 현재 {target}에 보냈어요 — 참고용일 뿐, 에이전트는 계속 작업해요: '{preview}'"
+
+
   suggestions:
     failed: "제안 명령 실패: {error}"
   blueprint:
@@ -1098,6 +1108,11 @@ platform:
       steer:
         description: "다음 도구 호출 후 메시지 삽입 (중단 없음)"
         arg_prompt: "에이전트의 다음 도구 결과에 삽입할 텍스트"
+      fyi:
+        description: "실행 중인 에이전트에게 추가 컨텍스트를 공유해요 (중단 없음, 방향 전환 없음)"
+        arg_context: "에이전트의 진행 중인 작업에 대한 컨텍스트"
+
+
       plan:
         description: "마크다운 구현 계획 작성 (실행 없음)"
         arg_task: "계획할 내용. 비워 두면 대화에서 추론해요."
@@ -2430,6 +2445,14 @@ cli:
     queued: "⏩ 조정 지시가 대기열에 추가됐어요 — 다음 도구 호출 후에 전달돼요: {preview}"
     rejected_empty: "조정이 거부됐어요 (내용이 비어 있음)."
     no_agent_queued: "실행 중인 에이전트가 없어 다음 턴으로 대기열에 추가했어요: {preview}"
+  fyi:
+    usage: "사용법: /fyi <컨텍스트>"
+    failed: "fyi 실패: {error}"
+    queued: "💡 fyi를 대기열에 넣었어요 — 참고용일 뿐, 에이전트는 계속 작업해요: {preview}"
+    rejected_empty: "fyi가 거부됐어요 (내용이 비어 있어요)."
+    no_agent_queued: "에이전트가 실행 중이 아니에요 — 다음 턴에 전달할게요: {preview}"
+
+
   title:
     session_id: "세션 ID: {session_id}"
     current: "제목: {title}"

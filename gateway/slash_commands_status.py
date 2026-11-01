@@ -462,7 +462,14 @@ class GatewayStatusCommandsMixin:
             current = t("gateway.agents.this_chat") if row["session_key"] == current_session_key else ""
             sid = f" · `{row['session_id']}`" if row["session_id"] else ""
             model = f" · `{row['model']}`" if row["model"] else ""
-            return [f"{idx}. `{row['session_key']}` · {row['state']} · "
+            label = f"`{row['session_key']}`"
+            if getattr(event.source, "platform", None) == Platform.DISCORD:
+                source = self._get_cached_session_source(row["session_key"])
+                if source is not None and source.platform == Platform.DISCORD:
+                    destination = source.thread_id or source.prospective_thread_id or source.chat_id
+                    if destination:
+                        label = f"<#{destination}>"
+            return [f"{idx}. {label} · {row['state']} · "
                     f"{format_uptime_short(row['elapsed'])}{sid}{model}{current}"]
 
         def _proc_row(proc):

@@ -164,9 +164,11 @@ def webhook_command(args):
     """Entry point for 'hermes webhook' subcommand."""
     sub = getattr(args, "webhook_action", None)
     if not sub:
-        print("Usage: hermes webhook {subscribe|list|remove|test}")
+        print("Usage: hermes webhook {subscribe|list|remove|test|history}")
         print("Run 'hermes webhook --help' for details.")
         return
+    if sub == "history":  # past deliveries stay readable after the platform is turned off
+        return _cmd_history(args)
     if not _is_webhook_enabled():
         print(_setup_hint())
         return 1
@@ -365,6 +367,27 @@ def _cmd_test(args):
     except Exception as e:
         print(f"  Error: {e}")
         print("  Is the gateway running? (hermes gateway run)")
+
+
+def _cmd_history(args):
+    """Recent deliveries with their outcome: accepted, duplicate, ignored (and why) or failed."""
+    from datetime import datetime
+
+    from gateway.platforms.webhook_receipts import read_history, receipts_path
+    from hermes_constants import get_hermes_home
+    rows = read_history(receipts_path(get_hermes_home()), route=args.route, limit=args.limit)
+    if not rows:
+        scope = f" for route '{args.route}'" if args.route else ""
+        print(f"  No webhook deliveries recorded{scope}.")
+        return
+    print(f"\n  {len(rows)} most recent webhook deliveries (newest first):\n")
+    for row in rows:
+        when = datetime.fromtimestamp(row["received_at"]).strftime("%Y-%m-%d %H:%M:%S")
+        route = row["route"] if row["profile"] == "default" else f"{row['profile']}/{row['route']}"
+        detail = "  ".join(part for part in (row["reason"], row["ref"]) if part)
+        print(f"  {when}  {row['outcome']:<9}  {route}  event={row['event_type'] or '-'}  "
+              f"delivery={row['delivery_id']}" + (f"\n      {detail}" if detail else ""))
+    print()
 
 
 _ACTIONS = {

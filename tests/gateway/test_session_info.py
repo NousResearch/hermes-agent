@@ -151,3 +151,121 @@ class TestResetNoticeSessionInfo:
         assert "anthropic" in info
         assert "base-model" not in info
 
+
+
+class TestSessionInfoLanguage:
+    """#53466: the session info block renders in the language of the profile it serves.
+
+    That covers the context-source hint as well as the labels around it, and it must hold
+    under multiplexing: two profiles on different ``display.language`` values each get their
+    own, whichever one rendered first.
+    """
+
+    _RUNTIME = {"provider": "", "base_url": "", "api_key": ""}
+
+    @pytest.fixture(autouse=True)
+    def _clean_language_cache(self, monkeypatch):
+        """Start and finish on a cold cache so ordering inside a test is what decides."""
+        from agent import i18n
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+        i18n.reset_language_cache()
+        yield
+        i18n.reset_language_cache()
+
+    def _source(self, profile: str):
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+        return SessionSource(
+            platform=Platform.TELEGRAM, chat_id="123", user_id="u1", profile=profile,
+        )
+
+    def _homes(self, tmp_path, profiles):
+        """Base home plus one profile home per ``(name, language)`` pair. No profile pins
+        ``model.context_length``, so each block carries the ``default`` hint."""
+        base = tmp_path / "base"
+        base.mkdir()
+        base.joinpath("config.yaml").write_text(
+            "model:\n  default: base-model\n  provider: custom\n  context_length: 1000\n")
+        homes = {}
+        for name, lang in profiles:
+            home = tmp_path / "profiles" / name
+            home.mkdir(parents=True)
+            home.joinpath("config.yaml").write_text(
+                f"model:\n  default: {name}-model\n  provider: custom\n"
+                f"display:\n  language: {lang}\n")
+            homes[name] = home
+        return base, homes
+
+    def _patches(self, base, homes):
+        from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+        return (
+            patch("gateway.run._hermes_home", base),
+            patch.object(GatewayRunner, "_resolve_profile_home_for_source",
+                         side_effect=lambda source: homes[source.profile]),
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value=self._RUNTIME),
+            # An uncatalogued model that falls through to the fallback window: the "default" hint.
+            patch("agent.model_metadata.get_model_context_length",
+                  return_value=DEFAULT_FALLBACK_CONTEXT),
+        )
+
+    @staticmethod
+    def _hint(lang: str) -> str:
+        from agent.i18n import t
+        return t("gateway.session.info_source_default", lang=lang)
+
+    def test_profile_language_localizes_session_info(self, runner, tmp_path):
+        """A profile on a non-English locale gets its own hint and labels, not the English ones."""
+        from types import SimpleNamespace
+        from agent.i18n import t
+        base, homes = self._homes(tmp_path, [("planner", "ja")])
+        runner.config = SimpleNamespace(multiplex_profiles=True)
+        p1, p2, p3, p4 = self._patches(base, homes)
+        with p1, p2, p3, p4:
+            info = runner._reset_notice_session_info(self._source("planner"))
+        assert self._hint("ja") in info
+        assert self._hint("en") not in info
+        assert t("gateway.session.info_model", lang="ja", model="planner-model") in info
+
+    def test_multiplex_profiles_do_not_share_one_language(self, runner, tmp_path):
+        """Serving a Japanese profile first must not pin Japanese onto the French one."""
+        from types import SimpleNamespace
+        base, homes = self._homes(tmp_path, [("planner", "ja"), ("scribe", "fr")])
+        runner.config = SimpleNamespace(multiplex_profiles=True)
+        p1, p2, p3, p4 = self._patches(base, homes)
+        with p1, p2, p3, p4:
+            # Order matters: Japanese renders first, then French.
+            rendered = {name: runner._reset_notice_session_info(self._source(name))
+                        for name in ("planner", "scribe")}
+
+        assert self._hint("ja") in rendered["planner"]
+        assert self._hint("fr") in rendered["scribe"]
+        assert self._hint("ja") not in rendered["scribe"]
+        assert self._hint("fr") not in rendered["planner"]
+
+    @pytest.mark.asyncio
+    async def test_auto_reset_notice_follows_the_served_profile(self, runner, tmp_path):
+        """The notice and the block under it come out in one language: the served profile's."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from agent.i18n import t
+        from gateway.run import _profile_runtime_scope
+
+        base, homes = self._homes(tmp_path, [("planner", "ja"), ("scribe", "fr")])
+        runner.config = SimpleNamespace(multiplex_profiles=True)
+        adapter = SimpleNamespace(send=AsyncMock())
+        sent = {}
+        p1, p2, p3, p4 = self._patches(base, homes)
+        with p1, p2, p3, p4, \
+                patch.object(GatewayRunner, "_delivery_adapter_for", return_value=adapter), \
+                patch.object(GatewayRunner, "_thread_metadata_for_source", return_value=None):
+            for name in ("planner", "scribe"):
+                entry = SimpleNamespace(auto_reset_reason="suspended")
+                # The adapter's message handler runs the turn inside the routed profile's scope.
+                with _profile_runtime_scope(homes[name]):
+                    await runner._hmwa_deliver_auto_reset_notice(entry, self._source(name), [])
+                sent[name] = adapter.send.await_args.args[1]
+
+        for name, lang in (("planner", "ja"), ("scribe", "fr")):
+            assert sent[name].startswith(t("gateway.session.auto_reset_notice", lang=lang))
+            assert self._hint(lang) in sent[name]
+        assert sent["planner"] != sent["scribe"]

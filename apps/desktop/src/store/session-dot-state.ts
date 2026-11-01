@@ -71,13 +71,17 @@ export const $delegatingSessionIds = computed(
 export type SessionDotState = 'background' | 'draft' | 'idle' | 'needs-input' | 'stalled' | 'unread' | 'working'
 
 /** The sidebar row's arc. A quiet turn is still authoritatively running, so
- *  `stalled` keeps it; a blocking prompt drops it, because the amber dot is the
- *  louder cue and two treatments at once fight each other. */
-export const showsRunningArc = (state: SessionDotState): boolean => state === 'stalled' || state === 'working'
+ *  `stalled` keeps it; so does `background`, because a turn that ended on
+ *  delegate_task(background=true) or terminal(background=true) still has work
+ *  running in the session, and a row with no arc read as finished. A blocking
+ *  prompt drops it, because the amber dot is the louder cue and two treatments
+ *  at once fight each other. The dot still tells background apart (hollow). */
+export const showsRunningArc = (state: SessionDotState): boolean =>
+  state === 'background' || state === 'stalled' || state === 'working'
 
-/** Whether this turn is the session's own, live: brighter title, and the row's
- *  age yields to the actions menu. Wider than the arc — a turn waiting on an
- *  answer has not ended. */
+/** Whether the session is live: brighter title, and the row's age yields to
+ *  the actions menu. Wider than the arc — a turn waiting on an answer has not
+ *  ended. */
 export const hasLiveTurn = (state: SessionDotState): boolean => showsRunningArc(state) || state === 'needs-input'
 
 /** The buckets the sidebar's status filter and ordering work in. `stalled` and

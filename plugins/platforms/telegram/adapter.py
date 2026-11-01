@@ -177,12 +177,13 @@ def _bold_label_html(line: str) -> str:
 _MEDIA_KIND_KEYS = {
     "attachment": "platform.telegram.media.kind_attachment", "photo": "platform.telegram.media.kind_photo",
     "voice message": "platform.telegram.media.kind_voice", "audio file": "platform.telegram.media.kind_audio",
-    "video file": "platform.telegram.media.kind_video"}
+    "video file": "platform.telegram.media.kind_video", "video note": "platform.telegram.media.kind_video"}
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
+from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
@@ -2903,7 +2904,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         app.add_handler(TelegramMessageHandler(
             filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION), self._handle_location_message))
         app.add_handler(TelegramMessageHandler(
-            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+            filters.PHOTO | filters.VIDEO | filters.VIDEO_NOTE | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message))
         # Topic-creation service messages carry the new topic id and no text, so no other handler sees
         # them. They are a routing signal only (never an agent turn): see _handle_forum_topic_created.
@@ -4759,8 +4760,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         if not session_key:
             return
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
-        # Resolve FIRST (unblocks the agent thread), render after: a tap landing after the wait timed out
-        # (count == 0) must NOT claim "Approved" — the command was already denied.
         try:
             # Rendering happens after so the message reflects what actually occurred: a tap that lands after
             # the approval wait timed out (count == 0) must NOT claim "Approved" — the command was already
@@ -4781,7 +4780,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             label = t("platform.telegram.approval.expired")
             edit_text = t("platform.telegram.approval.expired_detail", label=label)
         await query.answer(text=label[:_TOAST_LIMIT])
-        await self._edit_md_quiet(query, edit_text)
+        await edit_keeping_prompt(self, query, edit_text)
         # Typing was paused when the approval was sent; the text /approve and /deny paths resume it too.
         if count and cb["chat_id"] is not None:
             self.resume_typing_for_chat(str(cb["chat_id"]))
@@ -4803,7 +4802,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
         label = t(f"platform.telegram.{label_key}")
         await query.answer(text=label[:_TOAST_LIMIT])
-        await self._edit_md_quiet(query, t("platform.telegram.approval.resolved_by_user", label=label, user=user_display))
+        decided = t("platform.telegram.approval.resolved_by_user", label=label, user=user_display)
+        await edit_keeping_prompt(self, query, decided)
         # The runner stored a handler keyed by session_key; run it and send any returned text as a follow-up.
         try:
             from tools import slash_confirm as _slash_confirm_mod
@@ -6238,8 +6238,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """Classify a Telegram media message into a MessageType (first present attachment wins)."""
         for attr, mtype in (
             ("sticker", MessageType.STICKER), ("photo", MessageType.PHOTO), ("video", MessageType.VIDEO),
-            ("audio", MessageType.AUDIO), ("voice", MessageType.VOICE)):
-            if getattr(msg, attr):
+            ("video_note", MessageType.VIDEO), ("audio", MessageType.AUDIO), ("voice", MessageType.VOICE)):
+            if getattr(msg, attr, None):
                 return mtype
         return MessageType.DOCUMENT
 
@@ -6310,8 +6310,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """Return (telegram_file_source, filename, mime, default_kind) or Nones."""
         if msg.photo:
             return msg.photo[-1], "", "", "image"
-        if msg.video:
-            return msg.video, "", "video/mp4", "video"
+        if video := msg.video or getattr(msg, "video_note", None):
+            return video, "", "video/mp4", "video"
         if msg.voice:
             return msg.voice, "voice.ogg", "audio/ogg", "audio"
         if msg.audio:
@@ -6860,8 +6860,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         elif msg.audio:
             if await self._cache_inbound_av(msg, event, msg.audio, "audio file", "audio", ".mp3", "audio/mp3"):
                 return
-        elif msg.video:
-            if await self._cache_inbound_av(msg, event, msg.video, "video file", "video", ".mp4", "video/mp4"):
+        elif video := msg.video or getattr(msg, "video_note", None):
+            if await self._cache_inbound_av(msg, event, video, "video file" if msg.video else "video note", "video", ".mp4", "video/mp4"):
                 return
         elif msg.document and await self._cache_inbound_document(msg, event):
             return

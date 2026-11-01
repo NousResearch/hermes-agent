@@ -77,8 +77,8 @@ def group_reply_expected(adapter: "TelegramAdapter", message: "Message", chat_ty
         return None if unknown else False
     if starts_with_other_participant_mention(adapter, message):
         return False
-    # Words in a voice note or audio file are not in the message text, so the "?" rule cannot read them.
-    spoken = not text and any(getattr(message, kind, None) for kind in ("voice", "audio"))
+    # Words in a voice note, video note or audio file are not in the message text, so the "?" rule cannot read them.
+    spoken = not text and any(getattr(message, kind, None) for kind in ("voice", "video_note", "audio"))
     return None if "?" in text or spoken else False
 
 

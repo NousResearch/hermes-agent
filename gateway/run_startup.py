@@ -207,6 +207,7 @@ class GatewayStartupMixin:
         """Initialize turn machinery on an executor thread before the gate opens. Never raises: a
         failed warm-up degrades to lazy init and must not block startup."""
         from gateway.run import _warm_turn_machinery_sync
+        from gateway.handoff_scope import warm as warm_scope_worker
         with _log_suppressed(
             logging.WARNING, "Turn-machinery warm-up failed; first inbound turn will initialize lazily",
             exc_info=True,
@@ -217,6 +218,14 @@ class GatewayStartupMixin:
                 "Turn machinery warmed in %.1fs (%d tool schema(s) materialized)",
                 time.monotonic() - t0, tool_count,
             )
+            # The handoff watcher resolves its scopes on a parked worker, so a tick never starts a
+            # thread on the loop (a stalled Thread.start() = missed probes = watchdog exit 75). Warmed
+            # even for a single-profile gateway: hot-serve can start multiplexing after boot, and one
+            # parked thread is cheaper than a thread start on the loop.
+            if not await self._run_boot_probe_in_launch_scope(warm_scope_worker):
+                logger.warning(
+                    "Handoff scope worker did not start within the warm-up budget; the first watcher "
+                    "tick will start it on the loop")
 
     async def _await_startup_warmup(self) -> None:
         """Bounded wait for the boot warm-up. On timeout the gate opens anyway (availability outranks

@@ -87,3 +87,16 @@ def test_recording_uses_the_live_transcript_and_falls_back_to_the_file(tmp_path,
     voice_mode._park_live_session(failed_wav, _Session({"success": False, "transcript": "", "error": "socket"}))
     assert voice_mode.transcribe_recording(failed_wav)["transcript"] == "from file"
     assert uploads == [failed_wav]
+
+
+def test_resampler_chunk_split_matches_whole_input():
+    """Chunking must not change output (issue #139121: 44.1kHz split added a sample)."""
+    from array import array
+
+    pcm = array("h", [100, 200, 300, 400, 500, 600]).tobytes()
+    whole = ts.Resampler(44100, 16000)(pcm)
+
+    r = ts.Resampler(44100, 16000)
+    split = r(pcm[:8]) + r(pcm[8:])
+
+    assert list(array("h", split)) == list(array("h", whole))

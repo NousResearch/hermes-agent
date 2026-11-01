@@ -140,7 +140,8 @@ def _probe_glibc_malloc_trim() -> Callable[[int], int] | None:
 
 
 def trim_memory(
-    *, force: bool = False, reason: str = "", cooldown_seconds: float | None = None) -> bool:
+    *, force: bool = False, reason: str = "", cooldown_seconds: float | None = None,
+    log_level: int = logging.INFO) -> bool:
     """Collect cycles and ask glibc to release free heap pages.
 
     Returns ``True`` only when ``malloc_trim(0)`` ran and reported success. Unsupported allocators,
@@ -175,7 +176,8 @@ def trim_memory(
             if released and _should_log_trim(
                 force=force, log_every_n=log_every_n, call_count=_trim_call_count,
                 before=before, after=after, info_log_min_delta_mb=info_log_min_delta_mb):
-                logger.info(
+                logger.log(
+                    log_level,
                     "memory trim: reason=%s malloc_trim=%s rss_kib=%s->%s "
                     "rss_anon_kib=%s->%s threads=%s duration_ms=%.1f",
                     reason or "cleanup", trim_result,

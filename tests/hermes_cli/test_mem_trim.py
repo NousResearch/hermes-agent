@@ -1,5 +1,6 @@
 """Tests for the long-lived gateway heap-trim helper."""
 
+import logging
 from unittest.mock import Mock
 
 import pytest
@@ -77,6 +78,20 @@ def test_success_collects_then_trims(monkeypatch):
     assert mem_trim.trim_memory(reason="turn", cooldown_seconds=60) is True
     assert calls == ["gc", ("trim", 0)]
     assert mem_trim._last_trim_monotonic == 100.0
+
+
+def test_success_can_demote_routine_trim_log_to_debug(monkeypatch, caplog):
+    monkeypatch.setattr(mem_trim.gc, "collect", lambda: None)
+    monkeypatch.setattr(mem_trim, "_malloc_trim", lambda pad: 1)
+    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 100.0)
+
+    with caplog.at_level(logging.DEBUG, logger=mem_trim.logger.name):
+        assert mem_trim.trim_memory(
+            reason="messaging gateway housekeeping", log_level=logging.DEBUG
+        ) is True
+
+    records = [record for record in caplog.records if record.message.startswith("memory trim:")]
+    assert [record.levelno for record in records] == [logging.DEBUG]
 
 
 

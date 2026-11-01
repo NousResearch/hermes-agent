@@ -20,6 +20,7 @@ Three hardening changes under test:
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -36,12 +37,13 @@ class _DroppingWS:
     """Fake socket: accepts sends, then the read loop dies mid-iteration —
     the shape of an unexpected close (e.g. 1011 keepalive ping timeout)."""
 
-    def __init__(self, close_code: int | None = None):
+    def __init__(self, close_code: int | None = None, close_reason: str = ""):
         self.sent: list[str] = []
         # Reader blocks here until the test releases it, so the outbound
         # future is registered BEFORE the "socket" drops.
         self.drop = asyncio.Event()
         self._close_code = close_code
+        self._close_reason = close_reason
 
     async def send(self, data):
         self.sent.append(data)
@@ -54,7 +56,7 @@ class _DroppingWS:
         if self._close_code is not None:
             from websockets.frames import Close
 
-            raise ConnectionClosedError(Close(self._close_code, ""), None)
+            raise ConnectionClosedError(Close(self._close_code, self._close_reason), None)
         raise ConnectionClosedError(None, None)
 
     async def close(self):
@@ -86,6 +88,20 @@ async def test_read_loop_exit_fails_pending_futures_promptly():
     assert result == {"success": False, "error": "relay transport connection lost"}
     assert t._pending == {}
     await t._reader
+
+
+@pytest.mark.asyncio
+async def test_read_loop_demotes_keepalive_timeout_to_debug(caplog):
+    """A routine peer keepalive expiry should not populate the error log."""
+    t = WebSocketRelayTransport("ws://unused", "discord", "bot1", reconnect=False)
+    fake = _DroppingWS(close_code=1011, close_reason="keepalive ping timeout")
+    t._ws = fake
+
+    with caplog.at_level(logging.DEBUG, logger=ws_transport_mod.logger.name):
+        await _run_reader_to_exit(t, fake)
+
+    records = [record for record in caplog.records if "relay ws read loop ended" in record.message]
+    assert [record.levelno for record in records] == [logging.DEBUG]
 
 
 @pytest.mark.asyncio

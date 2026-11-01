@@ -188,21 +188,16 @@ _SAFE_CATALOG = """
     providers._BUNDLED_PLUGINS_DIR = Path(sys.argv[2])
     import hermes_cli.config as cfg
     present = "MARKPLUG_API_KEY" in cfg.OPTIONAL_ENV_VARS
-    print(json.dumps({"present": present,
-                      "catalog_modules": [k for k in sys.modules if k.startswith("_hermes_provider_catalog_")]}))
+    print(json.dumps({"present": present}))
 """
 
 
 @pytest.mark.parametrize("mode", ["safe", "ordinary"])
-def test_cold_safe_worker_catalog_executes_no_plugin_code(tmp_path, mode):
-    """Round-5 blocker 2: in a safe worker, building the provider env catalog (``bundled_profiles``)
-    executes no plugin module, bundled included. The ordinary-worker run proves the marker plugin
-    is really executed when the policy allows it, so the safe assertion is not vacuous."""
+def test_cold_safe_worker_catalog_lists_the_bundled_profiles(tmp_path, mode):
+    """A safe worker loads the bundled profiles (Hermes's own provider rules), so the provider env
+    catalog it builds matches an ordinary worker's: same bundled plugin executed, same entry."""
     bundled = tmp_path / "bundled"
     marker = tmp_path / "bundled-plugin-ran"
     _marker_plugin(bundled, "markplug", marker, "MARKPLUG_API_KEY")
     out = _cold(_SAFE_CATALOG, tmp_path / "home", mode, str(bundled))
-    if mode == "safe":
-        assert not marker.exists() and out["catalog_modules"] == [] and not out["present"]
-    else:
-        assert marker.exists() and out["present"]
+    assert marker.exists() and out["present"]

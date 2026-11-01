@@ -58,6 +58,80 @@ def fake_tool(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
+def quiet_send(monkeypatch):
+    """Neutralize the environment bootstrap so tests touch no real ``HERMES_HOME``."""
+    monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)
+
+
+def test_positional_target_with_negative_chat_id_delivers(fake_tool, quiet_send, tmp_path):
+    """The documented positional-target form: without ``--to``, a leading bare
+    ``platform:chat_id`` token (``telegram:-1001234567890``) is the delivery
+    target and the message comes from ``--file``/stdin. This used to die with a
+    usage error because only ``--to`` could carry the target."""
+    import contextlib
+    import io
+
+    body = tmp_path / "msg.txt"
+    body.write_text("deploy finished", encoding="utf-8")
+    with contextlib.redirect_stdout(io.StringIO()):
+        with pytest.raises(SystemExit) as exc:
+            send_cmd.cmd_send(_parse(["telegram:-1001234567890", "--file", str(body)]))
+    assert exc.value.code == 0
+    assert fake_tool.calls == [{
+        "action": "send", "target": "telegram:-1001234567890", "message": "deploy finished"}]
+
+
+def test_positional_target_with_inline_message(fake_tool, quiet_send):
+    """``hermes send ntfy:alerts-channel "Done!"`` — the form the messaging docs
+    show — parses; it used to be argparse's ``unrecognized arguments`` exit 2."""
+    import contextlib
+    import io
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        with pytest.raises(SystemExit) as exc:
+            send_cmd.cmd_send(_parse(["ntfy:alerts-channel", "Done!"]))
+    assert exc.value.code == 0
+    assert fake_tool.calls == [{
+        "action": "send", "target": "ntfy:alerts-channel", "message": "Done!"}]
+
+
+def test_positional_target_thread_suffix(fake_tool, quiet_send):
+    """The ``platform:chat_id:thread_id`` shape also works positionally."""
+    import contextlib
+    import io
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        with pytest.raises(SystemExit) as exc:
+            send_cmd.cmd_send(_parse(["telegram:-1001234567890:17585", "threaded reply"]))
+    assert exc.value.code == 0
+    assert fake_tool.calls == [{
+        "action": "send", "target": "telegram:-1001234567890:17585", "message": "threaded reply"}]
+
+
+def test_to_flag_wins_over_positional_target_shape(fake_tool, quiet_send):
+    """With ``--to`` given, a ``platform:...``-shaped positional is message text,
+    never a target — the explicit flag is authoritative."""
+    import contextlib
+    import io
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        with pytest.raises(SystemExit) as exc:
+            send_cmd.cmd_send(_parse(["--to", "telegram", "telegram:-1001234567890"]))
+    assert exc.value.code == 0
+    assert fake_tool.calls == [{
+        "action": "send", "target": "telegram", "message": "telegram:-1001234567890"}]
+
+
+def test_non_target_positional_without_to_still_usage_error(quiet_send, capsys):
+    """A positional containing spaces can't be a ``platform:chat_id`` target, so
+    the original ``--to is required`` usage error (exit 2) still fires."""
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(_parse(["deploy finished"]))
+    assert exc.value.code == 2
+    assert "--to" in capsys.readouterr().err
+
+
+@pytest.fixture
 def whatsapp_bridge(monkeypatch):
     """Route ``hermes send --to whatsapp:...`` through the real plugin standalone sender into a fake
     bridge; returns the recorded ``(path, payload)`` posts and a mutable ``supports_mentions`` flag."""

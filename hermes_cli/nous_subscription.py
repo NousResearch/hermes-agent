@@ -271,7 +271,9 @@ def _web_feature(web_cfg: dict[str, object], tool_enabled: bool, managed: bool, 
         "parallel": _any_env("PARALLEL_API_KEY") and not web_gw,
         "tavily": (_any_env("TAVILY_API_KEY") or "tavily" in {backend, search_backend, extract_backend}) and not web_gw,
         "perplexity": _any_env("PERPLEXITY_API_KEY") and not web_gw,
-        "searxng": _any_env("SEARXNG_URL"),
+        # Search-only vendors: a web.search_backend pin outranks the managed selection for web_search.
+        "searxng": _any_env("SEARXNG_URL") and (not web_gw or search_backend == "searxng"),
+        "brave-free": _any_env("BRAVE_SEARCH_API_KEY") and (not web_gw or search_backend == "brave-free"),
     }
     web_managed = managed and (
         (backend == "firecrawl" and not direct_firecrawl) or "nous" in {search_backend, extract_backend})
@@ -520,7 +522,10 @@ def _get_gateway_direct_credentials() -> dict[str, bool]:
     fal_direct = fal_key_is_configured()
     audio_direct = bool(resolve_openai_audio_api_key())
     return {
-        "web": _any_env("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "EXA_API_KEY", "SEARXNG_URL"),
+        "web": _any_env(
+            "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "EXA_API_KEY",
+            "SEARXNG_URL", "BRAVE_SEARCH_API_KEY",
+        ),
         # Env-configured keyless local backend: a reachable self-hosted SearXNG is a working web setup even
         # with no stored selection (the autodetect cascade in tools/web_tools.py picks it up), so it must
         # not be classified "unconfigured" and pre-checked (#92647).

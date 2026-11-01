@@ -98,6 +98,34 @@ class TestCacheImageFromBytes:
         with pytest.raises(ValueError, match="non-image data"):
             cache_image_from_bytes(b"<!DOCTYPE html><html><title>Slack</title></html>", ".png")
 
+    def test_converts_heic_to_jpeg(self, tmp_path, monkeypatch):
+        """iPhone/macOS HEIC screenshots are cached as a readable JPEG, not rejected."""
+        pillow_heif = pytest.importorskip("pillow_heif")
+        from io import BytesIO
+
+        from PIL import Image
+
+        pillow_heif.register_heif_opener()
+        buf = BytesIO()
+        Image.new("RGB", (32, 24), (200, 30, 30)).save(buf, format="HEIF")
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+
+        path = cache_image_from_bytes(buf.getvalue(), ".heic")
+        assert path.endswith(".jpg")
+        with Image.open(path) as im:
+            assert im.format == "JPEG" and im.size == (32, 24)
+
+    def test_undecodable_heic_raises_format_error(self, tmp_path, monkeypatch):
+        """A HEIC that can't be converted fails as a format problem, not as 'non-image data'
+        (which the Slack adapter reports as a scope/auth problem)."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+
+        with pytest.raises(ValueError, match="Could not convert HEIC/HEIF") as info:
+            cache_image_from_bytes(b"\x00\x00\x00\x18ftypheic" + b"\x00" * 64, ".heic")
+        assert "non-image data" not in str(info.value)
+
 
 # ---------------------------------------------------------------------------
 # cache_image_from_url (base.py)

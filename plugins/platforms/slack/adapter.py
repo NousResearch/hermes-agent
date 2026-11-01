@@ -1454,6 +1454,11 @@ class SlackAdapter(BasePlatformAdapter):
             if template:
                 return template.format(file_label=file_label)
         message = str(exc)
+        if "Could not convert HEIC/HEIF image" in message:
+            # A format problem, not access: don't send the user chasing Slack scopes.
+            return (
+                f"Couldn't read {file_label}: it is a HEIC image and converting it to JPEG failed. "
+                "Send it as PNG or JPEG instead.")
         if "Slack returned HTML instead of media" in message or "non-image data" in message:
             return (
                 f"Slack attachment access failed for {file_label}: Slack returned an HTML/login or non-media response. "

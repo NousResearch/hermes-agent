@@ -12,9 +12,10 @@ import pytest
 def locked_home(tmp_path, monkeypatch):
     home = tmp_path / "hh"
     skills = home / "skills"
-    for rel in ("ops/locked-skill", "ops/free-skill"):
+    for rel, display in (("ops/locked-skill", "locked-skill"), ("ops/free-skill", "free-skill"),
+                         ("training/accelerate", "huggingface-accelerate")):
         (skills / rel / "scripts").mkdir(parents=True)
-        (skills / rel / "SKILL.md").write_text(f"---\nname: {rel.split('/')[1]}\ndescription: x\n---\nbody\n")
+        (skills / rel / "SKILL.md").write_text(f"---\nname: {display}\ndescription: x\n---\nbody\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
     from tools import skill_usage
     assert skill_usage.set_locked("locked-skill", True)
@@ -50,14 +51,34 @@ def test_file_tools_refuse_a_locked_skill_and_its_record(locked_home):
     ("python3 -c \"open('{L}/SKILL.md','w').write('x')\"", True),
     ("echo {{}} > {H}/skills/.usage.json", True),
     ("hermes curator unlock locked-skill", True),
+    ("echo checking\nsed -i s/body/x/ {L}/SKILL.md", True),
+    ("sudo -u root rm -rf {L}", True),
+    ("cd {L} && (cd /) ; echo x > SKILL.md", True),
+    ("cp -t {L} {H}/SKILL.md", True),
+    ("cp --target-directory={L} {H}/SKILL.md", True),
+    ("cp -r {H}/locked-skill {H}/skills/ops", True),
+    ("tar xf {H}/a.tar -C {H}/skills/ops", True),
+    ("sed -i s/body/x/ {H}/skills/ops/*/SKILL.md", True),
     ("cat {L}/SKILL.md", False),
     ("python3 {L}/scripts/run.py > {H}/out.log 2>&1", False),
     ("cp {L}/SKILL.md {H}/copy.md", False),
     ("echo x > {H}/skills/ops/free-skill/SKILL.md", False),
     ("git -C {L} log --oneline", False),
+    ("tar xf {H}/a.tar -C {H}", False),
+    ("cp -r {H}/new-skill {H}/skills/ops/new-skill", False),
 ])
 def test_terminal_refuses_writes_into_a_locked_skill_but_not_reads(locked_home, command, blocked):
     from tools.skill_lock import command_refusal
     lock_dir = locked_home / "skills/ops/locked-skill"
     reason = command_refusal(command.format(L=lock_dir, H=locked_home), str(locked_home))
     assert (reason is not None) is blocked, reason
+
+
+def test_lock_resolves_by_display_name_as_well_as_directory(locked_home):
+    """Locks are keyed by directory; the curator's rows carry the frontmatter name."""
+    from tools import skill_usage
+    from tools.skill_lock import is_locked_skill
+    assert skill_usage.set_locked("accelerate", True)
+    assert is_locked_skill("huggingface-accelerate")
+    assert is_locked_skill("training/accelerate")
+    assert not is_locked_skill("free-skill")

@@ -14,6 +14,7 @@ policy check, not a sandbox: a script that writes there through its own logic is
 
 from __future__ import annotations
 
+import glob
 import itertools
 import os
 import re
@@ -60,6 +61,19 @@ def locked_skill_dirs() -> list[tuple[str, str]]:
     return found
 
 
+def is_locked_skill(name: str, locked_names: Iterable[str] | None = None) -> bool:
+    """Whether *name* (directory, ``cat/name`` or frontmatter name) is locked. Locks are keyed by
+    directory name, while curator rows and some callers carry the frontmatter name."""
+    names = set(_skill_usage().locked_skill_names() if locked_names is None else locked_names)
+    if not names:
+        return False
+    if name in names or os.path.basename(name) in names:
+        return True
+    from tools.skill_manager_tool import _find_skill
+    found = _find_skill(name)
+    return bool(found) and found["path"].name in names
+
+
 def _record_path() -> str:
     return os.path.realpath(_skill_usage()._usage_file())
 
@@ -81,13 +95,23 @@ UNLOCK_REFUSAL = ("Only the user can unlock a skill. Ask them to run `hermes cur
                   "themselves or use the lock switch in Desktop.")
 
 
-def _hit(path: str, locked: list[tuple[str, str]], record: str, *, ancestor: bool = False) -> str | None:
-    """Refusal text when *path* is the lock record, inside a locked skill, or (``ancestor``) above one."""
+def _skills_roots() -> list[str]:
+    from agent.skill_utils import get_all_skills_dirs
+    return [os.path.realpath(d) for d in get_all_skills_dirs()]
+
+
+def _hit(path: str, locked: list[tuple[str, str]], record: str, *, ancestor: str = "") -> str | None:
+    """Refusal text when *path* is the lock record or inside a locked skill. ``ancestor="any"`` also
+    counts a directory ABOVE a locked skill (recursive deletes/moves); ``ancestor="skills"`` counts it
+    only inside a skills root (a recursive copy or extraction there can merge into the skill)."""
     real = os.path.realpath(path)
     if real == record:
         return RECORD_REFUSAL
     for name, root in locked:
-        if _inside(real, root) or (ancestor and real != os.sep and _inside(root, real)):
+        if _inside(real, root):
+            return skill_refusal(name)
+        if ancestor and real != os.sep and _inside(root, real) and (
+                ancestor == "any" or any(_inside(real, r) for r in _skills_roots())):
             return skill_refusal(name)
     return None
 
@@ -106,22 +130,39 @@ def path_refusal(paths: Iterable[str]) -> str | None:
 
 # ── terminal ──────────────────────────────────────────────────────────────────────────────────
 
-def _expand(word: str, cwd: str) -> str:
-    """Shell word -> absolute path: ~, $HOME, $HERMES_HOME, then relative to *cwd*; glob tail dropped."""
+def _expand(word: str, cwd: str) -> list[str]:
+    """Shell word -> absolute path(s): ~, $HOME, $HERMES_HOME, relative to *cwd*; a glob expands
+    against the filesystem the way the shell would (unmatched: its literal directory prefix)."""
     from hermes_constants import get_hermes_home
     home = os.path.expanduser("~")
     for var, value in (("HERMES_HOME", str(get_hermes_home())), ("HOME", home)):
         word = word.replace("${" + var + "}", value).replace("$" + var, value)
     if word == "~" or word.startswith("~/"):
         word = home + word[1:]
-    if any(ch in word for ch in "*?["):  # a glob reaches everything under its literal prefix
-        word = word[: min(word.index(ch) for ch in "*?[" if ch in word)]
-        word = word.rsplit("/", 1)[0] or "/"
-    return os.path.normpath(os.path.join(cwd, word))
+    path = os.path.normpath(os.path.join(cwd, word))
+    if not any(ch in word for ch in "*?["):
+        return [path]
+    if matches := glob.glob(path):
+        return matches
+    return [path[: min(path.index(ch) for ch in "*?[" if ch in path)].rsplit(os.sep, 1)[0] or os.sep]
+
+
+def _unquoted_newlines_to_semicolons(command: str) -> str:
+    """Newlines separate commands like ``;`` does; shlex would read them as plain whitespace."""
+    out, quote = [], None
+    for ch in command:
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "\n":
+            ch = ";"
+        out.append(ch)
+    return "".join(out)
 
 
 def _tokens(command: str) -> list[str]:
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>()")
+    lexer = shlex.shlex(_unquoted_newlines_to_semicolons(command), posix=True, punctuation_chars=";&|<>()")
     lexer.whitespace_split = True
     lexer.commenters = ""
     try:
@@ -130,8 +171,8 @@ def _tokens(command: str) -> list[str]:
         return command.split()
 
 
-def _segments(tokens: list[str]) -> Iterable[tuple[list[str], list[str]]]:
-    """Yield ``(argv, redirect_targets)`` per simple command."""
+def _segments(tokens: list[str]) -> Iterable[tuple[list[str], list[str], str]]:
+    """Yield ``(argv, redirect_targets, separator_that_ended_it)`` per simple command."""
     argv: list[str] = []
     targets: list[str] = []
     it = iter(tokens)
@@ -145,24 +186,48 @@ def _segments(tokens: list[str]) -> Iterable[tuple[list[str], list[str]]]:
         if tok in ("<", "<<", "<<<", "<<-"):
             next(it, "")  # input file / heredoc delimiter / here-string: read, never written
             continue
-        if tok in _SEPARATORS or (tok and set(tok) <= set(";&|()")):
-            yield argv, targets
+        if tok and set(tok) <= set(";&|()"):
+            yield argv, targets, tok
             argv, targets = [], []
             continue
         argv.append(tok)
-    yield argv, targets
+    yield argv, targets, ""
+
+
+_XARGS_OPTIONS_WITH_ARG = frozenset({"-n", "-I", "-L", "-P", "-d", "-E", "-s", "-a"})
 
 
 def _strip_wrappers(argv: list[str]) -> list[str]:
-    while argv and (argv[0] in _WRAPPERS or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0])):
+    from tools.self_repo_guard import _WRAPPER_OPTIONS_WITH_ARG
+    while argv:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
+            argv = argv[1:]
+            continue
+        head = os.path.basename(argv[0])
+        if head not in _WRAPPERS:
+            break
+        takes_value = _XARGS_OPTIONS_WITH_ARG if head == "xargs" else _WRAPPER_OPTIONS_WITH_ARG.get(head, frozenset())
         argv = argv[1:]
         while argv and argv[0].startswith("-"):
-            argv = argv[1:]
+            argv = argv[2:] if argv[0] in takes_value else argv[1:]
     return argv
 
 
 def _operands(args: list[str]) -> list[str]:
     return [a for a in args if a and not a.startswith("-")]
+
+
+def _target_directory(args: list[str]) -> tuple[str | None, list[str]]:
+    """``cp/mv/install/ln -t DIR`` / ``--target-directory[=]DIR``: (DIR, remaining args)."""
+    rest = list(args)
+    for i, arg in enumerate(rest):
+        if arg.startswith("--target-directory="):
+            return arg.split("=", 1)[1], rest[:i] + rest[i + 1:]
+        if arg in ("-t", "--target-directory") and i + 1 < len(rest):
+            return rest[i + 1], rest[:i] + rest[i + 2:]
+        if arg.startswith("-t") and len(arg) > 2 and not arg.startswith("--"):
+            return arg[2:], rest[:i] + rest[i + 1:]
+    return None, rest
 
 
 class _Scope:
@@ -171,10 +236,11 @@ class _Scope:
     def __init__(self, cwd: str, locked: list[tuple[str, str]], record: str, depth: int) -> None:
         self.cwd, self.locked, self.record, self.depth = cwd, locked, record, depth
 
-    def hit(self, word: str, ancestor: bool = False) -> str | None:
-        return _hit(_expand(word, self.cwd), self.locked, self.record, ancestor=ancestor)
+    def hit(self, word: str, ancestor: str = "") -> str | None:
+        return next((r for path in _expand(word, self.cwd)
+                     if (r := _hit(path, self.locked, self.record, ancestor=ancestor))), None)
 
-    def first_hit(self, words: Iterable[str], ancestor: bool = False) -> str | None:
+    def first_hit(self, words: Iterable[str], ancestor: str = "") -> str | None:
         return next((r for w in words if (r := self.hit(w, ancestor))), None)
 
 
@@ -185,12 +251,22 @@ def _check_unlock(verb: str, args: list[str], scope: _Scope) -> str | None:
     return None
 
 
+_RECURSIVE_COPY_FLAGS = re.compile(r"^(?:-[A-Za-z]*[rRa][A-Za-z]*|--recursive|--archive)$")
+
+
 def _check_file_verbs(verb: str, args: list[str], scope: _Scope) -> str | None:
     if verb in _WRITES_EVERY_OPERAND or verb == "tee":
-        return scope.first_hit(_operands(args), ancestor=verb in _RECURSIVE)
-    if verb in _WRITES_LAST_OPERAND and (ops := _operands(args)):
-        return scope.hit(ops[-1], ancestor=verb == "rsync" and any(a.startswith("--delete") for a in args))
-    return None
+        return scope.first_hit(_operands(args), ancestor="any" if verb in _RECURSIVE else "")
+    if verb not in _WRITES_LAST_OPERAND:
+        return None
+    target, rest = _target_directory(args)
+    ops = _operands(rest)
+    dest = target if target is not None else (ops[-1] if ops else None)
+    if dest is None:
+        return None
+    # A recursive copy into a directory above the skill merges into it; rsync is recursive with -a/-r.
+    merges = verb == "rsync" or any(_RECURSIVE_COPY_FLAGS.match(a) for a in rest)
+    return scope.hit(dest, ancestor="skills" if merges else "")
 
 
 def _check_inplace(verb: str, args: list[str], scope: _Scope) -> str | None:
@@ -204,7 +280,7 @@ def _check_find(verb: str, args: list[str], scope: _Scope) -> str | None:
     if verb != "find" or not any(a in ("-delete", "-exec", "-execdir", "-ok") for a in args):
         return None
     starts = itertools.takewhile(lambda a: not a.startswith("-"), args)
-    return scope.first_hit(starts, ancestor=True)
+    return scope.first_hit(starts, ancestor="any")
 
 
 def _check_git(verb: str, args: list[str], scope: _Scope) -> str | None:
@@ -214,11 +290,11 @@ def _check_git(verb: str, args: list[str], scope: _Scope) -> str | None:
     while rest and rest[0].startswith("-"):
         flag = rest.pop(0)
         if flag == "-C" and rest:
-            where = _expand(rest.pop(0), scope.cwd)
+            where = _expand(rest.pop(0), scope.cwd)[0]
         elif flag in ("-c", "--git-dir", "--work-tree") and rest:
             rest.pop(0)
     if rest and rest[0] in _GIT_MUTATIONS:
-        return _hit(where, scope.locked, scope.record, ancestor=True)
+        return _hit(where, scope.locked, scope.record, ancestor="any")
     return None
 
 
@@ -228,11 +304,12 @@ def _check_extract(verb: str, args: list[str], scope: _Scope) -> str | None:
     dest = scope.cwd
     for flag, value in itertools.pairwise(args):
         if flag in ("-C", "--directory", "-d"):
-            dest = _expand(value, scope.cwd)
+            dest = _expand(value, scope.cwd)[0]
     bundled = bool(args) and not args[0].startswith("-") and "x" in args[0]  # `tar xzf a.tgz`
     extracting = verb == "unzip" or bundled or any(
         a == "--extract" or (a.startswith("-") and not a.startswith("--") and "x" in a) for a in args)
-    return _hit(dest, scope.locked, scope.record) if extracting else None
+    # The archive's paths are unknown: extracting into a directory above the skill can overwrite it.
+    return _hit(dest, scope.locked, scope.record, ancestor="skills") if extracting else None
 
 
 def _check_interpreter(verb: str, args: list[str], scope: _Scope) -> str | None:
@@ -278,21 +355,24 @@ def _code_refusal(code: str, locked, record) -> str | None:
 
 
 def _command_refusal(command: str, cwd: str, locked, record, depth: int = 0) -> str | None:
-    tokens = _tokens(command)
     if "<<" in command and (reason := _code_refusal(command, locked, record)):
         return reason  # heredoc-fed interpreter body
-    for argv, targets in _segments(tokens):
+    subshells: list[str] = []  # cwd to restore when each ( ... ) closes
+    for argv, targets, separator in _segments(_tokens(command)):
         for target in targets:
-            if reason := _hit(_expand(target, cwd), locked, record):
+            if reason := next((r for path in _expand(target, cwd)
+                               if (r := _hit(path, locked, record))), None):
                 return reason
         argv = _strip_wrappers(argv)
-        if not argv:
-            continue
-        if argv[0] in ("cd", "pushd") and len(argv) > 1:
-            cwd = _expand(argv[1], cwd)
-            continue
-        if reason := _argv_refusal(argv, cwd, locked, record, depth):
+        if argv and argv[0] in ("cd", "pushd") and len(argv) > 1:
+            cwd = _expand(argv[1], cwd)[0]
+        elif argv and (reason := _argv_refusal(argv, cwd, locked, record, depth)):
             return reason
+        for ch in separator:
+            if ch == "(":
+                subshells.append(cwd)
+            elif ch == ")" and subshells:
+                cwd = subshells.pop()
     return None
 
 

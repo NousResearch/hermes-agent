@@ -433,9 +433,11 @@ class SessionRecoveryMixin:
         (parent/_reset_from) land atomically in the INSERT so a crash right after cannot strand the
         row unroutable."""
         from gateway.session_identity import transport_profile_of
+        from hermes_state_gateway import _gateway_session_model
         return {
             "session_id": session_id,
             "source": source_value,
+            "model": _gateway_session_model(),
             "user_id": origin.user_id if origin else None,
             "session_key": session_key,
             "chat_id": origin.chat_id if origin else None,

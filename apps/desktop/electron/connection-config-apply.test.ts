@@ -43,6 +43,60 @@ describe('applyConnectionConfigAtomically', () => {
     expect(writeRegistry.mock.calls).toEqual([['remote-registry'], ['local-registry']])
   })
 
+  it('keeps the preflight-verified config on disk when activation fails afterward', async () => {
+    const writeConfig = vi.fn()
+    const writeRegistry = vi.fn()
+
+    await expect(
+      applyConnectionConfigAtomically({
+        previousConfig: 'old-config',
+        previousRegistry: 'old-registry',
+        nextConfig: 'remote-config',
+        nextRegistry: 'remote-registry',
+        preflight: async () => ({ wsVerified: true }),
+        writeConfig,
+        writeRegistry,
+        apply: async () => {
+          throw new Error('teardown/re-home failed')
+        }
+      })
+    ).rejects.toThrow('teardown/re-home failed')
+
+    // Activation failed AFTER a preflight that actually proved the WS leg
+    // reachable, so the write must not be rolled back to the old,
+    // unreachable config — that would strand the user on the dead gateway
+    // they were trying to escape ("Save and reconnect" losing the new URL
+    // on relaunch, #123225).
+    expect(writeConfig.mock.calls).toEqual([['remote-config']])
+    expect(writeRegistry.mock.calls).toEqual([['remote-registry']])
+  })
+
+  it('rolls back when the preflight ran but never verified the WS leg', async () => {
+    const writeConfig = vi.fn()
+    const writeRegistry = vi.fn()
+
+    await expect(
+      applyConnectionConfigAtomically({
+        previousConfig: 'old-config',
+        previousRegistry: 'old-registry',
+        nextConfig: 'remote-config',
+        nextRegistry: 'remote-registry',
+        // E.g. a tokenless gateway: the REST probe passed, but there was
+        // nothing to build a WS test URL with, so the transport the app
+        // actually uses was never exercised.
+        preflight: async () => ({ wsVerified: false }),
+        writeConfig,
+        writeRegistry,
+        apply: async () => {
+          throw new Error('teardown/re-home failed')
+        }
+      })
+    ).rejects.toThrow('teardown/re-home failed')
+
+    expect(writeConfig.mock.calls).toEqual([['remote-config'], ['old-config']])
+    expect(writeRegistry.mock.calls).toEqual([['remote-registry'], ['old-registry']])
+  })
+
   it('rolls legacy state back when the registry write fails', async () => {
     const writes: string[] = []
     let registryWrites = 0

@@ -277,6 +277,10 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     row.update(cached_ui_meta_fields(profile_dir, _read))
     # Cheap existence flag so rosters skip a get_asset probe per paint.
     row["has_avatar"] = _try(lambda: any((profile_dir / "assets" / f"avatar.{e}").is_file() for e in _ASSET_EXTS), False)
+    # Revision (mtime ms) so a client holding a cached image re-fetches only when the file changed.
+    row["avatar_rev"] = _try(lambda: max((int((profile_dir / "assets" / f"avatar.{e}").stat().st_mtime_ns // 1_000_000)
+                                          for e in _ASSET_EXTS if (profile_dir / "assets" / f"avatar.{e}").is_file()),
+                                         default=None), None)
 
 
 @_profile_handler("profiles.list", 5061)

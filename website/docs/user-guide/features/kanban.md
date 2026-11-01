@@ -1023,6 +1023,32 @@ kanban:
   default_workdir: ~/work/active-project
 ```
 
+### Optional review rework ceiling
+
+By default, a reviewer can request changes repeatedly: Kanban returns the
+same card to its implementer and starts another review after resubmission.
+For unattended boards with costly model calls, you can opt specific boards
+into a deterministic rejection ceiling:
+
+```yaml
+kanban:
+  max_review_rejections: 2
+  review_rework_boards: ["example-project"]
+```
+
+The count uses durable `changes_requested` events on the **same card**, not
+temporary worker memory or its crash/retry counter. Once the configured
+ceiling is reached, the reviewer verdict is saved, but the card becomes
+`blocked` with `needs_input`; a normal blocked notification requests an
+operator decision instead of automatically spawning another implementation
+run. An operator can use `hermes kanban promote <id>` to resume. The
+historical rejection count is preserved after promotion, so subsequent
+rejections block again until the limit is changed or the task is replaced.
+
+This does **not** cap model/API calls within a run. The feature is disabled
+when `max_review_rejections` is 0 (the default) or the board is absent from
+`review_rework_boards`. Unlisted boards retain their native review flow.
+
 ### Scheduled task starts (`scheduled_at`)
 
 Set `scheduled_at` on a task to delay dispatch until a specific time. The dispatcher skips ready tasks whose `scheduled_at` is in the future and picks them up on the first tick after that timestamp.

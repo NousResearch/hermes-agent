@@ -209,6 +209,13 @@ bootstrap commands, and setup notes — with the `source:` rendered as a
 clickable link, so you can inspect exactly what an entry connects to or runs
 before clicking Install.
 
+Catalog manifests may set `trust: untrusted` to require approval for every
+server tool that is not annotated `readOnlyHint: true`; the manifest value is
+written into `mcp_servers.<name>.trust`. Omitted `trust` preserves existing
+configuration behavior. This is separate from Nous's review of the catalog
+entry. The field requires `manifest_version: 2`, so older Hermes releases
+warn about the newer manifest instead of silently dropping the approval gate.
+
 ### Manifest version compatibility
 
 Manifests pin a `manifest_version`. The catalog is forward-compatible: if a

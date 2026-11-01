@@ -89,7 +89,7 @@ for all of it is the same — an ordered ladder of candidates:
 1. Precedence is written down, in one place, as data or a pure function.
 2. A candidate is trusted only after it is validated at the right boundary.
    Existence is not proof; probe what you're about to rely on.
-3. A failed *read* falls to the next rung; a failed *authoritative write*
+3. A failed _read_ falls to the next rung; a failed _authoritative write_
    surfaces or rolls back rather than silently retargeting.
 4. A missing capability and a transient failure are different: the first may
    enable a compatibility path or a disabled state; the second should retry.
@@ -170,7 +170,9 @@ reopens the gesture-less forced-navigation class the advisory closed.
   the owner-window wake callback. Keep validation and ownership checks at that IPC boundary.
 - Main owns script readiness, dispatch and document cancellation. Work queued
   during navigation belongs to the incoming page; a promise abandoned in the
-  old document must release its lease. Reapply the guest wake after loading:
+  old document must release its lease. The first lease owns a navigation listener
+  that re-wakes replacement widgets until the last lease ends, even without a
+  new script. Reapply again at script dispatch after loading as a backstop:
   Electron's stored throttling flag does not prove a replacement widget is awake.
   Preserve the existing script completion-value contract and plugin consent.
 - Capture leases cover paint waits and image capture, not waiting for a user's
@@ -180,14 +182,24 @@ reopens the gesture-less forced-navigation class the advisory closed.
   viewport lookup, native capture and cleanup. Stop, conversation changes and
   committed document navigation abort that lifetime and fence late drafts.
   A cancelled load or download keeps the existing document's annotation session.
+- Approved plugin scripts deliberately retain the guest **and owner window**
+  wake exemption for their entire pending result. A promise that never settles
+  can therefore keep the hidden app at full timer cadence indefinitely. There
+  is no wake cap: dropping the wake while preserving the pending result could
+  strand legitimate scripts waiting for rAF. Settlement or cancellation releases
+  the lease; committed guest navigation cancels dispatched old-document scripts,
+  pane unmount cancels its runner, and owner navigation or either renderer's
+  destruction/crash retires the affected leases. Hiding a pane alone is not cancellation.
 
 Verify scheduling changes with native hidden/minimized windows and real preview
 navigation, typing and capture. Browser automation's focus emulation can keep
 hidden frames awake and conceal regressions; disable it for these checks.
 Software-rendered VM timings are not hardware GPU or battery measurements.
 With a graphical session (or Xvfb), `npm run test:preview-activity-native
---workspace apps/desktop` exercises real hidden-frame navigation, overlapping
-operations, cancellation and plugin completion values in a disposable profile.
+--workspace apps/desktop` exercises real hidden-frame navigation (including
+lease-only rAF and capture), overlapping operations, cancellation and plugin
+completion values in a disposable profile. Add `-- --minimized` with a running
+window manager to exercise actual iconification rather than hiding the window.
 
 ## Nous free tier: state is pulled, never latched in the renderer
 

@@ -101,9 +101,10 @@ def run_fenced(session_info: dict[str, Any], fn: Callable[[], dict[str, Any]]) -
     """
     if not shares_bot_desktop_browser(session_info):
         return fn()
-    from tools.bot_desktop import lease as _bd_lease
+    from tools.bot_desktop import handback, lease as _bd_lease
     try:
         admitted = _bd_lease.assert_agent_may_act()
+        handback.note_driver()
     except _bd_lease.HumanHasControl as e:
         return {"success": False, "error": str(e), "code": "human_has_control"}
     result = fn()

@@ -95,8 +95,9 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Stopping kills the screen under whoever is on it, so it obeys the same rule as a bare
     display.lease.release: refused while a human holds unless the caller says ``force``."""
-    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    from tools.bot_desktop import handback, lease as _bd_lease, runtime as _bd_runtime
     force = bool(params.get("force"))
+    handback.forget()
     # Refusal and release are ONE lease transition: a takeover landing between a separate human_holds()
     # check and the release would be acknowledged to the human and then silently revoked here.
     if _bd_lease.release(unless_human=not force).holder == _bd_lease.HUMAN:

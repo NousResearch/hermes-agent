@@ -60,6 +60,7 @@ def test_call_llm_emits_auxiliary_events_not_api_request_events(manager, aux_cli
     assert pre["request"]["body"]["messages"] == [{"role": "user", "content": "hello"}]
     assert post["finish_reason"] == "stop" and post["error"] is None
     assert post["usage"]["input_tokens"] == 10 and post["usage"]["output_tokens"] == 5
+    assert post["response"]["usage"] == post["usage"]
     assert post["response"]["assistant_message"]["content"] == "A title"
 
 

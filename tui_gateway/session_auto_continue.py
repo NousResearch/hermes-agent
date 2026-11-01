@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+from pathlib import Path
 
 from .method_ctx import bind_module
 

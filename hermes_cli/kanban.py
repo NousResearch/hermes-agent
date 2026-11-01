@@ -573,9 +573,15 @@ def _cmd_show(args: argparse.Namespace) -> int:
 def _cmd_assign(args: argparse.Namespace) -> int:
     profile = _none_profile(args.profile)
     with kbc.connect_closing() as conn:
+        before = kb.get_task(conn, args.task_id)
         ok = kb.assign_task(conn, args.task_id, profile)
+        # A PARKED card returns to its lane when it gets a name — say so, so
+        # the operator knows the card is runnable again.
+        unparked = bool(ok and profile and before is not None
+                        and before.status == "parked")
     return _ok_or_err(ok, f"no such task: {args.task_id}",
-                      f"Assigned {args.task_id} to {profile or '(unassigned)'}")
+                      f"Assigned {args.task_id} to {profile or '(unassigned)'}"
+                      + (" (returned to the ready lane)" if unparked else ""))
 
 
 def _cmd_set_model(args: argparse.Namespace) -> int:
@@ -1149,6 +1155,15 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     age = stats["oldest_ready_age_seconds"]
     if age is not None:
         print(f"\nOldest ready task age: {int(age)}s")
+    # "Ready" and "runnable" are different numbers: a ready card with no
+    # assignee is queued work nobody can pick up. Reporting one without the
+    # other is what made a board with 20 unrunnable cards look healthy.
+    ready_total = stats["by_status"].get("ready", 0)
+    ready_runnable = stats.get("ready_runnable", 0)
+    parked = stats["by_status"].get("parked", 0)
+    print(f"\nReady: {ready_total} total, {ready_runnable} runnable")
+    if parked:
+        print(f"Parked (no assignee): {parked}")
     return 0
 
 

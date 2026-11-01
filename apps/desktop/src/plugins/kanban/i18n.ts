@@ -16,7 +16,7 @@ type KanbanMessages = {
   newTaskCommand: string
   countTip: (running: number, ready: number) => string
   col: Record<
-    'archived' | 'blocked' | 'done' | 'ready' | 'review' | 'running' | 'scheduled' | 'todo' | 'triage',
+    'archived' | 'blocked' | 'done' | 'parked' | 'ready' | 'review' | 'running' | 'scheduled' | 'todo' | 'triage',
     { label: string; help: string }
   >
   locked: { review: string; running: string; scheduled: string }
@@ -233,6 +233,7 @@ export const en: KanbanMessages = {
     triage: { label: 'Triage', help: 'Raw ideas — a specifier fleshes out the spec.' },
     todo: { label: 'Todo', help: 'Waiting on dependencies, or unassigned.' },
     scheduled: { label: 'Scheduled', help: 'Waiting for a scheduled time to arrive.' },
+    parked: { label: 'Parked', help: 'No assignee — the dispatcher cannot run this. Assign a profile to route it.' },
     ready: { label: 'Ready', help: 'Dependencies satisfied — assign a profile and the dispatcher runs it.' },
     running: { label: 'Running', help: 'Claimed by a worker — an agent is on it. Set by the dispatcher.' },
     blocked: { label: 'Blocked', help: 'The worker asked for human input.' },
@@ -461,6 +462,7 @@ const ja: KanbanMessages = {
     triage: { label: 'トリアージ', help: '生のアイデア — スペシファイアが仕様に整えます。' },
     todo: { label: 'Todo', help: '依存関係の待ち、または未割り当て。' },
     scheduled: { label: 'スケジュール', help: '予定時刻を待っています。' },
+    parked: { label: '保留', help: '担当者なし — ディスパッチャが実行できません。プロフィールを割り当てると実行されます。' },
     ready: { label: 'Ready', help: '依存関係が解決済み — プロフィールを割り当てるとディスパッチャが実行します。' },
     running: { label: '実行中', help: 'ワーカーが取得済み — エージェントが作業中。ディスパッチャが設定します。' },
     blocked: { label: 'ブロック', help: 'ワーカーが人間の入力を求めています。' },
@@ -688,6 +690,7 @@ const zh: KanbanMessages = {
     triage: { label: '分诊', help: '原始想法 — 由细化代理整理出规格。' },
     todo: { label: '待办', help: '等待依赖，或未分配。' },
     scheduled: { label: '已排期', help: '等待预定时间到来。' },
+    parked: { label: '已搁置', help: '未分配 — 调度器无法运行。分配一个配置档即可路由。' },
     ready: { label: '就绪', help: '依赖已满足 — 分配一个配置档，调度器即会运行它。' },
     running: { label: '运行中', help: '已被工作单元领取 — 有代理在处理。由调度器设置。' },
     blocked: { label: '受阻', help: '工作单元需要人工输入。' },
@@ -912,6 +915,7 @@ const zhHant: KanbanMessages = {
     triage: { label: '分類', help: '原始想法 — 由細化代理整理出規格。' },
     todo: { label: '待辦', help: '等待相依項目，或未指派。' },
     scheduled: { label: '已排程', help: '等待預定時間到來。' },
+    parked: { label: '已擱置', help: '未指派 — 排程器無法執行。指派一個設定檔即可路由。' },
     ready: { label: '就緒', help: '相依項目已滿足 — 指派一個設定檔，排程器便會執行它。' },
     running: { label: '執行中', help: '已被工作單元領取 — 有代理在處理。由排程器設定。' },
     blocked: { label: '受阻', help: '工作單元需要人工輸入。' },

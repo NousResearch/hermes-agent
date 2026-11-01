@@ -245,6 +245,14 @@ def staged_creation_follows(authority, actor, request_id):
     return isinstance(request, dict) and request.get('follow_profile_config') is True
 
 
+def _require_creation_model(policy):
+    """New receipts must be restorable; exact retries keep their original frozen model."""
+    if not isinstance(policy.model, str) or not policy.model.strip():
+        raise RuntimeStoreError('invalid_params', field='model',
+                                detail='No model configured for this profile; '
+                                       'set model.default in config.yaml or pass -m <model>.')
+
+
 def stage_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None,
                         client_local=False, desktop_local=False):
     """Everything before the creation commit: the existing session's ref on an exact retry, else the
@@ -325,6 +333,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
             if key is None or not hmac.compare_digest(key, params.get('api_key') or ''):
                 raise RuntimeStoreError('admission_conflict')
         return restore_local_session(authority, sid)
+    _require_creation_model(policy)
     from gateway.session_policy import launch_skills
     if launch_skills(params) and skills_prompt is None:
         # `-s` is rendered off-loop by the RPC handler (render_launch_skills); a caller that

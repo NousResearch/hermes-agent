@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type * as ConfigApi from '@/api/config'
 import { I18nProvider, TRANSLATIONS } from '@/i18n'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { deferred } from '@/test/deferred'
 
 import { ModelSettings } from './model-settings'
 
@@ -101,15 +102,14 @@ afterEach(() => {
 function renderModelSettings(scopeProfile?: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
-  return render(
-    // The aux-task deep-link highlight reads useSearchParams, so the page
-    // needs a router context in tests (the app provides HashRouter at root).
-    <MemoryRouter>
-      <QueryClientProvider client={client}>
-        <ModelSettings scopeProfile={scopeProfile} />
-      </QueryClientProvider>
-    </MemoryRouter>
-  )
+  return render(<ModelSettings scopeProfile={scopeProfile} />, {
+    // Keep the real router/query context when a pinned page is rerendered for another profile.
+    wrapper: ({ children }) => (
+      <MemoryRouter>
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      </MemoryRouter>
+    )
+  })
 }
 
 describe('ModelSettings profile scope', () => {
@@ -470,6 +470,139 @@ describe('ModelSettings', () => {
         reasoning_effort: 'high'
       })
     )
+  })
+
+  it('refreshes the provider catalog before choosing an auxiliary model', async () => {
+    getGlobalModelOptions
+      .mockResolvedValueOnce({
+        providers: [
+          {
+            name: 'Local Gateway',
+            slug: 'custom:work',
+            models: ['cached-model'],
+            authenticated: true,
+            is_user_defined: true
+          }
+        ]
+      })
+      .mockResolvedValueOnce({
+        providers: [
+          {
+            name: 'Local Gateway',
+            slug: 'custom:work',
+            models: ['cached-model', 'live-model'],
+            authenticated: true,
+            is_user_defined: true
+          }
+        ]
+      })
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'vision', provider: 'custom:work', model: 'cached-model', base_url: '' }]
+    })
+
+    await renderModelSettings()
+
+    fireEvent.click(await screen.findByRole('button', { name: TRANSLATIONS.en.shell.modelMenu.refreshModels }))
+
+    await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalledWith({ refresh: true }, undefined))
+
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Change' }))[0])
+
+    const auxiliaryModelSelect = screen.getByRole('combobox', { name: 'Vision model' })
+    expect(auxiliaryModelSelect).toBeTruthy()
+    fireEvent.click(auxiliaryModelSelect!)
+
+    expect(await screen.findByRole('option', { name: 'live-model' })).toBeTruthy()
+  })
+
+  it.each([
+    ['active', 'success'],
+    ['active', 'failure'],
+    ['pinned', 'success'],
+    ['pinned', 'failure']
+  ] as const)(
+    'keeps the new profile catalog after the %s profile switch and a late %s from its old auxiliary refresh',
+    async (mode, outcome) => {
+      const staleCatalog = {
+        providers: [{ name: 'Old A', slug: 'old-a', models: ['old-a-model'], authenticated: true }]
+      }
+
+      const freshCatalog = {
+        providers: [{ name: 'Profile B', slug: 'nous', models: ['model-b'], authenticated: true }]
+      }
+
+      const pendingA = deferred<typeof staleCatalog>()
+      const pendingB = deferred<typeof freshCatalog>()
+      getGlobalModelOptions
+        .mockResolvedValueOnce({
+          providers: [{ name: 'Nous', slug: 'nous', models: ['hermes-4'], authenticated: true }]
+        })
+        .mockReturnValueOnce(pendingA.promise)
+        .mockResolvedValueOnce(freshCatalog)
+        .mockReturnValueOnce(pendingB.promise)
+      getGlobalModelInfo
+        .mockResolvedValueOnce({ provider: 'nous', model: 'hermes-4' })
+        .mockResolvedValueOnce({ provider: 'nous', model: 'model-b' })
+
+      const view = renderModelSettings(mode === 'pinned' ? 'alpha' : undefined)
+      const refreshButton = await screen.findByRole('button', { name: TRANSLATIONS.en.shell.modelMenu.refreshModels })
+      await waitFor(() => expect(refreshButton).toHaveProperty('disabled', false))
+      fireEvent.click(refreshButton)
+      expect(getGlobalModelOptions).toHaveBeenLastCalledWith({ refresh: true }, mode === 'pinned' ? 'alpha' : undefined)
+      expect(refreshButton).toHaveProperty('disabled', true)
+
+      if (mode === 'pinned') {
+        view.rerender(<ModelSettings scopeProfile="beta" />)
+      } else {
+        await act(async () => profileSwitchHandler?.())
+      }
+
+      await waitFor(() => expect(screen.getAllByRole('combobox')[0].textContent).toContain('Profile B'))
+      await waitFor(() => expect(refreshButton).toHaveProperty('disabled', false))
+      fireEvent.click(refreshButton)
+      expect(getGlobalModelOptions).toHaveBeenLastCalledWith({ refresh: true }, mode === 'pinned' ? 'beta' : undefined)
+
+      await act(async () => {
+        if (outcome === 'success') {
+          pendingA.resolve(staleCatalog)
+        } else {
+          pendingA.reject(new Error('Old profile failed'))
+        }
+      })
+      expect(screen.queryByText('Old profile failed')).toBeNull()
+      expect(screen.getAllByRole('combobox')[0].textContent).toContain('Profile B')
+      // A's finally must not clear B's in-flight indicator or re-enable another refresh.
+      expect(refreshButton).toHaveProperty('disabled', true)
+      fireEvent.click(screen.getAllByRole('combobox')[0])
+      expect(screen.queryByRole('option', { name: 'Old A' })).toBeNull()
+      expect(screen.getByRole('option', { name: 'Profile B' })).toBeTruthy()
+      fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Escape' })
+
+      await act(async () => pendingB.resolve(freshCatalog))
+      await waitFor(() => expect(refreshButton).toHaveProperty('disabled', false))
+    }
+  )
+
+  it('keeps the catalog usable when an auxiliary refresh fails and allows a retry', async () => {
+    getGlobalModelOptions
+      .mockResolvedValueOnce({
+        providers: [{ name: 'Nous', slug: 'nous', models: ['hermes-4'], authenticated: true }]
+      })
+      .mockRejectedValueOnce(new Error('Catalog unavailable'))
+      .mockResolvedValueOnce({
+        providers: [{ name: 'Nous', slug: 'nous', models: ['hermes-4', 'new-model'], authenticated: true }]
+      })
+    renderModelSettings('research')
+    const refreshButton = await screen.findByRole('button', { name: TRANSLATIONS.en.shell.modelMenu.refreshModels })
+    await waitFor(() => expect(refreshButton).toHaveProperty('disabled', false))
+    fireEvent.click(refreshButton)
+    await screen.findByText('Catalog unavailable')
+    expect(screen.getAllByRole('combobox')[0].textContent).toContain('Nous')
+    expect(refreshButton).toHaveProperty('disabled', false)
+    fireEvent.click(refreshButton)
+    await waitFor(() => expect(screen.queryByText('Catalog unavailable')).toBeNull())
+    expect(getGlobalModelOptions).toHaveBeenLastCalledWith({ refresh: true }, 'research')
   })
 
   it('assigns an auxiliary task to the main model via setModelAssignment', async () => {

@@ -702,6 +702,24 @@
         .finally(function () { setLoading(false); });
     }, [tenantFilter, includeArchived, board]);
 
+    // --- board pause (#141451) ---------------------------------------------
+    // Nothing new starts while paused; running workers finish. The banner and
+    // the sidebar badge both read `boardData.pause`, so this only writes.
+    const pauseBoard = useCallback(function () {
+      return SDK.fetchJSON(withBoard(`${API}/pause`, board), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }).then(loadBoard)
+        .catch(function (e) { setError(String(e && e.message ? e.message : e)); });
+    }, [board, loadBoard]);
+
+    const resumeBoard = useCallback(function () {
+      return SDK.fetchJSON(withBoard(`${API}/resume`, board), { method: "POST" })
+        .then(loadBoard)
+        .catch(function (e) { setError(String(e && e.message ? e.message : e)); });
+    }, [board, loadBoard]);
+
     // --- load list of boards for the switcher ------------------------------
     const loadBoardList = useCallback(function () {
       return SDK.fetchJSON(withBoard(`${API}/boards`, board))
@@ -1307,6 +1325,10 @@
           },
         }) : null,
         h(OrchestrationPanel, null),
+        h(PauseStrip, {
+          pause: boardData && boardData.pause,
+          onResume: resumeBoard,
+        }),
         h(AttentionStrip, {
           boardData,
           onOpen: setSelectedTaskId,
@@ -1323,6 +1345,8 @@
               .then(loadBoard)
               .catch(function (e) { setError(String(e.message || e)); });
           },
+          onPauseBoard: pauseBoard,
+          onResumeBoard: resumeBoard,
           onRefresh: loadBoard,
         }),
        selectedIds.size > 0 ? h(BulkActionBar, {
@@ -2165,9 +2189,13 @@
               title: "Boards are independent work streams. Each board has its own tasks, tenants, and assignees.",
             }, selectChangeHandler(function (v) { if (v) props.onSwitch(v); })),
               list.map(function (b) {
-                const label = b.total > 0
+                const base = b.total > 0
                   ? `${b.name || b.slug} · ${b.total}`
                   : (b.name || b.slug);
+                // Pause is per board — say so right in the picker.
+                const label = b.pause
+                  ? `${base} · ${tx(t, "pausedBadge", "PAUSED")}`
+                  : base;
                 return h(SelectOption, { key: b.slug, value: b.slug }, label);
               }),
             ),
@@ -2537,6 +2565,38 @@
   }
 
   // -------------------------------------------------------------------------
+  // Pause strip (#141451) — the board is held: no new dispatch, running
+  // workers finish. Leads the page above the toolbar because it changes what
+  // the board DOES, not just how it looks.
+  // -------------------------------------------------------------------------
+
+  function PauseStrip(props) {
+    const { t } = useI18n();
+    const pause = props.pause;
+    if (!pause) return null;
+    return h("div", {
+      className: "hermes-kanban-pause flex flex-wrap items-center gap-2 rounded-md border border-amber-400/50 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-300/30 dark:bg-amber-300/10 dark:text-amber-100",
+      "data-testid": "kanban-pause-banner",
+      role: "status",
+    },
+      h("span", { className: "font-semibold" },
+        tx(t, "pauseBannerTitle", "Board paused")),
+      h("span", { className: "opacity-80" },
+        tx(t, "pauseBannerBody", "No new task will start. Running workers finish normally; queued work waits until you resume.")),
+      pause.reason
+        ? h("span", { className: "rounded bg-amber-500/20 px-1.5 py-px" }, pause.reason)
+        : null,
+      h("div", { className: "flex-1" }),
+      h(Button, {
+        onClick: props.onResume,
+        size: "sm",
+        outlined: true,
+        title: tx(t, "resumeTip", "Resume dispatch — queued tasks start on the next tick."),
+      }, tx(t, "resumeBoard", "Resume board")),
+    );
+  }
+
+  // -------------------------------------------------------------------------
   // Toolbar
   // -------------------------------------------------------------------------
 
@@ -2598,6 +2658,16 @@
         tx(t, "lanesByProfile", "Lanes by profile"),
       ),
       h("div", { className: "flex-1" }),
+      h(Button, {
+        onClick: (props.board && props.board.pause) ? props.onResumeBoard : props.onPauseBoard,
+        size: "sm",
+        outlined: true,
+        title: (props.board && props.board.pause)
+          ? tx(t, "resumeTip", "Resume dispatch — queued tasks start on the next tick.")
+          : tx(t, "pauseTip", "Stop dispatching new tasks — running workers finish. Resume any time."),
+      }, (props.board && props.board.pause)
+        ? tx(t, "resumeBoard", "Resume board")
+        : tx(t, "pauseBoard", "Pause board")),
       h(Button, {
         onClick: props.onNudgeDispatch,
         size: "sm",

@@ -16,6 +16,12 @@ export interface PluginManifest {
     override?: string;
     /** When true, the plugin may register without a sidebar tab (slot-only, etc.). */
     hidden?: boolean;
+    /**
+     * Optional live badge on the sidebar row. The shell polls `endpoint` and
+     * paints a chip while the JSON value at `path` is truthy (an object's
+     * `reason` rides the tooltip). The first consumer is Kanban's pause chip.
+     */
+    badge?: PluginTabBadge;
   };
   /** Declared for discovery; actual slots use registerSlot in the plugin bundle. */
   slots?: string[];
@@ -34,4 +40,18 @@ export interface PluginManifest {
 export interface RegisteredPlugin {
   manifest: PluginManifest;
   component: ComponentType;
+}
+
+/** `tab.badge` payload: poll `endpoint`, chip while `path` is truthy. */
+export interface PluginTabBadge {
+  /** Absolute API path, e.g. "/api/plugins/kanban/paused". */
+  endpoint: string;
+  /** Dotted JSON path whose truthiness means "badge on" (e.g. "paused"). */
+  path: string;
+  /** Optional dotted path to a number; >1 switches to `labelCountKey`. */
+  countPath?: string;
+  /** i18n path for the chip text (e.g. "kanban.pausedBadge"); defaults to "Paused". */
+  labelKey?: string;
+  /** i18n path for the plural chip text; `{count}` is substituted. */
+  labelCountKey?: string;
 }

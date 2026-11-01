@@ -1,5 +1,7 @@
 import { $gateway } from '@/store/gateway'
 import { $activeSessionId } from '@/store/session'
+import { ambientRequestFor } from '@/store/session-gone-latch'
+import { requestForOwnedSession } from '@/store/session-states'
 
 // Shared client for one-off ("one-shot") LLM requests: a single stateless model
 // call that runs OUTSIDE the conversation. It never appends to session history,
@@ -43,7 +45,10 @@ export async function requestOneShot(req: OneShotRequest): Promise<string> {
 
   const sessionId = req.sessionId === undefined ? $activeSessionId.get() : req.sessionId
 
-  const result = await gateway.request<{ text?: string }>('llm.oneshot', {
+  // A session-bound one-shot borrows that session's model, so it must reach the
+  // backend that OWNS the session: the ambient socket answers only for the
+  // launch profile and refuses a secondary profile's session_id.
+  const result = await requestForOwnedSession<{ text?: string }>(sessionId, ambientRequestFor(gateway), 'llm.oneshot', {
     input: req.input,
     instructions: req.instructions,
     max_tokens: req.maxTokens,

@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("aiohttp")
 
-from gateway.platforms.api_server import _resolve_media_to_data_urls  # noqa: E402
+from gateway.platforms.api_server import _resolve_media_to_data_urls
 
 # 1x1 transparent PNG
 _PNG_BYTES = base64.b64decode(
@@ -41,6 +41,13 @@ class TestResolveMediaToDataUrls(unittest.TestCase):
         p = self._write_png()
         out = _resolve_media_to_data_urls(f"See `MEDIA:{p}` above")
         self.assertIn("data:image/png;base64,", out)
+
+    def test_terminal_eos_sentinel_does_not_block_inlining(self):
+        """A leaked terminal ``<|eos|>`` glued to the tag (#111046) inlines exactly like the clean
+        response; the control token is dropped rather than returned to the HTTP client."""
+        p = self._write_png()
+        clean = f"Here you go: MEDIA:{p}"
+        self.assertEqual(_resolve_media_to_data_urls(clean + "<|eos|>"), _resolve_media_to_data_urls(clean))
 
     def test_missing_file_left_untouched(self):
         text = "MEDIA:/nonexistent/path/shot.png"

@@ -481,7 +481,7 @@ display:
   busy_input_mode: "steer"   # or "queue" or "interrupt" (default)
 ```
 
-`"queue"` mode prepares a separate follow-up turn. `"steer"` always waits for the next tool-result boundary. The default `"interrupt"` mode responds sooner during model generation while avoiding cancellation of a running tool; a long foreground `terminal` command (a build, a poller) is handed to the background so the agent sees your message right away instead of after the command exits. Use `/stop` when you want to cancel the turn and its foreground work. Unknown values fall back to `"interrupt"`.
+`"queue"` mode prepares a separate follow-up turn. `"steer"` always waits for the next tool-result boundary. The default `"interrupt"` mode responds sooner during model generation while avoiding cancellation of a running tool; a long foreground `terminal` command (a build, a poller) is handed to the background and a blocking `process` wait is released, including ones the agent starts later in the same tool batch, so the agent sees your message right away instead of after the command exits. Use `/stop` when you want to cancel the turn and its foreground work. Unknown values fall back to `"interrupt"`.
 
 `"steer"` has two automatic fallbacks: if the agent hasn't started yet, or if images are attached, the message falls back to `"queue"` behavior so nothing is lost.
 

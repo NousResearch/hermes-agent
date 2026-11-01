@@ -255,10 +255,8 @@ async def test_mattermost_thread_fallback_keeps_requested_result(policy, caplog)
     async def api(method, path, payload=None):
         frames.append(dict(payload))
         if "root_id" in payload:
-            adapter._last_post_status = 404
-            adapter._last_post_error = "root_id not found"
-            return {}
-        return {"id": "sent"}
+            return {}, 404, "root_id not found"
+        return {"id": "sent"}, 201, ""
 
     adapter._api = api
     adapter._resolve_root_id = AsyncMock(return_value="root")

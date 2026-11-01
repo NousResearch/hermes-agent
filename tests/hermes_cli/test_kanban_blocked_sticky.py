@@ -29,6 +29,7 @@ landed via #28754 / #28781 ahead of this fix.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -36,6 +37,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
@@ -156,8 +158,17 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
             assert kb.get_task(conn, tid).status == "blocked"
 
 
-def test_created_with_initial_status_blocked_is_not_promoted_by_recompute_ready(kanban_home: Path) -> None:
-    """Verify a task created with initial_status='blocked' remains blocked when parents complete."""
+def test_parentless_initial_status_blocked_remains_sticky(kanban_home: Path) -> None:
+    """Parentless creation holds remain the human-ops/R3 parking gate."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="parked", initial_status="blocked")
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, task_id).status == "blocked"
+
+
+def test_created_with_initial_status_blocked_promotes_when_parents_complete(kanban_home: Path) -> None:
+    """A graph-backed creation hold releases after all parents are terminal."""
     with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="parent task")
         child_id = kb.create_task(
@@ -165,13 +176,66 @@ def test_created_with_initial_status_blocked_is_not_promoted_by_recompute_ready(
         )
         assert kb.get_task(conn, child_id).status == "blocked"
 
-        # Complete parent task
-        kb.claim_task(conn, parent_id)
-        kb.complete_task(conn, parent_id, result="done")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ?",
+                (int(time.time()), parent_id),
+            )
         assert kb.get_task(conn, parent_id).status == "done"
 
-        # recompute_ready must NOT promote the blocked child task
-        promoted = kb.recompute_ready(conn)
-        assert promoted == 0
+        assert kb.recompute_ready(conn) == 1
+        assert kb.get_task(conn, child_id).status == "ready"
+
+
+def test_explicit_block_with_satisfied_parent_is_named_by_dispatch_tick(kanban_home: Path) -> None:
+    """Explicit worker/operator blocks stay sticky and cannot be silent."""
+    with kbc.connect() as conn:
+        parent_id = kb.create_task(conn, title="parent task")
+        child_id = kb.create_task(conn, title="needs input")
+        assert kb.block_task(conn, child_id, reason="choose an API")
+        kb.link_tasks(conn, parent_id, child_id)
+
+        kb.claim_task(conn, parent_id)
+        kb.complete_task(conn, parent_id, result="done")
+        result = kbd.dispatch_once(conn, dry_run=True)
+
         assert kb.get_task(conn, child_id).status == "blocked"
+        assert result.parent_satisfied_sticky == [child_id]
+
+
+def test_legacy_untagged_creation_hold_with_satisfied_parent_promotes(kanban_home: Path) -> None:
+    """Pre-source-tag creation events retain dependency-release behavior."""
+    with kbc.connect() as conn:
+        parent_id = kb.create_task(conn, title="parent task")
+        child_id = kb.create_task(conn, title="legacy hold", initial_status="blocked")
+        conn.execute(
+            "UPDATE task_events SET payload = ? WHERE task_id = ? AND kind = 'blocked'",
+            (json.dumps({"reason": "initial_status", "status": "blocked", "actor": "user"}), child_id),
+        )
+        conn.commit()
+        kb.link_tasks(conn, parent_id, child_id)
+
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ?",
+                (int(time.time()), parent_id),
+            )
+        assert kb.recompute_ready(conn) == 1
+        assert kb.get_task(conn, child_id).status == "ready"
+
+
+def test_explicit_block_cannot_spoof_legacy_creation_reason(kanban_home: Path) -> None:
+    """A user-controlled reason never turns an explicit block into a creation hold."""
+    with kbc.connect() as conn:
+        parent_id = kb.create_task(conn, title="parent task")
+        child_id = kb.create_task(conn, title="explicit hold")
+        assert kb.block_task(conn, child_id, reason="initial_status", kind="needs_input")
+        kb.link_tasks(conn, parent_id, child_id)
+
+        kb.claim_task(conn, parent_id)
+        kb.complete_task(conn, parent_id, result="done")
+        result = kbd.dispatch_once(conn, dry_run=True)
+
+        assert kb.get_task(conn, child_id).status == "blocked"
+        assert result.parent_satisfied_sticky == [child_id]
 

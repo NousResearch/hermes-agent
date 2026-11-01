@@ -1,8 +1,26 @@
-import { fromThreadMessageLike, getAutoStatus, MessageRepository } from '@assistant-ui/core/internal'
-import type { ExportedMessageRepository, ThreadMessage } from '@assistant-ui/react'
+import {
+  AssistantRuntimeImpl,
+  fromThreadMessageLike,
+  getAutoStatus,
+  MessageRepository
+} from '@assistant-ui/core/internal'
+import {
+  AssistantRuntimeProvider,
+  type ExportedMessageRepository,
+  type ExternalStoreAdapter,
+  type ThreadMessage,
+  useAuiState
+} from '@assistant-ui/react'
+import { render, screen, waitFor } from '@testing-library/react'
+import { createElement, StrictMode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { syncRepositoryIncrementally } from './incremental-external-store-runtime'
+import {
+  IncrementalExternalStoreRuntimeCore,
+  stabilizeThreadListSnapshot,
+  syncRepositoryIncrementally,
+  useIncrementalExternalStoreRuntime
+} from './incremental-external-store-runtime'
 
 const STATUS = getAutoStatus(false, false, false, false, undefined)
 
@@ -140,5 +158,92 @@ describe('syncRepositoryIncrementally', () => {
     })
 
     expect(result.map(item => item.id)).toEqual(['a'])
+  })
+})
+
+describe('stabilizeThreadListSnapshot', () => {
+  it('caches real runtime snapshots without hiding list updates, including while unsubscribed', () => {
+    const adapter: ExternalStoreAdapter = { messages: [], onNew: async () => {} }
+    const core = new IncrementalExternalStoreRuntimeCore(adapter)
+    const { threads } = stabilizeThreadListSnapshot(new AssistantRuntimeImpl(core))
+    const initial = threads.getState()
+    expect(threads.getState()).toBe(initial)
+
+    const observed: ReturnType<typeof threads.getState>[] = []
+    const unsubscribe = threads.subscribe(() => observed.push(threads.getState()))
+    expect(threads.getState()).toBe(initial)
+
+    core.setAdapter({
+      ...adapter,
+      adapters: { threadList: { threadId: 'next', threads: [{ id: 'next', title: 'Next', status: 'regular' }] } }
+    })
+    const switched = threads.getState()
+    expect(observed.at(-1)).toBe(switched)
+    expect(switched).not.toBe(initial)
+    expect(switched.mainThreadId).toBe('next')
+    expect(switched.threadIds).toEqual(['next'])
+    expect(threads.getState()).toBe(switched)
+
+    unsubscribe()
+    core.setAdapter({
+      ...adapter,
+      adapters: {
+        threadList: {
+          threadId: 'next',
+          threads: [{ id: 'next', title: 'Renamed', status: 'regular' }],
+          archivedThreads: [{ id: 'old', status: 'archived' }],
+          isLoading: true
+        }
+      }
+    })
+    const updated = threads.getState()
+    expect(updated).not.toBe(switched)
+    expect(updated.threadItems.next.title).toBe('Renamed')
+    expect(updated.archivedThreadIds).toEqual(['old'])
+    expect(updated.isLoading).toBe(true)
+    expect(threads.getState()).toBe(updated)
+    expect(observed.at(-1)).toBe(switched)
+  })
+
+  it('settles the real provider across mount, streaming updates and session switches', async () => {
+    function Consumer() {
+      const messages = useAuiState(state => state.thread.messages)
+
+      return createElement(
+        'output',
+        null,
+        messages.map(item => item.content.map(part => (part.type === 'text' ? part.text : '')).join('')).join('|')
+      )
+    }
+
+    function Harness({ text, threadId }: { text: string; threadId: string }) {
+      // Fresh adapter and repository on each render, as in ChatRuntimeBoundary.
+      const runtime = useIncrementalExternalStoreRuntime({
+        messageRepository: exported(chain([message('reply', text)])),
+        onNew: async () => {},
+        adapters: { threadList: { threadId } }
+      })
+
+      return createElement(AssistantRuntimeProvider, { runtime }, createElement(Consumer))
+    }
+
+    const view = (text: string, threadId = 'first') =>
+      createElement(StrictMode, null, createElement(Harness, { text, threadId }))
+
+    const { rerender, unmount } = render(view('hello'))
+
+    try {
+      expect(screen.getByRole('status').textContent).toBe('hello')
+
+      for (const text of ['hello w', 'hello world']) {
+        rerender(view(text))
+        await waitFor(() => expect(screen.getByRole('status').textContent).toBe(text))
+      }
+
+      rerender(view('another session', 'second'))
+      await waitFor(() => expect(screen.getByRole('status').textContent).toBe('another session'))
+    } finally {
+      unmount()
+    }
   })
 })

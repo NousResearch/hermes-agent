@@ -34754,6 +34754,17 @@
               }
             ],
             "default": null
+          },
+          "drain": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RuntimeDrain"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -34764,6 +34775,42 @@
           "session_create"
         ],
         "title": "RuntimeDescribeResult",
+        "type": "object"
+      },
+      "RuntimeDrain": {
+        "additionalProperties": false,
+        "description": "An owner draining for ``hermes update``: what it updates to and the work it still finishes.",
+        "properties": {
+          "reason": {
+            "const": "update",
+            "title": "Reason",
+            "type": "string"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target"
+          },
+          "waiting_for": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "default": {},
+            "title": "Waiting For",
+            "type": "object"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "RuntimeDrain",
         "type": "object"
       },
       "SecretRequestParams": {

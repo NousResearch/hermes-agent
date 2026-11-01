@@ -4,6 +4,10 @@ import type { Translations } from './types'
 
 // Shell notices (remote-display toast, butterbar, keep-awake offer), spread into en.ts.
 export const enNotices = {
+  gatewayUpdate: {
+    updating: (target, turns) =>
+      `${target ? `Updating to ${target}` : 'Updating Hermes'}${turns > 0 ? ` · finishing ${turns} turn${turns === 1 ? '' : 's'}` : '…'}`
+  },
   remoteDisplayBanner: {
     message: reason =>
       `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`
@@ -44,5 +48,5 @@ export const enNotices = {
   }
 } satisfies Pick<
   Translations,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'connectorOffer'
+  'gatewayUpdate' | 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'connectorOffer'
 >

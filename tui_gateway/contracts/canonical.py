@@ -338,6 +338,14 @@ class SessionCreateDescriptor(Result):
     parameters: list[str]
 
 
+class RuntimeDrain(Result):
+    """An owner draining for ``hermes update``: what it updates to and the work it still finishes."""
+    reason: Literal["update"]
+    target: str | None = None
+    #: Live work units by kind (``chat``, ``cron``, ``delegation``, ...).
+    waiting_for: dict[str, int] = {}
+
+
 class RuntimeDescribeResult(Result):
     instance_id: str
     profile_id: str
@@ -346,6 +354,8 @@ class RuntimeDescribeResult(Result):
     session_create: SessionCreateDescriptor
     #: The owning profile's resolved skin (``resolve_skin()``, main's ``gateway.ready.skin``).
     skin: SkinPayload | None = None
+    #: Set while the owner finishes its turns before an update replaces it; null otherwise.
+    drain: RuntimeDrain | None = None
 
 
 canonical_method("runtime.describe", params=RuntimeDescribeParams, result=RuntimeDescribeResult,

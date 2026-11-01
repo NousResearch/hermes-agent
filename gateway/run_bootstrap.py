@@ -287,7 +287,8 @@ async def _start_gateway_start_control_socket(runner):
         )
         from gateway.run_plugin_rewire import reload_plugins_verb
         from gateway.run_active_work_verb import active_work_verb
-        from gateway.drain_control import RESTART_WAIT_REASON
+        from gateway.drain_control import (RESTART_WAIT_REASON, drain_status, mark_update_drain,
+                                           pause_if_idle_verb)
         descriptor = runner.session_runtime_descriptor
 
         def _identify_runtime():
@@ -303,6 +304,8 @@ async def _start_gateway_start_control_socket(runner):
                     payload['capabilities'] = []
             if payload.get('state') == 'draining' and descriptor.get('drain_reason'):
                 payload['drain_reason'] = descriptor['drain_reason']
+            if payload.get('state') == 'draining':
+                payload['drain'] = _drain_on_loop()
             payload["supervisor"] = {"manual": "none", "desktop": "none"}.get(
                 payload.get("supervisor"), payload.get("supervisor", "none"))
             return payload
@@ -314,7 +317,21 @@ async def _start_gateway_start_control_socket(runner):
         # manager) relaunches after the code swap.
         _main_loop = asyncio.get_running_loop()
 
-        def _pause_for_update_handler() -> dict:
+        def _drain_on_loop():
+            # The work units live on the loop; identify answers on the socket thread. A loop too busy
+            # to answer within a second still gets why and where to, just not the counts.
+            box: list = []
+            ready = threading.Event()
+
+            def _read() -> None:
+                try:
+                    box.append(drain_status(runner))
+                finally:
+                    ready.set()
+            _main_loop.call_soon_threadsafe(_read)
+            return box[0] if ready.wait(timeout=1.0) and box else drain_status(runner, work=False)
+
+        def _pause_for_update_handler(params) -> dict:
             try:
                 from hermes_cli.gateway import _get_restart_drain_timeout
                 _drain = float(_get_restart_drain_timeout())
@@ -325,6 +342,7 @@ async def _start_gateway_start_control_socket(runner):
 
             def _request() -> None:
                 try:
+                    mark_update_drain(runner, params.get("target"))  # clients render "updating to <target>"
                     accepted_box.append(runner.request_restart(detached=False, via_service=True))
                 finally:
                     _done.set()
@@ -353,6 +371,9 @@ async def _start_gateway_start_control_socket(runner):
 
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler, "identify": _identify_runtime,
+                           # `hermes update --when-idle`: drain only if nothing is in flight, decided
+                           # in one loop step so no turn is admitted between the check and the pause.
+                           "pause-if-idle": pause_if_idle_verb(runner, _main_loop),
                            "rescan-profiles": _rescan_profiles_handler,
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),
                            "unserve-profile": unserve_profile_verb(runner),

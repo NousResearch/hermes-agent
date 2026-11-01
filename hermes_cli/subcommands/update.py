@@ -112,4 +112,21 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help="Update code and dependencies but defer the fleet restart. Use for updates "
              "running inside a gateway cgroup, then restart gateways separately.",
     )
-    update_parser.set_defaults(func=cmd_update)
+    from hermes_cli.update_cmd_when_idle import DEFAULT_MAX_WAIT_S, parse_max_wait
+    update_parser.add_argument(
+        "--when-idle", nargs="?", const=DEFAULT_MAX_WAIT_S, default=None, type=parse_max_wait,
+        metavar="MAX_WAIT",
+        help="Update only once the gateway's active-work list is empty (chat turns, cron runs, managed "
+             "and API runs, subagents) for two checks in a row, waiting up to MAX_WAIT (90s, 30m, 2h; "
+             "default 1h). "
+             "Exits 0 without changes when already up to date, 75 when still busy at the bound. "
+             "A target that failed under --when-idle is skipped by later --when-idle runs until a "
+             "newer version ships; a plain `hermes update` always retries it. For schedulers.")
+
+    def _update(args):
+        if getattr(args, "when_idle", None) is None:
+            return cmd_update(args)
+        from hermes_cli.update_cmd_when_idle import run_when_idle
+        return run_when_idle(args, cmd_update)
+
+    update_parser.set_defaults(func=_update)

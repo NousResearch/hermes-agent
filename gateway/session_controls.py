@@ -97,7 +97,7 @@ _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info',
                                'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
                                'prompt.steer_queued', 'prompt.replace_queued',
                                'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
-                               'approval.respond', 'clarify.respond'})
+                               'approval.respond', 'clarify.respond', 'runtime.describe'})
 
 
 def display_projection(history, profile_home):
@@ -542,6 +542,7 @@ class AuthorityConnection:
         await self.ping(ref, params)
         from gateway.session_policy import CREATE_FIELDS, SURFACES
         from gateway.session_skin import resolved_skin
+        from gateway.drain_control import update_drain
         return {'instance_id': self.authority.instance_id, 'profile_id': self.authority.profile_id,
                 'authority_epoch': self.authority.epoch,
                 'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1',
@@ -549,7 +550,10 @@ class AuthorityConnection:
                 'session_create': {'sources': sorted(SURFACES),
                                    'parameters': sorted(CREATE_FIELDS | {'title'})},
                 # Main's ``gateway.ready.skin``: the canonical client's own ready carries it.
-                'skin': await asyncio.to_thread(resolved_skin)}
+                'skin': await asyncio.to_thread(resolved_skin),
+                # Why an owner that is finishing its turns is going, so an attached client renders
+                # "Updating to v0.23.1, finishing 1 turn" rather than a refusal (on the loop: no hop).
+                'drain': update_drain(self.authority.runner)}
 
     async def info(self, ref, params):
         from gateway.session_local_inventory import snapshot_info

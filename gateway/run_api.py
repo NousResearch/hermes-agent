@@ -393,7 +393,13 @@ class GatewayRuntimeAPI:
                 await send({'type': 'websocket.close', 'code': 1013})
             else:
                 from starlette.responses import JSONResponse
-                await JSONResponse({'error': 'gateway_not_ready', 'state': descriptor['state']},
+                from gateway.drain_control import drain_status
+                # A restart wait keeps ``state: ready`` on the descriptor; the client must still read
+                # ``draining`` here, and why and where to (#142254), or it replaces a live owner.
+                # No work counts: this answers per request, and runtime.describe carries them.
+                drain = drain_status(self.runner, work=False)
+                body = {'error': 'gateway_not_ready', 'state': 'draining' if drain else descriptor['state']}
+                await JSONResponse({**body, **({'drain': drain} if drain else {})},
                                    status_code=503)(scope, receive, send)
             return
         # Capture before Uvicorn's proxy middleware rewrites scope.client (native grants, both kinds).

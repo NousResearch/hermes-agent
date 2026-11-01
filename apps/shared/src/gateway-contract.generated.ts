@@ -4837,6 +4837,7 @@ export interface RuntimeDescribeResult {
   capabilities: string[]
   session_create: SessionCreateDescriptor
   skin?: SkinPayload | null
+  drain?: RuntimeDrain | null
 }
 export interface SessionCreateDescriptor {
   sources: string[]
@@ -4855,6 +4856,12 @@ export interface SkinPayload {
   tool_prefix?: string
   help_header?: string
   [key: string]: unknown
+}
+/** An owner draining for ``hermes update``: what it updates to and the work it still finishes. */
+export interface RuntimeDrain {
+  reason: 'update'
+  target?: string | null
+  waiting_for?: Record<string, number>
 }
 export interface ClarifyRespondParams {
   session_id: string

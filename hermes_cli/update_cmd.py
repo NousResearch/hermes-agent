@@ -1419,7 +1419,8 @@ def _prepare_checkout_for_update(
         rollback_branch = current_branch
         # The switch (or its -B fallback) is this update's first tree write: bind both commits first,
         # on the POSIX pause's baseline (its refusal, sticky, reaches the switch's arm_commit_point).
-        _posix_pause.pause_at_commit_point()
+        _posix_pause.pause_at_commit_point(lambda: _posix_pause.update_target_label(
+            git_cmd, _m().PROJECT_ROOT, _resolved_commit(git_cmd, target_ref)))  # the drain names the target
         with _checkout_move(_windows_gateway_resume, *(_resolved_commit(git_cmd, ref) for ref in (
                 f"refs/heads/{branch}", f"origin/{branch}"))):
             track_result = _switch_branch_at_commit_point(

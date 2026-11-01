@@ -176,6 +176,15 @@ def debt_sha_for_move(pre: str, target: str) -> str:
     return pre if start and pre != start else target
 
 
+#: The commit each armed tree move of this process lands on, in order: what this run tried.
+_armed_targets: list[str] = []
+
+
+def armed_move_targets() -> list[str]:
+    """Copy of the commits this process armed a checkout move to (``hermes update --when-idle``)."""
+    return list(_armed_targets)
+
+
 def arm_commit_point(git_cmd, root: Path, expected_sha: str, **move) -> str | None:
     """Arm the obligations, then the tree-move marker (``arm_tree_move(**move)``): no marker, no move.
 
@@ -183,12 +192,13 @@ def arm_commit_point(git_cmd, root: Path, expected_sha: str, **move) -> str | No
     (``disarm_commit_obligations``), and the caller must stop before git writes a file.
     Linux/macOS gateways are paused first: this is every route's first checkout move.
     """
-    from hermes_cli.update_cmd_posix_pause import pause_at_commit_point
-    if refused := pause_at_commit_point():
+    from hermes_cli.update_cmd_posix_pause import pause_at_commit_point, update_target_label
+    if refused := pause_at_commit_point(lambda: update_target_label(git_cmd, root, expected_sha)):
         return refused
     try:
         arm_commit_obligations(root, expected_sha)
         arm_tree_move(git_cmd, root, **move)
+        _armed_targets.append(move["target"])
     except OSError as exc:
         disarm_commit_obligations()
         head = head_and_branch(git_cmd, root)[0] if _run_start is not None else ""

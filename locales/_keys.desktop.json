@@ -1739,6 +1739,7 @@
     "gatewayGroupOpen.lookupFailed",
     "gatewayGroupOpen.missing",
     "gatewayGroupOpen.opening",
+    "gatewayUpdate.updating",
     "install.activeDesc",
     "install.applyRemote",
     "install.authNeedsOauth",

@@ -4,6 +4,10 @@ import { ruSessionCommands } from './ru_session_commands'
 
 // Shell notices (remote-display toast, butterbar, keep-awake offer), spread into ru.ts.
 export const ruNotices = {
+  gatewayUpdate: {
+    updating: (target, turns) =>
+      `${target ? `Обновление до ${target}` : 'Обновление Hermes'}${turns > 0 ? ` · завершается ходов: ${turns}` : '…'}`
+  },
   remoteDisplayBanner: {
     message: reason =>
       `Включён программный рендеринг — обнаружен удалённый дисплей (${reason}). GPU-ускорение отключено, чтобы избежать мерцания.`
@@ -48,5 +52,5 @@ export const ruNotices = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+  'gatewayUpdate' | 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
 >

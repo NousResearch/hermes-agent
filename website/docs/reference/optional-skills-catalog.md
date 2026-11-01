@@ -39,6 +39,7 @@ hermes skills uninstall <skill-name>
 | [**honcho**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-honcho.md) | Configure and troubleshoot Honcho memory for Hermes. |
 | [**opencode**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-opencode.md) | Delegate coding to OpenCode CLI (features, PR review). |
 | [**openhands**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands.md) | Delegate coding to OpenHands CLI (model-agnostic, LiteLLM). |
+| [**request-scope-resolution**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-request-scope-resolution.md) | Resolve vague requests via JEV, memory, then user. |
 
 ## blockchain
 

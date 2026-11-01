@@ -22,7 +22,7 @@ const COMPACTION_MARKERS = ['[CONTEXT COMPACTION', '[CONTEXT SUMMARY]:', '[END O
 /** A human-authored live user turn (`agent/context_compressor.py::split_user_originated_turn`): no
  * display-only kind other than a typed /steer, not a compaction handoff carrier, and not a row a
  * compression archived (history the snapshot shows, never a turn to rewind to). */
-const isUserTurn = (row: Record<string, unknown>) =>
+export const isUserTurn = (row: Record<string, unknown>) =>
   row.role === 'user' &&
   (!row.display_kind || row.display_kind === 'steer') &&
   Number.isSafeInteger(row.row_id) &&
@@ -40,7 +40,7 @@ const TEXT_PARTS = new Set(['input_text', 'output_text', 'text'])
 
 /** Lossless /retry text (agent/context_compressor_retry.py::retryable_user_text): '' when the turn has
  * no text, null when it carries media, unknown or annotated parts (no replay protocol: fail closed). */
-function retryText(content: unknown): null | string {
+export function retryText(content: unknown): null | string {
   let text = ''
 
   for (const part of typeof content === 'string' ? [content] : Array.isArray(content) ? content : [null]) {
@@ -190,7 +190,7 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
 }
 
 /** Main's busy text for a refused rewind: wait for a running /compress, else stop the reply; null otherwise. */
-function rewindBusyText(error: unknown, intent: 'retry' | 'undo'): null | string {
+export function rewindBusyText(error: unknown, intent: 'retry' | 'rewind' | 'undo'): null | string {
   if (!(error instanceof JsonRpcGatewayError)) {
     return null
   }

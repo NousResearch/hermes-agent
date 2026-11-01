@@ -67,6 +67,7 @@ import { captureDestination, isCurrentDestination, type SubmissionDestination } 
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
+import { useApprovalAnswers } from './useApprovalAnswers.js'
 import { useBatteryPoll } from './useBatteryPoll.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
@@ -1240,39 +1241,7 @@ export function useMainApp(gw: GatewayClient) {
     done()
   }, [])
 
-  const answerApproval = useCallback(
-    (choice: string) => {
-      const fresh = capturePromptResponseGuard('approval', overlay.approval)
-
-      if (!fresh() || !overlay.approval) {
-        return
-      }
-
-      const settle = () => {
-        if (!fresh()) {
-          return
-        }
-
-        patchOverlayState({ approval: null })
-        patchTurnState({
-          outcome: choice === 'deny' ? t('session.approval.denied') : t('session.approval.approved', choice)
-        })
-        patchUiState({ status: 'running…' })
-      }
-
-      // Canonical shared controls answer through the generation-bound RPC; a
-      // legacy server→client request resolves its response frame locally.
-      if (overlay.approval.sharedControl) {
-        return rpc<SharedControlRespondResponse>('approval.respond', {
-          choice,
-          ...sharedControlParams(overlay.approval)
-        }).then(r => r && settle())
-      }
-
-      respondWith(overlay.approval.requestId, { choice }, settle)
-    },
-    [overlay.approval, respondWith, rpc]
-  )
+  const approvalAnswers = useApprovalAnswers(overlay.approval, gw.isCanonical, composerActions.enqueue, respondWith, rpc, sys)
 
   const answerSudo = useCallback(
     (pw: string) => {
@@ -1507,7 +1476,7 @@ export function useMainApp(gw: GatewayClient) {
     () => ({
       activateLiveSession: session.activateLiveSession,
       closeLiveSession,
-      answerApproval,
+      ...approvalAnswers,
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
@@ -1533,7 +1502,7 @@ export function useMainApp(gw: GatewayClient) {
       setStickyPrompt
     }),
     [
-      answerApproval,
+      approvalAnswers,
       answerClarifyQuestion,
       answerSecret,
       answerSudo,

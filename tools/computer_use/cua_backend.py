@@ -48,7 +48,8 @@ def _cua_no_overlay() -> bool:
     fullscreen always-on-top all-workspaces window with no compositor-owned lifecycle, so an unclean session
     end can leave it wedged over every app); on for Windows and Linux Wayland (compositor owns the surface).
 
-    Explicit ``True`` / ``False`` overrides auto-detection. See #28152, #47032.
+    Explicit ``True`` / ``False`` overrides auto-detection (``False`` keeps the cursor only in a
+    daemon-backed permission mode — see ``_warn_if_overlay_unavailable``). See #28152, #47032.
     """
     val = _computer_use_cfg().get("no_overlay")
     if val is not None or sys.platform != "linux":
@@ -60,9 +61,29 @@ def _cua_no_overlay() -> bool:
         # can leave it stuck above every app on every workspace, wedging desktop input until the app
         # restarts — the same failure class as the HUD window on Mutter/X11 (#83473). There is no
         # compositor-owned surface to tear down with the client connection, so default the overlay off on
-        # X11 too; set computer_use.no_overlay: false to keep the cursor. Wayland keeps it: the compositor
-        # owns the overlay surface lifecycle there.
+        # X11 too; set computer_use.no_overlay: false to keep the cursor (daemon-backed permission modes
+        # only). Wayland keeps it: the compositor owns the overlay surface lifecycle there.
         os.environ.get("XDG_SESSION_TYPE") != "wayland" and not os.environ.get("WAYLAND_DISPLAY"))
+
+
+def _cua_explicit_overlay_requested() -> bool:
+    """True only when ``computer_use.no_overlay`` is EXPLICITLY false — the user asked to keep the agent
+    cursor overlay. Auto-detect verdicts (Windows / Wayland default-on) do not count: nobody asked, so
+    nobody needs the no-daemon warning."""
+    val = _computer_use_cfg().get("no_overlay")
+    return val is not None and not bool(val)
+
+
+def _warn_if_overlay_unavailable(permission_mode: str) -> None:
+    """The cursor overlay is rendered only by an embedded daemon's UI runloop; the standard permission mode
+    spawns a bare ``cua-driver mcp`` child that never attaches to one, so an explicit ``no_overlay: false``
+    is silently accepted but cannot produce a cursor (#134243). Warn instead of staying a silent no-op."""
+    if permission_mode == "standard" and _cua_explicit_overlay_requested():
+        logger.warning(
+            "computer_use.no_overlay=false asks to keep the agent cursor overlay, but permission_mode=standard "
+            "spawns a bare 'cua-driver mcp' child with no overlay-rendering daemon, so no cursor can appear. "
+            "Set computer_use.permission_mode: bounded for a daemon-backed overlay, or clear computer_use.no_overlay."
+        )
 
 
 def _cua_telemetry_disabled() -> bool:
@@ -220,7 +241,8 @@ def _linux_session_locked() -> Optional[bool]:
     half-disables the AX tree, so discovery legitimately returns nothing — which otherwise reads as a driver bug.
     True/False when loginctl answers, None when unavailable (non-Linux, no systemd-logind, probe failure)."""
     # Auto-detect: macOS overlay can peg a core indefinitely after a computer_use session (#47032). Prefer
-    # off until the driver teardown is solid; set computer_use.no_overlay: false to keep the cursor.
+    # off until the driver teardown is solid; set computer_use.no_overlay: false to keep the cursor
+    # (daemon-backed permission modes only).
     if sys.platform != "linux":
         return None
     try:
@@ -278,6 +300,8 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._clear_active_target()
 
     def start(self) -> None:
+        # A requested-but-impossible overlay is knowable from config alone, before any runtime work.
+        _warn_if_overlay_unavailable(self.permission_mode)
         # Driver inside the terminal backend: the sandbox image pins its own cua-driver; the host
         # binary (if any) is not the one that will run, so neither its acquisition nor its contract
         # matters. On the host, runtime acquisition is on-demand, never the explicit install command

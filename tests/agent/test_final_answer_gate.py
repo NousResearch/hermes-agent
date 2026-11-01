@@ -37,7 +37,7 @@ def register(ctx):
             return {"action": "continue", "message": 42}
         if mode == "retrieve" and not any(row.get("role") == "tool" for row in payload["messages"]):
             return {"action": "continue", "message": "INTERNAL_REPAIR: read the evidence file."}
-        if mode in {"fail", "reasoning", "truncated"}:
+        if mode in {"fail", "reasoning", "truncated", "block"}:
             return {"action": "fail", "message": "Review rejected this answer.", "code": "evidence_missing"}
         if mode in {"repeat", "budget", "veto"} or (mode == "continue" and payload.get("attempt", 0) == 0):
             return {"action": "continue", "message": "INTERNAL_REPAIR: verify the requested evidence."}
@@ -49,6 +49,10 @@ def register(ctx):
         if json.loads((root / "mode.json").read_text()) == "veto":
             return {"action": "fail", "message": "A second policy rejected this answer."}
     ctx.register_hook("before_turn_end", veto)
+    def block(**payload):
+        if json.loads((root / "mode.json").read_text()) == "block":
+            return {"action": "block", "message": "Policy blocked this prompt."}
+    ctx.register_hook("pre_llm_call", block)
     def transform(response_text, **kwargs):
         if json.loads((root / "mode.json").read_text()) == "transform":
             return "Public transformed answer."
@@ -300,6 +304,18 @@ def test_accepted_and_unregistered_turns_preserve_history(gate_runtime, mode, en
         assert not delivered
     else:
         assert "PRIVATE_DRAFT" in "".join(delivered)
+
+
+def test_vetoed_prompt_skips_completion_review(gate_runtime):
+    from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON
+    start, _db, requests, plugin, _root = gate_runtime
+    agent, _delivered = start("block")
+    result = agent.run_conversation("Check the evidence.")
+    assert requests == []
+    assert result["final_response"] == "Policy blocked this prompt."
+    assert result["turn_exit_reason"] == PRE_LLM_BLOCK_EXIT_REASON
+    assert result["failed"] is False
+    assert not (plugin / "seen.jsonl").exists()
 
 
 @pytest.mark.parametrize("api_mode", ["anthropic_messages", "codex_responses"])

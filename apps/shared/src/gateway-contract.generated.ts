@@ -2255,6 +2255,7 @@ export interface VaultItem {
   identifier?: string | null
   identifier_type?: string | null
   has_otp?: boolean | null
+  allowed_origins?: string[] | null
   backend: string
 }
 export interface VaultSourcesResult {

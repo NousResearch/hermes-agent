@@ -69,6 +69,46 @@ def test_add_then_list_is_password_free(home):
     assert "password" not in dumped
 
 
+def test_list_accepts_multi_origin_manager_items(home, monkeypatch):
+    """A manager login bound to several origins carries ``allowed_origins`` in the listing;
+    the key is declared on ``VaultItem`` so the ``extra="forbid"`` result-frame validation
+    keeps the item instead of flagging it (and clients dropping it, #131814)."""
+    from agent.vault_store import VaultItemMeta
+    from tui_gateway.contracts import METHODS
+
+    class _ManagerBackend:
+        name = "bitwarden"
+        display_name = "Bitwarden"
+        needs_unlock = True
+
+        def is_unlocked(self):
+            return True
+
+        def list_items(self):
+            return [
+                VaultItemMeta(
+                    id="bw:1",
+                    kind="login",
+                    label="Example",
+                    origin="https://example.com",
+                    created_at="2026-01-01",
+                    allowed_origins=("https://example.com", "https://www.example.com"),
+                )
+            ]
+
+    monkeypatch.setattr(
+        "agent.vault_backends.enabled_backends", lambda: [_ManagerBackend()]
+    )
+
+    listed = _result(srv._methods["vault.list"](3, {}))
+    assert listed["items"][0]["allowed_origins"] == [
+        "https://example.com",
+        "https://www.example.com",
+    ]
+    # The declared contract must admit the wire shape the backends emit (extra="forbid").
+    METHODS["vault.list"].result.model_validate(listed)
+
+
 def test_add_validation_errors_are_clean(home):
     err = _error(
         srv._methods["vault.add"](

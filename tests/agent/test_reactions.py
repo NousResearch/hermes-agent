@@ -14,6 +14,10 @@ from agent.reactions import VIBE, detect_reaction
         "ty",
         "you're the best <3",
         "❤️",
+        "Gracias!",
+        "muchas gracias 🙏",
+        "te amo",
+        "sos un buen bot",
     ],
 )
 def test_affection_fires_vibe(text):
@@ -31,6 +35,7 @@ def test_affection_fires_vibe(text):
         "it's broken </3",  # broken heart is not affection
         "the ferry departs at 3",  # 'ty' must be word-bounded, not match 'ferTY'-like
         "commit the changes",
+        "te quiero preguntar algo",  # 'te quiero' doubles as "I want to" — must not fire
     ],
 )
 def test_neutral_or_negative_does_not_fire(text):

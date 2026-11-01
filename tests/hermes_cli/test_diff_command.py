@@ -114,3 +114,46 @@ def test_diff_session_empty_reports_no_changes(tmp_path, monkeypatch):
     assert "No changes" in out
 
 
+
+# ---------------------------------------------------------------------------
+# Turn mode — stubbed checkpoint manager
+# ---------------------------------------------------------------------------
+
+
+class _TurnMgr:
+    def __init__(self, result):
+        self.enabled = True
+        self._result = result
+        self.calls = []
+
+    def unsupported_backend_reason(self, task_id="default"):
+        return None
+
+    def turn_diff(self, cwd, index=0):
+        self.calls.append((cwd, index))
+        return self._result
+
+
+def test_diff_turn_passes_the_requested_index(tmp_path, monkeypatch):
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    mgr = _TurnMgr({"success": True, "stat": " main.py | 1 +\n", "diff": "+print('x')\n", "turn": 2})
+    out = _run(_Stub(_Agent(mgr)), "/diff turn 2")
+    assert mgr.calls == [(str(tmp_path), 2)]
+    assert "main.py | 1 +" in out
+    assert "+print('x')" in out
+
+
+def test_diff_turn_defaults_to_the_current_turn(tmp_path, monkeypatch):
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    mgr = _TurnMgr({"success": True, "stat": "", "diff": "", "empty": True})
+    out = _run(_Stub(_Agent(mgr)), "/diff turn")
+    assert mgr.calls == [(str(tmp_path), 0)]
+    assert "No changes" in out
+
+
+def test_diff_turn_stat_only_hides_the_body(tmp_path, monkeypatch):
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    mgr = _TurnMgr({"success": True, "stat": " main.py | 1 +\n", "diff": "+print('x')\n"})
+    out = _run(_Stub(_Agent(mgr)), "/diff turn --stat")
+    assert "main.py | 1 +" in out
+    assert "+print('x')" not in out

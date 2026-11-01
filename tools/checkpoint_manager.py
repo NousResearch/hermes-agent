@@ -1115,6 +1115,67 @@ class CheckpointManager:
                 result["empty"] = True
         return result
 
+    def turn_diff(self, working_dir: str, index: int = 0) -> dict:
+        """Show one turn's own changes: from that turn's checkpoint to the next boundary.
+
+        This powers ``/diff turn [N]``.  A snapshot is taken *before* each
+        file-mutating tool call and deduplicated per turn, so a checkpoint is a
+        turn's starting state and the next checkpoint is the following turn's
+        starting state.  Consecutive entries therefore bound exactly one turn's
+        mutations — unlike :meth:`session_diff`, which is cumulative.
+
+        ``index=0`` is the current turn: the turn that started at the newest
+        checkpoint, so its changes run to the live working tree (the same
+        comparison :meth:`diff` makes).  ``index=N`` is the turn that began N
+        checkpoints back, diffed against the next checkpoint in.
+
+        Returns the same shape as :meth:`diff` plus ``turn`` (the index asked
+        for) and ``checkpoint`` (the commit the turn started at).
+        """
+        from tools.checkpoint_pruning import PruneError, store_lock
+
+        try:
+            with store_lock(_resolve_checkpoint_base()):
+                return self._turn_diff(working_dir, index)
+        except (PruneError, OSError) as exc:
+            return {"success": False, "error": str(exc)}
+
+    def _turn_diff(self, working_dir: str, index: int) -> dict:
+        abs_dir = str(_normalize_path(working_dir))
+        store = _store_path()
+
+        checkpoints = self.list_checkpoints(abs_dir)
+        if not checkpoints:
+            return {"success": True, "stat": "", "diff": "", "empty": True}
+        if not 0 <= index < len(checkpoints):
+            kept = f"0-{len(checkpoints) - 1}" if len(checkpoints) > 1 else "0"
+            return {
+                "success": False,
+                "error": f"Turn {index} has no retained checkpoint (kept: {kept})",
+            }
+
+        start = checkpoints[index]["hash"]
+        if index == 0:  # current turn: its checkpoint up to the live working tree
+            result = self._diff(abs_dir, start)
+            if not result.get("success"):
+                return result
+        else:  # a completed turn: its checkpoint up to the following one
+            end = checkpoints[index - 1]["hash"]
+            base = ["diff-tree", "-r", "-M", "--no-commit-id"]
+            ok_stat, stat_out, _ = _run_git([*base, "--stat", start, end], store, abs_dir)
+            ok_diff, diff_out, _ = _run_git([*base, "-p", "--no-color", start, end], store, abs_dir)
+            if not ok_stat and not ok_diff:
+                return {"success": False, "error": "Could not generate diff"}
+            result = {
+                "success": True,
+                "stat": stat_out if ok_stat else "",
+                "diff": diff_out if ok_diff else "",
+            }
+
+        result["turn"] = index
+        result["checkpoint"] = start
+        return result
+
     def restore(
         self,
         working_dir: str,

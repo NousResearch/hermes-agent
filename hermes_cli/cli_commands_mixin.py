@@ -34,7 +34,8 @@ from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.cli_agent_setup_mixin import _gateway_open, _retire_agent
 from hermes_cli.cli_commands_session_tools import (
     CLICommandsSessionToolsMixin, _TTYBuf, _accent, _accent_line, _command_arg, _cp, _dim,
-    _dim_line, _gt, _lines, _pr, _probe, _rollback_kept, _save, _say_block, _shlex_args, _t, _tn)
+    _dim_line, _gt, _lines, _pr, _probe, _rollback_kept, _save, _say_block, _shlex_args, _t, _tn,
+    handle_diff_command, print_cli_session_diff)
 from hermes_cli.cli_session_switch import (
     _end_current_session, _sync_agent_to_session)
 from hermes_cli.browser_connect import (
@@ -125,12 +126,6 @@ _BRANCH_COPY_KEYS = ("content", "tool_calls", "tool_call_id", "reasoning", "reas
 # /hatch progress event -> catalog key (``cli.commands.hatch.*``).
 _HATCH_PROGRESS = {"compose": "hatch.progress_compose", "save": "hatch.progress_save"}
 
-# /diff argument -> mode (anything else is a path; --stat/stat is the stat flag).
-_DIFF_MODES = {
-    "staged": "staged", "--staged": "staged", "cached": "staged", "--cached": "staged",
-    "all": "all", "--all": "all", "head": "all", "session": "session"}
-# /diff mode -> stat headline catalog key (``cli.commands.diff.*``).
-_DIFF_LABELS = {"working": "diff.label_working", "staged": "diff.label_staged", "all": "diff.label_all"}
 
 
 def _persist_display_choice(key: str, value: str, label: str, note: str) -> None:
@@ -490,39 +485,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     # ---- /diff ----------------------------------------------------------------------------
     def _handle_diff_command(self, command: str):
-        """Handle /diff [working|staged|all|session] [--stat] [<path>...] — git changes in the
-        cwd; ``session`` is everything Hermes changed since the checkpoint baseline."""
-        stat_only = False
-        mode = "working"
-        paths: list[str] = []
-        for arg in _shlex_args(command):  # shlex preserves quoted paths
-            low = arg.lower()
-            if low in ("--stat", "stat"):
-                stat_only = True
-            elif low in _DIFF_MODES:
-                mode = _DIFF_MODES[low]
-            else:
-                paths.append(arg)
-        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-        if mode == "session":
-            return self._print_session_diff(cwd, stat_only)
-        from tools.working_diff import collect_working_diff
-        result = collect_working_diff(cwd, mode=mode, paths=paths or None)
-        if not result.get("success"):
-            return print(f"  {result.get('error') or _t('shared.could_not_generate_diff')}")
-        stat, diff = result.get("stat", ""), result.get("diff", "")
-        untracked = result.get("untracked", [])
-        if result.get("empty") or (not stat and not diff and not untracked):
-            return print(f"  {_gt('diff.no_changes')}")
-        if stat:
-            print(f"\n  {_t(_DIFF_LABELS[mode])}:")
-            self._print_diff_text(stat)
-        if untracked and mode in ("working", "all"):
-            _pr(f"\n  {_t('diff.untracked')}", *(f"    + {rel}" for rel in untracked[:20]))
-            if len(untracked) > 20:
-                print(f"    {_t('diff.and_more', count=len(untracked) - 20)}")
-        if diff and not stat_only:
-            self._print_diff_body(diff, _t("diff.stat_hint"))
+        """Handle /diff [working|staged|all|session|turn [N]] [--stat] [<path>...] — git changes in
+        the cwd, or a checkpoint baseline diff (``handle_diff_command`` does the parsing)."""
+        handle_diff_command(self, command)
 
     def _print_diff_body(self, diff: str, stat_hint: str, limit: int = 400, total: int = 0) -> None:
         """Print a diff, capped at ``limit`` lines (of ``total`` when its sender cut it) with a pointer to the --stat form."""
@@ -536,13 +501,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     def _print_session_diff(self, cwd: str, stat_only: bool):
         """Print the cumulative checkpoint-baseline diff (/diff session)."""
-        mgr = self._checkpoint_manager(_lines(_t("diff.not_enabled")))
-        if mgr is None:
-            return
-        if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree
-            return print(f"  {reason}")
-        from hermes_cli.cli_commands_session_tools import print_session_diff
-        print_session_diff(self, mgr.session_diff(cwd), stat_only)
+        print_cli_session_diff(self, cwd, stat_only)
 
     def _print_diff_text(self, text: str) -> None:
         """Render diff/stat text with color when a rich console is present; plain print otherwise

@@ -658,6 +658,7 @@ async def test_reconnect_reschedule_is_platform_scoped():
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.source == tg_source
+    assert event.metadata == {"startup_auto_resume": True}
 
 
 @pytest.mark.asyncio

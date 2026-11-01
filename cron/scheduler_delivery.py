@@ -1095,6 +1095,11 @@ def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
         logger.debug("Job '%s': could not record delivery verification: %s", job.get("id"), exc)
 
 
+# Receipt reconcile lives in its topical sibling (file-size offset); re-exported here for the
+# tick sweep, `cron list` and tests.
+from cron.scheduler_delivery_receipts import reconcile_delivery_receipts
+
+
 @dataclass
 class _TargetDelivery:
     """Per-target delivery state shared by the live-adapter and standalone lanes."""

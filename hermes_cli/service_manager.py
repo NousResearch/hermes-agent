@@ -53,7 +53,7 @@ class ServiceManager(Protocol):
 
 
 def detect_service_manager() -> ServiceManagerKind:
-    """Return "s6" (s6-svscan is PID 1), "windows", "launchd", "systemd" (working bus) or "none".
+    """Return "s6" (registered Hermes gateway), "windows", "launchd", "systemd" (working bus) or "none".
 
     This function does NOT replace ``supports_systemd_services()`` —
     host call sites continue to use that. It exists for new backend-
@@ -79,7 +79,7 @@ def detect_service_manager() -> ServiceManagerKind:
 
 
 def _s6_running() -> bool:
-    """True when s6-svscan is PID 1 in this container.
+    """True when s6-svscan is PID 1 and the Hermes root gateway is registered.
 
     Must work for the unprivileged hermes user too: ``/proc/1/exe`` is unreadable for other UIDs
     (``resolve()`` silently yields the literal ``exe``), which made runtime registration inert in
@@ -96,7 +96,11 @@ def _s6_running() -> bool:
         comm = Path("/proc/1/comm").read_text(encoding="utf-8").strip()
     except OSError:
         return False
-    return comm == "s6-svscan" and Path("/run/s6/basedir").is_dir()
+    return (
+        comm == "s6-svscan"
+        and Path("/run/s6/basedir").is_dir()
+        and (S6_DYNAMIC_SCANDIR / f"{S6_SERVICE_PREFIX}default").is_dir()
+    )
 
 
 # ---------------------------------------------------------------------------

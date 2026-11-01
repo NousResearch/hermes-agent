@@ -78,3 +78,31 @@ class TestStringTypedGuardPreserved:
         cfg.set_config_value("approvals.mode", "off")
         v = _read(tmp_path, "approvals", "mode")
         assert v == "off" and isinstance(v, str)  # not bool False
+
+
+def _resolve(config, model):
+    from hermes_constants import resolve_reasoning_config
+    return resolve_reasoning_config(config, model)
+
+
+def _moa_slot(slot):
+    from agent.moa_loop import _slot_reasoning_config
+    return _slot_reasoning_config(slot)
+
+
+class TestReasoningEffortNone:
+    """``none`` is the effort level that disables thinking. On an effort slot with no schema leaf it
+    used to be stored as YAML null, which every reader treats as "use the default effort"."""
+
+    @pytest.mark.parametrize("key, read", [
+        ("agent.reasoning_effort", lambda c: _resolve(c, "other-model")),
+        ("agent.reasoning_overrides.my-model", lambda c: _resolve(c, "my-model")),
+        ("moa.presets.default.aggregator.reasoning_effort",
+         lambda c: _moa_slot(c["moa"]["presets"]["default"]["aggregator"])),
+    ])
+    def test_none_disables_thinking(self, tmp_path, monkeypatch, key, read):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg.set_config_value(key, "none")
+        assert read(cfg.load_config()) == {"enabled": False}
+        cfg.set_config_value(key, "null")  # null still clears the slot back to the default
+        assert read(cfg.load_config()) is None

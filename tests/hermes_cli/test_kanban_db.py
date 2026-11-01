@@ -2574,7 +2574,7 @@ def test_complete_task_leaves_non_scratch_artifact_paths_unchanged(
 
 
 def test_complete_task_persists_duplicate_scratch_artifact_names(kanban_home):
-    """Scratch artifact persistence does not overwrite duplicate basenames."""
+    """Scratch artifacts in different subdirs keep their relative path structure (no basename collision)."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="render reports")
         task = kb.get_task(conn, t)
@@ -2596,11 +2596,20 @@ def test_complete_task_persists_duplicate_scratch_artifact_names(kanban_home):
 
         completed = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1]
         persisted = [Path(p) for p in completed.payload["artifacts"]]
+        with kb.connect() as conn2:
+            attachments = kb.list_attachments(conn2, t)
 
+    att_dir = kb.task_attachments_dir(t)
     assert not ws.exists(), "scratch workspace should still be cleaned up"
-    assert [p.name for p in persisted] == ["report.txt", "report_1.txt"]
+    # Relative path structure is preserved — no _1 suffix needed.
+    assert persisted[0] == att_dir / "a" / "report.txt"
+    assert persisted[1] == att_dir / "b" / "report.txt"
     assert [p.read_text(encoding="utf-8") for p in persisted] == ["first", "second"]
-    assert all(p.parent == kb.task_attachments_dir(t) for p in persisted)
+    # DB filename reflects the subdir-relative path.
+    assert [(a.filename, Path(a.stored_path)) for a in attachments] == [
+        ("a/report.txt", att_dir / "a" / "report.txt"),
+        ("b/report.txt", att_dir / "b" / "report.txt"),
+    ]
 
 
 def test_complete_task_persists_board_scratch_artifacts_to_board_attachments(kanban_home):
@@ -2628,6 +2637,104 @@ def test_complete_task_persists_board_scratch_artifacts_to_board_attachments(kan
     assert not ws.exists(), "board scratch workspace should still be cleaned up"
     assert persisted.exists()
     assert persisted.parent == kb.task_attachments_dir(t, board="work-proj")
+
+
+def test_complete_task_preserves_nested_subdir_artifacts_no_collision(kanban_home):
+    """Regression: screens/<game>/screenshot_NN.jpg from multiple games must all survive.
+
+    Reproduces the t_298221e4 scenario where 8 games each produced 5 screenshots
+    named screenshot_01.jpg through screenshot_05.jpg.  With the old basename-only
+    logic only 10 files survived (1 + 7 suffixed); with the relative-path fix all
+    40 must be preserved under screens/<game>/ within the attachment directory.
+    """
+    games = [f"game{i:02d}" for i in range(1, 9)]  # game01..game08
+    shots_per_game = 5
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="screenshot harvest")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+
+        artifact_paths: list[str] = []
+        for game in games:
+            game_dir = ws / "screens" / game
+            game_dir.mkdir(parents=True, exist_ok=True)
+            for n in range(1, shots_per_game + 1):
+                p = game_dir / f"screenshot_{n:02d}.jpg"
+                p.write_bytes(f"{game}-{n}".encode())
+                artifact_paths.append(str(p))
+
+        assert kb.complete_task(
+            conn,
+            t,
+            result="ok",
+            metadata={"artifacts": artifact_paths},
+        )
+
+        completed = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1]
+        persisted = [Path(p) for p in completed.payload["artifacts"]]
+        with kb.connect() as conn2:
+            attachments = kb.list_attachments(conn2, t)
+
+    att_dir = kb.task_attachments_dir(t)
+    total = len(games) * shots_per_game
+    assert not ws.exists(), "scratch workspace cleaned up"
+    assert len(persisted) == total, f"expected {total} artifacts, got {len(persisted)}"
+    assert len(attachments) == total
+
+    # Every file must exist on disk under att_dir/screens/<game>/
+    for p in persisted:
+        assert p.exists(), f"missing: {p}"
+        assert p.is_relative_to(att_dir), f"outside att_dir: {p}"
+
+    # No two persisted paths should be the same
+    assert len(set(persisted)) == total, "collision: duplicate destination paths"
+
+    # Filenames in DB must reflect relative path, not bare basename
+    att_filenames = {a.filename for a in attachments}
+    expected_filenames = {
+        f"screens/{game}/screenshot_{n:02d}.jpg"
+        for game in games
+        for n in range(1, shots_per_game + 1)
+    }
+    assert att_filenames == expected_filenames
+
+    # Content integrity: each file holds the correct bytes
+    for game in games:
+        for n in range(1, shots_per_game + 1):
+            dest = att_dir / "screens" / game / f"screenshot_{n:02d}.jpg"
+            assert dest.read_bytes() == f"{game}-{n}".encode()
+
+
+def test_complete_task_same_path_listed_twice_uses_suffix(kanban_home):
+    """If the exact same artifact path is declared twice, the second copy gets a suffix."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="dup artifact")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        art = ws / "report.txt"
+        art.write_text("hello", encoding="utf-8")
+
+        assert kb.complete_task(
+            conn,
+            t,
+            result="ok",
+            metadata={"artifacts": [str(art), str(art)]},
+        )
+
+        completed = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1]
+        persisted = [Path(p) for p in completed.payload["artifacts"]]
+
+    att_dir = kb.task_attachments_dir(t)
+    assert not ws.exists()
+    assert len(persisted) == 2
+    # First lands at the canonical path, second gets a suffix in the same dir
+    assert persisted[0] == att_dir / "report.txt"
+    assert persisted[1].parent == att_dir
+    assert persisted[1].name.startswith("report_")
+    assert persisted[1].read_text(encoding="utf-8") == "hello"
 
 
 def test_cleanup_workspace_refuses_path_outside_scratch_root(kanban_home, tmp_path):

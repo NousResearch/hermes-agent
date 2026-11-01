@@ -5113,12 +5113,17 @@ def complete_task(
             return False
         if isinstance(metadata, dict):
             _persist_scratch_completion_artifacts(conn, task_id, metadata)
-            for stored_path in metadata.pop("_staged_artifacts", []):
+            staged = metadata.pop("_staged_artifacts", [])
+            staged_filenames = metadata.pop("_staged_artifact_filenames", [])
+            for idx, stored_path in enumerate(staged):
                 path = Path(stored_path)
+                # Use the preserved relative display name (e.g. "screens/game1/shot.jpg")
+                # when available, falling back to bare basename for backwards compat.
+                filename = staged_filenames[idx] if idx < len(staged_filenames) else path.name
                 _insert_completion_attachment(
                     conn,
                     task_id,
-                    filename=path.name,
+                    filename=filename,
                     stored_path=str(path),
                     size=path.stat().st_size,
                     created_at=now,
@@ -5297,6 +5302,7 @@ def _persist_scratch_completion_artifacts(
 
     attachment_dir = task_attachments_dir(task_id, board=board)
     persisted: list[str] = []
+    persisted_filenames: list[str] = []  # relative paths from attachment_dir for DB filename
     used_destinations: set[Path] = set()
     changed = False
 
@@ -5306,7 +5312,14 @@ def _persist_scratch_completion_artifacts(
                 copied.unlink(missing_ok=True)
             except OSError:
                 pass
+        # Remove any empty subdirectories we may have created, then the root.
         try:
+            for sub in sorted(attachment_dir.rglob("*"), reverse=True):
+                if sub.is_dir():
+                    try:
+                        sub.rmdir()
+                    except OSError:
+                        pass
             attachment_dir.rmdir()
         except OSError:
             pass
@@ -5320,10 +5333,12 @@ def _persist_scratch_completion_artifacts(
             resolved_src = src.resolve()
         except OSError:
             persisted.append(artifact)
+            persisted_filenames.append(Path(artifact).name)
             continue
 
         if not resolved_src.is_relative_to(workspace_root):
             persisted.append(artifact)
+            persisted_filenames.append(Path(artifact).name)
             continue
 
         if not src.is_file():
@@ -5340,10 +5355,27 @@ def _persist_scratch_completion_artifacts(
                 f"{KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: {artifact}"
             )
 
+        # Compute destination preserving the relative path from workspace root
+        # so that screens/game1/shot.jpg and screens/game2/shot.jpg never collide.
+        try:
+            rel_path = resolved_src.relative_to(workspace_root)
+        except ValueError:
+            rel_path = Path(resolved_src.name)
+
+        ideal_dest = attachment_dir / rel_path
+        # Only fall back to a suffix if the exact destination was already used
+        # (same file listed twice in artifacts).
+        if ideal_dest in used_destinations or ideal_dest.exists():
+            dest_candidate = _unique_attachment_path(
+                ideal_dest.parent, ideal_dest.name, used_destinations
+            )
+        else:
+            dest_candidate = ideal_dest
+
         dest: Optional[Path] = None
         try:
-            attachment_dir.mkdir(parents=True, exist_ok=True)
-            dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
+            dest_candidate.parent.mkdir(parents=True, exist_ok=True)
+            dest = dest_candidate
             with resolved_src.open("rb") as source_file, dest.open("xb") as destination_file:
                 copied = 0
                 while chunk := source_file.read(1024 * 1024):
@@ -5367,14 +5399,26 @@ def _persist_scratch_completion_artifacts(
             ) from exc
 
         used_destinations.add(dest)
-        persisted.append(str(dest.resolve()))
+        dest_abs = str(dest.resolve())
+        persisted.append(dest_abs)
+        # Compute display filename as path relative to attachment_dir (preserves subdir structure).
+        try:
+            display_name = str(dest.resolve().relative_to(attachment_dir.resolve()))
+        except ValueError:
+            display_name = dest.name
+        persisted_filenames.append(display_name)
         changed = True
 
     if changed:
+        att_root = str(attachment_dir.resolve())
         metadata["artifacts"] = persisted
-        metadata["_staged_artifacts"] = [
-            path for path in persisted if path.startswith(str(attachment_dir.resolve()))
+        staged = [p for p in persisted if p.startswith(att_root)]
+        staged_filenames = [
+            fn for p, fn in zip(persisted, persisted_filenames)
+            if p.startswith(att_root)
         ]
+        metadata["_staged_artifacts"] = staged
+        metadata["_staged_artifact_filenames"] = staged_filenames
 
 
 def _insert_completion_attachment(

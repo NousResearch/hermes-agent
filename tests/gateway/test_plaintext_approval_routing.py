@@ -111,6 +111,22 @@ def test_plaintext_yes_resolves_approval(reply):
     _clear_approval_state()
 
 
+def test_plaintext_yes_from_non_admin_is_denied_when_allow_admin_from_set():
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    runner.config.platforms[Platform.TELEGRAM].extra = {"allow_admin_from": ["admin-1"]}
+    session_key, entry = _register_blocking_approval(runner)
+
+    handled = asyncio.run(
+        runner._route_plaintext_approval_while_busy(_make_event("yes"), session_key)
+    )
+
+    assert handled is True
+    assert not entry.event.is_set()
+    adapter._send_with_retry.assert_awaited()
+    _clear_approval_state()
+
+
 def test_no_pending_approval_does_not_consume_conversational_yes():
     """A bare 'yes' with NO blocking approval must NOT be treated as an
     approval — it falls through to normal busy handling (design intent:

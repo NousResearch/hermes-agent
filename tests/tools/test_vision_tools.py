@@ -36,6 +36,11 @@ VALID_PNG = (
     b"\x00\x04\x00\x01\xf6\x178U\x00\x00\x00\x00IEND\xaeB`\x82"
 )
 
+# JPEG magic bytes (FF D8 FF E0): JPEG is prefix-sniffed by
+# _detect_image_mime_type_from_bytes (PIL verify() runs only for PNG), so a
+# magic-only file exercises the label path without a decoder dependency.
+JPEG_MAGIC = b"\xff\xd8\xff\xe0" + b"\x00" * 100
+
 
 _RESOLVES = [(2, 1, 6, "", ("93.184.216.34", 0))]
 
@@ -111,6 +116,15 @@ class TestImageToBase64DataUrl:
         other.write_bytes(b"\x00" * 16)
         result = _image_to_base64_data_url(other, mime_type="image/webp")
         assert result.startswith("data:image/webp;base64,")
+
+    def test_magic_bytes_override_mime_hint_and_extension(self, tmp_path):
+        """Regression for #139253: a screenshot the agent saved as JPEG kept the caller's
+        ``image/png`` hint in the data URL and Anthropic hard-400'd the turn. Sniffed bytes
+        win; the hint is only a fallback for content sniffing can't identify."""
+        shot = tmp_path / "shot.png"  # wrong extension AND wrong hint — bytes decide
+        shot.write_bytes(JPEG_MAGIC)
+        assert _image_to_base64_data_url(shot, mime_type="image/png").startswith(
+            "data:image/jpeg;base64,")
 
     def test_file_not_found_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
@@ -731,6 +745,20 @@ class TestResizeImageForVision:
         assert result.startswith("data:image/png;base64,")
         assert len(result) < _MAX_BASE64_BYTES
 
+    def test_jpeg_under_caps_labeled_jpeg_despite_png_hint(self, tmp_path):
+        """Regression for #139253: browser_exec / browser_tool_vision pass
+        ``mime_type="image/png"`` unconditionally; a small JPEG screenshot took the
+        under-caps fast path and went out labeled ``image/png`` — a non-retryable
+        provider 400. The label must match the bytes on the wire."""
+        shot = tmp_path / "wf-p1.jpg"
+        shot.write_bytes(JPEG_MAGIC)
+
+        url = _resize_image_for_vision(shot, mime_type="image/png",
+                                       max_dimension=_EMBED_MAX_DIMENSION,
+                                       force_jpeg=True)
+
+        assert url.startswith("data:image/jpeg;base64,")
+        assert base64.b64decode(url.split(",", 1)[1]).startswith(b"\xff\xd8\xff")
 
     def test_no_pillow_returns_original(self, tmp_path):
         """Without Pillow, oversized images should be returned as-is."""

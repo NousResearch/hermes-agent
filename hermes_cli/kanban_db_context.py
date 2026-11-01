@@ -9,7 +9,9 @@ Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached late-
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
+import re
 import sqlite3
 import time
 from typing import TYPE_CHECKING, Any, Optional
@@ -25,6 +27,20 @@ _CTX_MAX_COMMENTS       = 30      # most recent N comments shown in full
 _CTX_MAX_FIELD_BYTES    = 4 * 1024   # per summary/error/metadata/result
 _CTX_MAX_BODY_BYTES     = 8 * 1024   # per task.body (opening post)
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # per comment
+
+# Desktop comment images: ``![alt](path)``, or ``![alt](<path>)`` when the path has spaces/parens;
+# backslashes (and ``<>`` inside the angle form) arrive escaped (drawer-comments.tsx imageMarkdown).
+_MD_IMAGE_RE = re.compile(r"!\[(?:\\.|[^\]\\])*\]\((?:<((?:\\.|[^<>\\\n])*)>|([^\s()]+))\)")
+
+
+def comment_image_lines(body: Optional[str]) -> list[str]:
+    """One "Image attached" line per markdown image in ``body``. Workers can't see an inline
+    image, and capping a comment can cut its path, so callers scan the FULL body."""
+    paths = (re.sub(r"\\(.)", r"\1", m.group(1) or m.group(2)) for m in _MD_IMAGE_RE.finditer(body or ""))
+    return [
+        f"Image attached: `{p}` — view it with vision_analyze (Claude Code: Read the path)"
+        for p in paths
+    ]
 
 
 def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
@@ -117,13 +133,16 @@ def _ctx_attachments(lines: list[str], attachments: list[Attachment]) -> None:
     lines.append("## Attachments")
     lines.append(
         "Files attached to this task. Read them with the file/terminal "
-        "tools at the absolute paths below:"
+        "tools at the absolute paths below (read_file refuses images: "
+        "view those with vision_analyze):"
     )
     for att in attachments:
         size_kb = max(1, (att.size + 1023) // 1024) if att.size else 0
         size_str = f", {size_kb} KB" if size_kb else ""
         ctype = f", {att.content_type}" if att.content_type else ""
-        lines.append(f"- `{att.filename}`{ctype}{size_str} → `{att.stored_path}`")
+        kind = att.content_type or mimetypes.guess_type(att.filename)[0] or ""
+        hint = " (image: view with vision_analyze)" if kind.startswith("image/") else ""
+        lines.append(f"- `{att.filename}`{ctype}{size_str} → `{att.stored_path}`{hint}")
     lines.append("")
 
 
@@ -236,4 +255,5 @@ def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
         safe_author = (c.author or "").replace("`", "")
         lines.append(f"comment from worker `{safe_author}` at {_ctx_stamp(c.created_at, now)}:")
         lines.append(_ctx_cap(c.body, _CTX_MAX_COMMENT_BYTES))
+        lines.extend(comment_image_lines(c.body))
         lines.append("")

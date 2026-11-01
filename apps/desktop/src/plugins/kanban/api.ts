@@ -18,6 +18,7 @@
 import {
   atom,
   captureGatewayFileDownload,
+  captureGatewayFileRead,
   host,
   type PluginOs,
   type PluginRestOptions,
@@ -34,6 +35,7 @@ import type {
   BoardImportResult,
   BoardMeta,
   BoardsResponse,
+  KanbanAttachment,
   KanbanBoard,
   KanbanProfile,
   KanbanProject,
@@ -390,9 +392,10 @@ export const fetchBoard = (archived: boolean) =>
 
 export const fetchTask = async (id: string) => {
   const downloadAttachment = captureGatewayFileDownload()
+  const readAttachment = captureGatewayFileRead()
   const detail = await call<KanbanTaskDetail>(withBoard(`/tasks/${id}`))
 
-  return { ...detail, downloadAttachment }
+  return { ...detail, downloadAttachment, readAttachment }
 }
 
 /** Worker stdout/stderr tail (last 16 KiB — plenty for the drawer). */
@@ -465,7 +468,7 @@ export const reassignTask = (id: string, profile: string) =>
 export const reclaimTask = (id: string) => nudged(call(withBoard(`/tasks/${id}/reclaim`), { method: 'POST', body: {} }))
 
 export const uploadAttachment = (id: string, upload: { filename: string; contentType?: string; bytes: ArrayBuffer }) =>
-  call(withBoard(`/tasks/${id}/attachments`), { method: 'POST', upload })
+  call<{ attachment: KanbanAttachment | null }>(withBoard(`/tasks/${id}/attachments`), { method: 'POST', upload })
 
 export const createBoard = (slug: string, name: string, projectId?: string) =>
   call<{ board: { slug: string } }>('/boards', {

@@ -847,6 +847,69 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     ]
 
 
+def test_block_task_persists_scratch_artifact_without_cleanup(kanban_home):
+    """A blocked scratch task keeps its workspace and gains a durable artifact copy."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="blocked evidence", assignee="worker")
+        task = kb.get_task(conn, t)
+        assert task is not None
+        ws = kbw.resolve_workspace(task)
+        kbw.set_workspace_path(conn, t, ws)
+        artifact = ws / "checkpoint.json"
+        artifact.write_bytes(b'{"step": 3}')
+        kb.claim_task(conn, t)
+
+        assert kb.block_task(
+            conn, t, reason="need input", kind="needs_input",
+            metadata={"checkpoint": 3, "artifacts": [str(artifact)]},
+        )
+
+        run = kb.latest_run(conn, t)
+        event = [e for e in kb.list_events(conn, t) if e.kind == "blocked"][-1]
+        attachments = kb.list_attachments(conn, t)
+    assert run is not None
+    assert run.metadata is not None
+    assert event.payload is not None
+    persisted = Path(run.metadata["artifacts"][0])
+    assert event.payload["artifacts"] == [str(persisted)]
+    assert persisted.read_bytes() == b'{"step": 3}'
+    assert [(a.filename, a.uploaded_by) for a in attachments] == [
+        ("checkpoint.json", "kanban_block")
+    ]
+    assert ws.exists(), "blocking must not clean a continuation workspace"
+
+
+def test_block_task_rollback_discards_staged_copy(kanban_home):
+    """A DB failure after staging leaves the task in-flight and no orphan copy."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="blocked rollback", assignee="worker")
+        task = kb.get_task(conn, t)
+        assert task is not None
+        ws = kbw.resolve_workspace(task)
+        kbw.set_workspace_path(conn, t, ws)
+        artifact = ws / "checkpoint.txt"
+        artifact.write_text("resume\n", encoding="utf-8")
+        kb.claim_task(conn, t)
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("run bookkeeping failed")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(kb, "_end_or_synthesize_run", _boom)
+            with pytest.raises(RuntimeError, match="run bookkeeping failed"):
+                kb.block_task(
+                    conn, t, reason="need input", kind="needs_input",
+                    metadata={"artifacts": [str(artifact)]},
+                )
+
+        attachment_dir = kb.task_attachments_dir(t)
+        task_after = kb.get_task(conn, t)
+        assert task_after is not None
+        assert task_after.status == "running"
+        assert kb.list_attachments(conn, t) == []
+        assert not attachment_dir.exists() or not any(attachment_dir.iterdir())
+
+
 def test_review_bound_handoff_preserves_declared_artifacts(kanban_home):
     """A review-bound card's declared files must outlive the reviewer's
     completion — that completion is what cleans the scratch workspace up."""

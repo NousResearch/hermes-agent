@@ -563,7 +563,13 @@ def _launch_tui(
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 
-    argv, cwd = _make_tui_argv(tui_dir, tui_dev)
+    from pm import InstallError
+    try:
+        argv, cwd = _make_tui_argv(tui_dir, tui_dev)
+    except InstallError as exc:  # PM could not provide node; its remedy names the fix
+        print(f"The TUI needs Node.js, which Hermes could not provide: {exc}", file=sys.stderr)
+        print("To keep working now, run `hermes --cli`.", file=sys.stderr)
+        sys.exit(1)
     code: Optional[int] = None
     try:
         try:

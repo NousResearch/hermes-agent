@@ -66,6 +66,13 @@ OX_ALPHA_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 #: Tencent TokenHub / Nebius Token Factory / Upstage Solar: plain three-level knobs.
 TOKENHUB_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 NEBIUS_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+#: Baseten Model APIs validate ``reasoning_effort`` server-side and 400 on anything else. The
+#: documented set is ``none, minimal, low, medium, high, xhigh, max``, but ``none`` is NOT
+#: portable: zai-org/GLM-5.3-Fast rejects it while accepting every other level, and on the
+#: models that do take it, it produces the same reasoning-token count as ``minimal`` rather
+#: than disabling thinking. ``minimal`` is accepted by every live model, so it is the weakest
+#: level Hermes can portably ask for.
+BASETEN_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh", "max")
 SOLAR_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 
 #: GLM-5.2 native knob: exactly ``high`` (its minimum thinking level) and ``max``; GLM-5.3

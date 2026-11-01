@@ -19,6 +19,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
 from hermes_cli.session_listing import subagent_listing_scope
+from hermes_cli.session_liveness import leased_session_ids, session_is_active
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_sessions import _session_latest_descendant
@@ -121,18 +122,9 @@ def _prune_sessions(body: SessionPrune):
         db.close()
 
 
-_ACTIVE_WINDOW_S = 300
-
-
 def _csv(value: Optional[str]) -> list[str]:
     """Split a comma-separated query param into stripped, non-empty items."""
     return [s.strip() for s in (value or "").split(",") if s.strip()]
-
-
-def _is_active(row: dict, now: float) -> bool:
-    return (
-        row.get("ended_at") is None
-        and (now - row.get("last_active", row.get("started_at", 0))) < _ACTIVE_WINDOW_S)
 
 
 def _with_db(profile: Optional[str], fn: Callable, *, read_only: bool):
@@ -226,8 +218,9 @@ def get_sessions(
             total = db.session_count(exclude_children=True, **scope)
             now = time.time()
             row_profile = profile_name or _cron_default_profile()
+            leased = leased_session_ids(Path(db.db_path).parent)
             for s in sessions:
-                s["is_active"] = _is_active(s, now)
+                s["is_active"] = session_is_active(s, now, leased)
                 s["profile"] = row_profile
                 s["is_default_profile"] = row_profile == "default"
                 # SQLite stores the flags as 0/1; expose real JSON booleans.
@@ -380,8 +373,8 @@ async def search_sessions(
                         "started_at": row.get("started_at"),
                         "ended_at": row.get("ended_at"),
                         "last_active": last_active,
-                        "is_active": (
-                            row.get("ended_at") is None and (now - (last_active or 0)) < 300),
+                        "is_active": session_is_active(
+                            row, now, leased_session_ids(Path(db.db_path).parent)),
                         "message_count": row.get("message_count") or 0,
                         "tool_call_count": row.get("tool_call_count") or 0,
                         "input_tokens": row.get("input_tokens") or 0,

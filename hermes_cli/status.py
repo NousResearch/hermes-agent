@@ -416,6 +416,10 @@ _SECTIONS = (
 
 def show_status(args):
     """One-screen summary by default; ``--full``/``--deep`` print every section."""
+    if getattr(args, "json", False):
+        from hermes_cli.status_json import print_status_json
+        return print_status_json()
+
     # Shared by section renderers: config, --deep, and the Nous login facts Auth Providers derives
     # for the later Nous Tool Gateway section.
     ctx = SimpleNamespace(deep=getattr(args, 'deep', False), config={}, nous_logged_in=False,

@@ -285,8 +285,9 @@ def start_deferred_title_upgrade(agent: Any) -> None:
 def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> int:
     """Locate this turn's user message after compaction rebuilt ``messages``.
 
-    Prefers the LAST user message whose content exactly matches this turn's text, else
-    the last user-originated turn; compaction handoffs are never the fallback.
+    Prefers the LAST user message whose content (or its ``api_content`` sidecar) exactly
+    matches this turn's text, else the last user-originated turn; compaction handoffs are
+    never the fallback.
     Returns -1 when there is no user-originated message.
 
     Compression replaces list entries with fresh copies (and may append a todo-snapshot user message or a
@@ -308,6 +309,12 @@ def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> in
         # Typed synthetic current events keep their persistence anchor when raw
         # content is unchanged; not eligible for the human-only fallback below.
         if msg.get("content") == user_message:
+            return i
+        # A staged API-only turn (barge-in note, voice prefix) keeps the CLEAN text in
+        # ``content`` while this turn's text is the noted one: the sidecar is the exact
+        # match there, and without it noted turns always miss into the fallback.
+        _sidecar = msg.get("api_content")
+        if isinstance(_sidecar, str) and _sidecar == user_message:
             return i
         live_view = user_originated_turn_view(msg)
         if live_view is None:
@@ -673,6 +680,23 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
             scrubber.reset()
 
 
+def _stage_user_api_content(user_msg: dict[str, Any], api_text: Any, durable_text: Any) -> None:
+    """Route an API-only variant of the user turn into the ``api_content`` sidecar.
+
+    A barge-in note, voice prefix or one-shot note is prepended for the model only. Left in
+    ``content`` it also reaches persistence, and a compaction copy re-materialises it into a
+    second user row (same ``message_uid`` and timestamp, different display key) whose reply then
+    speaks twice. When the durable and API texts are both strings and differ, ``content`` keeps
+    the durable transcript text and the model-bound bytes ride the sidecar, which
+    ``build_api_messages`` substitutes back on the wire.
+    """
+    if isinstance(api_text, str) and isinstance(durable_text, str) and api_text != durable_text:
+        user_msg["content"] = durable_text
+        user_msg["api_content"] = api_text
+    else:
+        user_msg["content"] = api_text
+
+
 def _stage_turn_user_message(
     agent: Any, user_message: Any, persist_user_message: Any,
     persist_user_timestamp: Optional[float], persist_user_platform_id: Optional[str],
@@ -681,7 +705,12 @@ def _stage_turn_user_message(
 ) -> tuple[dict[str, Any], Any]:
     """Build this turn's user dict, reusing CLI-staged input only when its clean text
     matches this turn (a stale handoff must not replace later input; voice turns
-    compare the clean override). Returns ``(user_msg, pending_cli_message)``."""
+    compare the clean override). Returns ``(user_msg, pending_cli_message)``.
+
+    Invariant for every setter of ``_pending_cli_user_message``: its ``content`` equals
+    the persist text this turn writes (``expected_persist_content``, note-free), so the
+    staged row can be adopted instead of rebuilt. A miss is dropped below and logged, so
+    a setter that stages noted bytes fails loudly rather than flushing a second row."""
     pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
     expected_persist_content = (
         persist_user_message if persist_user_message is not None else user_message
@@ -691,13 +720,18 @@ def _stage_turn_user_message(
         and pending_cli_message.get("content") == expected_persist_content
     ):
         user_msg = pending_cli_message
-        # CLI-staged value is the clean text; restore the API-facing variant (e.g. voice
-        # prefix) on the same dict, keeping any close-path durable marker.
-        user_msg["content"] = user_message
+        _stage_user_api_content(user_msg, user_message, expected_persist_content)
     else:
         user_msg = {"role": "user", "content": user_message}
         if isinstance(pending_cli_message, dict):
+            logger.debug(
+                "staged CLI user message missed the persist-text invariant "
+                "(staged=%r expected=%r) — dropped; a setter staged non-persist text",
+                str(pending_cli_message.get("content"))[:160],
+                str(expected_persist_content)[:160],
+            )
             agent._pending_cli_user_message = None
+        _stage_user_api_content(user_msg, user_message, expected_persist_content)
     # CLI input is stamped when staged; gateway input may carry the platform event
     # time. Preserve either value and cover any legacy unstamped handoff.
     stamp_message_timestamp(user_msg, timestamp=persist_user_timestamp)
@@ -1002,11 +1036,16 @@ def _stamp_api_content_sidecar(
     API copy, so stamp the exact sent bytes on the live dict for replay."""
     _turn_user_msg = messages[current_turn_user_idx]
     live_content = _turn_user_msg.get("content")
+    # An API-only variant already staged into the sidecar (barge-in note, voice prefix) is the
+    # base the ephemeral context appends to; recomposing from the clean ``content`` would drop it.
+    _staged_api = _turn_user_msg.get("api_content")
+    _staged_api = _staged_api if isinstance(_staged_api, str) and _staged_api else None
+    _composed = compose_user_api_content(_staged_api or live_content or "", ext_prefetch_cache, plugin_user_context)
     from agent.session_persistence import _persist_lock, durable_user_row_content
     # Match the row the flush wrote (persist override = clean transcript), not the live bytes.
+    # Nothing injected: the staged API-only variant alone is the sidecar.
     durable_content, _api_content = durable_user_row_content(
-        agent, _turn_user_msg, live_content,
-        compose_user_api_content(live_content or "", ext_prefetch_cache, plugin_user_context),
+        agent, _turn_user_msg, live_content, _composed if _composed is not None else _staged_api,
     )
     if _api_content is None or _api_content == durable_content:
         return
@@ -1366,8 +1405,21 @@ def build_api_messages(
         if msg is current_turn_message and msg.get("role") == "user":
             if isinstance(_api_content, str) and _api_content:
                 # Reuse the prologue's stamp so sidecar and wire cannot drift
-                # and every pass this turn sends identical bytes.
-                api_msg["content"] = _api_content
+                # and every pass this turn sends identical bytes. MoA and codex
+                # turns never get that stamp (prologue predicate at the
+                # ``Sidecar skipped for codex_app_server/MoA`` branch), so a
+                # staged sidecar holds only the note: compose the injections
+                # onto it here, exactly as the live branch below.
+                # Nothing injected -> the staged bytes go out untouched.
+                _stamped = (
+                    compose_user_api_content(
+                        _api_content, ext_prefetch_cache, plugin_user_context
+                    )
+                    if moa_config
+                    or getattr(agent, "api_mode", None) == "codex_app_server"
+                    else None
+                )
+                api_msg["content"] = _stamped if _stamped is not None else _api_content
             else:
                 # Callers that bypass the prologue stamping: compose live.
                 _composed = compose_user_api_content(

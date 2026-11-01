@@ -17,6 +17,7 @@ import pytest
 from agent.turn_context import (
     PreflightCompressionTimedOut,
     TurnContext,
+    _stage_turn_user_message,
     build_turn_context,
 )
 
@@ -377,10 +378,35 @@ def test_pending_cli_message_uses_clean_override_for_api_local_note():
     )
 
     assert ctx.messages[-1] is staged
-    assert ctx.messages[-1]["content"] == "[MODEL NOTE]\n\nclean prompt"
+    # The noted bytes are API-call local: they ride the api_content sidecar while the durable
+    # content keeps the clean staged text, so a compaction copy cannot persist the note as a
+    # second user turn.
+    assert ctx.messages[-1]["content"] == "clean prompt"
+    assert ctx.messages[-1]["api_content"] == "[MODEL NOTE]\n\nclean prompt"
     assert ctx.messages[-1]["_db_persisted"] is True
     assert isinstance(ctx.messages[-1]["timestamp"], float)
     assert agent._pending_cli_user_message is None
+
+
+def test_pending_cli_invariant_miss_drops_the_staged_row_and_logs():
+    """Setters stage ``pending.content == persist text``; a setter that stages noted bytes
+    violates the invariant. The miss must drop the staged dict (it can never flush a second
+    user row for this turn) and log why, so the caller fails loudly instead of silently."""
+    noted = "[MODEL NOTE]\n\nclean prompt"
+    agent = types.SimpleNamespace(
+        _pending_cli_user_message={"role": "user", "content": noted, "_db_persisted": True}
+    )
+
+    with patch("agent.turn_context.logger.debug") as debug:
+        live, staged = _stage_turn_user_message(
+            agent, noted, "clean prompt", 1791543218.2296236, None, None, None
+        )
+
+    assert live is not staged  # the violating row is not adopted
+    assert live["content"] == "clean prompt"
+    assert live["api_content"] == noted  # the note stays API-call-local
+    assert agent._pending_cli_user_message is None
+    debug.assert_called_once()
 
 
 def test_recall_indicator_emitted_when_memory_injected():

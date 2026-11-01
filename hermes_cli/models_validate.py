@@ -521,6 +521,12 @@ def _validate_anthropic(req: _Request) -> Optional[dict[str, Any]]:
     if models is None:
         return None
     match = _match_in_catalog(req.lookup, models, suggest_query=req.requested)
+    prefixed = f"claude-{req.lookup}"
+    if not match.exact and prefixed in models:
+        return _reject(
+            f"Model `{req.requested}` was not found in Anthropic's /v1/models listing. "
+            f"Did you mean `{prefixed}`?"
+        )
     # Accept anyway — Anthropic gates newer/preview models (snapshot IDs, early access) behind
     # accounts even though they aren't listed on /v1/models.
     return match.verdict(req) or _soft_accept(

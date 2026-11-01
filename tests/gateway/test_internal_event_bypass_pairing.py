@@ -174,6 +174,7 @@ async def test_notify_on_complete_uses_session_store_origin_for_group_topic(monk
     assert event.source.thread_id == "42"
     assert event.source.user_id == "user-42"
     assert event.source.user_name == "alice"
+    assert event.metadata["gateway_process_session_ids"] == ["proc_test_internal"]
 
 
 @pytest.mark.asyncio

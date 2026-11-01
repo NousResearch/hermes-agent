@@ -159,9 +159,9 @@ def _code_url_verdict(code: str) -> _CodeUrlVerdict:
     the hybrid LOCAL sidecar. Each URL's routing predicate is evaluated ONCE and feeds both answers: it
     resolves DNS unmemoised, so a rebinding host evaluated twice could relax the private-address floor and
     still route to the cloud provider."""
-    from tools.browser_url_policy import evaluate_url_safety, hybrid_routes_locally
+    from tools.browser_url_policy import evaluate_url_safety, hybrid_routes_locally, url_literals
     local_sidecar = False
-    for url in _URL_RE.findall(code or ""):
+    for url in url_literals(code or "", pattern=_URL_RE):  # plus the host after any userinfo
         routes_local = hybrid_routes_locally(url)
         local_sidecar = local_sidecar or routes_local
         err = evaluate_url_safety(url, auto_local=routes_local)

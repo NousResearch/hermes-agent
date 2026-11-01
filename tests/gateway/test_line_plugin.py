@@ -536,3 +536,55 @@ class TestMediaPublicUrlGuard:
         assert not result.success
         assert "LINE_PUBLIC_URL" in (result.error or "")
 
+
+# ---------------------------------------------------------------------------
+# 10. No message-edit capability → the gateway declines incremental streaming
+# ---------------------------------------------------------------------------
+
+class TestNoEditCapability:
+    """LINE's Messaging API has no message-edit endpoint. The adapter must declare
+    ``SUPPORTS_MESSAGE_EDITING = False`` so the gateway does not build an incremental
+    (edit-based) stream for it: a partial preview could never be updated, so it would
+    freeze with the edit cursor visible and the real final would duplicate as a new
+    message. Contract: ``gateway/run_turn.py::_build_stream_consumer_config``."""
+
+    def _adapter(self, monkeypatch):
+        from gateway.config import PlatformConfig
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        return LineAdapter(PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok", "channel_secret": "sec"}))
+
+    def _source(self):
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+        return SessionSource(
+            platform=Platform("line"), chat_id="Cgrp", chat_type="group", user_id="U1",
+        )
+
+    def test_gateway_omits_the_edit_cursor_for_line(self, monkeypatch):
+        from gateway.run_turn import GatewayTurnMixin
+        from gateway.stream_consumer import StreamConsumerConfig
+
+        runner = object.__new__(GatewayTurnMixin)
+        source = self._source()
+        # Interims allowed (fallback): the consumer must carry NO cursor — a platform that cannot
+        # edit must never leave a stale ▉ in a bubble it can never update.
+        cfg, _ = runner._build_stream_consumer_config(
+            source, StreamConsumerConfig(), self._adapter(monkeypatch), on_missing_cursor="fallback",
+        )
+        assert cfg.cursor == ""
+
+    def test_gateway_skips_incremental_streaming_for_line(self, monkeypatch):
+        from gateway.run_turn import GatewayTurnMixin
+        from gateway.stream_consumer import StreamConsumerConfig
+
+        runner = object.__new__(GatewayTurnMixin)
+        source = self._source()
+        # Deltas are wanted and interim commentary is off ("raise"): rather than stream edits that
+        # can never land, the gateway refuses and the caller skips streaming entirely.
+        with pytest.raises(RuntimeError, match="non-editable"):
+            runner._build_stream_consumer_config(
+                source, StreamConsumerConfig(), self._adapter(monkeypatch), on_missing_cursor="raise",
+            )
+

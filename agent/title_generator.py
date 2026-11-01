@@ -158,6 +158,23 @@ def _title_language() -> str:
         return ""
 
 
+def _title_system_prompt() -> str:
+    """Return a user-configured system prompt override, or empty for default.
+
+    ``auxiliary.title_generation.system_prompt`` replaces the built-in
+    _TITLE_PROMPT_TEMPLATE entirely when set. The JSON response format and the
+    answer-shaped-output guard still apply — only the instructions change.
+    """
+    try:
+        value = _title_config().get("system_prompt", "")
+        if not isinstance(value, str):
+            return ""
+        return value.strip()
+    except Exception:
+        logger.debug("Failed to read title_generation.system_prompt", exc_info=True)
+        return ""
+
+
 def _auto_title_enabled() -> bool:
     try:
         from utils import is_truthy_value
@@ -486,6 +503,7 @@ def generate_title(
     if not _auto_title_enabled():
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return None
+
     try:
         if runtime_validator is not None and not runtime_validator():
             logger.debug("Title generation skipped: runtime validator returned False")
@@ -500,11 +518,15 @@ def generate_title(
         not title_preview and _attachment_only_opener(user_snippet)
     ):
         return None
-    language = _title_language()
-    # str.replace, not str.format: the prompt embeds literal JSON braces.
-    prompt = _TITLE_PROMPT_TEMPLATE.replace(
-        "__LANGUAGE_RULE__", _LANGUAGE_RULE_PINNED.format(language=language) if language else _LANGUAGE_RULE_MATCH_USER,
-    )
+    custom_prompt = _title_system_prompt()
+    if custom_prompt:
+        prompt = custom_prompt
+    else:
+        language = _title_language()
+        # str.replace, not str.format: the prompt embeds literal JSON braces.
+        prompt = _TITLE_PROMPT_TEMPLATE.replace(
+            "__LANGUAGE_RULE__", _LANGUAGE_RULE_PINNED.format(language=language) if language else _LANGUAGE_RULE_MATCH_USER,
+        )
     try:
         # Use the provider's default temperature instead of forcing 0.3.
         # Some models (e.g. GPT-5.6) only accept their server-side default

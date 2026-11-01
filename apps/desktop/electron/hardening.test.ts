@@ -88,6 +88,14 @@ test('clampDataUrlReadMaxMb defaults and bounds the attach size preference', () 
   assert.equal(dataUrlReadMaxBytesFromMb(16), 16 * 1024 * 1024)
 })
 
+// The gateway's image.attach_bytes accepts 25 MiB images (tui_gateway
+// _ATTACH_BYTES_MAX_BYTES). The default preview/image read cap has to cover it,
+// else a fresh install rejects images the remote gateway would have taken.
+test('the default data-url read cap covers the gateway image attach cap', () => {
+  assert.equal(DATA_URL_READ_DEFAULT_MAX_MB, 25)
+  assert.equal(dataUrlReadMaxBytesFromMb(DATA_URL_READ_DEFAULT_MAX_MB), 25 * 1024 * 1024)
+})
+
 test('attachment data URL helper reads bytes above the preview default without changing that limit', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-large-attachment-'))
   const source = path.join(tempDir, 'large.bin')

@@ -288,3 +288,88 @@ def test_persistent_dispose_is_idempotent_after_targeted_unload():
     assert manager._persistent_carryover == []
     manager._evict_stale_persistent_registrations()
     assert get_provider("basic") is None
+
+
+# ---------------------------------------------------------------------------
+# Idempotent re-registration: a multiplexed gateway builds one plugin manager
+# per served profile, and each profile-scoped manager rediscovers the bundled
+# auth backend and re-registers the SAME launch-owned provider every boot.
+# The registry merges the global slot into every profile scope anyway, so the
+# re-registration is a provable no-op — it must not spam a WARNING per profile
+# per boot. The warning stays for genuinely first-time foreign-scope
+# registrations (scope isolation is still enforced).
+# ---------------------------------------------------------------------------
+
+
+def _profile_ctx(manager: PluginManager) -> tuple[PluginContext, str, PluginManager]:
+    profile_scope = hermes_home_key(Path(manager.scope_key) / "profiles" / "bot")
+    profile_manager = PluginManager(scope_key=profile_scope)
+    profile_ctx = PluginContext(
+        PluginManifest(name="basic", version="0.0.1", kind="backend"),
+        manager=profile_manager,
+    )
+    return profile_ctx, profile_scope, profile_manager
+
+
+def test_profile_re_registering_launch_provider_is_quiet_no_op(caplog):
+    """Same-name profile-scope re-registration of a launch-owned provider:
+    debug log, no warning, no registry change."""
+    import logging
+
+    manager, ctx = _real_ctx()
+    launch_provider = _Basic("launch-home")
+    ctx.register_dashboard_auth_provider(launch_provider)
+
+    profile_ctx, profile_scope, profile_manager = _profile_ctx(manager)
+
+    with caplog.at_level(logging.DEBUG):
+        registration = profile_ctx.register_dashboard_auth_provider(_Basic("profile"))
+
+    assert registration is None
+    # No behavior change: the launch provider still owns the name, and it is
+    # resolvable from the profile scope (the registry merge covers it).
+    assert get_provider("basic") is launch_provider
+    assert get_provider("basic", scope=profile_scope) is launch_provider
+    assert "basic" not in profile_manager._ownership_ledger
+
+    assert not any(
+        rec.levelno >= logging.WARNING and "dashboard-auth provider" in rec.message
+        for rec in caplog.records
+    )
+    assert any(
+        rec.levelno == logging.DEBUG and "already owns it" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_first_foreign_scope_registration_still_warns(caplog):
+    """A provider name nobody owns yet keeps the WARNING + refusal."""
+    import logging
+
+    profile_ctx, _scope, _manager = _profile_ctx(_real_ctx()[0])
+
+    with caplog.at_level(logging.WARNING):
+        registration = profile_ctx.register_dashboard_auth_provider(_Basic())
+
+    assert registration is None
+    assert get_provider("basic") is None
+    assert any("owned by launch scope" in rec.message for rec in caplog.records)
+
+
+def test_foreign_registration_warns_after_launch_provider_released(caplog):
+    """Once the launch plugin releases the global slot (e.g. it is disabled),
+    a later profile-scope registration is first-time again and still warns."""
+    import logging
+
+    manager, ctx = _real_ctx()
+    ctx.register_dashboard_auth_provider(_Basic())
+    manager.unload("basic")  # plugin disabled: the global slot is released
+    assert get_provider("basic") is None
+
+    profile_ctx, _scope, _manager = _profile_ctx(manager)
+
+    with caplog.at_level(logging.WARNING):
+        assert profile_ctx.register_dashboard_auth_provider(_Basic("late")) is None
+
+    assert get_provider("basic") is None
+    assert any("owned by launch scope" in rec.message for rec in caplog.records)

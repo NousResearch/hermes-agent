@@ -739,11 +739,31 @@ class PluginContext(PluginCapabilityCtxMixin):
         auth gate (non-loopback bind without ``--insecure``). Wrong type / duplicate name warn and
         are ignored, never raised."""
         from hermes_cli.dashboard_auth import DashboardAuthProvider
-        from hermes_cli.dashboard_auth.registry import register_global_provider, unregister_global_provider
+        from hermes_cli.dashboard_auth.registry import (get_provider,
+                                                        register_global_provider,
+                                                        unregister_global_provider)
         if self._wrong_type(provider, DashboardAuthProvider, "dashboard-auth provider"):
             return
         launch_scope = hermes_home_key(get_process_hermes_home())
         if self._manager.scope_key != launch_scope:
+            # Idempotent skip: a multiplexed gateway builds one plugin manager per
+            # served profile, and each profile-scoped manager rediscovers the
+            # bundled auth backend, re-registering the same launch-owned provider
+            # from its own scope every boot. When the name already lives in the
+            # process-global registry (launch scope owns it), the registry merges
+            # the global slot into every profile scope anyway, so skipping is a
+            # provable no-op -- demote the per-boot warning to debug. The warning
+            # is RETAINED for a genuinely first-time foreign-scope registration.
+            if get_provider(provider.name) is not None:
+                logger.debug(
+                    "Plugin '%s' re-registered dashboard-auth provider %r from profile "
+                    "scope %s; launch scope %s already owns it -- skipping (no-op).",
+                    self.manifest.name,
+                    provider.name,
+                    self._manager.scope_key,
+                    launch_scope,
+                )
+                return
             logger.warning(
                 "Plugin '%s' tried to register dashboard-auth provider %r "
                 "from profile scope %s; ignoring it because dashboard auth "

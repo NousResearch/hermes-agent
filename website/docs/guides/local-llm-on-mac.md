@@ -197,14 +197,14 @@ Start an OpenAI-compatible server with an MLX-format Qwen3.5-9B model:
 ```bash
 vllm serve mlx-community/Qwen3.5-9B-4bit \
   --host 127.0.0.1 --port 8000 \
-  --max-model-len 65536 --max-num-seqs 1 \
-  --gpu-memory-utilization 0.3 \
+  --max-model-len 65536 --max-num-seqs 4 \
+  --gpu-memory-utilization 0.6 \
   --enable-auto-tool-choice \
   --tool-call-parser qwen3_xml \
   --reasoning-parser qwen3
 ```
 
-The tool and reasoning parsers above are for Qwen3.5. The memory budget is 30% of unified memory; if startup reports insufficient capacity, increase `--gpu-memory-utilization` or use a smaller model while keeping at least Hermes' 64K context minimum.
+The tool and reasoning parsers above are for Qwen3.5. `--max-num-seqs 4` allows up to four concurrent requests. If startup reports insufficient capacity, increase `--gpu-memory-utilization` or use a smaller model while keeping at least Hermes' 64K context minimum.
 
 In `hermes model`, choose **Custom endpoint**, enter `http://127.0.0.1:8000/v1`, leave the API key blank, and select `mlx-community/Qwen3.5-9B-4bit`. Set the context length to `65536` to match the server. See the [vllm-metal installation guide](https://docs.vllm.ai/projects/vllm-metal/en/latest/installation/) for other installation options.
 
@@ -214,30 +214,33 @@ In `hermes model`, choose **Custom endpoint**, enter `http://127.0.0.1:8000/v1`,
 
 Tested on October 31, 2026, on an **Apple M5 Pro with 64 GB unified memory**, running macOS 27.0.1 and **Qwen3.5-9B**. vllm-metal and oMLX loaded identical `mlx-community/Qwen3.5-9B-4bit` weights; llama.cpp used `unsloth/Qwen3.5-9B-GGUF` in Q4_K_M format. The MLX and GGUF quantizations differ.
 
-Five shared prompts, three runs each, with one request at a time and a 65,536-token context limit. Engines ran sequentially, with thinking and prompt-cache reuse disabled. Two warmup requests per engine excluded model loading from the measurements. All 45 measured requests had matching prompt token counts and produced exactly 512 output tokens. llama.cpp used f16 K/V cache for this comparison, rather than the quantized cache in Option A.
+Replayed five consecutive model calls from each of 10 fixed [Hermes reasoning traces](https://huggingface.co/datasets/lambda/hermes-agent-reasoning-traces/tree/b92885e4f0161d4b2536512710e004d4892cac6e) (`kimi` configuration), once at concurrency 1 and 4: **50 requests per engine per concurrency**. Inputs were 1,584–21,268 tokens, with thinking enabled and a 2,048-token output cap. Each call used the same recorded history and tool results across engines.
+
+All servers allowed four concurrent requests with a 65,536-token context limit and RAM prefix caching. KV caches were unquantized; KV offloading and speculative decoding were disabled. Engines ran sequentially, restarting between concurrency levels. Warmups and model loading were excluded. All **300/300 requests** completed successfully.
 
 ### Results
 
-| Metric | llama.cpp b10731 | oMLX 0.6.4 | vllm-metal 0.32.0 |
-|--------|-----------------|------------|------------------|
-| **TTFT (avg)** | 149.6 ms | 339.7 ms | 116.3 ms |
-| **TTFT (p50)** | 146.5 ms | 338.7 ms | 116.5 ms |
-| **Generation (avg)** | 42.4 tok/s | 54.0 tok/s | 52.9 tok/s |
-| **Generation (p50)** | 42.5 tok/s | 54.1 tok/s | 52.8 tok/s |
-| **Total time (512 tokens, avg)** | 12.21 s | 9.80 s | 9.77 s |
+| Engine | Concurrent traces | Mean TTFT | Aggregate output | Hit output cap |
+|--------|------------------:|----------:|-----------------:|---------------:|
+| llama.cpp 0.8.0 | 1 | 1,511.1 ms | 36.8 tok/s | 5/50 |
+| oMLX 0.7.3 | 1 | 1,104.7 ms | 44.1 tok/s | 7/50 |
+| vllm-metal 0.32.0 | 1 | 1,326.2 ms | 36.3 tok/s | 4/50 |
+| llama.cpp 0.8.0 | 4 | 2,422.6 ms | 49.0 tok/s | 5/50 |
+| oMLX 0.7.3 | 4 | 2,507.1 ms | 76.3 tok/s | 5/50 |
+| vllm-metal 0.32.0 | 4 | 1,757.3 ms | 64.6 tok/s | 4/50 |
 
-See the [benchmark details](https://github.com/NousResearch/hermes-agent/pull/147355) for model revisions and the measurement method.
+TTFT measures time to the first streamed content, reasoning, or tool-call delta. Aggregate throughput is total output tokens divided by the 50-request wall time. See the [benchmark details](https://github.com/NousResearch/hermes-agent/pull/147355) for trace IDs, model revisions, and launch settings.
 
 ### What this means
 
-**vllm-metal** had the lowest time to first token in this workload. **oMLX** had a small generation-rate advantage, while its total response time was close to vllm-metal's. These short, single-request measurements do not establish performance for long-context agent turns, cached conversations, or concurrent workloads.
+**vllm-metal** had the lowest mean TTFT with four concurrent traces. **oMLX** had the highest aggregate output throughput at both concurrency levels. Output lengths varied, and the replay excludes tool execution time.
 
 ### Which one should you pick?
 
 | Use case | Recommendation |
 |----------|---------------|
-| Lowest time to first token in this benchmark | vllm-metal |
-| 512-token responses in this benchmark | oMLX or vllm-metal |
+| Lowest mean TTFT with four concurrent traces | vllm-metal |
+| Highest output throughput in this benchmark | oMLX |
 | Memory-constrained (8-16 GB) | llama.cpp (quantized KV cache is unmatched) |
 | Serving multiple models simultaneously | omlx (built-in multi-model support) |
 | Maximum compatibility (Linux too) | llama.cpp |

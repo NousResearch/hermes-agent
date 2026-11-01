@@ -357,3 +357,31 @@ test('applyZoomLevel clamps garbage before applying and notifying', () => {
     ['send', 'hermes:zoom:changed', { level: clamped, percent: zoomLevelToPercent(clamped) }]
   ])
 })
+
+test('applyZoomLevel skips a destroyed webContents but still returns the clamped level', () => {
+  const wc = { ...fakeWebContents(), isDestroyed: () => true }
+  const applied = applyZoomLevel(wc, 3)
+
+  assert.equal(applied, 3, 'callers persist the return value, so it must survive a dead frame')
+  assert.deepEqual(wc.calls, [], 'nothing may be applied or sent to a destroyed webContents')
+})
+
+test('applyZoomLevel swallows a disposed render frame instead of throwing at the caller', () => {
+  // The reassert-settle chain keeps firing while a window closes. isDestroyed() answers
+  // false there — the WebContents is alive, its frame is not — so send() throws and
+  // Electron logged "Render frame was disposed before WebFrameMain could be accessed"
+  // ~15 times on every quit.
+  const wc = {
+    calls: [] as Array<[string, ...unknown[]]>,
+    isDestroyed: () => false,
+    setZoomLevel: (level: number) => { wc.calls.push(['setZoomLevel', level]) },
+    send: () => {
+      throw new Error('Render frame was disposed before WebFrameMain could be accessed')
+    }
+  }
+
+  const applied = applyZoomLevel(wc, 2)
+
+  assert.equal(applied, 2)
+  assert.deepEqual(wc.calls, [['setZoomLevel', 2]], 'the zoom still applied before the send threw')
+})

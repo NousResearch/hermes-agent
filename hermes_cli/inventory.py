@@ -239,7 +239,10 @@ def build_model_options_payload(
     these are human-facing pickers, and hiding a temporarily exhausted pool makes providers vanish
     mid-session even though another model under the same provider may still work (same contract
     as ``/model`` and the aux pickers, #66584 / #66624). Visibility only: ``fast_custom_probe=False``
-    keeps the live probe of the current custom endpoint on its full 5s discovery budget."""
+    keeps the live probe of the current custom endpoint on its full 5s discovery budget.
+
+    Free models float to the front of each provider's models list (stable ordering;
+    ``featured_models`` is left untouched)."""
     refresh = bool(refresh)
     payload = build_models_payload(
         ctx, explicit_only=bool(explicit_only), include_unconfigured=bool(include_unconfigured),
@@ -248,12 +251,44 @@ def build_model_options_payload(
         refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
         non_blocking_catalogs=not refresh,
     )
+    _float_free_models_first(payload["providers"])
     _apply_limits(payload["providers"])
     _apply_usage(payload["providers"])
     if not refresh:
         _prewarm_pricing_async(payload["providers"], current_provider=ctx.current_provider,
                                current_base_url=ctx.current_base_url)
     return payload
+
+
+def _float_free_models_first(rows: list[dict]) -> None:
+    """Reorder each provider row's ``models`` so free models render first.
+
+    Stable partition: free models float to the front of each provider's models
+    list, each side keeps its relative order. A model counts as free when its
+    pricing entry has a truthy ``free`` flag (computed in the pricing builder as
+    "input and output cost nothing"), or — belt and suspenders for missing
+    pricing entries — when its id ends in ``:free`` (same suffix rule as
+    ``agent.plan_limits.is_free``). Rows without a models list or without a
+    pricing dict are left alone, and ``featured_models`` (an independent
+    curated shortlist) is never touched. Reassigns ``row["models"]`` to a new
+    list rather than mutating in place, so a mid-loop failure cannot leave a
+    half-reordered list behind."""
+    for row in rows:
+        models = row.get("models")
+        pricing = row.get("pricing")
+        if not models or not isinstance(pricing, dict):
+            continue
+        pricing_by_id: dict = pricing
+
+        def _is_free(mid: str) -> bool:
+            entry = pricing_by_id.get(mid)
+            if isinstance(entry, dict) and entry.get("free"):
+                return True
+            return str(mid).endswith(":free")
+
+        free = [m for m in models if _is_free(m)]
+        paid = [m for m in models if not _is_free(m)]
+        row["models"] = free + paid
 
 
 def _apply_limits(rows: list[dict]) -> None:

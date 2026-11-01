@@ -113,6 +113,32 @@ class TestDeterministicEmpty:
         )
         assert guard.deterministic_empty(agent) is False
 
+    def test_nonzero_then_two_zero_attempts_is_deterministic(self):
+        """A transient first attempt must not poison subsequent consecutive zero-output attempts."""
+        agent = _agent()
+        _record_streak(
+            agent,
+            [
+                _response(completion_tokens=7),
+                _response(completion_tokens=0),
+                _response(completion_tokens=0),
+            ],
+        )
+        assert guard.deterministic_empty(agent) is True
+
+    def test_missing_usage_then_two_zero_attempts_is_deterministic(self):
+        """A transient first attempt missing usage must not poison subsequent consecutive zero-output attempts."""
+        agent = _agent()
+        _record_streak(
+            agent,
+            [
+                _response(usage_present=False),
+                _response(completion_tokens=0),
+                _response(completion_tokens=0),
+            ],
+        )
+        assert guard.deterministic_empty(agent) is True
+
     def test_signature_change_resets_determinism(self):
         """Fallback switched model mid-streak — new model deserves retries."""
         agent = _agent()

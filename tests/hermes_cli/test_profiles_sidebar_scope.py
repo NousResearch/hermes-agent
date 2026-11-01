@@ -163,6 +163,98 @@ class TestCrossProfileProjectTree:
         assert [project["path"] for project in declared] == [str(shared)]
         assert declared[0]["sessionCount"] == 2
 
+    def test_project_sessions_hydrates_lanes_from_every_profile(self, client, profiles_on_disk, tmp_path):
+        # The tree only previews a few rows per project; the hydrated endpoint is what
+        # "Show all N sessions" reads while viewing all profiles, so it must return every
+        # profile's sessions for that one project, under the id the tree handed out.
+        shared = tmp_path / "repos" / "shared"
+        shared.mkdir(parents=True)
+
+        for name, home in profiles_on_disk.items():
+            for index in range(3):
+                _seed_session(home, f"{name}-chat-{index}", source="cli", cwd=shared)
+            _seed_project(home, "Shared", shared)
+
+        tree = client.get("/api/profiles/projects/tree", params={"preview_limit": 1}).json()
+        node = next(p for p in tree["projects"] if not p["isNoProject"])
+        assert len(node["previewSessions"]) == 1
+
+        payload = client.get("/api/profiles/projects/sessions", params={"project_id": node["id"]}).json()
+
+        assert payload["errors"] == []
+        project = payload["project"]
+        rows = [s for r in project["repos"] for g in r["groups"] for s in g["sessions"]]
+        assert len(rows) == node["sessionCount"] == 6
+        assert {row["profile"] for row in rows} == {"default", "worker"}
+
+    def test_project_sessions_unknown_project_is_null(self, client, profiles_on_disk):
+        payload = client.get("/api/profiles/projects/sessions", params={"project_id": "nope"}).json()
+
+        assert payload["project"] is None
+
+    def test_project_sessions_one_profile_read_finds_the_folder_under_its_own_id(
+        self, client, profiles_on_disk, tmp_path
+    ):
+        # One read per profile, as a native grant makes them.
+        shared = tmp_path / "repos" / "shared"
+        shared.mkdir(parents=True)
+
+        for name, home in profiles_on_disk.items():
+            for index in range(2):
+                _seed_session(home, f"{name}-chat-{index}", source="cli", cwd=shared)
+            _seed_project(home, "Shared", shared)
+
+        tree = client.get("/api/profiles/projects/tree").json()
+        node = next(p for p in tree["projects"] if not p["isNoProject"])
+        by_id = {"project_id": node["id"]}
+
+        for name in profiles_on_disk:
+            payload = client.get(
+                "/api/profiles/projects/sessions", params={**by_id, "path": node["path"], "profile": name}
+            ).json()
+            rows = [s for r in payload["project"]["repos"] for g in r["groups"] for s in g["sessions"]]
+            assert {row["profile"] for row in rows} == {name}
+            assert len(rows) == 2
+
+        misses = [
+            name for name in profiles_on_disk
+            if client.get("/api/profiles/projects/sessions", params={**by_id, "profile": name}).json()["project"]
+            is None
+        ]
+        assert len(misses) == 1
+
+    def test_project_sessions_named_folder_does_not_fall_back_to_a_cloned_id(
+        self, client, profiles_on_disk, tmp_path
+    ):
+        # ``--clone-all`` copies projects.db, so a cloned profile holds the same declared id;
+        # once it points that project at another folder, the id must not pull that folder in.
+        original, moved = tmp_path / "repos" / "original", tmp_path / "repos" / "moved"
+        original.mkdir(parents=True)
+        moved.mkdir(parents=True)
+        _seed_session(profiles_on_disk["default"], "default-chat", source="cli", cwd=original)
+        project_id = _seed_project(profiles_on_disk["default"], "Cloned", original)
+
+        import shutil
+        import sqlite3
+
+        worker_db = profiles_on_disk["worker"] / "projects.db"
+        shutil.copy(profiles_on_disk["default"] / "projects.db", worker_db)
+        conn = sqlite3.connect(worker_db)
+        try:
+            conn.execute("UPDATE project_folders SET path = ?", (str(moved),))
+            conn.execute("UPDATE projects SET primary_path = ?", (str(moved),))
+            conn.commit()
+        finally:
+            conn.close()
+        _seed_session(profiles_on_disk["worker"], "worker-chat", source="cli", cwd=moved)
+
+        payload = client.get(
+            "/api/profiles/projects/sessions",
+            params={"project_id": project_id, "path": str(original), "profile": "worker"},
+        ).json()
+
+        assert payload["project"] is None
+
     def test_group_totals_add_up_the_sessions_the_group_counts(self, client, profiles_on_disk, tmp_path):
         # A header total is only meaningful if it covers exactly what the header
         # says it counts — a project's totals span every profile working it, the

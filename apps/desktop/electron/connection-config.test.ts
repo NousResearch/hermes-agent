@@ -658,7 +658,7 @@ test('a /api/profiles/<name>/… path already names its profile: no ambient scop
       }
 
       // Collection routes under /api/profiles/ carry no name in the path: they still get the scope.
-      for (const path of ['/api/profiles/sessions', '/api/profiles/projects/tree', '/api/profiles']) {
+      for (const path of ['/api/profiles/sessions', '/api/profiles/projects/tree', '/api/profiles/projects/sessions', '/api/profiles']) {
         assert.equal(pathForRegistryBackendRequest(path, ambient, backend), `${path}?profile=${ambient}`)
       }
     }

@@ -29,6 +29,8 @@ Contract asserted here (mutation-survivable)
 2. A caller-supplied ``limits`` kwarg wins over the ``_POOL_LIMITS`` default.
 """
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -167,3 +169,112 @@ def test_pool_default_limits_applied_when_caller_omits(monkeypatch):
     limits = kwargs_log[0]["limits"]
     assert isinstance(limits, httpx.Limits)
     assert limits is transport._POOL_LIMITS
+
+
+class _SharedPool(httpx.AsyncBaseTransport):
+    """Fake pool shared by concurrent sends: ``/fail`` raises ConnectError, other requests wait on
+    ``gate``; a request still waiting when the pool is closed fails like a reset socket."""
+
+    def __init__(self, gate):
+        self.gate = gate
+        self.closed = False
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fail":
+            raise httpx.ConnectError("")
+        await self.gate.wait()
+        if self.closed:
+            raise httpx.ReadError("")
+        return httpx.Response(200, request=request, text="ok")
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def _shared_pool_transport(monkeypatch):
+    for key in (
+        "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy",
+        "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    gate = asyncio.Event()
+    monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", lambda **kwargs: _SharedPool(gate))
+    return tnet.TelegramFallbackTransport(["149.154.167.220"]), gate
+
+
+@pytest.mark.asyncio
+async def test_failed_path_does_not_close_pool_under_concurrent_sends(monkeypatch):
+    """One ConnectError on the sticky IPv4 path used to aclose() the pool every
+    concurrent send was using, turning each of them into an empty ReadError.
+    The discarded pool now closes once its last request has finished (#63311)."""
+    transport, gate = _shared_pool_transport(monkeypatch)
+    async with httpx.AsyncClient(transport=transport) as client:
+        slow = [asyncio.create_task(client.get("https://api.telegram.org/botT/sendMessage")) for _ in range(3)]
+        await asyncio.sleep(0)
+        shared_pool = transport._fallbacks["149.154.167.220"]
+
+        with pytest.raises(httpx.ConnectError):
+            await client.get("https://api.telegram.org/fail")
+
+        assert not shared_pool.closed, "pool closed under in-flight sends"
+        assert "149.154.167.220" not in transport._fallbacks, "failed pool must leave rotation at once"
+        gate.set()
+        assert [r.status_code for r in await asyncio.gather(*slow)] == [200, 200, 200]
+        assert shared_pool.closed, "discarded pool must close after its last request (#63311)"
+
+
+@pytest.mark.asyncio
+async def test_unread_response_body_keeps_discarded_pool_open(monkeypatch):
+    """A streamed body still reads from its pool: close the pool only after the body is closed."""
+    transport, gate = _shared_pool_transport(monkeypatch)
+    gate.set()
+    shared_pool = await transport._get_fallback("149.154.167.220")
+    shared_pool.handle_async_request = lambda request: _streamed_ok(request)
+    async with httpx.AsyncClient(transport=transport) as client:
+        async with client.stream("GET", "https://api.telegram.org/botT/getFile") as response:
+            await transport._reset_fallback("149.154.167.220", shared_pool)
+            assert not shared_pool.closed
+            assert await response.aread() == b"chunk"
+        assert shared_pool.closed
+
+
+async def _streamed_ok(request):
+    class _Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"chunk"
+
+    return httpx.Response(200, request=request, stream=_Body())
+
+
+@pytest.mark.asyncio
+async def test_cancelled_send_releases_discarded_pool(monkeypatch):
+    """A send cancelled mid-request (PTB timeouts) must not keep a discarded pool open forever."""
+    transport, _gate = _shared_pool_transport(monkeypatch)
+    pending = asyncio.create_task(transport.handle_async_request(_telegram_request()))
+    await asyncio.sleep(0)
+    shared_pool = transport._fallbacks["149.154.167.220"]
+    with pytest.raises(httpx.ConnectError):
+        await transport.handle_async_request(_telegram_request("/fail"))
+    assert not shared_pool.closed
+
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    assert shared_pool.closed
+    await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stale_failure_does_not_discard_replacement_pool(monkeypatch):
+    """A failure reported against an already-discarded pool must leave its replacement alone."""
+    transport, _gate = _shared_pool_transport(monkeypatch)
+    stale = await transport._get_fallback("149.154.167.220")
+    await transport._reset_fallback("149.154.167.220", stale)
+    fresh = await transport._get_fallback("149.154.167.220")
+
+    await transport._reset_fallback("149.154.167.220", stale)
+
+    assert transport._fallbacks["149.154.167.220"] is fresh
+    assert not fresh.closed
+    await transport.aclose()

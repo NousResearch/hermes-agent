@@ -53,17 +53,20 @@ export function NewTerminalButton({ className }: { className: string }) {
     </button>
   )
 
-  const tipped = (
+  // The context-menu trigger (when there is one) sits inside the Tip, right on
+  // the button: Tip hands its extra props to the tooltip content, so a trigger
+  // wrapped around it never reaches the button.
+  const tipped = (trigger: ReactNode) => (
     <Tip
       label={<TipHintLabel hint={newHint && formatCombo(newHint)} text={t.rightSidebar.terminalNew} />}
       placement="right-rail"
     >
-      {button}
+      {trigger}
     </Tip>
   )
 
   if (!choices.length) {
-    return <li className="flex w-full justify-center">{tipped}</li>
+    return <li className="flex w-full justify-center">{tipped(button)}</li>
   }
 
   const items = (Item: typeof ContextMenuItem | typeof DropdownMenuItem): ReactNode =>
@@ -77,7 +80,7 @@ export function NewTerminalButton({ className }: { className: string }) {
   return (
     <li className="flex w-full flex-col items-center">
       <ContextMenu>
-        <ContextMenuTrigger asChild>{tipped}</ContextMenuTrigger>
+        {tipped(<ContextMenuTrigger asChild>{button}</ContextMenuTrigger>)}
         <ContextMenuContent>
           <ContextMenuLabel>{t.rightSidebar.terminalNewOn}</ContextMenuLabel>
           {items(ContextMenuItem)}

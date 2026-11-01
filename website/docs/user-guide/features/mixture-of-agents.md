@@ -111,6 +111,41 @@ settings are no longer supported. Provider defaults vary; omission does not
 always mean the model maximum. Native protocols that require an output limit
 receive an internal value from Hermes.
 
+### Advisor tool-result previews
+
+`reference_tool_result_budget` controls how many characters from **each tool result**
+are retained in the reference models' advisory view. The default is **4,000**;
+longer results use a head-and-tail preview with an omission marker. The aggregator
+continues to receive the normal conversation and tool results.
+
+Set the budget for a named preset through the CLI or `config.yaml`:
+
+```bash
+hermes config set moa.presets.review.reference_tool_result_budget 12000
+```
+
+```yaml
+moa:
+  presets:
+    review:
+      reference_tool_result_budget: 12000
+      # Keep this preset's reference_models and aggregator settings here too.
+```
+
+Values are clamped to **200–50,000 characters**. Lower values reduce advisory
+input; higher values retain more context for document analysis. This is a
+per-result limit, so total advisory input still grows with the number of tool
+results and reference models. The omission marker is additional text outside
+the retained-character budget.
+
+Positive numeric values are truncated toward zero before clamping. Missing,
+invalid, boolean, non-finite, or non-positive values (including fractions that
+truncate to zero) use the default. Very large finite values clamp to 50,000.
+
+The setting applies to persistent MoA conversations and the one-shot `/moa`
+path when advisors run. It is preserved by the dashboard API, but there is no
+dedicated dashboard input for it.
+
 ### Advisor cadence with `fanout`
 
 By default the advisors run **once per user turn** (`fanout: user_turn`) —

@@ -20,6 +20,7 @@ import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import safe_url_for_log
+from gateway.platforms.base_session_work import BaseSessionWorkMixin
 
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
@@ -1805,7 +1806,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(ABC):
+class BasePlatformAdapter(BaseSessionWorkMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -3845,20 +3846,6 @@ class BasePlatformAdapter(ABC):
             return False
         return True
 
-    def _track_session_task(self, session_key: str, task: Any) -> bool:
-        """Record ``task`` as the session owner and track it for shutdown; False when
-        ``create_task`` was stubbed with an unhashable sentinel (tests) — the owner entry is left
-        for the caller."""
-        self._session_tasks[session_key] = task
-        try:
-            self._background_tasks.add(task)
-        except TypeError:
-            return False
-        if hasattr(task, "add_done_callback"):
-            task.add_done_callback(self._background_tasks.discard)
-            task.add_done_callback(self._expected_cancelled_tasks.discard)
-        return True
-
     async def cancel_session_processing(self, session_key: str, *, release_guard: bool = True,
                                         discard_pending: bool = True) -> None:
         """Cancel in-flight processing for one session. ``release_guard=False`` keeps the guard so
@@ -4615,15 +4602,11 @@ class BasePlatformAdapter(ABC):
         self._requeue_counts[session_key] = attempts + 1
         if attempts == 0:
             return 0.0
-        delay = jittered_backoff(attempts, base_delay=self._REQUEUE_BACKOFF_INITIAL_SECONDS,
-                                 max_delay=self._REQUEUE_BACKOFF_MAX_SECONDS, jitter_ratio=0.0)
-        (logger.info if attempts == 1 else logger.debug)(
-            "[%s] Handler re-queued a pending event for %s again (session busy elsewhere); "
-            "backing off %.2fs", self.name, session_key, delay)
+        delay = jittered_backoff(attempts, base_delay=self._REQUEUE_BACKOFF_INITIAL_SECONDS, max_delay=self._REQUEUE_BACKOFF_MAX_SECONDS, jitter_ratio=0.0)
+        (logger.info if attempts == 1 else logger.debug)("[%s] Handler re-queued a pending event for %s again (session busy elsewhere); backing off %.2fs", self.name, session_key, delay)
         return delay
 
-    def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str,
-                          delay: float = 0.0) -> None:
+    def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str, delay: float = 0.0) -> None:
         """Hand the session to a fresh task for a queued follow-up — never recurse (chained
         follow-ups grew the C stack to SIGSEGV). Clearing (not deleting) the Event keeps the guard
         live for concurrent inbound; ownership moves so stale-lock detection works. With ``delay``
@@ -4634,12 +4617,9 @@ class BasePlatformAdapter(ABC):
         # Capture the guard this drain owns now: a /stop//new guard swapped in during the
         # back-off must survive the slot-empty exit (#48300).
         guard = self._active_sessions.get(session_key)
-        self._track_session_task(
-            session_key,
-            asyncio.create_task(self._drain_after(pending_event, session_key, delay, guard)))
+        self._track_session_task(session_key, asyncio.create_task(self._drain_after(pending_event, session_key, delay, guard)))
 
-    async def _drain_after(self, pending_event: MessageEvent, session_key: str, delay: float,
-                           guard: Optional[asyncio.Event]) -> None:
+    async def _drain_after(self, pending_event: MessageEvent, session_key: str, delay: float, guard: Optional[asyncio.Event]) -> None:
         if delay > 0:
             await asyncio.sleep(delay)
             await self._flush_text_debounce_now(session_key)  # as every other task exit does
@@ -4655,8 +4635,7 @@ class BasePlatformAdapter(ABC):
         if _active is not None:
             _active.clear()
 
-    def _cleanup_finished_session_task(
-        self, session_key: str, interrupt_event: Optional[asyncio.Event]) -> None:
+    def _cleanup_finished_session_task(self, session_key: str, interrupt_event: Optional[asyncio.Event]) -> None:
         """Release a finished owner task's guard, dropping its ``_session_tasks`` entry ONLY if the
         guard was released: after a concurrent guard swap the done-task entry lets
         ``_session_task_is_stale`` heal the orphan.
@@ -4687,13 +4666,9 @@ class BasePlatformAdapter(ABC):
                 self._expected_cancelled_tasks.add(task)
                 task.cancel()
             try:
-                await asyncio.wait_for(
-                    asyncio.gather(*(asyncio.shield(t) for t in tasks), return_exceptions=True),
-                    timeout=5.0)
+                await asyncio.wait_for(asyncio.gather(*(asyncio.shield(t) for t in tasks), return_exceptions=True), timeout=5.0)
             except TimeoutError:
-                logger.warning("[%s] %d background task(s) did not exit within 5s; "
-                               "releasing tracking and letting them unwind in the background",
-                               self.name, sum(not t.done() for t in tasks))
+                logger.warning("[%s] %d background task(s) did not exit within 5s; releasing tracking and letting them unwind in the background", self.name, sum(not t.done() for t in tasks))
                 break
         with contextlib.suppress(Exception):  # flush pending messages to disk before clearing
             from gateway.shutdown_flush import flush_pending_to_file

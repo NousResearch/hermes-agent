@@ -15,7 +15,7 @@ import { delegationPrompt, useVoiceLiveConversation } from './use-voice-live-con
 // The transport is the only seam in the live hook, so the fake session records
 // the handlers it registers (tests drive the close/error paths directly) and
 // lets `start` reject with exactly what the real `getUserMedia` would throw.
-const transport = vi.hoisted(() => ({ failure: null as unknown, handlers: [] as VoiceLiveHandlers[] }))
+const transport = vi.hoisted(() => ({ failure: null as unknown, handlers: [] as VoiceLiveHandlers[], speak: vi.fn() }))
 
 vi.mock('@/lib/voice-live', async importOriginal => {
   const actual = (await importOriginal()) as Record<string, unknown>
@@ -26,7 +26,7 @@ vi.mock('@/lib/voice-live', async importOriginal => {
       close = vi.fn()
       instruct = vi.fn()
       setMuted = vi.fn()
-      speak = vi.fn()
+      speak = transport.speak
       think = vi.fn()
 
       constructor(handlers: VoiceLiveHandlers) {
@@ -125,6 +125,33 @@ describe('Voice-live toast copy', () => {
 })
 
 describe('GPT-Live delegation → Hermes turn', () => {
+  it('appends only the tail after a same-turn row rewrite and resets for a new turn', async () => {
+    vi.useFakeTimers()
+    transport.speak.mockClear()
+    transport.failure = null
+    let response = { id: 'stream', pending: true, text: 'First. Tail', turnKey: 'turn:0' }
+    const hook = renderHook(() => useVoiceLiveConversation({
+      busy: true, enabled: true, consumePendingResponse: vi.fn(), onSubmit: vi.fn(),
+      pendingResponse: () => response, seedHistory: () => []
+    }))
+    try {
+      await act(async () => { await hook.result.current.start() })
+      act(() => transport.handlers.at(-1)!.onDelegation('d1', [
+        { speaker: 'user', startMs: 0, endMs: 1, text: 'Request' }
+      ]))
+      await act(async () => { await vi.advanceTimersByTimeAsync(200) })
+      expect(transport.speak).toHaveBeenCalledWith('d1', 'First.')
+      response = { id: 'durable', pending: true, text: 'First. Second. Tail', turnKey: 'turn:0' }
+      await act(async () => { await vi.advanceTimersByTimeAsync(200) })
+      expect(transport.speak).toHaveBeenLastCalledWith('d1', ' Second.')
+      response = { id: 'other', pending: true, text: 'Next. Tail', turnKey: 'turn:1' }
+      await act(async () => { await vi.advanceTimersByTimeAsync(200) })
+      expect(transport.speak).toHaveBeenLastCalledWith('d1', 'Next.')
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
   it('sends the latest user words as the turn and the exchange as model-only context', () => {
     // The delegation event carries no text: both are reconstructed from
     // transcript deltas, fragments of one speaker concatenated as received.

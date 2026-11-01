@@ -126,6 +126,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         self._next_call_id = 1
         self._pending_calls: dict[int, asyncio.Future] = {}
         self._ws: Optional[ClientConnection] = None
+        self._page_target_id: Optional[str] = None
         self._page_session_id: Optional[str] = None
         # Dialog auto-dismiss watchdog handles (per dialog id) + id generator.
         self._dialog_watchdogs: dict[str, asyncio.TimerHandle] = {}
@@ -177,6 +178,27 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 frame_tree=self._build_frame_tree_locked(),
                 active=self._active, cdp_url=self.cdp_url, task_id=self.task_id,
             )
+
+    def resolve_target_session(self, target_id: str) -> Optional[str]:
+        """Return the live CDP session id for a target attached to this supervisor.
+
+        Public lookup backing ``browser_cdp(target_id=...)`` session reuse: checks the
+        attached top-level page, then OOPIF / auto-attached child targets tracked in
+        ``_frames`` (their frame ids equal their target ids). Returns ``None`` when this
+        supervisor does not track the target — callers fall back to a stateless attach.
+        """
+        if not target_id:
+            return None
+        with self._state_lock:
+            # Partial attach: _page_target_id is known but _page_session_id is not yet
+            # (mid-attach/reconnect). Falling through to None is deliberate — the caller's
+            # stateless fallback handles the call rather than racing the half-attached session.
+            if target_id == self._page_target_id and self._page_session_id:
+                return self._page_session_id
+            frame = self._frames.get(target_id)
+            if frame is not None and frame.cdp_session_id:
+                return frame.cdp_session_id
+        return None
 
     def respond_to_dialog(self, action: str, *, prompt_text: Optional[str] = None,
                           dialog_id: Optional[str] = None, timeout: float = 10.0) -> dict[str, Any]:
@@ -305,7 +327,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                         await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
                         continue
                 with self._state_lock:
-                    self._page_session_id = sid
+                    self._page_session_id, self._page_target_id = sid, target_id
                 return {"ok": True, "url": url}
             return _fail(f"no open page on {origin or 'any site'}" + (" with the expected form" if accept and candidates else ""))
 
@@ -397,6 +419,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 # Reset the per-connection page session id; ``_pending_dialogs`` / ``_frames``
                 # are deliberately kept — they reconcile as fresh events arrive (worst case a
                 # stale dialog entry is rejected with "no dialog is showing", logged only).
+                self._page_target_id = None
                 self._page_session_id = None
                 await self._attach_initial_page()
                 self._set_active(True)
@@ -444,6 +467,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         if page_target is None:
             page_target = (await self._cdp("Target.createTarget", {"url": "about:blank"}))["result"]
         attach = await self._cdp("Target.attachToTarget", {"targetId": page_target["targetId"], "flatten": True})
+        self._page_target_id = page_target["targetId"]
         self._page_session_id = sid = attach["result"]["sessionId"]
         await self._enable_page_domains(sid, timeout=10.0)
         await self._install_dialog_bridge(sid)

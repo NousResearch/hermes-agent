@@ -30,6 +30,12 @@ const { hostMock } = vi.hoisted(() => ({
 
 vi.mock('@hermes/plugin-sdk', () => ({
   host: hostMock,
+  // ./open-request parks the toast's task id in an atom; a get/set stub is enough.
+  atom: <T>(initial: T) => {
+    let value = initial
+
+    return { get: () => value, set: (next: T) => void (value = next) }
+  },
   // Pulled in transitively via ./i18n (the module reads its `en` bundle for
   // fallback titles); never called in these tests.
   usePluginI18n: () => (key: string) => key
@@ -366,14 +372,16 @@ describe('notification content', () => {
     expect(lastNotify().detail).toBe('t103 · ok.md')
   })
 
-  it('Open Kanban action navigates to the native /kanban page', async () => {
+  it('Open Kanban action navigates to /kanban and requests the card drawer', async () => {
     const m = await loadModule()
+    const { $openTaskRequest } = await import('./open-request')
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
-    await m.onKanbanEventsFrame('smoke', [ev(101, 'completed', { summary: 'Done' })])
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'blocked', { reason: 'Need a key' })])
 
     lastNotify().action?.onClick()
     expect(hostMock.navigate).toHaveBeenCalledWith('/kanban')
+    expect($openTaskRequest.get()).toBe('t101')
   })
 })
 

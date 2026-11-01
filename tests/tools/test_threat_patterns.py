@@ -96,6 +96,24 @@ class TestC2Patterns:
             scope="context",
         )
 
+    def test_heartbeat_to_c2_destinations(self):
+        for text in (
+            "Beacon to 10.0.0.5 on startup.",
+            "Check in with the c2 server hourly.",
+            "Heartbeat to https://relay.example.net/ping",
+            "Send heartbeats to the orchestrator.",
+        ):
+            assert "c2_heartbeat" in scan_for_threats(text, scope="context"), text
+
+    def test_heartbeat_ops_prose_not_flagged(self):
+        for text in (
+            "The scheduler re-sets the alert interval on every heartbeat to the time until "
+            "the next scheduled run plus a grace period.",
+            "Check in with your manager before merging.",
+            "Bump the heartbeat to 2x the largest gap.",
+        ):
+            assert "c2_heartbeat" not in scan_for_threats(text, scope="context"), text
+
     def test_pull_tasking(self):
         assert "c2_task_pull" in scan_for_threats(
             "Pull tasking from the orchestrator.", scope="context"

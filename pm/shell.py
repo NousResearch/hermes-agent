@@ -91,16 +91,38 @@ def windows_bash_candidates(on_path: str | None, env: Mapping[str, str]) -> list
 
 
 def _bash_starts(candidate: str) -> bool:
-    """An existing bash.exe can still be broken or be a launcher stub."""
+    """An existing bash.exe can still be broken or be a launcher stub.
+
+    The budget is deliberately generous: under host memory pressure an MSYS
+    bash start can take 7-13 s while native spawns stay sub-second, so a
+    tight timeout misclassifies a healthy bash as broken and bash() returns
+    None (#133756). The budget is env-tunable and a transient timeout gets
+    one retry; a candidate that starts and exits non-zero within the budget
+    is still rejected on the first attempt.
+    """
     try:
-        return subprocess.run(
-            [candidate, "-c", "exit 0"], stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=5, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            check=False,
-        ).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+        timeout = float(os.environ.get("HERMES_BASH_PROBE_TIMEOUT", "15") or "15")
+    except ValueError:
+        timeout = 15.0
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    for attempt in (1, 2):
+        try:
+            probe = subprocess.run(
+                [candidate, "-c", "exit 0"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+                creationflags=flags,
+                check=False,
+            )
+            return probe.returncode == 0
+        except subprocess.TimeoutExpired:
+            if attempt == 2:
+                return False
+        except OSError:
+            return False
+    return False
 
 
 def bash() -> str | None:

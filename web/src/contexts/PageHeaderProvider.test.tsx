@@ -99,7 +99,7 @@ describe("page header ownership", () => {
     expect(header().textContent).toContain("Other action");
     expect(header().textContent).not.toContain("Restart gateway");
     await click("Empty");
-    expect(header().textContent).toBe("/empty");
+    expect(header().textContent).toContain("/empty");
     await click("Channels");
     expect(header().textContent).toContain("Restart gateway");
     expect(header().textContent).not.toContain("Other action");
@@ -116,8 +116,154 @@ describe("page header ownership", () => {
   it("accepts a page that mounts after the route changes", async () => {
     await renderAt("/channels");
     await click("Delayed");
-    expect(header().textContent).toBe("/delayed");
+    expect(header().textContent).toContain("/delayed");
     await click("Mount page");
     expect(header().textContent).toContain("Other action");
+  });
+});
+
+describe("page header fullscreen toggle", () => {
+  let fullscreenElement: Element | null;
+  let requestFullscreen: ReturnType<typeof vi.fn>;
+  let exitFullscreen: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fullscreenElement = null;
+
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => fullscreenElement,
+    });
+
+    requestFullscreen = vi.fn(async () => {
+      fullscreenElement = document.documentElement;
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+
+    exitFullscreen = vi.fn(async () => {
+      fullscreenElement = null;
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+
+    Object.defineProperty(document.documentElement, "requestFullscreen", {
+      configurable: true,
+      value: requestFullscreen,
+    });
+
+    Object.defineProperty(document, "exitFullscreen", {
+      configurable: true,
+      value: exitFullscreen,
+    });
+  });
+
+  afterEach(() => {
+    delete (document as unknown as Record<string, unknown>).fullscreenElement;
+    delete (document.documentElement as unknown as Record<string, unknown>).requestFullscreen;
+    delete (document as unknown as Record<string, unknown>).exitFullscreen;
+    vi.restoreAllMocks();
+  });
+
+  it("enters fullscreen when clicked", async () => {
+    await renderAt("/empty");
+
+    await click("Fullscreen");
+
+    expect(requestFullscreen).toHaveBeenCalledOnce();
+    expect(header().textContent).toContain("Exit Fullscreen");
+  });
+
+  it("exits fullscreen when clicked again", async () => {
+    await renderAt("/empty");
+
+    await click("Fullscreen");
+    await click("Exit Fullscreen");
+
+    expect(exitFullscreen).toHaveBeenCalledOnce();
+    expect(header().textContent).toContain("Fullscreen");
+    expect(header().textContent).not.toContain("Exit Fullscreen");
+  });
+
+  it("updates when fullscreen is exited externally", async () => {
+    await renderAt("/empty");
+    await click("Fullscreen");
+
+    await act(async () => {
+      fullscreenElement = null;
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+
+    expect(header().textContent).not.toContain("Exit Fullscreen");
+    expect(header().textContent).toContain("Fullscreen");
+  });
+
+  it("remains available after navigation", async () => {
+    await renderAt("/empty");
+    await click("Other");
+
+    expect(header().textContent).toContain("Fullscreen");
+
+    await click("Fullscreen");
+    expect(requestFullscreen).toHaveBeenCalledOnce();
+  });
+
+  it("does not crash when fullscreen is rejected", async () => {
+    requestFullscreen.mockRejectedValueOnce(
+      new Error("Fullscreen not permitted"),
+    );
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await renderAt("/empty");
+    await click("Fullscreen");
+
+    expect(warn).toHaveBeenCalledWith(
+      "Fullscreen request failed:",
+      expect.any(Error),
+    );
+    expect(header().textContent).toContain("Fullscreen");
+  });
+
+  it("uses focus mode instead of native fullscreen on Android Firefox", async () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(
+      "Mozilla/5.0 (Android 9; Mobile; rv:152.0) Gecko/152.0 Firefox/152.0",
+    );
+
+    await renderAt("/empty");
+    await click("Focus Mode");
+
+    expect(requestFullscreen).not.toHaveBeenCalled();
+    expect(header().classList.contains("hidden")).toBe(true);
+    expect(document.querySelector('[aria-label="Exit focus mode"]')).not.toBeNull();
+
+    await click("Exit Focus");
+
+    expect(header().classList.contains("hidden")).toBe(false);
+    expect(document.querySelector('[aria-label="Exit focus mode"]')).toBeNull();
+    expect(requestFullscreen).not.toHaveBeenCalled();
+  });
+
+  it("supports Android Firefox focus mode without the native fullscreen API", async () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(
+      "Mozilla/5.0 (Android 9; Mobile; rv:152.0) Gecko/152.0 Firefox/152.0",
+    );
+    delete (document.documentElement as unknown as Record<string, unknown>)
+      .requestFullscreen;
+
+    await renderAt("/empty");
+    await click("Focus Mode");
+
+    expect(header().classList.contains("hidden")).toBe(true);
+    expect(document.querySelector('[aria-label="Exit focus mode"]')).not.toBeNull();
+  });
+
+  it("hides the control when fullscreen is unsupported", async () => {
+    delete (document.documentElement as unknown as Record<string, unknown>)
+      .requestFullscreen;
+
+    await renderAt("/empty");
+
+    expect(
+      header().querySelector('[aria-label="Enter fullscreen"]'),
+    ).toBeNull();
   });
 });

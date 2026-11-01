@@ -78,6 +78,9 @@ export const $petBusy = atom<string | null>(null)
 // Process-global caches (survive component unmount → instant reopen).
 const thumbCache = new Map<string, Promise<string | null>>()
 let galleryLoad: Promise<void> | null = null
+// Bumped by resetPetGallery so a load still in flight for the previous profile
+// drops its late results instead of caching them as the new profile's gallery.
+let galleryEpoch = 0
 
 /**
  * Drop the cached gallery, thumbnails, and in-flight load so the next open
@@ -87,6 +90,7 @@ let galleryLoad: Promise<void> | null = null
  */
 export function resetPetGallery(): void {
   galleryLoad = null
+  galleryEpoch += 1
   thumbCache.clear()
   $petGallery.set(null)
   $petGalleryStatus.set('idle')
@@ -121,6 +125,8 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
     return galleryLoad
   }
 
+  const epoch = galleryEpoch
+
   galleryLoad = (async () => {
     if (!$petGallery.get()) {
       $petGalleryStatus.set('loading')
@@ -136,6 +142,10 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
         syncInfo(request)
       ])
 
+      if (epoch !== galleryEpoch) {
+        return
+      }
+
       if (local) {
         $petGallery.set(local)
         $petGalleryStatus.set('ready')
@@ -143,6 +153,10 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
         localOk = true
       }
     } catch (e) {
+      if (epoch !== galleryEpoch) {
+        return
+      }
+
       if (isMissingRpcMethod(e)) {
         $petGalleryStatus.set('stale')
       } else if (!$petGallery.get()) {
@@ -152,7 +166,10 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
         $petGalleryError.set(e instanceof Error ? e.message : 'Could not reach the petdex gallery.')
       }
     } finally {
-      galleryLoad = null
+      // After a reset the slot belongs to the next profile's load (if any).
+      if (epoch === galleryEpoch) {
+        galleryLoad = null
+      }
     }
 
     // Phase 2: merge in the full petdex catalog in the background. A slow/failed
@@ -161,7 +178,7 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
       try {
         const full = await petRpc<PetGallery>(request, 'pet.gallery')
 
-        if (full) {
+        if (full && epoch === galleryEpoch) {
           $petGallery.set(full)
           $petGalleryStatus.set('ready')
         }

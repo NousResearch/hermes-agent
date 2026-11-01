@@ -176,7 +176,7 @@ class LaunchdServiceManager(_HostServiceManager):
     _fn_prefix = "launchd_"
 
     def is_running(self, name: str) -> bool:
-        return self._backend_module()._probe_launchd_service_running()
+        return self._backend_module()._probe_launchd_service_running() is True
 
 
 class WindowsServiceManager(_HostServiceManager):

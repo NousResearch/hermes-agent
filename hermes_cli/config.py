@@ -2793,6 +2793,17 @@ def reload_env() -> int:
     for key in known - set(env_vars):
         if os.environ.pop(key, None) is not None:
             count += 1
+    # The raw .env copy above just wrote a stale token/placeholder (e.g. Bitwarden's
+    # __BITWARDEN_MANAGED__) back over a value an external secret source resolved earlier —
+    # unlike load_hermes_dotenv(), this path never ran through an external source, so nothing
+    # re-asserted it. Same clobber load_hermes_dotenv() fixed for startup (#74265); re-assert
+    # only what the source is authoritative for.
+    from hermes_cli.env_loader import _SECRET_SOURCE_RESTORE_BY_HOME
+    home_key = str(get_hermes_home().resolve())
+    for name, value in _SECRET_SOURCE_RESTORE_BY_HOME.get(home_key, {}).items():
+        if os.environ.get(name) != value:
+            os.environ[name] = value
+            count += 1
     return count
 
 

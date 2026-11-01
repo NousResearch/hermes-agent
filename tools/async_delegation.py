@@ -725,6 +725,17 @@ def active_count() -> int:
         return sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
 
 
+def _active_slot_keys_locked() -> set:
+    """Pool slots in use (every unit of one delegate_task call shares one); caller holds ``_records_lock``."""
+    return {r.get("slot_key") or r["delegation_id"] for r in _records.values() if r.get("status") in _ACTIVE_STATES}
+
+
+def occupied_slots() -> int:
+    """Background pool slots in use process-wide: the figure admission compares to the cap."""
+    with _records_lock:
+        return len(_active_slot_keys_locked())
+
+
 def active_task_count() -> int:
     """Number of running child subagents (a batch of N contributes N; a batch with
     no goal list counts 1) — the truthful observability figure, unlike slots."""
@@ -849,9 +860,9 @@ def _dispatch_admitted(
     with _records_lock:
         if any((field, record[field]) in _refused_by for field in _FENCED_FIELDS):
             return {"status": "rejected", "error": "This session was closed (exit or /new): no new background work."}
-        active_slots = {r.get("slot_key") or r["delegation_id"] for r in _records.values() if r.get("status") in _ACTIVE_STATES}
+        active_slots = _active_slot_keys_locked()
         if record["slot_key"] not in active_slots and len(active_slots) >= max_async_children:
-            return {"status": "rejected", "error": capacity_error}
+            return {"status": "rejected", "error": capacity_error, "at_capacity": True}
         _records[delegation_id] = record
         live_units = sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
     _persist_dispatch(record)
@@ -909,7 +920,8 @@ def dispatch_async_delegation(
     ``session_key``/``parent_session_id`` are captured on the parent thread (the worker carries
     no contextvars) and route the completion back to the spawning session.
     ``progress_fn() -> (token, in_tool)`` enables stale monitoring; omitted = unmonitored.
-    Returns ``{"status": "dispatched", "delegation_id"}`` or ``{"status": "rejected", "error"}``."""
+    Returns ``{"status": "dispatched", "delegation_id"}`` or ``{"status": "rejected", "error"}`` (plus
+    ``"at_capacity": True`` when the pool was full rather than the schedule failing)."""
     delegation_id = _new_delegation_id()
     handle = _dispatch(
         delegation_id=delegation_id, goal=goal, goals=None, context=context,

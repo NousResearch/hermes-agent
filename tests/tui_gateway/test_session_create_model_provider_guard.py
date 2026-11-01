@@ -59,6 +59,35 @@ def test_session_create_keeps_coherent_unlisted_and_custom_pairs(_create, params
     assert session["model_override"] == {"model": params["model"], "provider": params["provider"]}
 
 
+@pytest.mark.parametrize("params", [
+    {"model": "myproxy", "provider": "custom:myproxy"},  # the custom provider's short name as the model
+    {"model": "MyProxy", "provider": "custom:myproxy"},  # case-insensitive
+    {"model": "custom:myproxy", "provider": "custom:myproxy"},  # the full provider id as the model
+])
+def test_session_create_rejects_a_model_named_after_its_own_provider(_create, params):
+    """``myproxy`` on ``custom:myproxy`` minted fine and every turn died with the provider's 400 —
+    a catalog-less custom provider kept the gate permissive (#134899)."""
+    response, sessions = _create(params)
+
+    error = response["error"]
+    assert error["code"] == -32602
+    assert params["model"] in error["message"]
+    assert error["data"]["model"] == params["model"]
+    assert error["data"]["provider"] == "custom:myproxy"
+    assert error["data"]["suggestions"] == []
+    assert sessions == {}
+
+
+def test_session_create_keeps_a_model_the_provider_catalog_spells_like_its_id(_create):
+    """``copilot-acp`` legitimately lists a model spelled exactly like its provider id — the
+    provider-name conflict (#134899) must stay subordinate to the own-catalog coherence check."""
+    response, sessions = _create({"model": "copilot-acp", "provider": "copilot-acp"})
+
+    assert "error" not in response, response
+    session = sessions[response["result"]["session_id"]]
+    assert session["model_override"] == {"model": "copilot-acp", "provider": "copilot-acp"}
+
+
 def test_session_create_logs_when_a_client_override_beats_the_profile_default(_create, caplog, monkeypatch):
     """A composer pick silently decided every new chat's model; agent.log must name it (#107410)."""
     from tui_gateway import server

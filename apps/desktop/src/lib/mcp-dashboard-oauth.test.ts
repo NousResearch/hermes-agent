@@ -146,4 +146,31 @@ describe('Desktop MCP client callback lifecycle', () => {
     expect(rpc.mock.calls.every(call => call[0] === 'remote-gateway' && call[1] === 'origin-profile')).toBe(true)
     expect(api).not.toHaveBeenCalled()
   })
+
+  it('uses a local backend-owned pinned loopback callback without relaying to the native listener', async () => {
+    const { bridge, openExternal, rpc } = harness()
+    const pinnedRedirectUri = 'http://localhost:8765/callback'
+    setApiRequestConnection('local')
+    rpc.mockImplementation(async (_connection, _profile, method) => {
+      if (method.endsWith('.start')) {
+        return {
+          ...started,
+          auth_url: `https://idp.example/authorize?state=expected&redirect_uri=${encodeURIComponent(pinnedRedirectUri)}`
+        }
+      }
+
+      if (method.endsWith('.poll')) {
+        return { ok: true, status: 'approved', tools }
+      }
+
+      return { ok: true }
+    })
+
+    await expect(completeMcpDesktopOAuth({ serverName: 'reports', sleep: async () => {} }))
+      .resolves.toMatchObject({ status: 'approved', tools })
+
+    expect(openExternal).toHaveBeenCalledOnce()
+    expect(bridge.wait).not.toHaveBeenCalled()
+    expect(bridge.cancel).toHaveBeenCalledWith('listener-1')
+  })
 })

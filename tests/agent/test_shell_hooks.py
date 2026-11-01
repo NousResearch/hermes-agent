@@ -9,6 +9,7 @@ covered in ``test_shell_hooks_consent.py``.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -74,6 +75,45 @@ class TestSerializePayload:
         )
         payload = json.loads(raw)
         assert payload["tool_input"] is None
+
+
+# ── session cwd ──────────────────────────────────────────────────────────
+
+
+class TestHookCwd:
+    """Hooks see and run in the session's working directory, not the process launch dir."""
+
+    def test_payload_cwd_is_the_session_cwd(self, tmp_path, monkeypatch):
+        from tools import terminal_tool
+
+        process_cwd, task_dir = tmp_path / "process", tmp_path / "Projects" / "foo"
+        process_cwd.mkdir()
+        task_dir.mkdir(parents=True)
+        monkeypatch.chdir(process_cwd)
+        terminal_tool.record_session_cwd("t-99", str(task_dir))
+        try:
+            payload = json.loads(shell_hooks._serialize_payload(
+                "post_tool_call", {"task_id": "t-99", "session_id": "sess-1"}))
+        finally:
+            terminal_tool.clear_session_cwd("t-99")
+        assert payload["cwd"] == str(task_dir)
+
+    @pytest.mark.platforms("posix")  # POSIX shell script
+    def test_hook_process_runs_in_the_session_cwd(self, tmp_path, monkeypatch):
+        from tools import terminal_tool
+
+        process_cwd, task_dir = tmp_path / "process", tmp_path / "proj"
+        process_cwd.mkdir()
+        task_dir.mkdir()
+        monkeypatch.chdir(process_cwd)
+        script = _write_script(tmp_path, "pwd.sh", "#!/bin/sh\ncat >/dev/null\nprintf '{\"context\": \"%s\"}' \"$(pwd -P)\"\n")
+        terminal_tool.record_session_cwd("t-7", str(task_dir))
+        try:
+            out = shell_hooks._make_callback(shell_hooks.ShellHookSpec(event="pre_llm_call", command=str(script)))(
+                session_id="s", task_id="t-7")
+        finally:
+            terminal_tool.clear_session_cwd("t-7")
+        assert out == {"context": os.path.realpath(task_dir)}
 
 
 # ── Matcher behaviour ─────────────────────────────────────────────────────

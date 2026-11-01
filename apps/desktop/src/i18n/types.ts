@@ -1851,6 +1851,8 @@ export interface Translations extends NoticeTranslations {
   skillDeepLink: SkillDeepLinkCopy
   skills: {
     tabSkills: string
+    relatedSkills: string
+    missingRelatedSkills: string
     tabToolsets: string
     configuringProfile: string
     all: string

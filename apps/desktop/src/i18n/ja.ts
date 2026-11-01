@@ -1332,6 +1332,8 @@ export const jaOverrides = {
       pickerHint: 'スキルの「+ Add to this Agent」を押すと、インストールされて上の一覧に表示されます。'
     },
     tabSkills: 'スキル',
+    relatedSkills: '関連スキル',
+    missingRelatedSkills: '未インストールの関連スキル',
     tabToolsets: 'ツールセット',
     all: 'すべて',
     searchSkills: 'スキルを検索...',

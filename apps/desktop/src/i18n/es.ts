@@ -2395,6 +2395,8 @@ export const esOverrides = {
   },
   skills: {
     tabSkills: 'Skills',
+    relatedSkills: 'Habilidades relacionadas',
+    missingRelatedSkills: 'Habilidades relacionadas no instaladas',
     tabToolsets: 'Conjuntos de herramientas',
     configuringProfile: 'Configurando:',
     all: 'Todo',

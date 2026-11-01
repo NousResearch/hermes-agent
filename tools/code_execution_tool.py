@@ -577,6 +577,8 @@ def _finish_remote_kernel_result(kernel_result: dict[str, Any], *,
     result = _remote_result(kernel_result.get("status", "error"), stdout_text, exec_start,
                             {"tool_calls_made": kernel_result.get("tool_calls_made", 0)},
                             kernel=kernel_result.get("kernel", {"remote": True}))
+    if kernel_result.get("tool_advisories"):
+        result["tool_advisories"] = kernel_result["tool_advisories"]
     if kernel_result.get("tool_errors"):
         result["tool_errors"] = kernel_result["tool_errors"]
     if result["status"] == "timeout":
@@ -600,6 +602,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
     sandbox_dir = f"{_env_temp_dir(env)}/hermes_exec_{uuid.uuid4().hex[:12]}"
     quoted_sandbox_dir = shlex.quote(sandbox_dir)
     tool_call_counter, tool_call_log, stop_event, rpc_thread = [0], [], threading.Event(), None
+    failure = None
     try:
         # Private dirs: the sandbox lives under a shared temp dir and carries the
         # RPC token (in req files) and tool results. Fail closed on setup
@@ -631,7 +634,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         # Backend exit codes: 124 = timeout wrapper, 130 = SIGINT.
         status = _REMOTE_EXIT_STATUS.get(exit_code, "success")
     except Exception as exc:
-        return _remote_failure(exc, exec_start, tool_call_counter[0])
+        failure = json.loads(_remote_failure(exc, exec_start, tool_call_counter[0]))
     finally:
         stop_event.set()
         if rpc_thread is not None:
@@ -640,8 +643,18 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
             env.execute(f"rm -rf {quoted_sandbox_dir}", cwd="/", timeout=15)
         except Exception:
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
+    if failure is not None:
+        from tools.tool_advisories import take_tool_advisories
+        advisories = take_tool_advisories(tool_call_log)
+        if advisories:
+            failure["tool_advisories"] = advisories
+        return json.dumps(failure, ensure_ascii=False)
     result = _remote_result(status, stdout_text, exec_start,
                             {"exit_code": exit_code, "tool_calls_made": tool_call_counter[0]})
+    from tools.tool_advisories import take_tool_advisories
+    advisories = take_tool_advisories(tool_call_log)
+    if advisories:
+        result["tool_advisories"] = advisories
     tool_errors = tool_errors_since(tool_call_log)
     if tool_errors:
         result["tool_errors"] = tool_errors

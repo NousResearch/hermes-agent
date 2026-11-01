@@ -17,6 +17,7 @@ import time
 
 from agent.thread_scoped_output import thread_scoped_silence
 from tools.registry import tool_error
+from tools.tool_advisories import AdvisorySink, MAX_ADVISORIES, bind_advisory_sink
 
 # Logger name kept as the origin module's so existing log expectations hold.
 logger = logging.getLogger("tools.code_execution_tool")
@@ -26,8 +27,14 @@ _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify", "notify_on_complete",
 
 
 def _default_dispatch(task_id):
-    from model_tools import handle_function_call
-    return lambda tool_name, tool_args: handle_function_call(tool_name, tool_args, task_id=task_id)
+    from model_tools import handle_function_call, suppress_post_tool_call_hook, suppress_transform_tool_result_hook
+
+    def _dispatch(tool_name, tool_args):
+        # The agent executor owns only the outer post hook; inner RPC calls own theirs.
+        with suppress_transform_tool_result_hook(), suppress_post_tool_call_hook(False):
+            return handle_function_call(tool_name, tool_args, task_id=task_id)
+
+    return _dispatch
 
 
 def _private_dirs_cmd(root: str, *subdirs: str) -> str:
@@ -100,20 +107,31 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
     if tool_name == "terminal" and isinstance(tool_args, dict):
         for param in _TERMINAL_BLOCKED_PARAMS:
             tool_args.pop(param, None)
+    remaining = MAX_ADVISORIES - sum(
+        previous.count() for entry in tool_call_log
+        if (previous := entry.get("_advisory_sink")) is not None
+    )
+    sink = AdvisorySink(max(0, remaining))
+    # Reserve the slot before executing: an in-flight background RPC belongs to
+    # this cell even if it completes after the next cell starts. Draining closes
+    # its sink, so late emissions cannot leak into the next cell or linger.
+    entry = {"tool": tool_name, "args_preview": str(tool_args)[:80],
+             "duration": 0, "_advisory_sink": sink}
+    tool_call_log.append(entry)
+    tool_call_counter[0] += 1
     # Silence handler status prints so they don't leak into the CLI spinner.
     try:
-        with thread_scoped_silence():
+        with thread_scoped_silence(), bind_advisory_sink(sink):
             result = dispatch(tool_name, tool_args)
     except Exception as exc:
         logger.error("Tool call failed in %s: %s", where, exc, exc_info=True)
         result = tool_error(str(exc))
-    tool_call_counter[0] += 1
-    entry = {"tool": tool_name, "args_preview": str(tool_args)[:80],
-             "duration": round(time.monotonic() - call_start, 2)}
+    finally:
+        sink.close()
+    entry["duration"] = round(time.monotonic() - call_start, 2)
     error = _result_error(result)
     if error:
         entry["error"] = error
-    tool_call_log.append(entry)
     return result
 
 

@@ -22,7 +22,7 @@ import { atom, computed } from 'nanostores'
 import { setSessionOwnerResolver } from '@/api/client'
 import { routeSessionId } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
-import { findGroupOfPane } from '@/components/pane-shell/tree/model'
+import { findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
 import {
   $layoutTree,
   focusedSessionTabAnchor,
@@ -95,6 +95,8 @@ import {
   type SessionProfileRoute
 } from './session-request-router'
 import { orderTilesByTree } from './session-tile-order'
+import { pinTilePlacements } from './session-tile-placement'
+import { parseTileList, type StoredTile, toStored } from './session-tile-storage'
 import { ackStoredSessionId, isMessagingCompletion, markSessionUnreadFinished } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
@@ -1201,80 +1203,6 @@ const TILES_KEY = 'hermes.desktop.sessionTiles.v2'
 const LEGACY_TILES_KEY = 'hermes.desktop.sessionTiles.v1'
 const BOTS_TILE_BUCKET = '__bots_workspace__'
 
-/** Persisted placement — `dir` + strip slot (`before`) + dock `anchor` so a
- *  restart / profile swap re-adopts tiles in the same order, not all stacked
- *  right of workspace. */
-type StoredTile = Pick<
-  SessionTile,
-  | 'anchor'
-  | 'before'
-  | 'dir'
-  | 'ownerProfile'
-  | 'ownerRoute'
-  | 'storedSessionId'
-  | 'workspaceMode'
-  | 'workspaceOwnerKey'
-  | 'workspaceTabTitle'
->
-
-const toStored = (t: SessionTile): StoredTile => ({
-  anchor: t.anchor,
-  before: t.before,
-  dir: t.dir,
-  ...(t.ownerProfile ? { ownerProfile: t.ownerProfile } : {}),
-  ...(t.ownerRoute ? { ownerRoute: t.ownerRoute } : {}),
-  storedSessionId: t.storedSessionId,
-  ...(t.workspaceMode ? { workspaceMode: t.workspaceMode } : {}),
-  ...(t.workspaceOwnerKey ? { workspaceOwnerKey: t.workspaceOwnerKey } : {}),
-  ...(t.workspaceTabTitle ? { workspaceTabTitle: t.workspaceTabTitle } : {})
-})
-
-function parseTileList(value: unknown): StoredTile[] {
-  return Array.isArray(value)
-    ? value
-        .filter((t): t is SessionTile => Boolean(t && typeof (t as SessionTile).storedSessionId === 'string'))
-        .map(t => {
-          const raw = t as SessionTile
-
-          return {
-            // #108679: a tile whose anchor is its OWN pane id is
-            // self-referential — the re-dock target can never exist (the
-            // pane is not in the tree at adoption time), so the dock falls
-            // through to an arbitrary same-placement neighbor instead of the
-            // recorded layout. Rewrite it to the workspace anchor at load,
-            // the same surface an anchorless tile re-docks against.
-            anchor:
-              typeof raw.anchor === 'string' && raw.anchor !== `${TILE_PANE_PREFIX}${raw.storedSessionId}`
-                ? raw.anchor
-                : undefined,
-            before: typeof raw.before === 'string' || raw.before === null ? raw.before : undefined,
-            dir: raw.dir,
-            ownerProfile: typeof raw.ownerProfile === 'string' ? normalizeProfileKey(raw.ownerProfile) : undefined,
-            ownerRoute:
-              raw.ownerRoute &&
-              typeof raw.ownerRoute.connectionId === 'string' &&
-              typeof raw.ownerRoute.profile === 'string'
-                ? {
-                    connectionId: raw.ownerRoute.connectionId,
-                    mode: raw.ownerRoute.mode,
-                    profile: raw.ownerRoute.profile,
-                    ...(typeof raw.ownerRoute.targetProfile === 'string'
-                      ? { targetProfile: raw.ownerRoute.targetProfile }
-                      : {})
-                  }
-                : undefined,
-            storedSessionId: raw.storedSessionId,
-            workspaceMode: raw.workspaceMode === 'bots' ? 'bots' : 'sessions',
-            workspaceOwnerKey:
-              raw.workspaceMode === 'bots' && typeof raw.workspaceOwnerKey === 'string'
-                ? raw.workspaceOwnerKey
-                : undefined,
-            workspaceTabTitle: typeof raw.workspaceTabTitle === 'string' ? raw.workspaceTabTitle : undefined
-          }
-        })
-    : []
-}
-
 function loadTilesByProfile(): Record<string, StoredTile[]> {
   const byProfile: Record<string, StoredTile[]> = Object.create(null)
   const parsed = readJson<unknown>(TILES_KEY)
@@ -1432,6 +1360,35 @@ function saveTiles(tiles: SessionTile[]) {
   $sessionTiles.set(tiles)
 }
 
+/** Restore tabs in place: pin every stored tile, in EVERY bucket, to the slot
+ *  its pane holds in `tree` (see pinTilePlacements). Call it before anything
+ *  prunes tile panes — boot's first mirror sync, a bucket swap — and after
+ *  installing a saved tree, so re-adoption puts each tab back where it was. */
+export function pinStoredTilesToTree(tree: LayoutNode | null = $layoutTree.get()): void {
+  let changed = false
+
+  for (const [bucket, tiles] of Object.entries(tilesByProfile)) {
+    const next = pinTilePlacements(tree, tiles)
+
+    if (next) {
+      tilesByProfile[bucket] = next
+      changed = true
+    }
+  }
+
+  if (!changed) {
+    return
+  }
+
+  persistTiles()
+  // Keep the live set's runtime bindings; take only the pinned placement.
+  const live = pinTilePlacements(tree, $sessionTiles.get())
+
+  if (live) {
+    $sessionTiles.set(live)
+  }
+}
+
 function saveTileBucket(bucket: string, tiles: SessionTile[]) {
   const stored = tiles.map(toStored)
 
@@ -1455,6 +1412,9 @@ if (!isSecondaryWindow() && !isBrowserWindow()) {
       return
     }
 
+    // The outgoing tabs leave the tree on the swap; record where they were
+    // so swapping back puts them in the same slots.
+    pinStoredTilesToTree()
     visibleTileScope = nextScope
     $sessionTiles.set([...(tilesByProfile[nextScope] ?? []), ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])])
   }

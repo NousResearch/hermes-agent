@@ -1220,8 +1220,8 @@ export function useSessionActions({
       // A session is EITHER the main thread OR a tile — never both. openSessionTile
       // enforces this from the tile side (it refuses to tile the selected session);
       // this enforces it from the main side. Loading an existing session into main
-      // (cold-start restore, a pasted/⌘K route, a notification jump) while it's also
-      // an open tile would paint the same transcript twice — the workspace pane from
+      // (a pasted route; cold start fronts an open tile in place instead) while it's
+      // also an open tile would paint the same transcript twice — the workspace pane from
       // the route and the tile pane in parallel, both fighting one runtime. Drop the
       // now-redundant tile so main owns it. Runs before the async awaits below (and
       // before the selection listener homes focus) so the tile is gone the same tick

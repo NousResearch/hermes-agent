@@ -69,6 +69,7 @@ import {
   closeSessionTile,
   discardSessionTile,
   patchSessionTile,
+  pinStoredTilesToTree,
   type SessionTile,
   sessionTileDelegate
 } from '@/store/session-states'
@@ -975,8 +976,17 @@ const tileTabTarget = (storedSessionId: string): SessionTabMenuTarget => ({
 })
 
 /** Keep pane contributions mirroring `$sessionTiles` (+ titles from
- *  `$sessions`). Tiles dock against main on the chosen edge, flex width. */
-export const watchSessionTiles = paneMirror<SessionTile>({
+ *  `$sessions`). Tiles dock against main on the chosen edge, flex width.
+ *
+ *  The first sync prunes persisted tile panes the boot scope doesn't list, so
+ *  each stored tile is pinned to its slot in the persisted tree first; a tab
+ *  that re-enters later comes back where it was (pinStoredTilesToTree). */
+export const watchSessionTiles = (): void => {
+  pinStoredTilesToTree()
+  mirrorSessionTiles()
+}
+
+const mirrorSessionTiles = paneMirror<SessionTile>({
   source: $sessionTiles,
   // $projectTree: a tile whose session is older than the recents page resolves
   // its title through the tree, which loads after the tiles register.

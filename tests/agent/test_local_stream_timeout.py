@@ -39,4 +39,21 @@ class TestIsLocalEndpoint:
     def test_remote_endpoints(self, url):
         assert is_local_endpoint(url) is False
 
+    def test_configured_local_hosts_env(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LOCAL_HOSTS", "litellm.homelab.example.com, ai-gateway.internal.example.org")
+        assert is_local_endpoint("https://litellm.homelab.example.com:2443/v1") is True
+        assert is_local_endpoint("http://ai-gateway.internal.example.org/v1") is True
+        assert is_local_endpoint("https://api.openai.com/v1") is False
+
+    def test_configured_local_hosts_config(self, monkeypatch):
+        mock_cfg = {
+            "agent": {
+                "local_hosts": ["custom-llm.homelab.example.com", "local-proxy.internal.example.org"]
+            }
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: mock_cfg)
+        assert is_local_endpoint("https://custom-llm.homelab.example.com:8443/v1") is True
+        assert is_local_endpoint("http://local-proxy.internal.example.org:8000/v1") is True
+        assert is_local_endpoint("https://api.anthropic.com/v1") is False
+
 

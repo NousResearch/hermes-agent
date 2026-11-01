@@ -94,6 +94,7 @@ def test_a_missed_row_does_not_hide_a_live_run(store):
 
 def test_stopping_a_ladder_rerun_does_not_spend_another_repeat(store):
     from cron.cancellation import finish_cancelled_run, request_cancel
+    from cron.occurrences import scheduled_instant
     from cron.unreachable_retry import STATE_KEY
 
     job = jobs.create_job(prompt="ping", schedule="every 1h", deliver="local", repeat=2)
@@ -101,7 +102,8 @@ def test_stopping_a_ladder_rerun_does_not_spend_another_repeat(store):
     stored[0]["repeat"]["completed"] = 1  # the original occurrence already counted
     jobs.save_jobs(stored)
     instant = jobs.get_job(job["id"])["next_run_at"]
-    rerun = dict(jobs.get_job(job["id"]), _scheduled_instant=instant,
+    # Dispatch stamps the UTC-canonical instant; plan_retry parks the raw one.
+    rerun = dict(jobs.get_job(job["id"]), _scheduled_instant=scheduled_instant(instant),
                  **{STATE_KEY: {"at": instant, "expr": job["schedule"].get("expr")}})
     fire = executions.create_execution(job["id"], source="test")["id"]
     request_cancel(fire)

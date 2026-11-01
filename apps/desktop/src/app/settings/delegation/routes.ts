@@ -70,21 +70,14 @@ export function validateRouteDraft(
 
   const turns = draft.max_iterations.trim()
 
-  if (turns && !/^[1-9]\d*$/.test(turns)) {
+  if (turns && !(/^[1-9]\d*$/.test(turns) && Number.isSafeInteger(Number(turns)))) {
     errors.max_iterations = 'turns'
   }
 
   const seconds = draft.child_timeout_seconds.trim()
 
-  if (seconds && !/^\d+(\.\d+)?$/.test(seconds)) {
-    errors.child_timeout_seconds = 'seconds'
-  }
-
-  if (turns && !errors.max_iterations && !Number.isSafeInteger(Number(turns))) {
-    errors.max_iterations = 'turns'
-  }
-
-  if (seconds && !errors.child_timeout_seconds && !(Number.isFinite(Number(seconds)) && Number(seconds) >= 0)) {
+  // The pattern already rules out signs, so finite is the only numeric check left.
+  if (seconds && !(/^\d+(\.\d+)?$/.test(seconds) && Number.isFinite(Number(seconds)))) {
     errors.child_timeout_seconds = 'seconds'
   }
 

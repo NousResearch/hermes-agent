@@ -230,7 +230,7 @@ export function ModelRouteDialog({ route, taken, scope, onClose, onSave }: Model
               <Input
                 aria-invalid={Boolean(errorFor('child_timeout_seconds'))}
                 id="delegation-route-timeout"
-                inputMode="numeric"
+                inputMode="decimal"
                 onBlur={() => touch('child_timeout_seconds')}
                 onChange={event => set('child_timeout_seconds', event.target.value)}
                 placeholder={r.timeoutPlaceholder}

@@ -225,11 +225,26 @@ def test_the_delegation_sections_own_max_iterations_is_not_a_route_error():
     assert child["max_iterations"] == "40"
 
 
+def test_limits_equal_to_the_delegation_sections_own_are_dropped_from_the_route_once():
+    """``resolve_task_routes`` strips a limit that echoes the ``delegation`` section (a ``dict(config)`` fallback
+    route carries both) so the child reads the globals itself; a pin that differs stays as routed."""
+    from tools.delegate_tool_routes import resolve_task_routes
+    cfg = {"max_iterations": 40, "child_timeout_seconds": 1400}
+    routes = [None, {**LOCAL, "max_iterations": 40, "child_timeout_seconds": 1400},
+              {**LOCAL, "max_iterations": 7, "child_timeout_seconds": 1400.0}]
+    with patch("tools.delegate_tool_routes._active_provider", return_value=_Backend(routes)):
+        (default, echo, pinned), error = resolve_task_routes([{"goal": "t"}] * 3, cfg, _parent())
+    assert error is None and not any(r.error for r in (default, echo, pinned))
+    assert (default.max_iterations, default.child_timeout_seconds) == (None, None)
+    assert (echo.max_iterations, echo.child_timeout_seconds) == (None, None)
+    assert (pinned.max_iterations, pinned.child_timeout_seconds) == (7, 1400.0)  # a float is not the int's echo
+
+
 def test_a_profile_route_is_not_checked_for_max_iterations():
     from tools.delegate_tool_routes import _check_route_max_iterations
-    _check_route_max_iterations(0, {"profile": "work", "max_iterations": 0}, {"max_iterations": 40})  # no raise
+    _check_route_max_iterations(0, {"profile": "work", "max_iterations": 0})  # no raise
     with pytest.raises(ValueError, match="max_iterations"):
-        _check_route_max_iterations(0, {"max_iterations": 0}, {"max_iterations": 40})
+        _check_route_max_iterations(0, {"max_iterations": 0})
 
 
 def test_route_child_timeout_is_pinned_on_the_child_and_a_sibling_is_not():
@@ -262,6 +277,6 @@ def test_the_delegation_sections_own_child_timeout_is_not_a_route_error():
 
 def test_a_profile_route_is_not_checked_for_child_timeout():
     from tools.delegate_tool_routes import _check_route_child_timeout
-    _check_route_child_timeout(0, {"profile": "work", "child_timeout_seconds": -1}, {"child_timeout_seconds": 1400})
+    _check_route_child_timeout(0, {"profile": "work", "child_timeout_seconds": -1})
     with pytest.raises(ValueError, match="child_timeout_seconds"):
-        _check_route_child_timeout(0, {"child_timeout_seconds": -1}, {"child_timeout_seconds": 1400})
+        _check_route_child_timeout(0, {"child_timeout_seconds": -1})

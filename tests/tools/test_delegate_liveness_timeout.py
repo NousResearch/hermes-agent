@@ -115,6 +115,7 @@ def test_frozen_child_is_still_abandoned_when_the_cap_elapses(monkeypatch):
 @pytest.mark.parametrize("pinned, global_cap, expected", [
     (45, 1400.0, 45.0), (10, 1400.0, 30.0), (0, 1400.0, None), (2.5, 1400.0, 30.0),
     (None, 1400.0, 1400.0), (True, 1400.0, 1400.0), ("45", 1400.0, 1400.0),
+    (float("nan"), 1400.0, 1400.0), (float("inf"), 1400.0, 1400.0), (-1, 1400.0, 1400.0), (10**400, 1400.0, 1400.0),
 ])
 def test_effective_child_timeout_prefers_a_valid_pinned_route_value(monkeypatch, pinned, global_cap, expected):
     from tools.delegate_tool_child_run import _effective_child_timeout

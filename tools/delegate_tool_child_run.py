@@ -266,13 +266,14 @@ _LIVENESS_POLL_SECONDS = 5.0
 _BUDGET_WARNING_FRACTION = 0.8
 
 def _effective_child_timeout(child: Any) -> Optional[float]:
-    """The route's pinned idle cap (``child._delegate_child_timeout``, validated at routing as a number >= 0)
-    through the same parse as the global knob; otherwise the global ``delegation.child_timeout_seconds``."""
-    from tools.delegate_tool import _get_child_timeout
-    from tools.delegate_tool_config import _parse_timeout
+    """The route's pinned idle cap (``child._delegate_child_timeout``) through the same parse as the global knob;
+    otherwise (unpinned or not a valid route timeout) the global ``delegation.child_timeout_seconds``."""
+    from agent.delegation_provider import valid_route_child_timeout
     pinned = getattr(child, "_delegate_child_timeout", None)
-    if isinstance(pinned, (int, float)) and not isinstance(pinned, bool):
+    if valid_route_child_timeout(pinned):
+        from tools.delegate_tool_config import _parse_timeout
         return _parse_timeout(pinned)
+    from tools.delegate_tool import _get_child_timeout
     return _get_child_timeout()
 
 

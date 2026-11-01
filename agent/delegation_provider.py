@@ -41,6 +41,7 @@ never beside the core ``delegation`` keys.
 from __future__ import annotations
 
 import abc
+import math
 from typing import Any, Mapping
 
 from agent.provider_base import ProviderBase
@@ -59,6 +60,22 @@ ROUTE_KEYS = frozenset({
     "reasoning_effort", "service_tier", "fallback_providers", "profile", "label",
     "max_iterations", "child_timeout_seconds",
 })
+
+
+def valid_route_max_iterations(value: Any) -> bool:
+    """A route's ``max_iterations``: a whole number of 1 or more (never a bool)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def valid_route_child_timeout(value: Any) -> bool:
+    """A route's ``child_timeout_seconds``: a finite int/float of 0 or more (never a bool). An int too large for a
+    float is not representable as seconds."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value) and value >= 0
+    except OverflowError:
+        return False
 
 
 class DelegationRouteError(ValueError):

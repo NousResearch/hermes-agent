@@ -21,7 +21,6 @@ from hermes_cli.web_models import DelegationBackendSelect, DelegationModelMapUpd
 from hermes_cli.web_routers._common import (
     _profile_scope, config_write_scope, is_redacted_credential_preview, redacted_credential_preview,
 )
-from tools.delegate_tool_routes import _is_finite_number
 
 router = APIRouter()
 _log = logging.getLogger(__name__)
@@ -151,6 +150,40 @@ def _check_default(default: Optional[str], names: list[str], what: str) -> Optio
     return value or None
 
 
+def _clean_route_limits(label: str, entry: dict) -> dict[str, Any]:
+    """The route's ``max_iterations``/``child_timeout_seconds``: the editor sends text, so decimal strings become
+    numbers; blank omits the field; anything else the route rules refuse is a 400."""
+    from agent.delegation_provider import valid_route_child_timeout, valid_route_max_iterations
+
+    limits: dict[str, Any] = {}
+    turns = entry.get("max_iterations")
+    if isinstance(turns, str):
+        turns = turns.strip() or None
+    if turns is not None:
+        if isinstance(turns, str) and turns.isdecimal():
+            turns = int(turns)
+        if not valid_route_max_iterations(turns):
+            raise _bad_request(f"{label}: max_iterations must be a whole number of 1 or more "
+                               f"(got {entry.get('max_iterations')!r}).")
+        limits["max_iterations"] = turns
+    seconds = entry.get("child_timeout_seconds")
+    if isinstance(seconds, str):
+        seconds = seconds.strip() or None
+    if seconds is not None:
+        if isinstance(seconds, str):
+            try:
+                seconds = float(seconds)
+            except ValueError:
+                seconds = None
+        if not valid_route_child_timeout(seconds):
+            raise _bad_request(f"{label}: child_timeout_seconds must be a number of 0 or more "
+                               f"(got {entry.get('child_timeout_seconds')!r}).")
+        if isinstance(seconds, float) and seconds.is_integer():
+            seconds = int(seconds)
+        limits["child_timeout_seconds"] = seconds
+    return limits
+
+
 def _clean_model_option(index: int, entry: dict, stored: dict[str, dict]) -> dict[str, Any]:
     from agent.delegation_provider import ROUTE_KEYS
     from agent.fast_mode import STATIC_TIERS, parse_exact_service_tier
@@ -184,31 +217,7 @@ def _clean_model_option(index: int, entry: dict, stored: dict[str, dict]) -> dic
         row["service_tier"] = tier
     if isinstance(entry.get("fallback_providers"), list):
         row["fallback_providers"] = entry["fallback_providers"]
-    turns = entry.get("max_iterations")
-    if isinstance(turns, str):
-        turns = turns.strip() or None
-    if turns is not None:
-        if isinstance(turns, str) and turns.isdecimal():
-            turns = int(turns)
-        if isinstance(turns, bool) or not isinstance(turns, int) or turns < 1:
-            raise _bad_request(f"{label}: max_iterations must be a whole number of 1 or more "
-                               f"(got {entry.get('max_iterations')!r}).")
-        row["max_iterations"] = turns
-    seconds = entry.get("child_timeout_seconds")
-    if isinstance(seconds, str):
-        seconds = seconds.strip() or None
-    if seconds is not None:
-        if isinstance(seconds, str):
-            try:
-                seconds = float(seconds)
-            except ValueError:
-                seconds = None
-        if seconds is None or not _is_finite_number(seconds) or seconds < 0:
-            raise _bad_request(f"{label}: child_timeout_seconds must be a number of 0 or more "
-                               f"(got {entry.get('child_timeout_seconds')!r}).")
-        if isinstance(seconds, float) and seconds.is_integer():
-            seconds = int(seconds)
-        row["child_timeout_seconds"] = seconds
+    row.update(_clean_route_limits(label, entry))
     # Route fields the editor never touches (request_overrides, label, profile) round-trip as stored.
     validated = {*_OPTION_TEXT_KEYS, "api_key", "reasoning_effort", "service_tier", "fallback_providers",
                  "max_iterations", "child_timeout_seconds"}

@@ -12,27 +12,17 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import math
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
 
 from agent.delegation_provider import (
-    RESERVED_TASK_PARAMETERS, ROUTE_KEYS, DelegationProvider, DelegationRouteError,
+    RESERVED_TASK_PARAMETERS, ROUTE_KEYS, DelegationProvider, DelegationRouteError, valid_route_child_timeout,
+    valid_route_max_iterations,
 )
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
-
-
-def _is_finite_number(value: Any) -> bool:
-    """A real, finite int/float (not bool). A Python int too large for a float is not representable as seconds."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
-    try:
-        return math.isfinite(value)
-    except OverflowError:
-        return False
 
 _PARAM_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
@@ -251,22 +241,15 @@ def _resolve_route(route: dict[str, Any], parent_agent: Any, backend: str) -> Ta
     if route.get("service_tier") not in (None, ""):
         from tools.delegate_tool_tuning import task_service_tier
         creds = {**creds, **task_service_tier(str(route["service_tier"]), creds, parent_agent)}
-    turns = route.get("max_iterations")
-    seconds = route.get("child_timeout_seconds")
     return TaskRoute(creds, route, route.get("reasoning_effort"), None, None, backend,
-                     max_iterations=turns if isinstance(turns, int) and not isinstance(turns, bool) and turns >= 1 else None,
-                     child_timeout_seconds=seconds if _is_finite_number(seconds) and seconds >= 0 else None)
+                     max_iterations=route.get("max_iterations"),
+                     child_timeout_seconds=route.get("child_timeout_seconds"))
 
 
 def _route_to_task_route(route: dict[str, Any], parent_agent: Any, cache: dict[str, TaskRoute],
                          config: Optional[Mapping[str, Any]] = None, backend: str = "default") -> TaskRoute:
     label = route.get("label") if isinstance(route.get("label"), str) else None
     route = _with_inherited_fallback(route, config or {})
-    own = (config or {}).get("child_timeout_seconds")
-    seconds = route.get("child_timeout_seconds")
-    if seconds is not None and type(seconds) is type(own) and seconds == own:
-        # The config's own value (a dict(config) fallback route): the child run reads the global knob itself.
-        route = {k: v for k, v in route.items() if k != "child_timeout_seconds"}
     # The label is display-only: two labels on one route (or one profile) resolve once.
     key = json.dumps({k: v for k, v in route.items() if k != "label"}, sort_keys=True, default=str)
     if key not in cache:
@@ -287,35 +270,36 @@ def _check_backend_effort(index: int, route: Mapping[str, Any], config: Mapping[
             f"Use none or one of: {', '.join(VALID_REASONING_EFFORTS)}.")
 
 
-def _check_route_max_iterations(index: int, route: Mapping[str, Any], config: Mapping[str, Any]) -> None:
+_LIMIT_KEYS = ("max_iterations", "child_timeout_seconds")
+
+
+def _without_config_echoes(route: dict[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:
+    """Drop limits equal to the ``delegation`` section's own (a ``dict(config)`` fallback route carries them):
+    delegate_task and the child run read those globals themselves, under the globals' own rules."""
+    echoes = {key for key in _LIMIT_KEYS if route.get(key) is not None
+              and type(route[key]) is type(config.get(key)) and route[key] == config.get(key)}
+    return {k: v for k, v in route.items() if k not in echoes} if echoes else route
+
+
+def _check_route_max_iterations(index: int, route: Mapping[str, Any]) -> None:
     """A backend's ``max_iterations`` must be a whole number of 1 or more: a bad value refuses this task,
-    never falls back to the global limit. A profile route ignores the field, so it is not checked.
-    The ``delegation`` section's own value (the default route, ``dict(config)``) is not checked here: delegate_task
-    reads it directly."""
+    never falls back to the global limit. A profile route ignores the field, so it is not checked."""
     value = route.get("max_iterations")
     if value is None or route.get("profile"):
         return
-    cfg_value = config.get("max_iterations")
-    if type(value) is type(cfg_value) and value == cfg_value:
-        return  # the config's own value, carried by a dict(config) fallback route
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+    if not valid_route_max_iterations(value):
         raise DelegationRouteError(
             f"Task {index}: max_iterations on this route must be a whole number of 1 or more (got {value!r})."
         )
 
 
-def _check_route_child_timeout(index: int, route: Mapping[str, Any], config: Mapping[str, Any]) -> None:
+def _check_route_child_timeout(index: int, route: Mapping[str, Any]) -> None:
     """A backend's ``child_timeout_seconds`` must be a number of 0 or more: a bad value refuses this task,
-    never falls back to the global timeout. A profile route ignores the field, so it is not checked.
-    The ``delegation`` section's own value (the default route, ``dict(config)``) is not checked here: the child run
-    reads it directly."""
+    never falls back to the global timeout. A profile route ignores the field, so it is not checked."""
     value = route.get("child_timeout_seconds")
     if value is None or route.get("profile"):
         return
-    cfg_value = config.get("child_timeout_seconds")
-    if type(value) is type(cfg_value) and value == cfg_value:
-        return  # the config's own value, carried by a dict(config) fallback route
-    if not _is_finite_number(value) or value < 0:
+    if not valid_route_child_timeout(value):
         raise DelegationRouteError(
             f"Task {index}: child_timeout_seconds on this route must be a number of 0 or more (got {value!r})."
         )
@@ -380,10 +364,10 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
     routes: list[TaskRoute] = []
     for i, task in enumerate(task_list):
         try:
-            route = _route_one(provider, declared, i, task, config)
+            route = _without_config_echoes(_route_one(provider, declared, i, task, config), config)
             _check_backend_effort(i, route, config)
-            _check_route_max_iterations(i, route, config)
-            _check_route_child_timeout(i, route, config)
+            _check_route_max_iterations(i, route)
+            _check_route_child_timeout(i, route)
             routes.append(_route_to_task_route(route, parent_agent, cache, config, provider.name))
         except ValueError as exc:  # DelegationRouteError, the credential resolver's and the tier check's refusals
             routes.append(TaskRoute({}, {}, backend=provider.name, error=str(exc)))

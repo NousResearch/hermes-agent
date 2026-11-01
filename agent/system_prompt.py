@@ -529,6 +529,14 @@ def _memory_parts(agent: Any) -> list[str]:
             block = agent._memory_store.format_for_system_prompt(kind) if enabled else None
             if block:
                 parts.append(block)
+    try:
+        from tools.next_session_handoff import next_session_handoff_prompt
+        handoff = next_session_handoff_prompt(agent.session_id)
+    except Exception:
+        logger.debug("Next-session handoff prompt load failed", exc_info=True)
+        handoff = None
+    if handoff:
+        parts.append(handoff)
     # External memory provider system prompt block (additive to built-in). Gated on the same check
     # ``inject_memory_provider_tools`` uses so we never advertise provider tools that the agent's toolset
     # configuration has already gated off (#81014).

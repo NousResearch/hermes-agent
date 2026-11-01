@@ -198,7 +198,14 @@ Each cron job creates a fresh AIAgent session, which may involve provider authen
 
 ### Too many overlapping jobs
 
-The scheduler executes jobs sequentially within each tick. If multiple jobs are due at the same time, they run one after another. Consider staggering schedules (e.g., `0 9 * * *` and `5 9 * * *` instead of both at `0 9 * * *`) to avoid delays.
+The scheduler dispatches due jobs to a persistent parallel pool for each profile. A long-running job does not block the next tick, and an already-running job is skipped rather than started again. If concurrent jobs compete for memory, provider rate limits, or other resources, set `cron.max_parallel_jobs` in the owning profile's `config.yaml`:
+
+```yaml
+cron:
+  max_parallel_jobs: 2
+```
+
+Use `1` when that profile's scheduled cron jobs need to run one at a time. The limit applies per profile, not across all profiles served by a shared gateway. If `HERMES_CRON_MAX_PARALLEL` is set, it takes precedence over this config value. Staggering schedules (e.g., `0 9 * * *` and `5 9 * * *`) can also reduce simultaneous demand, but does not prevent long jobs from overlapping.
 
 ### Large script output
 

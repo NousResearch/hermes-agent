@@ -13,6 +13,7 @@ import { copyPath, revealPath } from '@/store/projects'
 import {
   SIDEBAR_LEAD_ICON_SIZE,
   SidebarRowBody,
+  SidebarRowGrab,
   SidebarRowLabel,
   SidebarRowLead,
   SidebarRowLeadGlyph,
@@ -239,12 +240,16 @@ export function StartWorkButton({ repoPath }: { repoPath: string }) {
 // button with a leading glyph, plus an optional trailing action (the +).
 export function WorkspaceHeader({
   action,
+  className,
   emphasis = false,
   icon,
   label,
   onToggle,
   open,
   title,
+  reorderable = false,
+  dragging = false,
+  dragHandleProps,
   ref,
   ...rest
 }: {
@@ -256,14 +261,50 @@ export function WorkspaceHeader({
   open: boolean
   /** Hover tooltip — the lane's full on-disk path (worktree / repo root). */
   title?: string
+  reorderable?: boolean
+  dragging?: boolean
+  dragHandleProps?: React.HTMLAttributes<HTMLElement>
 } & React.ComponentProps<'div'>) {
+  const { t } = useI18n()
+  const s = t.sidebar
+
+  const lead = reorderable ? (
+    <SidebarRowGrab
+      ariaLabel={s.projects.reorder(label)}
+      dragging={dragging}
+      dragHandleProps={dragHandleProps}
+      leadClassName="overflow-visible"
+    >
+      {icon}
+    </SidebarRowGrab>
+  ) : (
+    <SidebarRowLead>{icon}</SidebarRowLead>
+  )
+
   return (
     <div
       className={cn(
         'group/workspace flex min-h-6 items-center gap-1 px-2 pt-1 text-[0.6875rem]',
-        emphasis ? 'font-semibold text-(--ui-text-secondary)' : 'font-medium text-(--ui-text-tertiary)'
+        emphasis ? 'font-semibold text-(--ui-text-secondary)' : 'font-medium text-(--ui-text-tertiary)',
+        dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)',
+        className
       )}
+      data-glass-opaque={dragging ? '' : undefined}
       ref={ref}
+      {...(reorderable ? dragHandleProps : undefined)}
+      onPointerDown={
+        reorderable
+          ? event => {
+              if (
+                (event.target as HTMLElement).closest('[data-reorder-handle], [data-row-actions], button[aria-label]')
+              ) {
+                return
+              }
+
+              dragHandleProps?.onPointerDown?.(event)
+            }
+          : undefined
+      }
       {...rest}
     >
       <button
@@ -274,7 +315,7 @@ export function WorkspaceHeader({
         onClick={onToggle}
         type="button"
       >
-        <SidebarRowLead>{icon}</SidebarRowLead>
+        {lead}
         <LaneLabel label={label} title={title ? `${label}\n${title}` : label} />
         <DisclosureCaret
           className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"

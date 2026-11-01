@@ -231,12 +231,15 @@ export function reorderableRowIds(rows: SidebarListRow[]): string[] {
  *  ids in their original slots. A drag while some date groups are collapsed
  *  must not wipe those groups' saved ranking. */
 export function mergeVisibleReorder(allIds: string[], nextVisibleIds: string[]): string[] {
-  if (nextVisibleIds.length === allIds.length) {
+  const visible = new Set(nextVisibleIds)
+  const missingFromAll = nextVisibleIds.filter(id => !allIds.includes(id))
+  const base = missingFromAll.length ? [...allIds, ...missingFromAll] : allIds
+
+  if (nextVisibleIds.length === base.length) {
     return nextVisibleIds
   }
 
-  const visible = new Set(nextVisibleIds)
   let i = 0
 
-  return allIds.map(id => (visible.has(id) ? (nextVisibleIds[i++] ?? id) : id))
+  return base.map(id => (visible.has(id) ? (nextVisibleIds[i++] ?? id) : id))
 }

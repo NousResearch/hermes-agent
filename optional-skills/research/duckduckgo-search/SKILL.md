@@ -75,8 +75,8 @@ ddgs text -q "best restaurants" -m 5 -r us-en
 # Recent results only (d=day, w=week, m=month, y=year)
 ddgs text -q "latest AI news" -m 5 -t w
 
-# JSON output for parsing
-ddgs text -q "fastapi tutorial" -m 5 -o json
+# Save results to a JSON file (prints nothing; see -o below)
+ddgs text -q "fastapi tutorial" -m 5 -o results.json
 ```
 
 ### CLI Flags
@@ -88,7 +88,9 @@ ddgs text -q "fastapi tutorial" -m 5 -o json
 | `-r` | Region | `-r us-en` |
 | `-t` | Time limit | `-t w` (week) |
 | `-s` | Safe search | `-s off` |
-| `-o` | Output format | `-o json` |
+| `-o` | Save results to a file instead of printing them. A bare `json`/`csv` writes an auto-named file in the current directory; pass a path to choose the file | `-o results.json` |
+
+`-o` never prints JSON to stdout. For JSON on stdout, use the Python API below with `json.dumps`.
 
 ## Method 2: Python API (Only After Verification)
 
@@ -119,6 +121,16 @@ with DDGS() as ddgs:
 ```
 
 Returns: `title`, `href`, `body`
+
+For JSON on stdout (for example, to parse the results):
+
+```python
+import json
+from ddgs import DDGS
+
+with DDGS() as ddgs:
+    print(json.dumps(list(ddgs.text("fastapi tutorial", max_results=5)), ensure_ascii=False))
+```
 
 ### News Search
 
@@ -190,7 +202,7 @@ DuckDuckGo returns titles, URLs, and snippets — not full page content. To get 
 CLI example:
 
 ```bash
-ddgs text -q "fastapi deployment guide" -m 3 -o json
+ddgs text -q "fastapi deployment guide" -m 3
 ```
 
 Python example, only after verifying `ddgs` is installed in that runtime:

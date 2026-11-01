@@ -2299,8 +2299,7 @@ DEFAULT_CONFIG = {
         # HERMES_SEARCH_SLOW_MS.
         "search_slow_ms": 1000,
         # Transcript guards (a runaway 100k+ row session can exhaust memory when materialized at
-        # once; 0 disables). Max active messages (across the compression lineage) for interactive
-        # resume.
+        # once; 0 disables). Max active messages (across the compression lineage) for interactive resume.
         "max_resume_messages": 20000,
         # Max active messages per session for in-memory export (`hermes sessions export`); checked
         # per session, so full-DB backups of small sessions work.
@@ -2309,6 +2308,7 @@ DEFAULT_CONFIG = {
         # restart also >= 6h idle. Unset: dashboard.ws_orphan_reap_grace_s: 0 / startup_orphan_sweep: false opt out.
         "orphan_end_grace_s": 300.0,
     },
+    "session_search": {"allow_profiles": ["*"]},  # other profiles it may read: "*" = all, [] = own only
     # First-touch onboarding hints (agent/onboarding.py), each latched under `seen` once shown.
     "onboarding": {
         "seen": {},

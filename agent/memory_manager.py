@@ -236,6 +236,8 @@ class MemoryManager:
         # The profile ``initialize_all`` bound the providers to; tool calls must come from it (#140058).
         self._bound_scope: Optional[dict[str, Any]] = None
         self._tool_call_keywords_cache: dict[int, Optional[frozenset[str]]] = {}
+        self._provider_initialization_failures_lock = threading.Lock()
+        self._provider_initialization_failures: dict[str, dict[str, str]] = {}
 
     def _each_provider(self, label: str, call: Callable[[MemoryProvider], Any], *, level: int = logging.DEBUG,
                        providers: Optional[list[MemoryProvider]] = None, exc_info: bool = False) -> list[Any]:
@@ -335,6 +337,15 @@ class MemoryManager:
 
     def get_provider(self, name: str) -> Optional[MemoryProvider]:
         return next((p for p in self._providers if p.name == name), None)
+
+    @property
+    def provider_initialization_failures(self) -> dict[str, dict[str, str]]:
+        """Latest initialization failures, without provider-controlled error text."""
+        with self._provider_initialization_failures_lock:
+            return {
+                name: dict(failure)
+                for name, failure in self._provider_initialization_failures.items()
+            }
 
     def build_system_prompt(self) -> str:
         """Join every provider's non-empty ``system_prompt_block()`` with blank lines."""
@@ -914,10 +925,15 @@ class MemoryManager:
         warning sink) tells the user this profile now runs without it."""
         before = [p for p in self._providers if p.name != "builtin"]
         self.initialize_all(**kwargs)
+        failures = self.provider_initialization_failures
         for provider in (p for p in before if not any(p is kept for kept in self._providers)):
-            message = (f"⚠ Memory provider {provider.name!r} is disabled for this profile: it handed out the "
-                       "provider instance another profile already uses. Built-in memory still works; the "
-                       "operator can see why with `hermes logs errors`.")
+            if provider.name in failures:
+                message = (f"⚠ Memory provider {provider.name!r} failed to initialize and was disabled. "
+                           "Built-in memory still works; the operator can see why with `hermes logs errors`.")
+            else:
+                message = (f"⚠ Memory provider {provider.name!r} is disabled for this profile: it handed out the "
+                           "provider instance another profile already uses. Built-in memory still works; the "
+                           "operator can see why with `hermes logs errors`.")
             (say or logger.warning)(message)
         return self._has_external
 
@@ -931,5 +947,35 @@ class MemoryManager:
         for provider in [p for p in self._providers if p.name != "builtin"]:
             if not claim_instance(provider, kwargs["hermes_home"]):
                 self._drop_provider(provider)
-        self._each_provider("initialize failed", lambda p: p.initialize(session_id=session_id, **kwargs),
-                            level=logging.WARNING)
+        for provider in list(self._providers):
+            try:
+                provider.initialize(session_id=session_id, **kwargs)
+            except Exception as exc:  # health: allow BLE001 -- isolate arbitrary plugin init failures and keep other providers usable.
+                failure = {"status": "failed", "error_type": type(exc).__name__}
+                with self._provider_initialization_failures_lock:
+                    self._provider_initialization_failures[provider.name] = failure
+                self._drop_provider(provider)
+                logger.error(
+                    "Memory provider '%s' initialization failed (%s); provider was deactivated",
+                    provider.name,
+                    type(exc).__name__,
+                )
+                try:
+                    provider.shutdown()
+                except Exception as cleanup_exc:  # health: allow BLE001 -- cleanup failure must not block healthy providers; retain only its type.
+                    with self._provider_initialization_failures_lock:
+                        previous = self._provider_initialization_failures.get(
+                            provider.name, failure
+                        )
+                        self._provider_initialization_failures[provider.name] = {
+                            **previous,
+                            "cleanup_error_type": type(cleanup_exc).__name__,
+                        }
+                    logger.error(
+                        "Memory provider '%s' shutdown after initialization failure also failed (%s)",
+                        provider.name,
+                        type(cleanup_exc).__name__,
+                    )
+            else:
+                with self._provider_initialization_failures_lock:
+                    self._provider_initialization_failures.pop(provider.name, None)

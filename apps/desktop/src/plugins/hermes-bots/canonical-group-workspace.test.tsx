@@ -31,6 +31,106 @@ const originalDesktop = window.hermesDesktop
 beforeEach(() => { Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined }) })
 afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.hermesDesktop = originalDesktop; vi.unstubAllGlobals() })
 
+it('keeps every pending retry actionable without losing the composer draft on refresh', async () => {
+  let actions = Array.from({ length: 100 }, (_, i) => ({
+    kind: 'retry',
+    member_id: `worker-${i}`,
+    task_id: `task-${i}`,
+    execution_generation: i + 1
+  }))
+
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.state') {
+      return { room: { name: 'Room' }, driver_status: { pending_actions: actions } }
+    }
+
+    if (method === 'groups.log') {
+      return { events: [], has_more: false }
+    }
+
+    if (method === 'groups.retry') {
+      actions = actions.filter(action => action.task_id !== params.task_id)
+    }
+
+    if (method === 'groups.stop') {
+      actions = []
+    }
+
+    return {}
+  })
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'backlog' }} />)
+  const list = await screen.findByRole('list')
+  expect(within(list).getAllByRole('listitem')).toHaveLength(100)
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep writing' } })
+  fireEvent.click(within(list).getAllByRole('button', { name: 'Retry' }).at(-1)!)
+  await waitFor(() => expect(within(list).getAllByRole('listitem')).toHaveLength(99))
+  const call = request.mock.calls.find(c => c[1] === 'groups.retry')!
+  expect(call[0]).toMatchObject({ connectionId: 'remote', targetProfile: 'team' })
+  expect(call[2]).toEqual({
+    room_id: 'backlog',
+    member_id: 'worker-99',
+    task_id: 'task-99',
+    execution_generation: 100,
+    profile: 'team'
+  })
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Keep writing')
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Stop' }) as HTMLButtonElement).disabled).toBe(false))
+  fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+  await waitFor(() => expect(screen.queryByRole('list')).toBeNull())
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Keep writing')
+})
+
+it.each([
+  ['Allow once', 'once'],
+  ['Deny', 'deny']
+])('preserves the exact approval request for %s in a mixed backlog', async (label, choice) => {
+  const approval = {
+    kind: 'approval',
+    member_id: 'approver',
+    task_id: 'approval-task',
+    execution_generation: 7,
+    request_id: 'request-7'
+  }
+
+  request.mockImplementation(async (_route, method) =>
+    method === 'groups.state'
+      ? {
+          room: { name: 'Room' },
+          driver_status: {
+            pending_actions: [
+              ...Array.from({ length: 100 }, (_, i) => ({
+                kind: 'retry',
+                member_id: 'worker',
+                task_id: `task-${i}`,
+                execution_generation: 1
+              })),
+              approval
+            ]
+          }
+        }
+      : method === 'groups.log'
+        ? { events: [] }
+        : {}
+  )
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'approvals' }} />)
+  const list = await screen.findByRole('list')
+  fireEvent.click(within(list).getByRole('button', { name: label }))
+  await waitFor(() => expect(request.mock.calls.some(c => c[1] === 'groups.approve')).toBe(true))
+  const call = request.mock.calls.find(c => c[1] === 'groups.approve')!
+  expect(call[0]).toMatchObject({ connectionId: 'remote', targetProfile: 'team' })
+  expect(call[2]).toEqual({
+    room_id: 'approvals',
+    member_id: 'approver',
+    task_id: 'approval-task',
+    execution_generation: 7,
+    request_id: 'request-7',
+    choice,
+    profile: 'team'
+  })
+  expect(request.mock.calls.some(c => c[1] === 'groups.retry')).toBe(false)
+})
+
 it('preserves the unsent draft when only the room display name changes', async () => {
   request.mockImplementation(async (_route, method) => method === 'groups.state'
     ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})

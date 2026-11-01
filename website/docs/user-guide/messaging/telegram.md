@@ -1440,6 +1440,20 @@ Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.
 
 If Telegram cannot render the button card (the Bot API rejects it, or the send fails after its 15-second acknowledgement window), Hermes re-asks the same question as a plain numbered-list message and your typed reply (a number or the option text) is taken as the answer. When even that cannot be delivered, the agent is released at once with `[clarify prompt could not be delivered]` instead of waiting out the timeout and mistaking the silence for you not answering.
 
+## Todo checklist progress
+
+When tool progress is enabled, todo updates appear in one editable checklist
+message per run and topic. Later updates replace the checklist, including task
+status changes and cleared lists. Interim replies and ordinary tool progress do
+not reset that message; the final assistant reply is sent separately.
+
+This also works when ordinary tool progress uses separate messages. Turning off
+tool progress hides the checklist. Long task lists show the rows that fit and an
+omission count. Telegram permission or network errors do not interrupt the agent.
+The checklist uses a normal text message; it does not require Telegram Business
+or automatically pin messages.
+
+
 ## Push notification volume
 
 Telegram fires a push notification on every message the bot sends. For long agent turns that emit tool-progress bubbles, streaming updates, and status callbacks, this gets noisy fast. The Telegram adapter has two notification modes:

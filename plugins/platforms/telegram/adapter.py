@@ -182,6 +182,7 @@ _MEDIA_KIND_KEYS = {
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
+from plugins.platforms.telegram.telegram_inbound_gate import TelegramInboundGateMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
@@ -516,7 +517,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramHeldInboundMixin, TelegramInboundGateMixin, TelegramTopicRoutingMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -6468,19 +6469,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """Message-like payload for normal messages and channel posts (``update.channel_post``)."""
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
-    def _log_blocked_user(self, msg, *, level=logging.WARNING, what: str = "unauthorized user") -> None:
-        logger.log(
-            level, "[Telegram] Blocked %s %s in chat %s", what, getattr(getattr(msg, "from_user", None), "id", None),
-            getattr(getattr(msg, "chat", None), "id", None))
-
-    def _gate_or_observe(self, msg, update, msg_type: MessageType) -> bool:
-        """Group trigger gate; observes unmentioned chatter when configured. True = proceed."""
-        if self._should_process_message(msg):
-            return True
-        if self._should_observe_unmentioned_group_message(msg):
-            self._observe_unmentioned_group_message(msg, msg_type, update_id=update.update_id)
-        return False
-
     async def _build_triggered_event(self, msg, update, msg_type: MessageType) -> MessageEvent:
         """Event for an addressed text/command: trigger text cleaned (sole addressee only), replied-to
         media cached, attribution applied."""
@@ -6499,7 +6487,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
             return
-        if not self._gate_or_observe(msg, update, MessageType.TEXT):
+        if await self._drop_forwarded(msg) or not self._gate_or_observe(msg, update, MessageType.TEXT):
             return
         await self._ensure_forum_commands(update.message)
         self._enqueue_text_event(await self._build_triggered_event(msg, update, MessageType.TEXT))
@@ -6513,6 +6501,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
+            return
+        if await self._drop_forwarded(msg):
             return
         await self._ensure_forum_commands(msg)
         event = await self._build_triggered_event(msg, update, MessageType.COMMAND)
@@ -6531,7 +6521,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
             return
-        if not self._gate_or_observe(msg, update, MessageType.LOCATION):
+        if await self._drop_forwarded(msg) or not self._gate_or_observe(msg, update, MessageType.LOCATION):
             return
         venue = getattr(msg, "venue", None)
         location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)
@@ -6820,6 +6810,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg, level=logging.INFO, what="media from unauthorized user")
+            return
+        if await self._drop_forwarded(msg):
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):

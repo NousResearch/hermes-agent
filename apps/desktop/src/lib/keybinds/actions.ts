@@ -182,6 +182,11 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   hostAction('session.prev', 'session', ['ctrl+shift+tab', 'ctrl+pageup'], { mac: 'mod+ctrl+[', other: 'alt+[' }),
   ...SESSION_SLOT_ACTIONS,
   { id: 'session.focusSearch', category: 'session', defaults: ['mod+shift+f'] },
+  // Ctrl+C stops the active turn — the muscle-memory interrupt terminal
+  // users reach for. On macOS ctrl+c is a free chord (Cmd+C is copy); off
+  // macOS ctrl folds to mod which IS the standard copy chord, so it ships
+  // unbound there — users can opt in via the panel.
+  { id: 'session.stop', category: 'session', defaults: isMacPlatform() ? ['ctrl+c'] : [] },
   { id: 'session.togglePin', category: 'session', defaults: [] },
   { id: 'conversation.scrollPageUp', category: 'session', defaults: ['pageup'] },
   { id: 'conversation.scrollPageDown', category: 'session', defaults: ['pagedown'] },

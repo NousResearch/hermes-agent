@@ -127,7 +127,7 @@ class OptionalSkillSource(SkillSource):
         for f in skill_dir.rglob("*"):
             if f.is_file() and not _skip_bundle_file(f.relative_to(skill_dir).as_posix()):
                 try:
-                    files[str(f.relative_to(skill_dir))] = f.read_bytes()
+                    files[f.relative_to(skill_dir).as_posix()] = f.read_bytes()
                 except OSError:
                     continue
         return self._bundle(rel_id, files) if files else None

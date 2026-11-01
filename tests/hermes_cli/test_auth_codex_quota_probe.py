@@ -26,6 +26,17 @@ from hermes_cli.auth import (
 )
 
 
+def test_purge_stale_codex_quota_probe_cache_entries():
+    auth_mod._codex_quota_probe_cache.update({
+        "stale": (100.0, True),
+        "fresh": (250.0, False),
+    })
+
+    auth_codex._purge_stale_codex_quota_probe_cache(300.0, 100.0)
+
+    assert auth_mod._codex_quota_probe_cache == {"fresh": (250.0, False)}
+
+
 @pytest.fixture(autouse=True)
 def _clear_probe_cache():
     auth_mod._codex_quota_probe_cache.clear()

@@ -462,10 +462,10 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `api_request_error` | Observer | On each failed provider attempt; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `status_code`, `retry_count`, `max_retries`, `retryable`, `reason`, `error`, `request` | Error text may contain provider/user data; `request` is intended to be sanitized. |
 | `pre_auxiliary_call` | Observer | Per provider attempt of an auxiliary LLM call (titling, compression, MoA, vision, approval, ...), immediately before the request; return ignored. | `aux_task`, `task_id`, `turn_id`, `session_id`, `platform` (the parent turn's, empty outside a turn), `api_request_id`, `api_call_count`, `retry_count`, `streaming`, `model`, `provider`, `base_url`, `api_mode`, `request_messages`, `system_prompt`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `request` | `request_messages` is raw (compression sees the whole transcript); prefer sanitized `request`. |
 | `post_auxiliary_call` | Observer | After the same attempt returns or raises; return ignored. | `pre_auxiliary_call` identity fields plus `api_duration`, `ended_at`, `finish_reason`, `response_model`, `usage`, `response`, `assistant_content_chars`, `assistant_tool_call_count`, `error`, `error_type` (`None` on success; `usage`/`response` are `None` on error and for `streaming=True`) | Sanitized `response`; `usage` is accounting data; `error` may contain provider text. |
-| `on_stream_start` | Observer | Dispatched when a streaming LLM response begins; delivered off the token path via a host-owned bounded queue with one worker per callback; return ignored. | `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Identifiers and routing metadata only. |
-| `on_stream_delta` | Observer | Dispatched per normalized streaming text delta via the bounded observer queue; a stalled callback drops only its own oldest events; return ignored. | `delta`, `kind` (`text` or `reasoning`), `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Delta text is raw model output; reasoning deltas require the `plugins.stream_reasoning_deltas` opt-in. |
-| `on_stream_end` | Observer | Dispatched when a streaming response finishes or errors, after the stream closes; return ignored. | `final_text`, `finished`, `error`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Full assembled response text; error text may include provider data. |
-| `on_interim_message` | Observer | Dispatched when a mid-loop assistant message is surfaced before the final answer (streaming or non-streaming); return ignored. | `text`, `already_streamed`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Full interim assistant text. |
+| `on_stream_start` | Observer | Dispatched when a streaming LLM response begins; delivered off the token path via a host-owned bounded queue with one worker per callback; return ignored. | `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface`, `interrupt` | Identifiers and routing metadata only. |
+| `on_stream_delta` | Observer | Dispatched per normalized streaming text delta via the bounded observer queue; a stalled callback drops only its own oldest events; return ignored. | `delta`, `kind` (`text` or `reasoning`), `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface`, `interrupt` | Delta text is raw model output; reasoning deltas require the `plugins.stream_reasoning_deltas` opt-in. |
+| `on_stream_end` | Observer | Dispatched when a streaming response finishes or errors, after the stream closes; return ignored. | `final_text`, `finished`, `error`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface`, `interrupt` | Full assembled response text; error text may include provider data. |
+| `on_interim_message` | Observer | Dispatched when a mid-loop assistant message is surfaced before the final answer (streaming or non-streaming); return ignored. | `text`, `already_streamed`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface`, `interrupt` | Full interim assistant text. |
 | `transform_api_error_classification` | Transform | On each failed provider attempt, at the top of the built-in classifier; all callbacks run, then the first dict with a valid `reason` wins (run-all-then-pick-first), and skipped valid results log a runtime warning. Python plugins only. | `provider`, `model`, `status_code`, `error_type`, `error_code`, `error_message`, `error_body`, `error`, `approx_tokens`, `context_length`, `num_messages` | `error_message` and `error_body` may contain raw provider/user data. |
 | `on_session_start` | Observer | First turn of a new session; return ignored. | `session_id`, `model`, `platform` | Identifiers and routing metadata only. |
 | `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
@@ -522,6 +522,7 @@ Common fields for all four hooks:
 | `model` | `str` | Active model identifier |
 | `provider` | `str` | Active provider name |
 | `surface` | `str` | Calling surface, e.g. `cli`, `discord`, `telegram` |
+| `interrupt` | `StreamInterruptRequest` | Ask the core to cut this stream. See [Asking the core to cut a stream](#asking-the-core-to-cut-a-stream) |
 
 Additional fields:
 
@@ -542,6 +543,27 @@ plugins:
 ```
 
 Return values are ignored. To keep the stream fast, callbacks should enqueue their own work and return quickly. Exceptions are logged and do not stop the stream.
+
+#### Asking the core to cut a stream
+
+A plugin may **ask** the core to cut the stream it is watching; the core decides. The payload carries `interrupt`, and asking is one call that only sets a flag:
+
+```python
+def on_stream_delta(delta: str, kind: str, interrupt=None, **_kw) -> None:
+    if kind == "text" and is_degenerate(delta) and interrupt is not None:
+        interrupt.request("the same block is repeating", source="my-guard")
+```
+
+`request()` returns `True` the first time and `False` after, so a second observer cannot rewrite the reason. The core reads the flag between chunks; when it fires, the stream closes and the turn ends with the plugin's reason.
+
+Honouring an ask needs an opt-in, since a plugin ending your responses early is a policy you grant rather than one it grants itself. With the setting off (default) the ask is recorded and the stream runs to completion.
+
+```yaml
+plugins:
+  stream_interrupt_requests: true
+```
+
+Honoured on the `chat_completions` and `anthropic` wires; on other wires the ask is recorded and ignored.
 
 ---
 

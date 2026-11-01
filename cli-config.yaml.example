@@ -66,6 +66,11 @@ plugins:
   # Raise this for large repositories or slow connections. Maximum: 3600.
   clone_timeout_seconds: 300
 
+  # Let a stream hook ask the core to stop the response it is watching, which is how a
+  # degeneracy guard cuts a loop mid-stream. The request is advisory: the core decides, and
+  # only when this is true. Default: false.
+  stream_interrupt_requests: false
+
 # =============================================================================
 # Model Configuration
 # =============================================================================

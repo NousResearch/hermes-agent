@@ -11,7 +11,9 @@ in real production traffic.
 
 - **Two arms, one variable.** `baseline` and `fixes` runs differ ONLY by
   `PYTHONPATH` (a checkout of `origin/main` vs your integration branch). Same
-  Hermes home, same model, same tasks, same reps.
+  dedicated Hermes home, same model, same tasks, same reps. Each trial starts
+  its own foreground gateway from that arm's checkout and stops it afterward.
+  The home's configuration and persistent state are retained across trials.
 - **Tasks are traps.** Each of the 9 tasks is constructed so a specific
   failure class fires: `python` vs `python3`/venv confusion, an
   already-applied patch, an ambiguous multi-match edit, wrong-casing search,
@@ -22,12 +24,24 @@ in real production traffic.
   ATOF traces emitted by the run itself (`llm`/`tool` scope events), plus wall
   clock and a per-task programmatic success check (marker strings + on-disk
   verification).
-- **Resume-safe.** Completed `run_id`s in `meta.jsonl` are skipped, so a
-  killed battery continues where it left off. Startup crashes (nonzero exit
-  with empty output) are NOT recorded — they retry on resume instead of
-  polluting cells (this bit the first pass of the Aug 2026 run).
+- **Verified evidence.** Relay captures exporter configuration when the gateway
+  starts. Changing the chat client's environment does not change an existing
+  gateway's trace destination. The runner gives each trial a fresh gateway,
+  waits for outstanding model calls and trace writes, shuts down gracefully,
+  then requires exactly one complete session whose working directory matches
+  the trial. Its Relay
+  `session_uuid` is saved in `meta.jsonl` and checked again when reporting.
+- **Resume-safe.** Only trials with a successful CLI exit and verified trace
+  enter `meta.jsonl`. A startup, chat, shutdown, or trace failure stops the
+  battery with an error; rerunning retries the unrecorded trial. Completed
+  entries are revalidated before being skipped. Missing, malformed, mixed,
+  and incomplete traces are errors, never zero-cost results.
 
 ## Setup
+
+The runner currently supports Linux, macOS, and WSL. Native Windows is refused
+before starting a gateway: a Windows virtual-environment launcher can have a
+different PID from the gateway, so this runner cannot yet prove ownership.
 
 1. Create a dedicated Hermes home with credentials for the models under test:
 
@@ -42,8 +56,16 @@ in real production traffic.
    printf 'OPENROUTER_API_KEY=%s\n' "$KEY" > "$ABEVAL_HOME/.env"
    ```
 
-   The runner writes a per-run Relay `plugins.toml` and points the native SDK
-   integration at it; no Hermes observability plugin needs to be enabled.
+   Use an idle, dedicated home, without messaging platforms or scheduled jobs,
+   and run one battery at a time. If another gateway already owns the home,
+   the runner refuses to attach; it only shuts down the child it started.
+   Do not point `ABEVAL_HOME` at your everyday Hermes home.
+
+   The runner writes a per-run Relay `plugins.toml` using the observability
+   schema supported by the pinned Relay 0.10 runtime (version 4). No Hermes
+   observability plugin needs to be enabled. Both checkouts must support the
+   foreground gateway and its planned-stop API; use their supported Python
+   runtime with NeMo Relay installed.
 
 2. Prepare the two trees:
 
@@ -70,6 +92,21 @@ python3 ab_eval.py report --models "anthropic/claude-sonnet-4.5,qwen/qwen3-coder
 ```
 
 ## Reading the results
+
+`wall_s` includes gateway startup and the chat client invocation on every
+trial; waiting for trace completion and shutting down are excluded. Compare
+both arms with this runner: older batches reused a warm gateway inconsistently,
+so their wall times are not directly comparable.
+Trial diagnostics are in `runs/<model>/<arm>/<run_id>/gateway.log`,
+`chat.stdout`, and `chat.stderr`. Traces and logs can contain task data; keep
+the evaluation workspace private.
+
+Older metadata lacks the verified session UUID. Use a fresh `ABEVAL_ROOT` to
+rerun those trials; adding IDs to old records would not repair missing or
+mixed traces. A deliberately shared trace stream remains a valid Relay setup,
+but this runner's contract is one session per trial file. Tasks that delegate
+to subagents or rotate sessions need a separate scoring contract before being
+added to this battery.
 
 - Weak models are the signal. Strong models recover from most induced errors
   in one turn, so expect parity there; the fixes' win shows up as fewer

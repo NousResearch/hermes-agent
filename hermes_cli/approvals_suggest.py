@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Iterator, Optional
 
+from hermes_constants import display_hermes_home
+
 
 # ---------------------------------------------------------------------------
 # Safety exclusions
@@ -309,7 +311,7 @@ def _render_text(proposals: list[Proposal], days: int) -> None:
     print(
         "\nNothing has been changed. Apply selected entries with:\n"
         "  hermes approvals suggest --apply 1,3\n"
-        "Entries are merged into command_allowlist in ~/.hermes/config.yaml."
+        f"Entries are merged into command_allowlist in {display_hermes_home()}/config.yaml."
     )
 
 
@@ -344,7 +346,7 @@ def suggest_command(args) -> int:
             print("Added to command_allowlist:")
             for pattern in applied:
                 print(f"  + {pattern}")
-            print(f"\ncommand_allowlist now has {len(merged)} entries (~/.hermes/config.yaml).")
+            print(f"\ncommand_allowlist now has {len(merged)} entries ({display_hermes_home()}/config.yaml).")
         return 0
 
     if as_json:

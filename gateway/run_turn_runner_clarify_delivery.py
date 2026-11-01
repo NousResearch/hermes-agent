@@ -108,6 +108,9 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
     timeout = clarify_mod.get_clarify_timeout()
     response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
     late.disarm()
+    # A human answer already won the native lock; a late transport error cannot erase it.
+    if response not in (None, "", clarify_mod.CANCELLED):
+        return response, True
     if late.undeliverable:
         return late.undeliverable, False
     if response == clarify_mod.CANCELLED:
@@ -150,6 +153,8 @@ class _LateFailureWatch:
 
     def _on_card_done(self, fut) -> None:
         if not self._armed:
+            return
+        if self._clarify_mod.get_pending(self._clarify_id) is None:
             return
         outcome = self._outcome(fut)
         if outcome == "sent":

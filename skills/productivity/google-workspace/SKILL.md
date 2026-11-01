@@ -165,6 +165,9 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 
 ### Notes
 
+- **Scopes are per-service.** Pass `--services` to request only what the user needs (`gmail`, `calendar`, `drive`, `contacts`, `sheets`, `docs`, or `all`). Aliases: `email`/`mail` → `gmail`, `workspace`/`full`/`gws` → `all`. Omitting it requests every scope.
+- **A narrow grant is valid, not broken.** `setup.py --check-live` probes the first service the stored token actually holds (gmail before calendar) instead of always hitting Calendar, so a Gmail-only token reports `LIVE_CHECK_OK`. Tokens holding only `sheets`/`docs` have no cheap list endpoint and are verified by scope presence — also OK.
+- `setup.py --check --services <list>` judges missing scopes only against what you asked for; plain `--check` still reports gaps against the full set.
 - Token is stored at `~/.hermes/google_token.json` and auto-refreshes.
 - Pending OAuth session state/verifier are stored temporarily at `~/.hermes/google_oauth_pending.json` until exchange completes.
 - If `gws` is installed, `google_api.py` points it at the same `~/.hermes/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.
@@ -331,8 +334,11 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 | `NOT_AUTHENTICATED` | Run setup Steps 2-5 above |
 | `REFRESH_FAILED` | Token revoked or expired — redo Steps 3-5 |
 | `HttpError 403: Insufficient Permission` | Missing API scope — `$GSETUP --revoke` then redo Steps 3-5 |
-| `AUTHENTICATED (partial)` or "Token missing scopes" | New write capabilities (Drive write/delete, Docs create/edit) require re-authorization. `$GSETUP --revoke` then redo Steps 3-5 to grant the upgraded scopes. |
+| `AUTHENTICATED (partial)` or "Token missing scopes" | The token lacks scopes you requested. Either re-authorize with `--services` covering what you need, or pass `--services` to `--check` matching what you actually granted so it stops reporting the gap. |
+| `LIVE_CHECK_FAILED: ... no recognized service scopes` | The stored token has no known Google scopes — redo Steps 3-5. |
+| `LIVE_CHECK_OK: ... have no probe endpoint` | Not a failure: the granted services (sheets/docs) have no cheap list call, so auth was verified by scope only. |
 | `HttpError 403: Access Not Configured` | API not enabled — user needs to enable it in Google Cloud Console |
+| Desktop client rejects a custom redirect URI | Expected: Desktop-app clients use a fixed `http://localhost` redirect and reject added callback URLs. Only Web-application clients accept custom URIs — don't convert a CLI client to satisfy one. |
 | `ModuleNotFoundError` | Run `$GSETUP --install-deps` |
 | Advanced Protection blocks auth | Workspace admin must allowlist the OAuth client ID |
 

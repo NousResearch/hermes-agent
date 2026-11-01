@@ -521,7 +521,7 @@ class TestImagegenModelPicker:
         catalog, default_model = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]({})
         model_ids = list(catalog.keys())
         ordered = [default_model] + [m for m in model_ids if m != default_model]
-        gpt_idx = ordered.index("fal-ai/gpt-image-1.5")
+        gpt_idx = ordered.index("fal-ai/gpt-image-2")
 
         # Only ONE picker call is expected (for model) — not two (model + quality).
         call_count = {"n": 0}
@@ -536,7 +536,7 @@ class TestImagegenModelPicker:
         assert call_count["n"] == 1, (
             f"Expected 1 picker call (model only), got {call_count['n']}"
         )
-        assert config["image_gen"]["model"] == "fal-ai/gpt-image-1.5"
+        assert config["image_gen"]["model"] == "fal-ai/gpt-image-2"
         assert "quality_setting" not in config["image_gen"]
 
 

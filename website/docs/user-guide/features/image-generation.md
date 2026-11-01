@@ -17,7 +17,6 @@ Hermes Agent generates images from text prompts via FAL.ai. Eleven models are su
 | `fal-ai/flux-2-pro` | ~6s | Studio photorealism | $0.03/MP |
 | `fal-ai/z-image/turbo` | ~2s | Bilingual EN/CN, 6B params | $0.005/MP |
 | `fal-ai/nano-banana-pro` | ~8s | Gemini 3 Pro, reasoning depth, text rendering | $0.15/image (1K) |
-| `fal-ai/gpt-image-1.5` | ~15s | Prompt adherence | $0.034/image |
 | `fal-ai/gpt-image-2` | ~20s | SOTA text rendering + CJK, world-aware photorealism | $0.04–0.06/image |
 | `fal-ai/ideogram/v3` | ~5s | Best typography | $0.03–0.09/image |
 | `fal-ai/recraft/v4/pro/text-to-image` | ~8s | Design, brand systems, production-ready | $0.25/image |
@@ -104,7 +103,7 @@ image_gen:
 
 ### GPT-Image Quality
 
-The `fal-ai/gpt-image-1.5` and `fal-ai/gpt-image-2` request quality is pinned to `medium` (~$0.034–$0.06/image at 1024×1024). We don't expose the `low` / `high` tiers as a user-facing option so that Nous Portal billing stays predictable across all users — the cost spread between tiers is 3–22×. If you want a cheaper option, pick Klein 9B or Z-Image Turbo; if you want higher quality, use Nano Banana Pro or Recraft V4 Pro.
+The `fal-ai/gpt-image-2` request quality is pinned to `medium` (~$0.04–$0.06/image at 1024×1024). OpenAI shuts GPT Image 1.5 down on 2026-12-01, so a saved `image_gen.model: fal-ai/gpt-image-1.5` now runs on `fal-ai/gpt-image-2`. We don't expose the `low` / `high` tiers as a user-facing option so that Nous Portal billing stays predictable across all users — the cost spread between tiers is 3–22×. If you want a cheaper option, pick Klein 9B or Z-Image Turbo; if you want higher quality, use Nano Banana Pro or Recraft V4 Pro.
 
 ### Meta Model API: Muse Image
 
@@ -296,7 +295,7 @@ Two inputs drive the edit:
 | **OpenRouter** (Image API models) | ✓ | up to 14–16 (per model) | `input_references` on `POST /images/generations`; chat-served models use `image_url` content parts (up to 3) |
 
 FAL models with an editing endpoint: `flux-2/klein/9b`, `flux-2-pro`,
-`nano-banana-pro`, `gpt-image-1.5`, `gpt-image-2`, `ideogram/v3`, and
+`nano-banana-pro`, `gpt-image-2`, `ideogram/v3`, and
 `qwen-image`, plus GPT Image 2.5 Flare and Sunburst above. Pure text-to-image FAL models (`z-image/turbo`, `recraft`,
 `krea/*`) reject image inputs with a clear error pointing you at an
 edit-capable model.
@@ -324,11 +323,11 @@ calls the tool.
 
 Every model accepts the same three aspect ratios from the agent's perspective. Internally, each model's native size spec is filled in automatically:
 
-| Agent input | image_size (flux/z-image/qwen/recraft/ideogram) | aspect_ratio (nano-banana-pro) | image_size (gpt-image-1.5) | image_size (gpt-image-2) |
-|---|---|---|---|---|
-| `landscape` | `landscape_16_9` | `16:9` | `1536x1024` | `landscape_4_3` (1024×768) |
-| `square` | `square_hd` | `1:1` | `1024x1024` | `square_hd` (1024×1024) |
-| `portrait` | `portrait_16_9` | `9:16` | `1024x1536` | `portrait_4_3` (768×1024) |
+| Agent input | image_size (flux/z-image/qwen/recraft/ideogram) | aspect_ratio (nano-banana-pro) | image_size (gpt-image-2) |
+|---|---|---|---|
+| `landscape` | `landscape_16_9` | `16:9` | `landscape_4_3` (1024×768) |
+| `square` | `square_hd` | `1:1` | `square_hd` (1024×1024) |
+| `portrait` | `portrait_16_9` | `9:16` | `portrait_4_3` (768×1024) |
 
 GPT Image 2 maps to 4:3 presets rather than 16:9 because its minimum pixel count is 655,360 — the `landscape_16_9` preset (1024×576 = 589,824) would be rejected.
 

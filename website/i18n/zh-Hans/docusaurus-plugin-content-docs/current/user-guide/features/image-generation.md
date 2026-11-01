@@ -17,7 +17,7 @@ Hermes Agent 通过 FAL.ai 根据文字提示生成图像。默认内置 8 个�
 | `fal-ai/flux-2-pro` | ~6s | 棚拍级写实 | $0.03/MP |
 | `fal-ai/z-image/turbo` | ~2s | 中英双语，6B | $0.005/MP |
 | `fal-ai/nano-banana-pro` | ~8s | Gemini 3 Pro、推理与文字渲染 | $0.15/张（1K） |
-| `fal-ai/gpt-image-1.5` | ~15s | 强指令遵循 | $0.034/张 |
+| `fal-ai/gpt-image-2` | ~20s | 文字渲染 + 中日韩文字、写实 | $0.04–0.06/张 |
 | `fal-ai/ideogram/v3` | ~5s | 排版最佳 | $0.03–0.09/张 |
 | `fal-ai/recraft/v4/pro/text-to-image` | ~8s | 设计 / 品牌系统 / 可交付生产 | $0.25/张 |
 | `fal-ai/qwen-image` | ~12s | 偏 LLM 式、复杂文字 | $0.02/MP |
@@ -67,7 +67,7 @@ image_gen:
 
 ### GPT-Image 画质档位
 
-`fal-ai/gpt-image-1.5` 的请求画质固定为 `medium`（约 1024×1024 下 $0.034/张）。面向用户**不开放** `low` / `high` 档位，以便 Nous Portal 侧计费在全体用户间更可预期（档位价差约 22×）。若需要更便宜的 GPT-Image 路线，请换其他模型；若追求更高画质，可考虑 Klein 9B 或同类 Imagen 系模型。
+`fal-ai/gpt-image-2` 的请求画质固定为 `medium`（约 1024×1024 下 $0.04–0.06/张）。OpenAI 将于 2026-12-01 下线 GPT Image 1.5，已保存的 `image_gen.model: fal-ai/gpt-image-1.5` 现在会改用 `fal-ai/gpt-image-2`。面向用户**不开放** `low` / `high` 档位，以便 Nous Portal 侧计费在全体用户间更可预期（档位价差约 22×）。若需要更便宜的 GPT-Image 路线，请换其他模型；若追求更高画质，可考虑 Klein 9B 或同类 Imagen 系模型。
 
 ## 使用方式
 

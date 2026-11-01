@@ -10,7 +10,7 @@ import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { onBrowserFocusSession, showBrowserNotification } from '@/lib/browser-notifications'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { type BrowserRelays, createBrowserRelays, relayEnabled } from '@/lib/browser-relay'
-import { createBrowserSettings } from '@/lib/browser-settings'
+import { browserFolderBasePath, createBrowserSettings } from '@/lib/browser-settings'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
 import { browserApi, type BrowserBootstrap, browserBootstrap, ticketedWebsocketUrl } from '@/lib/browser-transport'
 import { createBrowserUiPreferences } from '@/lib/browser-ui-preferences'
@@ -178,7 +178,7 @@ export function installBrowserDesktopBridge(): boolean {
 
       return target ? openWindow(target) : { error: 'invalid_session_id', ok: false }
     },
-    settings: createBrowserSettings({ basePath: bootstrap.basePath, currentProfile }),
+    settings: createBrowserSettings({ basePath: () => browserFolderBasePath(activeConnectionId()), currentProfile }),
     requestMicrophoneAccess: async () => {
       if (!navigator.mediaDevices?.getUserMedia) {
         return false

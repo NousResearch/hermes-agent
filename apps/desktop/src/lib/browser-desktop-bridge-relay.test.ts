@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $connection } from '@/store/session'
+import { $connection, workspaceCwdForNewSession } from '@/store/session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
+import { migrateBrowserProfilePrefs } from './browser-profile-prefs'
 
 type RelayWindow = Window & {
   __HERMES_AUTH_REQUIRED__?: boolean
@@ -194,6 +195,32 @@ describe('a Webapp whose gateway relays to others', () => {
 
     const stream = new URL(await desktop.getGatewayFileStreamUrl!({ connectionId: 'mini', path: '/tmp/a.png' }))
     expect(stream.pathname.startsWith('/hermes/api/relay/mini/')).toBe(true)
+  })
+
+  it("keeps the default folder a relayed gateway's profile chose apart from this gateway's", async () => {
+    servingGateway()
+    const desktop = install()
+    await desktop.connections!.list()
+    const onMini = { ...(await desktop.getConnectionFor!({ connectionId: 'mini', profile: 'research' })) }
+    const onHub = { ...onMini, connectionId: 'local' }
+
+    $connection.set(onHub)
+    await desktop.settings.setDefaultProjectDir('/srv/hub')
+    $connection.set(onMini)
+    await desktop.settings.setDefaultProjectDir('/srv/mini')
+    expect(workspaceCwdForNewSession('research')).toBe('/srv/mini')
+
+    $connection.set(onHub)
+    expect((await desktop.settings.getDefaultProjectDir()).dir).toBe('/srv/hub')
+    expect(workspaceCwdForNewSession('research')).toBe('/srv/hub')
+
+    // Renaming the profile on Mini takes Mini's folder with it and leaves this gateway's alone.
+    $connection.set(onMini)
+    migrateBrowserProfilePrefs('research', 'notes')
+    expect(workspaceCwdForNewSession('notes')).toBe('/srv/mini')
+    $connection.set(onHub)
+    expect(workspaceCwdForNewSession('research')).toBe('/srv/hub')
+    expect(workspaceCwdForNewSession('notes')).toBe('')
   })
 
   it('lists the profiles of every relayed gateway in the agent roster', async () => {

@@ -258,6 +258,43 @@ def _decode_keychain_attr(match: Optional[re.Match[str]]) -> str:
     return match.group("text") or ""
 
 
+def _claude_code_keychain_account() -> str:
+    """The account Claude Code files its Keychain item under: ``$USER``, else the OS user name
+    (Claude Code's ``process.env.USER || os.userInfo().username``; ``getpass`` would try $LOGNAME first)."""
+    if user := os.environ.get("USER"):
+        return user
+    try:
+        import pwd
+        return pwd.getpwuid(os.getuid()).pw_name  # windows-footgun: ok (callers are Darwin-only)
+    except (ImportError, AttributeError, KeyError, OSError):  # no resolvable user name
+        return ""
+
+
+def _run_claude_code_keychain_lookup(flag: str) -> Optional[subprocess.CompletedProcess]:
+    """``security find-generic-password <flag>`` for the Claude Code item, or None when there is none.
+
+    Several items can share the service name (other accounts, a migrated Mac, Claude Code's own MCP
+    OAuth state under account ``unknown``), and an unscoped lookup returns whichever comes first,
+    often a stale login. Claude Code reads only the item filed under its account (``-a $USER``; exit
+    44 means logged out), so Hermes does the same: one ``security`` process per read, as before.
+    """
+    account = _claude_code_keychain_account()
+    scope = ["-a", account] if account else []
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", *scope, "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE, flag],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+            stdin=subprocess.DEVNULL, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logger.debug("Keychain: security command not available or timed out")
+        return None
+    if result.returncode != 0:
+        logger.debug("Keychain: no entry found for %r (rc=%s)", _CLAUDE_CODE_KEYCHAIN_SERVICE, result.returncode)
+        return None
+    return result
+
+
 def _find_claude_code_keychain_item() -> Optional[tuple[str, dict[str, Any]]]:
     """``(account, payload)`` of the ``Claude Code-credentials`` login Keychain item, or None.
 
@@ -267,15 +304,8 @@ def _find_claude_code_keychain_item() -> Optional[tuple[str, dict[str, Any]]]:
     """
     if platform.system() != "Darwin":
         return None
-    try:
-        result = subprocess.run(
-            ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE, "-g"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, stdin=subprocess.DEVNULL,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
+    result = _run_claude_code_keychain_lookup("-g")
+    if result is None:
         return None
     account = _decode_keychain_attr(re.search(r'^\s*"acct"<blob>=' + _KEYCHAIN_ATTR + r"\s*$", result.stdout, re.MULTILINE))
     raw = _decode_keychain_attr(re.search(r"^password: " + _KEYCHAIN_ATTR + r"\s*$", result.stderr, re.MULTILINE))
@@ -297,17 +327,8 @@ def _read_claude_code_keychain_payload() -> Optional[dict[str, Any]]:
     """
     if platform.system() != "Darwin":
         return None
-    try:
-        result = subprocess.run(
-            ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE, "-w"],
-            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5, stdin=subprocess.DEVNULL,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        logger.debug("Keychain: security command not available or timed out")
-        return None
-    if result.returncode != 0:
-        logger.debug("Keychain: no entry found for %r", _CLAUDE_CODE_KEYCHAIN_SERVICE)
+    result = _run_claude_code_keychain_lookup("-w")
+    if result is None:
         return None
     raw = result.stdout.strip()
     if not raw:

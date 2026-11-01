@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setAlwaysExternalLinks } from '@/store/external-links'
 import { $previewTabs } from '@/store/preview'
 
-import { MarkdownPreview } from './preview-file'
+import { canOpenWithDefaultApp, MarkdownPreview } from './preview-file'
 
 // Behavior tests for the .md file preview renderer: input markdown goes
 // through normalizeFilePreviewMath -> Streamdown (+ KaTeX math plugin) and must
@@ -115,5 +115,31 @@ describe('MarkdownPreview', () => {
 
     expect(container.querySelector('a[href^="javascript:"]')).toBeNull()
     expect($previewTabs.get()).toEqual([])
+  })
+})
+
+describe('canOpenWithDefaultApp', () => {
+  const previousDesktop = window.hermesDesktop
+
+  afterEach(() => {
+    window.hermesDesktop = previousDesktop
+  })
+
+  it('requires captured local provenance and fails closed for remote or legacy targets', () => {
+    window.hermesDesktop = { openExternal: vi.fn() } as never
+
+    const target = {
+      kind: 'file' as const,
+      label: 'report.pdf',
+      path: '/work/report.pdf',
+      previewKind: 'pdf' as const,
+      source: '/work/report.pdf',
+      url: 'file:///work/report.pdf'
+    }
+
+    expect(canOpenWithDefaultApp({ ...target, filesystemOrigin: 'local' })).toBe(true)
+    expect(canOpenWithDefaultApp({ ...target, filesystemOrigin: 'remote' })).toBe(false)
+    expect(canOpenWithDefaultApp(target)).toBe(false)
+    expect(canOpenWithDefaultApp({ ...target, filesystemOrigin: 'local', transient: true })).toBe(false)
   })
 })

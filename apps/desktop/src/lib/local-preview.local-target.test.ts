@@ -10,7 +10,8 @@ const { isDesktopFsRemoteMode } = vi.hoisted(() => ({
   isDesktopFsRemoteMode: vi.fn(() => false)
 }))
 
-vi.mock('@/lib/desktop-fs', () => ({
+vi.mock('@/lib/desktop-fs', async importOriginal => ({
+  ...(await (importOriginal() as Promise<Record<string, unknown>>)),
   isDesktopFsRemoteMode,
   readDesktopDir: vi.fn(),
   readDesktopFileDataUrl: vi.fn(),
@@ -69,6 +70,22 @@ describe('normalizeOrLocalPreviewTarget non-previewable results', () => {
     await expect(normalizeOrLocalPreviewTarget('/work/nope.md')).resolves.toBeNull()
   })
 
+  it('captures local filesystem provenance on normalized file targets', async () => {
+    stubNormalization({
+      kind: 'file',
+      label: 'report.pdf',
+      path: '/work/report.pdf',
+      previewKind: 'pdf',
+      source: '/work/report.pdf',
+      url: 'file:///work/report.pdf'
+    })
+
+    await expect(normalizeOrLocalPreviewTarget('/work/report.pdf')).resolves.toMatchObject({
+      filesystemOrigin: 'local',
+      path: '/work/report.pdf'
+    })
+  })
+
   it('keeps the gateway-backed fallback for remote-backend directories', async () => {
     isDesktopFsRemoteMode.mockReturnValue(true)
     stubNormalization({
@@ -84,5 +101,6 @@ describe('normalizeOrLocalPreviewTarget non-previewable results', () => {
 
     expect(fabricated?.kind).toBe('file')
     expect(fabricated?.path).toBe('/srv/reports')
+    expect(fabricated?.filesystemOrigin).toBe('remote')
   })
 })

@@ -1633,6 +1633,7 @@
     "fileMenu.download",
     "fileMenu.downloadFailed",
     "fileMenu.downloadSaved",
+    "fileMenu.openWithApp",
     "fileMenu.pathCopied",
     "fileMenu.rename",
     "fileMenu.renameLabel",

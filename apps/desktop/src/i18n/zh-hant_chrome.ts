@@ -2,6 +2,7 @@ import type { TranslationOverrides } from './define-locale'
 
 export const zhHantChrome = {
   fileMenu: {
+    openWithApp: '用預設應用程式開啟',
     revealFinder: '在 Finder 中顯示',
     revealExplorer: '在檔案總管中顯示',
     revealFileManager: '開啟所在資料夾',

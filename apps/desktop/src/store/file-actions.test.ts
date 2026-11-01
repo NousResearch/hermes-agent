@@ -2,7 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $notifications, clearNotifications } from '@/store/notifications'
 
-import { downloadRemoteFile, shouldOfferLocalReveal, shouldOfferRemoteFileDownload } from './file-actions'
+const openDesktopPathWithDefaultApp = vi.hoisted(() => vi.fn(async () => {}))
+
+vi.mock('@/lib/desktop-fs', async importOriginal => ({
+  ...(await (importOriginal() as Promise<Record<string, unknown>>)),
+  openDesktopPathWithDefaultApp
+}))
+
+import {
+  downloadRemoteFile,
+  openFileWithDefaultApp,
+  shouldOfferLocalReveal,
+  shouldOfferRemoteFileDownload
+} from './file-actions'
 
 describe('shouldOfferRemoteFileDownload', () => {
   it('is only for files on a remote backend', () => {
@@ -65,5 +77,31 @@ describe('downloadRemoteFile', () => {
 
     expect($notifications.get()[0]?.kind).toBe('error')
     expect($notifications.get()[0]?.title).toBe('Download failed')
+  })
+})
+
+describe('openFileWithDefaultApp', () => {
+  beforeEach(() => {
+    clearNotifications()
+    openDesktopPathWithDefaultApp.mockReset()
+    openDesktopPathWithDefaultApp.mockImplementation(async () => {})
+  })
+
+  afterEach(() => {
+    clearNotifications()
+  })
+
+  it('forwards the native path to the desktop opener', async () => {
+    await openFileWithDefaultApp('/tmp/报告.xlsx')
+
+    expect(openDesktopPathWithDefaultApp).toHaveBeenCalledWith('/tmp/报告.xlsx')
+  })
+
+  it('toasts when the OS opener fails', async () => {
+    openDesktopPathWithDefaultApp.mockRejectedValueOnce(new Error('no association'))
+
+    await openFileWithDefaultApp('/tmp/x.unknown')
+
+    expect($notifications.get()[0]).toMatchObject({ kind: 'error', message: 'no association' })
   })
 })

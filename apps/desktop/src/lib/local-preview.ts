@@ -272,14 +272,12 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   }
 }
 
-async function enrichPreviewTarget(target: PreviewTarget | null, scope?: DesktopFsSessionScope): Promise<PreviewTarget | null> {
-  if (
-    !isDesktopFsRemoteMode() ||
-    !target ||
-    target.kind !== 'file' ||
-    target.previewKind === 'image' ||
-    target.previewKind === 'pdf'
-  ) {
+async function enrichPreviewTarget(
+  target: PreviewTarget | null,
+  scope?: DesktopFsSessionScope,
+  remote = isDesktopFsRemoteMode()
+): Promise<PreviewTarget | null> {
+  if (!remote || !target || target.kind !== 'file' || target.previewKind === 'image' || target.previewKind === 'pdf') {
     return target
   }
 
@@ -314,6 +312,19 @@ export async function normalizeOrLocalPreviewTarget(
   cwd?: string | null,
   scope?: DesktopFsSessionScope
 ): Promise<PreviewTarget | null> {
+  // Capture provenance before awaiting Electron or gateway work. Preview tabs
+  // can be pinned and shown under another session later; eligibility for local
+  // OS actions must follow the filesystem that opened the tab, not whichever
+  // connection happens to be focused then.
+  const remote = isDesktopFsRemoteMode()
+  const filesystemOrigin = remote ? 'remote' : 'local'
+
+  const finish = async (target: PreviewTarget | null): Promise<PreviewTarget | null> => {
+    const enriched = await enrichPreviewTarget(target, scope, remote)
+
+    return enriched?.kind === 'file' ? { ...enriched, filesystemOrigin } : enriched
+  }
+
   try {
     const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
 
@@ -325,10 +336,10 @@ export async function normalizeOrLocalPreviewTarget(
       // machine, so remote mode keeps the fabricated fallback the gateway
       // read resolves later.
       if (normalized.previewKind === 'directory' || normalized.previewKind === 'missing') {
-        return isDesktopFsRemoteMode() ? enrichPreviewTarget(localPreviewTarget(rawTarget, cwd), scope) : null
+        return remote ? finish(localPreviewTarget(rawTarget, cwd)) : null
       }
 
-      return enrichPreviewTarget(normalized, scope)
+      return finish(normalized)
     }
 
     // The main process resolved the target against the real filesystem and
@@ -337,7 +348,7 @@ export async function normalizeOrLocalPreviewTarget(
     // is authoritative — the fallback below can only fabricate a broken
     // preview tab (#101683). Remote-backend paths, and a dev server without
     // the bridge, keep it.
-    if (!isDesktopFsRemoteMode() && normalized === null) {
+    if (!remote && normalized === null) {
       return null
     }
   } catch {
@@ -345,5 +356,5 @@ export async function normalizeOrLocalPreviewTarget(
     // through to renderer-side local classification so text/images still open.
   }
 
-  return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd), scope)
+  return finish(localPreviewTarget(rawTarget, cwd))
 }

@@ -212,18 +212,24 @@ def resolve_xai_http_credentials(
             # the next healthy account rather than resurrecting the stale row.
             entry = pool.select()
         access_token = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-        fallback_base_url = str(
-            getattr(entry, "runtime_base_url", None)
-            or getattr(entry, "base_url", "")
-            or auth_mod.DEFAULT_XAI_OAUTH_BASE_URL
-        ).strip().rstrip("/")
+        # The stored fallback comes from auth.json; pin it as well so a stale
+        # or tampered pool URL cannot receive the bearer.
+        fallback_base_url = auth_mod._xai_validate_inference_base_url(
+            str(
+                getattr(entry, "runtime_base_url", None)
+                or getattr(entry, "base_url", "")
+                or auth_mod.DEFAULT_XAI_OAUTH_BASE_URL
+            ).strip().rstrip("/"),
+            fallback=auth_mod.DEFAULT_XAI_OAUTH_BASE_URL)
         base_url = auth_mod._xai_validate_inference_base_url(_xai_base_url_override(), fallback=fallback_base_url)
         if str(access_token).strip():
             return {"provider": "xai-oauth", "api_key": str(access_token).strip(), "base_url": base_url}
     except Exception:
         pass
 
-    from hermes_cli.config import get_env_value
     api_key = _resolve_explicit_xai_api_key()
-    base_url = str(get_env_value("XAI_BASE_URL") or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
+    # Same origin pinning as the branches above: a foreign XAI_BASE_URL must
+    # fall back, not receive the bearer.
+    base_url = auth_mod._xai_validate_inference_base_url(
+        _xai_base_url_override(), fallback=DEFAULT_XAI_BASE_URL)
     return {"provider": "xai", "api_key": api_key, "base_url": base_url}

@@ -474,6 +474,42 @@ def cmd_doctor(args) -> int:
     return 1 if bad else 0
 
 
+def _gc_launcher_entries(store_root: Path) -> set[str]:
+    """Store entries still executed by a launcher minted for this install."""
+    from pm import paths
+    from hermes_cli._launchers import _launcher_checkout, _launcher_python, _owns_launcher
+    from hermes_constants import get_default_hermes_root
+    from pm.filesystem import native
+
+    root = paths.install_root().resolve()
+    store_root = Path(native(store_root.resolve()))
+    entries = set()
+    directories = (root / ".hermes" / "bin", get_default_hermes_root() / "bin")
+    for directory in dict.fromkeys(directories):
+        try:
+            targets = list(directory.iterdir()) if directory.is_dir() else ()
+        except OSError:
+            continue
+        for target in targets:
+            # One unreadable launcher must not abort the rest of the
+            # directory: a still-referenced entry would then be reclaimed.
+            try:
+                if not target.is_file() or not (
+                    _owns_launcher(target, root) or _launcher_checkout(target) == root
+                ):
+                    continue
+                python = _launcher_python(target)
+                if python is None:
+                    continue
+                for parent in python.parents:
+                    if parent.resolve() == store_root:
+                        entries.add(python.relative_to(parent).parts[0])
+                        break
+            except OSError:
+                continue
+    return entries
+
+
 def _gc_store(store, facts) -> tuple[int, int]:
     """The sweep core shared by `pm gc` and `pm bundle`.
 
@@ -497,6 +533,7 @@ def _gc_store(store, facts) -> tuple[int, int]:
         facts.forget(RETIRED_DEFAULTS)
         facts.reload()
         keep = facts.entries_in_use()
+        keep.update(_gc_launcher_entries(store.root))
         collect_partials(partials_dir)
         removed += _reclaim_set_aside(store)
         for item in sorted(store.root.iterdir()):

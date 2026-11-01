@@ -11,6 +11,8 @@ from pathlib import Path
 
 from tools.checkpoint_manager import (
     CheckpointManager,
+    _clear_stale_index_lock,
+    _index_lock_path,
     _init_store,
     _run_git,
     _git_env,
@@ -737,6 +739,91 @@ class TestErrorResilience:
         monkeypatch.setattr("shutil.which", lambda *args, **kwargs: None)
         mgr.new_turn()
         assert mgr.ensure_checkpoint(str(work_dir), "test") is False
+
+
+def _backdate(path: Path, age_seconds: float) -> None:
+    old = time.time() - age_seconds
+    os.utime(path, (old, old))
+
+
+class TestStaleIndexLock:
+    """A crashed checkpoint git leaves ``index.lock``; the next op must remove
+    it. A lock a live process still has open, or one younger than the age
+    floor, must stay so a slow ``git add`` is not clobbered."""
+
+    def test_lock_path_follows_git_index_file(self, tmp_path):
+        store = tmp_path / "store"
+        index = store / "indexes" / "abcd"
+        assert _index_lock_path(store, index) == Path(str(index) + ".lock")
+        assert _index_lock_path(store, None) == store / "index.lock"
+
+    def test_stale_per_project_lock_is_cleared_and_add_succeeds(
+        self, checkpoint_base, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        work = tmp_path / "proj"
+        work.mkdir()
+        (work / "f.txt").write_text("one\n")
+        assert CheckpointManager(enabled=True).ensure_checkpoint(str(work), "seed")
+
+        store = checkpoint_base / "store"
+        index = store / "indexes" / _project_hash(str(work))
+        lock = _index_lock_path(store, index)
+        lock.write_bytes(b"orphaned")
+        _backdate(lock, 120)
+        (work / "f.txt").write_text("two\n")
+
+        ok, _out, err = _run_git(["add", "-A"], store, str(work), index_file=index)
+        assert ok, err
+        assert not lock.exists()
+
+    def test_fresh_lock_is_kept_and_blocks_add(
+        self, checkpoint_base, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        work = tmp_path / "proj"
+        work.mkdir()
+        (work / "f.txt").write_text("one\n")
+        assert CheckpointManager(enabled=True).ensure_checkpoint(str(work), "seed")
+
+        store = checkpoint_base / "store"
+        index = store / "indexes" / _project_hash(str(work))
+        lock = _index_lock_path(store, index)
+        lock.write_bytes(b"in-flight")
+
+        ok, _out, err = _run_git(["add", "-A"], store, str(work), index_file=index)
+        assert not ok
+        assert lock.exists()
+        assert "File exists" in err or "index.lock" in err
+
+    def test_stale_lock_held_open_by_a_live_process_is_kept(self, tmp_path):
+        store = tmp_path / "store"
+        store.mkdir()
+        lock = _index_lock_path(store, None)
+        lock.write_bytes(b"held")
+        _backdate(lock, 120)
+        fd = os.open(lock, os.O_RDWR)
+        try:
+            _clear_stale_index_lock(store, None)
+            assert lock.exists()
+            assert lock.read_bytes() == b"held"
+        finally:
+            os.close(fd)
+        _clear_stale_index_lock(store, None)
+        assert not lock.exists()
+
+    def test_inconclusive_probe_does_not_delete(self, tmp_path, monkeypatch):
+        store = tmp_path / "store"
+        store.mkdir()
+        lock = _index_lock_path(store, None)
+        lock.write_bytes(b"maybe-live")
+        _backdate(lock, 120)
+        monkeypatch.setattr(
+            "tools.checkpoint_manager._lock_open_by_live_process",
+            lambda _path: None,
+        )
+        _clear_stale_index_lock(store, None)
+        assert lock.exists()
 
 
 class TestTouchProjectMalformedMeta:

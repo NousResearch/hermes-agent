@@ -9,6 +9,7 @@ import pytest
 
 from tools.registry import (
     ToolRegistry,
+    GatewaySourceContextBinding,
     _MAX_LOGGED_ERROR_CHARS,
     _MAX_TOOL_ERROR_CHARS,
     discover_builtin_tools,
@@ -26,6 +27,247 @@ def _make_schema(name="test_tool"):
         "description": f"A {name}",
         "parameters": {"type": "object", "properties": {}},
     }
+
+
+class TestGatewaySourceConsent:
+    @staticmethod
+    def _source(session_id="session-1"):
+        return {
+            "platform": "telegram", "chat_id": "chat-123", "thread_id": "thread-456",
+            "message_id": "message-789", "user_id": "user-012", "session_key": "telegram:chat-123",
+            "session_id": session_id,
+        }
+
+    @staticmethod
+    def _registry(*, opt_in=True, consent=lambda: True):
+        reg = ToolRegistry()
+        seen = {}
+
+        def handler(args, **kwargs):
+            seen["args"] = args
+            seen["kwargs"] = kwargs
+            return "ok"
+
+        reg.register(name="source_tool", toolset="plugin", schema=_make_schema("source_tool"),
+                     handler=handler, gateway_source_consent=consent,
+                     requires_gateway_source_context=opt_in)
+        return reg, seen
+
+    def test_opted_in_and_consented_registration_still_denied_without_parent_ack(self):
+        reg, seen = self._registry()
+        reg.dispatch("source_tool", {}, trusted_gateway_source=self._source(), session_id="session-1")
+        assert "trusted_gateway_source" not in seen["kwargs"]
+
+    @pytest.mark.parametrize("ack", [object(), None, "ack", {}, type("FakeBinding", (), {"entry": None})()])
+    def test_untyped_or_unbound_ack_never_delivers_source(self, ack):
+        reg, seen = self._registry()
+        entry = reg.get_entry("source_tool")
+        assert entry is not None
+        entry.gateway_source_context_ack = ack  # type: ignore[assignment]
+        reg.dispatch("source_tool", {}, trusted_gateway_source=self._source(), session_id="session-1")
+        assert "trusted_gateway_source" not in seen["kwargs"]
+
+
+    @pytest.mark.parametrize("consent", [lambda: False, lambda: (_ for _ in ()).throw(RuntimeError("no consent"))])
+    def test_false_or_raising_consent_is_denied(self, consent):
+        reg, seen = self._registry(consent=consent)
+        reg.dispatch("source_tool", {}, trusted_gateway_source=self._source(), session_id="session-1")
+        assert "trusted_gateway_source" not in seen["kwargs"]
+
+    def test_partial_source_is_denied(self):
+        reg, seen = self._registry()
+        reg.dispatch("source_tool", {}, trusted_gateway_source={"platform": "telegram"}, session_id="session-1")
+        assert "trusted_gateway_source" not in seen["kwargs"]
+
+    def test_session_mismatch_is_denied(self):
+        reg, seen = self._registry()
+        reg.dispatch("source_tool", {}, trusted_gateway_source=self._source("source-session"), session_id="other-session")
+        assert "trusted_gateway_source" not in seen["kwargs"]
+
+    def test_builtin_mcp_and_unrelated_calls_preserve_arguments_without_source_metadata(self):
+        reg = ToolRegistry()
+        seen = {}
+        args = {"query": "unchanged"}
+        for name, toolset in (("builtin", "core"), ("mcp_tool", "mcp-example"), ("unrelated", "plugin")):
+            def handler(actual_args, _name=name, **kwargs):
+                seen[_name] = (actual_args, kwargs)
+                return "ok"
+            reg.register(name=name, toolset=toolset, schema=_make_schema(name), handler=handler)
+            reg.dispatch(name, args, trusted_gateway_source=self._source(), session_id="session-1", extra="value")
+        assert set(seen) == {"builtin", "mcp_tool", "unrelated"}
+        for actual_args, kwargs in seen.values():
+            assert actual_args is args
+            assert "trusted_gateway_source" not in kwargs
+            assert kwargs == {"session_id": "session-1", "extra": "value"}
+
+    @staticmethod
+    def _bind_for_isolated_registry_test(entry):
+        # Synthetic binding only tests ToolRegistry gate/linearization; it is not
+        # a PluginHost issuer or evidence of Host delivery.
+        from types import SimpleNamespace
+
+        handle_id = 1
+        handler = entry.handler
+        registration = SimpleNamespace(
+            active=True, kind="tool", key=entry.name, plugin_key="test-plugin"
+        )
+        context = SimpleNamespace(plugin_id="test-plugin", manifest=object())
+        manager = SimpleNamespace(scope_key="test-scope")
+        callback_ref = 1
+        host = SimpleNamespace(
+            home="/test", alive=True, _manager=manager, _generation=0,
+            _handles={handle_id: registration},
+            _contexts={"test-plugin": context}, _source_bindings={},
+        )
+        handler.__hermes_plugin_host_ref__ = callback_ref
+        binding = GatewaySourceContextBinding(
+            entry=entry, registration=registration, handle_id=handle_id,
+            key=entry.name, plugin_id="test-plugin", plugin_key="test-plugin",
+            scope="test-scope", profile_home="/test", handler=handler,
+            callback_ref=callback_ref, generation=0, opted_in=True, host=host,
+            context=context, gate=entry._source_dispatch_gate,
+        )
+        host._source_bindings[handle_id] = binding
+        entry.gateway_source_context_ack = binding
+
+    @staticmethod
+    def _dispatch_with_bound_source(reg, source, session_id=None):
+        import contextvars
+        from gateway import session_context as sc
+        ctx = contextvars.Context()
+        def invoke():
+            for var, key in zip((sc._SESSION_PLATFORM, sc._SESSION_CHAT_ID, sc._SESSION_THREAD_ID,
+                                 sc._SESSION_MESSAGE_ID, sc._SESSION_USER_ID, sc._SESSION_KEY, sc._SESSION_ID),
+                                ("platform", "chat_id", "thread_id", "message_id", "user_id", "session_key", "session_id")):
+                var.set(source[key])
+            with sc._scoped_gateway_source_dispatch(session_id or source["session_id"]):
+                return reg.dispatch("source_tool", {}, trusted_gateway_source=source,
+                                    session_id=session_id or source["session_id"])
+        return ctx.run(invoke)
+
+    def test_exact_typed_binding_isolated_registry_positive(self):
+        reg, seen = self._registry()
+        entry = reg.get_entry("source_tool")
+        self._bind_for_isolated_registry_test(entry)
+        self._dispatch_with_bound_source(reg, self._source())
+        assert seen["kwargs"]["trusted_gateway_source"] == self._source()
+
+    def test_raw_dispatch_without_bound_vars_or_permit_is_denied(self):
+        import contextvars
+        reg, seen = self._registry()
+        entry = reg.get_entry("source_tool")
+        self._bind_for_isolated_registry_test(entry)
+        source = self._source()
+        contextvars.Context().run(lambda: reg.dispatch("source_tool", {}, trusted_gateway_source=source, session_id="session-1"))
+        assert "trusted_gateway_source" not in seen["kwargs"]
+
+    def test_wrong_entry_typed_binding_is_denied(self):
+        reg, seen = self._registry()
+        entry = reg.get_entry("source_tool")
+        reg.register(name="other_tool", toolset="plugin", schema=_make_schema("other_tool"), handler=lambda a, **k: "other")
+        other = reg.get_entry("other_tool")
+        entry.gateway_source_context_ack = GatewaySourceContextBinding(
+            entry=other, registration=other, handle_id=0, key="test-key",
+            plugin_id="test-plugin", plugin_key="test-plugin", scope="test-scope",
+            profile_home="/test", handler=other.handler, callback_ref=0,
+            generation=0, opted_in=True, host=None, context=None,
+            gate=other._source_dispatch_gate,
+        )
+        reg.dispatch("source_tool", {}, trusted_gateway_source=self._source(), session_id="session-1")
+        assert "trusted_gateway_source" not in seen["kwargs"]
+
+    def test_revoke_first_race_denies_old_callback(self):
+        entered, proceed = threading.Event(), threading.Event()
+        reg, seen = self._registry(consent=lambda: (entered.set(), proceed.wait(2), True)[2])
+        old = reg.get_entry("source_tool")
+        old_seen, new_seen = {}, {}
+        old.handler = lambda args, **kwargs: old_seen.update(kwargs)
+        self._bind_for_isolated_registry_test(old)
+        t = threading.Thread(target=lambda: self._dispatch_with_bound_source(reg, self._source()))
+        try:
+            t.start()
+            assert entered.wait(2), "consent callback was not entered"
+            reg.register(name="source_tool", toolset="plugin", schema=_make_schema("source_tool"), handler=lambda a, **k: new_seen.update(k), override=True)
+        finally:
+            proceed.set()
+            if t.ident is not None: t.join(3)
+        assert not t.is_alive()
+        assert "trusted_gateway_source" not in seen.get("kwargs", {})
+        assert "trusted_gateway_source" not in old_seen
+        assert "trusted_gateway_source" not in new_seen
+
+    def test_permit_first_race_finishes_outside_registry_lock(self):
+        entered, release = threading.Event(), threading.Event()
+        seen = {}
+        reg = ToolRegistry()
+        def handler(args, **kwargs):
+            seen.update(kwargs); entered.set(); release.wait(3); return "ok"
+        reg.register(name="source_tool", toolset="plugin", schema=_make_schema("source_tool"), handler=handler,
+                     gateway_source_consent=lambda: True, requires_gateway_source_context=True)
+        old = reg.get_entry("source_tool")
+        self._bind_for_isolated_registry_test(old)
+        t = threading.Thread(target=lambda: self._dispatch_with_bound_source(reg, self._source()))
+        rt = None
+        try:
+            t.start()
+            assert entered.wait(2), "handler was not entered with permit"
+            def replace():
+                reg.register(name="source_tool", toolset="plugin", schema=_make_schema("source_tool"), handler=lambda a, **k: "new", override=True)
+            rt = threading.Thread(target=replace); rt.start(); rt.join(2)
+            assert not rt.is_alive(), "replacement blocked behind in-flight handler"
+        finally:
+            release.set()
+            if t.ident is not None: t.join(3)
+            if rt is not None and rt.ident is not None: rt.join(3)
+        assert not t.is_alive()
+        assert seen["trusted_gateway_source"] == self._source()
+
+    def test_gate_revocation_is_idempotent_and_old_disposal_does_not_revoke_new(self):
+        reg, _ = self._registry()
+        old = reg.get_entry("source_tool")
+        old._source_dispatch_gate.revoke()
+        old._source_dispatch_gate.revoke()
+        assert not old._source_dispatch_gate.acquire()
+
+        reg.register(name="source_tool", toolset="plugin", schema=_make_schema("source_tool"), handler=lambda a, **k: "new", override=True)
+        newer = reg.get_entry("source_tool")
+        assert newer is not old
+        assert newer._source_dispatch_gate.acquire()
+
+        # Delayed cleanup from the old lease must not restore/remove or revoke
+        # the replacement registration, which is now the current entry.
+        assert reg.restore_registration("source_tool", old, None) is False
+        assert reg.get_entry("source_tool") is newer
+        assert newer._source_dispatch_gate.acquire()
+        assert not old._source_dispatch_gate.acquire()
+
+        newer._source_dispatch_gate.revoke()
+        newer._source_dispatch_gate.revoke()
+        assert not newer._source_dispatch_gate.acquire()
+
+    def test_replaced_entry_is_denied_without_delivering_source(self):
+        entered, proceed = threading.Event(), threading.Event()
+        reg = ToolRegistry()
+        seen = {}
+        def consent():
+            entered.set()
+            return proceed.wait(2) and True
+        reg.register(name="source_tool", toolset="plugin", schema=_make_schema("source_tool"),
+                     handler=lambda args, **kwargs: seen.update(kwargs), gateway_source_consent=consent,
+                     requires_gateway_source_context=True)
+        old = reg.get_entry("source_tool")
+        self._bind_for_isolated_registry_test(old)
+        t = threading.Thread(target=lambda: self._dispatch_with_bound_source(reg, self._source()))
+        try:
+            t.start()
+            assert entered.wait(2), "consent callback was not entered"
+            reg.register(name="source_tool", toolset="plugin", schema=_make_schema("source_tool"), handler=lambda a, **k: "new", override=True)
+        finally:
+            proceed.set()
+            if t.ident is not None: t.join(3)
+        assert not t.is_alive()
+        assert "trusted_gateway_source" not in seen
+
 
 
 class TestRegisterAndDispatch:

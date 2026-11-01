@@ -557,16 +557,20 @@ class GatewayGoalsMixin:
                 await self._run_in_executor_with_context(mgr.complete_tick, "")
         except Exception as exc:
             logger.warning("loop wakeup injection failed for %s: %s", sid, exc)
+            # sys-8xces5: the raise may have come AFTER the prompt persisted as this session's
+            # role=user turn (admit/handle_message commit then raise) — a blind rollback
+            # re-renders the same '#N' next pass and duplicates the turn. The persisted
+            # transcript is the dedupe ledger: roll back only when the prompt is provably
+            # absent FOR THIS ATTEMPT — only post-snapshot turns count, and slash wakeups
+            # (payload repeats verbatim every tick) are never probed, so their raises always
+            # roll back rather than risk wedging awaiting_response. The probe runs under its OWN
+            # suppress: if the executor itself raises, abandon_tick must still run (landed
+            # defaults False), or awaiting_response persists True and wedges the loop.
+            landed = False
             with suppress(Exception):
-                # sys-8xces5: the raise may have come AFTER the prompt persisted as this session's
-                # role=user turn (admit/handle_message commit then raise) — a blind rollback
-                # re-renders the same '#N' next pass and duplicates the turn. The persisted
-                # transcript is the dedupe ledger: roll back only when the prompt is provably
-                # absent FOR THIS ATTEMPT — only post-snapshot turns count, and slash wakeups
-                # (payload repeats verbatim every tick) are never probed, so their raises always
-                # roll back rather than risk wedging awaiting_response.
                 landed = snapshot >= 0 and await self._run_in_executor_with_context(
                     _loop_wakeup_prompt_landed, self, session_key, wakeup, snapshot)
+            with suppress(Exception):
                 mgr.abandon_tick(wakeup if landed else None)
         # Viewers swap the countdown for "running now" (or re-anchor it after a slash tick settled).
         self._publish_local_control(source)

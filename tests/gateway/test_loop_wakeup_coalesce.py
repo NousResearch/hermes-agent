@@ -217,6 +217,32 @@ async def test_slash_wakeup_pre_persist_failure_skips_the_landed_probe(loop_env)
     assert store.turns == [{"role": "user", "content": "/recap"}]
 
 
+@pytest.mark.asyncio
+async def test_landed_probe_executor_raise_still_abandons_the_tick(loop_env):
+    """Review fix (sys-8xces5): the landed-probe executor await must not share suppress() with
+    abandon_tick. If the probe call itself raises (pool shut down), abandon_tick must still run
+    with landed=False — otherwise awaiting_response persists True and wedges the loop, the exact
+    wedge class this PR exists to eliminate. Worst case is one duplicate, never a wedge."""
+    store = _FakeStore()
+    runner = _make_runner(store, _Adapter(store, fail="after"))  # persist, then raise
+    real_exec = runner._run_in_executor_with_context
+
+    async def _flaky(fn, *args):
+        from gateway import run_goals
+        if fn is run_goals._loop_wakeup_prompt_landed:
+            raise RuntimeError("executor pool shut down")
+        return await real_exec(fn, *args)
+
+    runner._run_in_executor_with_context = _flaky
+    _set_loop()
+    await _watcher_pass(runner)
+
+    assert len(_wakeup_turns(store, 1)) == 1  # prompt persisted before the raise
+    state = loops.load_loop(SID)
+    assert state.ticks_fired == 0 and state.awaiting_response is False  # rolled back, not wedged
+    assert state.landed_tick == 0  # probe unprovable -> blind rollback
+
+
 class TestLoopManagerCoalesce:
     """Shared-manager surface (covers the CLI/TUI firers and the viewer RPC too)."""
 
@@ -239,6 +265,25 @@ class TestLoopManagerCoalesce:
         state = loops.load_loop(SID)
         assert state.ticks_fired == 1 and state.awaiting_response is False  # left rolled back
         assert state.landed_tick == 0
+
+    def test_coalesced_refire_of_last_allowed_tick_enforces_the_times_cap(self, loop_env):
+        """Review fix (sys-8xces5): the --times/max_ticks caps live ONLY in complete_tick. A
+        manual awaiting_response release let the coalesced re-fire of the LAST allowed tick keep
+        the loop active — one run past the user's cap, where the pre-fix duplicate path stopped
+        on time. The coalesce must go through complete_tick."""
+        _set_loop(times=1)
+        mgr = loops.LoopManager(session_id=SID)
+        msg1 = mgr.fire_tick()
+        assert msg1 and "[/loop wakeup #1" in msg1
+
+        mgr.abandon_tick(msg1)  # raised after persist: rolled back WITH the landed stamp
+        mgr.state.next_due_at = time.time() - 1
+        loops.save_loop(SID, mgr.state)
+
+        assert mgr.fire_tick() is None  # coalesced claim
+        state = loops.load_loop(SID)
+        assert state.status == "done"  # cap enforced at the coalesce, not one tick later
+        assert state.ticks_fired == 1 and state.awaiting_response is False
 
     def test_plain_abandon_reuses_index_when_nothing_persisted(self, loop_env):
         _set_loop()

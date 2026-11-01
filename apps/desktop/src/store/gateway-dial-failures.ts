@@ -1,5 +1,6 @@
-// Dial failures the secondary redial ladder (store/gateway.ts reconnectSecondary)
-// treats as permanent for a scoped socket.
+import { isTimeoutError } from '@/lib/with-timeout'
+
+// Failure classifiers for the secondary retry ladder in store/gateway.ts.
 
 // Electron's getConnectionFor rejects with `No connection with id "…"` when
 // the registry entry is gone. That is a permanent condition for the scoped
@@ -18,4 +19,14 @@ export function isMissingProfileError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '')
 
   return message.includes('no longer exists') || message.includes('is being deleted')
+}
+
+export function isStalledDialError(error: unknown): boolean {
+  if (isTimeoutError(error)) {
+    return true
+  }
+
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return message.includes('timed out while waiting for a free slot')
 }

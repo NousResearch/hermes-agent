@@ -183,8 +183,10 @@ The union roster is what multi-gateway surfaces (and the built-in
   bare name.
 - Every registered gateway, SSH included, connects when Desktop starts and
   stays connected: its default profile holds one open connection for the life
-  of the window and is redialed every 30 seconds while it is down. An
-  unreachable gateway reports per-row instead of breaking the roster. With a
+  of the window and reconnects through the normal retry backoff when it drops.
+  Permanent startup failures and exhausted stalled-dial retries stay parked
+  until an explicit retry, recovery signal or connection edit. An unreachable
+  gateway reports per-row instead of breaking the roster. With a
   remote primary, **This device** is kept connected too when Hermes is
   installed here, so its local gateway starts with Desktop. Terminals and
   running work on a gateway keep going when you pick another one.

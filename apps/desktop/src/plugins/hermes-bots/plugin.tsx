@@ -84,6 +84,7 @@ import { startScreenAutoRaise } from './screen-autoraise'
 import { ProfileGroupScreenPortal } from './screen-portal'
 import { startHideSweepScheduler } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
+import { TeammateWaits } from './teammate-waits'
 import type { GroupChat, RosterRow } from './types'
 import { loadBotSections } from './user-sections'
 
@@ -435,6 +436,9 @@ export default {
     startHideSweepScheduler(ctx)
     // Sessions sidebar: each gateway/profile group gets the profile's Screen portal
     // above its sessions, so the bot's computer is reachable from either mode.
+    // Above a Bot Chat's composer: that bot's unsettled teammate deliveries (renders nothing
+    // in any other chat, or when none are pending).
+    ctx.register({ id: 'teammate-waits', area: COMPOSER_AREAS.top, render: () => <TeammateWaits /> })
     ctx.register({
       id: 'screen-portal',
       area: SIDEBAR_PROFILE_GROUP_HEADER_AREA,

@@ -425,3 +425,57 @@ def test_adopter_scope_setup_failure_leaks_no_override_and_continues(two_profile
     assert get_hermes_home_override() is None
     assert ss.current_secret_scope() is None
     assert registered == [{"x": {"url": "https://mcp.example/x"}}]
+
+
+def test_filter_change_preserves_live_connection_and_reconciles_native_tools(two_profiles):
+    """Regression: #145265. Live allowlist edits are not connection changes."""
+    import tools.mcp_tool as core
+    from tools import mcp_tool_discovery as disc, mcp_tool_registration as reg
+    from tools.registry import registry
+
+    cfg = {"url": "https://mcp.example/x",
+           "headers": {"Authorization": "Bearer same"},
+           "tools": {"include": ["t"]}}
+    scope = two_profiles("a")
+    server = _server("x", cfg)
+    server._tools.append(SimpleNamespace(
+        name="t2", description="second", inputSchema={"type": "object", "properties": {}},
+        annotations=None))
+    disc._adopt_server("x", server)
+    server._registered_tool_names = reg._register_server_tools("x", server, cfg)
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+
+    expanded = {**cfg, "tools": {"include": ["t", "t2"]}}
+    assert reg._same_server_route(server, expanded)
+    assert reg.reapply_tool_filters({"x": expanded}) == 1
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t", "mcp__x__t2"]
+    assert reg.reapply_tool_filters({"x": expanded}) == 0
+    assert core._servers[(scope, "x")] is server
+
+    narrowed = {**cfg, "tools": {"include": ["t2"]}}
+    assert reg.reapply_tool_filters({"x": narrowed}) == 1
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t2"]
+    assert registry.snapshot_registration("mcp__x__t", scope=scope) is None
+    assert reg.reapply_tool_filters({"x": narrowed}) == 0
+    assert core._servers[(scope, "x")] is server
+
+
+def test_filter_reconcile_never_reuses_other_credentials(two_profiles):
+    """A filter edit must not make a differently authenticated route share tools."""
+    from tools import mcp_tool_discovery as disc, mcp_tool_registration as reg
+    from tools.registry import registry
+
+    cfg_a = {"url": "https://mcp.example/x",
+             "headers": {"Authorization": "Bearer A"},
+             "tools": {"include": ["t"]}}
+    cfg_b = {"url": "https://mcp.example/x",
+             "headers": {"Authorization": "Bearer B"},
+             "tools": {"include": ["t"]}}
+    two_profiles("a")
+    server = _server("x", cfg_a)
+    disc._adopt_server("x", server)
+    server._registered_tool_names = reg._register_server_tools("x", server, cfg_a)
+    two_profiles("b")
+    assert not reg._same_server_route(server, cfg_b)
+    assert reg.reapply_tool_filters({"x": cfg_b}) == 0
+    assert registry.get_tool_names_for_toolset("mcp-x") == []

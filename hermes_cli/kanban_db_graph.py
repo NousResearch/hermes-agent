@@ -22,6 +22,26 @@ def inherit_creator_origin(
     _inherit_notify_subs(conn, task_id, (creator_task_id,), created_at=created_at)
 
 
+def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
+    """``review`` when the newest lifecycle event carries a review
+    ``resume_status``/``retry_status``/``source_status``, else ``ready`` (legacy)."""
+    from hermes_cli.kanban_db import _json_dict, _row_get
+
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind IN ("
+        "'blocked', 'block_loop_detected', 'dependency_wait', 'gave_up', "
+        "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
+        "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
+        ") ORDER BY id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    payload = _json_dict(_row_get(row, "payload"))
+    for key in ("resume_status", "retry_status", "source_status"):
+        if payload.get(key) == "review":
+            return "review"
+    return "ready"
+
+
 def initial_task_state(
     conn: sqlite3.Connection, parents: tuple[str, ...], initial_status: str,
     triage: bool, tenant: Optional[str],

@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Huawei Cloud API And SDK'
+  short_description: 'Build correct Huawei Cloud API requests and SDK integrations.'
+  default_prompt: 'Use $huaweicloud-api-and-sdk to plan this Huawei Cloud API or SDK integration.'

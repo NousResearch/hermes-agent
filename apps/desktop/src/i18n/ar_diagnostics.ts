@@ -81,6 +81,8 @@ export const arDiagnostics = {
       noSpeechDetected: 'لم يتم اكتشاف كلام',
       playbackFailed: 'فشل تشغيل الصوت',
       recordingFailed: 'فشل التسجيل',
+      retryTranscription: 'إعادة المحاولة',
+      saveRecording: 'حفظ التسجيل',
       sayStopToEnd: phrase => `قل "${phrase}" لإنهاء المحادثة الصوتية.`,
       transcriptionFailed: 'فشل التفريغ النصي',
       transcriptionUnavailable: 'التفريغ النصي غير متاح.',

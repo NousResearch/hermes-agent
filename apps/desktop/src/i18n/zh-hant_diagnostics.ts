@@ -61,6 +61,8 @@ export const zhHantDiagnostics = {
       noSpeechDetected: '未偵測到語音',
       playbackFailed: '語音播放失敗',
       recordingFailed: '語音錄製失敗',
+      retryTranscription: '重試',
+      saveRecording: '儲存錄音',
       sayStopToEnd: phrase => `說「${phrase}」即可結束語音對話。`,
       transcriptionFailed: '語音轉寫失敗',
       transcriptionUnavailable: '語音轉寫暫不可用。',

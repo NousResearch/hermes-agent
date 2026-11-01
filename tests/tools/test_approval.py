@@ -840,6 +840,28 @@ class TestGatewayProtection:
         ):
             assert detect_dangerous_command(variant)[0] is True, variant
 
+    def test_gateway_run_backgrounded_before_next_command_detected(self):
+        """A `&` followed by another command still detaches the gateway from systemd."""
+        for cmd in (
+            'hermes gateway run >/dev/null 2>&1 & echo "gateway relaunched pid $!"',
+            "hermes gateway run & sleep 2 && curl localhost:8644/health",
+            "hermes gateway run &> /tmp/gateway.log & disown",
+            "hermes gateway run 2>&1 &",
+        ):
+            dangerous, key, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert "systemctl" in desc, cmd
+
+    def test_gateway_run_redirects_and_chaining_not_flagged(self):
+        """Redirections and `&&`/`|&` keep the gateway in the foreground."""
+        for cmd in (
+            "hermes gateway run 2>&1 | tail -5",
+            "hermes gateway run &> /tmp/gateway.log",
+            "hermes gateway run |& tee /tmp/gateway.log",
+            "hermes gateway run --help && echo ok",
+        ):
+            assert detect_dangerous_command(cmd)[0] is False, cmd
+
 
     def test_systemctl_restart_flagged(self):
         """systemctl restart kills running agents and should require approval."""
@@ -855,6 +877,25 @@ class TestGatewayProtection:
         assert dangerous is False
 
 
+class TestRedirectionOperatorsAreNotSeparators:
+    """`&>`, `>&`, `<&`, `>|` and `|&` are single shell operators; the command-start tokenizer must not
+    split them into a separator plus a stray `&`/`|`."""
+
+    def test_redirections_mark_no_command_start(self):
+        for cmd in ("a &> f", "a &>> f", "a 2>&1", "a <&3", "a >| f"):
+            assert approval_detection._mark_command_starts(cmd) == cmd, cmd
+
+    def test_pipe_with_stderr_is_one_separator(self):
+        assert approval_detection._mark_command_starts("a |& b") == "a |& \nb"
+
+    def test_escaped_redirect_char_still_separates(self):
+        """After an escaped `\\>` the `&`/`|` is a real separator, so the next word is a command."""
+        for cmd in ("echo \\>& reboot", "echo \\>| reboot"):
+            assert detect_hardline_command(cmd)[0] is True, cmd
+
+    def test_redirect_target_is_not_a_command(self):
+        for cmd in ("echo hi >| reboot", "echo hi &> reboot", "echo hi 2>&1 >| reboot"):
+            assert detect_hardline_command(cmd)[0] is False, cmd
 
 
 class TestWebhookApprovalExclusion:

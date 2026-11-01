@@ -1114,8 +1114,11 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
             # mutation goes through ledgered skill_manage; dropping the toolset
             # closes the hole by construction (no command heuristic can).
             enabled_toolsets=["skills"],
-            # Umbrella-building over hundreds of skills takes 50-100 API calls.
-            max_iterations=9999,
+            # Umbrella-building over hundreds of skills takes 50-100 API calls, so
+            # 200 leaves ample headroom while still bounding a runaway review loop.
+            # 9999 was effectively unbounded: a stuck review could burn the whole
+            # provider quota before any interrupt landed.
+            max_iterations=200,
             quiet_mode=True, platform="curator", skip_context_files=True, skip_memory=True,
         )
         # Disable recursive nudges — the curator must never spawn its own review.

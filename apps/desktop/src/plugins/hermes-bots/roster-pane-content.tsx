@@ -127,7 +127,7 @@ export function renderRosterContent({
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-slot="bots-roster">
-          <div className="grid w-full min-w-0 gap-0.5 px-1.5 pb-2">
+          <div className="grid w-full min-w-0 gap-px px-1.5 pb-2">
             {showGatewaySections
               ? [
                   sortedGroupRows.length ? renderGroupChatSection() : null,

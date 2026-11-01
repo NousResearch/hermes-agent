@@ -19,7 +19,7 @@ from tests.ci.test_desktop_release_tag_admission import _BASH, _child_env, _work
     ('v0.28.0', '', True),
     ('canary.20260818T000000Z-v0.28.0', '', False),
     ('canary.20260818T000000Z-v0.28.0', '', True),
-    ('', 'a' * 40, False),
+    ('commit.20260818T000000Z-v0.28.0', 'a' * 40, False),
 ])
 def test_bundle_only_requests_store_for_release_candidates(tmp_path, tag, commit, store):
     helper = tmp_path / 'bin'
@@ -48,7 +48,8 @@ def test_bundle_only_requests_store_for_release_candidates(tmp_path, tag, commit
     calls = [json.loads(line) for line in log.read_text(encoding='utf-8-sig').splitlines()]
     assert calls[0][:1] == ['scripts/stage-msixbundle.mjs']
     assert calls[0][calls[0].index('--variant') + 1] == 'bundled'
-    assert ('--no-upload' in calls[0]) is bool(commit)
+    # Every claim kind assembles from its claim tag; there is no tagless, upload-less mode.
+    assert calls[0][calls[0].index('--tag') + 1] == tag and '--no-upload' not in calls[0]
     assert ('--candidate' in calls[0]) is store
     assert any('scripts/bundle-store-msixbundle.mjs' in call for call in calls) is store
     assert not any('publish-appinstaller' in call for call in calls)
@@ -58,15 +59,12 @@ def test_bundle_only_requests_store_for_release_candidates(tmp_path, tag, commit
 def test_native_windows_build_selects_store_only_for_stable(tmp_path):
     jobs = _workflow()['jobs']
     legs = native_builds(jobs)
-    scripts = {
-        kind: next(step['run'] for step in jobs[legs[('win32-x64', kind)]]['steps']
-                   if step.get('name') == 'Build and package')
-        for kind in ('release', 'commit')
-    }
+    script = next(step['run'] for step in jobs[legs['win32-x64']]['steps'] if step.get('name') == 'Build and package')
+    # (payload tag, commit identity, builds the Store variant): every claim kind builds on this one leg.
     cases = [
-        ('v0.28.0', '', True, 'release'),
-        ('canary.20260818T000000Z-v0.28.0', '', False, 'release'),
-        ('', 'a' * 40, False, 'commit'),
+        ('v0.28.0', '', True),
+        ('canary.20260818T000000Z-v0.28.0', '', False),
+        ('commit.20260818T000000Z-v0.28.0', 'a' * 40, False),
     ]
     wrapper = tmp_path / 'run.ps1'
     # Substitute only the build boundary, then execute both workflow scripts
@@ -75,15 +73,14 @@ def test_native_windows_build_selects_store_only_for_stable(tmp_path):
     # of the assertion.
     body = [
         'function python { $args -join " " | Add-Content $env:CALL_LOG -Encoding UTF8; $global:LASTEXITCODE = 0 }',
-        f'$releaseBuild = {{\n{scripts["release"]}\n}}',
-        f'$commitBuild = {{\n{scripts["commit"]}\n}}',
+        f'$build = {{\n{script}\n}}',
     ]
-    for index, (tag, commit, _, kind) in enumerate(cases):
+    for index, (tag, commit, _) in enumerate(cases):
         body.extend([
             f'$env:HERMES_PAYLOAD_TAG = \'{tag}\'',
             f'$env:HERMES_BUILD_COMMIT = \'{commit}\'',
             f'$env:CALL_LOG = Join-Path $env:RUNNER_TEMP \'calls-{index}.txt\'',
-            f'& ${kind}Build',
+            '& $build',
         ])
     wrapper.write_text('\n'.join(body) + '\n', encoding='utf-8')
     powershell = shutil.which('powershell')
@@ -96,7 +93,7 @@ def test_native_windows_build_selects_store_only_for_stable(tmp_path):
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    for index, (_, _, store, _) in enumerate(cases):
+    for index, (_, _, store) in enumerate(cases):
         calls = (tmp_path / f'calls-{index}.txt').read_text(encoding='utf-8-sig')
         assert '--variant bundled' in calls
         assert ('--variant store' in calls) is store

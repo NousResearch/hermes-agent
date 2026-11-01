@@ -197,9 +197,20 @@ python scripts/release.py --build-commit REV --remote origin
 ```
 
 The command fetches the remote and resolves `REV` to a full commit SHA.
-It prints the dispatch command without changing local branches, tags, or releases.
-Add `--publish` to dispatch that build. This flag does not publish a release
-in commit-build mode.
+Without `--publish`, it prints the proposed claim tag, lanes, downloads-page URL
+and dispatch command without creating tags or releases. Add `--publish` to
+create and push an annotated `commit.<YYYYMMDDTHHMMSSZ>-v<version>` claim on that
+commit, then dispatch `stable-release.yml` from the repository's default branch.
+The version comes from `pyproject.toml` at `REV`; no GitHub release is created.
+`desktop-bundled-release.yml` is a reusable leg, not a direct dispatch entrypoint.
+
+Commit claims start from the stable default lanes minus `upgrade`, `install-e2e`
+and `windows-store`, which they cannot run. Use `--only`, `--with` and `--without`
+to select lanes; macOS Intel and Termux are opt-in. `--require-green` is the
+default; `--no-require-green` still waits for the selected suites to finish,
+but allows the downloads page if the candidate built and passed smoke tests
+even when unrelated suites fail. See the canonical
+[commit-build pipeline guide](../../website/docs/developer-guide/stable-releases.md#commit-builds).
 
 Use repeatable `--bundle-env NAME=VALUE` options to bake non-secret runtime
 defaults into the desktop app, for example:
@@ -213,8 +224,8 @@ python scripts/release.py --build-commit REV --remote fork --publish \
 
 These defaults run before Electron initializes its paths and are inherited by
 local backend processes. Explicit runtime environment values win, including
-empty values. Do not pass secrets: the values are visible in the workflow inputs
-and packaged JavaScript. This option affects desktop bundles, not Termux.
+empty values. Do not pass secrets: the defaults are recorded in the annotated
+claim and packaged JavaScript. This option affects desktop bundles, not Termux.
 The suffix is appended literally; include a leading hyphen if desired.
 `--bundle-unset NAME` explicitly clears an inherited value at app launch, even
 if the caller supplied it. Internally it sets the value to an empty string, not
@@ -231,33 +242,32 @@ string values are defaults and whose `null` values are explicit clears. For exam
 `HERMES_HOME`, `HERMES_DATA_DIR_SUFFIX`, `HERMES_DESKTOP_USER_DATA_DIR`,
 `HERMES_SHARED_AUTH_DIR`, and `HERMES_PREVIEW_FULL_CONNECTORS` are accepted. Process-control variables such as `NODE_OPTIONS` and `PATH`
 are rejected. These settings are not applied to the build runner itself.
-Commit archive keys still use the SHA, so use a fresh commit for different
-defaults: an existing artifact is never overwritten with different bytes.
 
-The workflow must exist on the repository's default branch. Admission requires
-a default-branch `workflow_dispatch` and repository write, maintain, or admin
-permission for both the original actor and the actor who reruns it.
-It rejects mixed tag, release-phase, channel-publication, and upgrade inputs.
+Each dispatched build has its own claim archive, so a new claim can build the
+same commit with different defaults without overwriting an earlier build.
+Admission binds the exact remote annotated claim and requires repository write,
+maintain, or admin permission for both the original actor and the rerunning actor.
+The claim records lanes, green policy and bundle defaults; candidate verification
+rejects defaults that differ from the claim.
 
-Builder jobs check out the admitted SHA. Their artifacts and completion receipts
-go to `releases/commit/FULL_SHA/`, separate from tag archives and update channels.
-The run summary lists Windows sideload packages and their universal bundle, macOS DMG/ZIP
-files, and the Termux package. Linux release legs remain disabled and are listed
-as not built. Only receipt-listed artifacts that exist in storage get download
-links. Missing receipts show the failed or incomplete leg.
+Builder jobs check out the admitted SHA. Artifacts and handoff receipts go to
+`releases/tag/<claim>/`, where `<claim>` is the commit claim tag. `publish-commit`
+renders only the accepted candidate's receipt-backed downloads at
+`releases/tag/<claim>/index.html` and in the run summary. The CLI prints this page
+URL before dispatch, including in dry runs. No post-build receipt tag is minted:
+the claim created before the build is its identity. Claim tags and archives are
+retained for 90 days.
 
-Each commit build also writes a downloads page to
-`releases/commit/<FULL_SHA>/index.html` on the R2 public origin; a tag run
-writes its channel page instead (`releases/stable/index.html` or
-`releases/canary/index.html`). Pages list only objects the build actually
-staged, and a re-run of an older tag never replaces a newer channel page.
-`release.py --build-commit` prints the commit page URL before dispatching.
+Claim packages use `X.Y.Z+commit.<stamp>` and a timestamp-derived Windows quad,
+while their application identity keeps `Commit<sha7>`. Stamps use
+`source: commit-build` and `updateMechanism: external`; both the GUI and bundled
+CLI refuse update requests. Recipients need a new build from the developer.
 
-Commit builds require the signing credentials used by their release legs.
-They do not produce Store packages or submit to Partner Center. No GitHub
-release, updater feed, or APT channel is changed.
-An identical upload retry can succeed. Different bytes at an existing commit
-object key fail rather than replace that object.
+Commit builds require the signing credentials used by their selected native
+legs. They do not produce Store packages or submit to Partner Center. No GitHub
+release, updater feed, APT channel or Docker tag is published; the Docker lane
+still builds and tests its image. An identical artifact upload retry can succeed,
+but different bytes at an existing immutable archive key are refused.
 
 For a local native build, check out the exact SHA and run:
 

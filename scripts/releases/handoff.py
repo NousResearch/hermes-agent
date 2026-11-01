@@ -13,10 +13,6 @@ from scripts.releases import r2
 from scripts.releases.semver import is_release_version
 
 
-class MissingReceipt(ValueError):
-    """A missing receipt is incomplete work, not a corrupt receipt."""
-
-
 def validate_identity(tag: str, commit: str, name: str) -> None:
     # Stable attempts stage and fetch under their attempt ref, so the receipt
     # identity admits rc.N-vX.Y.Z beside plain vX.Y.Z and canary.<stamp>-vX.Y.Z tags.
@@ -31,13 +27,6 @@ def validate_identity(tag: str, commit: str, name: str) -> None:
             or not re.fullmatch(r"[a-f0-9]{40}", commit or "")
             or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name or "")):
         raise ValueError("Invalid release handoff identity")
-
-
-def validate_commit_identity(commit: str, name: str) -> None:
-    """Identity for commit-only handoffs: no tag, an exact full SHA."""
-    if (not r2.is_full_sha(commit)
-            or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name or "")):
-        raise ValueError("Invalid commit handoff identity")
 
 
 def validate_receipt_files(receipt: dict) -> list[dict]:
@@ -71,16 +60,6 @@ def validate_receipt(receipt: dict, tag: str, commit: str, name: str) -> list[di
     return validate_receipt_files(receipt)
 
 
-def validate_commit_receipt(receipt: dict, commit: str, name: str) -> list[dict]:
-    """Schema-2 receipts bind the files to a commit with no tag anywhere."""
-    validate_commit_identity(commit, name)
-    if (not isinstance(receipt, dict) or receipt.get("schema") != 2
-            or receipt.get("commit") != commit or receipt.get("name") != name
-            or "tag" in receipt):
-        raise ValueError("Commit handoff identity mismatch")
-    return validate_receipt_files(receipt)
-
-
 def _select_files(root: Path, includes: list[str]) -> dict[str, Path]:
     """Shared stage selector: pattern matching, symlink/escape rejection."""
     root = root.resolve()
@@ -102,8 +81,7 @@ def _receipt_file_rows(selected: dict[str, Path]) -> list[dict]:
 
 
 def _prefix(receipt: dict) -> str:
-    return (r2.staging_key_for(receipt["tag"], "") if "tag" in receipt
-            else r2.commit_prefix_for(receipt["commit"]))
+    return r2.staging_key_for(receipt["tag"], "")
 
 
 def _stage(receipt: dict, selected: dict[str, Path]) -> dict:
@@ -129,16 +107,6 @@ def stage(tag: str, commit: str, name: str, root: Path, includes: list[str]) -> 
     return _stage(receipt, selected)
 
 
-def stage_commit_build(commit: str, name: str, root: Path, includes: list[str]) -> dict:
-    """Stage tagless artifacts. Identical retries pass; different bytes fail."""
-    validate_commit_identity(commit, name)
-    selected = _select_files(root, includes)
-    receipt = {"schema": 2, "commit": commit, "name": name,
-               "files": _receipt_file_rows(selected)}
-    validate_commit_receipt(receipt, commit, name)
-    return _stage(receipt, selected)
-
-
 def read_receipt(tag: str, commit: str, name: str, *, public_base: str | None = None) -> dict:
     validate_identity(tag, commit, name)
     key = r2.staging_key_for(tag, receipt_name(name))
@@ -154,39 +122,12 @@ def read_receipt(tag: str, commit: str, name: str, *, public_base: str | None = 
     return receipt
 
 
-def read_commit_receipt(commit: str, name: str, *, public_base: str | None = None) -> dict:
-    validate_commit_identity(commit, name)
-    key = r2.commit_key_for(commit, receipt_name(name))
-    try:
-        if public_base is not None:
-            receipt = r2.read_public_receipt(public_base, key)
-        else:
-            creds, base, bucket = r2.credentials()
-            text = r2.get_object(creds, base, bucket, key, r2.amz_timestamp())
-            if text is None:
-                raise MissingReceipt(f"Missing commit handoff: {name}")
-            receipt = json.loads(text)
-    except r2.R2RequestError as err:
-        if err.status == 404:
-            raise MissingReceipt(f"Missing commit handoff: {name}") from err
-        raise
-    validate_commit_receipt(receipt, commit, name)
-    return receipt
-
-
 def fetch(tag: str, commit: str, names: list[str], root: Path,
           includes: list[str] | None = None, *, public_base: str | None = None,
           require_files: bool = True) -> list[dict]:
     receipts = [read_receipt(tag, commit, name, public_base=public_base) for name in names]
     return _fetch_receipts(receipts, root, includes, public_base=public_base,
                            require_files=require_files)
-
-
-def fetch_commit_build(commit: str, names: list[str], root: Path,
-                       includes: list[str] | None = None, *, public_base: str | None = None) -> list[dict]:
-    """Fetch commit artifacts through the shared receipt-bound transport."""
-    receipts = [read_commit_receipt(commit, name, public_base=public_base) for name in names]
-    return _fetch_receipts(receipts, root, includes, public_base=public_base)
 
 
 def _fetch_receipts(receipts: list[dict], root: Path,
@@ -235,14 +176,8 @@ def _fetch_receipts(receipts: list[dict], root: Path,
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["stage", "fetch"])
-    parser.add_argument("--tag", default=os.environ.get("HERMES_PAYLOAD_TAG") or os.environ.get("RELEASE_TAG"), required=False)
-    # Explicit only: a commit claim's legs export HERMES_BUILD_COMMIT (its Commit<sha7> identity)
-    # beside the claim tag, and stage under the claim archive like every candidate.
-    parser.add_argument("--commit-build", default=None,
-                        help="Commit-only mode: stage/fetch under releases/commit/<sha>/ "
-                             "with schema-2 receipts (no tag; exact full SHA required)")
-    parser.add_argument("--commit", default=None,
-                        help="Artifact commit. Must equal --commit-build when both are supplied.")
+    parser.add_argument("--tag", default=os.environ.get("HERMES_PAYLOAD_TAG") or os.environ.get("RELEASE_TAG"))
+    parser.add_argument("--commit", default=None, help="The claim's exact commit")
     parser.add_argument("--name", action="append", required=True)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--include", action="append")
@@ -250,19 +185,6 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if args.public_base is not None and args.command != 'fetch':
         parser.error('--public-base is only supported for fetch')
-    if args.commit_build:
-        if args.tag:
-            parser.error("--commit-build and --tag are mutually exclusive")
-        if args.commit and args.commit != args.commit_build:
-            parser.error("--commit must equal --commit-build (they name the same commit)")
-        commit = args.commit_build
-        if args.command == "stage":
-            if len(args.name) != 1 or not args.include:
-                parser.error("stage needs one name and at least one include pattern")
-            stage_commit_build(commit, args.name[0], args.root, args.include)
-        else:
-            fetch_commit_build(commit, args.name, args.root, args.include, public_base=args.public_base)
-        return
     if args.command == "stage":
         if len(args.name) != 1 or not args.include:
             parser.error("stage needs one name and at least one include pattern")

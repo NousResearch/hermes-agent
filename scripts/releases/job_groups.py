@@ -2,9 +2,8 @@
 
 The workflow's admission step is the only place that reads the raw input; it
 emits one `<group>=true|false` output per group and every job gates on its own
-group output. Channel callers use `selects_all` where they refused
-`TERMUX_ONLY=true` before, and the stable phase result uses `phase_jobs` to
-judge only the selected groups.
+group output. The stable phase result uses `phase_jobs` to judge only the
+selected groups.
 """
 from __future__ import annotations
 
@@ -61,11 +60,6 @@ def parse_jobs(raw: str | None) -> dict[str, bool]:
             raise ValueError(f"duplicate job group: {name}")
         selected[name] = True
     return selected
-
-
-def selects_all(raw: str | None) -> bool:
-    """True only when the input selects every group."""
-    return all(parse_jobs(raw).values())
 
 
 def phase_jobs(selected: dict[str, bool], phase: str, *, skip_tests: bool = False,

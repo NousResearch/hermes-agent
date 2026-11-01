@@ -847,6 +847,63 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     ]
 
 
+def test_complete_task_persists_hermes_home_artifacts_outside_scratch_workspace(kanban_home):
+    """Declared HERMES_HOME deliverables become durable task attachments."""
+    external = kanban_home / "reports" / "summary.md"
+    external.parent.mkdir()
+    external.write_text("durable report\n", encoding="utf-8")
+
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="preserve external report")
+        ws = kbw.resolve_workspace(kb.get_task(conn, t))
+        kbw.set_workspace_path(conn, t, ws)
+
+        assert kb.complete_task(
+            conn,
+            t,
+            result="report attached",
+            metadata={"artifacts": [str(external)]},
+        )
+
+        completed = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1]
+        run = kb.latest_run(conn, t)
+        attachments = kb.list_attachments(conn, t)
+
+    persisted = Path(completed.payload["artifacts"][0])
+    assert not ws.exists(), "scratch workspace should still be cleaned up"
+    assert external.exists(), "copying must not delete the declared source"
+    assert persisted.parent == kb.task_attachments_dir(t)
+    assert persisted.read_text(encoding="utf-8") == "durable report\n"
+    assert run is not None
+    assert run.metadata["artifacts"] == [str(persisted)]
+    assert [(a.filename, a.stored_path) for a in attachments] == [
+        ("summary.md", str(persisted.resolve()))
+    ]
+    assert [e.kind for e in kb.list_events(conn, t)].count("attached") == 1
+
+
+def test_complete_task_does_not_persist_artifacts_outside_hermes_home(kanban_home, tmp_path):
+    """Paths outside the current HERMES_HOME remain metadata-only."""
+    external = tmp_path / "outside-hermes-home.txt"
+    external.write_text("do not attach\n", encoding="utf-8")
+
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="reject external artifact")
+        ws = kbw.resolve_workspace(kb.get_task(conn, t))
+        kbw.set_workspace_path(conn, t, ws)
+        assert kb.complete_task(
+            conn, t, result="done", metadata={"artifacts": [str(external)]},
+        )
+        completed = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1]
+        run = kb.latest_run(conn, t)
+        attachments = kb.list_attachments(conn, t)
+
+    assert completed.payload["artifacts"] == [str(external)]
+    assert run is not None
+    assert run.metadata["artifacts"] == [str(external)]
+    assert attachments == []
+
+
 def test_review_bound_handoff_preserves_declared_artifacts(kanban_home):
     """A review-bound card's declared files must outlive the reviewer's
     completion — that completion is what cleans the scratch workspace up."""

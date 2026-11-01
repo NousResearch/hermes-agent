@@ -1,0 +1,23 @@
+name: nvidia-skills
+title: NVIDIA Skills
+repo: https://github.com/NVIDIA/skills
+sha: e1fc9977d3ee62170ea583eb0c7bf1804fc4855f
+subdir: plugins/nvidia-skills
+version: "1.4.1"
+description: >-
+  Find the right NVIDIA skill for GPU acceleration, CUDA, AI agents, data loading, training, inference,
+  robotics, Physical AI, Omniverse, simulation, and other NVIDIA-powered workflows. Portable Agent Plugins
+  v1 package with one skill, nvidia-skill-finder; no code, tools or credentials. Disclosure: the plugin
+  makes public network calls (GitHub, build.nvidia.com, and npm for the skills CLI) and suggests install
+  commands the user approves.
+maintainer: NVIDIA
+tier: community
+category: tools
+docs_url: https://github.com/NVIDIA/skills/tree/main/plugins/nvidia-skills
+image: https://raw.githubusercontent.com/NVIDIA/skills/e1fc9977d3ee62170ea583eb0c7bf1804fc4855f/plugins/nvidia-skills/assets/banner.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

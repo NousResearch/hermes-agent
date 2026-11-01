@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Hermes Context Visor — read-only real-time context window dashboard.
+set -euo pipefail
+
+PROFILE="${HERMES_VISOR_PROFILE:-${HERMES_PROFILE:-default}}"
+PY="${HERMES_PYTHON:-$HOME/.hermes/hermes-agent/venv/bin/python3}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT="${HERMES_VISOR_SCRIPT:-$HERE/context_visor.py}"
+
+if [[ ! -x "$PY" ]]; then
+  # fall back to python3 on PATH
+  PY="$(command -v python3)"
+fi
+if [[ ! -f "$SCRIPT" ]]; then
+  echo "Visor script not found at $SCRIPT" >&2
+  exit 2
+fi
+
+for arg in "$@"; do
+  if [[ "$arg" == "--profile" || "$arg" == --profile=* ]]; then
+    exec "$PY" "$SCRIPT" "$@"
+  fi
+done
+exec "$PY" "$SCRIPT" --profile "$PROFILE" "$@"

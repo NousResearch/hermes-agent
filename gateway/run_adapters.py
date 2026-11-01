@@ -784,7 +784,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         change: retrying it re-warns forever at the backoff cap (#5196 fleet nodes). Shared by startup and
         the reconnect watcher so both classify the same platform the same way."""
         from gateway.platform_registry import platform_registry
-        from gateway.run import _BUILTIN_ADAPTERS, _platform_has_bot_credential
+        from gateway.run import _BUILTIN_ADAPTERS
+        from gateway.run_adapter_credentials import _platform_has_bot_credential
         return (
             platform not in _BUILTIN_ADAPTERS
             and not platform_registry.is_registered(platform.value)
@@ -793,7 +794,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
 
     async def _reconnect_failed_platform(self, platform, now: float) -> None:
         """One watcher pass for a queued platform: gate, attempt, and record the outcome."""
-        from gateway.run import _dispose_unused_adapter, _platform_has_bot_credential
+        from gateway.run import _dispose_unused_adapter
+        from gateway.run_adapter_credentials import _platform_has_bot_credential
         info = self._failed_platforms.get(platform)
         # None: removed concurrently since the caller's snapshot. Paused needs /platform resume.
         if info is None or info.get("paused"):
@@ -1245,7 +1247,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         self, profile_name: str, profile_home: Path, claimed: dict[tuple, str]
     ) -> int:
         """Create+connect one profile's adapters under its runtime scope."""
-        from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
+        from gateway.run import _profile_runtime_scope
+        from gateway.run_adapter_credentials import _platform_has_bot_credential
         profile_cfg = await self._load_secondary_profile_config(profile_name, profile_home)
         # Keep the served profile's config: host-wide passes (planned-restart notices) must reach
         # every served profile's home channels, and this is the only place it is loaded.

@@ -110,7 +110,7 @@ class TestLoadGatewayConfigForRunner:
 
 class TestPlatformHasBotCredential:
     def test_telegram_empty_token_false(self):
-        from gateway.run import _platform_has_bot_credential
+        from gateway.run_adapter_credentials import _platform_has_bot_credential
 
         assert _platform_has_bot_credential(
             Platform.TELEGRAM, PlatformConfig(enabled=True, token="")
@@ -128,7 +128,7 @@ class TestPlatformHasBotCredential:
         transient failure, so a momentary DNS blip took Matrix down until
         the gateway was restarted by hand.
         """
-        from gateway.run import _platform_has_bot_credential
+        from gateway.run_adapter_credentials import _platform_has_bot_credential
 
         cfg = PlatformConfig(enabled=True)
         cfg.extra = {
@@ -163,7 +163,7 @@ class TestPlatformHasBotCredential:
         environment, so without these explicit setenv calls this test would
         pass against an env-reading implementation and guard nothing.
         """
-        from gateway.run import _platform_has_bot_credential
+        from gateway.run_adapter_credentials import _platform_has_bot_credential
 
         monkeypatch.setenv("MATRIX_HOMESERVER", "https://env.example.org")
         monkeypatch.setenv("MATRIX_USER_ID", "@envbot:env.example.org")
@@ -172,6 +172,55 @@ class TestPlatformHasBotCredential:
         cfg = PlatformConfig(enabled=True)
         cfg.extra = dict(extra)
         assert _platform_has_bot_credential(Platform.MATRIX, cfg) is False
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {},
+            {"peer_routing_fallback_chat": "oc_shared", "send_failure_dead_letter_chat": "oc_dl"},
+            {"app_secret": "secret-only", "domain": "feishu"},
+        ],
+        ids=["empty", "shared-routing-settings-only", "secret-without-app-id"],
+    )
+    def test_feishu_apps_only_multiplex_config_is_not_credentialed(self, extra, monkeypatch):
+        """An apps-only multiplex Feishu config has no primary credential — #64674 must skip it.
+
+        The production shape: every Feishu app lives in the platform block's
+        ``apps:`` list bound to a profile; the platform-level block carries only
+        shared settings, so the default-profile view has no ``app_id``. Feishu
+        is absent from PLATFORM_TOKEN_ENV_NAMES, so without a Feishu branch the
+        generic token-platform check reports "credentialed" and the primary
+        adapter creation is attempted on every startup and reconnect pass,
+        failing validation each time ("config validation failed" -> "adapter
+        creation failed") — pure noise, but every few minutes.
+
+        FEISHU_APP_ID/FEISHU_APP_SECRET are set in the environment on purpose:
+        the credential lives in extra, never in os.environ (same contract as
+        the Matrix tests above).
+        """
+        from gateway.run_adapter_credentials import _platform_has_bot_credential
+
+        monkeypatch.setenv("FEISHU_APP_ID", "cli_env-app")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "env-secret")
+
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra = dict(extra)
+        assert _platform_has_bot_credential(Platform.FEISHU, cfg) is False
+
+    def test_feishu_platform_level_app_id_is_a_credential(self):
+        """A root-level Feishu app (single-app deployment) keeps starting the primary."""
+        from gateway.run_adapter_credentials import _platform_has_bot_credential
+
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra = {"app_id": "cli_aad581a890fa1ce0", "app_secret": "s"}
+        assert _platform_has_bot_credential(Platform.FEISHU, cfg) is True
+
+    def test_feishu_blank_app_id_is_not_a_credential(self):
+        from gateway.run_adapter_credentials import _platform_has_bot_credential
+
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra = {"app_id": "  ", "app_secret": "s"}
+        assert _platform_has_bot_credential(Platform.FEISHU, cfg) is False
 
 
 class TestPrimaryStartupSkipsEmptyTokenUnderMultiplex:
@@ -214,7 +263,7 @@ class TestPrimaryStartupSkipsEmptyTokenUnderMultiplex:
         # stand-in by invoking the real loop logic via a partial start is
         # heavy. Instead assert the skip helper path by simulating the
         # condition the start() loop uses.
-        from gateway.run import _platform_has_bot_credential
+        from gateway.run_adapter_credentials import _platform_has_bot_credential
 
         skipped = []
         for platform, platform_config in cfg.platforms.items():
@@ -331,7 +380,8 @@ class TestPrimaryMessageRuntimeScope:
 class TestReconnectDropsEmptyToken:
     @pytest.mark.asyncio
     async def test_empty_token_removed_from_queue(self):
-        from gateway.run import GatewayRunner, _platform_has_bot_credential
+        from gateway.run import GatewayRunner
+        from gateway.run_adapter_credentials import _platform_has_bot_credential
         from gateway.config import Platform, PlatformConfig
 
         # Unit-level: the branch condition the watcher uses.

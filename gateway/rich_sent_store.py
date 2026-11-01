@@ -20,6 +20,8 @@ from typing import Optional
 from utils import atomic_json_write
 
 _MAX_ENTRIES = 1000
+# Keep one noisy chat from consuming the entire cross-chat quote index.
+_MAX_ENTRIES_PER_CHAT = 200
 _MAX_TEXT_CHARS = 2000
 # ``atomic_json_write`` makes each WRITE atomic, not the load/merge/save triple.
 # ``record_async`` runs ``_update`` on worker threads, so two concurrent callers
@@ -54,6 +56,15 @@ def _update(chat_id, message_id, fields: dict) -> None:
             entry = data.get(key)
             entry = entry if isinstance(entry, dict) else {}
             data[key] = {**entry, **fields, "ts": int(time.time())}
+            chat_prefix = f"{chat_id}:"
+            chat_entries = [
+                (k, value) for k, value in data.items() if k.startswith(chat_prefix)
+            ]
+            if len(chat_entries) > _MAX_ENTRIES_PER_CHAT:
+                for k, _ in sorted(chat_entries, key=lambda kv: kv[1].get("ts", 0))[
+                    : len(chat_entries) - _MAX_ENTRIES_PER_CHAT
+                ]:
+                    data.pop(k, None)
             if len(data) > _MAX_ENTRIES:  # trim oldest by timestamp
                 for k, _ in sorted(data.items(), key=lambda kv: kv[1].get("ts", 0))[: len(data) - _MAX_ENTRIES]:
                     data.pop(k, None)

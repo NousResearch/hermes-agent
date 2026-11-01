@@ -38,8 +38,9 @@ _MAX_RESPONSE_BYTES = 512 * 1024
 _DEFAULT_CLIENT_TIMEOUT = 2.0
 # What a filesystem that cannot host an AF_UNIX node answers: a Docker Desktop (virtiofs) bind mount
 # refuses the socket, and an inode a previous container left there can be neither stat'ed nor
-# removed from inside (#123761). Not EADDRINUSE: a live sibling must keep failing loudly.
-_SOCKET_UNSUPPORTED_ERRNOS = frozenset({errno.EOPNOTSUPP, errno.ENOTSUP})
+# removed from inside (#123761); an sshfs mount (colima) answers bind() with EPERM (#144696).
+# Not EADDRINUSE: a live sibling must keep failing loudly.
+_SOCKET_UNSUPPORTED_ERRNOS = frozenset({errno.EOPNOTSUPP, errno.ENOTSUP, errno.EPERM})
 
 
 def _home_hash(home: Path) -> str:

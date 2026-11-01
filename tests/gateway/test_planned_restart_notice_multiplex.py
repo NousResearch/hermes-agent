@@ -6,6 +6,7 @@ profile's chat never heard that its gateway had restarted. The marker must also 
 every served profile was reached, or the missed channels are lost for good.
 """
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -14,6 +15,7 @@ import pytest
 
 import gateway.delivery as gateway_delivery
 import gateway.run as gateway_run
+import gateway.run_restart_notifications as notices
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import SendResult
 
@@ -95,8 +97,8 @@ async def test_marker_survives_until_a_served_profile_is_reachable(multiplex_run
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["success", "failure"])
-async def test_private_home_notices_reach_both_bots(multiplex_runner, outcome):
+@pytest.mark.parametrize("outcome", ["success", "known-unsent", "ambiguous"])
+async def test_private_home_notices_reach_both_bots(multiplex_runner, monkeypatch, outcome):
     """Equal positive Telegram chat ids under two bots are two conversations, not one shared chat.
 
     A Telegram private chat id names the USER, so the launch bot and a served profile's bot with
@@ -109,20 +111,41 @@ async def test_private_home_notices_reach_both_bots(multiplex_runner, outcome):
     runner.adapters = {Platform.TELEGRAM: launch}
     runner._profile_configs = {"coder": _home_config(Platform.TELEGRAM, "8776018003")}
     runner._profile_adapters = {"coder": {Platform.TELEGRAM: coder}}
-    if outcome == "failure":
-        coder.send.return_value = SendResult(success=False, error="temporary failure")
+    if outcome != "success":
+        coder.send.return_value = SendResult(
+            success=False, error="temporary failure", retryable=True,
+            known_unsent=outcome == "known-unsent", retry_after=60)
+        clock = [asyncio.get_running_loop().time()]
+
+        async def advance(delay):
+            clock[0] += delay
+            await asyncio.sleep(0)
+
+        class AsyncioProxy:
+            def __getattr__(self, name):
+                if name == "get_running_loop":
+                    return lambda: SimpleNamespace(time=lambda: clock[0])
+                return advance if name == "sleep" else getattr(asyncio, name)
+
+        monkeypatch.setattr(notices, "asyncio", AsyncioProxy())
+        monkeypatch.setattr(notices, "_RESTART_NOTICE_TIMEOUT", 2.0)
 
     await runner._replay_pending_planned_restart_notification()
 
     launch.send.assert_awaited_once()
     coder.send.assert_awaited_once()
-    if outcome == "failure":
-        assert marker.exists(), "the second bot's conversation is still owed its notice"
+    if outcome == "known-unsent":
+        assert marker.exists(), "the explicitly unsent second-bot notice is still owed"
         recorded = json.loads(marker.read_text(encoding="utf-8"))["delivered_targets"]
         assert ["telegram", "8776018003", None] in recorded
         assert ["coder:telegram", "8776018003", None] not in recorded
         coder.send.reset_mock()
         coder.send.return_value = SendResult(success=True, message_id="recovered")
+        await runner._replay_pending_planned_restart_notification()
+        coder.send.assert_awaited_once()
+        launch.send.assert_awaited_once()
+    elif outcome == "ambiguous":
+        # Replayability is not delivery certainty: never duplicate an accepted-but-unacknowledged send.
         await runner._replay_pending_planned_restart_notification()
         coder.send.assert_awaited_once()
         launch.send.assert_awaited_once()

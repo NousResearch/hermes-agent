@@ -15,7 +15,7 @@ import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { sessionBackgroundResume } from '@/store/background-delegation'
-import { sessionCompacting } from '@/store/compaction'
+import { sessionCompacting, sessionCompactionProgress } from '@/store/compaction'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { sessionAwaitingInput } from '@/store/prompts'
 import { parseModelLoadWait, sessionProviderWait } from '@/store/provider-wait'
@@ -48,9 +48,6 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
     {children}
   </div>
 )
-
-// Fixed label while auto-compaction runs — decoupled from backend status text.
-const COMPACTION_LABEL = 'Summarizing thread'
 
 const HintText: FC<{ children: ReactNode }> = ({ children }) => (
   <span className={cn(SCAFFOLD_LABEL_CLASS, 'shimmer min-w-0 flex-1 truncate')}>{children}</span>
@@ -169,6 +166,7 @@ function useThreadSessionStatus() {
   const busy = useStore(view.$busy)
   const turnStartedAt = useStore(view.$turnStartedAt)
   const compacting = useStore(useMemo(() => sessionCompacting(sessionId), [sessionId]))
+  const compaction = useStore(useMemo(() => sessionCompactionProgress(sessionId), [sessionId]))
   const drafting = useStore(useMemo(() => sessionDraftingTool(sessionId), [sessionId]))
   const providerWait = useStore(useMemo(() => sessionProviderWait(sessionId), [sessionId]))
   // A pending clarify / approval / sudo / secret means the turn is paused on the
@@ -180,6 +178,7 @@ function useThreadSessionStatus() {
     awaitingInput,
     busy,
     compacting,
+    compaction,
     drafting,
     providerWait,
     // Epoch ms this surface's turn began, or undefined between turns. The
@@ -196,9 +195,18 @@ const DRAFTING_REVEAL_MS = 200
 
 /**
  * What to call the wait, if it deserves a name. Compaction outranks a draft —
- * it's rarer, slower, and explains a transcript that looks like it reset.
+ * it's rarer, slower, and explains a transcript that looks like it reset. The
+ * gateway streams live progress text on the compaction status (`compressing
+ * 42 messages (~120,000 tok)…`); when a frame carries one it wins over the
+ * static label, so a multi-minute compress reads as progress, not a hang.
  */
-function useStatusHint(compacting: boolean, drafting: DraftingTool | null, providerWait: string): string {
+function useStatusHint(
+  compacting: boolean,
+  compactionText: string | undefined,
+  drafting: DraftingTool | null,
+  providerWait: string
+): string {
+  const { t } = useI18n()
   const [revealed, setRevealed] = useState(false)
   const name = drafting?.name ?? ''
 
@@ -215,7 +223,7 @@ function useStatusHint(compacting: boolean, drafting: DraftingTool | null, provi
   }, [name])
 
   if (compacting) {
-    return COMPACTION_LABEL
+    return compactionText || t.assistant.thread.compacting
   }
 
   if (providerWait) {
@@ -248,9 +256,9 @@ export const CenteredThreadSpinner: FC = () => {
 
 export const ResponseLoadingIndicator: FC = () => {
   const { t } = useI18n()
-  const { compacting, drafting, providerWait, turnStartedAt } = useThreadSessionStatus()
+  const { compacting, compaction, drafting, providerWait, turnStartedAt } = useThreadSessionStatus()
   const elapsed = useElapsedSeconds(true, undefined, turnStartedAt)
-  const hint = useStatusHint(compacting, drafting, providerWait)
+  const hint = useStatusHint(compacting, compaction?.text, drafting, providerWait)
   // Renderer-synthesized load bar: covers loads the backend's wait loop
   // can't narrate (gateway still initializing, or an auxiliary call — not
   // the main request — triggered the autoload). A real wait frame wins.
@@ -292,6 +300,46 @@ export const BackgroundResumeNotice: FC = () => {
     <StatusRow className="pl-(--message-text-indent)" data-slot="aui_background-resume" label={label}>
       <Codicon name="sync" size="0.875rem" />
       <span className={cn(SCAFFOLD_LABEL_CLASS, 'min-w-0 truncate')}>{label}</span>
+    </StatusRow>
+  )
+}
+
+// A manual /compress runs with no live turn, so every row above — all gated on
+// `working` — stays silent: the only trace was a corner toast, while the
+// composer looked sendable and the gateway held new messages until the compress
+// landed. This row claims the transcript for that whole phase. Mid-turn
+// auto-compaction is already narrated by the tail activity row, so this one
+// defers to it while the session is busy.
+export const CompactingStatusRow: FC = () => {
+  const { t } = useI18n()
+  const view = useSessionView()
+  const sessionId = useStore(view.$runtimeId)
+  const busy = useStore(view.$busy)
+  const compacting = useStore(useMemo(() => sessionCompacting(sessionId), [sessionId]))
+  const compaction = useStore(useMemo(() => sessionCompactionProgress(sessionId), [sessionId]))
+  // A running tail already wears the compaction hint on its own loading row —
+  // a second thread-level row would double-narrate (#68634 pins one row).
+  const running = useAuiState(s => s.thread.isRunning)
+  const active = !busy && !running && compacting
+  // Timed from the compaction's own start, not the last turn: a standalone
+  // compress follows no turn, and its whole length is the wait.
+  const elapsed = useElapsedSeconds(active, undefined, compaction?.since)
+
+  if (!active) {
+    return null
+  }
+
+  const label = compaction?.text || t.assistant.thread.compacting
+
+  return (
+    <StatusRow className="pl-(--message-text-indent)" data-slot="aui_compacting" label={label}>
+      <StatusPulse
+        aria-hidden="true"
+        className="dither inline-block size-3 rounded-[2px] text-midground/80"
+        kind="opacity"
+      />
+      <HintText>{label}</HintText>
+      <ActivityTimerText aria-hidden={true} seconds={elapsed} />
     </StatusRow>
   )
 }
@@ -376,8 +424,8 @@ export const TurnActivityIndicator: FC<{ thinking?: boolean }> = ({ thinking = f
   // timer read "quiet for 12s" rather than the age of this component, which is
   // the whole turn so far.
   const [quietSince, setQuietSince] = useState<number | undefined>(undefined)
-  const { awaitingInput, busy, compacting, drafting, providerWait, turnStartedAt } = useThreadSessionStatus()
-  const hint = useStatusHint(compacting, drafting, providerWait)
+  const { awaitingInput, busy, compacting, compaction, drafting, providerWait, turnStartedAt } = useThreadSessionStatus()
+  const hint = useStatusHint(compacting, compaction?.text, drafting, providerWait)
 
   // A tool run at the tail already narrates the wait — its summary counts the
   // calls, its ticker names the current one, and it carries its own timer. A

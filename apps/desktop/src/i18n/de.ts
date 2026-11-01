@@ -3745,6 +3745,7 @@ export const deOverrides = {
     startVoice: 'Sprachkonversation starten',
     openDirective: 'Öffnen',
     queueMessage: 'Nachricht einreihen',
+    compactingNotice: 'Kontext wird komprimiert — gesendete Nachrichten werden eingereiht',
     steer: 'Laufenden Lauf steuern',
     redirect: 'Laufenden Lauf umleiten',
     stop: 'Stopp',
@@ -4831,6 +4832,7 @@ export const deOverrides = {
       loadingSession: 'Session wird geladen',
       showEarlier: 'Frühere Nachrichten anzeigen',
       loadingResponse: 'Hermes lädt eine Antwort',
+      compacting: 'Kontext wird komprimiert',
       loadingLocalModel: model => `${model} wird in den Speicher geladen`,
       processingPrompt: 'Verarbeite Prompt',
       resumeWhenBackgroundDone: count =>

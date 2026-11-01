@@ -3202,6 +3202,7 @@ export const zhOverrides = {
     startVoice: '开始语音对话',
     openDirective: '打开',
     queueMessage: '排队消息',
+    compactingNotice: '正在压缩上下文 — 发送的消息将排队',
     steer: '引导当前运行',
     redirect: '重新定向当前运行',
     stop: '停止',
@@ -4247,6 +4248,7 @@ export const zhOverrides = {
       loadingSession: '正在加载会话',
       showEarlier: '显示更早的消息',
       loadingResponse: 'Hermes 正在加载回复',
+      compacting: '正在压缩对话上下文',
       loadingLocalModel: model => `正在将 ${model} 载入内存`,
       processingPrompt: '正在处理提示词',
       resumeWhenBackgroundDone: count =>

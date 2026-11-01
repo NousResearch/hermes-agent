@@ -2282,6 +2282,7 @@ export const jaOverrides = {
     startVoice: '音声会話を開始',
     openDirective: '開く',
     queueMessage: 'メッセージをキューに入れる',
+    compactingNotice: 'コンテキストを圧縮中 — 送信されたメッセージはキューに入ります',
     redirect: '現在の実行をリダイレクト',
     stop: '停止',
     send: '送信',
@@ -3266,6 +3267,7 @@ export const jaOverrides = {
       loadingSession: 'セッションを読み込み中',
       showEarlier: '以前のメッセージを表示',
       loadingResponse: 'Hermes が応答を読み込み中',
+      compacting: 'スレッドを要約中',
       resumeWhenBackgroundDone: count =>
         count === 1
           ? 'バックグラウンドタスクの完了後に再開します'

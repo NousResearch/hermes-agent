@@ -117,7 +117,10 @@ The adapter supports native SimpleX attachments in both directions:
 
 Agent replies can also embed `MEDIA:/path/to/file` tags in plain text —
 the adapter strips the tag from the body and sends the file as either a
-voice note (audio extensions) or a document.
+voice note (audio extensions) or a document. Tags go through the same
+`MEDIA:` delivery check as every other platform: a credential store
+(`.env`, `auth.json`, token directories) or a path refused by strict mode is
+never uploaded, and a tag inside a code block stays text.
 
 ## Using SimpleX with cron jobs
 

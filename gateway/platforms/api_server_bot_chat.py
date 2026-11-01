@@ -14,7 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import uuid
 
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ async def create_peer_bot_chat(adapter, body):
             code='bot_chat_parameters_unsupported')
     from gateway.session_bot import _create_bot_chat
     from gateway.session_runtime_workers import track_mutation
-    actor = Principal(_PEER_SUBJECT, authority.profile_id,
+    actor = SessionActor(_PEER_SUBJECT, authority.profile_id,
                       frozenset({'session:create', 'session:read', 'session:submit'}), 'api-peer-dm')
     try:
         authority._require_admission_open()
@@ -141,12 +141,12 @@ async def admit_peer_turn(runner, session_id, message, author):
     if displaceable_bot_chat(authority, authority.db.get_session_by_title('Bot Chat') or tip) is not None:
         # The title is held by an API conversation no FIFO can own (#140769, MSG-21): the owner
         # moves it aside and mints the local Bot Chat for the peer, as ``create_peer_bot_chat`` does.
-        actor = Principal(_PEER_SUBJECT, authority.profile_id,
+        actor = SessionActor(_PEER_SUBJECT, authority.profile_id,
                           frozenset({'session:create', 'session:read', 'session:submit'}), 'api-peer-dm')
     else:
         # The API key already authenticated the peer; the turn enters the chat as its owner's own
         # input, the way owner recovery re-admits queued deliveries (``recover_bot_deliveries``).
-        actor = Principal(tip['user_id'], authority.profile_id,
+        actor = SessionActor(tip['user_id'], authority.profile_id,
                           frozenset({'session:submit', 'session:read'}), 'api-peer-dm')
     key = uuid.uuid4().hex
     params = dict(id=key, profile=served_profile_name(home), message=message)

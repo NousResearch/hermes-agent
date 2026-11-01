@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 from hermes_state import SessionDB
 from hermes_state_local_migration import validate_legacy_row
 from hermes_state_mutation_binding import authorize_history, same_history_owner
@@ -30,7 +30,7 @@ def test_rows_the_resume_adopts_take_sidebar_edits(tmp_path):
                                      ('old-desktop-foreign', 'desktop', 'telegram:42'),
                                      ('old-cli-nous', 'cli', 'nous:account'), ('api-row', 'api_server', None)):
             db.create_session(sid, source=source, user_id=user_id)
-        actor = Principal('uid:1', str(tmp_path), frozenset({'session:read', 'session:create'}), 'native-http:x')
+        actor = SessionActor('uid:1', str(tmp_path), frozenset({'session:read', 'session:create'}), 'native-http:x')
         with db._read_ctx() as conn:
             for sid in ('old-desktop', 'old-oneshot', 'old-desktop-nous'):
                 validate_legacy_row(db, db.get_session(sid))  # the resume adopts it ...
@@ -58,9 +58,9 @@ def test_a_login_labelled_desktop_row_belongs_to_that_login_only(tmp_path):
         db.create_session('alice-row', source='desktop', user_id='basic:alice')
         db.create_session('oidc-row', source='desktop', user_id='oidc:alice')
         caps = frozenset({'session:read', 'session:create'})
-        alice, bob = (Principal(_login(u), str(tmp_path), caps, 'native-http:x') for u in ('alice', 'bob'))
-        issuer_alice = Principal(_login('alice', 'https://idp.example'), str(tmp_path), caps, 'native-http:x')
-        host = Principal('uid:1', str(tmp_path), caps, 'native-http:x')
+        alice, bob = (SessionActor(_login(u), str(tmp_path), caps, 'native-http:x') for u in ('alice', 'bob'))
+        issuer_alice = SessionActor(_login('alice', 'https://idp.example'), str(tmp_path), caps, 'native-http:x')
+        host = SessionActor('uid:1', str(tmp_path), caps, 'native-http:x')
         row = db.get_session('alice-row')
         validate_legacy_row(db, row, subject=alice.subject)
         for stranger in (bob, issuer_alice, host):
@@ -101,7 +101,7 @@ def test_a_served_login_controls_its_own_stamped_chat_over_http(tmp_path):
         db.create_session('alice-other-profile', source='desktop', user_id='basic:alice', profile_name='other')
         authority = SimpleNamespace(profile_id=str(tmp_path), db=db, sessions={})
         caps = frozenset({'session:read', 'session:create', 'session:control'})
-        alice, bob, host = (Principal(subject, str(tmp_path), caps, 'http')
+        alice, bob, host = (SessionActor(subject, str(tmp_path), caps, 'http')
                             for subject in (_login('alice'), _login('bob'), 'uid:1'))
 
         def control(actor, sid):
@@ -131,7 +131,7 @@ async def test_editing_ones_own_branch_leaves_another_logins_parent_alone(tmp_pa
     from tui_gateway.methods_session import _persist_branch
 
     caps = frozenset({'session:read', 'session:control', 'session:create', 'session:operator'})
-    alice = Principal(_login('alice'), 'p', caps, 'http')
+    alice = SessionActor(_login('alice'), 'p', caps, 'http')
 
     async def edit(sid, rid, payload):
         params = {'session_id': sid, 'request_id': rid, 'payload': payload,
@@ -176,7 +176,7 @@ async def test_renaming_ones_own_branch_leaves_another_logins_parent_title_alone
     from tui_gateway.methods_session import _persist_branch
 
     caps = frozenset({'session:read', 'session:control', 'session:create', 'session:operator'})
-    alice = Principal(_login('alice'), 'p', caps, 'http')
+    alice = SessionActor(_login('alice'), 'p', caps, 'http')
     with SessionDB(db_path=tmp_path / 'state.db') as db:
         authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='p', instance_id='owner',
                                      db=db, epoch=begin_runtime_epoch(db, instance_id='owner'))

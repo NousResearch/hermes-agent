@@ -38,7 +38,7 @@ def _hosted(hosted_owner, tmp_path, monkeypatch):
 def _cron(hosted_owner, tmp_path, monkeypatch):
     from gateway import session_cron
     from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from hermes_state import SessionDB
     from hermes_state_runtime import admit_session_input, begin_runtime_epoch
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -48,7 +48,7 @@ def _cron(hosted_owner, tmp_path, monkeypatch):
                                  epoch=begin_runtime_epoch(db, instance_id='t'))
     authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='cron-owner'), 'route')
     authority._schedule = lambda ref: None
-    actor = Principal('cron-owner', 'p', frozenset({'session:create', 'session:submit', 'session:control'}), 'ticker')
+    actor = SessionActor('cron-owner', 'p', frozenset({'session:create', 'session:submit', 'session:control'}), 'ticker')
     with db:
         row = admit_session_input(db, epoch=authority.epoch, principal_id='cron-owner', session_id='s',
                                   request_id='cron:job:fire', payload={'text': ''})

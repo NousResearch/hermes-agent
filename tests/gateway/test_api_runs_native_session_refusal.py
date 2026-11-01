@@ -19,7 +19,7 @@ async def probe():
     from gateway.platforms.api_server import APIServerAdapter
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
 
     runner = GatewayRunner()
@@ -30,7 +30,7 @@ async def probe():
     runner.adapters[Platform.API_SERVER] = adapter
     assert await adapter.connect()
     port = adapter._site._server.sockets[0].getsockname()[1]
-    actor = Principal('uid:test', 'default', frozenset({'session:create', 'session:read', 'session:submit', 'session:control'}), 'socket')
+    actor = SessionActor('uid:test', 'default', frozenset({'session:create', 'session:read', 'session:submit', 'session:control'}), 'socket')
     native = create_local_session(authority, actor, {'request_id': 'native', 'source': 'cli', 'toolsets': []}).session_id
     headers = {'Authorization': 'Bearer runs-probe-owned-secret', 'Idempotency-Key': 'native-run'}
     body = {'session_id': native, 'input': 'RUN_ON_NATIVE'}

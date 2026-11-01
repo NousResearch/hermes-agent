@@ -720,6 +720,47 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
         assert len(kb.list_runs(conn, t)) == 0
 
 
+def test_delete_task_refuses_while_children_gated(kanban_home):
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="gating", initial_status="blocked")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        with pytest.raises(kb.TaskHasChildrenError) as exc:
+            kb.delete_task(conn, parent)
+        assert exc.value.child_ids == [child]
+        # Refusal touches nothing: the row, the link and the gated status survive.
+        assert kb.get_task(conn, parent) is not None
+        assert kb.get_task(conn, child).status == "todo"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_links WHERE parent_id = ?", (parent,)
+        ).fetchone()[0] == 1
+
+
+def test_delete_task_allows_once_children_promoted(kanban_home):
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="gating", initial_status="blocked")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        # The documented way forward: archive first — the child promotes with an
+        # audit trail, and the now-unblocked parent may be hard-deleted.
+        assert kb.archive_task(conn, parent)
+        assert kb.get_task(conn, child).status == "ready"
+        assert kb.delete_task(conn, parent) is True
+        assert kb.get_task(conn, child).status == "ready"
+
+
+def test_delete_archived_task_stamps_parent_deleted_audit_row(kanban_home):
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="gating", initial_status="blocked")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        # Archive without the recompute pass, so the child is still gated when
+        # the archived parent is purged (e.g. a sticky-blocked child).
+        conn.execute("UPDATE tasks SET status = 'archived' WHERE id = ?", (parent,))
+        conn.commit()
+        assert kb.delete_archived_task(conn, parent) is True
+        stamps = [e for e in kb.list_events(conn, child) if e.kind == "parent_deleted"]
+        assert len(stamps) == 1
+        assert stamps[0].payload == {"deleted_parent_id": parent}
+
+
 
 
 # ---------------------------------------------------------------------------

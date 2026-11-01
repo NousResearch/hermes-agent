@@ -512,9 +512,10 @@ def _run_plugin_command(handler, arg: str, session=None, sid: str = "") -> str:
                "session_id": getattr(session.get("agent"), "session_id", None) or key if session else ""}
     # ctx.ask_choice: the ``clarify`` server request this backend's clarify tool sends.
     choices = _tools_mod("hermes_cli.plugin_choices")
+    reply_text = _tools_mod("gateway.plugin_card_actions").plugin_reply_text  # a CardReply shows its text
     try:
         with choices.bind_asker(choices.clarify_asker(lambda questions: _clarify_block(sid, questions))):
-            return str(plugins.resolve_plugin_command_result(invoke(handler, arg, **context)) or "")
+            return reply_text(plugins.resolve_plugin_command_result(invoke(handler, arg, **context))) or ""
     finally:
         _clear_session_context(tokens)
 

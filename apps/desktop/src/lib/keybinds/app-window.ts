@@ -30,11 +30,7 @@ function isChromium(): boolean {
 const canWatch = () => typeof window !== 'undefined' && typeof window.matchMedia === 'function'
 
 export function inChromiumAppWindow(): boolean {
-  return (
-    canWatch() &&
-    isChromium() &&
-    APP_WINDOW_QUERIES.some(query => window.matchMedia(query).matches)
-  )
+  return canWatch() && isChromium() && APP_WINDOW_QUERIES.some(query => window.matchMedia(query).matches)
 }
 
 /** Runs `listener` whenever the window's display mode changes. */

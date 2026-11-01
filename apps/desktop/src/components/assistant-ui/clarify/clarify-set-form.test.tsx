@@ -41,8 +41,16 @@ function renderSet(questions = QUESTIONS) {
   const args = { questions: questions.map(({ choices, question }) => ({ choices, question })) }
 
   const props: ToolCallMessagePartProps = {
-    addResult: vi.fn(), args, argsText: JSON.stringify(args), isError: false, respondToApproval: vi.fn(),
-    result: undefined, resume: vi.fn(), status: { type: 'running' }, toolCallId: 'clarify-set', toolName: 'clarify',
+    addResult: vi.fn(),
+    args,
+    argsText: JSON.stringify(args),
+    isError: false,
+    respondToApproval: vi.fn(),
+    result: undefined,
+    resume: vi.fn(),
+    status: { type: 'running' },
+    toolCallId: 'clarify-set',
+    toolName: 'clarify',
     type: 'tool-call'
   }
 
@@ -62,7 +70,9 @@ describe('a multi-question clarify set is one form', () => {
   it('shows every question at once with one submit', () => {
     renderSet()
 
-    for (const { question } of QUESTIONS) { expect(screen.getByText(question)).toBeTruthy() }
+    for (const { question } of QUESTIONS) {
+      expect(screen.getByText(question)).toBeTruthy()
+    }
 
     expect(screen.getAllByRole('button', { name: /Confirm and continue/ })).toHaveLength(1)
   })
@@ -84,7 +94,11 @@ describe('a multi-question clarify set is one form', () => {
     fireEvent.change(screen.getByPlaceholderText(/Type your answer/), { target: { value: 'after 5pm' } })
     fireEvent.keyDown(screen.getByPlaceholderText(/Type your answer/), { key: 'Enter', ctrlKey: true })
     await waitFor(() => expect(locks(request)).toHaveLength(3))
-    expect(locks(request)).toEqual([['q0', 'staging'], ['q1', 'us'], ['q2', 'after 5pm']])
+    expect(locks(request)).toEqual([
+      ['q0', 'staging'],
+      ['q1', 'us'],
+      ['q2', 'after 5pm']
+    ])
   })
 
   it('plain Enter on the last question does not send the set while earlier questions are open', async () => {
@@ -98,7 +112,11 @@ describe('a multi-question clarify set is one form', () => {
     fireEvent.keyDown(window, { key: 'Enter' })
     fireEvent.keyDown(screen.getByRole('button', { name: /later/ }), { key: 'Enter', ctrlKey: true })
     await waitFor(() => expect(locks(request)).toHaveLength(3))
-    expect(locks(request)).toEqual([['q0', 'staging'], ['q1', null], ['q2', 'later']])
+    expect(locks(request)).toEqual([
+      ['q0', 'staging'],
+      ['q1', null],
+      ['q2', 'later']
+    ])
   })
 
   // An empty multi-select ("pick any") is a valid answer, so it never holds plain Enter back:
@@ -135,7 +153,12 @@ describe('a multi-question clarify set is one form', () => {
         }
 
         await waitFor(() => expect(locks(request)).toHaveLength(4))
-        expect(locks(request)).toEqual([['q0', 'staging'], ['q1', null], ['q2', 'after 5pm'], ['q3', 'later']])
+        expect(locks(request)).toEqual([
+          ['q0', 'staging'],
+          ['q1', null],
+          ['q2', 'after 5pm'],
+          ['q3', 'later']
+        ])
       })
     }
   }

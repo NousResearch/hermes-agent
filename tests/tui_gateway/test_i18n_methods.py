@@ -75,3 +75,94 @@ def test_catalog_answers_for_the_requested_profile_home(tmp_path, monkeypatch, c
 
     assert _call(server, "i18n.catalog", {"lang": "de", "profile": "named"})["result"]["messages"] == {"approval.denied": "Nur named"}
     assert _call(server, "i18n.catalog", {"lang": "de"})["result"]["messages"] == {}
+
+
+def test_cold_gateway_serves_an_installed_pack_before_any_agent_exists(tmp_path, monkeypatch, clean_layers):
+    """The Desktop asks for ``i18n.languages`` / ``i18n.catalog`` right after connecting, before anything
+    in the gateway has discovered plugins. An installed, enabled pack must already be in both answers."""
+    from tui_gateway import server
+    from hermes_cli import plugins as plugins_mod
+
+    home = tmp_path / "home"
+    plugin = home / "plugins" / "hermes-lang-ko"
+    (plugin / "locales").mkdir(parents=True)
+    empty_bundled = tmp_path / "bundled"
+    empty_bundled.mkdir()
+    (plugin / "plugin.yaml").write_text(yaml.safe_dump({
+        "name": "hermes-lang-ko", "version": "1.0.0", "description": "Korean pack",
+        "provides_locales": [{"id": "ko", "endonym": "한국어"}]}, allow_unicode=True), encoding="utf-8")
+    (plugin / "locales" / "ko.yaml").write_text("{}\n", encoding="utf-8")
+    (plugin / "locales" / "ko.desktop.yaml").write_text(
+        yaml.safe_dump({"settings": {"appearance": {"modelPricingTitle": "모델 가격"}}}, allow_unicode=True),
+        encoding="utf-8")
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": ["hermes-lang-ko"]}}), encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(server, "_hermes_home", home)
+    monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: empty_bundled)
+    i18n.reset_language_cache()
+    manager = plugins_mod.get_plugin_manager()
+    assert "ko" not in i18n_layers.pack_languages()  # nothing has loaded plugins in this home yet
+    try:
+        ko = next(row for row in _call(server, "i18n.languages", {})["result"]["languages"] if row["id"] == "ko")
+        assert ko["source"] == "plugin:hermes-lang-ko"
+        desktop = _call(server, "i18n.catalog", {"lang": "ko", "surface": "desktop"})["result"]
+        assert desktop["messages"] == {"settings.appearance.modelPricingTitle": "모델 가격"}
+    finally:
+        manager.unload()
+
+
+def test_failed_plugin_discovery_still_answers_with_bundled_languages(tmp_path, monkeypatch, clean_layers):
+    from tui_gateway import server
+    from hermes_cli import plugins as plugins_mod
+
+    def boom(force=False):
+        raise RuntimeError("plugin loader broke")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr(plugins_mod, "discover_plugins", boom)
+    i18n.reset_language_cache()
+
+    languages = _call(server, "i18n.languages", {})["result"]["languages"]
+    assert {"id": "ko", "endonym": "한국어", "rtl": False, "source": "bundled"} in languages
+    assert _call(server, "i18n.catalog", {"lang": "ko", "surface": "desktop"})["result"]["messages"] == {}
+
+
+@pytest.mark.parametrize("method", ["i18n.languages", "i18n.catalog"])
+def test_slow_plugin_discovery_does_not_hold_up_other_requests(method, tmp_path, monkeypatch, clean_layers):
+    """Cold discovery loads every enabled plugin, so it runs on the RPC pool: the reader keeps serving."""
+    import queue
+    import threading
+
+    from hermes_cli import plugins as plugins_mod
+    from tui_gateway import server
+
+    class Transport:
+        def __init__(self):
+            self.frames = queue.Queue()
+
+        def write(self, frame):
+            self.frames.put(frame)
+            return True
+
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_discovery(force=False):
+        entered.set()
+        assert release.wait(10)
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr(plugins_mod, "discover_plugins", slow_discovery)
+    transport = Transport()
+    try:
+        params = {"lang": "ko", "surface": "desktop"} if method == "i18n.catalog" else {}
+        assert server.dispatch({"jsonrpc": "2.0", "id": "slow", "method": method, "params": params}, transport) is None
+        assert entered.wait(10)
+        pong = server.dispatch({"jsonrpc": "2.0", "id": "ping", "method": "ping", "params": {}}, transport)
+        assert pong["id"] == "ping" and "result" in pong
+    finally:
+        release.set()
+    reply = transport.frames.get(timeout=10)
+    assert reply["id"] == "slow" and "result" in reply

@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 from hermes_cli.doctor_platform import _system_package_install_cmd
-from hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check
+from hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check, warn_on_error
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import is_termux as _is_termux
 from tools.environments.docker import docker_runtime_name, docker_runtime_start_hint, find_docker
@@ -510,3 +510,58 @@ def _warn_partially_stripped_toolsets(f: Finding) -> None:
     for ts, (tools, by, hint) in toolsets_partially_stripped(config, _get_platform_tools(config, "cli")).items():
         check_warn(f"{ts} (partly disabled)", f"({', '.join(tools)} removed by agent.disabled_toolsets: {', '.join(by)})")
         f.issues.append(f"{ts}: {hint[0].upper()}{hint[1:]} {', '.join(tools)}")
+
+
+# Reclaimable PM-store bytes this large earn a warning; below it the footprint is noise
+# (a few fetch-<sha> caches from the last install are normal turnover).
+_PM_STORE_RECLAIM_WARN_BYTES = 256 << 20
+
+# Orphan install states are never noise: each carries a full venv + PM runtime (~200 MB up).
+_PM_STORE_ORPHANS_WARN = 1
+
+
+@doctor_check()
+def _check_pm_store_reclaim(should_fix: bool, f: Finding) -> None:
+    """Read-only PM-store footprint: what `hermes pm gc --dry-run` would reclaim.
+
+    The store sweep and orphan-install-state reclaim run only on a manual `pm gc` or a
+    worktree prune, so debris otherwise accumulates silently (one host carried 402 orphan
+    install states, 80 GB); doctor is where that shows, mirroring unpruned_cache_hogs."""
+    with warn_on_error("PM store", "(could not check: {e})"):
+        from hermes_cli.sizefmt import format_bytes
+        from pm.cli import _gc_store_plan
+        from pm.environments import installs_root
+        from pm.filesystem import native
+        from pm.install import _facts, _store
+        from pm.install_states import orphan_install_states
+        from pm.lock import Facts
+        from pm.paths import writable_store_root
+        from pm.store import Store
+
+        store = Store(writable_store_root())
+        if not store.root.is_dir():
+            check_info("PM store not initialized yet (nothing reclaimable)")
+            return
+        # native(): the ordinary spelling for text — store.root is the \\?\-spelled root.
+        display_root = native(store.root)
+        facts = _facts() if store.root == _store().root else Facts(store.root / "facts.json")
+        plan = _gc_store_plan(store, facts, lock_wait=False)
+        if plan is None:
+            check_info("PM store is busy (another PM operation holds it); skipping the footprint check")
+            return
+        candidates, kept = plan
+        entries = [item for kind in ("store_entries", "staging", "set_aside") for item in candidates[kind]]
+        reclaimable = sum(item["bytes"] for item in entries) + sum(item["bytes"] for item in candidates["partials"])
+        orphans = orphan_install_states(installs_root())
+        if not entries and not candidates["partials"] and not orphans:
+            check_ok(f"PM store ({display_root}): clean ({kept} referenced store entries, nothing reclaimable)")
+            return
+        detail = (f"{len(entries)} store dir(s), {len(candidates['partials'])} expired partial(s), "
+                  f"{format_bytes(reclaimable)} total")
+        if orphans:
+            detail += f"; {len(orphans)} install state dir(s) of deleted checkouts"
+        if reclaimable >= _PM_STORE_RECLAIM_WARN_BYTES or len(orphans) >= _PM_STORE_ORPHANS_WARN:
+            check_warn(f"PM store ({display_root}) holds reclaimable debris ({detail}) — "
+                       "run 'hermes pm gc --dry-run' for the itemized list, 'hermes pm gc' to reclaim")
+        else:
+            check_ok(f"PM store ({display_root}): minor turnover ({detail}) — 'hermes pm gc' reclaims it")

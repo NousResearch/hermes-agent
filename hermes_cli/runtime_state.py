@@ -179,8 +179,11 @@ def lease_directory(generation: Path) -> Callable[[], None]:
     return release
 
 
-def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> list[Path]:
-    """Remove unselected lease-managed generations after their readers exit."""
+def collect_generations(project: Path, *, min_age_seconds: float = 86400,
+                        dry_run: bool = False) -> list[Path]:
+    """Remove unselected lease-managed generations after their readers exit.
+
+    With ``dry_run`` the candidates are returned without removal."""
     from pm.environments import selected_venv
     removed = []
     root = install_state_dir(project)
@@ -201,7 +204,8 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
             if not marker.is_file() or time.time() - marker.stat().st_mtime < min_age_seconds:
                 continue
             if not leases_held(generation):
-                shutil.rmtree(generation)
+                if not dry_run:
+                    shutil.rmtree(generation)
                 removed.append(generation)
     return removed
 

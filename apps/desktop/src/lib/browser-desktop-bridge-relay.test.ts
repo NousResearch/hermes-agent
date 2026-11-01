@@ -4,6 +4,7 @@ import { $connection, workspaceCwdForNewSession } from '@/store/session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { migrateBrowserProfilePrefs } from './browser-profile-prefs'
+import { RELAYED_ROSTER_TIMEOUT_MS } from './browser-relay'
 
 type RelayWindow = Window & {
   __HERMES_AUTH_REQUIRED__?: boolean
@@ -19,8 +20,11 @@ const MINI = { added_at: 1, id: 'mini', label: 'Mini', scopes: ['files'], url: '
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' }, status })
 
-/** The serving gateway at /hermes, relaying to Mini; answers by path and records every request. */
-function servingGateway() {
+/**
+ * The serving gateway at /hermes, relaying to Mini; answers by path and records every request. A
+ * stalled Mini takes the request and never answers it.
+ */
+function servingGateway({ miniStalled = false } = {}) {
   const requests: { method: string; path: string; search: string }[] = []
 
   const fetchMock = vi.fn(async (url: URL, init?: RequestInit) => {
@@ -41,6 +45,12 @@ function servingGateway() {
     }
 
     if (path === '/hermes/api/relay/mini/api/profiles') {
+      if (miniStalled) {
+        return new Promise<Response>((_resolve, reject) =>
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+        )
+      }
+
       return json({ profiles: [{ name: 'default' }, { name: 'research' }] })
     }
 
@@ -88,6 +98,7 @@ afterEach(() => {
   document.documentElement.removeAttribute('data-hermes-desktop-host')
   window.localStorage.clear()
   $connection.set(null)
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -234,6 +245,23 @@ describe('a Webapp whose gateway relays to others', () => {
     expect(roster.sources.map(source => [source.connectionId, source.reachable])).toEqual([
       ['local', true],
       ['mini', true]
+    ])
+  })
+
+  it('lists a relayed gateway that never answers as unreachable without holding the roster', async () => {
+    servingGateway({ miniStalled: true })
+    vi.useFakeTimers()
+    let settled = false
+    const pending = install().getAgentRoster!().finally(() => (settled = true))
+
+    await vi.advanceTimersByTimeAsync(RELAYED_ROSTER_TIMEOUT_MS)
+    expect(settled).toBe(true)
+
+    const roster = await pending
+    expect(roster.agents.map(agent => [agent.connectionId, agent.profile])).toEqual([['local', 'default']])
+    expect(roster.sources.map(source => [source.connectionId, source.reachable])).toEqual([
+      ['local', true],
+      ['mini', false]
     ])
   })
 

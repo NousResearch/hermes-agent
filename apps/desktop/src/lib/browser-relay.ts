@@ -76,6 +76,12 @@ export interface BrowserRelays {
   bridge: NonNullable<Window['hermesDesktop']['gatewayRelay']>
 }
 
+/**
+ * How long the roster waits for a relayed gateway's profiles before listing it unreachable. One that
+ * takes the connection and never answers would otherwise hold the switcher for a whole request timeout.
+ */
+export const RELAYED_ROSTER_TIMEOUT_MS = 8_000
+
 export function createBrowserRelays({ api, bootstrap }: { api: Api; bootstrap: BrowserBootstrap }): BrowserRelays {
   let cached: RelayGateway[] = []
   const listeners = new Set<ChangeListener>()
@@ -155,7 +161,8 @@ export function createBrowserRelays({ api, bootstrap }: { api: Api; bootstrap: B
     const row = gateway(connectionId)
 
     const result = await browserApi<{ profiles?: { name?: string }[] }>(bootstrapFor(connectionId), {
-      path: '/api/profiles'
+      path: '/api/profiles',
+      timeoutMs: RELAYED_ROSTER_TIMEOUT_MS
     })
 
     const names = [

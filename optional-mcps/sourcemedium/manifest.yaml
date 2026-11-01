@@ -1,0 +1,41 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: sourcemedium
+description: >-
+  Analyze maintained ecommerce data from SourceMedium using read-only
+  warehouse, Shopify, Meta Ads, catalog, health, and documentation tools.
+source: https://sourcemedium.com/docs/ai-analyst/connect-an-ai-assistant
+
+# Official SourceMedium-hosted remote MCP. Hermes runs no local code.
+transport:
+  type: http
+  url: https://mcp.sourcemedium.com/mcp
+
+# SourceMedium supports native MCP OAuth 2.1 and Dynamic Client Registration.
+# Hermes handles discovery, PKCE, authorization, token exchange, and refresh.
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - sourcemedium
+    - source medium
+  hosts:
+    - sourcemedium.com
+
+post_install: |
+  On first connection, Hermes opens a browser to authorize SourceMedium.
+
+  You can start or repeat authorization with:
+
+    hermes mcp login sourcemedium
+
+  After authorization, restart the Hermes session so the SourceMedium
+  tools are loaded.
+
+  You can review or change the enabled tools with:
+
+    hermes mcp configure sourcemedium

@@ -189,8 +189,11 @@ def review_terminal_response(agent, final_response, turn_exit_reason, failed, in
                              turn_id, user_message):
     """Review a recovery answer (iteration-limit summary or partial answer) before any durable write, then
     drop held rows. Recovery answers have no repair budget. Returns ``(final_response, turn_exit_reason,
-    failed, interrupted)``."""
-    if (final_response and not interrupted and getattr(agent, "_turn_end_failure", None) is None
+    failed, interrupted)``. A ``pre_llm_call`` veto has no model answer, so the policy never sees its
+    block message or the vetoed prompt."""
+    from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON
+    if (final_response and not interrupted and turn_exit_reason != PRE_LLM_BLOCK_EXIT_REASON
+            and getattr(agent, "_turn_end_failure", None) is None
             and defers_text_delivery() and not getattr(agent, "_tool_guardrail_halt_decision", None)
             and getattr(agent, "_turn_end_checked", None) != (turn_id, final_response)):
         final_response = prepare_response(agent, final_response)

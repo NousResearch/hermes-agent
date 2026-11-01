@@ -140,3 +140,31 @@ def test_local_search_runs_the_pinned_ripgrep_not_the_first_on_path(_local_env, 
                         lambda name: InstalledPackage(pinned.parent, "15", pinned) if name == "ripgrep" else None)
     ops = ShellFileOperations(_local_env, cwd=str(tmp_path))
     assert ops._resolve_command("rg") == str(pinned).replace("\\", "/")
+
+
+def test_bounded_kill_survives_rg_exiting_before_the_group_lookup(tree, ops_factory, monkeypatch):
+    """#125461: rg reached the line bound and exited before the kill; macOS getpgid() on the
+    unreaped zombie raises ESRCH, which escaped as "[Errno 3] No such process". Lookups fail
+    from the kill on, so the kill must use the group recorded at spawn."""
+    import os
+    import tools.environments.local as local
+
+    ops = ops_factory(tree, [])
+    real_getpgid, real_kill = os.getpgid, local._kill_process_group_posix
+    exited = []
+
+    def zombie_getpgid(pid):
+        if exited:
+            raise ProcessLookupError(3, "No such process")
+        return real_getpgid(pid)
+
+    def kill_after_exit(proc):
+        exited.append(proc.pid)
+        real_kill(proc)
+
+    monkeypatch.setattr(os, "getpgid", zombie_getpgid)
+    monkeypatch.setattr(local, "_kill_process_group_posix", kill_after_exit)
+    result = ops._run_rg_native(["yes", "hit"], 5, timeout=10)
+    assert exited
+    assert result.exit_code == 0
+    assert result.stdout.splitlines()[:5] == ["hit"] * 5

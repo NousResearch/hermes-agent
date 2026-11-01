@@ -1073,6 +1073,9 @@ export const esOverrides = {
       toursDesc:
         'Deja que Hermes resalte cada paso mientras te guía por la app. Se desactiva automáticamente tras tus primeros 30 días; puedes volver a activarlo.',
       composerPopoutTitle: 'Compositor flotante',
+      focusFollowsMouseTitle: 'El foco sigue al ratón',
+      focusFollowsMouseDesc:
+        'Al pasar por otro chat, cambian el foco de entrada y el espacio de trabajo de archivos. Si está desactivado, cambia con un clic o con el teclado. Se aplica a los campos de entrada anclados y flotantes.',
       composerPopoutDesc:
         'Permite arrastrar el compositor fuera de su posición fija. Si está desactivado, permanece anclado abajo.',
       fileBrowserTitle: 'Explorador de archivos',

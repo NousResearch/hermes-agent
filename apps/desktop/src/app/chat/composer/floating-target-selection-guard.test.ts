@@ -79,14 +79,14 @@ describe('floating composer focus-follow vs transcript selection', () => {
     expect(focusin).toHaveBeenCalledTimes(1)
   })
 
-  it('still focuses the composer on pointermove when nothing is selected outside it', () => {
+  it('does not focus the composer merely because the pointer moves over it', () => {
     const { editor } = mount()
     unregister = registerFloatingComposer('surface-1', { groupId: 'g1', target: 'main' })
 
     expect(window.getSelection()!.rangeCount).toBe(0)
     movePointerOver(editor)
 
-    expect(document.activeElement).toBe(editor)
+    expect(document.activeElement).not.toBe(editor)
   })
 
   it.each(['touch', 'pen'])('keeps %s transcript gestures from focusing the composer', pointerType => {
@@ -96,7 +96,9 @@ describe('floating composer focus-follow vs transcript selection', () => {
     unregister = registerFloatingComposer('surface-1', { groupId: 'g1', target: 'main' })
 
     button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType, clientX: 12, clientY: 20 }))
-    button.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType, buttons: 0, clientX: 13, clientY: 21 }))
+    button.dispatchEvent(
+      new PointerEvent('pointermove', { bubbles: true, pointerType, buttons: 0, clientX: 13, clientY: 21 })
+    )
     button.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType }))
     expect(document.activeElement).not.toBe(editor)
 

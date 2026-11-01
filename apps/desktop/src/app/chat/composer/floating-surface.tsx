@@ -46,7 +46,9 @@ export function FloatingComposerSurface({ children }: ComposerSurfaceProps) {
       return undefined
     }
 
-    return registerFloatingComposer(id, { groupId, target })
+    const paneId = surface.closest<HTMLElement>('[data-pane-host]')?.dataset.paneHost
+
+    return registerFloatingComposer(id, { groupId, target, paneId })
     // Re-register when Fast Refresh replaces the module-local recipient registry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId, id, paneVisible, registerFloatingComposer, target])

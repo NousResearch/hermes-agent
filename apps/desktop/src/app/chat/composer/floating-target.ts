@@ -1,21 +1,35 @@
 import { flushSync } from 'react-dom'
 
-import { $activeTreeGroup, $hoveredTreeGroup, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+import { onPaneFocusRequest } from '@/components/pane-shell/pane-focus'
+import {
+  $activeTreeGroup,
+  $hoveredTreeGroup,
+  isPaneVisible,
+  noteActiveTreeGroup
+} from '@/components/pane-shell/tree/store'
 import { isEditableTarget, OVERLAY_SURFACE } from '@/lib/keybinds/combo'
 import { isTouchInteraction } from '@/lib/touch-interaction'
 import { $composerPopout } from '@/store/composer-popout'
+import { $focusFollowsMouse } from '@/store/focus-follows-mouse'
 
 import { $floatingComposerOwner, type FloatingComposerOwner } from './floating-state'
-import { EDIT_COMPOSER_ROOT, focusComposerInput, markActiveComposer } from './focus'
+import { EDIT_COMPOSER_ROOT, markActiveComposer } from './focus'
 import { placeCaretEnd } from './rich-editor'
 
 const surfaces = new Map<string, Omit<FloatingComposerOwner, 'id'>>()
 const captureOwners = new Set<string>()
 const carets = new WeakMap<HTMLElement, Range>()
-let pointer: { x: number; y: number } | null = null
 let pointerDownTarget: Element | null = null
 let keyboardNavigation = false
 let reconcileQueued = false
+let pendingPaneFocus: string | null = null
+let stopPaneFocus: (() => void) | undefined
+let pointer: { x: number; y: number } | null = null
+let composing: Element | null = null
+
+function trackComposition(event: CompositionEvent) {
+  composing = event.type === 'compositionstart' && event.target instanceof Element ? event.target : null
+}
 
 /** The inline message edit lives in the transcript, outside every composer
  * host, and takes focus programmatically when a bubble is clicked. That focus
@@ -35,8 +49,8 @@ const inNativeMediaControls = (el: Element | null) => Boolean(el?.closest('audio
  * — the clarify answer box, the transcript find bar, a dialog field — is their
  * own focus, exactly like the inline edit: moving the pointer must not hand the
  * caret back to the pane composer, and a refused redirect must leave that
- * element's focusin visible to React. Composer editors are excluded, so
- * hover-switching between panes keeps behaving as before (#114245). */
+ * element's focusin visible to React. Composer editors are excluded so stale
+ * focus callbacks cannot override an explicitly selected pane. */
 const keepsOwnFocus = (el: Element | null) =>
   inNativeMediaControls(el) ||
   inInlineEdit(el) ||
@@ -61,7 +75,13 @@ function rememberCaret(editor: EventTarget | null) {
   }
 }
 
-const trackBlur = (event: FocusEvent) => rememberCaret(event.target)
+const trackBlur = (event: FocusEvent) => {
+  rememberCaret(event.target)
+
+  if (event.target instanceof Node && composing?.contains(event.target)) {
+    composing = null
+  }
+}
 
 const releasePointer = () => {
   pointerDownTarget = null
@@ -82,9 +102,7 @@ function selectionOutsideComposer(): boolean {
   return !anchorEl?.closest('[data-slot="composer-rich-input"]')
 }
 
-/** Every focus-follow branch (pointermove and focusin) funnels here, so the
- * selection and floating-layer guards live at this chokepoint rather than at
- * one call site. */
+/** Focus recovery preserves selections and controls that own their focus. */
 function focusSelectedComposer() {
   const owner = $floatingComposerOwner.get()
 
@@ -99,7 +117,9 @@ function focusSelectedComposer() {
   const editor = host?.querySelector<HTMLElement>('[data-slot="composer-rich-input"]')
 
   if (editor && document.activeElement !== editor) {
-    focusComposerInput(editor)
+    // Selection is already committed. Do not queue retries that could steal
+    // the native focus a clicked control or inline editor is about to take.
+    editor.focus({ preventScroll: true })
     const caret = carets.get(editor)
     const selection = window.getSelection()
 
@@ -121,7 +141,19 @@ function selectSurface(id: string) {
   }
 
   if ($floatingComposerOwner.get()?.id !== id) {
-    rememberCaret(document.activeElement)
+    const active = document.activeElement
+    rememberCaret(active)
+
+    // A preserve-focus control can cancel native blur. Do not leave another
+    // visible composer accepting characters for the newly selected recipient.
+    if (
+      active instanceof HTMLElement &&
+      active.dataset.slot === 'composer-rich-input' &&
+      active.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner !== id
+    ) {
+      active.blur()
+    }
+
     $floatingComposerOwner.set({ id, ...surface })
   }
 
@@ -146,55 +178,115 @@ function surfaceAt(target: Element): string | undefined {
   return [...surfaces].find(([, surface]) => surface.groupId === groupId)?.[0]
 }
 
-function trackPointer(event: PointerEvent) {
+function trackPointerDown(event: PointerEvent) {
   const target = event.target instanceof Element ? event.target : null
+  pointerDownTarget = target
+  keyboardNavigation = false
+  pendingPaneFocus = null
 
-  if (event.type === 'pointerdown') {
-    pointerDownTarget = target
-    keyboardNavigation = false
-  } else {
-    if (pointer?.x === event.clientX && pointer.y === event.clientY) {
-      return
-    }
-
-    pointer = { x: event.clientX, y: event.clientY }
-    pointerDownTarget = null
-    keyboardNavigation = false
-  }
-
-  if (!target || (event.type === 'pointermove' && event.buttons !== 0)) {
+  if (!target) {
     return
   }
 
   const id = surfaceAt(target)
 
+  if (id && $floatingComposerOwner.get()?.id !== id) {
+    // Select before native focus and the next keystroke. Passing through a
+    // different chat on the way to Files must not change the recipient.
+    flushSync(() => selectSurface(id))
+    // Let the clicked control take its native focus first. A control that
+    // deliberately prevented that default instead leaves typing with this chat.
+    queueMicrotask(() => {
+      if ($floatingComposerOwner.get()?.id === id && document.activeElement === document.body) {
+        focusSelectedComposer()
+      }
+    })
+  }
+}
+
+function trackPointerMove(event: PointerEvent) {
+  if (pointer?.x === event.clientX && pointer.y === event.clientY) {
+    return
+  }
+
+  pointer = { x: event.clientX, y: event.clientY }
+
+  if (
+    !$focusFollowsMouse.get() ||
+    event.buttons !== 0 ||
+    (event.pointerType && event.pointerType !== 'mouse') ||
+    isTouchInteraction(event) ||
+    composing?.contains(document.activeElement) ||
+    selectionOutsideComposer() ||
+    keepsOwnFocus(document.activeElement) ||
+    inFloatingLayer(document.activeElement) ||
+    document.activeElement?.matches(
+      'button, a[href], select, [role="button"], [tabindex]:not([data-slot="composer-rich-input"])'
+    )
+  ) {
+    return
+  }
+
+  const target = event.target instanceof Element ? event.target : null
+  const id = target && surfaceAt(target)
+
   if (!id) {
     return
   }
 
-  // Commit the recipient and expose its existing editor before the very next
-  // key event. Pointerover can fire on layout changes with a stationary mouse;
-  // only actual movement or a click is user intent.
-  const changed = $floatingComposerOwner.get()?.id !== id
+  pointerDownTarget = null
+  keyboardNavigation = false
+  pendingPaneFocus = null
 
-  if (changed) {
+  if ($floatingComposerOwner.get()?.id !== id) {
     flushSync(() => selectSurface(id))
   }
 
-  const active = document.activeElement
-
-  const alreadyTyping =
-    active instanceof HTMLElement &&
-    active.dataset.slot === 'composer-rich-input' &&
-    active.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner === id
-
-  if (event.type === 'pointermove' && !isTouchInteraction(event) && !alreadyTyping && !keepsOwnFocus(active)) {
+  if ($floatingComposerOwner.get()?.id === id) {
     focusSelectedComposer()
   }
 }
 
+function fulfillPaneFocus() {
+  const paneId = pendingPaneFocus
+
+  if (!paneId || !isPaneVisible(paneId)) {
+    pendingPaneFocus = null
+
+    return
+  }
+
+  const id = [...surfaces].find(([, surface]) => surface.paneId === paneId)?.[0]
+
+  if (id) {
+    pendingPaneFocus = null
+    flushSync(() => selectSurface(id))
+
+    if ($floatingComposerOwner.get()?.id === id) {
+      noteActiveTreeGroup(surfaces.get(id)!.groupId)
+      focusSelectedComposer()
+    }
+  }
+}
+
 function trackKey(event: KeyboardEvent) {
+  // Match the editor's recovery when an IME abort omits compositionend.
+  if (
+    event.type === 'keydown' &&
+    !event.isComposing &&
+    event.target instanceof Node &&
+    composing?.contains(event.target)
+  ) {
+    composing = null
+  }
+
   keyboardNavigation = event.type === 'keydown' && event.key === 'Tab' && !event.ctrlKey && !event.metaKey
+
+  if (keyboardNavigation) {
+    // Tab is a newer explicit choice, including a control in the same owner
+    // or outside chat surfaces. A resumed pane must not reclaim that focus.
+    pendingPaneFocus = null
+  }
 }
 
 function trackFocus(event: FocusEvent) {
@@ -219,7 +311,12 @@ function trackFocus(event: FocusEvent) {
   // A delayed focus/restore isn't a navigation gesture. A clicked control,
   // keyboard Tab, or the inline edit opened by a bubble click still keeps its
   // normal focus, without redirecting to the input.
-  if (isTouchInteraction() || keyboardNavigation || keepsOwnFocus(target) || (pointerDownTarget && target.contains(pointerDownTarget))) {
+  if (
+    isTouchInteraction() ||
+    keyboardNavigation ||
+    keepsOwnFocus(target) ||
+    (pointerDownTarget && target.contains(pointerDownTarget))
+  ) {
     flushSync(() => selectSurface(id))
   } else {
     // A refused redirect leaves focus where it landed: that element's focusin
@@ -258,17 +355,27 @@ export function registerFloatingComposer(id: string, surface: Omit<FloatingCompo
   surfaces.set(id, surface)
 
   if (surfaces.size === 1) {
-    window.addEventListener('pointermove', trackPointer, true)
-    window.addEventListener('pointerdown', trackPointer, true)
+    stopPaneFocus = onPaneFocusRequest(paneId => {
+      pendingPaneFocus = paneId
+      queueMicrotask(fulfillPaneFocus)
+    })
+    window.addEventListener('pointerdown', trackPointerDown, true)
+    window.addEventListener('pointermove', trackPointerMove, true)
     window.addEventListener('focusin', trackFocus, true)
     window.addEventListener('focusout', trackBlur, true)
     window.addEventListener('pointerup', releasePointer, true)
     window.addEventListener('keydown', trackKey, true)
     window.addEventListener('keyup', trackKey, true)
+    window.addEventListener('compositionstart', trackComposition, true)
+    window.addEventListener('compositionend', trackComposition, true)
   }
 
   if (!$floatingComposerOwner.get() || $floatingComposerOwner.get()?.groupId === surface.groupId) {
     selectSurface(id)
+  }
+
+  if (pendingPaneFocus) {
+    queueMicrotask(fulfillPaneFocus)
   }
 
   return () => {
@@ -283,16 +390,21 @@ export function registerFloatingComposer(id: string, surface: Omit<FloatingCompo
     }
 
     if (surfaces.size === 0) {
-      window.removeEventListener('pointermove', trackPointer, true)
-      window.removeEventListener('pointerdown', trackPointer, true)
+      stopPaneFocus?.()
+      stopPaneFocus = undefined
+      window.removeEventListener('pointerdown', trackPointerDown, true)
+      window.removeEventListener('pointermove', trackPointerMove, true)
       window.removeEventListener('focusin', trackFocus, true)
       window.removeEventListener('focusout', trackBlur, true)
       window.removeEventListener('pointerup', releasePointer, true)
       window.removeEventListener('keydown', trackKey, true)
       window.removeEventListener('keyup', trackKey, true)
-      pointer = null
+      window.removeEventListener('compositionstart', trackComposition, true)
+      window.removeEventListener('compositionend', trackComposition, true)
       pointerDownTarget = null
       keyboardNavigation = false
+      pointer = null
+      composing = null
     }
   }
 }

@@ -1071,6 +1071,9 @@ export const deOverrides = {
       toursDesc:
         'Lassen Sie sich von Hermes durch die App führen – der Bildschirm wird abgedunkelt und jeder Schritt hervorgehoben.',
       composerPopoutTitle: 'Schwebender Composer',
+      focusFollowsMouseTitle: 'Fokus folgt der Maus',
+      focusFollowsMouseDesc:
+        'Beim Bewegen über einen anderen Chat wechseln Eingabefokus und Datei-Arbeitsbereich. Wenn deaktiviert, wechseln Sie per Klick oder Tastatur. Gilt für angedockte und schwebende Eingabefelder.',
       composerPopoutDesc:
         'Erlaubt, den Composer aus seiner Ablage herauszuziehen. Wenn aus, bleibt er unten angedockt.',
       fileBrowserTitle: 'Dateibrowser',

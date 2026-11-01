@@ -526,6 +526,64 @@ describe('selectConnection', () => {
     }
   })
 
+  it('does not spend the activation timeout while waiting for the serialized commit turn', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const mutex = deferred<void>()
+
+      setConnectionsRegistry(registry)
+      $connection.set({ connectionId: 'local', mode: 'local' })
+      $activeSessionId.set('a93bb39d')
+      $showAllProfiles.set(true)
+      ensureGatewayAgent.mockImplementationOnce(async (connectionId, profile, options) => {
+        await mutex.promise
+
+        if (options?.beforeActivate && !options.beforeActivate()) {
+          return
+        }
+
+        $connection.set({
+          connectionId: connectionId ?? undefined,
+          mode: 'remote',
+          profile,
+          registryScoped: true
+        })
+      })
+
+      let outcome = 'pending'
+
+      const attempt = selectConnection('homelab').then(
+        () => {
+          outcome = 'resolved'
+        },
+        (error: Error) => {
+          outcome = error.message
+        }
+      )
+
+      await vi.advanceTimersByTimeAsync(SOURCE_SWITCH_DIAL_TIMEOUT_MS)
+      expect(outcome).toBe('pending')
+      expect($pendingConnectionId.get()).toBe('homelab')
+      expect($activeSessionId.get()).toBe('a93bb39d')
+      expect($showAllProfiles.get()).toBe(true)
+      expect(requestFreshSession).not.toHaveBeenCalled()
+      expect(exitProjectScope).not.toHaveBeenCalled()
+
+      mutex.resolve()
+      await attempt
+
+      expect(outcome).toBe('resolved')
+      expect($connection.get()?.connectionId).toBe('homelab')
+      expect($activeSessionId.get()).toBeNull()
+      expect($showAllProfiles.get()).toBe(false)
+      expect(requestFreshSession).toHaveBeenCalledTimes(1)
+      expect(exitProjectScope).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('a dial that never answers times out visibly, cannot publish later, and the gateway can be retried', async () => {
     vi.useFakeTimers()
 
@@ -535,6 +593,11 @@ describe('selectConnection', () => {
       setConnectionsRegistry(registry)
       $connection.set({ connectionId: 'local', mode: 'local' })
       ensureGatewayAgent.mockImplementationOnce(async (connectionId, _profile, options) => {
+        // The turn is already granted. Only the commit itself is on the clock.
+        if (options?.beforeActivate && !options.beforeActivate()) {
+          return
+        }
+
         await activation.promise
 
         // Mirrors the real door: ownership is checked right before publishing.

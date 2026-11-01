@@ -333,7 +333,9 @@ def _validate_python_files_syntax(
     import tempfile
 
     root = Path(root)
-    with tempfile.TemporaryDirectory(prefix="hermes-syntax-check-") as tmpdir:
+    with tempfile.TemporaryDirectory(
+        prefix="hermes-syntax-check-", ignore_cleanup_errors=True
+    ) as tmpdir:
         for relpath in relpaths:
             path = root / relpath
             if not path.exists():

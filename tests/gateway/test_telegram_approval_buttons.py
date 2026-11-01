@@ -238,6 +238,34 @@ class TestTelegramApprovalCallback:
 
 
     @pytest.mark.asyncio
+    async def test_approval_callback_resolves_only_its_own_request(self):
+        adapter = _make_adapter()
+        adapter._approval_state[7] = "agent:main:telegram:group:12345:99"
+        adapter._approval_request_ids[7] = "req-abc"
+
+        query = AsyncMock()
+        query.data = "ea:once:7"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Norbert"
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+                await adapter._handle_callback_query(update, context)
+
+        mock_resolve.assert_called_once_with(
+            "agent:main:telegram:group:12345:99", "once", request_id="req-abc")
+        assert 7 not in adapter._approval_request_ids
+
+    @pytest.mark.asyncio
     async def test_approval_callback_escapes_dynamic_user_name(self):
         adapter = _make_adapter()
         adapter._approval_state[3] = "agent:main:telegram:group:12345:99"

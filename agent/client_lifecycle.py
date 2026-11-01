@@ -114,6 +114,10 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
     # later request-client rebuilds drop them and User-Agent-sentinel providers (Kimi Coding) 403.
     fb_headers = getattr(fb_client, "_custom_headers", None) or getattr(fb_client, "default_headers", None)
     agent._client_kwargs = {"api_key": credential, "base_url": fb_base_url}
+    # The resolver extracts URL query params (e.g. api-version) from the SDK base URL.
+    fb_query = getattr(fb_client, "default_query", None)
+    if fb_query:
+        agent._client_kwargs["default_query"] = dict(fb_query)
     if fb_headers:
         agent._client_kwargs["default_headers"] = dict(fb_headers)
     if timeout is not None:

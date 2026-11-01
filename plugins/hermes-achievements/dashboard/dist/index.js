@@ -695,10 +695,10 @@
           // Render the localized "All" pill but keep the underlying value
           // unchanged so the filter logic still compares against "All".
           const pillLabel = cat === "All" ? allCategoryLabel : cat;
-          return React.createElement("button", { key: cat, onClick: function () { setCategory(cat); }, className: cat === category ? "active" : "" }, pillLabel);
+          return React.createElement("button", { key: cat, onClick: function () { setCategory(cat === category ? "All" : cat); }, className: cat === category ? "active" : "" }, pillLabel);
         })),
         React.createElement("div", { className: "ha-pills" }, ["all", "unlocked", "discovered", "secret"].map(function (v) {
-          return React.createElement("button", { key: v, onClick: function () { setVisibility(v); }, className: v === visibility ? "active" : "" }, visibilityLabels[v] || v);
+          return React.createElement("button", { key: v, onClick: function () { setVisibility(v === visibility ? "all" : v); }, className: v === visibility ? "active" : "" }, visibilityLabels[v] || v);
         }))
       ),
       latest.length > 0 && React.createElement("section", { className: "ha-latest" },

@@ -24,6 +24,23 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _reserved_example_hosts_are_explicit_mock_remotes(monkeypatch):
+    """Treat fixture-only example endpoints as remote mocks, not DNS evidence."""
+    from hermes_cli import local_model_routes
+
+    resolve_host = local_model_routes._host_resolves_to_local_address
+    mock_hosts = {"api.example.com", "gateway.example.com"}
+    monkeypatch.setattr(
+        local_model_routes,
+        "_host_resolves_to_local_address",
+        lambda host: (
+            False if host.lower().rstrip(".").endswith(".example")
+            or host.lower().rstrip(".") in mock_hosts else resolve_host(host)
+        ),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _fresh_structured_output_memo(monkeypatch):
     """The aux client remembers routes that rejected ``response_format`` for the whole process;
     a rejection recorded by one test must not strip the field from the next test's request."""

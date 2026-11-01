@@ -16,6 +16,9 @@ _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar("hermes_delegated_child_
 # Any in-process execution that is NOT the dispatcher-owned worker (cron jobs). Kept separate
 # so delegate_task-specific behaviour (subprocess env scrubbing, its error strings) is unchanged.
 _NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar("hermes_non_dispatcher_owned_context", default=False)
+_OWNED_LOCAL_GPU_TASK_CONTEXT: ContextVar[dict[str, str]] = ContextVar(
+    "hermes_owned_local_gpu_task_context", default={}
+)
 
 DELEGATED_CHILD_ENV_MARKER = "HERMES_DELEGATED_CHILD_CONTEXT"
 
@@ -71,6 +74,33 @@ def non_dispatcher_owned_context() -> Iterator[None]:
 def is_dispatcher_owned_worker_context() -> bool:
     """The single predicate every ``HERMES_KANBAN_*`` identity gate should use."""
     return not (is_delegated_child_process_context() or _NON_DISPATCHER_OWNED_CONTEXT.get())
+
+
+def set_owned_local_gpu_task_context(context: dict[str, str]) -> Token[dict[str, str]]:
+    """Bind trusted local-model task pins decoded from the owner-admitted worker frame."""
+    return _OWNED_LOCAL_GPU_TASK_CONTEXT.set(dict(context))
+
+
+def reset_owned_local_gpu_task_context(token: Token[dict[str, str]]) -> None:
+    """Restore the preceding task scope at the worker-turn boundary."""
+    _OWNED_LOCAL_GPU_TASK_CONTEXT.reset(token)
+
+
+def owned_local_gpu_task_context() -> dict[str, str]:
+    """Return task pins only inside the current dispatcher-owned execution context."""
+    if not is_dispatcher_owned_worker_context():
+        return {}
+    return dict(_OWNED_LOCAL_GPU_TASK_CONTEXT.get())
+
+
+@contextmanager
+def scoped_owned_local_gpu_task_context(context: dict[str, str]) -> Iterator[None]:
+    """Bind owner-admitted task pins for one worker turn and restore the parent scope."""
+    token = set_owned_local_gpu_task_context(context)
+    try:
+        yield
+    finally:
+        reset_owned_local_gpu_task_context(token)
 
 
 def explicit_board_intent_is_pinned() -> bool:

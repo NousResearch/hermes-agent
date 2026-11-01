@@ -276,14 +276,37 @@ def settle_unrecovered_error(
     terminal result), max-retries exhaustion (primary transport recovery -> fallback -> terminal
     result), else the interruptible error backoff. ``FailoverReason.billing`` (402) is deliberately
     treated as non-retryable (#31273)."""
-    from agent.conversation_loop import _arm_fallback_restart, _credential_refresh_profile
-    from agent.provider_route_hooks import ask_on_error_path
-
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> UnrecoveredErrorVerdict:
         return UnrecoveredErrorVerdict(
             action=action, active_system_prompt=active_system_prompt, retry_count=retry_count,
             compression_attempts=compression_attempts, result=result,
         )
+
+    # Admission refusals happen before local inference. Keep this machine-enforced
+    # terminal boundary ahead of provider hooks, credential refresh, and fallback.
+    if classified.reason == FailoverReason.local_admission_blocked:
+        delivered = settle_delivered_partial(agent, messages, current_turn_user_idx)
+        summary = agent._summarize_api_error(api_error)
+        agent._flush_status_buffer()
+        agent._emit_diagnostic_status(
+            f"❌ Local model admission blocked this request: {summary}"
+        )
+        response = (
+            "Локальная модель не запущена: запрос остановлен проверкой допуска до инференса. "
+            "Исправьте причину отказа допуска и повторите задачу."
+        )
+        if delivered:
+            response += f"\n\nУже полученный частичный результат:\n{delivered}"
+        result = {
+            "final_response": response, "messages": messages, "api_calls": api_call_count,
+            "completed": False, "failed": True, "error": summary,
+            "failure_reason": FailoverReason.local_admission_blocked.value,
+            "failure_retryable": False,
+        }
+        return _verdict("return", result)
+
+    from agent.conversation_loop import _arm_fallback_restart, _credential_refresh_profile
+    from agent.provider_route_hooks import ask_on_error_path
 
     # ``FailoverReason.billing`` (402) is deliberately NOT excluded: pool rotation and
     # eager fallback already gave up, so retrying only burns paid requests on a depleted

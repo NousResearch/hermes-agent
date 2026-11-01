@@ -9,15 +9,16 @@ import pytest
 from tests.acp_adapter.test_gateway_sessions import editor, viewer
 from tests.waiting import async_wait_until
 
-_SECOND = {'providers': {'second': {'name': 'second', 'base_url': 'http://127.0.0.1:9/v1',
+_SECOND = {'providers': {'second': {'name': 'second', 'base_url': 'http://api.test.invalid/v1',
                                     'api_key': 'loopback-only', 'default_model': 'second-model'}}}
 
 
 def _second_on_peer(daemon, model_peer):
-    """Point the named provider at the loopback peer (the daemon reads config per resolve)."""
+    """Point the named provider at the fake peer through the daemon's reserved-host proxy."""
+    assert daemon[2].get('HTTP_PROXY') == f'http://127.0.0.1:{model_peer.server_port}'
     home = daemon[0]
     config = json.loads((home / 'config.yaml').read_text())
-    config['providers']['second']['base_url'] = f'http://127.0.0.1:{model_peer.server_port}/second/v1'
+    config['providers']['second']['base_url'] = 'http://api.test.invalid/second/v1'
     (home / 'config.yaml').write_text(json.dumps(config))
 
 

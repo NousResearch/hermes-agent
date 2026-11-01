@@ -35,6 +35,7 @@ class FailoverReason(enum.Enum):
     """Why an API call failed — determines recovery strategy."""
     auth = "auth"                        # Transient auth (401/403) — refresh/rotate
     auth_permanent = "auth_permanent"    # Auth failed after refresh — abort
+    local_admission_blocked = "local_admission_blocked"  # Local inference denied before provider I/O
     billing = "billing"                  # 402 or confirmed credit exhaustion — rotate immediately
     rate_limit = "rate_limit"            # 429 or quota-based throttling — backoff then rotate
     upstream_rate_limit = "upstream_rate_limit"  # Aggregator's upstream model 429 — fallback model, key is healthy
@@ -1030,6 +1031,13 @@ def classify_api_error(
     dark-tier 403 on it because that refusal carries no distinguishing message.
     ``api_key`` identifies an anonymous request; a host or fairshare reason alone does not.
     The credential is never included in the returned context."""
+    from hermes_cli.middleware import LocalModelAdmissionBlockedError
+    if isinstance(error, LocalModelAdmissionBlockedError):
+        return ClassifiedError(
+            reason=FailoverReason.local_admission_blocked,
+            provider=provider, model=model, message=str(error), retryable=False,
+            should_compress=False, should_rotate_credential=False, should_fallback=False,
+        )
     from hermes_cli.anon_auth import is_anonymous_request
     status_code = _extract_status_code(error)
     # Some SDK RateLimitErrors (OpenAI-compatible relays) may not set .status_code; force 429.

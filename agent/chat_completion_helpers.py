@@ -10,7 +10,6 @@ forwarders. Symbols tests patch on ``run_agent`` (``cleanup_vm`` /
 from __future__ import annotations
 
 import contextlib
-import contextvars
 import json
 import logging
 import math
@@ -32,6 +31,7 @@ from agent.error_classifier import (
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_local import _streams_llamacpp, stale_giveup
+from agent.chat_completion_thread_context import context_thread_target as _context_thread_target
 from agent.chat_completion_headers import _chat_completion_capturing_headers
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor, StreamLifetimeExceeded
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
@@ -73,12 +73,6 @@ _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 # outer retry loop (up to ~3 attempts x backoff, well under 60s) so an outage doesn't
 # double traffic every attempt, while later turns re-arm automatically.
 _STREAM_5XX_PROBE_WINDOW_S = 60.0
-
-
-def _context_thread_target(callback):
-    """Bind a no-argument thread target to the caller's ContextVars."""
-    context = contextvars.copy_context()
-    return lambda: context.run(callback)
 
 
 def _join_worker_for_relay_teardown(worker, *, label: str) -> None:
@@ -1263,6 +1257,8 @@ def interruptible_api_call(agent, api_kwargs: dict):
     per-request client (interrupts close only that one); a stale-call detector
     kills the connection and raises so the main retry loop can back off / rotate
     credentials / fall back."""
+    from hermes_cli.middleware import require_local_model_admission
+    require_local_model_admission(agent, api_kwargs, streaming=False)
     # Nested-pool contexts (cron, delegated children) wedge on a worker thread
     # (#62151): run inline. See should_use_direct_api_call.
     if should_use_direct_api_call(agent):
@@ -3979,6 +3975,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     text token (tool-call turns suppress them) and returns a SimpleNamespace in
     the non-streaming response shape. codex_responses delegates to the already-
     streaming codex runner; cron turns and delegated children run inline."""
+    from hermes_cli.middleware import require_local_model_admission
+    require_local_model_admission(agent, api_kwargs, streaming=True)
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
     if agent.api_mode == "codex_responses":

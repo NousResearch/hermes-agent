@@ -1581,7 +1581,25 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
             return None
         try:
             _run_phase(build_api_request, agent, s)
-            if _run_phase(perform_api_call, agent, s).action == "break":
+            _api = _run_phase(perform_api_call, agent, s)
+            if _api.action == "blocked":
+                decision = _api.response
+                reason = getattr(decision, "reason", "Local model admission was denied")
+                code = getattr(decision, "code", "admission_denied")
+                final = (
+                    f"STOP: локальный запуск модели заблокирован проверкой допуска ({code}): "
+                    f"{reason}. Запрос модели не отправлялся; задача остановлена без автоматического повтора."
+                )
+                append_message(s.messages, {"role": "assistant", "content": final})
+                # begin_iteration() accounts for the attempted iteration before admission.
+                # No provider request occurred, so undo only the API-call counter.
+                s.api_call_count = max(0, s.api_call_count - 1)
+                agent._api_call_count = s.api_call_count
+                return _partial_turn_result(
+                    final, s.messages, s.api_call_count, failed=True,
+                    failure_reason="local_admission_blocked", failure_retryable=False,
+                )
+            if _api.action == "break":
                 return None
             _rc = _run_phase(check_api_response, agent, s)
             if _rc.action == "return":

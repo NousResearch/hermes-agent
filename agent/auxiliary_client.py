@@ -39,6 +39,13 @@ from agent.auxiliary_error_shapes import (
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
+from agent.local_auxiliary_admission import (
+    LocalAuxiliaryAdmissionRequired,
+    _RELAY_AUX_CALL_CONTEXT,
+    record_route_info as _record_route_info,
+    require_nonlocal_auxiliary_route as _require_nonlocal_auxiliary_route,
+    set_relay_auxiliary_route as _set_relay_auxiliary_route,
+)
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -2544,11 +2551,6 @@ _RUNTIME_MAIN_CONTEXT: contextvars.ContextVar[Optional[dict[str, Any]]] = (
     contextvars.ContextVar("auxiliary_runtime_main", default=None)
 )
 
-_RELAY_AUX_CALL_CONTEXT: contextvars.ContextVar[Optional[dict[str, Any]]] = (
-    contextvars.ContextVar("auxiliary_relay_call", default=None)
-)
-
-
 @contextlib.contextmanager
 def _relay_aux_call_scope(args: tuple, kwargs: dict):
     """Bind a fresh relay call context for one auxiliary call; mark it failed on any exception."""
@@ -2589,25 +2591,6 @@ def _relay_auxiliary_call_async(callback):
     return wrapped
 
 
-def _set_relay_auxiliary_route(provider: str | None, model: str | None, api_mode: str | None) -> None:
-    context = _RELAY_AUX_CALL_CONTEXT.get()
-    if context is None:
-        return
-    context["provider"] = str(provider or "auxiliary")
-    context["model"] = str(model or "unknown")
-    context["response_model"] = None
-    context["api_mode"] = str(api_mode or "chat_completions")
-
-
-def _record_route_info(
-    route_info: Optional[dict[str, str]], provider: Optional[str], model: Optional[str]
-) -> None:
-    """Expose the concrete route selected for one auxiliary call."""
-    if route_info is not None:
-        route_info["provider"] = provider or "auto"
-        route_info["model"] = model or "default"
-
-
 def _relay_auxiliary_metadata(
     *, provider: str | None = None, api_mode: str | None = None
 ) -> tuple[str, str, dict[str, Any]] | None:
@@ -2631,6 +2614,8 @@ def _relay_sync_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
+    relay_context = _RELAY_AUX_CALL_CONTEXT.get() or {}
+    _require_nonlocal_auxiliary_route(client, provider, relay_context.get("task"))
     from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
     kwargs = prepare_chat_messages(client, kwargs)
@@ -2670,6 +2655,8 @@ async def _relay_async_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
+    relay_context = _RELAY_AUX_CALL_CONTEXT.get() or {}
+    _require_nonlocal_auxiliary_route(client, provider, relay_context.get("task"))
     from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
     kwargs = prepare_chat_messages(client, kwargs)
@@ -2699,6 +2686,8 @@ async def _relay_async_completion(
 def _relay_sync_stream(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None
 ) -> Any:
+    relay_context = _RELAY_AUX_CALL_CONTEXT.get() or {}
+    _require_nonlocal_auxiliary_route(client, provider, relay_context.get("task"))
     from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
     kwargs = prepare_chat_messages(client, kwargs)
@@ -4097,6 +4086,7 @@ def _call_fallback_candidate_sync(
     )
 
     def _send(client: Any, request_kwargs: dict[str, Any], dest: _FallbackDestination) -> Any:
+        _require_nonlocal_auxiliary_route(client, dest.provider, task, base_url=dest.base_url)
         return _validate_llm_response(
             _relay_sync_completion(
                 client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode,
@@ -4154,6 +4144,7 @@ async def _call_fallback_candidate_async(
 
     async def _send(client: Any, request_kwargs: dict[str, Any], dest: _FallbackDestination) -> Any:
         import asyncio
+        _require_nonlocal_auxiliary_route(client, dest.provider, task, base_url=dest.base_url)
         return await asyncio.to_thread(
             _validate_llm_response,
             await _relay_async_completion(client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode),
@@ -7463,6 +7454,7 @@ def _prepare_aux_request(
             logger.info("Auxiliary %s: using %s (%s)%s",
                          task, request_provider or "auto", final_model or "default",
                          f" at {base_info}" if base_info and "openrouter" not in base_info else "")
+    _require_nonlocal_auxiliary_route(client, request_provider, task, base_url=base_info or resolved_base_url)
     # Client's actual base_url so endpoint-specific temperature overrides work on
     # auto-detected routes (api.moonshot.ai vs api.kimi.com/coding).
     kwargs = _build_call_kwargs(
@@ -8132,6 +8124,7 @@ def _call_llm_impl(
         if task == "moa_aggregator" and isinstance(client, CodexAuxiliaryClient):
             # Responses-shim clients consume the stream internally and return a completed
             # object Relay's managed stream would iterate; the MoA facade wraps it as one chunk.
+            _require_nonlocal_auxiliary_route(client, request_provider, task)
             return client.chat.completions.create(**kwargs)
         return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
 

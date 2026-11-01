@@ -27,7 +27,15 @@ import {
   groupSessionKey,
   hasThreadScopedGroupSession
 } from './group-membership'
-import { type GroupRoundMemberContext, runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
+import {
+  activeGroupPriorityLaneClaims,
+  groupPriorityLaneClaimed,
+  type GroupRoundMemberContext,
+  memberIdleForPriorityLane,
+  runGroupContinuationMembers,
+  runGroupPriorityLaneTurn,
+  runGroupRoundMember
+} from './group-round-members'
 import { rejectGroupSlashCommand } from './group-slash'
 import { GROUP_TURN_HARD_CAP_MS, harvestStrandedGroupReply } from './group-turns'
 import { botsText } from './i18n'
@@ -611,6 +619,41 @@ export async function stopGroupThread(group: string, thread: null | string, memb
          the abandoned poll loop exits on its staleness check */
     }
   }
+
+  // #head-of-line: every live priority lane owns an in-flight member turn
+  // the epoch bump above just cancelled at its next boundary — but a lane
+  // turn's model call needs the same interrupt leg Stop gives the on-turn
+  // member, or it grinds to completion in the background. Resolve each
+  // claim's session from the room's per-thread session map (the same
+  // lookup stopGroupThread uses for the on-turn member) and interrupt
+  // best-effort. The BUSY foreground member is not re-addressed here — its
+  // interrupt was handled above, and nothing in this loop re-submits into
+  // its live session.
+  const laneClaims = activeGroupPriorityLaneClaims(group)
+
+  for (const claim of laneClaims) {
+    const claimMemberKey = groupMemberKey(claim.member)
+
+    if (claimMemberKey === onTurnKey) {
+      continue
+    }
+
+    const laneSessionId =
+      sessions[groupSessionKey(claim.thread || 'legacy', claim.member)] ||
+      (hasThreadScopedGroupSession(sessions, claimMemberKey) ? null : sessions[claimMemberKey])
+
+    if (!laneSessionId) {
+      continue
+    }
+
+    try {
+      await requestForBot(claim.member, 'session.interrupt', {
+        session_id: laneSessionId
+      })
+    } catch {
+      /* best-effort — the epoch/hold legs already cancel the lane's poll */
+    }
+  }
 }
 
 /** Deliver any replies that finished after their turn timed out — every
@@ -704,7 +747,13 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
       const strandedNow = ($groupChats.get()[group] || {}).stranded || {}
 
       const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, members), round).filter(
-        (member: GroupMember) => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
+        (member: GroupMember) =>
+          !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member)) &&
+          // A live priority lane owns this member's turn in THIS thread — the
+          // foreground drive must not re-prepare the delta it is driving
+          // (double submit). The claim releases when the lane settles, so a
+          // settled lane's thread arrives here with no delta anyway.
+          !groupPriorityLaneClaimed(group, thread, member)
       )
 
       let spokeThisRound = 0
@@ -970,6 +1019,23 @@ interface GroupChatDrive {
   binding: ReturnType<typeof followGroupChat>
 }
 
+/** The newest USER entry in a thread — the just-queued send's own text, which
+ *  is what the mention parse of the priority lane must read (entries older
+ *  than it belong to earlier sends that already had their turn). */
+function lastUserTextInThread(room: GroupChatRoom, thread: string): string {
+  const log = Array.isArray(room?.log) ? room.log : []
+
+  for (let i = log.length - 1; i >= 0; i--) {
+    const entry = log[i]
+
+    if (entry?.from?.kind === 'user' && groupThreadOf(entry) === thread) {
+      return String(entry.text || '')
+    }
+  }
+
+  return ''
+}
+
 // Keep the owner until its awaited member releases, even after Stop. A
 // rename follows the room identity; disband retires the binding permanently.
 const groupChatDrives = new Map<string, GroupChatDrive>()
@@ -982,6 +1048,31 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
     // Only a new user action AFTER failure authorizes another attempt.
     active.failedMembers.clear()
     active.pending.set(thread, members)
+
+    // Head-of-line bypass: an explicit (non-@everyone) user mention of an
+    // IDLE member dispatches that member NOW, in a background lane, instead
+    // of waiting out the whole drive. The member the drive is awaiting and
+    // members with stranded (still-running) turns are excluded — their work
+    // must never be re-submitted or interrupted. The thread itself stays
+    // queued above, so bot-to-bot handoffs and busy mentions keep their
+    // normal turn; the lane's watermark advance makes the foreground pass
+    // over an already-answered mention a no-delta no-op (no duplicates).
+    const room = $groupChats.get()[group] as GroupChatRoom | undefined
+    const parsed = room ? parseGroupChatMentions(lastUserTextInThread(room, thread), members) : null
+
+    if (parsed && !parsed.everyone && room) {
+      for (const member of members) {
+        if (!parsed.mentioned.has(groupMemberKey(member))) {
+          continue
+        }
+
+        if (!memberIdleForPriorityLane(room, member)) {
+          continue
+        }
+
+        void runGroupPriorityLaneTurn(group, members, thread, member, active.failedMembers).catch(() => undefined)
+      }
+    }
 
     return
   }

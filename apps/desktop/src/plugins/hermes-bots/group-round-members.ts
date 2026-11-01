@@ -6,12 +6,13 @@ import {
   GROUP_CHAT_HISTORY_LIMIT,
   GROUP_CHAT_MAX_CONTINUATIONS,
   GROUP_CHAT_MAX_MESSAGES,
+  groupChatRoomKey,
   groupThreadOf,
   shouldCommitMemberTurn,
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
-import { groupMemberAuthor, groupMemberKey } from './group-membership'
+import { followGroupChat, groupMemberAuthor, groupMemberKey } from './group-membership'
 import {
   buildGroupChatTurnPrompt,
   formatGroupDeltaLines,
@@ -35,6 +36,11 @@ export interface GroupRoundMemberContext {
    *  ordinary silence. Absent/empty = collaborative turn, where a plain
    *  "(pass)" stays legitimate. */
   addressedKeys?: null | Set<string>
+  /** A priority-mention lane turn: runs beside the foreground drive, so it
+   *  must not claim the room's single `turn` slot — that slot belongs to the
+   *  busy member the lane exists to route AROUND, and clobbering it would
+   *  break Stop's interrupt targeting and the presence roster. */
+  background?: boolean
 }
 
 /** #93129: a held member's skip must consume its delta exactly once —
@@ -154,12 +160,17 @@ async function runVisibleMemberTurn(
   images?: Attachment[]
 ) {
   const turn = { ...member }
-  updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn }), { sync: false })
+
+  // A background lane turn never claims the room's single `turn` slot: the
+  // foreground drive owns it, and Stop keys its interrupt on `room.turn`.
+  if (!context.background) {
+    updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn }), { sync: false })
+  }
 
   try {
     return await runGroupChatMemberTurn(context.group, member, prompt, context.thread, images)
   } finally {
-    if (context.binding.isLive() && $groupChats.get()[context.group]?.turn === turn) {
+    if (!context.background && context.binding.isLive() && $groupChats.get()[context.group]?.turn === turn) {
       updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn: null }), { sync: false })
     }
   }
@@ -171,7 +182,12 @@ export async function runGroupRoundMember(
 ): Promise<boolean | null> {
   const { thread, startEpoch, binding } = context
 
-  if (context.failedMembers?.has(groupMemberKey(member))) {
+  if (
+    context.failedMembers?.has(groupMemberKey(member)) ||
+    (!context.background && groupPriorityLaneClaimed(context.group, thread, member))
+  ) {
+    // Recheck at dispatch, not only when the round snapshots its responders:
+    // a lane can acquire this member while an earlier member is awaited.
     return false
   }
 
@@ -326,11 +342,28 @@ export async function runGroupRoundMember(
   // A member's own entries — its reply, and the rows group-external-writes.ts
   // mirrored out of its own session — are never news to their author, so the
   // watermark steps over them. A user entry that arrived during inference
-  // stops the walk: a reply cannot acknowledge what it never saw.
+  // stops the walk: a reply cannot acknowledge what it never saw. Entries of
+  // OTHER threads are invisible to this thread's delta (the delta filter is
+  // thread-scoped), so the walk steps over them too — a concurrent lane's
+  // writes in a sibling thread must not wedge this member's watermark
+  // between the commit boundary and its own reply, or the next round
+  // re-delivers that reply to its own author as "news" (#head-of-line).
   updateGroupChat(context.group, (r: GroupChatRoom) => {
     let mark = r.watermarks[markKey] || 0
 
-    while (mark < r.log.length && authoredByMember(r.log[mark], member)) {
+    while (mark < r.log.length) {
+      const entry = r.log[mark]
+
+      if (groupThreadOf(entry) !== thread) {
+        mark += 1
+
+        continue
+      }
+
+      if (!authoredByMember(entry, member)) {
+        break
+      }
+
       mark += 1
     }
 
@@ -346,6 +379,151 @@ export async function runGroupRoundMember(
 
 function authoredByMember(entry: GroupMessage, member: GroupMember): boolean {
   return entry?.from?.kind === 'member' && isGroupChatSelf(entry.from, member)
+}
+
+// ── priority mention lanes (#head-of-line) ───────────────────────────────────
+//
+// The room drive is serial on purpose: one member turn at a time, user sends
+// queue behind it. But head-of-line blocking made a DIRECT user mention of an
+// IDLE member wait out another member's arbitrarily long turn — minutes of
+// "Chief is quiet" while the Chief was never even prompted.
+//
+// A lane is a single-shot background drive for exactly ONE member+thread,
+// dispatched at send time when the room is busy and the mention is explicit
+// (non-@everyone). It reuses the whole turn path — delta/watermarks, hold
+// semantics, the #93127 commit check, stranded markers — so a lane turn and
+// the later foreground pass over the same thread cannot double-deliver:
+// whichever finishes first advances the watermark; the other finds no delta.
+//
+// One lane per member+thread at a time. The thread stays in the foreground
+// queue regardless, as the safety net for mentions of members that are busy
+// right now (their work must not be interrupted — the lane never re-submits
+// into a live session) and for the bot-to-bot handoffs the round loop owns.
+
+/** In-flight lane claims, keyed `${roomKey}::${thread}::${memberKey}`. The
+ *  value carries the live descriptors so Stop can resolve and interrupt each
+ *  claim's session without re-parsing the key. */
+interface GroupPriorityLaneClaim {
+  group: string
+  member: GroupMember
+  thread: string
+}
+
+const groupPriorityLanes = new Map<string, GroupPriorityLaneClaim>()
+
+function groupPriorityLaneKey(group: string, thread: string, member: GroupMember) {
+  return `${groupChatRoomKey(group, $groupChats.get()[group])}::${thread}::${groupMemberKey(member)}`
+}
+
+/** Claim a member+thread lane for one background dispatch. False when a lane
+ *  is already running there — the foreground queue still owns the thread, so
+ *  a second claim would be a duplicate dispatch. */
+export function claimGroupPriorityLane(group: string, thread: string, member: GroupMember): boolean {
+  const key = groupPriorityLaneKey(group, thread, member)
+
+  if (groupPriorityLanes.has(key)) {
+    return false
+  }
+
+  groupPriorityLanes.set(key, { group, member, thread })
+
+  return true
+}
+
+/** Whether a live lane claim exists for this member+thread — the foreground
+ *  round loop skips such members so it can never re-prepare the delta the
+ *  lane is already driving (a duplicate submit into a live session). */
+export function groupPriorityLaneClaimed(group: string, thread: string, member: GroupMember): boolean {
+  return groupPriorityLanes.has(groupPriorityLaneKey(group, thread, member))
+}
+
+/** Live lane claims in a room, for the Stop path: every claim owns an
+ *  in-flight member turn the stop must cancel AND interrupt. */
+export function activeGroupPriorityLaneClaims(group: string): GroupPriorityLaneClaim[] {
+  return [...groupPriorityLanes.values()].filter(claim => claim.group === group)
+}
+
+/** Release a lane claim when its background turn settles (any outcome). A
+ *  rename mid-lane re-keys the room for legacy (roomId-less) rooms, so both
+ *  the claim key and the current-name key are cleared — a leaked claim would
+ *  silence that member+thread's lanes forever. */
+function releaseGroupPriorityLane(claimKey: string, group: string, thread: string, member: GroupMember) {
+  groupPriorityLanes.delete(claimKey)
+  groupPriorityLanes.delete(groupPriorityLaneKey(group, thread, member))
+}
+
+/** Is this member permitted to run a lane turn RIGHT NOW? False when it is
+ *  the member the foreground drive is awaiting (`room.turn` — the very work
+ *  the lane exists to route around; a lane must never re-submit or interrupt
+ *  it), or when a stranded marker says its previous turn is still running on
+ *  the backend. Presence in `room.stranded` is the same still-running signal
+ *  the round loop's responder filter uses. */
+export function memberIdleForPriorityLane(room: GroupChatRoom, member: GroupMember): boolean {
+  if (room.turn && groupMemberKey(room.turn) === groupMemberKey(member)) {
+    return false
+  }
+
+  return !Object.prototype.hasOwnProperty.call(room.stranded || {}, groupMemberKey(member))
+}
+
+/** Drive ONE member's turn in a background lane: claim, run, release. Returns
+ *  the turn outcome so a caller can surface failures. Reuses
+ *  runGroupRoundMember wholesale — delta scoping, holds, the #93127 commit
+ *  check and stranded markers are all its behavior — with a `background`
+ *  context so the lane never clobbers the room's `turn` slot (Stop's
+ *  interrupt key). `failedMembers` is the LIVE drive's set, so a member the
+ *  drive already gave up on (ambiguous admission/submit failure) is not
+ *  retried by the lane, and a lane failure poisons the drive's set the same
+ *  way a foreground one does. */
+export async function runGroupPriorityLaneTurn(
+  group: string,
+  members: GroupMember[],
+  thread: string,
+  member: GroupMember,
+  failedMembers?: Set<string>
+): Promise<boolean | null> {
+  let claimKey = groupPriorityLaneKey(group, thread, member)
+
+  if (!claimGroupPriorityLane(group, thread, member)) {
+    return null
+  }
+
+  const claim = groupPriorityLanes.get(claimKey)!
+
+  // Follow the room and the claim together, including name-keyed legacy rooms.
+  let laneGroup = group
+
+  const binding = followGroupChat(group, name => {
+    groupPriorityLanes.delete(claimKey)
+    laneGroup = name
+    claim.group = name
+    claimKey = groupPriorityLaneKey(name, thread, member)
+    groupPriorityLanes.set(claimKey, claim)
+  })
+
+  const startEpoch = ($groupChats.get()[laneGroup] || {}).epoch || 0
+  const isCurrent = () => binding.isLive() && (($groupChats.get()[laneGroup] || {}).epoch || 0) === startEpoch
+
+  try {
+    return await runGroupRoundMember(
+      {
+        get group() {
+          return laneGroup
+        },
+        members,
+        thread,
+        startEpoch,
+        binding,
+        isCurrent,
+        failedMembers,
+        background: true
+      },
+      member
+    )
+  } finally {
+    releaseGroupPriorityLane(claimKey, laneGroup, thread, member)
+    binding.dispose()
+  }
 }
 
 export async function runGroupContinuationMembers(
@@ -364,7 +542,11 @@ export async function runGroupContinuationMembers(
       const strandedNow = ($groupChats.get()[context.group] || {}).stranded || {}
 
       const continuationResponders = citedMembers.filter(
-        (member: GroupMember) => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
+        (member: GroupMember) =>
+          !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member)) &&
+          // Same live-lane exclusion as the round loop's responder filter: a
+          // lane turn in flight for this member+thread owns that delta.
+          !groupPriorityLaneClaimed(context.group, context.thread, member)
       )
 
       for (const member of continuationResponders) {

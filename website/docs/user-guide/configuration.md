@@ -2143,6 +2143,8 @@ The gate is independent of `tool_use_enforcement` — either can be on without t
 
 Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, or an idempotent call returning the same result with no progress. By default it injects a **warning** into the tool result so the model self-corrects. Interactive CLI, TUI, Desktop, and ACP sessions remain warning-only because a person can intervene; unattended gateway and cron sessions enable hard stops by default.
 
+A `tool_call` the bridge rejects (wrong or missing arguments for a deferred tool, or a tool outside the session's toolsets) counts as a failed call of that tool.
+
 The platform-aware default can be disabled for an unattended deployment, or hard stops can be explicitly enabled on every platform:
 
 ```yaml

@@ -13,6 +13,18 @@ endpoint probe is actually handed, not just on the returned struct.
 import pytest
 
 
+@pytest.mark.parametrize("effort, expected", [
+    ("medium", {"enabled": True, "effort": "medium"}), (False, {"enabled": False}), (None, None),
+])
+def test_alias_reasoning_reaches_switch_result(monkeypatch, effort, expected):
+    result, _ = _switch_to_alias(monkeypatch, {
+        "model": "theta-1", "provider": "custom", "base_url": ALIAS_HOST,
+        "reasoning_effort": effort,
+    })
+    assert result.success
+    assert result.reasoning_config == expected
+
+
 ALIAS_HOST = "https://theta.example.com/v1"
 DEFAULT_PROVIDER_SECRET = "sk-or-DEFAULT-PROVIDER-SECRET"
 

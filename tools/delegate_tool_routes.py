@@ -39,6 +39,7 @@ class TaskRoute:
     label: Optional[str] = None
     backend: str = "default"
     error: Optional[str] = None
+    max_iterations: Optional[int] = None
 
     def report(self) -> Optional[dict[str, Any]]:
         """The ``route`` a backend-routed task's result carries (None for the default backend's unlabelled route)."""
@@ -238,7 +239,8 @@ def _resolve_route(route: dict[str, Any], parent_agent: Any, backend: str) -> Ta
     if route.get("service_tier") not in (None, ""):
         from tools.delegate_tool_tuning import task_service_tier
         creds = {**creds, **task_service_tier(str(route["service_tier"]), creds, parent_agent)}
-    return TaskRoute(creds, route, route.get("reasoning_effort"), None, None, backend)
+    return TaskRoute(creds, route, route.get("reasoning_effort"), None, None, backend,
+                     max_iterations=route.get("max_iterations"))
 
 
 def _route_to_task_route(route: dict[str, Any], parent_agent: Any, cache: dict[str, TaskRoute],
@@ -263,6 +265,18 @@ def _check_backend_effort(index: int, route: Mapping[str, Any], config: Mapping[
         raise DelegationRouteError(
             f"Task {index}: unknown reasoning_effort {effort!r} on this route. "
             f"Use none or one of: {', '.join(VALID_REASONING_EFFORTS)}.")
+
+
+def _check_route_max_iterations(index: int, route: Mapping[str, Any]) -> None:
+    """A backend's ``max_iterations`` must be a whole number of 1 or more: a bad value refuses this task,
+    never falls back to the global limit. A profile route ignores the field, so it is not checked."""
+    value = route.get("max_iterations")
+    if value is None or route.get("profile"):
+        return
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise DelegationRouteError(
+            f"Task {index}: max_iterations on this route must be a whole number of 1 or more (got {value!r})."
+        )
 
 
 def _undeclared_error(provider: DelegationProvider, index: int, names: list[str], config: Mapping[str, Any]) -> str:
@@ -326,6 +340,10 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
         try:
             route = _route_one(provider, declared, i, task, config)
             _check_backend_effort(i, route, config)
+            if provider.name != "default":
+                # The default route is the delegation section itself: its max_iterations is the global
+                # value, which delegate_task already reads and has never refused.
+                _check_route_max_iterations(i, route)
             routes.append(_route_to_task_route(route, parent_agent, cache, config, provider.name))
         except ValueError as exc:  # DelegationRouteError, the credential resolver's and the tier check's refusals
             routes.append(TaskRoute({}, {}, backend=provider.name, error=str(exc)))

@@ -468,7 +468,8 @@ def _build_children(
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=route.creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                model=route.creds["model"], max_iterations=route.max_iterations or max_iterations,
+                task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **_route_overrides(route),
             )
         except ValueError as exc:

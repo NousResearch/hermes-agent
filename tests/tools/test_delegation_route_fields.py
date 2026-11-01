@@ -194,3 +194,25 @@ def test_an_inherited_fast_tier_is_reported_as_what_ran():
     entry = _build_result_entry(child, {"final_response": "ok", "completed": True}, 0, 1.0,
                                 _SchemaOutcome(None, None, [], 0))
     assert entry["route"]["service_tier"] == "fast"
+
+
+def test_route_max_iterations_beats_the_global_and_a_sibling_keeps_the_global():
+    result, (capped, plain), _ = _spawn([{**LOCAL, "max_iterations": 7}, None], cfg={"max_iterations": 40})
+    assert result == {"status": "built"}
+    assert capped["max_iterations"] == 7
+    assert plain["max_iterations"] == 40
+
+
+def test_a_route_without_max_iterations_uses_the_global():
+    _result, (child,), _ = _spawn([dict(LOCAL)], cfg={"max_iterations": 40})
+    assert child["max_iterations"] == 40
+
+
+@pytest.mark.parametrize("bad", [0, -3, "15", 2.5, True])
+def test_a_bad_route_max_iterations_refuses_that_task_and_its_sibling_runs(bad):
+    result, built, _ = _spawn([{**LOCAL, "max_iterations": bad}, None], cfg={"max_iterations": 40})
+    (refused,) = result["refused"]
+    assert refused["task_index"] == 0
+    assert "max_iterations" in refused["error"]
+    assert len(built) == 1
+

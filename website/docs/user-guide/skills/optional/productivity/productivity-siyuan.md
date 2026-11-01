@@ -31,7 +31,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # SiYuan Note API
 
-Use the [SiYuan](https://github.com/siyuan-note/siyuan) kernel API via curl to search, read, create, update, and delete blocks and documents in a self-hosted knowledge base. No extra tools needed -- just curl and an API token.
+Use the [SiYuan](https://github.com/siyuan-note/siyuan) kernel API via curl to search, read, create, update, and delete blocks and documents in a self-hosted knowledge base. No SDK needed -- just curl, jq, and an API token.
 
 ## Prerequisites
 

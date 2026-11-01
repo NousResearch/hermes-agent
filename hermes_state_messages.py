@@ -876,6 +876,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         # A weak claim (a rewritten carry naming the row) is archived as compacted history, never rewound out of display.
         rewind_ids += [row_id for row_id in unseen if row_id not in weak_claims]
         rewind_ids = list(dict.fromkeys(rewind_ids))
+        # Donors are active-only, so carry their timestamp before archiving the old generation.
+        self._carry_parent_timestamps(conn, session_id, compacted_messages)
         if rewind_ids:
             placeholders = _placeholders(rewind_ids)
             conn.execute(
@@ -883,10 +885,6 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                 f"WHERE session_id = ? AND id IN ({placeholders})",
                 [session_id, *rewind_ids])
         conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
-        # Same identity carry as publish_compression_child (#59661): carried tail copies keep the
-        # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
-        # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
-        self._carry_parent_timestamps(conn, session_id, compacted_messages)
         inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
         if clone_ids:
             _ids, unseen_tool_calls = self._tail_rows_after_watermark(
@@ -1011,6 +1009,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         # A weak claim (a rewritten carry naming the row) is archived as compacted history, never rewound out of display.
         rewind_ids += [row_id for row_id in tail_ids if row_id not in weak_claims]
         rewind_ids = list(dict.fromkeys(rewind_ids))
+        # Donors are active-only, so carry their timestamp before archiving the old generation.
+        self._carry_parent_timestamps(conn, session_id, compacted_messages)
         if rewind_ids:
             placeholders = _placeholders(rewind_ids)
             conn.execute("UPDATE messages SET active = 0, compacted = 0 "
@@ -1018,10 +1018,6 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             conn.execute(f"{_ARCHIVE_ACTIVE_SQL} AND id NOT IN ({placeholders})", [session_id, *rewind_ids])
         else:
             conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
-        # Same identity carry as publish_compression_child (#59661): carried tail copies keep the
-        # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
-        # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
-        self._carry_parent_timestamps(conn, session_id, compacted_messages)
         inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
         if clone_ids:
             self._clone_message_rows(conn, clone_ids)

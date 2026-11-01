@@ -1,0 +1,60 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: blacktea
+description: Spending controls for agents that pay online via x402. Holds over-limit payments for human approval, enforces a policy, audits every spend.
+source: https://github.com/nmrtn/blacktea
+
+# npm package launched via npx. No install step needed: transport.command is
+# the install (the npm/uvx case noted in the schema docs), so no git clone or
+# bootstrap block.
+transport:
+  type: stdio
+  command: npx
+  args:
+    - "-y"
+    - "@nmrtn/blacktea-mcp"
+
+# blacktea signs x402 USDC payments with a wallet key and reads a policy file.
+auth:
+  type: api_key
+  env:
+    - name: EVM_PRIVATE_KEY
+      prompt: "Wallet private key (0x-prefixed) for x402 payments on Base"
+      required: true
+      secret: true
+    - name: BLACKTEA_POLICY
+      prompt: "Path to your spending-policy JSON file"
+      default: "./policy.json"
+      required: false
+      secret: false
+
+# Tool selection at install time:
+# blacktea exposes pay, approve_payment, reject_payment, audit_query. Unlike a
+# generic write-tool surface, the guardrail here is the POLICY, not tool
+# pruning: pay does not auto-spend over the user's auto-approve limit, it HOLDS
+# the payment and returns approval_required. approve_payment is the
+# human-in-the-loop gate the agent calls only after the human confirms in chat.
+# Pruning any of these would break the intended approval flow, so all four are
+# enabled by default.
+tools:
+  default_enabled:
+    - pay
+    - approve_payment
+    - reject_payment
+    - audit_query
+
+post_install: |
+  blacktea enforces a spending policy before any payment is signed. Point
+  BLACKTEA_POLICY at a policy.json:
+  https://github.com/nmrtn/blacktea/blob/main/docs/policy-cookbook.md
+
+  Try it with no wallet, USDC, or x402 endpoint by setting BLACKTEA_RAIL=mock
+  (and optionally BLACKTEA_MOCK_AMOUNT). The `pay` tool holds over-limit
+  amounts and returns approval_required; relay the amount to the human and
+  call approve_payment only after they say yes.
+
+  Start a new Hermes session to load the blacktea tools.

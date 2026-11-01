@@ -67,6 +67,56 @@ class TestConfigureWindowsStdio:
         stdio._reconfigure_stream(buf)
 
 
+class TestAugmentPathRunningInstall:
+    r"""``_augment_path_with_known_tools`` must expose the *running* install's Scripts dir.
+
+    The venv Scripts entry used to be hardcoded to the default
+    ``%LOCALAPPDATA%\hermes\hermes-agent`` install: a source checkout sharing the machine
+    with that install prepended the default install's ``hermes.exe`` to every child's
+    PATH, so child ``hermes`` calls ran the other installation (a different install_id
+    writing the same HERMES_HOME → shared-profile warning loop).
+    """
+
+    def test_running_venv_wins_over_default_install(self, monkeypatch, tmp_path):
+        """A source checkout prepends its own .venv Scripts, never the default install's."""
+        from hermes_cli import stdio
+
+        default_scripts = tmp_path / "default-root" / "hermes" / "hermes-agent" / "venv" / "Scripts"
+        default_scripts.mkdir(parents=True)
+        running_venv = tmp_path / "checkout" / ".venv"
+        running_scripts = running_venv / "Scripts"
+        running_scripts.mkdir(parents=True)
+
+        monkeypatch.setattr(stdio, "is_windows", lambda: True)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "default-root"))
+        monkeypatch.setattr(sys, "prefix", str(running_venv))
+        monkeypatch.setenv("PATH", "")
+
+        stdio._augment_path_with_known_tools()
+
+        entries = os.environ["PATH"].split(os.pathsep)
+        assert str(running_scripts) in entries
+        assert str(default_scripts) not in entries
+
+    def test_default_install_still_prepends_own_scripts(self, monkeypatch, tmp_path):
+        """The standard install (sys.prefix == default venv) keeps its Scripts dir on PATH."""
+        from hermes_cli import stdio
+
+        appdata = tmp_path / "appdata"
+        default_scripts = appdata / "hermes" / "hermes-agent" / "venv" / "Scripts"
+        default_scripts.mkdir(parents=True)
+
+        monkeypatch.setattr(stdio, "is_windows", lambda: True)
+        monkeypatch.setenv("LOCALAPPDATA", str(appdata))
+        monkeypatch.setattr(sys, "prefix", str(default_scripts.parent))
+        monkeypatch.setenv("PATH", "")
+
+        stdio._augment_path_with_known_tools()
+
+        entries = os.environ["PATH"].split(os.pathsep)
+        assert str(default_scripts) in entries
+
+
 # ---------------------------------------------------------------------------
 # terminate_pid — the centralized kill primitive
 # ---------------------------------------------------------------------------

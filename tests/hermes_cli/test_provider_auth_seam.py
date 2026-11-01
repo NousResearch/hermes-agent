@@ -164,3 +164,30 @@ def test_oauth_plugin_without_handler_fails_loud_and_builtins_are_untouched(tmp_
     assert _log(tmp_path) == []
     pool = json.loads((tmp_path / "hermes" / "auth.json").read_text(encoding="utf-8"))["credential_pool"]
     assert next(e for e in pool["openrouter"] if e["access_token"] == "sk-or-fixture")["label"] == "personal"
+
+
+def test_external_process_plugin_relogin_hint_never_names_a_failing_auth_add(install_provider, monkeypatch):
+    """An ``external_process`` plugin with no ``auth_handler`` (its vendor CLI owns sign-in) must not be
+    told to run ``hermes auth add <slug> --type oauth``: that exact command fails loud with "ships no
+    auth_handler". The hint points at ``hermes model``, whose external-process flow runs the CLI login."""
+    plugin_dir = install_provider("cli-owned", with_handler=False)
+    init = plugin_dir / "__init__.py"
+    init.write_text(init.read_text(encoding="utf-8").replace(
+        'auth_type="oauth_external"', 'auth_type="external_process", process_command="vendor-cli"'),
+        encoding="utf-8")
+    _rediscover()
+    monkeypatch.setattr("hermes_constants.profile_cli_selector", lambda: "")
+
+    from agent.turn_failure_copy import oauth_relogin_command, relogin_command_hint
+    from hermes_cli.auth_commands import auth_command
+
+    with pytest.raises(SystemExit) as excinfo:
+        auth_command(_parse_auth_args(["add", "cli-owned", "--type", "oauth"]))
+    assert "ships no auth_handler" in str(excinfo.value)
+
+    assert oauth_relogin_command("cli-owned") == "hermes model"
+    assert "auth add" not in relogin_command_hint("cli-owned")
+    # Handler-shipping plugins and built-ins keep their `hermes auth add` command.
+    install_provider("fake-auth")
+    assert oauth_relogin_command("fake-auth") == "hermes auth add fake-auth --type oauth"
+    assert oauth_relogin_command("nous") == "hermes portal"

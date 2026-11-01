@@ -323,41 +323,23 @@ def launcher_text(raw: bytes) -> str:
 
 def _vbs_identity(script: str) -> tuple[str, list[str]]:
     # Recognize the vendor's complete template, not a HERMES_HOME substring
-    # inside an arbitrary executable script. Doubled quotes are VB literals.
-    literal = r'"(?:[^"\r\n]|"")*"'
-    lines = script.splitlines()
-    if len(lines) < 16 or not lines[0].startswith("' "):
+    # inside an arbitrary executable script. The shape comes from
+    # gateway_vbs_template -- the same module the generator writes from -- so a
+    # launcher change can never leave the writer and this verifier disagreeing.
+    # Doubled quotes are VB literals.
+    from hermes_cli import gateway_vbs_template as vbs
+
+    parsed = vbs.parse(script)
+    if parsed is None:
         _unverified()
-    fixed = ["Option Explicit", "Dim sh, env, existing_pp",
-             'Set sh = CreateObject("WScript.Shell")', 'Set env = sh.Environment("PROCESS")']
-    if lines[1:5] != fixed:
+    command = parsed.command
+    if "%" in command or "%" in parsed.home:
         _unverified()
-    env = {}
-    index = 5
-    while index < len(lines):
-        match = re.fullmatch(r'env.Item\("([A-Z_]+)"\) = (' + literal + ')', lines[index])
-        if not match:
-            break
-        if match[1] not in {"HERMES_HOME", "HERMES_SUPERVISED_CHILD", "HERMES_GATEWAY_DETACHED", "PYTHONIOENCODING", "VIRTUAL_ENV"} or match[1] in env:
-            _unverified()
-        env[match[1]] = match[2][1:-1].replace('""', '"')
-        index += 1
-    tail = lines[index:]
-    if len(tail) != 8 or tail[:2] != ['existing_pp = env.Item("PYTHONPATH")', 'If Len(existing_pp) > 0 Then'] or tail[3] != 'Else' or tail[5] != 'End If':
-        _unverified()
-    if not re.fullmatch(r'  env.Item\("PYTHONPATH"\) = ' + literal + r' & existing_pp', tail[2]) or not re.fullmatch(r'  env.Item\("PYTHONPATH"\) = ' + literal, tail[4]):
-        _unverified()
-    if not re.fullmatch(r'sh.CurrentDirectory = ' + literal, tail[6]):
-        _unverified()
-    run = re.fullmatch(r'sh.Run (' + literal + r'), 0, False', tail[7])
-    if not run or not env.get("HERMES_SUPERVISED_CHILD"):
-        _unverified()
-    command = run[1][1:-1].replace('""', '"')
-    if "%" in command or "%" in env.get("HERMES_HOME", ""):
+    if not parsed.env.get("HERMES_SUPERVISED_CHILD"):
         _unverified()
     # The template uses list2cmdline, with no embedded executable quote escapes.
     argv = [part.strip('"') for part in shlex.split(command, posix=False)]
-    return env.get("HERMES_HOME", ""), argv
+    return parsed.home, argv
 
 
 def verify_windows_task(xml: str | bytes, home: Path, account: str, sid: str) -> None:

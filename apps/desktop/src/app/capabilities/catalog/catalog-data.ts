@@ -76,9 +76,14 @@ function webUrl(value: unknown): string | null {
 }
 
 /** Display form of a source or category id: domains stay verbatim (`browse.sh`),
- *  slugs read as words (`software-development` → `Software Development`). */
+ *  slugs read as words (`software-development` → `Software Development`). A value that already
+ *  carries capitals is display text (a toolset name, `macOS`, a translated label), so it stays
+ *  verbatim too. Letters are matched as Unicode (`\p{L}`): with ASCII `\b\w` every letter after
+ *  `ş`, `é` or `ü` started a new word (`işlemleri` → `işLemleri`). */
 export const catalogLabel = (value: string) =>
-  value.includes('.') ? value : value.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+  value.includes('.') || /\p{Lu}/u.test(value)
+    ? value
+    : value.replace(/[-_]+/g, ' ').replace(/(?<![\p{L}\p{N}_])[\p{L}\p{N}]/gu, c => c.toUpperCase())
 
 const isoDate = (value: unknown) => (Number.isFinite(Date.parse(text(value))) ? text(value) : undefined)
 

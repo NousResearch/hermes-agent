@@ -661,3 +661,27 @@ def test_roster_change_while_waiting_suppresses_result(relay, monkeypatch):
     result = relay.call()
     assert result['status'] == 'incomplete'
     assert 'SHOULD NOT LEAK' not in json.dumps(result)
+
+
+def test_allowlisted_sender_gets_only_non_sensitive_denial_stage(relay):
+    relay.context['chat_type'] = 'group'
+    before = events(relay)
+    result = relay.call()
+    assert result == {'status': 'denied', 'reason': 'relay_not_authorized', 'check': 'not_private_dm'}
+    assert events(relay) == before
+
+
+def test_unlisted_sender_does_not_get_diagnostic_stage(relay):
+    relay.context['user_id'] = relay.context['chat_id'] = 'foreign'
+    result = relay.call()
+    assert result == {'status': 'denied', 'reason': 'relay_not_authorized'}
+    assert 'fixture-sender' not in json.dumps(result)
+    assert events(relay) == []
+
+
+def test_incomplete_bound_context_reports_only_coarse_check(relay):
+    relay.context['session_key'] = ''
+    result = relay.call()
+    assert result == {'status': 'denied', 'reason': 'relay_not_authorized',
+                      'check': 'bound_context_incomplete'}
+    assert events(relay) == []

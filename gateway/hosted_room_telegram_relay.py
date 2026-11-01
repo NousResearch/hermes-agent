@@ -2,6 +2,7 @@
 import contextvars
 import hashlib
 import json
+import logging
 import re
 from pathlib import Path
 import threading
@@ -21,6 +22,15 @@ MAX_RESULT_CHARS = 16000
 
 _worker_lock = threading.Lock()
 _poll_lock = threading.Lock()
+logger = logging.getLogger(__name__)
+
+
+class RelayAuthorizationDenied(Exception):
+    """Authorization failure with a non-sensitive internal stage label."""
+
+    def __init__(self, stage):
+        super().__init__(stage)
+        self.stage = stage
 
 
 def _bound_identity():
@@ -29,13 +39,34 @@ def _bound_identity():
     return {name: session_context.bound_session_value('HERMES_SESSION_' + name) for name in names}
 
 
+def _identity_failure(identity, recipient, message):
+    if not all(isinstance(v, str) and v for v in identity.values()):
+        return 'bound_context_incomplete'
+    if identity['PLATFORM'] != 'telegram':
+        return 'wrong_platform'
+    if identity['CHAT_TYPE'] != 'dm' or identity['CHAT_ID'] != identity['USER_ID']:
+        return 'not_private_dm'
+    if identity['PROFILE'] != 'default':
+        return 'wrong_profile'
+    if recipient != 'server':
+        return 'recipient_not_allowed'
+    if not isinstance(message, str) or not message.strip() or len(message) > MAX_MESSAGE_CHARS:
+        return 'invalid_message'
+    return None
+
+
 def _identity_allowed(identity, recipient, message):
-    return (all(isinstance(v, str) and v for v in identity.values())
-            and identity['PLATFORM'] == 'telegram' and identity['CHAT_TYPE'] == 'dm'
-            and identity['CHAT_ID'] == identity['USER_ID']
-            and identity['PROFILE'] == 'default' and recipient == 'server'
-            and isinstance(message, str) and bool(message.strip())
-            and len(message) <= MAX_MESSAGE_CHARS)
+    return _identity_failure(identity, recipient, message) is None
+
+
+def _configured_sender(identity):
+    try:
+        config = yaml.safe_load((get_hermes_home() / 'config.yaml').read_text()) or {}
+        allowed = config.get('telegram_room_relay', {}).get('allowed_senders')
+        return (isinstance(allowed, list) and len(allowed) == 1
+                and isinstance(allowed[0], str) and identity.get('USER_ID') == allowed[0])
+    except Exception:
+        return False
 
 
 def _valid_members(members):
@@ -89,18 +120,35 @@ def _room_members(service, room_id, approved):
 
 def _authorize(runner, recipient, message):
     identity = _bound_identity()
-    if not _identity_allowed(identity, recipient, message) or getattr(runner, '_draining', False):
-        raise RuntimeStoreError('permission_denied')
-    authority = active_authority(runner)
-    if (authority is None or getattr(authority, 'retiring', False)
-            or served_profile_name(authority.profile_id) != 'default'
-            or Path(authority.profile_id).resolve() != get_hermes_home().resolve()):
-        raise RuntimeStoreError('permission_denied')
-    grant = _local_grant(authority, identity)
-    service = _active_service(authority)
+    stage = _identity_failure(identity, recipient, message)
+    if stage:
+        raise RelayAuthorizationDenied(stage)
+    if runner is None or getattr(runner, '_draining', False):
+        raise RelayAuthorizationDenied('gateway_unavailable')
+    try:
+        authority = active_authority(runner)
+        if (authority is None or getattr(authority, 'retiring', False)
+                or served_profile_name(authority.profile_id) != 'default'
+                or Path(authority.profile_id).resolve() != get_hermes_home().resolve()):
+            raise RelayAuthorizationDenied('gateway_profile_mismatch')
+    except RelayAuthorizationDenied:
+        raise
+    except Exception as exc:
+        raise RelayAuthorizationDenied('gateway_profile_unavailable') from exc
+    try:
+        grant = _local_grant(authority, identity)
+    except Exception as exc:
+        raise RelayAuthorizationDenied('relay_config_or_sender_mismatch') from exc
+    try:
+        service = _active_service(authority)
+    except Exception as exc:
+        raise RelayAuthorizationDenied('hosted_room_service_unavailable') from exc
     # Canonical create_room rejects roster changes for an already-owned room; _owned_authority above
     # fails closed for legacy/unowned rooms, so no supported API can mutate this roster before send.
-    members = _room_members(service, grant['room_id'], grant['members'])
+    try:
+        members = _room_members(service, grant['room_id'], grant['members'])
+    except Exception as exc:
+        raise RelayAuthorizationDenied('room_ownership_or_roster_mismatch') from exc
     # Session IDs/keys rotate on /new and compression; dedupe by the bound inbound message instead.
     stable = {name: identity[name] for name in
               ('PLATFORM', 'CHAT_TYPE', 'USER_ID', 'CHAT_ID', 'PROFILE', 'MESSAGE_ID')}
@@ -174,6 +222,15 @@ def _submit_or_resume(service, room_id, key, message, deadline):
 def _operation(runner, recipient, message, request_id, deadline, result, sync):
     try:
         service, room_id, key, members, approved = _authorize(runner, recipient, message)
+    except RelayAuthorizationDenied as exc:
+        identity = _bound_identity()
+        denied = {'status': 'denied', 'reason': 'relay_not_authorized'}
+        if _configured_sender(identity):
+            logger.warning('Bot Mode relay authorization denied at stage=%s', exc.stage)
+            denied['check'] = exc.stage
+        elif exc.stage == 'bound_context_incomplete':
+            denied['check'] = exc.stage
+        return denied
     except (RuntimeStoreError, hosted_rooms.HostedRoomError, OSError, ValueError,
             TypeError, AttributeError, yaml.YAMLError):
         return {'status': 'denied', 'reason': 'relay_not_authorized'}

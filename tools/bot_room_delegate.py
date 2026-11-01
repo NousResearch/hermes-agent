@@ -34,6 +34,7 @@ registry.register(
                        'Timeout/incomplete means work may still be pending; do not claim completion '
                        'or silently resubmit. If a request_id is returned, use bot_room_result. '
                        'If no request_id is present, authorization did not complete and no task was submitted. '
+                       'A denied result may include a coarse check label for the configured sender, never identifiers. '
                        'Room member sessions retain their normal room history.',
         'parameters': {
             'type': 'object', 'additionalProperties': False,

@@ -458,10 +458,12 @@ starts another discussion or approves an action.
 Retain the stable 64-hex `request_id` returned after successful authorization,
 including timeout and incomplete responses. Use read-only `bot_room_result(request_id)`
 to retrieve late results; never silently resubmit. If no `request_id` is returned,
-authorization did not complete and no task was submitted. Polling rechecks the same DM
-grant and exact roster, verifies the fixed-room submission, and uses a separate
-worker guard so a blocked submit cannot prevent retrieval. Polling also has a fixed
-120-second deadline. Missing submissions or unfinished discussions return incomplete/pending.
+authorization did not complete and no task was submitted. A denied result may include
+a coarse check label for the configured sender only; it never contains identifiers
+or local configuration values. Polling rechecks the same DM grant and exact roster,
+verifies the fixed-room submission, and uses a separate worker guard so a blocked
+submit cannot prevent retrieval. Polling also has a fixed 120-second deadline.
+Missing submissions or unfinished discussions return incomplete/pending.
 
 Only nonempty committed replies from configured member profiles matching both the generated
 discussion and thread are returned to Telegram, each prefixed with its profile

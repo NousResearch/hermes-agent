@@ -1,4 +1,4 @@
-"""Tests for the Brave Search (free tier) web search provider.
+"""Tests for the Brave Search web search provider.
 
 Covers:
 - BraveFreeWebSearchProvider.is_available() env var gating

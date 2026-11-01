@@ -569,6 +569,7 @@ import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstra
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
+import { managedSshConfig, resolveSharedSshProfileBackend } from './ssh-shared-profile-backend'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { installSystemCaTrust } from './system-ca'
@@ -10632,15 +10633,7 @@ async function ensureRegistryBackend(
     }
 
     if (!resolvedRegistrySshConfig) {
-      resolvedRegistrySshConfig = normalizeSshConfig({
-        mode: 'ssh',
-        host: source.host,
-        user: source.user,
-        port: source.port,
-        keyPath: source.keyPath,
-        remoteHermesPath: source.remoteHermesPath,
-        remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
-      })
+      resolvedRegistrySshConfig = managedSshConfig(source, profileKey)
     }
 
     return resolvedRegistrySshConfig
@@ -10753,6 +10746,18 @@ async function ensureRegistryBackend(
 
   const key = backendScopeKey(id, profile)
   const existing = backendPool.get(key)
+
+  // One remote `hermes serve` per SSH host: a named profile rides the default backend when it can.
+  const shared = existing ? null : await resolveSharedSshProfileBackend(source, profile, {
+    ensureDefault: (): Promise<any> => ensureRegistryBackend(id, 'default', managedUpdateCorrelation, { passive }),
+    listProfiles: descriptor => getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 })
+  })
+
+  if (shared) {
+    setWslBridgeProfileState(shared.profile, false)
+
+    return shared
+  }
 
   if (existing) {
     const connectionPromise = existing.connectionPromise
@@ -10958,20 +10963,6 @@ async function restoreManagedPrimarySshBackend(source, profile, correlationId) {
       managedPrimaryRestoreOwners.delete(source.id)
     }
   }
-}
-
-function managedSshConfig(source, profile = '') {
-  const profileKey = String(profile ?? '').trim() || 'default'
-
-  return normalizeSshConfig({
-    mode: 'ssh',
-    host: source.host,
-    user: source.user,
-    port: source.port,
-    keyPath: source.keyPath,
-    remoteHermesPath: source.remoteHermesPath,
-    remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
-  })
 }
 
 async function captureManagedSshScopes(source) {

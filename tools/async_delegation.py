@@ -287,6 +287,7 @@ def recover_abandoned_delegations() -> int:
     if alive is None:
         return 0
     now, recovered = time.time(), 0
+    manifests = []
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
@@ -327,7 +328,12 @@ def recover_abandoned_delegations() -> int:
             conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,
                    updated_at=?, event_json=?, result_json=?, delivery_state='pending'
                    WHERE delegation_id=?""", (now, now, json.dumps(event), json.dumps(result), delegation_id))
+            manifests.append((delegation_id, task, recovered_results))
             recovered += 1
+    # The ledger owns the outcome; repair its best-effort live view only after commit.
+    from tools.delegation_live_log import recover_manifest_statuses
+    for delegation_id, task, results in manifests:
+        recover_manifest_statuses(delegation_id, task, results)
     return recovered
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import threading
 import time
@@ -286,7 +287,8 @@ def _write_manifest(delegation_id: str, task_list: list[dict[str, Any]],
 
 def update_manifest_statuses(delegation_id: Optional[str],
                              results: list[dict[str, Any]],
-                             home: Optional[Path] = None, *, completed: bool = True) -> None:
+                             home: Optional[Path] = None, *, completed: bool = True,
+                             recovered: bool = False) -> None:
     """Best-effort per-task status update once the batch has aggregated (``completed=False``: tasks settled
     before the batch ran, e.g. ones their backend refused, while the rest still run)."""
     if not delegation_id:
@@ -297,7 +299,7 @@ def update_manifest_statuses(delegation_id: Optional[str],
         by_index = {r.get("task_index"): r for r in results if isinstance(r, dict)}
         for task in manifest.get("tasks", []):
             r = by_index.get(task.get("index"))
-            if r is not None:
+            if r is not None and (not recovered or task.get("status") == "running"):
                 task["status"] = r.get("status", task.get("status"))
                 if r.get("exit_reason"):
                     task["exit_reason"] = r["exit_reason"]
@@ -306,9 +308,26 @@ def update_manifest_statuses(delegation_id: Optional[str],
         # The dispatch-time model is only the delegation.model override (None when children inherit the parent's).
         if not manifest.get("model"):
             manifest["model"] = next((t["model"] for t in manifest.get("tasks", []) if t.get("model")), None)
-        if completed:
+        if completed and all(t.get("status") != "running" for t in manifest.get("tasks", [])):
             manifest["completed"] = time.strftime(_TIME_FMT)
         _dump_json(mp, manifest)
+
+
+def recover_manifest_statuses(delegation_id: str, task: dict[str, Any],
+                              results: Optional[list[dict[str, Any]]]) -> None:
+    """Mirror the ledger's dead-owner recovery, preserving known outcomes and other units.
+
+    Independent units suffix the call's live-directory id with ``-1``, ``-2``, etc.
+    Recovery runs in the ledger's owning profile; never follow stored transcript paths.
+    """
+    match = re.fullmatch(r"(deleg_[0-9a-f]{8})(?:-[1-9][0-9]*)?", delegation_id)
+    if match is None:
+        return
+    indexes = task.get("task_indexes")
+    if indexes is None:
+        indexes = range(len(task.get("goals") or [])) if task.get("is_batch") else [0]
+    entries = results or [{"task_index": i, "status": "unknown"} for i in indexes]
+    update_manifest_statuses(match[1], entries, recovered=True)
 
 
 def prune_stale_live_dirs(max_age_days: int = LIVE_RETENTION_DAYS, root: Optional[Path] = None) -> int:

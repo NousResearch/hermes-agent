@@ -235,6 +235,8 @@ export const ga: Translations = {
     component: "Comhpháirt",
     lines: "Línte",
     noLogLines: "Níor aimsíodh línte loga",
+    copy: "Cóipeáil",
+    copied: "Cóipeáilte",
   },
 
   cron: {

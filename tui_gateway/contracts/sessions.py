@@ -387,7 +387,7 @@ method("session.cwd.set", params=SessionCwdSetParams, result=SessionCwdSetResult
 
 
 class SessionCloseParams(SessionParams):
-    pass
+    end_reason: str | None = None
 
 
 class SessionCloseResult(Result):
@@ -397,7 +397,7 @@ class SessionCloseResult(Result):
 
 
 method("session.close", params=SessionCloseParams, result=SessionCloseResult,
-       doc="Tear down a live session (its stored row stays resumable).")
+       doc="Tear down a live session (its stored row stays resumable). end_reason is an optional lowercase snake_case lifecycle reason.")
 
 
 class SessionBranchParams(SessionParams):

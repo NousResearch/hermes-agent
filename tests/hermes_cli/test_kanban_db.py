@@ -469,6 +469,44 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+def test_respawn_guard_holds_the_whole_profile_while_its_provider_is_walled(kanban_home, monkeypatch):
+    """A rate-limited run of profile ``a`` holds every OTHER card of ``a`` for the cooldown (their spawn
+    would only park a slot behind the same wall); another profile is untouched, and a later run of ``a``
+    that ended otherwise (the provider answered) lifts it."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+    with kbc.connect() as conn:
+        walled = kb.create_task(conn, title="walled", assignee="a")
+        sibling = kb.create_task(conn, title="sibling", assignee="a")
+        other = kb.create_task(conn, title="other", assignee="b")
+        kb.claim_task(conn, walled)
+        run_id = kb.get_task(conn, walled).current_run_id
+        conn.execute("UPDATE task_runs SET outcome='rate_limited', status='rate_limited', ended_at=? WHERE id=?",
+                     (now, run_id))
+        conn.execute("UPDATE tasks SET status='ready', current_run_id=NULL, claim_lock=NULL, claim_expires=NULL, "
+                     "worker_pid=NULL WHERE id=?", (walled,))
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        assert kbd.check_respawn_guard(conn, sibling) == "provider_rate_limit_cooldown"
+        assert kbd.check_respawn_guard(conn, other) is None
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 400)  # cooldown elapsed: a probe is allowed
+        assert kbd.check_respawn_guard(conn, sibling) is None
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+
+        # the provider answered: a later run of ``a`` that ended otherwise supersedes the wall
+        kb.claim_task(conn, sibling)
+        conn.execute("UPDATE task_runs SET outcome='completed', status='done', ended_at=? "
+                     "WHERE id=(SELECT current_run_id FROM tasks WHERE id=?)", (now + 50, sibling))
+        conn.execute("UPDATE tasks SET status='ready', current_run_id=NULL, claim_lock=NULL, claim_expires=NULL, "
+                     "worker_pid=NULL WHERE id=?", (sibling,))
+        conn.commit()
+        nxt = kb.create_task(conn, title="next", assignee="a")
+        assert kbd.check_respawn_guard(conn, nxt) is None
+
+
 @pytest.mark.parametrize(
     "error_text, expected",
     [

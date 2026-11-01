@@ -130,6 +130,47 @@ def test_reaching_the_model_resets_ladder_and_oneshots_never_retry(tmp_cron_home
     assert remaining is None or remaining.get(ur.STATE_KEY) is None
 
 
+def test_summarized_offline_prose_still_counts_as_transient(tmp_cron_home):
+    """The error summarizer folds raw DNS/transport errors into a canonical offline sentence and
+    the scheduler re-raises that prose bare (no ``__cause__``); the transient matcher must
+    recognize the sentence itself or offline cron failures never enter the retry ladder
+    (#118536)."""
+    from cron.scheduler_preflight import _is_transient_provider_resolve_error as is_transient
+
+    offline = RuntimeError(
+        "Hermes can't reach the model provider. You may be offline. "
+        "Check your internet connection and try again.")
+    assert is_transient(offline) is True
+    # Embedded the way a failure payload prefixes it (e.g. "cron run failed: <summary>").
+    assert is_transient(RuntimeError(f"cron run failed: {offline}")) is True
+
+    # A run cut off mid-flight (desktop app quit, long-run watchdog) fails with
+    # conversation_loop's cancellation prose and the elapsed time inlined — the prefix must
+    # match without pinning the number (#118536 follow-up).
+    assert is_transient(RuntimeError(
+        "Operation interrupted: waiting for model response (1062.0s elapsed).")) is True
+    assert is_transient(RuntimeError(
+        "Operation interrupted: waiting for model response (2.1s elapsed).")) is True
+    # The loop's own backoff-path interrupt prose stays out of the ladder: those are retry
+    # bookkeeping, not a fresh never-spent run.
+    assert is_transient(RuntimeError(
+        "Operation interrupted: retrying API call after error (retry 2/5).")) is False
+    assert is_transient(RuntimeError(
+        "Operation interrupted: handling API error (RateLimitError: 429).")) is False
+
+    # Auth/billing/idle/tool failures stay non-transient — no retry ladder for those.
+    assert is_transient(RuntimeError("401 Unauthorized")) is False
+    assert is_transient(RuntimeError("429 rate limited, retry after 60s")) is False
+    assert is_transient(RuntimeError("idle for 0s (limit 600s)")) is False
+    assert is_transient(RuntimeError("tool error: nonexistent_script.py not found")) is False
+    assert is_transient(RuntimeError("")) is False
+
+    # Raw transport shapes (the pre-summarizer world) keep matching.
+    import socket
+    assert is_transient(socket.gaierror(socket.EAI_NONAME, "nodename nor servname")) is True
+    assert is_transient(RuntimeError("nodename nor servname provided, or not known")) is True
+
+
 @pytest.mark.parametrize("rung_tail", ["finish", "crash", "worker", "ownership_lost"])
 def test_ladder_reruns_do_not_spend_extra_repeat_budget(tmp_cron_home, monkeypatch, rung_tail):
     """A ladder re-run repeats an occurrence that already counted toward ``repeat``, so it must

@@ -1,0 +1,3 @@
+name: living-subsystems
+version: 1.0.0
+description: "Independent JSON-backed subsystems (governance audit, science loop, reflective learnings, fitness functions) with a uniform run()/status() contract and a `hermes subsystems` command for cron use."

@@ -918,11 +918,20 @@ def _handle_request_review(args: dict, **kw) -> str:
 
 @_kanban_handler("kanban_request_changes")
 def _handle_request_changes(args: dict, **kw) -> str:
-    """Return a reviewer-owned running task to its implementer."""
+    """Return an active review run or an idle review card to its implementer."""
     tid = _worker_guard("kanban_request_changes", args)
     reason = _redact(
         _require_text(args, "reason", "reason is required — describe the changes needed"))
     with _board(args.get("board")) as (kb, conn):
+        if not os.environ.get("HERMES_KANBAN_TASK"):
+            task = _existing_task(kb, conn, tid)
+            _check(task.status == "review",
+                   f"could not request changes for {tid}: task is not in review")
+            kb.add_comment(conn, tid, author=_persisted_identity(), body=reason)
+            _check(kb.reopen_review_task(conn, tid),
+                   f"could not request changes for {tid}: task is no longer in review")
+            return _ok_landed(kb, conn, tid, "ready",
+                              implementer=kb.get_task(conn, tid).assignee)
         ok, detail = kb.request_changes(
             conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
         _check(ok, f"could not request changes for {tid}: {detail or 'invalid review state'}")

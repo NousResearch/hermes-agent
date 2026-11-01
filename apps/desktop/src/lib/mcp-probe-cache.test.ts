@@ -15,13 +15,24 @@ describe('classifyProbe', () => {
     'HTTP 401 Unauthorized',
     'invalid_token: The access token expired',
     'OAuth authorization required',
-    'authentication failed'
+    'OAuth: authorization required',
+    'authentication failed',
+    'HTTP 403 Forbidden',
+    "MCP OAuth for 'learn': non-interactive environment and no cached tokens found. Run `hermes mcp login learn` interactively first to complete initial authorization.",
+    'MCP device authorization requires `hermes mcp login <server> --flow device`; background reconnects cannot start a device login',
+    'MCP OAuth requires browser authorization but no interactive session is available (non-interactive/background context).',
+    'OAuth callback requires an interactive session but none is available (non-interactive/background context)'
   ])('classifies "%s" as needs-auth', error => {
     expect(classifyProbe(result({ ok: false, error }))).toBe('needs-auth')
   })
 
-  it('classifies other failures as error', () => {
-    expect(classifyProbe(result({ ok: false, error: 'ECONNREFUSED 127.0.0.1:3845' }))).toBe('error')
+  it.each([
+    'ECONNREFUSED 127.0.0.1:3845',
+    "MCP server 'rea' test timed out after 60s (bounded by connect_timeout; an OAuth login also by oauth.timeout)",
+    'OAuth transport connection refused',
+    'authentication timeout setting is 60s'
+  ])('classifies non-auth failure "%s" as error', error => {
+    expect(classifyProbe(result({ ok: false, error }))).toBe('error')
   })
 
   it('classifies a failure without an error string as error', () => {

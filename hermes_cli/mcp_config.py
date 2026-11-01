@@ -459,9 +459,14 @@ def _probe_single_server(
             server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
         except TimeoutError:
             # str(TimeoutError()) is '' — printed verbatim it was a blank "Authentication failed:".
+            timeout_hint = (
+                "bounded by connect_timeout; an OAuth login also by oauth.timeout"
+                if config.get("url")
+                else "bounded by connect_timeout"
+            )
             raise TimeoutError(
                 f"Connecting to MCP server '{name}' timed out after {float(connect_timeout):.0f}s "
-                "(bounded by connect_timeout; an OAuth login also by oauth.timeout)"
+                f"({timeout_hint})"
             ) from None
         finally:
             _core._connect_server_claim.reset(claim_token)

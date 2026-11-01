@@ -22,7 +22,7 @@ import re
 import sys
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_cli.gateway_client import AnswerLost, GatewayClientError, GatewayRPCError
 from hermes_cli.gateway_connection import RESUME_REFUSALS, GatewayConnection
 
 logger = logging.getLogger(__name__)
@@ -70,6 +70,9 @@ class GatewaySessionStore:
         self.current: dict | None = None
         self._reader = None
         self._create_parameters = None
+        # (params, request_id) of a create whose answers were both lost: the owner may still have
+        # created it, so the next create of the same request asks under that id again.
+        self._unanswered_create = None
 
     def __bool__(self):
         return not self.connection.final
@@ -121,6 +124,9 @@ class GatewaySessionStore:
         return self.connection.call(method, **params)
 
     def _adopt(self, snapshot):
+        # Any session this viewer takes up (created, resumed, branched) settles a held create: a later
+        # /new must not land on the session a lost ask made, which may be the one now in use.
+        self._unanswered_create = None
         sid = snapshot["stored_session_id"]
         self.snapshots[sid] = snapshot
         self.current = snapshot
@@ -174,7 +180,20 @@ class GatewaySessionStore:
         if title:
             params["title"] = title
         params.update(self.client_env())
-        snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
+        held = self._unanswered_create
+        reused = bool(held) and held[0] == params
+        request_id = held[1] if reused else uuid.uuid4().hex
+        # Held until an answer settles it (_adopt): any failure may follow the owner's commit (a lost
+        # answer, Ctrl+C, storage_unavailable or request_failed after it), and holding an id the owner
+        # never used costs nothing, since the next ask simply creates under it.
+        self._unanswered_create = (params, request_id)
+        try:
+            snapshot = _create_session(self.call, params, request_id)
+        except GatewayRPCError as exc:
+            if _verdict_on_the_id(exc):  # every later ask under it would be refused the same way
+                self._unanswered_create = None if reused else held
+            raise
+
         warning = (snapshot.get("info") or {}).get("config_warning")
         if warning:
             print(f"Warning: {warning}", file=sys.stderr)
@@ -548,6 +567,31 @@ def move_cli_workspace(cli, wt_info):
     os.environ["TERMINAL_CWD"] = cwd
 
 
+def _create_session(call, params, request_id):
+    """``session.create`` asked again once, under the same ``request_id``, when its answer was lost
+    (:class:`AnswerLost`). The owner derives the session id from the request id
+    (``hermes_state_keys.local_identity``, applied by ``gateway.session_local.stage_local_session``),
+    so a repeat resolves to the same session whether the first build has committed or is still in
+    flight. A fresh id would build a second agent and orphan the first session. Any failure raises as
+    is."""
+    try:
+        return call("session.create", request_id=request_id, **params)
+    except AnswerLost as exc:
+        logger.info("session.create answer lost (%s); asking again under the same request_id", exc)
+        return call("session.create", request_id=request_id, **params)
+
+
+def _verdict_on_the_id(exc):
+    """The owner refused the request id itself: it is malformed, or the session under it carries
+    another frozen request (both ``invalid_params`` naming ``request_id``) or another launch key
+    (``admission_conflict``), in ``gateway.session_local.stage_local_session``; or the session under
+    it was deleted (``not_found`` from its tombstone, ``hermes_state_local``). Every later ask under
+    that id would be refused the same way. A refusal about anything else (``invalid_params`` for an
+    unavailable ``cwd``, ``runtime_draining``) is not one."""
+    return (str(exc) in ("admission_conflict", "not_found")
+            or (str(exc) == "invalid_params" and exc.data.get("field") == "request_id"))
+
+
 def session_store():
     return GatewaySessionStore()
 
@@ -565,7 +609,7 @@ def create_titled_session(title):
     try:
         store = session_store()
         params.update(store.client_env())
-        snapshot = store.call("session.create", request_id=uuid.uuid4().hex, title=title, **params)
+        snapshot = _create_session(store.call, {**params, "title": title}, uuid.uuid4().hex)
     except GatewayClientError as exc:
         logger.warning("Failed to create titled session %r on the gateway: %s", title, exc)
         return None

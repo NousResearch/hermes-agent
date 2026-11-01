@@ -55,6 +55,13 @@ DISCONNECTED = ("Gateway disconnected; turn outcome is unknown. "
 NOT_SENT = "Gateway disconnected before the request was sent; nothing was sent."
 
 
+class AnswerLost(GatewayClientError):
+    """The request may have reached the owner, but its answer never came back: the deadline passed
+    (``GatewayConnection.call_tagged``), the socket dropped after the send (this client's reader), or
+    the send itself failed after the frame may have left (:meth:`GatewayClient.rpc`). A retry must
+    reuse the request's own identity."""
+
+
 class GatewayRPCError(GatewayClientError):
     """A received owner refusal, distinct from an ambiguous transport failure.
 
@@ -202,7 +209,7 @@ class GatewayClient:
         except (ConnectionClosed, OSError, ValueError, TimeoutError):
             pass
         finally:
-            error = GatewayClientError(DISCONNECTED)
+            error = AnswerLost(DISCONNECTED)
             for future in self.pending.values():
                 if not future.done():
                     future.set_exception(error)
@@ -212,15 +219,18 @@ class GatewayClient:
                 self.events.get_nowait()
             self.events.hold(error)
 
+    def hung_up(self):
+        """This socket can carry no new request: it is closing (a keepalive timeout fails it, then
+        waits up to ``close_timeout`` for the peer, so it is never written to), or its reader ended
+        (closed socket, bad frame, stalled consumer: no answer could be read)."""
+        from websockets.protocol import State
+        return self.websocket.state is not State.OPEN or (self.reader is not None and self.reader.done())
+
     async def rpc(self, method, *, _timeout=None, **params):
         """Send one request and await its answer; ``_timeout`` (seconds, never sent on the wire)
         overrides ``DEFAULT_RPC_TIMEOUT`` for a verb that legitimately takes longer (``math.inf``: no
         deadline; the answer, a hang-up or the caller's cancel ends the wait)."""
-        from websockets.protocol import State
-        if self.websocket.state is not State.OPEN or (self.reader is not None and self.reader.done()):
-            # A closing socket (a keepalive timeout fails it, then waits up to close_timeout for the
-            # peer) is never written to, and a reader that ended (closed socket, bad frame, stalled
-            # consumer) could not read the answer: refuse before writing, so the caller knows nothing left.
+        if self.hung_up():  # refuse before writing, so the caller knows nothing left
             raise GatewayClientError(NOT_SENT)
         self.sequence += 1
         rid = self.sequence
@@ -232,8 +242,9 @@ class GatewayClient:
             try:
                 await self.websocket.send(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
             except (ConnectionClosed, OSError) as exc:
-                # The frame may have left before the socket died: the same unknown outcome as a lost answer.
-                raise GatewayClientError(DISCONNECTED) from exc
+                # The frame may have left before the socket died (a reset while send drains): a lost
+                # answer, so a caller that asks again reuses the request's identity.
+                raise AnswerLost(DISCONNECTED) from exc
             budget = DEFAULT_RPC_TIMEOUT if _timeout is None else _timeout
             return await asyncio.wait_for(future, None if budget == float("inf") else budget)
         finally:

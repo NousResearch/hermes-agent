@@ -7,7 +7,7 @@ import pytest
 from websockets.exceptions import ConnectionClosedError
 from websockets.protocol import State
 
-from hermes_cli.gateway_client import NOT_SENT, GatewayClient, GatewayClientError, GatewayRPCError
+from hermes_cli.gateway_client import NOT_SENT, AnswerLost, GatewayClient, GatewayClientError, GatewayRPCError
 
 
 class _Socket:
@@ -91,7 +91,7 @@ async def test_send_on_a_dead_socket_is_a_client_error_not_a_raw_websockets_one(
             raise ConnectionClosedError(None, None)
 
     async with GatewayClient(_Dead(lambda req: None)) as client:
-        with pytest.raises(GatewayClientError, match='turn outcome is unknown'):
+        with pytest.raises(AnswerLost, match='turn outcome is unknown'):  # the frame may have left
             await client.rpc('subagent.list', session_id='s')
         assert client.pending == {}
 
@@ -177,3 +177,42 @@ async def test_a_send_that_fails_after_the_reader_failed_its_request_logs_nothin
     finally:
         loop.set_exception_handler(previous)
     assert not [m for m in logged if 'never retrieved' in str(m)]
+
+
+@pytest.mark.asyncio
+async def test_a_request_failed_by_a_hang_up_already_sees_the_socket_hung_up():
+    """A caller on another thread wakes the moment its request fails and may ask again at once
+    (session.create does): by then the client must already read as hung up, so the connection
+    redials instead of writing the retry to the dying socket."""
+    seen = []
+
+    class _HangsUp(_Socket):
+        async def __anext__(self):
+            await self.inbox.get()
+            raise StopAsyncIteration
+
+    class _Pending(dict):  # a done callback runs when the reader fails the request, like a waiting thread
+        def __setitem__(self, rid, future):
+            future.add_done_callback(lambda _f: seen.append(client.hung_up()))
+            super().__setitem__(rid, future)
+
+    async with GatewayClient(_HangsUp(lambda req: {'sent': True})) as client:
+        client.pending = _Pending()
+        with pytest.raises(AnswerLost):
+            await client.rpc('session.create', request_id='r')
+    assert seen == [True]
+
+
+@pytest.mark.asyncio
+async def test_an_answer_cut_off_by_a_hang_up_is_answer_lost():
+    """The socket drops after the send: the request may have reached the owner, so a caller that
+    retries must reuse its identity (``AnswerLost``), unlike a request that never left."""
+
+    class _HangsUp(_Socket):
+        async def __anext__(self):
+            await self.inbox.get()  # the request was sent; the socket then closes without answering
+            raise StopAsyncIteration
+
+    async with GatewayClient(_HangsUp(lambda req: {'sent': True})) as client:
+        with pytest.raises(AnswerLost, match='turn outcome is unknown'):
+            await client.rpc('session.create', request_id='r')

@@ -643,7 +643,7 @@ class TestSignalSendDocumentViaHelper:
 
 
 class TestSignalSendReturnsMessageId:
-    """Signal send() should not pretend sent messages are editable."""
+    """Signal send() returns signal-cli's timestamp as the editable message id."""
 
     @pytest.mark.asyncio
     async def test_send_chunks_long_messages_without_truncation_footer(self, monkeypatch):
@@ -761,7 +761,7 @@ class TestSignalSendReturnsMessageId:
         adapter._rpc.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_send_returns_none_message_id_even_with_timestamp(self, monkeypatch):
+    async def test_send_returns_timestamp_message_id(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
         mock_rpc, _ = _stub_rpc({"timestamp": 1712345678000})
         adapter._rpc = mock_rpc
@@ -770,7 +770,7 @@ class TestSignalSendReturnsMessageId:
         result = await adapter.send(chat_id="+155****4567", content="hello")
 
         assert result.success is True
-        assert result.message_id is None
+        assert result.message_id == "1712345678000"
 
 
 class TestSignalSendResultValidation:

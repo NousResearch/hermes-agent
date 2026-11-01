@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform, StreamingConfig
+from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import resolve_proxy_url
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
@@ -235,6 +235,57 @@ class TestRunAgentProxyDispatch:
 
 class TestRunAgentViaProxy:
     """Test the actual proxy HTTP forwarding logic."""
+
+    @staticmethod
+    def _signal_adapter(monkeypatch):
+        """The real Signal adapter, its JSON-RPC stubbed and every call captured."""
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+        from plugins.platforms.signal.adapter import SignalAdapter
+
+        adapter = SignalAdapter(PlatformConfig(
+            enabled=True, extra={"http_url": "http://localhost:8080", "account": "+155****0000"}))
+        adapter.rpc_calls = []
+
+        async def _rpc(method, params, rpc_id=None, **kwargs):
+            adapter.rpc_calls.append((method, dict(params)))
+            return {"timestamp": 1712345678000 + len(adapter.rpc_calls)}
+
+        adapter._rpc = _rpc
+        return adapter
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("opted_out", [True, False])
+    async def test_signal_streaming_opt_out_skips_proxy_preview(self, monkeypatch, opted_out):
+        """Proxy SSE must not bypass Signal's streaming-edit opt-out; the control run (the same
+        adapter with token streaming allowed) proves the preview path is otherwise reached."""
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        adapter = self._signal_adapter(monkeypatch)
+        if not opted_out:
+            monkeypatch.setattr(type(adapter), "SUPPORTS_STREAMING_EDITS", True)
+        runner = _make_runner()
+        runner.config.streaming = StreamingConfig(enabled=True, transport="edit", edit_interval=0, buffer_threshold=1)
+        runner._delivery_adapter_for = lambda source: adapter
+        session = _FakeSession(_FakeSSEResponse(status=200, sse_chunks=[
+            'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+            'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
+            "data: [DONE]\n\n",
+        ]))
+        config = {"display": {"platforms": {"signal": {"streaming": True}}}}
+
+        with patch("gateway.run._load_gateway_config", return_value=config), _patch_aiohttp(session):
+            result = await runner._run_agent_via_proxy(
+                message="hi", context_prompt="", history=[], source=_make_source(Platform.SIGNAL),
+                session_id="signal-proxy",
+            )
+
+        preview_rpcs = [params for method, params in adapter.rpc_calls if method == "send"]
+        assert result["final_response"] == "Hello world"
+        if opted_out:
+            assert result["response_previewed"] is False
+            assert preview_rpcs == []
+        else:
+            assert preview_rpcs, "control: a streaming-capable adapter must receive the proxy preview"
 
     @pytest.mark.asyncio
     async def test_builds_correct_request(self, monkeypatch):

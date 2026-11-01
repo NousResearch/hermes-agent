@@ -18,6 +18,7 @@ from agent.replay_cleanup import strip_stale_dangerous_confirmations
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base_edit_targets import adapter_declines_progress_edits, next_edit_target_message_id
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -603,7 +604,10 @@ class GatewayTurnProgressMixin:
             kwargs["finalize"] = True
         if st._edit_accepts_metadata:
             kwargs["metadata"] = ctx._progress_metadata
-        return await st.adapter.edit_message(**kwargs)
+        result = await st.adapter.edit_message(**kwargs)
+        # Timestamp-chained adapters (Signal) mint the next edit target on every edit.
+        st.progress_msg_id = next_edit_target_message_id(st.adapter, message_id, result)
+        return result
 
     @staticmethod
     def _progress_text(lines: list) -> str:
@@ -733,6 +737,10 @@ class GatewayTurnProgressMixin:
         result = await self._send_progress_text(st, "\n".join(st.progress_lines) if st.can_edit else msg)
         if result.success and result.message_id:
             st.progress_msg_id = result.message_id
+        elif result.success and st.can_edit:
+            # Delivered but not addressable for a later edit: one new line per update from here,
+            # instead of replaying the accumulated transcript into a fresh bubble every tick.
+            st.can_edit = False
         return True
 
     async def send_progress_messages(self):
@@ -746,8 +754,11 @@ class GatewayTurnProgressMixin:
         # Skip tool progress for platforms that can't edit messages (e.g. iMessage/BlueBubbles):
         # each update would be a separate bubble. getattr, not attribute access: duck-typed
         # adapters (test fakes, minimal plugins) may lack edit_message — treated as "can't edit".
+        # An adapter may also edit explicitly yet decline automatic progress edits (Signal before
+        # the user opts in): only a declared SUPPORTS_PROGRESS_EDITS=False counts.
         adapter_edit = getattr(type(adapter), "edit_message", None)
-        if adapter_edit is None or adapter_edit is BasePlatformAdapter.edit_message:
+        if (adapter_declines_progress_edits(adapter) or adapter_edit is None
+                or adapter_edit is BasePlatformAdapter.edit_message):
             self._drain_progress_queue()
             return
         st = self._progress_edit_state(adapter)

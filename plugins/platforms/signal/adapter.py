@@ -181,8 +181,19 @@ class SignalAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     splits_long_messages = True  # send() chunks after markdown → Signal formatting conversion
     serial_receive_loop = True  # _sse_listener awaits each envelope before reading the next
-    # No real edit API; declaring it lets streaming suppress the cursor instead of a stale tofu square.
-    SUPPORTS_MESSAGE_EDITING = False
+    # signal-cli edits text via send(editTimestamp=...). Every edit is a visible event, so token
+    # streaming stays off; the accumulated tool-progress bubble may edit once the user opts in (the
+    # "low" display tier keeps tool_progress off by default). See gateway/platforms/base_edit_targets.py.
+    SUPPORTS_MESSAGE_EDITING = True
+    SUPPORTS_STREAMING_EDITS = False
+    SUPPORTS_PROGRESS_EDITS = True
+    # Each edit mints a fresh timestamp, and the next edit must target that one.
+    EDIT_RESULT_ID_IS_NEXT_TARGET = True
+
+    @property
+    def message_len_fn(self):
+        """Signal measures message length in UTF-16 code units (as send()'s splitter does)."""
+        return utf16_len
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SIGNAL)
@@ -713,18 +724,54 @@ class SignalAdapter(BasePlatformAdapter):
         chunks = self._split_signal_formatted_message(*markdown_to_signal(content), self.MAX_MESSAGE_LENGTH)
         last_result = None
         for idx, (plain_text, text_styles) in enumerate(chunks, start=1):
-            params: dict[str, Any] = dict(base_params, message=plain_text)
-            if len(text_styles) == 1:
-                params["textStyle"] = text_styles[0]
-            elif text_styles:
-                params["textStyles"] = text_styles
+            params = self._with_text_styles(dict(base_params, message=plain_text), text_styles)
             logger.info("[Signal] Sending response chunk %d/%d (%d chars) to %s", idx, len(chunks), len(plain_text),
                         chat_id)
             last_result, err = await self._rpc_send(params, "RPC send failed")
             if err:
                 return err
-        # No editable message identifier; message_id=None keeps the stream consumer on the non-edit path.
-        return SendResult(success=True, message_id=None, raw_response=last_result)
+        # The last chunk's timestamp is the edit handle (SendResult: message_id is the LAST id).
+        return SendResult(success=True, message_id=self._extract_send_timestamp(last_result), raw_response=last_result)
+
+    @staticmethod
+    def _with_text_styles(params: dict[str, Any], text_styles: list[str]) -> dict[str, Any]:
+        """Attach Signal body ranges to send/edit *params* (in place)."""
+        if len(text_styles) == 1:
+            params["textStyle"] = text_styles[0]
+        elif text_styles:
+            params["textStyles"] = text_styles
+        return params
+
+    @staticmethod
+    def _extract_send_timestamp(rpc_result: Any) -> Optional[str]:
+        """signal-cli's send/edit timestamp as an editable message id, or None."""
+        timestamp = rpc_result.get("timestamp") if isinstance(rpc_result, dict) else None
+        if timestamp is None or timestamp == "":
+            return None
+        return str(timestamp)
+
+    async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
+        """Edit a sent text message: signal-cli ``send`` with ``editTimestamp`` set to the message's
+        current timestamp (``message_id``). The edit mints a fresh timestamp, returned as
+        ``message_id`` because the next edit must target it; a reply without one fails closed."""
+        del finalize  # Signal edits have no streaming finalization step.
+        if not message_id:
+            return SendResult(success=False, error="Signal edit requires message_id timestamp")
+        try:
+            edit_timestamp = int(str(message_id))
+        except (TypeError, ValueError):
+            return SendResult(success=False, error="Signal edit requires numeric message_id timestamp")
+        await self._stop_typing_indicator(chat_id)
+        plain_text, text_styles = markdown_to_signal(content)
+        params = await self._with_target(
+            {"account": self.account, "message": plain_text, "editTimestamp": edit_timestamp}, chat_id)
+        result, err = await self._rpc_send(self._with_text_styles(params, text_styles), "RPC edit failed")
+        if err:
+            return err
+        fresh_timestamp = self._extract_send_timestamp(result)
+        if fresh_timestamp is None:
+            return SendResult(success=False, error="Signal edit response missing fresh timestamp", raw_response=result)
+        return SendResult(success=True, message_id=fresh_timestamp)
 
     def _track_sent_timestamp(self, rpc_result) -> None:
         """Record outbound message timestamp for echo-back filtering."""

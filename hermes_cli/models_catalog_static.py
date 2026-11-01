@@ -672,4 +672,4 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
 # against them with ``400 "The requested operation is unsupported."`` (seen on gpt-5.3-codex while
 # gpt-4o on the same endpoint worked). Broad enough for vendor-renamed deployments (gpt-5.x-codex,
 # o1-preview), tight enough to leave GPT-4 / 3.5 / Llama / Mistral / Grok on chat completions.
-_AZURE_FOUNDRY_RESPONSES_PREFIXES = ("codex", "gpt-5", "o1", "o3", "o4")
+_AZURE_FOUNDRY_RESPONSES_PREFIXES = ("codex", "gpt-5", "gpt-6", "o1", "o3", "o4")

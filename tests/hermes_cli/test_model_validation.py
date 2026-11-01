@@ -343,6 +343,19 @@ class TestAzureFoundryModelApiMode:
         assert azure_foundry_model_api_mode("codex") == "codex_responses"
         assert azure_foundry_model_api_mode("codex-mini") == "codex_responses"
 
+    def test_gpt6_family_uses_responses(self):
+        """GPT-6 Luna/Sol 400 on chat/completions with tools+reasoning (#120263). The prefix
+        pins the whole family, not the two names in the title: vendor prefixes, dated snapshots
+        and sibling deployments (astra) resolve identically."""
+        assert azure_foundry_model_api_mode("gpt-6-luna") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-6-sol") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-6.1-sol") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-6-astra") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-6-luna-2026-09-22") == "codex_responses"
+        assert azure_foundry_model_api_mode("azure/gpt-6-sol") == "codex_responses"
+        assert azure_foundry_model_api_mode("azure/gpt-6.1-sol") == "codex_responses"
+        assert azure_foundry_model_api_mode("GPT-6-LUNA") == "codex_responses"
+
 
     def test_gpt4_family_returns_none(self):
         """GPT-4, GPT-4o, etc. speak chat completions on Azure."""
@@ -353,6 +366,7 @@ class TestAzureFoundryModelApiMode:
         assert azure_foundry_model_api_mode("gpt-4-turbo") is None
         assert azure_foundry_model_api_mode("gpt-4.1") is None
         assert azure_foundry_model_api_mode("gpt-3.5-turbo") is None
+        assert azure_foundry_model_api_mode("Kimi-K2.7-Code") is None
 
 
 # -- validate — format checks -----------------------------------------------

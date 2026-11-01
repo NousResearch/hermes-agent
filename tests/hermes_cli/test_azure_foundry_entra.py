@@ -70,6 +70,36 @@ def fake_azure_identity(monkeypatch):
 
 
 class TestResolveAzureFoundryRuntimeEntra:
+    @pytest.mark.parametrize(
+        ("model", "expected_mode"),
+        [
+            ("gpt-6.1-sol", "codex_responses"),
+            ("Kimi-K2.7-Code", "chat_completions"),
+        ],
+    )
+    def test_persisted_config_routes_each_model_without_losing_entra(
+        self, fake_azure_identity, tmp_path, monkeypatch, model, expected_mode,
+    ):
+        import hermes_yaml as yaml
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "model": {
+                "provider": "azure-foundry",
+                "base_url": "https://example.openai.azure.com/openai/v1",
+                "api_mode": "chat_completions",
+                "auth_mode": "entra_id",
+                "default": "gpt-6.1-sol",
+            },
+        }))
+
+        runtime = resolve_runtime_provider(requested="azure-foundry", target_model=model)
+
+        assert runtime["api_mode"] == expected_mode
+        assert runtime["auth_mode"] == "entra_id"
+        assert callable(runtime["api_key"])
+
     def test_returns_callable_api_key_for_entra(self, fake_azure_identity):
         from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
         runtime = _resolve_azure_foundry_runtime(

@@ -289,7 +289,7 @@ _S6_PID = 4242
 
 
 @pytest.fixture
-def real_s6(monkeypatch: pytest.MonkeyPatch):
+def real_s6(monkeypatch: pytest.MonkeyPatch, s6_scandir):
     """Emulate s6 2.15 ``s6-svstat`` (legacy line and ``-o`` fields) plus ``s6-svc``.
 
     ``state["up"]`` toggles the supervised process; ``state["svstat"]`` may be set
@@ -302,6 +302,19 @@ def real_s6(monkeypatch: pytest.MonkeyPatch):
         seq = list(cmd)
         name = seq[0].rsplit("/", 1)[-1]
         state["calls"].append([name, *seq[1:]])
+        if name == "s6-svc":
+            if state.pop("drop_before_svc", False):
+                state["up"] = False
+            # -t/-r signal an UP service but cannot revive a DOWN one.
+            for command in seq[1].lstrip("-"):
+                if command == "d":
+                    state["up"] = False
+                elif command == "u":
+                    state["up"] = True
+                elif command == "U":
+                    state["up"] = True
+                    (s6_scandir / "gateway-coder" / "down").unlink(missing_ok=True)
+            return _sp.CompletedProcess(cmd, 0, "", "")
         if name != "s6-svstat":
             return _sp.CompletedProcess(cmd, 0, "", "")
         override = state["svstat"]
@@ -369,6 +382,57 @@ def test_s6_stop_when_down_writes_no_marker_but_still_stops(
 
     assert marker_calls == []
     assert _svc_down_issued(real_s6)
+
+
+def test_s6_restart_after_stop_brings_the_gateway_back(
+    s6_scandir, real_s6, marker_calls
+) -> None:
+    (s6_scandir / "gateway-coder").mkdir()
+    mgr = S6ServiceManager(scandir=s6_scandir)
+
+    mgr.stop("gateway-coder")
+    assert not mgr.is_running("gateway-coder")
+
+    mgr.restart("gateway-coder")
+
+    assert mgr.is_running("gateway-coder")
+    assert marker_calls == [_S6_PID]
+
+
+def test_s6_restart_survives_gateway_exit_after_status_probe(
+    s6_scandir, real_s6
+) -> None:
+    (s6_scandir / "gateway-coder").mkdir()
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    real_s6["drop_before_svc"] = True
+
+    mgr.restart("gateway-coder")
+
+    assert mgr.is_running("gateway-coder")
+
+
+def test_s6_restart_clears_persistent_down_intent(s6_scandir, real_s6) -> None:
+    slot = s6_scandir / "gateway-coder"
+    slot.mkdir()
+    (slot / "down").touch()
+    real_s6["up"] = False
+
+    S6ServiceManager(scandir=s6_scandir).restart("gateway-coder")
+
+    assert real_s6["up"] is True
+    assert not (slot / "down").exists()
+
+
+def test_s6_start_clears_persistent_down_intent(s6_scandir, real_s6) -> None:
+    slot = s6_scandir / "gateway-coder"
+    slot.mkdir()
+    (slot / "down").touch()
+    real_s6["up"] = False
+
+    S6ServiceManager(scandir=s6_scandir).start("gateway-coder")
+
+    assert real_s6["up"] is True
+    assert not (slot / "down").exists()
 
 
 def test_s6_stop_marker_write_failure_still_stops(

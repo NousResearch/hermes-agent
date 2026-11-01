@@ -562,3 +562,127 @@ def test_decline_guard_does_not_suppress_an_ordinary_request():
         ag, user, "I'll inspect the files.",
         [{"role": "user", "content": user}], require_workspace=False,
     )
+
+
+# ── exact-head evidence from #69779 (jar-vision-ai, 2026-11-01) ───────────────
+
+# A completed tool turn earlier in the conversation, then a status question.
+_STATUS_QUESTION = "Are we doing it or not?"
+_STATUS_MESSAGES = [
+    {"role": "user", "content": "Inspect the repository first."},
+    {"role": "assistant", "content": "", "tool_calls": [
+        {"id": "old", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}
+    ]},
+    {"role": "tool", "tool_call_id": "old", "content": "The source has been inspected."},
+    {"role": "assistant", "content": "Inspection complete."},
+    {"role": "user", "content": _STATUS_QUESTION},
+]
+
+
+def _status_turn(text: str) -> list[bool]:
+    return [
+        looks_like_codex_intermediate_ack(
+            _agent(), _STATUS_QUESTION, text, _STATUS_MESSAGES, require_workspace=mode
+        )
+        for mode in (True, False)
+    ]
+
+
+def test_status_question_turn_matrix():
+    """The reporter's four replies, asserted at both require_workspace values.
+
+    Only the first is an unstarted action. The worker reply defers reporting
+    to a completion the model is not driving, the cancellation negates the
+    very verb it names, and the approval reply is gated on the user.
+    """
+    assert _status_turn("I'll inspect the project files now.") == [True, True]
+    assert _status_turn(
+        "Worker job-42 is running. I'll report back when it completes."
+    ) == [False, False]
+    assert _status_turn("Cancelled. I'll run no further commands.") == [False, False]
+    assert _status_turn(
+        "Blocked on approval. I'll inspect the files once you authorize access."
+    ) == [False, False]
+
+
+def test_post_verb_negation_is_a_stand_down_not_an_announcement():
+    """A negated object right after the governed verb ends the turn in both modes.
+
+    The governed-announcement pattern only guarded negation BETWEEN the lead-in
+    and the verb ("I'll not run"), so "I'll run no further commands" matched on
+    "I'll run" before reaching "no further".
+    """
+    for text in (
+        "Cancelled. I'll run no further commands.",
+        "I'll make no changes.",
+        "Understood. I'll run nothing else.",
+        "I will touch nothing until you say so.",
+    ):
+        assert _status_turn(text) == [False, False], text
+    # The guard is about the object, not the verb: an affirmative object still fires.
+    assert _status_turn("I'll run the remaining commands in the repo now.") == [True, True]
+
+
+def test_deferred_report_on_a_pronoun_completion_is_a_wait():
+    """"when it completes" is a wait, the same as "when the job completes".
+
+    The wait guard only knew the ``when the <noun> completes`` form, so a
+    pronoun subject ("when it completes", "after it finishes", "once they are
+    done") slipped through and "I'll report back" fired as an announcement.
+    """
+    for text in (
+        "Worker job-42 is running. I'll report back when it completes.",
+        "The build is queued. I'll report back after it finishes.",
+        "Both jobs are running. I'll summarize once they are done.",
+        "I'll check the logs when the job is done.",
+    ):
+        assert _status_turn(text) == [False, False], text
+    # Still a live announcement when nothing is being waited on.
+    assert _status_turn("I'll check the project logs and report back.") == [True, True]
+
+
+def test_workspace_markers_match_whole_words_only():
+    """codex_only's workspace requirement must not be met by a substring.
+
+    "repo" matched inside "report", "files" inside "profiles" and "path" inside
+    "sympathy", so a codex_only reply with no workspace reference at all could
+    satisfy the gate. The same bug class as #101868's "read" in "bread".
+    """
+    user = "Check the service."
+    for text in (
+        "I'll summarize the report now.",
+        "I'll review your profiles now.",
+        "I'll check with sympathy now.",
+    ):
+        assert not looks_like_codex_intermediate_ack(
+            _agent(), user, text, [{"role": "user", "content": user}], require_workspace=True
+        ), text
+        # The all-mode path never needed a workspace, so it is unchanged.
+        assert looks_like_codex_intermediate_ack(
+            _agent(), user, text, [{"role": "user", "content": user}], require_workspace=False
+        ), text
+    # Whole-word markers, singular and plural, still satisfy the requirement.
+    for text in (
+        "I'll inspect the repo now.",
+        "I'll scan both repos now.",
+        "I'll read the files now.",
+        "I'll check the path now.",
+    ):
+        assert looks_like_codex_intermediate_ack(
+            _agent(), user, text, [{"role": "user", "content": user}], require_workspace=True
+        ), text
+
+
+def test_complete_answer_with_an_action_substring_is_delivered():
+    """#101868: a complete list that happens to contain "bread" plus a closing
+    offer must not be mistaken for an unstarted "read" announcement."""
+    user = "List four products."
+    text = (
+        "Here are four options:\n"
+        "1. Bread maker.\n2. Coffee grinder.\n3. Electric kettle.\n4. Stand mixer.\n\n"
+        "These are the available options. If useful, I'll provide a comparison table."
+    )
+    for mode in (True, False):
+        assert not looks_like_codex_intermediate_ack(
+            _agent(), user, text, [{"role": "user", "content": user}], require_workspace=mode
+        )

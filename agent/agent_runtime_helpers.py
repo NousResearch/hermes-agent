@@ -3163,6 +3163,17 @@ _ACK_WORKSPACE_MARKERS = (
     "directory", "current directory", "current dir", "cwd", "repo", "repository", "codebase",
     "project", "folder", "filesystem", "file tree", "files", "path",
 )
+# The markers above, matched as whole words (plurals allowed) rather than as substrings:
+# "repo" must not match "report", "files" must not match "profiles", "path" must not match
+# "sympathy". Reported on #69779 (and the same bug class as #101868's "read" in "bread").
+_ACK_WORKSPACE_RE = re.compile(
+    r"\b(?:current\s+dir(?:ectory)?|director(?:y|ies)|cwd|repos?|repositor(?:y|ies)|"
+    r"codebases?|projects?|folders?|filesystems?|file\s+trees?|files|paths?)\b"
+)
+
+
+def _mentions_workspace(text: str) -> bool:
+    return bool(_ACK_WORKSPACE_RE.search(text))
 
 
 # Action verbs an ack may announce. Word-boundaried with suffix control so a
@@ -3211,6 +3222,9 @@ _ACK_ANNOUNCE_RE = re.compile(
     r"i(?:['’]?m|\s+am)\s+about\s+to|going\s+straight\s+to|let\s+me(?!\s+know)|"
     r"now\s+i(?:['’]ll|['’]m(?=\s+\w+ing\b)|\s+will|\s+am(?=\s+\w+ing\b)))\b"
     r"(?:(?!\b(?:never|not)\b)[^,.:;!?\n]){0,40}?\b(?:" + _ACK_ACTION_ALT + r")\b"
+    # A negated object right after the verb is a stand-down, not an announcement:
+    # "I'll run no further commands", "I'll make no changes", "I'll touch nothing".
+    r"(?!\s+(?:no|not|nothing|nor)\b)"
 )
 
 # Sign-off / conditional-offer / question-for-input: the model is offering
@@ -3228,7 +3242,9 @@ _ACK_OFFER_RE = re.compile(
 _ACK_QUESTION_RE = re.compile(r"\?(?=\s|$|[\"'’”)\\])")
 _ACK_WAIT_RE = re.compile(
     r"\b(?:never|(?:once|when|after|until)\s+you|"
-    r"(?:once|when|after|until)\s+the\s+[\w\s-]{0,30}?\b(?:finish(?:es|ed)|complet(?:es|ed))|your\s+(?:approval|permission|confirmation)|"
+    r"(?:once|when|after|until)\s+(?:(?:it|they|this|that)\s+|the\s+[\w\s-]{0,30}?\b)"
+    r"(?:finish(?:es|ed)|complet(?:es|ed)|(?:is|are)\s+(?:done|finished|complete))|"
+    r"your\s+(?:approval|permission|confirmation)|"
     r"go.ahead|credentials?|password|"
     r"(?:review|task|work|request(?:ed)?\s+\w+)\s+(?:is|was)\s+(?:now\s+)?(?:complete|done|finished))\b"
 )
@@ -3291,9 +3307,9 @@ def looks_like_codex_intermediate_ack(
         if not require_workspace:
             return True
         return (
-            any(m in _clar_text for m in _ACK_WORKSPACE_MARKERS)
+            _mentions_workspace(_clar_text)
             or "/" in _clar_text
-            or any(m in _prose for m in _ACK_WORKSPACE_MARKERS)
+            or _mentions_workspace(_prose)
         )
 
     # Prior-tool gate. NEVER scan the whole `messages` history: the store keeps a
@@ -3509,10 +3525,10 @@ def looks_like_codex_intermediate_ack(
     from agent.codex_responses_adapter import _summarize_user_message_for_log
     user_text = _summarize_user_message_for_log(user_message).strip().lower()
     return (
-        any(marker in user_text for marker in _ACK_WORKSPACE_MARKERS)
+        _mentions_workspace(user_text)
         or "~/" in user_text
         or "/" in user_text
-        or any(marker in assistant_text for marker in _ACK_WORKSPACE_MARKERS)
+        or _mentions_workspace(assistant_text)
     )
 
 

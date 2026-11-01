@@ -1,0 +1,35 @@
+# Ohvii catalog candidate. Nous approval is pending upstream review.
+manifest_version: 1
+
+name: ohvii
+description: "Find homes with your AI, then use a free Ohvii account to carry the purchase from listing to close."
+source: https://ohvii.com/developers
+
+transport:
+  type: http
+  url: https://ohvii.com/api/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - ohvii
+  hosts:
+    - ohvii.com
+  examples:
+    - "Help me find homes that fit my budget and what I’m looking for."
+    - "Compare recent sales so I can decide what to offer for this home."
+    - "Review this home’s disclosures, explain the risks, and help me plan inspections or repair requests."
+    - "Help me prepare an offer for this home."
+    - "Help me evaluate this counteroffer and prepare a response."
+    - "What do I need to complete before closing, and what’s due next?"
+
+post_install: |
+  Sign in to your free Ohvii account in the browser and review the requested permissions.
+  You can start authorization with: hermes mcp login ohvii
+  Restart your Hermes session after connecting.
+  Ask: Help me prepare an offer for this home.
+  Transaction support is for self-represented California buyers.
+  You choose terms, review documents, sign securely and approve delivery.
+  Setup, tool reference and support: https://ohvii.com/developers

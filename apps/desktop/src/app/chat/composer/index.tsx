@@ -1,14 +1,6 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import {
-  type ClipboardEvent,
-  type FormEvent,
-  type KeyboardEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef
-} from 'react'
+import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { useTourMarker } from '@/app/chat/tour-marker'
 import type { GatewayRequester } from '@/app/contrib/types'

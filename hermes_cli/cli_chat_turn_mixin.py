@@ -34,8 +34,12 @@ class CLIChatTurnMixin:
     def _sync_fallback_chain_with_config(self, agent) -> None:
         """Adopt ``fallback_providers`` edits made while this chat is open (#95066) — the same
         per-turn, fail-closed contract as the Desktop/TUI and messaging gateways: a torn config.yaml
-        keeps the last known-good chain instead of reading as "chain removed"."""
+        keeps the last known-good chain instead of reading as "chain removed". Under
+        ``--ignore-user-config`` / ``--safe-mode`` the startup chain was built without config.yaml,
+        and re-reading it here would fail over to a user-configured provider (#134954)."""
         from cli import logger
+        if os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
+            return
         try:
             from gateway.run import GatewayRunner
             from hermes_cli.config_effective import load_user_config_effective

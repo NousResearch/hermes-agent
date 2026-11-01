@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GrowthLab Skill Capabilities</title>
+<style>
+  :root{
+    --bg:#07110d;
+    --ink:#f5fff8;
+    --muted:#a9beb0;
+    --line:rgba(211,255,224,.18);
+    --green:#50f28f;
+    --mint:#a8ffd0;
+    --lime:#d7ff68;
+    --blue:#79b7ff;
+    --amber:#ffc85a;
+    --red:#ff7d7d;
+    --card:rgba(245,255,248,.07);
+    --card2:rgba(80,242,143,.11);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#020402;color:var(--ink);font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;}
+  body{min-height:100vh;display:grid;place-items:center;overflow:hidden;}
+  .slide{width:1920px;height:1080px;position:relative;overflow:hidden;background:
+    radial-gradient(900px 520px at 80% 12%, rgba(80,242,143,.20), transparent 65%),
+    radial-gradient(900px 560px at 15% 90%, rgba(121,183,255,.16), transparent 65%),
+    linear-gradient(135deg, #05100b 0%, #07110d 42%, #030605 100%);
+    padding:76px 92px;display:none;}
+  .slide.active{display:block;}
+  .slide:before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);background-size:64px 64px;mask-image:linear-gradient(to bottom, rgba(0,0,0,.65), transparent 88%);pointer-events:none;}
+  .slide:after{content:"";position:absolute;inset:32px;border:1px solid rgba(168,255,208,.12);border-radius:34px;pointer-events:none;}
+  .kicker{position:relative;display:inline-flex;gap:12px;align-items:center;padding:10px 16px;border:1px solid var(--line);border-radius:999px;background:rgba(8,18,12,.6);color:var(--mint);font-size:24px;font-weight:750;letter-spacing:.08em;text-transform:uppercase;}
+  .dot{width:12px;height:12px;border-radius:50%;background:var(--green);box-shadow:0 0 24px var(--green)}
+  h1{position:relative;margin:42px 0 0;font-size:118px;line-height:.93;letter-spacing:-.075em;max-width:1280px;font-weight:860;}
+  h2{position:relative;margin:38px 0 0;font-size:82px;line-height:1;letter-spacing:-.055em;max-width:1300px;font-weight:850;}
+  .sub{position:relative;margin-top:34px;max-width:1040px;color:var(--muted);font-size:34px;line-height:1.28;font-weight:500;}
+  .small{font-size:25px;color:var(--muted);line-height:1.35}
+  .brand{position:absolute;left:92px;bottom:64px;font-size:26px;color:rgba(245,255,248,.55);font-weight:700;letter-spacing:.03em;}
+  .num{position:absolute;right:92px;bottom:62px;font-size:24px;color:rgba(245,255,248,.48);font-weight:650;}
+  .pillrow{position:relative;display:flex;gap:16px;flex-wrap:wrap;margin-top:46px;max-width:1260px}
+  .pill{font-size:26px;font-weight:750;color:#06100a;background:linear-gradient(135deg,var(--green),var(--lime));padding:14px 21px;border-radius:999px;box-shadow:0 14px 55px rgba(80,242,143,.18)}
+  .hero-card{position:absolute;right:108px;top:164px;width:520px;border:1px solid var(--line);border-radius:32px;background:linear-gradient(180deg, rgba(245,255,248,.12), rgba(245,255,248,.04));box-shadow:0 34px 120px rgba(0,0,0,.42);padding:30px;}
+  .terminal{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:22px;line-height:1.55;color:#dfffea}.terminal .g{color:var(--green)}.terminal .b{color:var(--blue)}.terminal .y{color:var(--amber)}
+  .grid{position:relative;display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:54px;}
+  .card{border:1px solid var(--line);border-radius:30px;background:linear-gradient(180deg,rgba(255,255,255,.075),rgba(255,255,255,.035));padding:30px;min-height:220px;box-shadow:0 22px 80px rgba(0,0,0,.2)}
+  .card h3{margin:0 0 14px;font-size:34px;letter-spacing:-.03em}.card p{margin:0;color:var(--muted);font-size:24px;line-height:1.34}.icon{width:54px;height:54px;border-radius:18px;background:var(--card2);display:grid;place-items:center;margin-bottom:24px;font-size:28px;color:var(--green);border:1px solid rgba(80,242,143,.25)}
+  .slide[data-slide="2"] .grid{margin-top:34px;gap:18px}.slide[data-slide="2"] .card{min-height:174px;padding:23px 25px}.slide[data-slide="2"] .icon{width:44px;height:44px;border-radius:15px;margin-bottom:15px;font-size:23px}.slide[data-slide="2"] .card h3{font-size:30px;margin-bottom:10px}.slide[data-slide="2"] .card p{font-size:21px;line-height:1.26}
+  .flow{position:relative;margin-top:58px;display:grid;grid-template-columns:1.05fr .12fr 1.05fr .12fr 1.05fr .12fr 1.05fr;align-items:center;gap:14px}.stage{height:310px;border:1px solid var(--line);border-radius:34px;background:rgba(255,255,255,.055);padding:30px}.stage .label{font-size:24px;color:var(--green);font-weight:850;text-transform:uppercase;letter-spacing:.07em}.stage .title{font-size:42px;line-height:1.04;font-weight:850;letter-spacing:-.035em;margin-top:26px}.stage .copy{font-size:24px;color:var(--muted);line-height:1.32;margin-top:18px}.arrow{font-size:58px;color:rgba(168,255,208,.42);text-align:center;}
+  .digest{position:absolute;right:110px;top:118px;width:660px;border:1px solid rgba(168,255,208,.22);border-radius:34px;background:#08150f;box-shadow:0 38px 130px rgba(0,0,0,.55);padding:34px}.digest h3{margin:0 0 20px;font-size:36px}.digest .item{border-top:1px solid rgba(255,255,255,.12);padding:20px 0}.digest b{color:#fff;font-size:25px}.digest p{margin:8px 0 0;color:var(--muted);font-size:21px;line-height:1.28}.tag{display:inline-block;font-size:18px;color:#041108;background:var(--green);padding:7px 12px;border-radius:999px;font-weight:900;margin-bottom:10px}
+  .split{position:relative;display:grid;grid-template-columns:1fr 650px;gap:70px;align-items:start}.metric-stack{display:grid;gap:18px;margin-top:46px}.metric{display:grid;grid-template-columns:90px 1fr;gap:22px;align-items:center;border:1px solid var(--line);border-radius:26px;background:rgba(255,255,255,.055);padding:24px}.metric strong{font-size:44px;color:var(--lime)}.metric span{font-size:25px;color:var(--muted)}
+  .ops{position:relative;margin-top:54px;display:grid;grid-template-columns:repeat(2,1fr);gap:24px;max-width:1220px}.op{border:1px solid var(--line);border-radius:28px;background:rgba(255,255,255,.055);padding:26px 28px}.op h3{font-size:32px;margin:0 0 10px}.op p{font-size:23px;color:var(--muted);line-height:1.32;margin:0}.status{position:absolute;right:110px;top:190px;width:420px;border:1px solid rgba(80,242,143,.22);border-radius:32px;background:rgba(5,14,9,.75);padding:28px}.bar{height:18px;border-radius:999px;background:rgba(255,255,255,.09);overflow:hidden;margin:18px 0 28px}.bar span{display:block;height:100%;background:linear-gradient(90deg,var(--green),var(--lime));border-radius:999px}.check{font-size:23px;color:var(--muted);line-height:1.7}.check b{color:var(--ink)}
+  .big-quote{position:relative;font-size:88px;line-height:1.02;letter-spacing:-.06em;font-weight:870;max-width:1380px;margin-top:82px}.highlight{color:var(--green)}.cta{position:relative;margin-top:62px;display:flex;gap:22px;align-items:center}.button{font-size:30px;font-weight:850;color:#041108;background:linear-gradient(135deg,var(--green),var(--lime));padding:22px 30px;border-radius:999px}.ghost{font-size:28px;color:var(--muted);padding:20px 0}.rings{position:absolute;right:95px;top:160px;width:520px;height:520px;border-radius:50%;border:1px solid rgba(80,242,143,.25)}.rings:before,.rings:after{content:"";position:absolute;border-radius:50%;inset:70px;border:1px solid rgba(121,183,255,.22)}.rings:after{inset:150px;border-color:rgba(215,255,104,.28);background:radial-gradient(circle,rgba(80,242,143,.28),transparent 62%)}
+</style>
+</head>
+<body>
+<section class="slide active" data-slide="1">
+  <div class="kicker"><span class="dot"></span>GrowthLab Skill Demo</div>
+  <h1>Startup intelligence, compressed into founder action.</h1>
+  <p class="sub">A Hermes skill that scans Singapore & Southeast Asia startup signals, curates what matters, and publishes a clean daily brief founders can actually use.</p>
+  <div class="pillrow"><span class="pill">News</span><span class="pill">Funding</span><span class="pill">Grants</span><span class="pill">Events</span><span class="pill">Policy</span></div>
+  <div class="hero-card terminal">
+    <div><span class="g">run</span> growthlab.daily_brief()</div>
+    <div>↳ monitor <span class="b">regional sources</span></div>
+    <div>↳ score for <span class="y">founder relevance</span></div>
+    <div>↳ dedupe + attribute</div>
+    <div>↳ publish Telegram-ready digest</div>
+    <br><div class="g">✓ briefing complete</div>
+  </div>
+  <div class="brand">GrowthLab × Hermes Agent</div><div class="num">01 / 06</div>
+</section>
+<section class="slide" data-slide="2">
+  <div class="kicker"><span class="dot"></span>Signal Coverage</div>
+  <h2>It watches the startup ecosystem from multiple angles.</h2>
+  <p class="sub">The skill is built to avoid single-source blindness: news, official programs, funding signals, events, and policy all feed the same briefing pipeline.</p>
+  <div class="grid">
+    <div class="card"><div class="icon">🗞</div><h3>Regional news</h3><p>Tech in Asia, e27, DealStreetAsia, Business Times, Vulcan Post, KrASIA, TNGlobal.</p></div>
+    <div class="card"><div class="icon">💰</div><h3>Funding signals</h3><p>Rounds, investor activity, VC theses, databases, accelerator-backed company updates.</p></div>
+    <div class="card"><div class="icon">📅</div><h3>Events + opportunities</h3><p>Luma, SGInnovate, BLOCK71, Startup SG, grants, demo days, founder programs.</p></div>
+    <div class="card"><div class="icon">🏛</div><h3>Policy watch</h3><p>MAS, IMDA, Enterprise Singapore, PDPC, and market infrastructure changes.</p></div>
+    <div class="card"><div class="icon">🌏</div><h3>SEA relevance</h3><p>Singapore first, Southeast Asia second, global only when regional founders should care.</p></div>
+    <div class="card"><div class="icon">🔗</div><h3>Attribution</h3><p>Every included item carries a source name and URL. No anonymous ecosystem gossip.</p></div>
+  </div>
+  <div class="brand">Coverage breadth without noise</div><div class="num">02 / 06</div>
+</section>
+<section class="slide" data-slide="3">
+  <div class="kicker"><span class="dot"></span>Curation Engine</div>
+  <h2>From noisy links to ranked founder relevance.</h2>
+  <div class="flow">
+    <div class="stage"><div class="label">Collect</div><div class="title">Fetch sources independently</div><div class="copy">Each source is optional and failure-isolated so one outage never kills the run.</div></div>
+    <div class="arrow">→</div>
+    <div class="stage"><div class="label">Normalize</div><div class="title">Schema for each candidate</div><div class="copy">Title, source, geography, category, confidence, founder relevance, actionability.</div></div>
+    <div class="arrow">→</div>
+    <div class="stage"><div class="label">Score</div><div class="title">Rank by practical usefulness</div><div class="copy">Singapore/SEA relevance, timeliness, funding signal, opportunity value, novelty.</div></div>
+    <div class="arrow">→</div>
+    <div class="stage"><div class="label">Publish</div><div class="title">Digest, not a link dump</div><div class="copy">5–8 strong items with “why founders care” and one synthesis takeaway.</div></div>
+  </div>
+  <div class="brand">Evidence over vibes</div><div class="num">03 / 06</div>
+</section>
+<section class="slide" data-slide="4">
+  <div class="split">
+    <div>
+      <div class="kicker"><span class="dot"></span>Output Format</div>
+      <h2>A mobile-first briefing ready for Telegram.</h2>
+      <p class="sub">The final artifact is concise, attributable, and structured around founder action — not generic tech news.</p>
+      <div class="metric-stack">
+        <div class="metric"><strong>5–8</strong><span>curated items instead of endless headlines</span></div>
+        <div class="metric"><strong>4</strong><span>sections: news, funding, opportunities, takeaway</span></div>
+        <div class="metric"><strong>1</strong><span>practical synthesis founders can act on today</span></div>
+      </div>
+    </div>
+    <div class="digest">
+      <h3>🚀 GrowthLab Daily Startup Brief</h3>
+      <div class="item"><span class="tag">Top Startup News</span><br><b>1. Singapore AI startup expands enterprise workflow product</b><p>Why founders care: B2B AI buyers are moving from experiments to workflow-specific deployments.</p></div>
+      <div class="item"><span class="tag">Funding Signal</span><br><b>2. SEA fintech raises Series A</b><p>Why founders care: Distribution + compliance remain fundable advantages in fintech.</p></div>
+      <div class="item"><span class="tag">Opportunity</span><br><b>3. Founder AI meetup this week</b><p>Why founders care: Meet builders, design partners, and early-stage investors.</p></div>
+      <div class="item"><span class="tag">Takeaway</span><br><b>Position around deployment, trust, and regional distribution.</b></div>
+    </div>
+  </div>
+  <div class="brand">Scannable on mobile</div><div class="num">04 / 06</div>
+</section>
+<section class="slide" data-slide="5">
+  <div class="kicker"><span class="dot"></span>Operational Reliability</div>
+  <h2>Cron-safe, failure-tolerant, and explicit about source health.</h2>
+  <p class="sub">The skill is designed for unattended daily operation: gather, curate, format, and finish even when parts of the web are unavailable.</p>
+  <div class="ops">
+    <div class="op"><h3>Retry + fallback</h3><p>If extraction fails, retry once or switch to targeted search queries.</p></div>
+    <div class="op"><h3>Partial success</h3><p>If only some categories work, publish a shorter digest with a source-status note.</p></div>
+    <div class="op"><h3>No hallucinated filler</h3><p>Missing data is omitted or labeled unavailable. Funding details are never invented.</p></div>
+    <div class="op"><h3>Delivery-ready</h3><p>Fits Hermes cron delivery and Telegram channels, with current-channel testing support.</p></div>
+  </div>
+  <div class="status"><div class="small">Run health</div><div class="bar"><span style="width:86%"></span></div><div class="check">✓ <b>Sources checked</b><br>✓ <b>Duplicates merged</b><br>✓ <b>URLs attached</b><br>✓ <b>Quiet-day fallback ready</b><br>✓ <b>Telegram format validated</b></div></div>
+  <div class="brand">Built for daily automation</div><div class="num">05 / 06</div>
+</section>
+<section class="slide" data-slide="6">
+  <div class="kicker"><span class="dot"></span>What It Enables</div>
+  <div class="rings"></div>
+  <div class="big-quote">Turn <span class="highlight">ecosystem noise</span> into a founder’s daily operating advantage.</div>
+  <p class="sub">GrowthLab becomes the trusted layer between scattered startup signals and decisive founder action: what changed, why it matters, and what to do next.</p>
+  <div class="cta"><div class="button">Run daily at 8:00 AM</div><div class="ghost">→ Singapore & SEA founder intelligence, delivered automatically</div></div>
+  <div class="brand">GrowthLab capability demo</div><div class="num">06 / 06</div>
+</section>
+<script>
+  const params = new URLSearchParams(location.search);
+  const n = params.get('slide') || '1';
+  document.querySelectorAll('.slide').forEach(s => s.classList.toggle('active', s.dataset.slide === n));
+  document.addEventListener('keydown', e => {
+    const cur = Number(new URLSearchParams(location.search).get('slide') || 1);
+    if(e.key === 'ArrowRight') location.search = '?slide=' + Math.min(6, cur + 1);
+    if(e.key === 'ArrowLeft') location.search = '?slide=' + Math.max(1, cur - 1);
+  });
+</script>
+</body>
+</html>

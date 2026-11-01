@@ -46,9 +46,8 @@ def test_quick_setup_keeps_imported_model_unless_user_switches(switch, nous_runs
             patch("hermes_cli.setup.offer_agent_import", side_effect=_fake_import), \
             patch("hermes_cli.setup.prompt_choice", side_effect=answer), \
             patch("hermes_cli.model_setup_flows._model_flow_nous", side_effect=_fake_nous_flow) as nous, \
-            patch("hermes_cli.setup.setup_terminal_backend"), \
             patch("hermes_cli.setup.setup_gateway") as gateway, \
-            patch("hermes_cli.setup._print_setup_summary"), \
+            patch("hermes_cli.setup._print_setup_summary") as summary, \
             patch("hermes_cli.setup._record_setup_completed"):
         run_setup_wizard(Namespace(non_interactive=False, section=None, reset=False,
                                    reconfigure=False, quick=False))
@@ -57,6 +56,7 @@ def test_quick_setup_keeps_imported_model_unless_user_switches(switch, nous_runs
     model = load_config()["model"]
     assert {k: model.get(k) for k in expected_model} == expected_model
     assert get_env_value("OPENROUTER_API_KEY") == "sk-or-demo-not-a-real-key"
-    gateway.assert_called_once()  # the rest of Quick Setup still runs
+    summary.assert_called_once()  # the rest of Quick Setup still runs
+    gateway.assert_not_called()  # messaging is a closing hint, not a question
     assert any("Keep your imported model (OpenRouter · anthropic/claude-sonnet-4.5)" in q
                for q in questions), questions

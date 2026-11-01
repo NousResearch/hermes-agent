@@ -379,6 +379,25 @@ def test_first_handoff_without_reviewer_refused_when_holder_is_the_implementer(
         assert _frozen(conn, tid) == before
 
 
+def test_first_handoff_without_reviewer_refused_when_holder_profile_is_missing(
+    board: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The run is claimed by a real implementer, and the card is then re-held by a
+    # name that is not a profile. Independence passes, so only existence can refuse
+    # it: a missing holder must not pass the capability gate via the bundled tree.
+    _pin_skills(monkeypatch, {"worker": {"some-other-skill"}, "ghost": {"sdlc-review"}})
+    with kbc.connect() as conn:
+        tid, run_id = _claim_unreviewed(conn, assignee="worker")
+        conn.execute("UPDATE tasks SET assignee = 'ghost' WHERE id = ?", (tid,))
+        before = _frozen(conn, tid)
+        ok, why = kb.request_review(
+            conn, tid, summary="done", expected_run_id=run_id, with_reason=True,
+        )
+        assert ok is False
+        assert "ghost" in why and why.endswith("Nothing changed.")
+        assert _frozen(conn, tid) == before
+
+
 def test_retry_with_a_qualified_other_reviewer_succeeds_on_the_same_run(
     board: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

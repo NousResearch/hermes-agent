@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli.kanban_workflow import ARCHIVE_PROTECTED_STATUSES
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
 from utils import unlink_files_older_than
@@ -3802,10 +3803,17 @@ def _unreviewed_holder_refusal(conn: sqlite3.Connection, task_id: str) -> Option
     problems: list[str] = []
     if implementer is not None and holder == implementer:
         problems.append("cannot review its own work")
-    try:
-        _require_review_phase_skills(holder)
-    except ValueError:
-        problems.append("lacks sdlc-review")
+    # Existence first: a holder that is not a profile would otherwise pass the skill
+    # check through the bundled-tree fallback and land a review nobody can run.
+    from hermes_cli.kanban_validation import profile_exists as _holder_exists
+
+    if not _holder_exists(holder):
+        problems.append("is not a profile")
+    else:
+        try:
+            _require_review_phase_skills(holder)
+        except ValueError:
+            problems.append("lacks sdlc-review")
     if not problems:
         return None
     return (
@@ -4261,9 +4269,6 @@ def specify_triage_task(
     # flips to 'ready' now instead of idling until the next tick.
     recompute_ready(conn)
     return True
-
-
-ARCHIVE_PROTECTED_STATUSES: frozenset = frozenset({"ready", "running", "review"})
 
 
 def archive_refusal_reason(task_id: str, status: Optional[str]) -> Optional[str]:

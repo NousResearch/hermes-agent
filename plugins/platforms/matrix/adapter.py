@@ -2150,6 +2150,16 @@ class MatrixAdapter(BasePlatformAdapter):
                 reply_to_author_name = await self._get_display_name(room_id, reply_to_author_id)
         return body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name
 
+    def _resolve_channel_prompt(self, room_id: str, parent_id: Optional[str] = None) -> Optional[str]:
+        """Per-room ephemeral system prompt from ``channel_prompts`` in this platform's config.
+
+        Same contract as Discord/Slack/Telegram/Mattermost: keyed by room id, threads inherit
+        the parent's entry, blank counts as absent. Matrix has no parent channel, so ``parent_id``
+        is reserved for callers that later map a room hierarchy.
+        """
+        from gateway.platforms.base import resolve_channel_prompt
+        return resolve_channel_prompt(self.config.extra, room_id, parent_id)
+
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
         ctx: Optional[tuple] = None, **extra) -> Optional[MessageEvent]:
@@ -2175,6 +2185,7 @@ class MatrixAdapter(BasePlatformAdapter):
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply_to, reply_to_text=reply_to_text, reply_to_author_id=reply_to_author_id,
             reply_to_author_name=reply_to_author_name,
+            channel_prompt=self._resolve_channel_prompt(room_id),
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
             user_id=sender, user_name=display_name, **extra)
 

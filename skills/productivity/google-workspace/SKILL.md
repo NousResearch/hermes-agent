@@ -323,6 +323,15 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 3. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
 4. **Calendar times must include timezone** — always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).
 5. **Respect rate limits** — avoid rapid-fire sequential API calls. Batch reads when possible.
+6. **Full-mailbox exports** — the global batch endpoint `https://www.googleapis.com/batch`
+   returns 404; `BatchHttpRequest` needs `batch_uri="https://gmail.googleapis.com/batch/gmail/v1"`.
+   Worse: inner per-request 403s surface only as the callback's `exc` argument — nothing
+   raises, nothing retries, so a rate-limited batch silently returns ~25% populated while
+   progress counters stay green. For bulk fetches prefer threaded sequential
+   `messages.get` (`num_retries=5` handles backoff): 4 threads ≈ 5 msg/s at ~75 quota
+   units/s, well under Gmail's 250 units/s/user, 0 failures on a 22k-message mailbox.
+   Cover spam/trash by listing `labelIds=SPAM` and `labelIds=TRASH` in addition to the
+   default query, and union-dedupe the ids.
 
 ## Troubleshooting
 

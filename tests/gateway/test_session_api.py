@@ -374,6 +374,250 @@ async def test_run_agent_registers_active_run_id_for_steering(adapter, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_session_api_preserves_first_party_sources_and_rejects_invalid_sources(adapter, session_db):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        web_created = await cli.post(
+            "/api/sessions",
+            json={"id": "hermes-web-source-session", "source": "hermes_web", "title": "Hermes Web source"},
+        )
+        assert web_created.status == 201, await web_created.text()
+        web_payload = await web_created.json()
+        assert web_payload["session"]["source"] == "hermes_web"
+
+        browser_created = await cli.post(
+            "/api/sessions",
+            json={"id": "hermes-browser-source-session", "source": "hermes_browser"},
+        )
+        assert browser_created.status == 201, await browser_created.text()
+        browser_payload = await browser_created.json()
+        assert browser_payload["session"]["source"] == "hermes_browser"
+
+        stale_client = await cli.post(
+            "/api/sessions",
+            json={"id": "hermes-web-stale-client", "title": "Hermes Web stale client"},
+        )
+        assert stale_client.status == 201, await stale_client.text()
+        stale_payload = await stale_client.json()
+        assert stale_payload["session"]["source"] == "hermes_web"
+
+        mobile_created = await cli.post(
+            "/api/sessions",
+            json={"id": "hermes-mobile-source-session", "source": "hermes_mobile"},
+        )
+        assert mobile_created.status == 201, await mobile_created.text()
+        mobile_payload = await mobile_created.json()
+        assert mobile_payload["session"]["source"] == "hermes_mobile"
+
+        # Unknown create-time sources keep the existing api_server contract instead of breaking clients.
+        unknown_create = await cli.post(
+            "/api/sessions",
+            json={"id": "unknown-source-session", "source": "bogus_source"},
+        )
+        assert unknown_create.status == 201, await unknown_create.text()
+        assert (await unknown_create.json())["session"]["source"] == "api_server"
+
+        for extension_tag in ("hermes_bot_mode", "hermes_browser_bg"):
+            tagged = await cli.post(
+                "/api/sessions",
+                json={"id": f"extension-{extension_tag}", "source": extension_tag},
+            )
+            assert tagged.status == 201, await tagged.text()
+            assert (await tagged.json())["session"]["source"] == "hermes_browser"
+
+        legacy_id = session_db.create_session("hermes-web-legacy-source", "api_server")
+        corrected = await cli.patch(
+            f"/api/sessions/{legacy_id}",
+            json={"source": "hermes_web"},
+        )
+        assert corrected.status == 200, await corrected.text()
+        corrected_payload = await corrected.json()
+
+        invalid_patch = await cli.patch(
+            f"/api/sessions/{legacy_id}",
+            json={"source": "bogus_source"},
+        )
+        assert invalid_patch.status == 400
+        invalid_patch_payload = await invalid_patch.json()
+        assert invalid_patch_payload["error"]["code"] == "invalid_session_source"
+
+    assert corrected_payload["session"]["source"] == "hermes_web"
+    assert session_db.get_session("hermes-web-legacy-source")["source"] == "hermes_web"
+
+
+# The turn gate, the binding and the peer refresh are the production code; only the model turn
+# behind the authority's drain is a stub.
+TURN_KEY = "session-source-turn-key"
+CLIENT_OWNED_SOURCES = ("api_server", "hermes_browser", "hermes_web", "hermes_mobile")
+FOREIGN_SOURCES = ("cli", "tui", "acp", "telegram", "discord", "slack", "desktop", "dashboard", "cron", "kanban")
+
+
+@pytest.fixture
+def turn_api(api, owner):
+    async def handle(event):
+        from gateway.session_results import execution_result
+
+        execution_result.get()["result"] = {"final_response": "ok", "messages": []}
+        return "ok"
+
+    owner.runner._handle_message = handle
+    api._api_key = TURN_KEY
+    return api
+
+
+async def _call(adapter, method, path, body):
+    app = web.Application()
+    app.router.add_post("/api/sessions", adapter._handle_create_session)
+    app.router.add_patch("/api/sessions/{session_id}", adapter._handle_patch_session)
+    app.router.add_post("/api/sessions/{session_id}/fork", adapter._handle_fork_session)
+    app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.request(method, path, json=body, headers={"Authorization": f"Bearer {TURN_KEY}"})
+        return resp.status, await resp.text()
+
+
+def _sse_events(body):
+    return [block.splitlines()[0].removeprefix("event: ") for block in body.split("\n\n") if block.strip()]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", CLIENT_OWNED_SOURCES)
+async def test_session_chat_stream_runs_on_client_owned_sources(turn_api, owner, source):
+    """A session the REST client created under its own label (the side panel's ``hermes_browser``, the
+    full tab's ``hermes_web``, Mobile, or the API server's) takes REST turns and keeps its label."""
+    from hermes_state_runtime import list_session_admissions
+
+    status, _ = await _call(turn_api, "POST", "/api/sessions", {"id": "chat-source", "source": source})
+    assert status == 201
+    # The second turn meets a session the authority already holds live (its own binding check).
+    for text in ("hello", "again"):
+        status, body = await _call(turn_api, "POST", "/api/sessions/chat-source/chat/stream", {"message": text})
+        assert status == 200
+        assert "run.completed" in _sse_events(body) and "error" not in _sse_events(body), body
+    rows = list_session_admissions(owner.db, session_id="chat-source", pending_only=False)
+    assert [row["payload"]["text"] for row in rows] == ["hello", "again"]
+    # A finished turn refreshes the routing peer (what the gateway runner does after every turn):
+    # that refresh must not relabel the session.
+    owner.runner.session_store.update_session(owner.sessions["chat-source"].route)
+    assert owner.db.get_session("chat-source")["source"] == source
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", FOREIGN_SOURCES)
+async def test_session_chat_stream_refuses_sessions_another_surface_owns(turn_api, owner, source):
+    from hermes_state_runtime import list_session_admissions
+
+    owner.db.create_session("foreign-chat", source)
+    status, body = await _call(turn_api, "POST", "/api/sessions/foreign-chat/chat/stream", {"message": "hello"})
+    assert status == 200
+    assert "run.completed" not in _sse_events(body)
+    assert '"message": "permission_denied"' in body, body
+    assert not list_session_admissions(owner.db, session_id="foreign-chat", pending_only=False)
+    assert owner.db.get_session("foreign-chat")["source"] == source
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", FOREIGN_SOURCES)
+async def test_patch_refuses_to_relabel_a_session_another_surface_owns(turn_api, owner, source):
+    owner.db.create_session("owned-elsewhere", source)
+    owner.db.set_session_title("owned-elsewhere", "Theirs")
+    status, text = await _call(
+        turn_api, "PATCH", "/api/sessions/owned-elsewhere",
+        {"source": "api_server", "title": "Taken over", "pinned": True})
+    error = json.loads(text)["error"]
+    assert status == 403, text
+    assert error["code"] == "permission_denied" and f"'{source}'" in error["message"]
+    row = owner.db.get_session("owned-elsewhere")
+    assert (row["source"], row["title"], row["pinned"]) == (source, "Theirs", 0)
+    # The relabel was the way past the turn gate; with it closed the gate still refuses the session.
+    _, body = await _call(turn_api, "POST", "/api/sessions/owned-elsewhere/chat/stream", {"message": "hello"})
+    assert '"message": "permission_denied"' in body, body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", ("telegram", "cli", "desktop", "dashboard"))
+@pytest.mark.parametrize("source", ("api_server", "hermes_web"))
+async def test_patch_refuses_a_source_no_rest_client_may_set(adapter, session_db, source, target):
+    session_db.create_session("labelled", source)
+    status, text = await _call(adapter, "PATCH", "/api/sessions/labelled", {"source": target})
+    assert status == 403, text
+    assert json.loads(text)["error"]["code"] == "permission_denied"
+    assert session_db.get_session("labelled")["source"] == source
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("before,after", (
+    ("api_server", "hermes_web"), ("api_server", "hermes_browser"), ("hermes_browser", "api_server"),
+    ("hermes_web", "hermes_mobile"), ("hermes_mobile", "hermes_browser")))
+async def test_patch_relabels_between_client_owned_sources(adapter, session_db, before, after):
+    session_db.create_session("relabel", before)
+    status, text = await _call(adapter, "PATCH", "/api/sessions/relabel", {"source": after, "title": "Renamed"})
+    assert status == 200, text
+    assert json.loads(text)["session"]["source"] == after
+    row = session_db.get_session("relabel")
+    assert (row["source"], row["title"]) == (after, "Renamed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("title", (pytest.param("Taken", id="held-by-another"), pytest.param("x" * 500, id="too-long")))
+async def test_patch_refused_title_leaves_source_and_flags_unchanged(adapter, session_db, title):
+    session_db.create_session("holder", "api_server")
+    session_db.set_session_title("holder", "Taken")
+    session_db.create_session("victim", "api_server")
+    status, text = await _call(
+        adapter, "PATCH", "/api/sessions/victim",
+        {"source": "hermes_web", "title": title, "archived": True, "pinned": True})
+    assert status == 400, text
+    assert json.loads(text)["error"]["code"] == "invalid_title"
+    row = session_db.get_session("victim")
+    assert (row["source"], row["title"], row["archived"], row["pinned"]) == ("api_server", None, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_relabelled_session_keeps_taking_turns(turn_api, owner):
+    """The full tab's migration: a session the API server created and already ran a turn on is
+    relabelled ``hermes_web``; its next turn is admitted and the new label survives it."""
+
+    async def turn(text, label):
+        _, body = await _call(turn_api, "POST", "/api/sessions/legacy-web/chat/stream", {"message": text})
+        assert "run.completed" in _sse_events(body) and "error" not in _sse_events(body), body
+        owner.runner.session_store.update_session(owner.sessions["legacy-web"].route)
+        assert owner.db.get_session("legacy-web")["source"] == label
+
+    assert (await _call(turn_api, "POST", "/api/sessions", {"id": "legacy-web"}))[0] == 201
+    await turn("before", "api_server")
+    status, text = await _call(turn_api, "PATCH", "/api/sessions/legacy-web", {"source": "hermes_web"})
+    assert status == 200, text
+    await turn("after", "hermes_web")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parent,child", (
+    ("hermes_browser", "hermes_browser"), ("hermes_web", "hermes_web"), ("hermes_mobile", "hermes_mobile"),
+    ("api_server", "api_server"), ("telegram", "api_server"), ("cli", "api_server")))
+async def test_fork_takes_a_first_party_label_and_then_a_turn(turn_api, owner, parent, child):
+    """A fork keeps its parent's first-party label and runs a REST turn; another surface's label
+    never carries over, the fork is the REST client's own session."""
+    owner.db.create_session("fork-parent", parent)
+    status, text = await _call(turn_api, "POST", "/api/sessions/fork-parent/fork", {"id": "fork-child"})
+    assert status == 201, text
+    assert owner.db.get_session("fork-child")["source"] == child
+    _, body = await _call(turn_api, "POST", "/api/sessions/fork-child/chat/stream", {"message": "continue"})
+    assert "run.completed" in _sse_events(body) and "error" not in _sse_events(body), body
+    owner.runner.session_store.update_session(owner.sessions["fork-child"].route)
+    assert owner.db.get_session("fork-child")["source"] == child
+
+
+@pytest.mark.parametrize("source", ("hermes_web", "hermes_browser", "hermes_mobile"))
+def test_declared_conversation_bind_keeps_first_party_label(api, owner, source):
+    owner.db.create_session("declared", source)
+    api._bind_declared_conversation("declared", "declared-conversation-key")
+    row = owner.db.get_session("declared")
+    assert row["source"] == source
+    assert row["session_key"] == "declared-conversation-key"
+
+
+@pytest.mark.asyncio
 async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_finishes(
     adapter, session_db
 ):

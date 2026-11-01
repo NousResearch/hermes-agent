@@ -14,7 +14,7 @@ import re
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone, UTC
-from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
+from typing import Any, Awaitable, Callable, Coroutine, Dict, Iterator, List, Optional, Set, cast
 from hermes_cli import setup_platforms
 
 logger = logging.getLogger(__name__)
@@ -1717,11 +1717,44 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         # First proof getUpdates is flowing for this generation: flip a
         # published "retrying" (degraded connect, reconnect stamp, or the
         # mid-session recovery below) back to "connected" (#101391).
-        if self._send_path_degraded and getattr(self, "_running", False) and not self.has_fatal_error:
+        was_send_path_degraded = self._send_path_degraded
+        if was_send_path_degraded and getattr(self, "_running", False) and not self.has_fatal_error:
             self._write_runtime_status_safe(
                 "connected", platform_state="connected", error_code=None, error_message=None,
             )
         self._send_path_degraded = False
+        if was_send_path_degraded:
+            # A degraded reconnect can leave final-response ledger rows failed after the adapter
+            # object was already republished. Replaying only at adapter replacement misses the
+            # later getUpdates health confirmation, which is the first proof that sends are usable.
+            runner = getattr(self, "gateway_runner", None)
+            redeliver = getattr(runner, "_redeliver_failed_obligations_for_platform", None)
+            if callable(redeliver) and getattr(self, "_running", False) and not self.has_fatal_error:
+                task = asyncio.create_task(
+                    cast(Coroutine[Any, Any, Any], redeliver(
+                        Platform.TELEGRAM, profile=getattr(self, "_owner_profile", None))))
+
+                def _finish_delivery_replay(completed: asyncio.Task) -> None:
+                    if completed.cancelled():
+                        return
+                    try:
+                        error = completed.exception()
+                    except Exception:
+                        logger.exception("Telegram delivery replay task inspection failed")
+                        return
+                    if error is not None:
+                        logger.warning(
+                            "Telegram delivery replay after polling recovery failed: %s",
+                            error, exc_info=(type(error), error, error.__traceback__),
+                        )
+
+                retain = getattr(runner, "_retain_background_task", None)
+                if callable(retain):
+                    retain(task)
+                else:
+                    logger.error("Telegram delivery replay has no Gateway background-task owner")
+                    task.cancel()
+                task.add_done_callback(_finish_delivery_replay)
         return True
 
     def _observe_polling_request_result(self, request, generation, result):

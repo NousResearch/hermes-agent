@@ -321,14 +321,14 @@ def retry_invalid_response(
             else provider_name
         )
         _final_response = site_copy(
-            "invalid_response", label=_label, attempts=max_retries, detail=_failure_hint,
+            "invalid_response", label=_label, attempts=max_retries, detail=f"{_failure_hint}. Provider said: {error_msg}",
         )
         return _verdict("return", stamp_failure({
             "final_response": _final_response,
             "messages": messages,
             "completed": False,
             "api_calls": api_call_count,
-            "error": f"Invalid API response after {max_retries} retries: {_failure_hint}",
+            "error": f"Invalid API response after {max_retries} retries: {_failure_hint}. Provider said: {error_msg}",
             "failed": True,
         }, invalid_response_failure_reason(response), True))
 

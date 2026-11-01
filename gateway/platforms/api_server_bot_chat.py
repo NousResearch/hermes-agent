@@ -12,6 +12,7 @@ import asyncio
 import logging
 from pathlib import Path
 from types import SimpleNamespace
+import sqlite3
 import uuid
 
 from gateway.session_contract import Principal
@@ -105,24 +106,58 @@ def _reset_local_title_owner(db, title, include_hidden, source=None):
     if (row is None or row.get('end_reason') != 'session_reset' or row.get('archived')
             or (row.get('hidden') and not include_hidden) or (source and row.get('source') != source)):
         return []
-    from hermes_state_local import local_receipt
+    from hermes_state_local import local_lineage_owner
+    from hermes_state_local_lineage import local_physical_target
     try:
-        lineage = local_receipt(db, row['id']).get('lineage') or []
-    except RuntimeStoreError:
-        return []
-    return [row] if len(lineage) > 1 else []
+        with db._read_ctx() as conn:
+            # The title is a placement, not the owner: a re-title can leave it on a
+            # superseded segment, whose own key has no receipt. Resolve the row to its
+            # lineage owner first, then pin that owner's physical target.
+            owner = local_lineage_owner(conn, row['id'])
+            target = local_physical_target(conn, owner)
+    except (RuntimeStoreError, sqlite3.OperationalError, KeyError, TypeError, ValueError):
+        return []  # a damaged or foreign receipt: the row answers nothing, as before
+    # A reset lineage's physical target has moved off the creation id; a row that is
+    # still its own owner's target was never reset.
+    return [row] if target != owner else []
 
 
 def bot_chat_tip(authority, session_id):
-    """The canonical Bot Chat's tip row when *session_id* is in its lineage, else None."""
+    """The canonical Bot Chat's tip row when *session_id* is in its lineage, else None.
+
+    A local reset forks a segment ``get_compression_tip`` deliberately does not follow
+    (#114271): the title row then names the pre-reset creation id while the receipt's
+    lineage targets the reset child, so a peer turn addressed at the head segment missed
+    the FIFO and ran as an API turn. The title is a placement, not the owner (a re-title
+    can leave it on a superseded segment), so resolve it to its lineage owner first and
+    pin that owner's physical target; without a readable receipt the compression walk is
+    the pre-patch behavior and stays the safe fallback.
+    """
     db = authority.db
     row = db.get_session_by_title('Bot Chat')
     if row is None:
         return None
-    tip = db.get_compression_tip(row['id'])
-    if not tip or db.get_compression_tip(session_id) != tip:
-        return None
-    return db.get_session(tip)
+    from hermes_state_local import POLICY_PREFIX, local_lineage_owner
+    from hermes_state_local_lineage import local_physical_target
+    receipted, target, member = False, None, False
+    try:
+        with db._read_ctx() as conn:
+            owner = local_lineage_owner(conn, row['id'])
+            receipted = conn.execute('SELECT 1 FROM state_meta WHERE key=?',
+                                     (POLICY_PREFIX + owner,)).fetchone() is not None
+            if receipted:
+                target = local_physical_target(conn, owner)
+                member = local_lineage_owner(conn, session_id) == owner
+    except (RuntimeStoreError, sqlite3.OperationalError, KeyError, TypeError, ValueError):
+        # A damaged or foreign receipt must not break admission: the compression walk
+        # below is the pre-patch behavior and stays the safe fallback.
+        logger.debug('bot chat receipt read failed; falling back to compression walk',
+                     exc_info=True)
+        receipted = False
+    if not receipted:
+        tip = db.get_compression_tip(row['id'])
+        return db.get_session(tip) if tip and db.get_compression_tip(session_id) == tip else None
+    return db.get_session(target) if member else None
 
 
 async def admit_peer_turn(runner, session_id, message, author):

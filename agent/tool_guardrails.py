@@ -302,6 +302,12 @@ _IDENTICAL_CYCLE_NOTICE = (
     "proceed with what you have.]"
 )
 
+_IDENTICAL_SUCCESS_NOTICE = (
+    "[hermes note: this is the {ordinal} consecutive call to {tool_name} with identical "
+    "arguments, and each one succeeded. The action is already done — repeating it unchanged "
+    "only duplicates its effect. Move on to the next step or report back.]"
+)
+
 # tool -> (LoopCapConfig field, controller counter attribute, decision code)
 _LOOP_CAPS: dict[str, tuple[str, str, str]] = {
     "web_search": ("max_web_searches", "_turn_web_search_count", "loop_web_search_cap"),
@@ -334,6 +340,13 @@ class ToolCallGuardrailController:
         self._identical_streak_result_hash: str = ""
         self._identical_streak_count: int = 0
         self._identical_streak_first_call_id: str = ""
+        # Success-loop breaker (#137170): consecutive identical (tool, args) calls that each
+        # SUCCEED with a FRESH result — a mutating tool appending again returns
+        # {"ok": true, "comment_id": N} with N incrementing, so the result-identical streak
+        # above resets on every call and the replay runs unflagged. Tracks the signature
+        # alone over successful calls; a failure or different args restarts it.
+        self._success_loop_sig: ToolCallSignature | None = None
+        self._success_loop_count: int = 0
         # Batch-cycle loop breaker (port of can1357/oh-my-pi#10521): sequence of
         # (signature, result_hash, repeatable) for every observed call this turn, so a repeating
         # multi-call cycle (A,B,A,B,...) is caught even though it resets the consecutive streak above.
@@ -472,6 +485,16 @@ class ToolCallGuardrailController:
             self._identical_streak_first_call_id = tool_call_id or ""
         count = self._identical_streak_count
 
+        # Success loop: identical (tool, args) succeeding with a fresh result each time
+        # (a side effect lands again and its id increments), which resets the streak above
+        # on every call. Failure restarts the count — only unbroken successful replays grow it.
+        if failed:
+            self._success_loop_sig, self._success_loop_count = None, 0
+        elif signature == self._success_loop_sig:
+            self._success_loop_count += 1
+        else:
+            self._success_loop_sig, self._success_loop_count = signature, 1
+
         notice = kind = None
         if not is_stall_guard_repeatable(tool_name) and count >= STALL_GUARD_IDENTICAL_CALL_THRESHOLD:
             notice, kind = _IDENTICAL_CALL_NOTICE.format(ordinal=_ordinal(count), tool_name=tool_name), "identical_call_streak"
@@ -494,6 +517,24 @@ class ToolCallGuardrailController:
                 notice, kind = _IDENTICAL_CYCLE_NOTICE.format(count=laps, period=period, tool_name=tool_name), "identical_cycle"
                 if self.config.hard_stop_enabled and laps >= self.config.no_progress_block_after and self._halt_decision is None:
                     self._decide("halt", "identical_cycle_halt", tool_name, laps, signature, period=period)
+
+        # Notice-only, and never for pollers or output-style tools (terminal, execute_code,
+        # web_extract...): a mutating tool re-succeeded with identical args only duplicates
+        # its effect — the fresh result IS the duplication, not progress — but an output-style
+        # tool re-run while its subject moves (a re-run `date`, a `poll-status`) may be
+        # legitimate observation, so those keep the existing result-identical detectors only.
+        if (
+            notice is None and not failed
+            and tool_name not in FAILURE_TOLERANT_TOOL_NAMES
+            and not is_stall_guard_repeatable(tool_name)
+            and self._success_loop_count >= STALL_GUARD_IDENTICAL_CALL_THRESHOLD
+        ):
+            notice, kind = (
+                _IDENTICAL_SUCCESS_NOTICE.format(
+                    ordinal=_ordinal(self._success_loop_count), tool_name=tool_name,
+                ),
+                "identical_success_streak",
+            )
 
         stub = None
         if is_plain_str and count >= 2 and not failed and len(result) >= IDENTICAL_RESULT_STUB_MIN_CHARS:

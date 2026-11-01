@@ -1666,6 +1666,8 @@ DEFAULT_CONFIG = {
         "cron_mode": "deny",
         "single_query_mode": "deny",
         "unattended_mode": "deny",
+        # Webhook routes exempt from unattended_mode (a plugin relays their approvals to a human).
+        "attended_webhook_routes": [],
         # Extra rules appended to the smart-approval guardian's SYSTEM prompt, e.g. "Always ESCALATE
         # commands touching /etc".
         "smart_policy": "",

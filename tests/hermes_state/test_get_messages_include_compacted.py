@@ -172,6 +172,24 @@ class TestDisplayDedupe:
 
         db._execute_write(_do)
 
+    def test_indexed_read_repairs_split_display_generations(self, db):
+        """Existing indexed drift is repaired before GROUP BY display_order projects history."""
+        sid = "split-index"
+        db.create_session(sid, source="desktop")
+        db.append_message(sid, "assistant", "same logical message")
+        source_id = db.get_messages(sid)[0]["id"]
+        self._copy_tail_as_new_generation(db, sid, [source_id])
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = id, display_identity = ?, message_uid = "
+            "(SELECT message_uid FROM messages WHERE id = ?) WHERE session_id = ? AND id != ?",
+            (b"split-generation", source_id, sid, source_id)))
+
+        messages = db.get_messages(sid, include_compacted=True)
+
+        assert [message["content"] for message in messages] == ["same logical message"]
+        assert db._read_one(
+            "SELECT COUNT(DISTINCT display_order) FROM messages WHERE session_id = ?", (sid,))[0] == 1
+
     @pytest.mark.parametrize("read_only", [False, True])
     def test_legacy_page_retains_only_bounded_payloads(self, tmp_path, read_only):
         """Benjamin Brumbaugh's PR #106838: backfill and fallback retain identities, not payloads."""

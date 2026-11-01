@@ -53,7 +53,7 @@ class TestCrossLoopCacheIsolation:
                         side_effect=_stub_resolve_provider_client):
                 client, _ = _get_cached_client("custom", "m1", async_mode=True,
                                                  base_url="http://localhost:8081/v1")
-            results[name] = (id(client), id(loop))
+            results[name] = (client, id(loop))
             # Don't close loop — simulates real usage where loops persist
 
         t1 = threading.Thread(target=_get_client_on_new_loop, args=("a",))
@@ -61,11 +61,15 @@ class TestCrossLoopCacheIsolation:
         t1.start(); t1.join()
         t2.start(); t2.join()
 
-        client_id_a, loop_id_a = results["a"]
-        client_id_b, loop_id_b = results["b"]
+        client_a, loop_id_a = results["a"]
+        client_b, loop_id_b = results["b"]
 
         assert loop_id_a != loop_id_b, "Test setup error: same loop on both threads"
-        assert client_id_a != client_id_b, (
+        assert client_a is not client_b, (
             "Different event loops got the SAME cached client — this causes "
             "httpx cross-loop deadlocks in gateway mode (#2681)"
+        )
+        assert not client_a.close.called, (
+            "A client owned by a live loop must not be closed when another loop "
+            "builds its own auxiliary client (#137365)"
         )

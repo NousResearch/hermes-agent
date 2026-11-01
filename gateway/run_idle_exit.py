@@ -27,6 +27,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+from hermes_state_holders import read_only_db_uri
+
 logger = logging.getLogger("gateway.run")
 
 DEFAULT_IDLE_EXIT_SECONDS = 600.0
@@ -115,7 +117,7 @@ def _kanban_busy() -> str | None:
         path = kanban_db.kanban_db_path(board=meta.get("slug"))
         if not path.exists():
             continue
-        with contextlib.closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)) as conn:
+        with contextlib.closing(sqlite3.connect(read_only_db_uri(path), uri=True, timeout=2)) as conn:
             if conn.execute(f"SELECT 1 FROM tasks WHERE status IN ({marks}) LIMIT 1",
                             _KANBAN_DUE_STATUSES).fetchone():
                 return f"kanban work on board {meta.get('slug')}"

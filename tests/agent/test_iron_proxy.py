@@ -645,7 +645,7 @@ def test_bitwarden_importerror_raise_without_fallback(
         )
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/proc cmdline identity is Linux-only")
+@pytest.mark.platforms("linux")
 def test_pid_alive_reads_a_proxy_that_exited_after_the_liveness_probe_as_dead(hermes_home, monkeypatch):
     """The pid passes the existence probe, then exits and is reaped before /proc/<pid>/cmdline is
     read. On Linux the missing entry means the process is gone; the `ps` fallback must not run,

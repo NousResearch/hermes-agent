@@ -65,6 +65,28 @@ class NoopDb:
         return None
 
 
+class RewindDb(NoopDb):
+    def rewind_user_turn(self, *_args, **_kwargs):
+        return SimpleNamespace(
+            prefix=[{"role": "user", "content": "before"}],
+            live_text="",
+            rewound_count=1,
+        )
+
+
+class TitleDb(NoopDb):
+    def __init__(self):
+        self.created = []
+        self.title = None
+
+    def create_session(self, **kwargs):
+        self.created.append(kwargs)
+
+    def set_session_title(self, _session_id, title):
+        self.title = title
+        return True
+
+
 def make_agent_and_state():
     fake = FakeAgent()
     manager = SessionManager(agent_factory=lambda **kwargs: fake, db=NoopDb())
@@ -116,6 +138,42 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     assert captured["session_db"] is sentinel_db
     assert captured["platform"] == "acp"
     assert captured["session_id"] == "acp-session"
+
+
+def test_acp_undo_notifies_memory_manager_after_rewind():
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    db = RewindDb()
+    fake._session_db = db
+    fake._memory_manager = SimpleNamespace(on_session_switch=lambda *args, **kwargs: setattr(
+        fake._memory_manager, "call", (args, kwargs)
+    ))
+    state.history = [
+        {"role": "user", "content": "before"},
+        {"role": "assistant", "content": "answer"},
+    ]
+
+    assert acp_agent._cmd_undo("", state) == "Undid 1 user turn(s)."
+    assert fake._memory_manager.call == (
+        (state.session_id,),
+        {"parent_session_id": "", "reset": False, "rewound": True},
+    )
+
+
+def test_acp_title_creates_empty_ephemeral_session():
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    db = TitleDb()
+    fake._session_db = db
+    state.history = []
+
+    assert acp_agent._cmd_title("Name before first message", state) == "Title set: Name before first message"
+    assert db.created == [{
+        "session_id": state.session_id,
+        "source": "acp",
+        "model": "fake-model",
+        "model_config": {"cwd": state.cwd},
+        "cwd": state.cwd,
+    }]
+    assert db.title == "Name before first message"
 
 
 @pytest.mark.asyncio

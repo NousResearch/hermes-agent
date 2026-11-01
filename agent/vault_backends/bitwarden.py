@@ -13,13 +13,12 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from agent.secret_sources.base import run_cli, scrub_ansi
+from agent.secret_sources.base import scrub_ansi
 from agent.vault_backends import unlock as _unlock
-from agent.vault_backends.base import LoginBackend, UnlockRequired, run_with_secret_env
+from agent.vault_backends.base import LoginBackend, UnlockRequired, run_until_answered, run_with_secret_env
 from agent.vault_store import VaultItemMeta, normalize_origin
 
 logger = logging.getLogger(__name__)
@@ -27,6 +26,19 @@ logger = logging.getLogger(__name__)
 _TIMEOUT = 30.0
 _ENV_KEEP = ("PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot",
              "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "BITWARDENCLI_APPDATA_DIR")
+
+
+def _has_text(out: str) -> bool:
+    return bool(out.strip())
+
+
+def _is_json(out: str) -> bool:
+    # `list` answers with one JSON document; a prefix of it never parses, so this proves it is whole.
+    try:
+        json.loads(out)
+    except ValueError:
+        return False
+    return True
 
 
 class BitwardenLoginBackend(LoginBackend):
@@ -61,7 +73,7 @@ class BitwardenLoginBackend(LoginBackend):
         generation = _unlock.begin_unlock(self.name)
         proc = run_with_secret_env([str(self._bw()), "unlock", "--raw", "--nointeraction", "--passwordenv", "HERMES_BW_MASTER"],
                                    env=self._env(None), secret_env="HERMES_BW_MASTER", secret=master_password,
-                                   timeout=_TIMEOUT, label="bw")
+                                   timeout=_TIMEOUT, label="bw", answered=_has_text)
         token = (proc.stdout or "").strip()
         if proc.returncode != 0 or not token:
             err = scrub_ansi(proc.stderr or "").strip()[:200]
@@ -75,8 +87,9 @@ class BitwardenLoginBackend(LoginBackend):
         token = _unlock.get_session_token(self.name)
         if not token:
             raise UnlockRequired(self)
-        proc = run_cli([str(self._bw()), *args, "--nointeraction"], env=self._env(token), timeout=_TIMEOUT,
-                       label="bw", timeout_message="bw timed out", stdin=subprocess.DEVNULL)
+        proc = run_until_answered([str(self._bw()), *args, "--nointeraction"], env=self._env(token), timeout=_TIMEOUT,
+                                  label="bw", timeout_message="bw timed out",
+                                  answered=_is_json if args[:1] == ("list",) else _has_text)
         if proc.returncode != 0:
             err = scrub_ansi(proc.stderr or "")
             if "locked" in err.lower() or "session" in err.lower():

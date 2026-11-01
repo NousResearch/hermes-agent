@@ -308,6 +308,45 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
     return None
 
 
+def _repetition_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[TruncationVerdict]:
+    """Retry a repetition-aborted response once on fallback, from the intact transcript.
+
+    A completed tool batch is a reportable checkpoint, not permission to dispatch those
+    actions again. Its fallback request is therefore text-only. An incomplete/uncertain
+    batch has no safe checkpoint and remains terminal.
+    """
+    agent = st.agent
+    if getattr(agent, "_repetition_fallback_attempted", False):
+        return None
+
+    from agent.repetition_recovery import repetition_tool_recovery_mode
+    mode = repetition_tool_recovery_mode(st.messages, st.current_turn_user_idx)
+    if mode == "unsafe":
+        agent._vprint(
+            f"{agent.log_prefix}⚠️ Tool execution has no complete checkpoint; refusing repetition fallback.",
+            force=True, diagnostic=True,
+        )
+        return None
+    if getattr(agent, "_fallback_index", 0) >= len(getattr(agent, "_fallback_chain", None) or []):
+        return None
+
+    agent._vprint(
+        f"{agent.log_prefix}🔁 Repetition detected; trying one fallback response from the preserved context.",
+        force=True, diagnostic=True,
+    )
+    if not agent._try_activate_fallback(reason=FailoverReason.incomplete_response):
+        return None
+
+    agent._repetition_fallback_attempted = True
+    agent._repetition_fallback_no_tools = mode == "answer_only"
+    agent._session_messages = st.messages
+    st.retry_count = 0
+    st.compression_attempts = 0
+    _retry.primary_recovery_attempted = False
+    _retry.restart_with_rebuilt_messages = True
+    return st.done("break")
+
+
 def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -> TruncationVerdict:
     """Text truncation (no tool calls): append the fragment + a continuation nudge (up to
     4), then the ceiling exit that drops the fragment trail and keeps the stitched partial.
@@ -473,7 +512,10 @@ def recover_from_truncation(
     )
     if getattr(response, "_runaway_repetition", False):
         # The streaming call cut a live repetition loop: a continuation would only re-enter it,
-        # whatever the partial or its tool calls look like.
+        # whatever the partial looks like. A complete transcript can make one safe fallback.
+        fallback = _repetition_fallback(st, _retry)
+        if fallback is not None:
+            return fallback
         line, user_response, error = _REPETITION_STREAM_CUT
         agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
         return st.end_turn(user_response, error)

@@ -1553,7 +1553,10 @@ class TestOverflowWithCompactionDisabled:
 
     def test_413_does_not_compress_when_disabled(self, agent):
         """413 must NOT call _compress_context when compaction is disabled."""
+        # Config-disabled scenario: keep the init snapshot in agreement so the
+        # terminal copy stays the actionable "compression.enabled" one (#123500).
         agent.compression_enabled = False
+        agent.compression_enabled_from_config = False
         err_413 = _make_413_error()
         # If the guard fails, a second (success) response would be consumed.
         agent.client.chat.completions.create.side_effect = [err_413, _mock_response()]
@@ -1572,3 +1575,25 @@ class TestOverflowWithCompactionDisabled:
         assert result.get("compaction_disabled") is True
         assert result["failure_reason"] == "context_overflow" and result["failure_retryable"] is False
         assert "/compress" in result["error"] and "compression.enabled" in result["error"]
+
+    def test_413_host_flipped_disability_uses_neutral_copy(self, agent):
+        """413 with the flag flipped off by an embedding host (config stays enabled)
+        must not blame the user's settings in the terminal copy (#123500)."""
+        agent.compression_enabled_from_config = True  # config.yaml still enables it
+        agent.compression_enabled = False  # the host disabled it after init
+        err_413 = _make_413_error()
+        agent.client.chat.completions.create.side_effect = [err_413, _mock_response()]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session") as mock_persist,
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=self._prefill())
+
+        mock_compress.assert_not_called()
+        assert result.get("failed") is True
+        assert result.get("compaction_disabled") is True
+        assert "compression.enabled" not in result["error"]
+        assert "for this session" in result["error"]

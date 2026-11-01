@@ -35,6 +35,9 @@ class _FakeUncompressedAgent(_FakeAgent):
         self.model = model
         self.provider = "deepseek"
         self.compression_enabled = False
+        # What config.yaml said when this agent was built (agent_init snapshots it);
+        # the fake models the config-disabled case, where the config.yaml copy applies.
+        self.compression_enabled_from_config = False
         self.context_compressor = types.SimpleNamespace(
             protect_first_n=2,
             protect_last_n=2,
@@ -142,3 +145,42 @@ def test_multimodal_content_forces_real_estimate_in_rearm_gate():
     tctx = _build(agent, conversation_history=history)
     assert isinstance(tctx, TurnContext)
     assert agent._last_ctx_overflow_warn is None
+
+
+def test_host_flipped_compression_uses_neutral_copy():
+    """An embedding host that flips compression_enabled off after init (config stays
+    enabled) must not be told to edit config.yaml — nothing there can fix it (#123500)."""
+    agent = _FakeUncompressedAgent(context_length=10_000)
+    agent.compression_enabled_from_config = True  # what config.yaml said at init
+    agent._emit_warning = MagicMock()
+
+    agent._warn_uncompressed_context_overflow(15_000, 10_000)
+
+    msg = agent._emit_warning.call_args[0][0]
+    assert "disabled for this session" in msg
+    assert "compression.enabled: false" not in msg
+    assert "config.yaml" not in msg
+
+
+def test_config_snapshot_false_keeps_config_copy():
+    """With config itself disabling compression, the actionable config.yaml copy stays."""
+    agent = _FakeUncompressedAgent(context_length=10_000)
+    agent.compression_enabled_from_config = False
+    agent._emit_warning = MagicMock()
+
+    agent._warn_uncompressed_context_overflow(15_000, 10_000)
+
+    msg = agent._emit_warning.call_args[0][0]
+    assert "compression.enabled: false" in msg
+    assert "config.yaml" in msg
+
+
+def test_compression_disabled_host_site_copy_is_neutral():
+    """The overflow dead-end reply must not blame the user's settings when the flag
+    was flipped by the host (#123500)."""
+    from agent.turn_failure_copy import site_copy
+
+    msg = site_copy("compression_disabled_host", model="deepseek-v4-flash")
+    assert "automatic shrinking is off for this session" in msg
+    assert "your settings" not in msg
+    assert "compression.enabled" not in msg

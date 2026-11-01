@@ -261,7 +261,16 @@ export async function ensureLocalGateway(
 // Unsafe path permissions or types require repair, not another ensure of the same home.
 const STALE_CONTROL_ERRORS = new Set(['Invalid gateway ticket response', 'Invalid gateway control pointer', 'Noncanonical gateway profile'])
 
+export class GatewayTicketTimeoutError extends Error {
+  constructor() {
+    super('Hermes gateway did not respond in time; it may still be busy. Please retry shortly.')
+    this.name = 'GatewayTicketTimeoutError'
+  }
+}
+
 export function isStaleLocalGatewayError(error: unknown): boolean {
+  // A live owner can miss its ticket deadline while its loop or executor is busy.
+  if (error instanceof GatewayTicketTimeoutError) {return false}
   const message = error instanceof Error ? error.message : String(error ?? '')
 
   return message.startsWith('Gateway ticket') || STALE_CONTROL_ERRORS.has(message)
@@ -655,8 +664,10 @@ export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose:
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath)
     let buffer = ''
-    const deadline = setTimeout(() => socket.destroy(new Error('Gateway ticket deadline')), 5000)
-    socket.on('error', () => reject(new Error('Gateway ticket bootstrap failed')))
+    const deadline = setTimeout(() => socket.destroy(new GatewayTicketTimeoutError()), 5000)
+    socket.on('error', error => reject(error instanceof GatewayTicketTimeoutError
+      ? error
+      : new Error('Gateway ticket bootstrap failed', { cause: error })))
     socket.on('close', () => { clearTimeout(deadline); reject(new Error('Gateway ticket connection closed')) })
     socket.on('connect', () => socket.write(JSON.stringify({ protocol: 1, id: 1, verb: 'session-ticket', params: { profile_id: home, instance_id: endpoint.instance_id, purpose, ...ticketScope(purpose) } }) + '\n'))
     socket.on('data', chunk => {

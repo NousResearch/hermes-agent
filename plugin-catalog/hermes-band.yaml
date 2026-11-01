@@ -1,0 +1,33 @@
+name: hermes-band
+repo: https://github.com/RegeneratusLabs/hermes-band
+sha: c7a104f9a3d4daf28f507fbf0e054871bc1489c9
+version: "0.2.0"
+title: Hermes Band
+description: >-
+  Compose and render original music on your own machine — no music API, no model
+  download, no per-track cost. An arrangement is data (tempo, key, chord
+  progression, parts), rendered deterministically through fluidsynth and a
+  mastering chain to an exact-length wav and mp3, which makes it usable for
+  scoring to picture. Adds band_render, band_validate_score, band_list_presets
+  and band_doctor plus a bundled composition skill.
+  Disclosure — renders by running the host's fluidsynth and ffmpeg binaries
+  against a local General MIDI soundfont, and writes the wav, mp3 and per-part
+  midi/wav stems into ~/hermes-band-out/<name>/ (configurable via the plugin's
+  output_dir setting). Long renders take tens of seconds and run in the
+  foreground of the tool call. No network calls, no credentials.
+maintainer: RegeneratusLabs
+tier: community
+category: tools
+docs_url: https://github.com/RegeneratusLabs/hermes-band#readme
+readme: true
+platforms: [linux, macos]
+requires_hermes: ">=0.21.5"
+capabilities:
+  provides_tools:
+    - band_render
+    - band_validate_score
+    - band_list_presets
+    - band_doctor
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

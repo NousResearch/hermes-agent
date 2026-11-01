@@ -97,7 +97,7 @@ _TITLE_PROMPT_TEMPLATE = (
     "You name chat sessions. Given the user's opening message, write a title "
     "that lets them find this conversation again in a list.\n\n"
     "Rules:\n"
-    "- 3 to 7 words, sentence case (capitalize only the first word and proper nouns).\n"
+    "- __LENGTH_RULE__, sentence case (capitalize only the first word and proper nouns).\n"
     "- Name what the user wants DONE, not that they asked a question.\n"
     "- Keep technical terms, filenames, numbers, and error codes exact.\n"
     "- Drop filler words: the, this, my, a, an.\n"
@@ -111,6 +111,8 @@ _TITLE_PROMPT_TEMPLATE = (
     'does not respond on mobile devices"}\n\n'
     'Reply with JSON only: {"title": "..."}'
 )
+
+_LENGTH_RULE_DEFAULT = "3 to 7 words"
 
 _LANGUAGE_RULE_MATCH_USER = "- Write the title in the same language as the user's message."
 _LANGUAGE_RULE_PINNED = "- Write the title in {language}."
@@ -156,6 +158,21 @@ def _title_language() -> str:
         return str(_title_config().get("language", "")).strip()
     except Exception:
         return ""
+
+
+def _title_max_words() -> int:
+    """``auxiliary.title_generation.max_words``: 0 (default) keeps the prompt's 3-7 word range."""
+    try:
+        value = int(_title_config().get("max_words") or 0)
+    except Exception:
+        return 0
+    return value if 0 < value < _MAX_TITLE_WORDS else 0
+
+
+def _length_rule(max_words: int) -> str:
+    if not max_words:
+        return _LENGTH_RULE_DEFAULT
+    return f"{min(2, max_words)} to {max_words} words" if max_words > 1 else "1 word"
 
 
 def _auto_title_enabled() -> bool:
@@ -501,10 +518,11 @@ def generate_title(
     ):
         return None
     language = _title_language()
+    max_words = _title_max_words()
     # str.replace, not str.format: the prompt embeds literal JSON braces.
     prompt = _TITLE_PROMPT_TEMPLATE.replace(
         "__LANGUAGE_RULE__", _LANGUAGE_RULE_PINNED.format(language=language) if language else _LANGUAGE_RULE_MATCH_USER,
-    )
+    ).replace("__LENGTH_RULE__", _length_rule(max_words))
     try:
         # Use the provider's default temperature instead of forcing 0.3.
         # Some models (e.g. GPT-5.6) only accept their server-side default
@@ -551,6 +569,10 @@ def generate_title(
         if title is not None and _is_prompt_example_echo(title):
             logger.debug("Rejecting prompt-example echo title: %r", title)
             return None
+        # A configured cap the model overshot by a word or two: trim rather than reject, since the
+        # fallback (the derived first-line slice) is longer than the overshoot.
+        if title is not None and max_words and len(title.split()) > max_words:
+            title = " ".join(title.split()[:max_words]).rstrip(".!,;:-—")
         return title
     except Exception as e:
         # WARNING so it shows in agent.log without debug mode; stack at debug.

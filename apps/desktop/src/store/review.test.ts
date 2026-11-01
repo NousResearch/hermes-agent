@@ -39,7 +39,7 @@ import {
   toggleReview,
   unstageReviewFile
 } from './review'
-import { $busy, $currentCwd } from './session'
+import { $busy, $currentCwd, _resetSessionOwnerHintsForTests, setSessionOwnerHint } from './session'
 import { $sessionStates } from './session-states'
 
 // requestOneShot is the only cross-module dependency that must be faked (it
@@ -117,6 +117,7 @@ beforeEach(() => {
   $reviewScopeCwd.set(null)
   $reviewScopeTarget.set('main')
   $currentCwd.set('/repo')
+  setSessionOwnerHint('project-b', { connectionId: 'local', mode: 'local', profile: 'default' })
   $busy.set(false)
   $sessionStates.set({})
 })
@@ -125,6 +126,7 @@ afterEach(() => {
   vi.clearAllTimers()
   vi.useRealTimers()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  _resetSessionOwnerHintsForTests({ storage: true })
 })
 
 describe('refreshReview', () => {
@@ -484,7 +486,7 @@ describe('mutations', () => {
 describe('revert confirm dialog', () => {
   it('requestRevert(null) encodes the "revert all" target distinctly from closed', () => {
     requestRevert(null)
-    expect($reviewRevertTarget.get()).toEqual({ path: null })
+    expect($reviewRevertTarget.get()).toMatchObject({ path: null, ownerKey: expect.any(String) })
   })
 
   it('confirmRevert closes the dialog then performs the revert', async () => {

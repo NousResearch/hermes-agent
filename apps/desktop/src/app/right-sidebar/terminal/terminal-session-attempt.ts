@@ -42,6 +42,8 @@ if (typeof window !== 'undefined') {
 
 interface SessionAttemptOptions {
   isDisposed: () => boolean
+  /** The PTY bridge must still match the connection that created this tab. */
+  isExecutionOwnerActive?: () => boolean
   /** True while restored local history is parsing; its query replies must not reach the shell. */
   isReplayingHistory: () => boolean
   /** The attempt adopted a live session: seed size, shell name and selection. */
@@ -76,6 +78,7 @@ export function createSessionAttemptController(
   id: string,
   {
     isDisposed,
+    isExecutionOwnerActive = () => true,
     isReplayingHistory,
     onStarted,
     resolveCwd,
@@ -98,8 +101,25 @@ export function createSessionAttemptController(
     let current = true
     let attemptSessionId: string | null = null
 
-    const releaseSession = (sid: string) =>
-      persistent && terminalApi.detach ? terminalApi.detach(sid) : terminalApi.dispose(sid)
+    const releaseSession = (sid: string) => {
+      if (!isExecutionOwnerActive()) {
+        return undefined
+      }
+
+      return persistent && terminalApi.detach ? terminalApi.detach(sid) : terminalApi.dispose(sid)
+    }
+
+    const abandonForeignAttempt = () => {
+      current = false
+      subscriptions.splice(0).forEach(unsubscribe => unsubscribe())
+      attemptSessionId = null
+
+      if (sessionIdRef.current) {
+        sessionIdRef.current = null
+      }
+
+      armRetry('This terminal belongs to another gateway. Switch to its connection, then press Enter to reconnect.')
+    }
 
     const subscriptions: Array<() => void> = []
 
@@ -128,6 +148,12 @@ export function createSessionAttemptController(
       term.write(`${message}\r\n`)
     }
 
+    if (!isExecutionOwnerActive()) {
+      armRetry('This terminal belongs to another gateway. Switch to its connection, then press Enter to reconnect.')
+
+      return
+    }
+
     void terminalApi
       // Prefer the last observed cwd so retry/relaunch stays in the same directory.
       .start({ cols: term.cols, cwd: resolveCwd(), rows: term.rows, restoreKey: id, resumeOnly })
@@ -145,6 +171,16 @@ export function createSessionAttemptController(
           return
         }
 
+        if (!isExecutionOwnerActive()) {
+          if (persistent) {
+            markTerminalPersistent(id)
+          }
+
+          abandonForeignAttempt()
+
+          return
+        }
+
         restoreHistory()
         attemptSessionId = session.id
         sessionIdRef.current = session.id
@@ -152,7 +188,7 @@ export function createSessionAttemptController(
 
         subscriptions.push(
           terminalApi.onData(session.id, (data, options) => {
-            if (!current || isDisposed()) {
+            if (!current || isDisposed() || !isExecutionOwnerActive()) {
               return
             }
 
@@ -168,7 +204,7 @@ export function createSessionAttemptController(
             }
           }),
           terminalApi.onExit(session.id, exit => {
-            if (!current || isDisposed() || appTearingDown) {
+            if (!current || isDisposed() || appTearingDown || !isExecutionOwnerActive()) {
               return
             }
 
@@ -197,7 +233,7 @@ export function createSessionAttemptController(
         if (persistent && terminalApi.onState) {
           subscriptions.push(
             terminalApi.onState(session.id, state => {
-              if (!current || isDisposed() || appTearingDown) {
+              if (!current || isDisposed() || appTearingDown || !isExecutionOwnerActive()) {
                 return
               }
 
@@ -218,6 +254,12 @@ export function createSessionAttemptController(
         }
 
         const attached = await terminalApi.attach(session.id)
+
+        if (!isExecutionOwnerActive()) {
+          abandonForeignAttempt()
+
+          return
+        }
 
         if (!attached) {
           throw new Error('Terminal session disappeared before its output stream attached')
@@ -264,7 +306,7 @@ export function createSessionAttemptController(
   }
 
   const input = (data: string) => {
-    if (replayWrites || isReplayingHistory()) {
+    if (!isExecutionOwnerActive() || replayWrites || isReplayingHistory()) {
       return
     }
 

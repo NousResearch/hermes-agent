@@ -6,8 +6,8 @@ const STORAGE_KEY = 'hermes.desktop.terminals.v1'
 async function loadTerminalStore() {
   const $currentCwd = atom('/workspace')
 
-  vi.doMock('@/store/session', () => ({
-    $currentCwd
+  vi.doMock('@/store/session-states', () => ({
+    $focusedWorkspaceCwd: $currentCwd
   }))
 
   return { ...(await import('./terminals')), $currentCwd }
@@ -54,7 +54,16 @@ describe('terminal store persistence', () => {
     // disk (this is what makes app-quit restore reliable).
     expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '{}')).toEqual({
       activeTerminalId: userId,
-      terminals: [{ auto: false, cwd: '/repo', id: userId, reviveBuffer: 'recent scrollback', title: 'server' }]
+      terminals: [
+        {
+          auto: false,
+          cwd: '/repo',
+          executionOwner: { connectionId: 'local', mode: 'local', profile: 'default' },
+          id: userId,
+          reviveBuffer: 'recent scrollback',
+          title: 'server'
+        }
+      ]
     })
   })
 

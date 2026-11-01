@@ -220,6 +220,7 @@ function printablePath(path: string): string {
 }
 
 interface TerminalDropOptions {
+  canUseBackend?: () => boolean
   getSessionId: () => string | null
   getShellName: () => string
   markActivity: () => void
@@ -233,7 +234,7 @@ interface TerminalDropOptions {
 // them without acting on them. Returns the listener teardown.
 export function bindTerminalDrop(
   host: HTMLElement,
-  { getSessionId, getShellName, markActivity, term }: TerminalDropOptions
+  { canUseBackend = () => true, getSessionId, getShellName, markActivity, term }: TerminalDropOptions
 ): () => void {
   const onDragOver = (e: DragEvent) => {
     if (!e.dataTransfer || !transferHasDropCandidates(e.dataTransfer)) {
@@ -246,6 +247,10 @@ export function bindTerminalDrop(
   }
 
   const onDrop = (e: DragEvent) => {
+    if (!canUseBackend()) {
+      return
+    }
+
     const id = getSessionId()
 
     if (!id || !e.dataTransfer || !transferHasDropCandidates(e.dataTransfer)) {
@@ -261,6 +266,10 @@ export function bindTerminalDrop(
     }
 
     const typePaths = (paths: string[]) => {
+      if (!canUseBackend() || getSessionId() !== id) {
+        return
+      }
+
       const refused = paths.filter(hasControlCharacter)
       const shellName = getShellName()
       const typed: string[] = []

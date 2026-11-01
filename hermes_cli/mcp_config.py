@@ -402,6 +402,13 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     """
     from tools.mcp_tool_config import _interpolate_env_vars
     from agent.secret_scope import current_secret_scope
+    from hermes_cli.plugins import discover_plugins
+
+    # Standalone ``mcp test/add/configure`` never reach argparse-time plugin discovery (only agent
+    # commands run it), so plugin-provided secret sources stay unregistered and their credentials
+    # fail the fail-closed ${VAR} render below even though runtime startup resolves them fine
+    # (#133616). Idempotent and profile-keyed; joins an in-flight background discovery if one exists.
+    discover_plugins()
 
     if current_secret_scope() is None:
         try:

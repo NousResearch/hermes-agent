@@ -43,3 +43,30 @@ def test_build_apikey_providers_list_skips_dedicated_check_providers():
     )
 
 
+def test_probe_anthropic_falls_back_to_oauth_pool_token(monkeypatch):
+    """When no env/.env API key is set, _probe_anthropic falls back to resolve_anthropic_token()
+    so OAuth / credential-pool Anthropic logins are probed instead of skipped."""
+    from types import SimpleNamespace
+    import httpx
+    import hermes_cli.auth as auth_mod
+    import agent.anthropic_credentials as creds_mod
+
+    monkeypatch.setattr(auth_mod, "get_anthropic_key", lambda: "")
+    monkeypatch.setattr(creds_mod, "resolve_anthropic_token", lambda: "sk-ant-oat01-pool-token")
+
+    captured = {}
+
+    def _fake_get(url, headers=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers or {}
+        return SimpleNamespace(status_code=200, text="ok")
+
+    monkeypatch.setattr(httpx, "get", _fake_get)
+
+    res = doctor_connectivity._probe_anthropic()
+    assert res.label == "Anthropic API"
+    assert res.lines and "Anthropic API" in res.lines[0][1]
+    assert captured["headers"].get("Authorization") == "Bearer sk-ant-oat01-pool-token"
+
+
+

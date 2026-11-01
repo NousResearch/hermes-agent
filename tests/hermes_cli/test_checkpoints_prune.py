@@ -34,7 +34,9 @@ _V2_ORPHAN_ONLY_STATUS = {
 _PRE_V2_ONLY_STATUS = {
     "projects": [],
     "pre_v2_projects": [
-        {"path": "/home/user/.hermes/checkpoints/deadbeefcafebabe", "workdir": None,
+        {"path": "/home/user/.hermes/checkpoints/deadbeefcafebabe",
+         "workdir": "/gone/pre-v2-project",  # recorded + observably gone (the only
+                                             # state that is confirmable post-tightening)
          "exists": False, "orphan_confirmable": True, "unconfirmable_reason": None},
     ],
 }
@@ -176,13 +178,14 @@ _V2_ORPHAN_NO_WORKDIR_STATUS = {
 }
 
 
-def test_pre_v2_orphan_preview_names_shadow_repo_path(monkeypatch, capsys):
-    """A pre-v2 orphan with no recorded workdir is named by its shadow repo
-    path in the destructive preview.
+def test_pre_v2_orphan_preview_names_recorded_workdir(monkeypatch, capsys):
+    """A confirmable pre-v2 orphan always has a recorded (non-blank) workdir
+    post-tightening, so the destructive preview names that workdir.
 
-    "(unknown)" gives the human no way to tell several such rows apart, and no
-    path to inspect before confirming — the shadow repo path is also exactly
-    what the allowlist binds, so showing it keeps the preview auditable.
+    The shadow-repo-path fallback still exists but is only reachable in
+    ``cmd_status`` (for non-confirmable records); the destructive preview
+    never hits it. The preview must name the workdir a human can inspect
+    before confirming — and never print "(unknown)".
     """
     import hermes_cli.checkpoints as checkpoints_cli
 
@@ -194,7 +197,7 @@ def test_pre_v2_orphan_preview_names_shadow_repo_path(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert rc == 1
-    assert "/home/user/.hermes/checkpoints/deadbeefcafebabe" in out
+    assert "/gone/pre-v2-project" in out
     assert "(unknown)" not in out
     assert prune_calls == []
 

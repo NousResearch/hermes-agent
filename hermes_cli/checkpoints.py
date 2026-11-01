@@ -100,7 +100,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(f"  {wd:<60}  {state}")
             if state == "unreachable":
                 print(f"    unreachable but not prunable as an orphan: {p.get('unconfirmable_reason') or '(no reason recorded)'}")
-                print("    (pre-v2 shadow repo; prune won't treat it as an orphan)")
+                print("    (pre-v2 shadow repo; prune won't treat it as an orphan; "
+                      "retention still drops it once older than --retention-days)")
 
     legacy = info.get("legacy_archives", [])
     if legacy:

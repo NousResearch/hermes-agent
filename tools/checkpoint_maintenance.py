@@ -285,9 +285,17 @@ def prune_checkpoints(
 
     A project entry is deleted when either:
 
-    * ``delete_orphans=True`` and its ``workdir`` no longer exists on disk
-      (the original project was deleted / moved); OR
+    * ``delete_orphans=True`` and the record's workdir is an *observably gone*
+      orphan as judged by ``_orphan_verdict()`` — the parent directory still
+      exists with a matching recorded identity and no longer holds the project.
+      A missing parent, a detached volume, or a parent-identity mismatch is
+      never treated as a deletion: such records are kept and surface as
+      ``unreachable`` in ``store_status()``; OR
     * its ``last_touch`` is older than ``retention_days`` days.
+
+    A conservatively-kept record is protected from *orphan* deletion only —
+    once its ``last_touch`` passes the retention window it is still reclaimed
+    as stale, exactly like a live-but-abandoned project.
 
     ``orphan_allowlist``, when not ``None``, restricts orphan deletion to
     the given identities (v2 project ``_hash`` strings and/or pre-v2 shadow

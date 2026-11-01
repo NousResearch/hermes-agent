@@ -1325,6 +1325,12 @@ def _apply_agent_section(agent, _agent_cfg):
         "environment_probe", "bot_mode_protocol",
     ):
         setattr(agent, f"_{_key}", bool(_agent_section.get(_key, True)))
+    # agent.attribution rebrands the identity fallback and Hermes help block.
+    # Empty string omits those clauses. Non-strings keep the default. Does not
+    # rewrite SOUL.md or licensing/safety notices.
+    from agent.prompt_builder import DEFAULT_ATTRIBUTION as _DEFAULT_ATTRIBUTION
+    _attr = _agent_section.get("attribution", _DEFAULT_ATTRIBUTION)
+    agent._attribution = _attr if isinstance(_attr, str) else _DEFAULT_ATTRIBUTION
     # Warm the probe (~0.5s of subprocesses) off-thread so the first prompt build finds it cached.
     if agent._environment_probe:
         with suppress(Exception):

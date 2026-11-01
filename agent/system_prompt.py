@@ -19,11 +19,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.delegation_context import owned_kanban_task
 from agent.prompt_builder import (
-    DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
-    HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
-    PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
-    SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
-    TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
+    DEFAULT_AGENT_IDENTITY, DEFAULT_ATTRIBUTION, EXECUTION_GUIDANCE_MODELS,
+    GOOGLE_MODEL_OPERATIONAL_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE, PARALLEL_TOOL_CALL_GUIDANCE,
+    PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE, STEER_CHANNEL_NOTE,
+    TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT, TOOL_USE_ENFORCEMENT_GUIDANCE,
+    TOOL_USE_ENFORCEMENT_MODELS, build_agent_identity, build_help_guidance,
+    build_help_guidance_no_skills, drain_truncation_warnings,
 )
 from agent import prompt_builder as _pb
 from agent.runtime_cwd import resolve_agent_cwd, resolve_context_cwd
@@ -547,13 +549,50 @@ def _memory_parts(agent: Any) -> list[str]:
     return parts
 
 
+def _configured_attribution(agent: Any) -> str:
+    """``agent.attribution`` after init, else the historical default.
+
+    A non-string (config that bypassed init) stays on the default so assembly
+    cannot crash. Whitespace-only is empty and drops the clause.
+    """
+    raw = getattr(agent, "_attribution", DEFAULT_ATTRIBUTION)
+    if not isinstance(raw, str):
+        return DEFAULT_ATTRIBUTION
+    return raw.strip()
+
+
+def _identity_fallback(agent: Any) -> str:
+    """Default identity, or a rebranded copy when attribution is not the default.
+
+    The default path returns the module constant so a monkeypatch of
+    ``DEFAULT_AGENT_IDENTITY`` stays byte-stable for the prompt cache.
+    """
+    label = _configured_attribution(agent)
+    if label == DEFAULT_ATTRIBUTION:
+        return DEFAULT_AGENT_IDENTITY
+    return build_agent_identity(label)
+
+
+def _help_guidance_for(agent: Any, *, with_skills: bool) -> str:
+    """Help block for the configured attribution. The default reuses the constants."""
+    label = _configured_attribution(agent)
+    if label == DEFAULT_ATTRIBUTION:
+        if with_skills:
+            return HERMES_AGENT_HELP_GUIDANCE
+        return HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
+    if with_skills:
+        return build_help_guidance(label)
+    return build_help_guidance_no_skills(label)
+
+
 def _identity_parts(agent: Any, ctx_len: Optional[int]) -> tuple[list[str], bool]:
     """SOUL.md (primary identity; cron keeps the persona while skipping cwd
     instructions, scoped to the agent's OWN home) or the default identity.
-    Returns ``(parts, soul_loaded)``."""
+    Returns ``(parts, soul_loaded)``. A custom SOUL.md is not rewritten by
+    ``agent.attribution``."""
     wants_soul = agent.load_soul_identity or not agent.skip_context_files
     _soul_content = _pb.load_soul_md(ctx_len, home_override=_agent_home(agent)) if wants_soul else None
-    return ([_soul_content], True) if _soul_content else ([DEFAULT_AGENT_IDENTITY], False)
+    return ([_soul_content], True) if _soul_content else ([_identity_fallback(agent)], False)
 
 
 def _guidance_parts(agent: Any) -> list[str]:
@@ -752,13 +791,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # hermes-agent skill installed, so the variant is chosen after the skills
     # index is built; this slot holds its position.
     _help_guidance_slot = len(stable_parts)
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
+    stable_parts.append(_help_guidance_for(agent, with_skills=False))
     stable_parts.extend(_guidance_parts(agent))
     skills_prompt = _skills_prompt(agent)
     # Skill-pointer variant requires BOTH skill_view AND the hermes-agent skill
     # in the rendered index (pure string check — inherits the index's stability).
     if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
-        stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
+        stable_parts[_help_guidance_slot] = _help_guidance_for(agent, with_skills=True)
     stable_parts.extend(_alibaba_identity_part(agent))
     # Pinned skills are per-agent constants (resolved once), so they live in the stable prefix.
     stable_parts.extend(_auto_load_parts(agent))

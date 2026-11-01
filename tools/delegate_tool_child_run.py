@@ -592,6 +592,33 @@ def _build_tool_trace(messages: Any) -> list[dict[str, Any]]:
                 tool_trace[-1].update(result_meta)  # no tool_call_id: pair with the latest call
     return tool_trace
 
+
+def _route_failure_reasons() -> frozenset[str]:
+    """Failures of the child's ROUTE (provider, model, account) that another provider could serve. Prompt/content
+    failures (context_overflow, content_policy_blocked, format_error, …) follow the request to any provider."""
+    from agent.error_classifier import FailoverReason as R
+    return frozenset(r.value for r in (
+        R.auth, R.auth_permanent, R.billing, R.rate_limit, R.upstream_rate_limit, R.upstream_blocked, R.overloaded,
+        R.server_error, R.timeout, R.ssl_cert_verification, R.model_not_found, R.model_entitlement,
+        R.provider_policy_blocked))
+
+
+def _no_fallback_note(child: Any, failure_reason: Any) -> str:
+    """Why no other provider was tried, for a route failure on a child with an empty fallback chain. A child pinned
+    to a provider/model never borrows the main ``fallback_providers`` (by design), so name the setting that
+    gives subagents a chain instead of leaving the parent to conclude fallback does not exist."""
+    if getattr(child, "_fallback_chain", None) or failure_reason not in _route_failure_reasons():
+        return ""
+    note = "No fallback provider was tried: this subagent has no fallback chain."
+    # The route's owner names the setting: a caller-owned route (e.g. /review -> auxiliary.review) takes no chain
+    # from the delegation block, so pointing there would send the user to a setting that changes nothing.
+    setting = getattr(child, "_delegate_fallback_setting", "delegation.fallback_providers in config.yaml")
+    if not setting:
+        return f"{note} Its route comes from the caller that spawned it, not from the delegation settings."
+    return (f"{note} Subagents pinned to a provider or model do not use the main fallback_providers; set "
+            f"{setting} to give them one.")
+
+
 def _build_result_entry(
     child: Any, result: dict[str, Any], task_index: int, duration: float, schema: _SchemaOutcome,
 ) -> dict[str, Any]:
@@ -666,6 +693,8 @@ def _build_result_entry(
         _failure_reason = result.get("failure_reason")
         if isinstance(_failure_reason, str) and _failure_reason:
             entry["failure_reason"] = _failure_reason
+        if _note := _no_fallback_note(child, _failure_reason):
+            entry["error"] = f"{entry['error']}\n\n{_note}"
     elif interrupt_note:
         entry["error"] = interrupt_note
 

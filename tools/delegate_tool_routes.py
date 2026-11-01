@@ -39,6 +39,8 @@ class TaskRoute:
     label: Optional[str] = None
     backend: str = "default"
     error: Optional[str] = None
+    # Where a user gives this route's children a fallback chain (None = the spawning caller owns the policy).
+    fallback_setting: Optional[str] = "delegation.fallback_providers in config.yaml"
 
     def report(self) -> Optional[dict[str, Any]]:
         """The ``route`` a backend-routed task's result carries (None for the default backend's unlabelled route)."""
@@ -218,7 +220,8 @@ def _profile_route(home: Path) -> TaskRoute:
         command=rt.get("command"), args=list(rt.get("args") or []),
     )
     return TaskRoute(creds, {"fallback_providers": fallback if isinstance(fallback, list) else []},
-                     ResolvedReasoning(resolve_reasoning_config(cfg, model or "")), home)
+                     ResolvedReasoning(resolve_reasoning_config(cfg, model or "")), home,
+                     fallback_setting=f"fallback_providers in {home / 'config.yaml'}")
 
 
 def _with_inherited_fallback(route: dict[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:
@@ -336,4 +339,4 @@ def route_for_config(routing_cfg: dict[str, Any], parent_agent: Any) -> TaskRout
     """The route an internal caller's explicit config block describes (``/review`` ->
     ``auxiliary.review``); bypasses the provider, as those callers own their route."""
     from tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam
-    return TaskRoute(_resolve_delegation_credentials(routing_cfg, parent_agent), routing_cfg)
+    return TaskRoute(_resolve_delegation_credentials(routing_cfg, parent_agent), routing_cfg, fallback_setting=None)

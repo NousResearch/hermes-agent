@@ -411,7 +411,7 @@ If no provider is available for compression, Hermes drops middle conversation tu
 
 ## Delegation Provider Override
 
-Subagents spawned by `delegate_task` inherit the parent agent's primary fallback chain. You can still route subagents to a different primary provider:model pair for cost optimization:
+Unpinned subagents spawned by `delegate_task` inherit the parent agent's fallback chain. You can route subagents to a different primary provider:model pair for cost optimization:
 
 ```yaml
 delegation:
@@ -419,7 +419,14 @@ delegation:
   model: "google/gemini-3-flash-preview"      # override model
   # base_url: "http://localhost:1234/v1"      # or use a direct endpoint
   # api_key: "local-key"
+  fallback_providers:                         # pinned subagents only fall back to this chain
+    - provider: nous
+      model: google/gemini-3.7-flash
 ```
+
+A subagent pinned to its own provider, model or endpoint does **not** borrow the main `fallback_providers` chain; give it `delegation.fallback_providers`. When a pinned subagent fails on its route (model not found, auth, quota, provider outage) without a chain, its result `error` says so and names `delegation.fallback_providers`.
+
+A named `delegation.provider` reaches that provider even when the main model is a local endpoint (`model.provider: auto` with a local `model.base_url`); the same holds for fallback entries, cron job providers and auxiliary task providers. Only an unset or `auto` request follows the main model's local endpoint.
 
 See [Subagent Delegation](./delegation.md) for full configuration details.
 

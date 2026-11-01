@@ -266,6 +266,34 @@ class TestScanSkillCommands:
                 reset_hermes_home_override(token)
         assert msg is not None and "Body of b-only." in msg
 
+    def test_skill_under_create_dir_invokes_via_slash(self, tmp_path):
+        """A skill under ``skills.create_dir`` must load through the slash path.
+        The command map stores its absolute ``skill_dir``, which
+        ``normalize_skill_lookup_name`` must treat as trusted — without
+        ``create_dir`` in its roots the identifier passes through unchanged and
+        ``skill_view`` rejects it, so every create_dir skill registers but can
+        never be invoked (#141159).
+        """
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import build_skill_invocation_message, get_skill_commands
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home = tmp_path / "home"
+        (home / "skills").mkdir(parents=True)
+        brain = tmp_path / "brain"
+        _make_skill(brain, "brain-skill", category="workflow", body="Body of brain-skill.")
+        (home / "config.yaml").write_text(
+            f"skills:\n  create_dir: {brain}\n", encoding="utf-8")
+
+        with patch.object(sc_mod, "_skill_commands_by_key", {}):
+            token = set_hermes_home_override(home)
+            try:
+                assert "/brain-skill" in dict(get_skill_commands())
+                msg = build_skill_invocation_message("/brain-skill", user_instruction="go")
+            finally:
+                reset_hermes_home_override(token)
+        assert msg is not None and "Body of brain-skill." in msg
+
     def test_get_skill_commands_rescans_when_leaving_platform_scope(self, tmp_path, monkeypatch):
         """Returning to no-platform-scope (CLI / cron / RL) after a gateway
         session must rescan so the unfiltered view is repopulated (#14536).

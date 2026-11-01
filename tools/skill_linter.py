@@ -45,6 +45,11 @@ _EXPECTED_SECTIONS = ("When to Use", "When to use")
 # incident-log-shape: at least this many PR/issue refs AND this density (per 1k chars of prose).
 _INCIDENT_REF_MIN = 4
 _INCIDENT_REF_PER_KCHAR = 0.5  # the 100k incident-log SKILL.md this targets sat at ~0.7
+
+# A local file link ends in a real suffix: "topic.md", "schema.json". A bare
+# directory mention ("references/") and a sentence-ending dot ("assets/.") are
+# prose, not links, and must not be reported as dangling references.
+_FILE_SUFFIX_RE = re.compile(r"^[^/]*\.[A-Za-z0-9]+$")
 # references-sprawl: a skill carrying more reference files than this is hoarding per-session notes.
 # Calibration: a deliberately curated large workflow skill sits near 50 topical files; the hoarding
 # shape this catches was 443 one-per-session files.
@@ -124,6 +129,59 @@ def _check_frontmatter(frontmatter: dict[str, Any], skill_dir: Optional[Path]) -
                         f"expected a subset of {sorted(valid)}.")
 
 
+def _inside_url(text: str, pos: int) -> bool:
+    """True when the match at ``pos`` sits inside a URL path.
+
+    A body may link a remote asset (``https://host/docs/assets/x.json``); that
+    mention is not a local skill file and must not be reported as dangling.
+    """
+    window = text[max(0, pos - 120):pos]
+    if "://" not in window:
+        return False
+    # Only a URL path component counts, and the scheme must be the last one seen.
+    tail = window.rsplit("://", 1)[-1]
+    return "/" in tail and " " not in tail.split("//")[-1].rsplit("/", 1)[0]
+
+
+def _owner_prefix(text: str, pos: int) -> str:
+    """Return the skill-owner path immediately preceding ``pos``, or ``""``.
+
+    A body can cite a reference owned by another skill. The owner is spelled
+    right before the mention: ``other-skill/references/x.md``,
+    ``../other-skill/references/x.md`` or ``category/other-skill/references/x.md``.
+    """
+    prefix = text[:pos]
+    match = re.search(r"([\w.\-]+/)+$", prefix)
+    return match.group(0).rstrip("/") if match else ""
+
+
+def _reference_resolves(skill_dir: Path, rel: str, text: str, pos: int) -> bool:
+    """True when a ``references/...`` mention resolves to a real file.
+
+    Resolution order:
+
+    1. the skill's own directory (the common case);
+    2. the owner named immediately before the mention, relative to the skill
+       dir, its parent, or its grandparent (a category layout);
+    3. the skills root, for a bare ``other-skill/references/x.md`` mention.
+
+    A skill body legitimately cites files owned by other skills, so a mention
+    that resolves through the owner is not dangling.
+    """
+    if (skill_dir / rel).exists():
+        return True
+    bases = (skill_dir, skill_dir.parent, skill_dir.parent.parent)
+    owner = _owner_prefix(text, pos)
+    if owner:
+        for base in bases:
+            if (base / owner / rel).exists():
+                return True
+    for base in (skill_dir.parent, skill_dir.parent.parent):
+        if (base / rel).exists():
+            return True
+    return False
+
+
 def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
     if len(body) > _BODY_SOFT_BUDGET_CHARS:
         yield _warn("oversized-body",
@@ -150,15 +208,24 @@ def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
         return
     # Dangling links. Only references/, templates/, assets/ are reliably skill-owned;
     # `scripts/` is excluded because dev skills legitimately cite repo-root scripts.
+    # Scan PROSE, not the raw body: a fenced example that spells out
+    # `references/file.md` documents how to write a reference, it is not a link
+    # that must resolve.
     seen: set[str] = set()
-    for match in re.finditer(r"(references|templates|assets)/[\w./-]+", body):
+    for match in re.finditer(r"(references|templates|assets)/[A-Za-z0-9._/-]+", prose):
         rel = match.group(0)
         if rel in seen or "*" in rel or rel.endswith("/"):  # dupes, placeholders, globs
             continue
+        if ".." in rel:  # `references/...` — a spelled-out placeholder
+            continue
+        if not _FILE_SUFFIX_RE.match(rel.rsplit("/", 1)[-1]):
+            continue  # a directory mention ("assets/") or a sentence-ending dot ("assets/.")
+        if _inside_url(prose, match.start()):
+            continue  # `https://host/docs/assets/files/x.txt` is a URL, not a local link
         seen.add(rel)
-        if not (skill_dir / rel).exists():
+        if not _reference_resolves(skill_dir, rel, prose, match.start()):
             yield _warn("dangling-reference", f"body references '{rel}' but that file "
-                        f"does not exist in the skill directory.")
+                        "does not exist in the skill directory or under an owning skill.")
 
 
 def _check_files(frontmatter: dict[str, Any], skill_dir: Path) -> Iterator[LintFinding]:

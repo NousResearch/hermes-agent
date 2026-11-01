@@ -216,3 +216,17 @@ def test_a_bad_route_max_iterations_refuses_that_task_and_its_sibling_runs(bad):
     assert "max_iterations" in refused["error"]
     assert len(built) == 1
 
+
+def test_the_delegation_sections_own_max_iterations_is_not_a_route_error():
+    """A backend that falls back to ``dict(config)`` carries the config's value: a bad global keeps its old
+    behaviour (delegate_task's own read) instead of refusing the task as a route error."""
+    result, (child,), _ = _spawn([None], cfg={"max_iterations": "40"})
+    assert result == {"status": "built"}
+    assert child["max_iterations"] == "40"
+
+
+def test_a_profile_route_is_not_checked_for_max_iterations():
+    from tools.delegate_tool_routes import _check_route_max_iterations
+    _check_route_max_iterations(0, {"profile": "work", "max_iterations": 0}, {"max_iterations": 40})  # no raise
+    with pytest.raises(ValueError, match="max_iterations"):
+        _check_route_max_iterations(0, {"max_iterations": 0}, {"max_iterations": 40})

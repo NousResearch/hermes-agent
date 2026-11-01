@@ -225,8 +225,9 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
 
       startSegment()
 
-      context = new AudioContext()
-      const source = context.createMediaStreamSource(stream)
+      const audioContext = new AudioContext()
+      context = audioContext
+      const source = audioContext.createMediaStreamSource(stream)
       const floorSamples: number[] = []
       const recentAbove: { above: boolean; at: number }[] = []
       let calibratedSince: number | null = null
@@ -266,6 +267,9 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
       }
 
       const updateTrigger = (level: number, now: number, playing: boolean) => {
+        // Playback is observed at delivery, not when a queued audio sample was
+        // captured. Historical samples must not backdate playback-onset grace.
+        const playbackNow = audioContext.currentTime * 1_000
         // Calibrate from quiet samples, then hold the floor through playback.
         if (!floorLocked) {
           if (!playing) {
@@ -280,8 +284,8 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
 
         // Sentence gaps must not chain playback-onset grace windows.
         if (playing && !wasPlaying) {
-          if (!playbackSeen || now - lastPlayingAt >= PLAYBACK_GAP_FOR_GRACE_MS) {
-            graceUntil = now + PLAYBACK_GRACE_MS
+          if (!playbackSeen || playbackNow - lastPlayingAt >= PLAYBACK_GAP_FOR_GRACE_MS) {
+            graceUntil = playbackNow + PLAYBACK_GRACE_MS
           }
 
           playbackSeen = true
@@ -290,7 +294,7 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
         wasPlaying = playing
 
         if (playing) {
-          lastPlayingAt = now
+          lastPlayingAt = playbackNow
         }
 
         let trigger = Math.max(MIN_TRIGGER_LEVEL, quietFloor * floorMultiplier)

@@ -13,6 +13,9 @@ function compilerPreset() {
 }
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
+import { fileURLToPath } from "node:url";
+
+const configDir: string = fileURLToPath(new URL(".", import.meta.url));
 
 const BACKEND = process.env.HERMES_DASHBOARD_URL ?? "http://127.0.0.1:9119";
 
@@ -74,6 +77,11 @@ function hermesDevToken(): Plugin {
 }
 
 export default defineConfig({
+  css: {
+    // Tailwind runs through its Vite plugin. Keep unrelated ancestor PostCSS
+    // configs (including BOM-marked JSON) out of this build.
+    postcss: { plugins: [] },
+  },
   plugins: [
     react(),
     babel({ presets: [compilerPreset()] }),
@@ -82,8 +90,8 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
-      "@hermes/shared": path.resolve(__dirname, "../apps/shared/src"),
+      "@": path.resolve(configDir, "./src"),
+      "@hermes/shared": path.resolve(configDir, "../apps/shared/src"),
     },
     // When @nous-research/ui is symlinked via `file:../../design-language`,
     // Node's module resolution would pick up shared deps from

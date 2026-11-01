@@ -43,7 +43,7 @@ def _mem_db_pair_agrees(mem, db_msg) -> bool:
         return False
     if mem.get("role") == "user":
         from agent.context_compressor import user_originated_turn_view
-        from agent.memory_manager import sanitize_context
+        from agent.memory_context import sanitize_context
         mem_view = user_originated_turn_view(mem)
         db_view = user_originated_turn_view(db_msg)
         if (mem_view is None) != (db_view is None):
@@ -59,7 +59,13 @@ def _mem_db_pair_agrees(mem, db_msg) -> bool:
 
 
 def _find_user_turn_by_row_id(history: list, target_row_id: int):
-    """``(user_ordinal, history_index)`` for ``target_row_id``, or None."""
+    """``(user_ordinal, history_index)`` for ``target_row_id``, or None.
+
+    Exact ``_row_id`` matches only. An id absorbed into a merge carrier must NOT
+    resolve here: the carrier's own index cuts the whole merged pair away, but a
+    rewind aimed at the absorbed row has to retain the carrier's earlier half —
+    that mapping is `_resolve_truncate_row_id`'s durable-prefix path.
+    """
     return next(
         ((u_ord, h_idx) for u_ord, h_idx in enumerate(_history_user_indices(history))
          if _message_row_id(history[h_idx]) == target_row_id), None)
@@ -68,7 +74,10 @@ def _find_user_turn_by_row_id(history: list, target_row_id: int):
 def _load_durable_truncation_history(
     session: dict, fallback_sid: str = "", repair_alternation: bool = True):
     """Load the durable live-replay transcript, or None when it cannot be proven safe."""
-    session_key = str(session.get("session_key") or fallback_sid or "")
+    # Same stale-key hazard as the submit row and the out-of-band probe: a compression rotation moves the
+    # live tip off session_key, and this is the load every adoption path replays from — reading the parent
+    # returns a transcript without the continuation (#123545).
+    session_key = _submit_row_target_key(session) or str(fallback_sid or "")
     if not session_key:
         return []
     try:
@@ -87,22 +96,39 @@ def _load_durable_truncation_history(
 
 
 def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
-    """Resolve ``truncate_before_row_id`` to ``(user_ordinal, history_index)``: in-memory
-    stamps first, else the durable transcript mapped onto the live list by user ordinal.
-    Never falls back to a client-supplied ordinal — unknown row ids refuse.
+    """Resolve ``truncate_before_row_id`` against the live list: a
+    ``(user_ordinal, history_index)`` pair, or — when the target is a durable
+    row absorbed into a repaired live carrier — a triple appending the
+    physical ``durable_prefix`` to cut from. None refuses (fail closed);
+    a client-supplied ordinal is never trusted as a fallback.
 
     Prefer in-memory ``_row_id`` / ``row_id`` stamps. When a live turn rewrote ``session["history"]``
     without stamps (provider-format messages), load the session's durable transcript with
     ``include_row_ids=True`` and map the matched user-turn ordinal onto the live list. See #82959.
+
+    A cold resume/reload materializes the live history with ``repair_alternation=True``, so the
+    live list is the REPAIRED projection of the physical rows: a user;user run is merged into
+    its first row and the absorbed rows' ids have no live ordinal. When the physical target row
+    lives inside such a merged carrier, resolving to the carrier's own index would cut the whole
+    pair (losing the unanswered earlier half); instead the durable prefix — the physical rows
+    strictly before the target — is returned so the cut keeps the inner row boundary (#94486).
     """
     if (hit := _find_user_turn_by_row_id(history, target_row_id)) is not None:
         return hit
-    db_history = _load_durable_truncation_history(session)
+    # Identity lookups read the UN-REPAIRED transcript: repair merges any user;user run
+    # into its first row (a model-switch marker run, or an interrupted turn that persisted
+    # no assistant row followed by a resend), and the merged row keeps only the first
+    # row's _row_id — the absorbed rows' ids vanish from the repaired view, so resolving
+    # against it fails closed on rows that are physically present (#94486's live-session
+    # shape). Resolution must read the physical rows, the same discipline the rebind path
+    # applies below for the active-id set.
+    db_history = _load_durable_truncation_history(session, repair_alternation=False)
     if db_history is None:
         return None
-    # Heal missing stamps only when EVERY pair agrees: the durable copy is alternation-
-    # repaired while the live list can carry optimistic/marker rows, and a stamp on a
-    # misaligned pair is sticky (re-aims every later rewind at the wrong durable row).
+    # Heal missing stamps only when EVERY pair agrees: the live list can carry
+    # optimistic/marker rows while the durable copy is physical, and the two can coincide
+    # in length while position-shifted; a stamp on a misaligned pair is sticky (re-aims
+    # every later rewind at the wrong durable row).
     if len(db_history) == len(history) and all(
             _mem_db_pair_agrees(mem, db_msg) for mem, db_msg in zip(history, db_history)):
         for mem, db_msg in zip(history, db_history):
@@ -114,12 +140,56 @@ def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
         return None
     db_ord, db_idx = db_hit
     mem_user_indices = _history_user_indices(history)
-    # Same-ordinal mapping across lists that can diverge (repair may merge a user;user
-    # pair): trust it only when the mapped live turn shows the durable target's content.
-    if db_ord >= len(mem_user_indices) or not _mem_db_pair_agrees(
+    if db_ord < len(mem_user_indices) and _mem_db_pair_agrees(
             history[mem_user_indices[db_ord]], db_history[db_idx]):
-        return None
-    return db_ord, mem_user_indices[db_ord]
+        # Same-ordinal mapping across aligned lists: the live turn at that user
+        # ordinal shows the same content as the durable target.
+        return db_ord, mem_user_indices[db_ord]
+    # The live list can be the REPAIRED projection of these physical rows (a cold
+    # resume/reload materializes session["history"] with repair_alternation=True):
+    # the user;user run ending in the target row is merged into its FIRST row, so
+    # every user ordinal after the run shifts down and the target has no live
+    # ordinal of its own. Map the durable row onto the merge survivor that owns it
+    # — the carrier whose own or absorbed id names the target — gated on the
+    # carrier holding the durable target's text (repair folds a run with a
+    # "\n\n" join, so the target's sanitized text is a whole part of the carrier).
+    # The returned index keeps the merged pair: the prefix cut below carves the
+    # durable target's own boundary out of it instead of dropping both rows.
+    for u_ord, h_idx in enumerate(mem_user_indices):
+        carrier = history[h_idx]
+        absorbed_ids = [rid for rid in (carrier.get("_absorbed_row_ids") or ())
+                        if isinstance(rid, int)]
+        if target_row_id != _message_row_id(carrier) and target_row_id not in absorbed_ids:
+            continue
+        if not _merge_carrier_holds_target_text(carrier, db_history[db_idx]):
+            continue
+        return u_ord, h_idx, db_history[:db_idx]
+    return None
+
+
+def _merge_carrier_holds_target_text(carrier: dict, db_msg: dict) -> bool:
+    """True when the live merge *carrier* plausibly holds the durable target row's
+    text. ``_merge_consecutive_users`` joins a user;user run with ``"\\n\\n"`` (an
+    empty side drops out), so the target's sanitized text either IS the carrier's
+    content or appears in it as a whole ``"\\n\\n"``-delimited part. Both views are
+    user-originated by construction (the caller only visits user turns)."""
+    from agent.context_compressor import user_originated_turn_view
+    from agent.memory_context import sanitize_context
+    mem_view = user_originated_turn_view(carrier)
+    db_view = user_originated_turn_view(db_msg)
+    if mem_view is None or db_view is None:
+        # The caller only visits user turns; a None view means a non-user row
+        # slipped in — refuse it.
+        return False
+    mem_content = mem_view.get("content")
+    db_content = db_view.get("content")
+    if not (isinstance(mem_content, str) and isinstance(db_content, str)):
+        # A merged carrier is always plain-text (repair never merges multimodal
+        # rows); a non-text durable target cannot live inside one.
+        return False
+    mem_text = sanitize_context(mem_content).strip()
+    db_text = sanitize_context(db_content).strip()
+    return db_text == mem_text or f"\n\n{db_text}" in mem_text
 
 
 def _coerce_truncate_int(rid, value, param_name="truncate_before_user_ordinal"):
@@ -166,36 +236,50 @@ def _pending_reaction_notes(session: dict) -> str:
 
 # ── prompt.submit pieces ────────────────────────────────────────────────────
 
-def _typed_stop_phrase_response(rid, text):
-    """RPC reply ending the voice chat when a bare stop phrase is TYPED while backend voice
-    mode is on (typed twin of the spoken stop phrase), or None for a normal message."""
-    if not (isinstance(text, str) and _voice_mode_enabled()):
-        return None
+def _consume_typed_stop_phrase(text, sid=None, *, emit: bool = True) -> bool:
+    """End *sid*'s voice chat when *text* is a bare stop phrase TYPED while its voice mode is on
+    (typed twin of the spoken stop phrase) -> True; False for a normal message. *emit* sends the
+    ``voice.transcript`` stop event to the voice client; the canonical ``prompt.submit`` path
+    (``gateway/session_controls.py``) answers its submitter in the reply instead (TUI-26)."""
+    if not (isinstance(text, str) and _session_voice_enabled(sid)):
+        return False
     try:
         # Typed bare stop phrase while backend voice mode is active ends the voice chat instead of sending
-        # "stop" to the agent — the typed twin of the spoken stop phrase (PR #73106), applied at the ONE
-        # server-side choke point every TUI submit passes through. (The desktop's voice conversation is
-        # renderer-owned and never flips the backend flag, so it handles its own typed stop client-side.)
-        from tools.voice_mode import is_voice_stop_phrase
+        # "stop" to the agent — the typed twin of the spoken stop phrase (PR #73106), applied at the
+        # server-side choke point every TUI submit passes through: this sidecar handler and the shared
+        # owner's canonical prompt.submit. (The desktop's voice conversation is renderer-owned and never
+        # flips the backend flag, so it handles its own typed stop client-side.)
+        from tools.voice_mode_transcript import is_voice_stop_phrase
         if not is_voice_stop_phrase(text):
-            return None
-    except Exception:
-        return None
-    _end_voice_chat(stop_loop=True, stop_tts=True)
-    _voice_emit("voice.transcript", {"stop_phrase": True, "typed": True})
+            return False
+    except Exception:  # an unreadable voice config never swallows the message: it reaches the agent
+        logger.debug("typed stop-phrase check failed; submitting the text", exc_info=True)
+        return False
+    _end_session_voice_chat(sid, stop_loop=True, stop_tts=True)
+    if emit:
+        _voice_emit("voice.transcript", {"stop_phrase": True, "typed": True})
     logger.info("prompt.submit: typed stop phrase — voice chat ended")
-    return _ok(rid, {"voice_stopped": True})
+    return True
+
+
+def _typed_stop_phrase_response(rid, text, sid=None):
+    """RPC reply ending the voice chat when a bare stop phrase is TYPED while the session's voice
+    mode is on (typed twin of the spoken stop phrase), or None for a normal message."""
+    return _ok(rid, {"voice_stopped": True}) if _consume_typed_stop_phrase(text, sid) else None
 
 
 _HOSTED_TASK_FIELDS = {"room_id", "task_id", "thread_id", "turn_id", "execution_generation", "member_id"}
 
 
-def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback):
-    """Validate the hosted-room turn proof carried by an internal submit."""
+def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback, hosted_images=None):
+    """Validate the hosted-room turn proof carried by an internal submit. ``hosted_images`` are the
+    member's event-bound images, already materialized under the image cache by the room worker."""
     if session.get("source") != "bot_room":
         return _err(rid, 4120, "hosted room turns require a bot_room session")
     valid = (
         isinstance(hosted_task, dict) and callable(hosted_terminal_callback)
+        and (hosted_images is None or (isinstance(hosted_images, list)
+                                       and all(isinstance(p, str) and p for p in hosted_images)))
         and set(hosted_task) == _HOSTED_TASK_FIELDS
         and all(isinstance(hosted_task.get(f), str) and hosted_task[f]
                 for f in _HOSTED_TASK_FIELDS - {"execution_generation"})
@@ -268,14 +352,19 @@ def _parse_truncation_params(rid, sid, session, params, history):
 
 
 def _resolve_truncation_ordinal(rid, sid, session, params, history):
-    """Resolve the truncation target to ``(ordinal, cut_index, err)``: unresolvable target
-    (4018, fail closed — never degrade a missing row_id/message_id into an ordinal cut) ->
-    ordinal drift (4030) -> ordinal-only on a durable session (4004)."""
+    """Resolve the truncation target to ``(ordinal, cut_index, err)`` — with a fourth
+    ``durable_prefix`` element when the durable target was absorbed into a repaired
+    live carrier: unresolvable target (4018, fail closed — never degrade a missing
+    row_id/message_id into an ordinal cut) -> ordinal drift (4030) -> ordinal-only on
+    a durable session (4004)."""
     target_row_id, client_ordinal, err = _parse_truncation_params(
         rid, sid, session, params, history)
     if err is not None:
         return None, None, err
     truncate_message_id = params.get("truncate_before_message_id")
+    # The durable target was absorbed into a repaired live carrier: the physical
+    # prefix carries the true row boundary for the cut (see _resolve_truncate_row_id).
+    durable_prefix = None
     # Client ordinals count the full displayed lineage; after compression ancestors live in
     # display_history_prefix, so count their user turns once to translate ordinals.
     prefix_user_count = len(_history_user_indices(session.get("display_history_prefix") or []))
@@ -293,6 +382,12 @@ def _resolve_truncation_ordinal(rid, sid, session, params, history):
         if target_row_id is not None:
             param_name, target_repr = "truncate_before_row_id", target_row_id
             found_match = _resolve_truncate_row_id(session, history, target_row_id)
+            if len(found_match or ()) == 3:
+                # The durable target is a physical row absorbed into a repaired
+                # live carrier: the pair stays, the cut keeps the target's own
+                # row boundary (physical rows strictly before it).
+                durable_prefix = found_match[2]
+                found_match = found_match[:2]
             not_found = "target row_id %d not found for session %s (in-memory + durable)"
         else:
             param_name = "truncate_before_message_id"
@@ -346,6 +441,8 @@ def _resolve_truncation_ordinal(rid, sid, session, params, history):
     # BOTH ends: a negative ordinal would index user_indices[-1] and persist the loss.
     if ordinal < 0 or ordinal >= len(user_indices):
         return _stale(resolved_ordinal=ordinal)
+    if durable_prefix is not None:
+        return ordinal, user_indices[ordinal], None, durable_prefix
     return ordinal, user_indices[ordinal], None
 
 
@@ -353,15 +450,59 @@ def _row_ids_of(messages) -> set:
     return {row_id for message in messages if isinstance((row_id := _message_row_id(message)), int)}
 
 
+# Rollout (#133716, maintainer decision G15-B): one release warn-only, so an older Desktop or a
+# third-party client that predates confirm_deep_truncate keeps working while upgraded clients ask
+# before a deep cut on their own. The next release flips this to refuse with 4033.
+DEEP_TRUNCATE_ENFORCED = False
+
+
+def _archived_user_turns(session, sid, history, cut_index, survivor_ids) -> int:
+    """User turns a cut at *cut_index* drops. A repaired live carrier stands for its whole merged
+    run (own id + ``_absorbed_row_ids``), which can mix real user rows with display markers
+    (#94486): its turns are counted from the physical durable rows, and every id that cannot be
+    classified there counts as a turn (fail closed). On a durable-carrier cut the run's rows
+    before the target survive (*survivor_ids*)."""
+    from agent.context_compressor import user_originated_turn_view
+    physical = None
+    archived = 0
+    for h_idx in _history_user_indices(history):
+        if h_idx < cut_index:
+            continue
+        message = history[h_idx]
+        absorbed = [rid for rid in (message.get("_absorbed_row_ids") or ()) if isinstance(rid, int)]
+        if not absorbed:
+            archived += 1
+            continue
+        if physical is None:
+            rows = _load_durable_truncation_history(session, sid, repair_alternation=False) or []
+            physical = {_message_row_id(row): row for row in rows if isinstance(row, dict)}
+        own = _message_row_id(message)
+        # A carrier with no id of its own still holds its own (unaddressable) user turn.
+        archived += own is None
+        for rid in {own, *absorbed} - survivor_ids - {None}:
+            row = physical.get(rid)
+            archived += row is None or user_originated_turn_view(row) is not None
+    return archived
+
+
 def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids):
     """Rewind/regenerate cut under ``history_lock``: ``(err, survivor_fields)``; the fields
     are the client rowId-rebind payload."""
     history = _history_without_ephemeral_scaffolding(session.get("history", []))
-    ordinal, cut_index, err = _resolve_truncation_ordinal(rid, sid, session, params, history)
+    resolved = _resolve_truncation_ordinal(rid, sid, session, params, history)
+    ordinal, cut_index, err = resolved[0], resolved[1], resolved[2]
     if err is not None:
         return err, {}
+    durable_prefix = resolved[3] if len(resolved) > 3 else None
     from agent.context_compressor import history_before_user_originated_turn
-    truncated, _live_view = history_before_user_originated_turn(history, cut_index)
+    if durable_prefix is not None:
+        # Durable-boundary cut: the target row is physically present but merged into
+        # a repaired live carrier; the physical rows strictly before it are the
+        # survivors — the carrier's earlier half stays, the absorbed target and
+        # everything after it are replaced by the submitted turn.
+        truncated, _live_view = [message.copy() for message in durable_prefix], None
+    else:
+        truncated, _live_view = history_before_user_originated_turn(history, cut_index)
     # Second gate: ordinal 0 would DELETE every durable row; wiping needs its own opt-in.
     if not truncated and history and not is_truthy_value(params.get("confirm_empty_truncate")):
         logger.warning(
@@ -372,6 +513,25 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
             rid, 4028,
             "truncation would erase the entire session transcript; "
             "resubmit with confirm_empty_truncate=true if this is intended"), {}
+    # Depth gate: a valid anchor can still name a stale row; tail regenerate / edit-last
+    # drop exactly one user turn, deeper cuts need confirm_deep_truncate.
+    archived_user_turns = _archived_user_turns(session, sid, history, cut_index, _row_ids_of(truncated))
+    if archived_user_turns > 1 and not is_truthy_value(params.get("confirm_deep_truncate")):
+        # A durable-carrier cut's ``truncated`` is physical rows: count the live cut instead.
+        archived_messages = len(history) - (
+            cut_index if durable_prefix is not None else len(truncated))
+        logger.warning(
+            "prompt.submit: %s unconfirmed deep truncation of session %s (%d messages / %d user "
+            "turns; ordinal=%d).",
+            "REFUSED" if DEEP_TRUNCATE_ENFORCED else "ALLOWED (warn-only release)",
+            sid, archived_messages, archived_user_turns, ordinal)
+        if DEEP_TRUNCATE_ENFORCED:
+            return _err(
+                rid, 4033,
+                "truncation would archive later user turns; resubmit with "
+                "confirm_deep_truncate=true if this is intended",
+                data={"archived_messages": archived_messages,
+                      "archived_user_turns": archived_user_turns}), {}
     log_fn = logger.warning if not truncated else logger.info
     log_fn(
         "prompt.submit: truncating session %s history %d -> %d messages (ordinal=%d)",
@@ -444,6 +604,25 @@ def _storage_error_data(failure, raw) -> dict:
     return {"code": failure.code, "cause": failure.cause, "details": storage_failure_details(raw)}
 
 
+def _reopen_if_finalized(db, session_id: str) -> None:
+    """The first real turn is what reopens a finalized session (#85303).
+
+    Mounting a chat (``session.resume``/hydration) is a READ and no longer clears
+    ``ended_at``/``end_reason`` — opening a finished session must not re-light DB-derived
+    liveness with no new activity. This runs on the submit path (the user actually sent
+    something) before the turn's first transcript write, so the row the turn writes is
+    live again. Best-effort: a failed read must not block the send."""
+    if not session_id:
+        return
+    try:
+        row = db.get_session(session_id)
+    except Exception:
+        logger.debug("finalized-session reopen check failed for %s", session_id, exc_info=True)
+        return
+    if row is not None and row.get("ended_at") is not None:
+        db.reopen_session(session_id)
+
+
 def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
     here), then the message itself (#111868: a freeze during the first build must leave a
@@ -459,6 +638,11 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
                 data=_storage_error_data(failure, _db_error))
         else:
             _persist_branch_seed(session)
+            # The first real turn reopens a finalized row (#85303): resume is read-only, so
+            # an ended_at set at mount time is cleared HERE, before the turn's first write.
+            with _session_db(session) as db:
+                if db is not None:
+                    _reopen_if_finalized(db, str(session.get("session_key") or ""))
             _persist_submit_user_row(session, text, display_kind)
             return None
     except Exception as exc:
@@ -488,7 +672,8 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
 
 
 def _run_after_agent_ready(
-    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None,
+    hosted_images=None,
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
@@ -519,11 +704,80 @@ def _run_after_agent_ready(
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        image_paths=hosted_images, terminal_callback=hosted_terminal_callback, turn_author=turn_author)
 
 
 _TRUNCATION_PARAMS = (
     "truncate_before_user_ordinal", "truncate_before_row_id", "truncate_before_message_id")
+
+#: The refusal reason when the owner's FIFO could not take a typed prompt (RT-37): transient, the
+#: gateway's turn ends on its own, so the client offers "send when the turn ends", not a new chat.
+SESSION_OWNER_BUSY = "SESSION_OWNER_BUSY"
+#: The owner's FIFO did not confirm a forwarded prompt in time; it may still have been queued, so the
+#: client must not offer Retry (a second copy would run): check the chat first.
+SESSION_OWNER_UNCONFIRMED = "SESSION_OWNER_UNCONFIRMED"
+
+
+def _slot_refusal(rid, sid, session, text, params, refusal, internal_hosted_submit) -> dict:
+    """The answer to a refused slot: a ledger refusal of a client submit goes to the owner's FIFO."""
+    if getattr(refusal, "ledger_status", None) is not None and not internal_hosted_submit:
+        return _submit_to_ledger_owner(rid, sid, session, text, params, refusal)
+    reason = getattr(refusal, "reason", None)
+    return _err(rid, 4090, str(refusal), {"reason": reason} if reason else None)
+
+
+def _submit_to_ledger_owner(rid, sid, session, text, params, refusal) -> dict:
+    """The gateway's durable ledger holds work for this session (#140385, RT-37): one owner, one FIFO.
+    Work that ends on its own (a running or queued gateway turn) gets this prompt queued behind it in
+    the OWNER's FIFO (``owner_forward``): the owner runs it once, after the current turn, and nothing
+    runs here. An ``unknown`` admission, or work no running gateway will finish, keeps its refusal
+    (only Discard / a gateway resume resolves it); anything else that cannot be queued is refused
+    with the reason and the advice to send when the turn ends."""
+    from tui_gateway import owner_forward
+    not_owned = _err(rid, 4090, str(refusal), {"reason": getattr(refusal, "reason", None) or "SESSION_NOT_OWNED"})
+    if getattr(refusal, "ledger_status", None) == "unknown":
+        return not_owned
+    why = None
+    if not owner_forward.forwardable(refusal, session, text, params):
+        why = ("a rewind or attachment cannot join its queue" if isinstance(text, str) and text.strip()
+               else "this kind of message cannot join its queue")
+        if _unstage_refused_images(session):
+            why = "an image cannot join its queue, so it was removed from this message"
+    else:
+        try:
+            receipt = owner_forward.forward_prompt(sid, session, text)
+        except owner_forward.OwnerNotRunning:
+            return not_owned  # no gateway runs the ledger's work: it will not end on its own
+        except owner_forward.OwnerUnconfirmed:
+            return _err(rid, 4090, "The gateway is running a turn in this chat and did not confirm your message"
+                        " in time. It may already be queued there: check the chat before sending it again.",
+                        {"reason": SESSION_OWNER_UNCONFIRMED})
+        except Exception as exc:  # every owner failure is the same named refusal
+            logger.info("forwarding prompt for %s to the owner failed: %s",
+                        session.get("session_key") or sid, exc, exc_info=True)
+            why = str(exc) if isinstance(exc, owner_forward.OwnerUnavailable) else "the gateway refused it"
+        else:
+            if receipt.get("voice_stopped") is True:
+                return _ok(rid, {"voice_stopped": True})  # the owner ended its voice chat; nothing queued
+            return _ok(rid, {"status": "queued", "admission_id": receipt.get("admission_id"),
+                             "forwarded": True})
+    return _err(rid, 4090, "The gateway is running a turn in this chat and " + why
+                + ". Nothing was sent. Send it again when the current turn ends.",
+                {"reason": SESSION_OWNER_BUSY})
+
+
+def _unstage_refused_images(session) -> int:
+    """Drop the images staged for a submit the owner's FIFO cannot take (RT-37c live finding).
+
+    Every other refusal leaves ``attached_images`` staged because the turn that ends the refusal (the
+    legacy turn once the slot frees) consumes them. Here no legacy turn comes: while the gateway owns the
+    chat, a staged image makes every later text-only send unforwardable too, so the chat stays refused
+    behind an image the composer may no longer show. The refusal names the removal, so the user re-attaches
+    it knowingly instead of losing it silently."""
+    with session["history_lock"]:
+        dropped = len(session.get("attached_images") or ())
+        session["attached_images"] = []
+    return dropped
 
 
 def _lock_in_submit_turn(
@@ -536,7 +790,8 @@ def _lock_in_submit_turn(
             return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
-        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+        if session.get("lazy") and _child_run_active(
+            str(session.get("session_key") or ""), session.get("profile_home") or None):
             return _err(rid, 4009, "subagent still running — wait for it to finish"), fields
         if is_truthy_value(params.get("confirm_truncate")) and not has_truncation:
             return _err(
@@ -557,8 +812,9 @@ def _lock_in_submit_turn(
     return None, fields
 
 
-# Per-turn client surfaces that carry a model-bound note (session_notifications._surface_note).
-_CLIENT_SURFACES = frozenset({"hud", "voice-live"})
+# Per-turn client surfaces that carry a model-bound note (session_notifications._hud_surface_note);
+# the canonical admission path shares the same set (gateway.session_surface).
+from gateway.session_surface import SURFACES as _CLIENT_SURFACES
 
 
 @method("prompt.submit")
@@ -576,7 +832,7 @@ def _(rid, params: dict) -> dict:
         if isinstance(title_preview, str) and title_preview.strip()
         else None
     )
-    if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
+    if (stopped := _typed_stop_phrase_response(rid, text, sid)) is not None:
         return stopped
     if params.get("interrupted"):
         # Client-side barge-in: latch so this turn's model message carries the note.
@@ -594,17 +850,18 @@ def _(rid, params: dict) -> dict:
     turn_author = raw_author.author if raw_author is not None else None
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
-    internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
+    hosted_images = params.get("_hosted_images")
+    internal_hosted_submit = (
+        hosted_task is not None or hosted_terminal_callback is not None or hosted_images is not None)
     err = (
-        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback)
+        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback, hosted_images)
         if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
     if err is not None:
         return err
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         # Refused HERE — before the busy queue, db row and agent build — so a refusal
         # leaves the session untouched.  The reason travels as machine-readable data.
-        reason = getattr(limit_message, "reason", None)
-        return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
+        return _slot_refusal(rid, sid, session, text, params, limit_message, internal_hosted_submit)
     # Rewritten every submit: a session alternates app window / HUD / live voice; a stale value misinforms.
     session["client_surface"] = params.get("surface") if params.get("surface") in _CLIENT_SURFACES else ""
     # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted
@@ -612,6 +869,7 @@ def _(rid, params: dict) -> dict:
     voice_context = params.get("voice_context")
     session["voice_live_context"] = (
         voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
+    session["voice_turn"] = params.get("voice_turn") is True
     has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
     if has_truncation and isinstance(text, str):
         # A rewind replays what the transcript shows: re-expand a skill invocation or
@@ -649,7 +907,8 @@ def _(rid, params: dict) -> dict:
             # for `running` to clear and resubmits with the truncation intact.
             return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author)
+            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
+            display_kind=display_kind)
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
@@ -664,6 +923,19 @@ def _(rid, params: dict) -> dict:
         if turn_author:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
+        # The isolated dispatch returns BELOW before the inline persist, so the reopen
+        # cannot live only in _persist_session_row_for_submit: the turn is already
+        # admitted here (running, in flight, active-slot lease claimed, truncation
+        # applied inline), and the child's transcript writes must land in a live row
+        # (#85303 review: the early return made _reopen_if_finalized unreachable on
+        # this path). Best-effort like the helper: a failed read never blocks the send.
+        try:
+            with _session_db(session) as db:
+                if db is not None:
+                    _reopen_if_finalized(db, str(session.get("session_key") or ""))
+        except Exception:
+            logger.debug("finalized-session reopen before isolated dispatch failed for %s",
+                         sid, exc_info=True)
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
         if not isolated_response.get("error"):
@@ -692,21 +964,13 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
+            hosted_images),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
     run_thread.start()
     return _ok(rid, {"status": "streaming", **survivor_fields})
-
-
-# ── attachments ─────────────────────────────────────────────────────────────
-
-def _attached_image_result(session, image_path, **extra) -> dict:
-    """Common ``{attached, path, count, ...meta}`` reply after queuing an image."""
-    return {
-        "attached": True, "path": str(image_path), "count": len(session["attached_images"]),
-        **extra, **_image_meta(image_path)}
 
 
 @method("clipboard.paste")
@@ -792,53 +1056,6 @@ def _(rid, params: dict) -> dict:
         remainder="", text=f"[User attached image: {img_path.name}]", bytes=len(img_bytes)))
 
 
-def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64):
-    """Materialize the PDF to render: ``(pdf_path, display_name, err)``."""
-    if raw_b64:
-        pdf_bytes, err = _decode_attach_payload(
-            rid, raw_b64, mime_prefix="application/pdf", max_bytes=_PDF_ATTACH_MAX_BYTES,
-            label="PDF", empty_msg="decoded PDF is empty")
-        if err is not None:
-            return None, None, err
-        if pdf_bytes[:5] != b"%PDF-":
-            return None, None, _err(rid, 4017, "payload is not a PDF (missing %PDF- magic bytes)")
-        pdf_path = td_path / "input.pdf"
-        pdf_path.write_bytes(pdf_bytes)
-        return pdf_path, str(params.get("filename", "") or "uploaded.pdf"), None
-    try:
-        from cli import _resolve_attachment_path
-        resolved = _resolve_attachment_path(raw_path)
-    except Exception:
-        resolved = None
-    if resolved is None or not (pdf := Path(resolved)).is_file():
-        return None, None, _err(rid, 4016, f"PDF not found: {raw_path}")
-    if pdf.suffix.lower() != ".pdf":
-        return None, None, _err(rid, 4016, f"not a PDF: {pdf.name}")
-    if pdf.stat().st_size > _PDF_ATTACH_MAX_BYTES:
-        mb = _PDF_ATTACH_MAX_BYTES // (1024 * 1024)
-        return None, None, _err(rid, 4018, f"PDF too large; cap is {mb} MB")
-    return pdf, pdf.name, None
-
-
-def _pdf_page_range(rid, params):
-    """Validate first/last page against the per-call cap: ``(first, last, err)``."""
-    try:
-        first_page = int(params.get("first_page") or 1)
-        last_page = None if params.get("last_page") is None else int(params.get("last_page"))
-    except (TypeError, ValueError):
-        return None, None, _err(rid, 4015, "first_page/last_page must be integers")
-    if first_page < 1:
-        return None, None, _err(rid, 4015, "first_page must be >= 1")
-    if last_page is None:
-        last_page = first_page + _PDF_ATTACH_MAX_PAGES - 1
-    if last_page < first_page:
-        return None, None, _err(rid, 4015, "last_page must be >= first_page")
-    if last_page - first_page + 1 > _PDF_ATTACH_MAX_PAGES:
-        return None, None, _err(
-            rid, 4019, f"page range exceeds cap of {_PDF_ATTACH_MAX_PAGES} pages per attach call")
-    return first_page, last_page, None
-
-
 @method("pdf.attach")
 def _(rid, params: dict) -> dict:
     """Attach a PDF by rendering each page to PNG (``pdftoppm``; 5028 if missing) and
@@ -872,7 +1089,7 @@ def _(rid, params: dict) -> dict:
             # thread on locale-mismatched Windows.
             res = subprocess.run(
                 argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
-                encoding="utf-8", errors="replace", creationflags=windows_hide_flags())
+                encoding="utf-8", errors="replace", creationflags=windows_hide_flags(), check=False)
         except subprocess.TimeoutExpired:
             return _err(rid, 5028, "pdftoppm timed out (>120s)")
         if res.returncode != 0:
@@ -961,10 +1178,256 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5027, str(e))
 
 
+@method("prompt.background")
+def _(rid, params: dict) -> dict:
+    session, text, parent, task_id, err = _side_agent_args(rid, params, "bg")
+    if err:
+        return err
+
+    def body():
+        from run_agent import AIAgent
+        kwargs = _background_agent_kwargs(session["agent"], task_id)
+        with _side_agent_session_db(kwargs.get("session_db")) as session_db:
+            agent = AIAgent(**{**kwargs, "session_db": session_db})
+            try:
+                result = agent.run_conversation(user_message=text, task_id=task_id)
+            finally:
+                # AIAgent.close() is the owner boundary (memory shutdown, tool
+                # subprocesses, httpx clients); an unclosed side agent leaks
+                # all of them for the gateway's life (#50197).
+                with contextlib.suppress(Exception):
+                    agent.close()
+        return _final_response_text(result)
+
+    return _spawn_side_agent(rid, session, task_id, parent, "background.complete", body)
+
+
+@method("prompt.btw")
+def _(rid, params: dict) -> dict:
+    """Side question over a snapshot of the live conversation (``agent/side_question.py``);
+    history, alternation and prompt cache stay untouched.  Answer: ``btw.complete``."""
+    session, text, parent, task_id, err = _side_agent_args(rid, params, "btw")
+    if err:
+        return err
+    agent = session.get("agent")
+    snapshot = list(getattr(agent, "_session_messages", None) or session.get("history") or [])
+    main_runtime = {
+        k: getattr(agent, k, None)
+        for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")}
+
+    def body():
+        from agent.side_question import answer_side_question
+        return answer_side_question(
+            text, snapshot, parent_agent=agent, main_runtime=main_runtime) or ""
+
+    return _spawn_side_agent(
+        rid, session, task_id, parent, "btw.complete", body, extra={"question": text})
+
+
+@method("preview.restart")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    url, cwd, context = (str(params.get(k) or "").strip() for k in ("url", "cwd", "context"))
+    if not url:
+        return _err(rid, 4012, "url required")
+    task_id = f"preview_{uuid.uuid4().hex[:6]}"
+    parent = params.get("session_id", "")
+    with session.get("history_lock") or contextlib.nullcontext():
+        snapshot = list(session.get("history") or [])
+    parent_history = _preview_restart_history(snapshot)
+    prompt = _preview_restart_prompt(url, cwd, context, bool(parent_history))
+    preview_cwd = _validated_preview_cwd(cwd)
+
+    def body():
+        from run_agent import AIAgent
+        from tools.terminal_tool import register_task_env_overrides
+        if preview_cwd:
+            register_task_env_overrides(task_id, {"cwd": preview_cwd})
+        history_note = (
+            f" (with {len(parent_history)} parent-session messages of context)"
+            if parent_history else "")
+        _emit(
+            "preview.restart.progress", parent,
+            {"task_id": task_id, "text": f"Starting hidden restart agent{history_note}"})
+        # Deliberately NOT closed via AIAgent.close(): it would kill the background
+        # server this task exists to leave running.
+        result = AIAgent(
+            **_ephemeral_preview_agent_kwargs(session["agent"], task_id),
+            **_preview_restart_callbacks(parent, task_id),
+        ).run_conversation(
+            user_message=prompt, task_id=task_id, conversation_history=parent_history or None)
+        return _final_response_text(result)
+
+    def cleanup():
+        with contextlib.suppress(Exception):
+            from tools.terminal_tool import clear_task_env_overrides
+            clear_task_env_overrides(task_id)
+
+    # Pin the validated preview cwd, else the parent workspace — never an invalid path.
+    return _spawn_side_agent(
+        rid, session, task_id, parent, "preview.restart.complete", body,
+        cwd=preview_cwd, cleanup=cleanup)
+
+
+@method("clarify.lock")
+def _(rid, params: dict) -> dict:
+    request_id = str(params.get("request_id") or "")
+    question_id = str(params.get("question_id") or "")
+    if not request_id or not question_id:
+        return _err(rid, 4002, "request_id and question_id required")
+    answer = params.get("answer", "")
+    if answer is not None and not isinstance(answer, str):
+        answer = json.dumps(answer, ensure_ascii=False)
+    if (proxied := _lock_compute_host_clarify(rid, request_id, question_id, answer)) is not None:
+        return proxied
+    from tui_gateway import server_requests
+    try:
+        remaining = server_requests.lock_answer(request_id, question_id, answer)
+    except ValueError as e:
+        return _err(rid, 4002, str(e))
+    if remaining is None:
+        # The wait already ended (timeout / cancel) while the card was still visible: not an error.
+        return _ok(rid, {"status": "expired"})
+    return _ok(rid, {"status": "ok", "remaining": remaining})
+
+
+@method("request.answer")
+def _(rid, params: dict) -> dict:
+    """Answer an open server→client request from a client that did not receive it (a Bot Mode room
+    window answering a member's prompt mirrored from its resume snapshot). The response-frame path is
+    the norm; this is the proxy for it. ``expired`` when the request already ended."""
+    request_id = str(params.get("id") or "")
+    result = params.get("result")
+    if not request_id or not isinstance(result, dict):
+        return _err(rid, 4002, "id and an object result required")
+    from tui_gateway import server_requests
+    frame = {"jsonrpc": "2.0", "id": request_id, "result": result}
+    if server_requests.resolve_response(frame) or _relay_compute_host_response(frame):
+        return _ok(rid, {"status": "ok"})
+    return _ok(rid, {"status": "expired"})
+
+
+@method("approval.pending")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    return _approval_reply(
+        rid, "approvals", lambda a: a.list_gateway_approvals(session["session_key"]))
+
+
+@method("approval.received")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    if not isinstance(request_id := params.get("request_id"), str) or not request_id:
+        return _err(rid, 4006, "request_id required")
+    return _approval_reply(
+        rid, "acknowledged", lambda a: a.ack_gateway_approval(session["session_key"], request_id))
+
+
+@method("approval.respond")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        # Session-not-found (4001) only: resolve by durable identity before failing.
+        if (err.get("error") or {}).get("code") != 4001:
+            return err
+        session = _approval_respond_session_fallback(params)
+        if session is None:
+            return err
+    return _approval_reply(
+        rid, "resolved",
+        lambda a: a.resolve_gateway_approval(
+            session["session_key"], params.get("choice", "deny"),
+            resolve_all=params.get("all", False), request_id=params.get("request_id")))
+
+
+# ── attachments ─────────────────────────────────────────────────────────────
+
+def _attached_image_result(session, image_path, **extra) -> dict:
+    """Common ``{attached, path, count, ...meta}`` reply after queuing an image."""
+    return {
+        "attached": True, "path": str(image_path), "count": len(session["attached_images"]),
+        **extra, **_image_meta(image_path)}
+
+
+def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64):
+    """Materialize the PDF to render: ``(pdf_path, display_name, err)``."""
+    if raw_b64:
+        pdf_bytes, err = _decode_attach_payload(
+            rid, raw_b64, mime_prefix="application/pdf", max_bytes=_PDF_ATTACH_MAX_BYTES,
+            label="PDF", empty_msg="decoded PDF is empty")
+        if err is not None:
+            return None, None, err
+        if pdf_bytes[:5] != b"%PDF-":
+            return None, None, _err(rid, 4017, "payload is not a PDF (missing %PDF- magic bytes)")
+        pdf_path = td_path / "input.pdf"
+        pdf_path.write_bytes(pdf_bytes)
+        return pdf_path, str(params.get("filename", "") or "uploaded.pdf"), None
+    try:
+        from cli import _resolve_attachment_path
+        resolved = _resolve_attachment_path(raw_path)
+    except Exception:
+        resolved = None
+    if resolved is None or not (pdf := Path(resolved)).is_file():
+        return None, None, _err(rid, 4016, f"PDF not found: {raw_path}")
+    if pdf.suffix.lower() != ".pdf":
+        return None, None, _err(rid, 4016, f"not a PDF: {pdf.name}")
+    if pdf.stat().st_size > _PDF_ATTACH_MAX_BYTES:
+        mb = _PDF_ATTACH_MAX_BYTES // (1024 * 1024)
+        return None, None, _err(rid, 4018, f"PDF too large; cap is {mb} MB")
+    return pdf, pdf.name, None
+
+
+def _pdf_page_range(rid, params):
+    """Validate first/last page against the per-call cap: ``(first, last, err)``."""
+    try:
+        first_page = int(params.get("first_page") or 1)
+        last_page = None if params.get("last_page") is None else int(params.get("last_page"))
+    except (TypeError, ValueError):
+        return None, None, _err(rid, 4015, "first_page/last_page must be integers")
+    if first_page < 1:
+        return None, None, _err(rid, 4015, "first_page must be >= 1")
+    if last_page is None:
+        last_page = first_page + _PDF_ATTACH_MAX_PAGES - 1
+    if last_page < first_page:
+        return None, None, _err(rid, 4015, "last_page must be >= first_page")
+    if last_page - first_page + 1 > _PDF_ATTACH_MAX_PAGES:
+        return None, None, _err(
+            rid, 4019, f"page range exceeds cap of {_PDF_ATTACH_MAX_PAGES} pages per attach call")
+    return first_page, last_page, None
+
+
 # ── side agents (background / btw / preview.restart) ────────────────────────
 
 def _final_response_text(result) -> str:
     return (result.get("final_response", str(result)) if isinstance(result, dict) else str(result))
+
+
+def _preview_restart_prompt(url: str, cwd: str, context: str, has_history: bool) -> str:
+    """The hidden restart agent's task, shared by this transport and the gateway's
+    (``gateway/session_tui_side.py``) so the two cannot drift."""
+    return "\n".join(line for line in [
+        "The desktop preview pane cannot load a local server URL.", f"Preview URL: {url.strip()}",
+        f"Current working directory: {cwd or '(unknown)'}",
+        f"Preview console:\n{context}" if context else "",
+        _PREVIEW_RESTART_HISTORY_NOTE if has_history else "", *_PREVIEW_RESTART_RULES] if line)
+
+
+def _validated_preview_cwd(cwd: str) -> str:
+    """The client's cwd as an existing absolute directory, else ``""``. A malformed client path
+    (embedded NUL, a missing dir) is "no validated cwd", never an error."""
+    import os  # this module's globals are bound by tui_gateway.server; the gateway calls it unbound
+
+    try:
+        preview_cwd = os.path.abspath(os.path.expanduser(cwd)) if cwd else ""
+        return preview_cwd if preview_cwd and os.path.isdir(preview_cwd) else ""
+    except (OSError, ValueError):
+        return ""
 
 
 def _spawn_side_agent(
@@ -975,7 +1438,10 @@ def _spawn_side_agent(
     extra = extra or {}
 
     def run():
-        session_tokens = _set_session_context(task_id, cwd=(cwd or _session_cwd(session)))
+        # ``parent`` is the caller's live sid (``_sess`` admitted it): bind it as the UI owner so
+        # prompts this worker raises (skill secrets) reach the session whose profile it runs under.
+        session_tokens = _set_session_context(
+            task_id, cwd=(cwd or _session_cwd(session)), ui_session_id=parent)
         # Bug #50233: ephemeral agent threads don't inherit the session's ContextVar scopes (set on the
         # session-create thread), so a side turn under a non-default profile ran against the wrong home.
         # Bind the profile's home + secrets + terminal policy for the whole body, exactly as a prompt turn
@@ -1011,45 +1477,6 @@ def _side_agent_args(rid, params, prefix):
     return session, text, parent, f"{prefix}_{uuid.uuid4().hex[:6]}", None
 
 
-@method("prompt.background")
-def _(rid, params: dict) -> dict:
-    session, text, parent, task_id, err = _side_agent_args(rid, params, "bg")
-    if err:
-        return err
-
-    def body():
-        from run_agent import AIAgent
-        kwargs = _background_agent_kwargs(session["agent"], task_id)
-        with _side_agent_session_db(kwargs.get("session_db")) as session_db:
-            result = AIAgent(**{**kwargs, "session_db": session_db}).run_conversation(
-                user_message=text, task_id=task_id)
-        return _final_response_text(result)
-
-    return _spawn_side_agent(rid, session, task_id, parent, "background.complete", body)
-
-
-@method("prompt.btw")
-def _(rid, params: dict) -> dict:
-    """Side question over a snapshot of the live conversation (``agent/side_question.py``);
-    history, alternation and prompt cache stay untouched.  Answer: ``btw.complete``."""
-    session, text, parent, task_id, err = _side_agent_args(rid, params, "btw")
-    if err:
-        return err
-    agent = session.get("agent")
-    snapshot = list(getattr(agent, "_session_messages", None) or session.get("history") or [])
-    main_runtime = {
-        k: getattr(agent, k, None)
-        for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")}
-
-    def body():
-        from agent.side_question import answer_side_question
-        return answer_side_question(
-            text, snapshot, parent_agent=agent, main_runtime=main_runtime) or ""
-
-    return _spawn_side_agent(
-        rid, session, task_id, parent, "btw.complete", body, extra={"question": text})
-
-
 _PREVIEW_RESTART_RULES = (
     "Restart exactly the app intended for the Preview URL, not Hermes Desktop itself.",
     "The Preview URL and port are the target. Preserve that target unless you conclude it is impossible.",
@@ -1072,107 +1499,10 @@ _PREVIEW_RESTART_HISTORY_NOTE = (
 )
 
 
-@method("preview.restart")
-def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
-    if err:
-        return err
-    url, cwd, context = (str(params.get(k) or "").strip() for k in ("url", "cwd", "context"))
-    if not url:
-        return _err(rid, 4012, "url required")
-    task_id = f"preview_{uuid.uuid4().hex[:6]}"
-    parent = params.get("session_id", "")
-    parent_history = _preview_restart_history(session)
-    prompt = "\n".join(
-        line
-        for line in [
-            "The desktop preview pane cannot load a local server URL.",
-            f"Preview URL: {url}",
-            f"Current working directory: {cwd or '(unknown)'}",
-            f"Preview console:\n{context}" if context else "",
-            _PREVIEW_RESTART_HISTORY_NOTE if parent_history else None,
-            *_PREVIEW_RESTART_RULES]
-        if line)
-    # A malformed client path (embedded NUL, etc.) is "no validated cwd".
-    try:
-        preview_cwd = os.path.abspath(os.path.expanduser(cwd)) if cwd else ""
-        if preview_cwd and not os.path.isdir(preview_cwd):
-            preview_cwd = ""
-    except Exception:
-        preview_cwd = ""
-
-    def body():
-        from run_agent import AIAgent
-        from tools.terminal_tool import register_task_env_overrides
-        if preview_cwd:
-            register_task_env_overrides(task_id, {"cwd": preview_cwd})
-        history_note = (
-            f" (with {len(parent_history)} parent-session messages of context)"
-            if parent_history else "")
-        _emit(
-            "preview.restart.progress", parent,
-            {"task_id": task_id, "text": f"Starting hidden restart agent{history_note}"})
-        # Deliberately NOT closed via AIAgent.close(): it would kill the background
-        # server this task exists to leave running.
-        result = AIAgent(
-            **_ephemeral_preview_agent_kwargs(session["agent"], task_id),
-            **_preview_restart_callbacks(parent, task_id),
-        ).run_conversation(
-            user_message=prompt, task_id=task_id, conversation_history=parent_history or None)
-        return _final_response_text(result)
-
-    def cleanup():
-        with contextlib.suppress(Exception):
-            from tools.terminal_tool import clear_task_env_overrides
-            clear_task_env_overrides(task_id)
-
-    # Pin the validated preview cwd, else the parent workspace — never an invalid path.
-    return _spawn_side_agent(
-        rid, session, task_id, parent, "preview.restart.complete", body,
-        cwd=preview_cwd, cleanup=cleanup)
-
-
 # ── batch clarify locks ─────────────────────────────────────────────────────
 # A batch ``clarify`` server request is answered one question at a time: each lock is a normal RPC
 # (update-in-place, editable until every qid is locked); the LAST lock resolves the request itself.
 # A cancel-all is the plain response frame with no ``answers``.
-
-
-@method("clarify.lock")
-def _(rid, params: dict) -> dict:
-    request_id = str(params.get("request_id") or "")
-    question_id = str(params.get("question_id") or "")
-    if not request_id or not question_id:
-        return _err(rid, 4002, "request_id and question_id required")
-    answer = params.get("answer", "")
-    answer = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
-    if (proxied := _lock_compute_host_clarify(rid, request_id, question_id, answer)) is not None:
-        return proxied
-    from tui_gateway import server_requests
-    try:
-        remaining = server_requests.lock_answer(request_id, question_id, answer)
-    except ValueError as e:
-        return _err(rid, 4002, str(e))
-    if remaining is None:
-        # The wait already ended (timeout / cancel) while the card was still visible: not an error.
-        return _ok(rid, {"status": "expired"})
-    return _ok(rid, {"status": "ok", "remaining": remaining})
-
-
-@method("request.answer")
-def _(rid, params: dict) -> dict:
-    """Answer an open server→client request from a client that did not receive it (a Bot Mode room
-    window answering a member's prompt mirrored from its resume snapshot). The response-frame path is
-    the norm; this is the proxy for it. ``expired`` when the request already ended."""
-    request_id = str(params.get("id") or "")
-    result = params.get("result")
-    if not request_id or not isinstance(result, dict):
-        return _err(rid, 4002, "id and an object result required")
-    from tui_gateway import server_requests
-    frame = {"jsonrpc": "2.0", "id": request_id, "result": result}
-    if server_requests.resolve_response(frame) or _relay_compute_host_response(frame):
-        return _ok(rid, {"status": "ok"})
-    return _ok(rid, {"status": "expired"})
 
 
 # ── approvals ───────────────────────────────────────────────────────────────
@@ -1180,30 +1510,10 @@ def _(rid, params: dict) -> dict:
 def _approval_reply(rid, result_key, call):
     """``_ok({result_key: call(tools.approval)})``, 5004 on any failure."""
     try:
-        import tools.approval as approval
+        from tools import approval
         return _ok(rid, {result_key: call(approval)})
     except Exception as e:
         return _err(rid, 5004, str(e))
-
-
-@method("approval.pending")
-def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
-    if err:
-        return err
-    return _approval_reply(
-        rid, "approvals", lambda a: a.list_gateway_approvals(session["session_key"]))
-
-
-@method("approval.received")
-def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
-    if err:
-        return err
-    if not isinstance(request_id := params.get("request_id"), str) or not request_id:
-        return _err(rid, 4006, "request_id required")
-    return _approval_reply(
-        rid, "acknowledged", lambda a: a.ack_gateway_approval(session["session_key"], request_id))
 
 
 def _approval_respond_session_fallback(params: dict):
@@ -1236,31 +1546,6 @@ def _approval_respond_session_fallback(params: dict):
     return None
 
 
-@method("approval.respond")
-def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
-    if err:
-        # Session-not-found (4001) only: resolve by durable identity before failing.
-        if (err.get("error") or {}).get("code") != 4001:
-            return err
-        session = _approval_respond_session_fallback(params)
-        if session is None:
-            return err
-    return _approval_reply(
-        rid, "resolved",
-        lambda a: a.resolve_gateway_approval(
-            session["session_key"], params.get("choice", "deny"),
-            resolve_all=params.get("all", False), request_id=params.get("request_id")))
-
-
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import types  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

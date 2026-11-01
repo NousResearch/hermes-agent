@@ -25,6 +25,18 @@ def _load_runner():
     return mod
 
 
+def test_silent_child_failure_reports_exit_code(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    mod = _load_runner()
+    child = SimpleNamespace(pid=123, returncode=23, communicate=lambda **kwargs: ("", None))
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda *args, **kwargs: child)
+    monkeypatch.setattr(mod, "_kill_tree", lambda *args, **kwargs: None)
+    _, code, output, counts, _ = mod._run_one_file_once(tmp_path / "test.py", [], tmp_path, 30)
+    assert code == 23
+    assert "23" in output and "no output" in output.lower()
+    assert counts == {}
+
+
 def _cp1252_stream() -> tuple[io.TextIOWrapper, io.BytesIO]:
     raw = io.BytesIO()
     return io.TextIOWrapper(raw, encoding="cp1252", errors="strict"), raw
@@ -41,7 +53,7 @@ def test_glyph_safe_stdio_survives_cp1252(monkeypatch) -> None:
     sys.stdout.flush()
 
     out = raw.getvalue()
-    assert "✓".encode("utf-8") in out, "stream should now carry UTF-8 glyphs"
+    assert "✓".encode() in out, "stream should now carry UTF-8 glyphs"
     assert b"tests/foo.py (3 tests, 1.2s)" in out, "line content must survive"
 
 

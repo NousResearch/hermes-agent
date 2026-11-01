@@ -8,15 +8,26 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import tools.terminal_tool_sudo as terminal_tool_sudo
-from tools.environments.base import BaseEnvironment
+from tools import terminal_tool_sudo
+from tools.environments.base import BaseEnvironment, _load_json_store
 from tools.environments.base_output import _BoundedOutputCollector
+
+
+def test_snapshot_store_reads_dict_and_tolerates_missing_or_damaged_file(tmp_path):
+    path = tmp_path / "snapshots.json"
+    assert _load_json_store(path) == {}
+    path.write_text('{"task": "snapshot"}', encoding="utf-8")
+    assert _load_json_store(path) == {"task": "snapshot"}
+    path.write_text('["not a mapping"]', encoding="utf-8")
+    assert _load_json_store(path) == {}
+    path.write_text("{bad json", encoding="utf-8")
+    assert _load_json_store(path) == {}
 
 
 class _TestableEnv(BaseEnvironment):
     """Concrete subclass for testing base class methods."""
 
-    _sudo_nopasswd_probe_supported = True
+    _passwordless_sudo_probe_supported = True
 
     def __init__(self, cwd="/tmp", timeout=10):
         super().__init__(cwd=cwd, timeout=timeout)
@@ -50,7 +61,7 @@ def test_nopasswd_probe_runs_sudo_n_inside_backend_only_when_supported(
     monkeypatch, supported, returncode, expected, probed
 ):
     env = _TestableEnv()
-    env._sudo_nopasswd_probe_supported = supported
+    env._passwordless_sudo_probe_supported = supported
     run = MagicMock(return_value=object())
     monkeypatch.setattr(env, "_run_bash", run)
     monkeypatch.setattr(env, "_wait_for_process", MagicMock(return_value={"returncode": returncode}))
@@ -170,7 +181,8 @@ class TestSnapshotFileModes:
         import shutil
         import stat
         import subprocess
-        if not shutil.which("bash"):
+        bash = shutil.which("bash")
+        if not bash:
             import pytest
             pytest.skip("bash required")
 
@@ -184,7 +196,7 @@ class TestSnapshotFileModes:
 
             def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
                 proc = subprocess.Popen(
-                    ["/bin/bash", "-lc", cmd_string],
+                    [bash, "-lc", cmd_string],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
@@ -239,6 +251,31 @@ class TestEmbedStdinHeredoc:
         d1 = r1.split("'")[1]
         d2 = r2.split("'")[1]
         assert d1 != d2  # UUID-based, should be unique
+
+    def test_compound_command_receives_stdin_as_a_group(self):
+        import shutil
+        import subprocess
+
+        import pytest
+
+        bash = shutil.which("bash")
+        if bash is None:
+            pytest.skip("bash required")
+
+        command = BaseEnvironment._embed_stdin_heredoc(
+            'IFS= read -r first; IFS= read -r second; '
+            'printf \'<%s|%s>\' "$first" "$second"',
+            "alpha\nbeta",
+        )
+
+        result = subprocess.run(
+            [bash, "-c", command],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.stdout == "<alpha|beta>"
 
 
 class TestInitSessionFailure:

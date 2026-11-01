@@ -31,8 +31,8 @@ from hermes_cli.fallback_config import get_fallback_chain
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -57,7 +57,7 @@ class GatewayConfigLoadersMixin:
         return os.getenv(env_var, "").strip() or cls._cfg_str(section, key)
 
     @staticmethod
-    def _load_prefill_messages() -> List[Dict[str, Any]]:
+    def _load_prefill_messages() -> list[dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.
 
         HERMES_PREFILL_MESSAGES_FILE env wins, then top-level prefill_messages_file in config.yaml,
@@ -79,7 +79,7 @@ class GatewayConfigLoadersMixin:
             logger.warning("Prefill messages file not found: %s", path)
             return []
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
             if not isinstance(data, list):
                 logger.warning("Prefill messages file must contain a JSON array: %s", path)
@@ -91,9 +91,11 @@ class GatewayConfigLoadersMixin:
 
     @staticmethod
     def _load_ephemeral_system_prompt() -> str:
-        """HERMES_EPHEMERAL_SYSTEM_PROMPT env first, then ``display.personality`` / ``agent.system_prompt``."""
+        """HERMES_EPHEMERAL_SYSTEM_PROMPT env first (a local session's: its client's), then
+        ``display.personality`` / ``agent.system_prompt``."""
+        from agent.session_client_env import session_env
         from gateway.run import _load_gateway_config
-        prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
+        prompt = session_env("HERMES_EPHEMERAL_SYSTEM_PROMPT")
         if prompt:
             return prompt
         return resolve_ephemeral_system_prompt_from_config(_load_gateway_config())
@@ -105,6 +107,49 @@ class GatewayConfigLoadersMixin:
         if not config:
             return None
         return _get_channel_override(config, platform, chat_id, thread_id=thread_id, parent_id=parent_id)
+
+    def _silence_allowed_for_source(self, source, display_kind, reply_expected, agent_result) -> bool:
+        """Evaluate existing exemptions before consulting the optional room permission."""
+        from gateway.response_filters import silence_allowed
+        return silence_allowed(display_kind, reply_expected) or silence_allowed(
+            display_kind, reply_expected, allow_silence=self._room_allow_silence(source),
+            agent_result=agent_result)
+
+    def _room_allow_silence(self, source: SessionSource) -> Optional[bool]:
+        """Resolve the room policy in the serving profile, never the launch snapshot for a route."""
+        from gateway.config import GatewayConfig
+        from gateway.config_loader import merge_platform_sections, platform_section
+        from gateway.run import _get_channel_override, _load_gateway_config
+        from gateway.session_identity import identity_of
+        config = getattr(self, "config", None)
+        identity = identity_of(source)
+        runtime = identity.runtime_profile if identity is not None else (source.profile or None)
+        # ``self.config`` (including a ``gateway --config`` file) serves the primary profile; only a
+        # turn routed to another profile reads that profile's config.yaml.
+        routed = bool(runtime) and runtime != (getattr(self, "_primary_profile_name", None) or "default")
+        try:
+            if config is None or routed:
+                raw = _load_gateway_config(self._resolve_profile_home_for_source(source) / "config.yaml")
+                # The loader's own two steps: merge every nested platform block, then the overrides of
+                # the block platform_section picks (a top-level ``<platform>:`` block first) win.
+                # ``GatewayConfig.from_dict(raw)`` alone reads only the nested ``platforms`` form.
+                name, gateway_section = str(source.platform.value), raw.get("gateway")
+                overrides = (merge_platform_sections(raw, gateway_section, {}).get(name) or {}).get("channel_overrides")
+                section, _ = platform_section(raw, name, (
+                    gateway_section.get("platforms") if isinstance(gateway_section, dict) else None))
+                if isinstance(section, dict) and isinstance(section.get("channel_overrides"), dict):
+                    overrides = section["channel_overrides"]
+                config = GatewayConfig.from_dict({"platforms": {name: {
+                    "channel_overrides": overrides if isinstance(overrides, dict) else {}}}})
+            override = _get_channel_override(
+                config, source.platform, source.chat_id,
+                thread_id=source.thread_id, parent_id=source.parent_chat_id)
+        except Exception:
+            # No permission means the default reply rule; a lookup failure must not become an error reply.
+            logger.warning("Room allow_silence lookup failed for %s; keeping the reply rule",
+                           source.chat_id, exc_info=True)
+            return None
+        return override.allow_silence if override is not None else None
 
     def _resolve_model_for_channel(
         self, platform: Platform, chat_id: str, *, user_config: Optional[dict] = None,
@@ -186,6 +231,10 @@ class GatewayConfigLoadersMixin:
             _r_state = self._peek_session_state(resolved_session_key)
             if _r_state is not None and _r_state.conversation.reasoning_override is not None:
                 return _r_state.conversation.reasoning_override
+        from gateway.session_setting_commands import local_policy
+        if (policy := local_policy(self, source)) is not None:
+            # A local session runs its frozen (or followed) level, not the profile's.
+            return policy.current_reasoning_config(self, resolved_session_key)
         return self._load_reasoning_config(model)
 
     def _set_session_reasoning_override(self, session_key: str, reasoning_config: Optional[dict]) -> None:
@@ -208,6 +257,10 @@ class GatewayConfigLoadersMixin:
             _t_state = self._peek_session_state(resolved_session_key)
             if _t_state is not None and _t_state.conversation.service_tier_override is not _SERVICE_TIER_UNSET:
                 return _t_state.conversation.service_tier_override
+        from gateway.session_setting_commands import local_live_for_route, local_policy
+        live = local_live_for_route(self, resolved_session_key)
+        if live is not None and (policy := local_policy(self, live.source)) is not None:
+            return policy.current_service_tier(self, resolved_session_key)  # its frozen tier, not config.yaml's
         return self._load_service_tier()
 
     def _set_session_service_tier_override(self, session_key: str, service_tier, clear: bool = False) -> None:
@@ -222,17 +275,10 @@ class GatewayConfigLoadersMixin:
 
     @classmethod
     def _load_service_tier(cls) -> str | None:
-        """``agent.service_tier``: fast/priority/on => "priority"; normal/off => None; None when unset/unknown."""
-        raw = cls._cfg_str("agent", "service_tier")
-        value = raw.lower()
-        if not value or value in {"normal", "default", "standard", "off", "none"}:
-            return None
-        if value in {"fast", "priority", "on"}:
-            return "priority"
-        if value in {"auto", "cold"}:
-            return value
-        logger.warning("Unknown service_tier '%s', ignoring", raw)
-        return None
+        """``agent.service_tier`` parsed like the CLI (``hermes_cli.cli_config_load``); None when unset/unknown."""
+        from hermes_cli.cli_config_load import _parse_service_tier_config
+
+        return _parse_service_tier_config(cls._cfg_str("agent", "service_tier"))
 
     @staticmethod
     def _load_show_reasoning() -> bool:
@@ -445,7 +491,7 @@ class GatewayConfigLoadersMixin:
 
     @classmethod
     def _load_cron_drain_timeout(cls) -> float:
-        """The cron-only floor under the stop()/drain wait.
+        """The cron and api_server (/v1) floor under the stop()/drain wait.
 
         See #82161.
         """
@@ -529,6 +575,7 @@ class GatewayConfigLoadersMixin:
         and keeps one last-known-good chain per home: a single runner-wide slot filled from the launch
         home handed every secondary profile the default profile's fallback chain.
         """
+        from hermes_cli.config_backend import config_exists
         from gateway.run import _gateway_config_home
         from hermes_constants import hermes_home_key
         home = _gateway_config_home()
@@ -539,7 +586,7 @@ class GatewayConfigLoadersMixin:
         try:
             from hermes_cli.config_effective import load_user_config_effective
             cfg_path = home / "config.yaml"
-            if not cfg_path.exists():
+            if not config_exists(cfg_path):
                 by_home[home_key] = self._fallback_model = None
                 return self._fallback_model
             # fail_closed: a torn mid-edit write must raise so the per-home last known-good chain

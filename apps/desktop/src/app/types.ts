@@ -93,6 +93,8 @@ export interface SessionSteerResponse {
 export interface SessionRedirectResponse {
   status?: 'redirected' | 'queued' | 'rejected'
   text?: string
+  /** TUI-26: the text was a bare stop phrase that ended the LOCAL voice chat; no turn saw it. */
+  voice_stopped?: boolean
 }
 
 export interface SessionTitleResponse {
@@ -159,6 +161,10 @@ export interface ClientSessionState {
   /** Gateway-reported wire level for `reasoningEffort`; '' until the backend
    *  has stamped the current pick (so a clamp is never inferred client-side). */
   reasoningEffortWire?: string
+  /** The runtime has not reported this session's effort yet, so '' above means
+   *  "unknown", not "profile default". A cold resume answers before the agent
+   *  builds, and only the built agent knows the session's own pin (#79807). */
+  reasoningEffortPending?: boolean
   serviceTier: string
   fast: boolean
   yolo: boolean
@@ -182,9 +188,15 @@ export interface ClientSessionState {
    *  heartbeat (#119569); when it lands it settles onto this bubble instead of
    *  appending a duplicate. Cleared by the next message.start or complete. */
   heartbeatSettledStreamId?: null | string
+  /** `turn_id` of the newest message.start (tui_gateway/stream_segments.py): a
+   *  re-sent start of the same turn is not a new occurrence. */
+  streamTurnId?: null | string
   /** A blocking clarify prompt is waiting on the user for this session. Drives
    *  the sidebar "needs input" indicator; cleared when the turn resumes/ends. */
   needsInput: boolean
+  /** Epoch ms this renderer attached to the live runtime. Per-runtime so a
+   *  cached session keeps its elapsed anchor when it becomes foreground again. */
+  runtimeStartedAt: number
   /** Epoch ms the current turn started, or null when idle. Per-session so a
    *  background turn's elapsed timer keeps counting while another session is
    *  focused, and switching sessions doesn't zero a still-running turn's clock.

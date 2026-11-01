@@ -92,9 +92,18 @@ export const ru: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Активный провайдер памяти",
+    noProvider: "нет — только встроенная",
+    builtinLayer: "Встроенный слой",
+    builtinNote: "MEMORY.md и USER.md — собственная память Hermes, независимая от внешних провайдеров. По умолчанию оба файла загружаются в сессии; переключатели конфигурации (memory.memory_enabled / memory.user_profile_enabled) отключают каждый из них. Внешний провайдер дополняет их, но никогда не заменяет.",
+  },
+
   status: {
     actionFailed: "Ошибка действия",
     actionFinished: "Завершено",
+    actionFinishedOwed: "Обновлено, но работа ещё не завершена (запустите `hermes update` снова, чтобы закончить)",
     actions: "Действия",
     agent: "Агент",
     activeSessions: "Активные сессии",
@@ -162,6 +171,7 @@ export const ru: Translations = {
     deleteSelectedConfirmMessage:
       "Это безвозвратно удалит {count} выбранных сессий и все их сообщения. Это действие нельзя отменить.",
     selectedSessionsDeleted: "Удалено сессий: {count}",
+    selectedSessionsSkippedActive: "Удалено: {deleted}; сохранено: {count}, так как ход ещё выполняется",
     failedToDeleteSelected: "Не удалось удалить выбранные сессии",
     resumeInChat: "Продолжить в чате",
     newChat: "Новый чат",

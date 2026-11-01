@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { ExternalLink, RefreshCw, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
 import { Link } from "react-router";
 import { api } from "@/lib/api";
+import { runDashboardPluginUpdate } from "@/lib/plugin-update";
+import { setupHasDetails, setupHasInstallableSteps } from "@/lib/memory-provider-setup";
 import type {
   CatalogEntry,
   CatalogRemovedEntry,
@@ -11,7 +13,6 @@ import type {
   MemoryProviderConfig,
   MemoryProviderField,
   MemoryProviderInfo,
-  MemoryProviderSetupInfo,
   MemoryProviderSetupResult,
   PluginsHubResponse,
 } from "@/lib/api";
@@ -64,23 +65,6 @@ function fieldIsVisible(field: MemoryProviderField, values: Record<string, Memor
     const current = values[key];
     return String(current ?? "") === String(expected);
   });
-}
-
-function setupHasDetails(setup?: MemoryProviderSetupInfo) {
-  if (!setup) return false;
-  return Boolean(
-    setup.external_dependencies?.length ||
-      setup.pip_dependencies?.length ||
-      setup.required_env?.length,
-  );
-}
-
-function setupHasInstallableSteps(setup?: MemoryProviderSetupInfo) {
-  if (!setup) return false;
-  return Boolean(
-    setup.external_dependencies?.some((dep) => dep.install) ||
-      setup.pip_dependencies?.length,
-  );
 }
 
 function SetupCommandBlock({ code, label }: { code: string; label: string }) {
@@ -445,7 +429,7 @@ export default function PluginsPage() {
     }
   }, [loadHub, showToast, t.pluginsPage.refreshDashboard]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setAfterTitle(
       <Button
         ghost
@@ -1179,20 +1163,13 @@ function PluginRowCard(props: PluginRowCardProps) {
                 size="sm"
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
-                    const res = await api.updateAgentPlugin(row.name);
-                    if (res.consent_required) {
-                      // The new pin widens the plugin; the backend changed nothing until confirmed.
-                      const body = [
-                        (t.pluginsPage.updateConsentBody ?? en.pluginsPage.updateConsentBody!)(
-                          row.name,
-                          (res.sha ?? "").slice(0, 8),
-                        ),
-                        ...(res.delta_lines ?? []),
-                      ].join("\n");
-                      if (!window.confirm(body)) return;
-                      await api.updateAgentPlugin(row.name, true);
-                    }
-                    showToast(t.pluginsPage.updateGit, "success");
+                    const pp = t.pluginsPage;
+                    const applied = await runDashboardPluginUpdate(row.name, {
+                      consentBody: pp.updateConsentBody ?? en.pluginsPage.updateConsentBody!,
+                      scanBody: pp.updateScanBody ?? en.pluginsPage.updateScanBody!,
+                      scanBlocked: pp.updateScanBlocked ?? en.pluginsPage.updateScanBlocked!,
+                    });
+                    if (applied) showToast(pp.updateGit, "success");
                   });
                 }}
               >
@@ -1321,7 +1298,7 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
             <span className="truncate font-semibold">{entry.name}</span>
 
-            <Badge tone={entry.tier === "official" ? "success" : "secondary"}>
+            <Badge tone={entry.tier === "community" ? "secondary" : "success"}>
               {entry.tier}
             </Badge>
 

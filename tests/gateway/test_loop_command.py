@@ -214,6 +214,38 @@ async def test_empty_agent_result_releases_inflight_loop_tick(loop_env):
 
 
 @pytest.mark.asyncio
+async def test_failed_turn_with_text_never_drives_goal_or_until_judge(loop_env, monkeypatch):
+    """A refused turn (its folder is gone) settles failed WITH text. That text is not evidence: the
+    goal judge must not run on it (it burned the whole turn budget in seconds) and the /loop tick is
+    released with no text, so a --until judge never grades it; the loop still reschedules."""
+    from gateway.session_results import execution_result
+    from hermes_cli import goals
+
+    runner = _make_runner()
+    await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI --until CI is green"))
+    mgr = loops.LoopManager(session_id="sid-gateway-loop")
+    mgr.state.next_due_at = time.time() - 1
+    assert mgr.fire_tick() is not None
+
+    judged = []
+    monkeypatch.setattr(goals, "judge_goal", lambda *a, **k: judged.append(a) or ("done", "green", False, None, False))
+    runner._post_turn_goal_continuation = AsyncMock()
+    refusal = "⚠️ This chat's working folder no longer exists (/gone), so your message was not run."
+    token = execution_result.set({"result": {"final_response": refusal, "failed": True, "completed": False}})
+    try:
+        await GatewayRunner._run_post_turn_hooks(
+            runner, agent_result=refusal, source=_make_event("wakeup").source, is_internal=True,
+        )
+    finally:
+        execution_result.reset(token)
+
+    runner._post_turn_goal_continuation.assert_not_awaited()
+    assert judged == []
+    reloaded = loops.load_loop("sid-gateway-loop")
+    assert reloaded.awaiting_response is False and reloaded.status == "active"
+
+
+@pytest.mark.asyncio
 async def test_goal_hook_failure_does_not_block_loop_completion(loop_env, caplog):
     runner = _make_runner()
     await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
@@ -330,7 +362,14 @@ async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env,
     goals._DB_CACHE[str(work_home)] = work_db
 
     scopes = [(None, None), ("work", work_home)]
-    monkeypatch.setattr("gateway.run._handoff_watch_scopes", lambda _r: scopes)
+    on_main_thread = []
+
+    def _scopes(_runner):
+        # profiles_to_serve() walks the filesystem: it must resolve off the loop thread.
+        on_main_thread.append(threading.current_thread() is threading.main_thread())
+        return scopes
+
+    monkeypatch.setattr("gateway.run._handoff_watch_scopes", _scopes)
 
     entered = []
 
@@ -348,6 +387,7 @@ async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env,
     monkeypatch.setattr("gateway.run._async_profile_runtime_scope", _SpyScope)
 
     runner = _make_runner()
+    runner.config.multiplex_profiles = True
     runner._running_agents = {}
     runner.adapters = {}
 
@@ -372,6 +412,7 @@ async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env,
         # Idle: no loop rows in the work profile's store → its scope is never entered.
         await _run_one_tick()
         assert entered == [], f"idle profile scope must not be entered; got {entered}"
+        assert on_main_thread == [False], f"scopes must resolve off the loop; got {on_main_thread}"
 
         # An ACTIVE loop row in the work profile's store opens the gate.
         await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))

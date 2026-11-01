@@ -77,7 +77,7 @@ echo "=============== $LABEL ($REF) ==============="
 echo; echo "--- A: kill before git wrote anything, then user edits + fetch, then any hermes command"
 setup clone >/dev/null
 cat > "$U/fakebin/git" <<'EOF'
-#!/bin/bash
+#!/usr/bin/env bash
 for a in "$@"; do [ "$a" = "--ff-only" ] && sleep 30; done
 exec /usr/bin/git "$@"
 EOF
@@ -119,7 +119,7 @@ for KIND in clone worktree; do
   echo; echo "--- $([ $KIND = clone ] && echo C || echo D): torn tree in a $KIND install, user edit on an upstream-changed file"
   setup $KIND >/dev/null
   cat > "$U/fakebin/git" <<'EOF'
-#!/bin/bash
+#!/usr/bin/env bash
 # The fast-forward writes two files of the new commit, holds index.lock, and is SIGKILLed.
 for a in "$@"; do
   if [ "$a" = "--ff-only" ]; then
@@ -147,7 +147,7 @@ echo; echo "--- E: kill inside the custom-branch merge, then the hermes-agent en
 setup clone >/dev/null
 git checkout -q -b mywork && sed -i "1a LOCAL_WORK = 1" run_agent.py && git commit -qam "local work that merges cleanly"
 cat > "$U/fakebin/git" <<'EOF'
-#!/bin/bash
+#!/usr/bin/env bash
 # The merge writes run_agent.py as the merge of both sides (upstream's half imports a utils name git has
 # not written yet), holds index.lock, and is SIGKILLed.
 for a in "$@"; do

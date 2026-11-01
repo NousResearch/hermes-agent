@@ -42,7 +42,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     cn: (...values: unknown[]) => values.filter(Boolean).join(' '),
     Codicon: () => null,
     CopyButton: () => null,
-    Switch: () => null,
+    ToggleRow: () => null,
     ConfirmDialog: () => null,
     Dialog: Passthrough,
     DialogContent: Passthrough,
@@ -134,6 +134,8 @@ it('the room settings dialog offers Compress history per member and reports the 
   const members = [{ name: 'mason' }, { name: 'critic' }] as never
 
   const { getByLabelText } = render(<GroupChatWorkspace group="Build" members={members} />)
+  // The room paints once the async group-driver gate resolves to the legacy workspace.
+  await waitFor(() => expect(getByLabelText('Group settings for Build')).toBeTruthy())
   fireEvent.click(getByLabelText('Group settings for Build'))
   fireEvent.click(getByLabelText('Compress history: mason'))
 

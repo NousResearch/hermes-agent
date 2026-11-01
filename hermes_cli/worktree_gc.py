@@ -40,7 +40,7 @@ class TreeRecord:
     size_mb: Optional[int]
     verdict: str          # reap | reap-archive | keep
     reason: str
-    untracked: List[str] = field(default_factory=list)
+    untracked: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -50,9 +50,10 @@ class BranchRecord:
     reason: str
 
 
-def _run(cmd: list, timeout: int, cwd: Optional[str] = None) -> subprocess.CompletedProcess:
+def _run(cmd: list, timeout: int, cwd: Optional[str] = None,
+         env: Optional[dict] = None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          timeout=timeout, cwd=cwd)
+                          timeout=timeout, cwd=cwd, env=env, stdin=subprocess.DEVNULL, check=False)
 
 
 @dataclass
@@ -70,37 +71,51 @@ class ExternalTreeRecord:
 def _git(args: list, cwd: str, timeout: int = 15) -> subprocess.CompletedProcess:
     """Run git, translating timeouts into returncode 124. Every verdict fails safe toward "keep"
     on nonzero, so a slow ``git cherry`` on a huge repo degrades to keep instead of aborting the
-    audit mid-list."""
+    audit mid-list. :func:`noninteractive_repo_git_env` because ``status`` executes the repo's
+    ``core.fsmonitor`` and clean filters (GHSA-7x36-8jrh-v4pw)."""
+    from hermes_cli._subprocess_compat import FILTER_DISCOVERY_FAILED, noninteractive_repo_git_env
+    env = noninteractive_repo_git_env(cwd)
+    if env is None:
+        return subprocess.CompletedProcess(args=["git", *args], returncode=1, stdout="",
+                                           stderr=FILTER_DISCOVERY_FAILED)
     try:
-        return _run(["git", *args], timeout, cwd)
+        return _run(["git", *args], timeout, cwd, env=env)
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(args=["git", *args], returncode=124, stdout="",
                                            stderr=f"timeout after {timeout}s")
 
 
 def _tree_size_mb(path: Path, timeout: int = 30) -> Optional[int]:
-    """Cheap directory size via ``du -sm`` — best-effort, None on failure."""
+    """Cheap directory size via ``du -sm`` — best-effort, None on failure or timeout. Not
+    ``subprocess.run``: its post-kill ``wait()`` never returns for a ``du`` stuck in uninterruptible
+    disk I/O, so the caller (a ``hermes -w`` launch, the cron prune thread) would hang with it."""
+    from hermes_cli._subprocess_compat import bounded_probe_run
+
     try:
-        result = _run(["du", "-sm", str(path)], timeout)
-        return int(result.stdout.split()[0]) if result.returncode == 0 and result.stdout.strip() else None
+        result = bounded_probe_run(["du", "-sm", str(path)], timeout=timeout)
+        return int(result.stdout.split()[0]) if result and result.returncode == 0 and result.stdout.strip() else None
     except Exception:
         return None
 
 
-def _dirty_split(path: str) -> tuple[bool, List[str]]:
+def _dirty_split(path: str) -> tuple[bool, list[str]]:
     """(has_tracked_modifications, untracked_paths) — tracked = real work, untracked = archivable."""
     try:
-        result = _git(["status", "--porcelain"], cwd=path, timeout=10)
+        result = _git(["status", "--porcelain", "--untracked-files=normal"], cwd=path, timeout=10)
         if result.returncode != 0:
             return True, []  # fail safe: treat as real work
         lines = [line for line in result.stdout.splitlines() if line.strip()]
         untracked = [line[3:].strip() for line in lines if line.startswith("??")]
+        if len(untracked) == len(lines):
+            from hermes_cli.worktree_retention import hidden_index_edits
+            if hidden_index_edits(path):  # skip-worktree / assume-unchanged edits
+                return True, []
         return len(untracked) != len(lines), untracked
     except Exception:
         return True, []
 
 
-def _archive_untracked(tree: Path, untracked: List[str]) -> Optional[Path]:
+def _archive_untracked(tree: Path, untracked: list[str]) -> Optional[Path]:
     """Copy untracked files out of a doomed tree; None on any failure (caller must then keep)."""
     stamp = time.strftime("%Y%m%d-%H%M%S")
     from hermes_constants import get_hermes_home
@@ -121,7 +136,7 @@ def _archive_untracked(tree: Path, untracked: List[str]) -> Optional[Path]:
         return None
 
 
-def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads) -> tuple[str, str, List[str]]:
+def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads) -> tuple[str, str, list[str]]:
     """Return (verdict, reason, untracked) for one tree under ``.worktrees/``."""
     path = str(entry)
     if _KANBAN_RE.match(entry.name):
@@ -139,15 +154,21 @@ def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads)
         # as unpushed forever. A head EXACTLY matching the remote branch has nothing origin lacks.
         if not _ops._worktree_branch_pushed_exact(path, remote_heads, timeout=10):
             return "keep", "unpushed commits not found upstream", []
+        blocked = _ops.removal_blocked(path)
+        if blocked:
+            return "keep", blocked[1], []
         if untracked:
             return "reap-keep-branch", f"pushed to origin (open-PR lane); branch kept; {archive_note}", untracked
         return "reap-keep-branch", "pushed to origin (open-PR lane); branch kept", []
+    blocked = _ops.removal_blocked(path)
+    if blocked:
+        return "keep", blocked[1], []
     if untracked:
         return "reap-archive", f"merged/pushed; {archive_note}", untracked
     return "reap", "clean and fully merged/pushed", []
 
 
-def audit_external_trees(repo_root: str) -> List[ExternalTreeRecord]:
+def audit_external_trees(repo_root: str) -> list[ExternalTreeRecord]:
     """List linked worktrees registered OUTSIDE ``.worktrees/``.
 
     ``hermes -w`` scratch trees all live under ``<repo>/.worktrees/``, but
@@ -165,7 +186,7 @@ def audit_external_trees(repo_root: str) -> List[ExternalTreeRecord]:
     managed_root = os.path.realpath(str(Path(repo_root) / ".worktrees"))
     main_root = os.path.realpath(repo_root)
 
-    records: List[ExternalTreeRecord] = []
+    records: list[ExternalTreeRecord] = []
     current: dict = {}
 
     def _flush():
@@ -205,7 +226,7 @@ def audit_external_trees(repo_root: str) -> List[ExternalTreeRecord]:
     return records
 
 
-def prune_missing_registrations(repo_root: str, *, dry_run: bool = False) -> List[str]:
+def prune_missing_registrations(repo_root: str, *, dry_run: bool = False) -> list[str]:
     """Drop registrations whose directory no longer exists (any location).
 
     The equivalent of a targeted ``git worktree prune``: purely
@@ -224,7 +245,7 @@ def prune_missing_registrations(repo_root: str, *, dry_run: bool = False) -> Lis
 
 
 def audit_worktrees(repo_root: str, *, with_sizes: bool = True,
-                    older_than_days: Optional[float] = None) -> List[TreeRecord]:
+                    older_than_days: Optional[float] = None) -> list[TreeRecord]:
     """Classify every tree under ``.worktrees/`` without mutating anything.
 
     ``older_than_days`` only ever RESTRICTS: a reapable tree younger than the threshold is kept
@@ -244,7 +265,7 @@ def audit_worktrees(repo_root: str, *, with_sizes: bool = True,
     remote_heads = _ops._fetch_remote_branch_heads(repo_root)
 
     now = time.time()
-    records: List[TreeRecord] = []
+    records: list[TreeRecord] = []
     for entry in sorted(worktrees_dir.iterdir()):
         if not entry.is_dir():
             continue
@@ -274,13 +295,13 @@ _REAP_VERDICTS = {"reap", "reap-archive", "reap-keep-branch"}
 
 
 def reclaim_worktrees(
-    repo_root: str, *, dry_run: bool = False, records: Optional[List[TreeRecord]] = None
-) -> List[str]:
+    repo_root: str, *, dry_run: bool = False, records: Optional[list[TreeRecord]] = None
+) -> list[str]:
     """Remove every reap-verdict tree from a frozen audit list — never re-globs inside the
     destructive loop, so trees created by concurrent sessions after the audit are out of scope."""
     if records is None:
         records = audit_worktrees(repo_root, with_sizes=False)
-    actions: List[str] = []
+    actions: list[str] = []
     for record in records:
         if record.verdict not in _REAP_VERDICTS:
             continue
@@ -319,14 +340,14 @@ def reclaim_worktrees(
     return actions
 
 
-def audit_branches(repo_root: str) -> List[BranchRecord]:
+def audit_branches(repo_root: str) -> list[BranchRecord]:
     """Classify EVERY local branch: deletable when fully merged OR every commit is patch-equivalent
     upstream (``git cherry``) and not checked out. The gate is content reachability, not name."""
     from hermes_cli import worktree_ops as _ops
     if _ops._repo_is_shallow(repo_root):
         _ops._deepen_shallow_repo(repo_root)
 
-    def _lines(result) -> List[str]:
+    def _lines(result) -> list[str]:
         return [b.strip() for b in result.stdout.splitlines() if b.strip()]
 
     # No remote at all -> the local trunk; no trunk either -> nothing can be judged, report nothing.
@@ -386,12 +407,12 @@ def audit_branches(repo_root: str) -> List[BranchRecord]:
 
 
 def reclaim_branches(
-    repo_root: str, *, dry_run: bool = False, records: Optional[List[BranchRecord]] = None
-) -> List[str]:
+    repo_root: str, *, dry_run: bool = False, records: Optional[list[BranchRecord]] = None
+) -> list[str]:
     """Delete every delete-verdict branch from a frozen audit list."""
     if records is None:
         records = audit_branches(repo_root)
-    actions: List[str] = []
+    actions: list[str] = []
     for record in records:
         if record.verdict != "delete":
             continue
@@ -405,8 +426,10 @@ def reclaim_branches(
     return actions
 
 
-def worktrees_summary(repo_root: str) -> tuple[int, Optional[int]]:
-    """(tree_count, total_size_mb) for the escalation notice; size is best-effort with a timeout."""
+def worktrees_summary(repo_root: str, *, size_below_count: Optional[int] = None) -> tuple[int, Optional[int]]:
+    """(tree_count, total_size_mb) for the escalation notice; size is best-effort with a timeout,
+    and skipped (None) once the count reaches *size_below_count*: sizing walks every file of every
+    tree, node_modules included."""
     worktrees_dir = Path(repo_root) / ".worktrees"
     if not worktrees_dir.exists():
         return 0, None
@@ -414,4 +437,6 @@ def worktrees_summary(repo_root: str) -> tuple[int, Optional[int]]:
         count = sum(1 for e in worktrees_dir.iterdir() if e.is_dir())
     except Exception:
         return 0, None
+    if size_below_count is not None and count >= size_below_count:
+        return count, None
     return count, _tree_size_mb(worktrees_dir, timeout=20)

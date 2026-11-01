@@ -4,7 +4,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-
 def _import_cli():
     import hermes_cli.config as config_mod
 
@@ -19,7 +18,6 @@ def _import_cli():
 
     return cli_mod
 
-
 class TestParseServiceTierConfig(unittest.TestCase):
     def _parse(self, raw):
         cli_mod = _import_cli()
@@ -28,8 +26,6 @@ class TestParseServiceTierConfig(unittest.TestCase):
     def test_fast_maps_to_priority(self):
         self.assertEqual(self._parse("fast"), "priority")
         self.assertEqual(self._parse("priority"), "priority")
-
-
 
 class TestHandleFastCommand(unittest.TestCase):
     def _make_cli(self, service_tier=None):
@@ -57,7 +53,6 @@ class TestHandleFastCommand(unittest.TestCase):
         printed = " ".join(str(c) for c in mock_cprint.call_args_list)
         self.assertIn("normal", printed)
 
-
     def test_normal_argument_clears_service_tier(self):
         cli_mod = _import_cli()
         stub = self._make_cli(service_tier="priority")
@@ -71,9 +66,6 @@ class TestHandleFastCommand(unittest.TestCase):
         mock_save.assert_not_called()
         self.assertIsNone(stub.service_tier)
         self.assertIsNone(stub.agent)
-
-
-
 
 class TestPriorityProcessingModels(unittest.TestCase):
     """Verify the expanded Priority Processing model registry."""
@@ -94,15 +86,12 @@ class TestPriorityProcessingModels(unittest.TestCase):
         for model in supported:
             assert model_supports_fast_mode(model), f"{model} should support fast mode"
 
-
     def test_codex_models_excluded(self):
         """Codex models route through Responses API and don't accept service_tier."""
         from hermes_cli.models import model_supports_fast_mode
 
         for model in ["gpt-5-codex", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5.1-codex-max"]:
             assert not model_supports_fast_mode(model), f"{model} is codex — should not expose /fast"
-
-
 
     def test_grok_46_supports_priority_processing(self):
         from hermes_cli.models import (
@@ -115,16 +104,12 @@ class TestPriorityProcessingModels(unittest.TestCase):
         assert model_supports_fast_mode("grok-4.5") is False
         assert resolve_fast_mode_overrides("grok-4.6") == {"service_tier": "priority"}
 
-
-
-
 class TestFastModeRouting(unittest.TestCase):
     def test_fast_command_exposed_for_model_even_when_provider_is_auto(self):
         cli_mod = _import_cli()
         stub = SimpleNamespace(provider="auto", requested_provider="auto", model="gpt-5.4", agent=None)
 
         assert cli_mod.HermesCLI._fast_command_available(stub) is True
-
 
     def test_turn_route_injects_overrides_without_provider_switch(self):
         """Fast mode should add request_overrides but NOT change the provider/runtime."""
@@ -172,7 +157,6 @@ class TestFastModeRouting(unittest.TestCase):
 
         assert route["runtime"]["provider"] == "openrouter"
         assert route.get("request_overrides") is None
-
 
 class TestAnthropicFastMode(unittest.TestCase):
     """Verify Anthropic Fast Mode model support and override resolution."""
@@ -222,13 +206,6 @@ class TestAnthropicFastMode(unittest.TestCase):
         assert model_supports_fast_mode("anthropic/claude-sonnet-4.6") is False
         assert model_supports_fast_mode("anthropic/claude-opus-4-7") is False
 
-
-
-
-
-
-
-
     def test_fast_command_hidden_for_anthropic_sonnet(self):
         """Sonnet doesn't support fast mode (Opus 4.8/5/5.5 only) — /fast must be hidden."""
         cli_mod = _import_cli()
@@ -237,8 +214,6 @@ class TestAnthropicFastMode(unittest.TestCase):
             model="claude-sonnet-4-6", agent=None,
         )
         assert cli_mod.HermesCLI._fast_command_available(stub) is False
-
-
 
     def test_turn_route_injects_speed_for_anthropic(self):
         """Anthropic models should get speed:'fast' override, not service_tier."""
@@ -259,7 +234,6 @@ class TestAnthropicFastMode(unittest.TestCase):
 
         assert route["runtime"]["provider"] == "anthropic"
         assert route["request_overrides"] == {"speed": "fast"}
-
 
 class TestAnthropicFastModeAdapter(unittest.TestCase):
     """Verify build_anthropic_kwargs handles fast_mode parameter."""
@@ -325,6 +299,3 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
         assert kwargs.get("extra_body", {}).get("speed") is None
         assert "speed" not in kwargs
         assert "extra_headers" not in kwargs
-
-
-

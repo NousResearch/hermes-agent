@@ -12,7 +12,8 @@ Those stay on AIAgent.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+import threading
+from dataclasses import KW_ONLY, dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
@@ -32,10 +33,109 @@ def _profile_user_agent() -> str:
     (OpenCode Zen, etc.) sit behind a WAF that returns 403 for that.
     """
     try:
-        from hermes_cli import __version__ as _ver  # lazy: avoid layer cycle at import time
-        return f"hermes-cli/{_ver}"
+        from hermes_cli.version_info import get_version_info  # lazy: avoid layer cycle at import time
+        return f"hermes-cli/{get_version_info().base_version}"
     except Exception:
         return "hermes-cli"
+
+
+_RESOLVE_LOCK = threading.RLock()  # re-entrant: a callback may read another LazyHeaders
+
+
+class LazyHeaders(dict[str, str]):
+    """``default_headers`` whose callable values (a User-Agent carrying the release) run on first read.
+
+    A source checkout resolves the release from git, and every CLI start imports all provider plugins
+    (``hermes_cli.config`` lists their env vars), so headers built at import made every command pay git
+    subprocesses for a request it may never send. Keys are stored up front, so ``in``/``len`` stay lazy,
+    and the class stays a real ``dict``: plugins copy, merge, mutate and serialize ``default_headers``.
+
+    Every method that reads or writes a value resolves first; ``__iter__`` is overridden so CPython's
+    ``dict(x)``/``{**x}``/``f(**x)`` merge leaves its raw-storage fast path for ``keys()`` +
+    ``__getitem__``, and ``json.dumps`` takes ``items()`` because the stored keys make the dict
+    non-empty. Copies (``.copy()``, ``|``, ``copy``/``pickle``) are plain resolved dicts.
+    """
+
+    __slots__ = ("_pending",)
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._pending = any(callable(value) for value in dict.values(self))
+
+    def _resolved(self) -> LazyHeaders:
+        if self._pending:
+            # One resolver: concurrent first reads (parallel aux clients) would each walk git.
+            with _RESOLVE_LOCK:
+                if self._pending:
+                    for key, value in list(dict.items(self)):
+                        if callable(value):
+                            dict.__setitem__(self, key, value())
+                    self._pending = False
+        return self
+
+    def __getitem__(self, key: str) -> str:
+        return dict.__getitem__(self._resolved(), key)
+
+    def __iter__(self):
+        return dict.__iter__(self._resolved())
+
+    def __reversed__(self):
+        return dict.__reversed__(self._resolved())
+
+    def __repr__(self) -> str:
+        return dict.__repr__(self._resolved())
+
+    def __eq__(self, other: object) -> bool:
+        return dict.__eq__(self._resolved(), other._resolved() if isinstance(other, LazyHeaders) else other)
+
+    def __ne__(self, other: object) -> bool:
+        equal = self.__eq__(other)
+        return equal if equal is NotImplemented else not equal
+
+    def __or__(self, other: Any) -> Any:
+        return dict.__or__(self._resolved(), other)
+
+    def __ror__(self, other: Any) -> Any:
+        return dict.__or__(other, self._resolved()) if isinstance(other, dict) else NotImplemented
+
+    def __ior__(self, other: Any) -> LazyHeaders:
+        return dict.__ior__(self._resolved(), other)
+
+    def __reduce__(self) -> tuple:
+        return (dict, (dict.copy(self._resolved()),))
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return dict.get(self._resolved(), key, default)
+
+    def keys(self):
+        return dict.keys(self._resolved())
+
+    def values(self):
+        return dict.values(self._resolved())
+
+    def items(self):
+        return dict.items(self._resolved())
+
+    def copy(self) -> dict[str, str]:
+        return dict.copy(self._resolved())
+
+    def __setitem__(self, key: str, value: str) -> None:
+        dict.__setitem__(self._resolved(), key, value)
+
+    def __delitem__(self, key: str) -> None:
+        dict.__delitem__(self._resolved(), key)
+
+    def pop(self, *args: Any) -> Any:
+        return dict.pop(self._resolved(), *args)
+
+    def popitem(self) -> tuple[str, str]:
+        return dict.popitem(self._resolved())
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        return dict.setdefault(self._resolved(), key, default)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        dict.update(self._resolved(), *args, **kwargs)
 
 
 @dataclass
@@ -52,11 +152,20 @@ class ProviderProfile:
     description: str = ""        # e.g. "GMI Cloud (multi-model direct API)" — picker subtitle
     signup_url: str = ""         # e.g. "https://www.gmicloud.ai/" — shown during setup
 
+    # True when the provider is pre-release / not for public listing. Discovery surfaces (provider
+    # pickers, the setup provider list, the dashboard accounts tab) skip it unless ``listed()``
+    # says otherwise; resolution by name is untouched, so an explicit ``model.provider`` /
+    # ``hermes auth add <name>`` keeps working.
+    hidden: bool = False
+
     # ── Auth & endpoints ─────────────────────────────────────
     env_vars: tuple = ()
     base_url: str = ""
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
-    auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
+    auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|external_process|aws_sdk|plugin-defined
+    # None preserves transport defaults (external-process clients default to non-streaming).
+    # True opts a streaming-capable process client in; False disables streaming for this provider.
+    supports_streaming: bool | None = field(default=None, kw_only=True)
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
     # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
     supports_model_listing: bool = True
@@ -108,8 +217,8 @@ class ProviderProfile:
     # resolve_external_process_provider_credentials() reads them instead of
     # hardcoding one vendor's binary. Env vars are checked in order and win
     # over the static defaults, so an operator can point at a custom build.
-    process_command: str = ""            # default binary, e.g. "copilot"
-    process_args: tuple = ()             # default argv tail, e.g. ("--acp", "--stdio")
+    process_command: str = ""            # default binary, e.g. "kimchi"
+    process_args: tuple = ()             # default argv tail, e.g. ("--mode", "acp")
     process_command_env_vars: tuple = ()  # env overrides for the binary, in priority order
     process_args_env_var: str = ""       # env override for argv (shlex-split)
 
@@ -142,6 +251,32 @@ class ProviderProfile:
     # Per-model metadata in the canonical model_overrides schema. Partial entries
     # patch catalog metadata; explicit user overrides still win. Exact model IDs.
     model_capabilities: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    # Every field below was added after the released positional layout above: keyword-only, so a
+    # plugin subclass's own positional options keep their constructor slots.
+    _: KW_ONLY
+
+    # ── L6: provider-owned setup + sign-in surfaces (all optional; None/empty = core's generic path) ──
+    # ``account_card``: Accounts-tab card overrides ``{name, flow, cli_command, docs_url}`` for the
+    # Desktop/dashboard (``/api/providers/oauth``); non-empty also lists a Keys-tab profile there.
+    account_card: dict[str, str] = field(default_factory=dict)
+    # ``account_status() -> Mapping``: that card's live status (``logged_in``, ``source``, ``source_label``…);
+    # subprocess- and network-free, it runs on every Accounts list. None = ``auth.get_auth_status(name)``.
+    account_status: Callable[[], Any] | None = None
+    # In-app device-code sign-in (Desktop "Login" button; the card's flow becomes ``device_code``):
+    # ``start_device_login() -> {user_code, verification_url, expires_in, interval, state}`` asks the
+    # provider for a code; ``poll_device_login(state) -> {status: pending|approved|denied|expired,
+    # interval?, credential?, message?}`` makes ONE poll; ``save_device_login(credential)`` persists it.
+    # Core owns the wait loop and cancellation and calls save inside the session's profile scope.
+    start_device_login: Callable[[], Any] | None = None
+    poll_device_login: Callable[[Any], Any] | None = None
+    save_device_login: Callable[[Any], None] | None = None
+    # ``model_setup_flow(config, current_model, args)``: this provider's own ``hermes model`` step
+    # (credential prompt, catalog, persist); None = the generic flow for its auth_type.
+    model_setup_flow: Callable[[Any, str, Any], Any] | None = None
+    # ``setup_reasoning_efforts(model) -> tuple | None``: levels the setup effort picker offers for
+    # *model*; ``()`` = no reasoning control, None = the generic ladder gated by models.dev.
+    setup_reasoning_efforts: Callable[[str], Any] | None = None
 
     # ── Hooks (override in subclass for complex providers) ───
 
@@ -305,6 +440,52 @@ class ProviderProfile:
         """
         return None
 
+    # ── L1 wire seams (per-model wire, endpoint-keyed headers, max-tokens param) ──
+    # Endpoint-keyed hooks take the request's ``base_url``: core asks the named provider's profile first,
+    # then any registered profile overriding the hook (``agent.provider_route_hooks``), so a ``custom``
+    # route pointed at this provider's host is served too. Return None / ``{}`` for an endpoint that is
+    # not yours. All four are pure: no I/O unless the docstring says so.
+
+    def api_mode_for_model(self, model: str, *, api_key: str | None = None) -> str | None:
+        """Wire (``api_mode``) this provider serves *model* on, or None to keep the static ``api_mode``.
+
+        ``api_key=None`` is the pure hot path (agent init, fallback, aux client builds): answer from the
+        id alone. A string ``api_key`` comes from resolution-time callers (``/model``, runtime resolve),
+        which may consult a cached live catalog with that credential to normalize the id first.
+        """
+        return None
+
+    def client_headers(
+        self, *, base_url: str, api_key: str = "", has_images: bool = False,
+    ) -> dict[str, str] | None:
+        """Default headers for an OpenAI client built for *base_url*, or None when this profile has no
+        endpoint-specific headers there (core then uses the static ``default_headers``). ``has_images``
+        asks for the headers of a request-scoped client carrying native image parts. Core merges user
+        ``model.default_headers`` over the result and re-adds missing keys on snapshot rebuilds."""
+        return None
+
+    def request_headers(self, *, base_url: str, model: str = "", user_initiated: bool = False) -> dict[str, str]:
+        """Per-request headers (``extra_headers``) for *base_url*; ``user_initiated`` is True only on the
+        first attempt of a user turn's first API call (attribution). Pure: core memoizes the answer per argument set."""
+        return {}
+
+    def max_tokens_param(self, *, base_url: str, model: str = "") -> str | None:
+        """``"max_completion_tokens"`` / ``"max_tokens"`` for requests to *base_url*, or None for the
+        core heuristic (direct OpenAI / Azure host or newer OpenAI model families). Pure: memoized per arguments."""
+        return None
+
+    def listed(self) -> bool:
+        """Whether discovery surfaces may offer this provider.
+
+        Every non-``hidden`` profile is listed. A ``hidden`` (pre-release) one surfaces once the user
+        opted in by name (``hermes auth add <name>`` put a row in its credential pool), so the
+        pickers can then offer it. Reads auth.json only: it runs on every picker build.
+        """
+        if not self.hidden:
+            return True
+        from hermes_cli.auth import read_credential_pool  # lazy: providers/ must not import hermes_cli at load
+        return bool(read_credential_pool(self.name))
+
     def create_client(self, **client_kwargs: Any) -> Any | None:
         """Return a provider-specific client, or ``None`` for the standard one.
 
@@ -326,7 +507,7 @@ class ProviderProfile:
         This is the hook that lets a provider ship *outside* this tree: with it,
         a profile registered from ``~/.hermes/plugins/model-providers/`` or a
         pip entry point can supply its own transport without any core edit. See
-        ``plugins/model-providers/copilot-acp/`` for the in-tree example.
+        ``website/docs/developer-guide/model-provider-plugin.md``.
         """
         return None
 
@@ -409,7 +590,158 @@ class ProviderProfile:
             with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             items = data if isinstance(data, list) else data.get("data", [])
-            return [m["id"] for m in items if isinstance(m, dict) and "id" in m]
+            from hermes_cli.chat_catalog import chat_catalog_ids
+
+            return chat_catalog_ids(items)
         except Exception as exc:
             logger.debug("fetch_models(%s): %s", self.name, exc)
             return None
+
+    # ── Lane L4: catalog / metadata seams ─────────────────────
+    # Hosts (exact or any subdomain) that serve THIS provider's API, so a ``custom`` endpoint or an
+    # auto-routed aux client at one of them is recognised as this provider (``providers.profile_for_host``).
+    # It also makes ``reasoning_payload`` the reasoning gate there, except on hosts core gates itself
+    # (OpenRouter, Ollama Cloud, Nous Portal, Vercel AI Gateway, the ``lmstudio`` provider).
+    hostnames: tuple = ()
+    # Hosts that identify this provider's catalog for model metadata (context length, models.dev) but
+    # take other credentials; matched only by ``profile_for_host(url, metadata=True)``.
+    metadata_hostnames: tuple = ()
+    # models.dev provider id when it differs from ``name`` (e.g. ``fireworks`` -> ``fireworks-ai``).
+    models_dev_id: str = ""
+
+    def live_context_length(self, model: str, *, api_key: str = "", base_url: str = "") -> int | None:
+        """Context window from the provider's live, credentialed catalog; consulted after the persistent cache."""
+        return None
+
+    def normalize_model_id(self, model: str, *, api_key: str = "") -> str | None:
+        """Provider-native id for *model* (alias table, catalog repair); None = core's generic normalization."""
+        return None
+
+    # ── Lane L2: provider-owned credential seams ──────────────────────────────
+    # Credentials are commonly ambient (another tool's login, a token exported for other purposes):
+    # never auto-detected as the inference provider, and the auxiliary fallback chain skips the
+    # provider unless the user explicitly configured it.
+    ambient_credentials: bool = field(default=False, kw_only=True)
+
+    def resolve_api_key_secret(self) -> tuple[str, str] | None:
+        """Provider-owned ``(runtime_api_key, source)`` resolution; None = generic env/pool ladder."""
+        return None
+
+    def runtime_base_url(self, *, api_key: str, default: str, env_url: str) -> str | None:
+        """Runtime base URL derived from the credential (e.g. an account endpoint); None = env or default."""
+        return None
+
+    def prepare_pool_entry(self, entry: Any, api_key: str) -> str:
+        """Turn the selected pool row's secret into the runtime key (may update ``entry``); default as-is."""
+        return api_key
+
+    def seed_pool_credentials(self, *, suppressed_sources: frozenset[str],
+                              explicitly_configured: bool) -> list[dict] | None:
+        """Pool rows ``{source, access_token, base_url, label}`` this provider seeds itself; skip any source in
+        ``suppressed_sources`` (``hermes auth remove``). Plain data, so it crosses ``plugins.isolation: host``.
+        Overriding it replaces generic env seeding (that loop would overwrite exchanged tokens with the raw env
+        value), so an override returns ``[]`` for none; only the base implementation keeps generic env seeding."""
+        return None
+
+    def remove_credential_source(self, source: str) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+        """``hermes auth remove`` of *source*: ``(sources_to_suppress, hints)``; None = generic removal."""
+        return None
+
+    def refresh_runtime_credentials(self, *, reason: str) -> tuple[str, str | None] | None:
+        """Re-mint the live client's ``(api_key, base_url or None)`` on ``reason`` (``unauthorized`` |
+        ``stale`` | ``auxiliary_unauthorized``); None = nothing fresher. Error path only, I/O allowed."""
+        return None
+
+    def is_stale_credential_error(self, *, status_code: int | None, message: str) -> bool:
+        """True when a non-auth error really means the credential went stale (pure, no I/O)."""
+        return False
+
+    def credential_refresh_notice(self, *, reason: str) -> str:
+        """Status line after ``refresh_runtime_credentials(reason=...)`` succeeded; "" = generic wording."""
+        return ""
+
+    def request_rejection_hint(self, *, status_code: int | None, base_url: str) -> tuple[str, ...]:
+        """User-facing lines explaining an endpoint's hard rejection of *any* route (pure); default none."""
+        return ()
+
+    def external_auth_evidence(self) -> tuple[bool, str | None] | None:
+        """Subprocess-free ``(verified, source)`` login evidence for an external CLI; None = binary resolves."""
+        return None
+
+    def missing_credentials_hint(self) -> str | None:
+        """One sentence appended to every "No usable credentials found" surface (runtime resolution, CLI and
+        Desktop readiness), e.g. the provider's own sign-in command; None = the generic message alone."""
+        return None
+
+    # ── Lane L3: Responses-route quirks and message-level reasoning carriers ───
+    # Every field and hook below applies only on hosts the profile declares in ``hostnames``;
+    # the defaults are the generic wire. Hot path: answers must be pure and cheap (no I/O). A hook that
+    # raises is logged once and answers the default for the rest of the session (provider_route_hooks).
+    responses_replay_item_ids: bool = True  # replayed Responses ``message`` items keep their ``id``
+    responses_prompt_cache_key: bool = True  # the Responses body carries ``prompt_cache_key``
+    responses_issuer_kind: str = ""  # persisted stamp for encrypted reasoning minted here ("" = URL-derived)
+    responses_trusts_completed_status: bool = True  # False: a reasoning-only ``completed`` response continues
+    responses_native_compaction: bool = True  # False: never send ``context_management``
+    responses_profile_reasoning: bool = False  # True: ``reasoning`` = ``reasoning_payload`` + summary, no ``include``
+    message_carrier_opaque: str = ""  # top-level assistant key of an opaque reasoning blob (latest streamed wins)
+    message_carrier_text: str = ""  # top-level assistant key of readable reasoning text (streamed parts concatenate)
+    replays_tool_call_signatures: bool = False  # tool calls keep Gemini ``extra_content`` signatures (by provider name)
+
+    def reasoning_payload(self, model: str | None, reasoning_config: dict | None, *, base_url: str) -> dict | None:
+        """Verbatim ``reasoning`` object the endpoint takes for *model* (catalog-clamped), or None for none.
+        Pure: memoized per arguments."""
+        return None
+
+    def replay_message_carriers(self, values: dict[str, Any], *, model: str | None, base_url: str) -> dict[str, Any]:
+        """Captured message carriers (``message_carrier_*`` keys) to put back on a replayed assistant message.
+        Decide from which keys are present, not their content: core asks once per (model, base_url, key set)
+        and replays the same keys for every message with that key set (an answer whose values are not
+        copies of input values is asked per message)."""
+        return {}
+
+    def replays_function_thought_signature(self, *, model: str | None, base_url: str) -> bool:
+        """True when replayed tool calls keep ``function.thought_signature`` (stripped everywhere else).
+        Pure: memoized per arguments."""
+        return False
+
+    # --- I2-cat: provider-owned catalog sources ---
+    # ``picker_catalog(force_refresh) -> list | None``: the provider's own model-picker catalog (own
+    # credential lookup, live fetch, curated fallback); set = a live source, tried before the generic
+    # profile fetch like a built-in per-provider fetcher. None return falls through to that path.
+    picker_catalog: Callable[[bool], Any] | None = field(default=None, kw_only=True)
+    # Curated ids registered as this provider's row of core's static catalog (model detection,
+    # defaults, validation) the way a built-in provider's curated list is; empty = no row.
+    static_models: tuple = field(default=(), kw_only=True)
+    # Credential files (``~`` allowed) whose mtime is folded into every cached catalog's fingerprint.
+    catalog_credential_files: tuple = field(default=(), kw_only=True)
+
+    def probe_models(
+        self, *, base_url: str, api_key: str | None = None, timeout: float = 5.0,
+    ) -> tuple[list[str] | None, str, str] | None:
+        """``(model ids or None, probed_url, resolved_base_url)`` for a ``/models`` probe of *base_url*
+        this provider answers from its own catalog; None = the generic HTTP probe."""
+        return None
+
+    def invalidate_catalog_cache(self) -> None:
+        """Drop in-process catalog memos (``/model --refresh``); default none."""
+
+    # --- I2-static: provider-table placement ---
+    picker_after: str = ""  # provider slug this row follows in the provider list ("" = appended)
+    picker_group: tuple = ()  # (group_id, label, description): fold with same-group rows in interactive pickers
+    catalog_aliases: bool = False  # ``aliases`` also normalize in the model catalog (``/model``, pickers)
+    aggregator: bool = False  # catalog re-exposes many vendors' models (vendor/family ids, alias resolution)
+    # HermesOverlay fields (transport, auth_type, extra_env_vars, base_url_override, base_url_env_var) for
+    # the provider's models.dev-keyed definition, keyed by ``models_dev_id`` or ``name``; {} = none.
+    provider_overlay: dict = field(default_factory=dict)
+    # Extra names that normalize to the ``provider_overlay`` definition (its id, else ``name``); () = none.
+    overlay_aliases: tuple = ()
+
+    # --- I2-auth: hermes-auth registry row mirrored from this profile (hermes_cli/auth_plugin_providers.py) ---
+    # auth_type of the registry row when credential resolution differs from the setup flow ``auth_type`` names
+    # (an env-token provider with its own login); "" = ``auth_type``.
+    registry_auth_type: str = ""
+    # Env var overriding ``base_url`` on the registry row when it is not listed in ``env_vars``; "" = none.
+    base_url_env_var: str = ""
+    # Registry id this provider's row sits right after, keeping its place in priority-ordered scans
+    # (aux api-key chain, env auto-detect); "" or an unknown id = appended.
+    registry_after: str = ""

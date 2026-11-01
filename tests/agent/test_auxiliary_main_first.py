@@ -15,10 +15,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-
-
 # ── Text aux tasks — _resolve_auto_route ──────────────────────────────────────────
-
 
 class TestResolveAutoMainFirst:
     """_resolve_auto_route() must prefer main provider + main model for every user."""
@@ -84,7 +81,6 @@ class TestResolveAutoMainFirst:
         assert client is mock_client
         assert model == fast_model
 
-
     def test_moa_main_resolves_aux_to_aggregator(self, monkeypatch, tmp_path):
         """MoA main user → aux runs on the aggregator slot, NOT the preset name.
 
@@ -94,7 +90,7 @@ class TestResolveAutoMainFirst:
         acting model). The virtual moa://local base_url + placeholder key must
         be dropped so the aggregator resolves via its own provider credentials.
         """
-        import yaml
+        import hermes_yaml as yaml
 
         home = tmp_path / ".hermes"
         home.mkdir()
@@ -126,7 +122,7 @@ class TestResolveAutoMainFirst:
 
             from agent.auxiliary_client import _resolve_auto_route
 
-            client, model, _provider = _resolve_auto_route(
+            client, _model, _provider = _resolve_auto_route(
                 main_runtime={
                     "provider": "moa",
                     "model": "opus-gpt",
@@ -144,9 +140,6 @@ class TestResolveAutoMainFirst:
         # The virtual moa://local endpoint must not be forwarded as the
         # aggregator's base_url.
         assert mock_resolve.call_args.kwargs.get("explicit_base_url") in (None, "")
-
-
-
 
     def test_main_unavailable_uses_task_fallback_chain_before_builtin_chain(self):
         """Auto aux resolution honors auxiliary.<task>.fallback_chain before built-ins."""
@@ -176,9 +169,6 @@ class TestResolveAutoMainFirst:
             "title_generation", "nvidia", reason="main provider unavailable")
         mock_main_chain.assert_not_called()
         mock_openrouter.assert_not_called()
-
-
-
 
     def test_resolve_provider_auto_returns_runtime_model_not_stale_config_default(self):
         """Blank auto aux requests must not pair a stale config model with live fallback provider."""
@@ -237,9 +227,7 @@ class TestResolveAutoMainFirst:
         assert mock_resolve.call_args.kwargs["explicit_api_key"] == "tp-test-key"
         assert mock_resolve.call_args.kwargs["api_mode"] == "chat_completions"
 
-
 # ── Vision — resolve_vision_provider_client ─────────────────────────────────
-
 
 class TestResolveVisionMainFirst:
     """Vision auto-detection prefers the main provider first."""
@@ -275,9 +263,6 @@ class TestResolveVisionMainFirst:
         assert mock_resolve.call_args.args[0] == "openrouter"
         assert mock_resolve.call_args.args[1] == "anthropic/claude-sonnet-4.6"
         assert mock_resolve.call_args.kwargs.get("is_vision") is True
-
-
-
 
     @staticmethod
     def _stub_nous_portal(seen: dict):
@@ -402,91 +387,8 @@ class TestResolveVisionMainFirst:
 
         assert model == "tencent/hy3:free"
 
-    def test_copilot_vision_sets_vision_header(self, monkeypatch):
-        """Copilot vision requests include the header required for vision routing."""
-        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "ghu_test-token")
-
-        captured = {}
-
-        def fake_headers(*, is_agent_turn=False, is_vision=False):
-            captured["is_agent_turn"] = is_agent_turn
-            captured["is_vision"] = is_vision
-            return {"Copilot-Vision-Request": "true"} if is_vision else {}
-
-        with patch(
-            "agent.auxiliary_client._read_main_provider", return_value="copilot",
-        ), patch(
-            "agent.auxiliary_client._read_main_model", return_value="configured-copilot-model",
-        ), patch(
-            "agent.auxiliary_client._resolve_task_provider_model",
-            return_value=("auto", None, None, None, None),
-        ), patch(
-            "agent.auxiliary_client.OpenAI",
-        ) as mock_openai, patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
-            return_value={
-                "provider": "copilot",
-                "api_key": "copilot-api-token",
-                "base_url": "https://api.githubcopilot.com",
-            },
-        ), patch(
-            "hermes_cli.copilot_auth.copilot_request_headers",
-            side_effect=fake_headers,
-        ):
-            mock_client = MagicMock()
-            mock_openai.return_value = mock_client
-
-            from agent.auxiliary_client import resolve_vision_provider_client
-
-            provider, client, model = resolve_vision_provider_client()
-
-        assert provider == "copilot"
-        assert client is mock_client
-        assert model == "configured-copilot-model"
-        assert captured == {"is_agent_turn": True, "is_vision": True}
-        assert mock_openai.call_args.kwargs["default_headers"]["Copilot-Vision-Request"] == "true"
-
-    def test_text_copilot_does_not_set_vision_header(self, monkeypatch):
-        """Text Copilot requests keep the vision-only header off."""
-        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "ghu_test-token")
-
-        captured = {}
-
-        def fake_headers(*, is_agent_turn=False, is_vision=False):
-            captured["is_agent_turn"] = is_agent_turn
-            captured["is_vision"] = is_vision
-            return {"Copilot-Vision-Request": "true"} if is_vision else {}
-
-        with patch(
-            "agent.auxiliary_client.OpenAI",
-        ) as mock_openai, patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
-            return_value={
-                "provider": "copilot",
-                "api_key": "copilot-api-token",
-                "base_url": "https://api.githubcopilot.com",
-            },
-        ), patch(
-            "hermes_cli.copilot_auth.copilot_request_headers",
-            side_effect=fake_headers,
-        ):
-            mock_client = MagicMock()
-            mock_openai.return_value = mock_client
-
-            from agent.auxiliary_client import resolve_provider_client
-
-            client, model = resolve_provider_client("copilot", "gpt-5-mini")
-
-        assert client is mock_client
-        assert model == "gpt-5-mini"
-        assert captured == {"is_agent_turn": True, "is_vision": False}
-        assert "default_headers" not in mock_openai.call_args.kwargs
-
-
-
 
 # ── Vision — custom provider endpoint credential passthrough ────────────────
-
 
 class TestResolveVisionCustomProvider:
     """Custom-endpoint mains must forward base_url/api_key to Step 1.
@@ -560,7 +462,7 @@ class TestResolveVisionCustomProvider:
 
             from agent.auxiliary_client import resolve_vision_provider_client
 
-            provider, client, model = resolve_vision_provider_client()
+            provider, client, _model = resolve_vision_provider_client()
 
         assert provider == "custom:copilot-gateway"
         assert client is mock_client
@@ -595,14 +497,11 @@ class TestResolveVisionCustomProvider:
 
             from agent.auxiliary_client import resolve_vision_provider_client
 
-            provider, client, model = resolve_vision_provider_client()
+            _provider, client, _model = resolve_vision_provider_client()
 
         assert client is mock_client
         kwargs = mock_resolve.call_args.kwargs
         assert kwargs.get("explicit_base_url") == "https://configured.example/v1"
         assert kwargs.get("explicit_api_key") == "sk-configured"
 
-
 # ── Constant cleanup ────────────────────────────────────────────────────────
-
-

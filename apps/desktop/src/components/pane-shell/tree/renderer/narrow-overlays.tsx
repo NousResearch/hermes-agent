@@ -9,30 +9,64 @@
 import { useStore } from '@nanostores/react'
 import { type MouseEventHandler, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { $chatOnboardingSolo } from '@/components/onboarding-chat/assembly'
+import { useTitlebarHeight } from '@/app/shell/use-touch-titlebar'
 import { PaneTab, PaneTabLabel, PaneTabStrip } from '@/components/ui/pane-tab'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
+import { hostHas } from '@/lib/host-capabilities'
 import { cn } from '@/lib/utils'
+import { $chatOnboardingSolo } from '@/store/onboarding-intro'
+import { $paneStates } from '@/store/panes'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '../..'
+import { useWindowControlsOverlap } from '../../geometry'
+import { $narrowOverlayPaneIds } from '../../narrow-overlay-state'
 import { NO_PANE_GROUP } from '../../pane-visibility'
-import { allPaneIds, findGroupOfPane } from '../model'
+import { allPaneIds, findGroupOfPane, type LayoutNode } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport } from '../store'
 
 import { KeepAlivePaneSlot, useStablePaneHosts } from './keep-alive-panes'
-import { paneChrome } from './track-model'
+import { fixedTrackSize, paneChrome, type TrackContext } from './track-model'
+
+/** The width a revealed narrow overlay sizes itself to: the SAME resolution
+ *  the pane's zone uses while docked — declared max() refined by the live
+ *  widthOverride of the zone's shown panes (fixedTrackSize) — so the overlay
+ *  and the docked zone can never disagree. Falls back to the pane's declared
+ *  `data.width` (then 18rem) when no zone claims the pane. Pure, so the
+ *  regression test asserts the resolution itself (jsdom's CSSOM drops the
+ *  `min()` wrapper from style.width, hiding the rendered result). */
+export function narrowOverlayWidth(ctx: TrackContext, tree: LayoutNode | null, revealed: Contribution): string {
+  if (!tree) {
+    return paneChrome(revealed).width ?? '18rem'
+  }
+
+  const zone = findGroupOfPane(tree, revealed.id)
+  const track = zone ? fixedTrackSize(zone, 'row', ctx) : null
+
+  return track ?? paneChrome(revealed).width ?? '18rem'
+}
 
 export function NarrowOverlays() {
+  const titlebarHeight = useTitlebarHeight()
   const narrow = useStore($narrowViewport)
   const solo = useStore($chatOnboardingSolo)
   const tree = useStore($layoutTree)
   const panes = useContributions('panes')
+  const paneStates = useStore($paneStates)
   const stableHosts = useStablePaneHosts()
   const hiddenPanes = useStore($hiddenTreePanes)
   const [reveal, setReveal] = useState<{ id: string; pinned: boolean } | null>(null)
+
+  // The revealed overlay spans the full viewport height (inset-y-0 below), so
+  // its tab strip starts at the top edge — under the native window controls
+  // (macOS traffic lights) when the sidebar is on the left. Reserve their rect
+  // the same way a docked zone does (TreeGroup's wcOverlap -> paddingTop plus
+  // an absolute drag-region spacer so the band stays a window-drag target).
+  const overlayRef = useRef<HTMLDivElement>(null)
+  const outsidePress = useRef<{ id: number; x: number; y: number } | null>(null)
+  const wcOverlap = useWindowControlsOverlap(overlayRef, reveal !== null)
 
   const onMouseLeave = useCallback<MouseEventHandler<HTMLDivElement>>(event => {
     // The overlay's chrome and its stable guest are DOM siblings, but one
@@ -62,6 +96,15 @@ export function NarrowOverlays() {
 
   const collapsiblesRef = useRef(collapsibles)
   collapsiblesRef.current = collapsibles
+
+  useEffect(() => {
+    const active = narrow && !solo && reveal ? collapsibles.find(p => p.id === reveal.id) : undefined
+    const zone = active && tree ? findGroupOfPane(tree, active.id) : null
+    const visible = active ? collapsibles.filter(p => (zone ? zone.panes.includes(p.id) : p.id === active.id)) : []
+    $narrowOverlayPaneIds.set(new Set(visible.flatMap(p => [p.id, ...(paneChrome(p).revealAliases ?? [])])))
+
+    return () => $narrowOverlayPaneIds.set(new Set())
+  }, [narrow, solo, reveal, collapsibles, tree])
 
   // ⌘B / ⌘G's narrow branch dispatches the app's toggle-reveal event with the
   // REAL pane id — accept those via each contribution's revealAliases.
@@ -95,7 +138,12 @@ export function NarrowOverlays() {
         }
 
         if (mode === 'close') {
-          return current?.id === match.id ? null : current
+          // The browser host's titlebar Hide names the zone (its alias) while a
+          // zone mate may be showing; native close names one pane, as on main.
+          const currentTree = $layoutTree.get()
+          const targetZone = currentTree && hostHas('narrowOverlayChrome') ? findGroupOfPane(currentTree, match.id) : null
+
+          return current && (current.id === match.id || targetZone?.panes.includes(current.id)) ? null : current
         }
 
         return current?.id === match.id && current.pinned ? null : { id: match.id, pinned: true }
@@ -128,6 +176,18 @@ export function NarrowOverlays() {
   const revealed = reveal ? collapsibles.find(p => p.id === reveal.id) : undefined
   const sides = [...new Set(collapsibles.map(sideOf))]
 
+  // Size the overlay the way the pane's zone is sized while docked: declared
+  // width refined by the user's drag override (fixedTrackSize), so a pane the
+  // user narrowed stays narrowed here too — reading only data.width would
+  // reset the overlay to the declared size on every reveal.
+  const overlayWidth = revealed
+    ? narrowOverlayWidth(
+        { paneFor: id => panes.find(p => p.id === id), paneGone: () => false, overrides: paneStates },
+        tree,
+        revealed
+      )
+    : null
+
   // The revealed pane's ZONE-mates that also left the grid (the sessions zone
   // stacks SESSIONS | BOTS): the overlay mirrors the zone's tab strip so a
   // pane docked into a collapsed zone stays reachable on narrow viewports —
@@ -146,6 +206,45 @@ export function NarrowOverlays() {
 
   return (
     <>
+      {/* A touch screen has no hover to leave the overlay by, so the browser
+          host closes it on a tap outside. Native Desktop lets that click reach
+          the app and keeps the overlay until Escape, the toggle or hover-out. */}
+      {revealed && hostHas('tapOutsideDismiss') && (
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 z-30"
+          data-narrow-overlay-backdrop=""
+          onPointerCancel={() => {
+            outsidePress.current = null
+          }}
+          onPointerDown={event => {
+            if (event.button === 0 && isTopEscapeLayer(ESCAPE_PRIORITY.narrowOverlay)) {
+              // Dismissal must not focus the transcript or input underneath.
+              event.preventDefault()
+              outsidePress.current = { id: event.pointerId, x: event.clientX, y: event.clientY }
+            }
+          }}
+          onPointerLeave={() => {
+            outsidePress.current = null
+          }}
+          onPointerMove={event => {
+            const press = outsidePress.current
+
+            if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 8) {
+              outsidePress.current = null
+            }
+          }}
+          onPointerUp={event => {
+            const press = outsidePress.current
+            outsidePress.current = null
+
+            if (press?.id === event.pointerId && isTopEscapeLayer(ESCAPE_PRIORITY.narrowOverlay)) {
+              event.preventDefault()
+              setReveal(null)
+            }
+          }}
+        />
+      )}
       {/* Hover-intent strips on each edge that has a collapsed pane. */}
       {sides.map(side => (
         <div
@@ -173,12 +272,30 @@ export function NarrowOverlays() {
           // panes beneath it — a see-through overlay reads as text bleeding
           // through text. Contract: `[data-glass-opaque]` in styles.css.
           data-glass-opaque=""
-          data-narrow-overlay=""
+          data-narrow-overlay={revealed.id}
           onMouseLeave={onMouseLeave}
+          ref={overlayRef}
           // Match the pane's docked width (sessions ~237px, files its rail
           // width) instead of a fat fixed 20rem — capped for tiny screens.
-          style={{ width: `min(${(revealed.data as { width?: string } | undefined)?.width ?? '18rem'}, 85vw)` }}
+          // paddingTop keeps the tab strip below the native window controls
+          // (macOS traffic lights); the spacer above keeps that band
+          // draggable, mirroring TreeGroup's reservation.
+          style={{
+            paddingTop: hostHas('narrowOverlayChrome')
+              ? titlebarHeight
+              : wcOverlap
+                ? wcOverlap.y + wcOverlap.height
+                : undefined,
+            width: `min(${overlayWidth}, 85vw)`
+          }}
         >
+          {wcOverlap && (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute z-10 [-webkit-app-region:drag]"
+              style={{ height: wcOverlap.height, left: wcOverlap.x, top: wcOverlap.y, width: wcOverlap.width }}
+            />
+          )}
           {/* Zone-mates share the overlay through the zone's own tab strip
               (SESSIONS | BOTS) — a lone pane keeps the stripless form. */}
           {zonePanes.length > 1 && (

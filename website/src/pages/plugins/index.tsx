@@ -2,6 +2,7 @@ import React, { useState, useMemo, useCallback, useRef, useEffect } from "react"
 import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
 import { useHistory } from "@docusaurus/router";
+import RouteLink, { useKnownRoute } from "../../components/RouteLink";
 import useBaseUrl from "@docusaurus/useBaseUrl";
 import styles from "./styles.module.css";
 
@@ -13,6 +14,8 @@ import {
   SUBMIT_PLUGIN_URL,
   TIER_CONFIG,
   authorPagePath,
+  capToolChips,
+  cardSummary,
   categoryOf,
   desktopInstallLink,
   formatDate,
@@ -24,6 +27,9 @@ import {
   tierOf,
 } from "../../components/PluginCatalog/catalog";
 import CopyButton from "../../components/PluginCatalog/CopyButton";
+import CatalogFeatured from "../../components/CatalogFeatured";
+import { groupCatalogPlugins, sortCatalogPlugins } from "../../../../apps/shared/src/catalog-browse";
+import { pickFeatured } from "../../../../apps/shared/src/catalog-featured";
 
 // Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
 // `static/api/` ends up at `/docs/api/` — same pattern as the Skills Hub.
@@ -32,7 +38,7 @@ const META_URL = "/docs/api/plugins-meta.json";
 /** Mirrors the `max-width: 600px` blocks in styles.module.css. */
 const MOBILE_PANEL_QUERY = "(max-width: 600px)";
 
-const TIER_ORDER = ["all", "official", "community"];
+const TIER_ORDER = ["all", "official", "verified", "community"];
 
 // Sort orders. "stars" is the extractor's own order (stars desc, name), so it
 // needs no client-side work; the two date sorts read the git-derived
@@ -44,17 +50,8 @@ const SORT_OPTIONS: { key: SortKey; label: string; title: string }[] = [
   { key: "updated", label: "Recently updated", title: "Most recently re-pinned or edited first" },
 ];
 
-function dateMs(iso?: string | null): number {
-  const t = iso ? new Date(iso).getTime() : NaN;
-  return Number.isFinite(t) ? t : -Infinity;
-}
-
 function sortPlugins(list: CatalogPlugin[], sort: SortKey): CatalogPlugin[] {
-  if (sort === "stars") return list;
-  const field = sort === "newest" ? "addedAt" : "updatedAt";
-  return [...list].sort(
-    (a, b) => dateMs(b[field]) - dateMs(a[field]) || a.name.localeCompare(b.name),
-  );
+  return sortCatalogPlugins(list, sort);
 }
 
 function highlightMatch(text: string, query: string): React.ReactNode {
@@ -90,15 +87,25 @@ function PluginCard({
   const toolCount = caps.providesTools?.length || 0;
   const hookCount = caps.providesHooks?.length || 0;
   const middlewareCount = caps.providesMiddleware?.length || 0;
+  const toolChips = capToolChips(caps.providesTools);
+  // Cards show what the plugin does; its disclosure sits at the bottom of the plugin's own page.
+  const description = cardSummary(plugin.description || "") || "No description available.";
+  // A broken banner URL swaps to the placeholder instead of collapsing, so the card keeps its
+  // height (every card in a grid row shares one height; see .grid in styles.module.css).
+  const [imageBroken, setImageBroken] = useState(false);
+  const showImage = Boolean(plugin.image) && !imageBroken;
   const pagePath = pluginPagePath(plugin.name);
   const history = useHistory();
   const pageHref = useBaseUrl(pagePath); // <Link> adds baseUrl itself; history.push does not
+  const routed = useKnownRoute(pagePath);
   // A card IS the link to the plugin's own page: nothing expands or collapses in place. Inside
   // the Desktop picker iframe an in-frame navigation would leave the host's embed, so the page
   // opens in a new tab there instead.
   const onCardClick = onPick
     ? () => window.open(new URL(pageHref, window.location.href).toString(), "_blank", "noopener,noreferrer")
-    : () => history.push(pageHref);
+    : routed
+      ? () => history.push(pageHref)
+      : () => window.location.assign(pageHref);
 
   return (
     <div
@@ -113,7 +120,7 @@ function PluginCard({
     >
       <div className={styles.cardAccent} style={{ background: tier.color }} />
 
-      {plugin.image && (
+      {showImage ? (
         <img
           className={styles.cardImage}
           src={plugin.image}
@@ -121,34 +128,27 @@ function PluginCard({
           loading="lazy"
           decoding="async"
           referrerPolicy="no-referrer"
-          onError={(e) => { e.currentTarget.style.display = "none"; }}
+          onError={() => setImageBroken(true)}
         />
+      ) : (
+        <div
+          className={styles.cardImagePlaceholder}
+          aria-hidden="true"
+          style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${tier.color} 12%, transparent), transparent 70%)` }}
+        >
+          <span className={styles.cardImagePlaceholderIcon}>{category.icon}</span>
+        </div>
       )}
 
       <div className={styles.cardInner}>
         <div className={styles.cardTop}>
           <span className={styles.cardIcon} title={category.label}>{category.icon}</span>
           <div className={styles.cardTitleGroup}>
-            <h3 className={styles.cardTitle}>
-              <Link className={styles.cardTitleLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
+            <h3 className={styles.cardTitle} title={plugin.name}>
+              <RouteLink className={styles.cardTitleLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
                 {highlightMatch(plugin.name, query)}
-              </Link>
+              </RouteLink>
             </h3>
-            <span
-              className={styles.tierPill}
-              style={{
-                color: tier.color,
-                background: tier.bg,
-                borderColor: tier.border,
-              }}
-            >
-              {tier.icon} {tier.label}
-            </span>
-            {plugin.version && (
-              <span className={styles.versionPill} title={`Version ${plugin.version} at ${plugin.sha}`}>
-                v{plugin.version.replace(/^v/i, "")}
-              </span>
-            )}
             {typeof plugin.stars === "number" && (
               <a
                 className={styles.starPill}
@@ -164,11 +164,26 @@ function PluginCard({
           </div>
         </div>
 
-        <p className={styles.cardDesc}>
-          {highlightMatch(plugin.description || "No description available.", query)}
+        <p className={styles.cardDesc} title={description}>
+          {highlightMatch(description, query)}
         </p>
 
         <div className={styles.cardMeta}>
+          <span
+            className={styles.tierPill}
+            style={{
+              color: tier.color,
+              background: tier.bg,
+              borderColor: tier.border,
+            }}
+          >
+            {tier.icon} {tier.label}
+          </span>
+          {plugin.version && (
+            <span className={styles.versionPill} title={`Version ${plugin.version} at ${plugin.sha}`}>
+              v{plugin.version.replace(/^v/i, "")}
+            </span>
+          )}
           <button
             className={styles.categoryChip}
             onClick={(e) => {
@@ -206,22 +221,23 @@ function PluginCard({
           ))}
         </div>
 
-        {/* Updated is omitted while it equals Added: a fresh entry has nothing to say yet. */}
-        {plugin.addedAt && (
-          <div className={styles.cardDates}>
+        {/* Always rendered (empty when undated) so every card keeps the same row layout.
+            Updated is omitted while it equals Added: a fresh entry has nothing to say yet. */}
+        <div className={styles.cardDates}>
+          {plugin.addedAt && (
             <span title={`Added to the catalog ${formatDate(plugin.addedAt)}`}>
               Added {formatRelativeTime(plugin.addedAt) ?? formatDate(plugin.addedAt)}
             </span>
-            {plugin.updatedAt && plugin.updatedAt !== plugin.addedAt && (
-              <>
-                <span aria-hidden="true" className={styles.cardDatesSep}>·</span>
-                <span title={`Last catalog change ${formatDate(plugin.updatedAt)}`}>
-                  Updated {formatRelativeTime(plugin.updatedAt) ?? formatDate(plugin.updatedAt)}
-                </span>
-              </>
-            )}
-          </div>
-        )}
+          )}
+          {plugin.addedAt && plugin.updatedAt && plugin.updatedAt !== plugin.addedAt && (
+            <>
+              <span aria-hidden="true" className={styles.cardDatesSep}>·</span>
+              <span title={`Last catalog change ${formatDate(plugin.updatedAt)}`}>
+                Updated {formatRelativeTime(plugin.updatedAt) ?? formatDate(plugin.updatedAt)}
+              </span>
+            </>
+          )}
+        </div>
 
         {onPick ? (
           <button
@@ -246,63 +262,64 @@ function PluginCard({
 
         {
           <div className={styles.cardDetail}>
-            {plugin.maintainer && (
-              <div className={styles.metaRow}>
-                <span className={styles.metaLabel}>Maintainer</span>
-                <span className={styles.metaValue}>
-                  {plugin.maintainerSlug ? (
-                    <Link to={authorPagePath(plugin.maintainerSlug)} onClick={(e) => e.stopPropagation()}>
-                      {plugin.maintainer}
-                    </Link>
-                  ) : (
-                    plugin.maintainer
-                  )}
-                </span>
-              </div>
-            )}
-            {plugin.requiresHermes && (
-              <div className={styles.metaRow}>
-                <span className={styles.metaLabel}>Requires</span>
-                <span className={styles.metaValue}>
-                  <code>hermes {plugin.requiresHermes}</code>
-                </span>
-              </div>
-            )}
+            {/* Exactly three fixed-height fact rows so the install box and links land on the same
+                edge in every card: Maintainer, Pinned (+ Requires), Tools (capped, or a dash). */}
+            <div className={styles.metaRow}>
+              <span className={styles.metaLabel}>Maintainer</span>
+              <span className={styles.metaValue} title={plugin.maintainer || undefined}>
+                {plugin.maintainerSlug ? (
+                  <Link to={authorPagePath(plugin.maintainerSlug)} onClick={(e) => e.stopPropagation()}>
+                    {plugin.maintainer}
+                  </Link>
+                ) : (
+                  plugin.maintainer || <span className={styles.metaEmpty}>—</span>
+                )}
+              </span>
+            </div>
             <div className={styles.metaRow}>
               <span className={styles.metaLabel}>Pinned</span>
-              <span className={styles.metaValue}>
+              <span
+                className={styles.metaValue}
+                title={plugin.requiresHermes ? `${plugin.sha} · requires hermes ${plugin.requiresHermes}` : plugin.sha}
+              >
                 <a
                   href={pinUrl(plugin)}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}
                   className={styles.shaLink}
-                  title={plugin.sha}
                 >
                   <code>{plugin.version ? `${plugin.version} @ ${plugin.shaShort}` : plugin.shaShort}</code> ↗
                 </a>
+                {plugin.requiresHermes && (
+                  <>
+                    <span aria-hidden="true" className={styles.cardDatesSep}> · </span>
+                    <code>hermes {plugin.requiresHermes}</code>
+                  </>
+                )}
               </span>
             </div>
-            {caps.providesTools?.length ? (
-              <div className={styles.metaRow}>
-                <span className={styles.metaLabel}>Tools</span>
-                <span className={styles.chipList}>
-                  {caps.providesTools.map((t) => (
-                    <code key={t} className={styles.envChip}>
-                      {t}
-                    </code>
-                  ))}
+            <div className={styles.metaRow}>
+              <span className={styles.metaLabel}>Tools</span>
+              {toolChips.shown.length ? (
+                <span className={styles.chipList} title={caps.providesTools?.join(", ")}>
+                  <code className={styles.toolList}>{toolChips.shown.join(", ")}</code>
+                  {toolChips.hidden > 0 && (
+                    <code className={`${styles.envChip} ${styles.moreChip}`}>+{toolChips.hidden}</code>
+                  )}
                 </span>
-              </div>
-            ) : null}
+              ) : (
+                <span className={`${styles.metaValue} ${styles.metaEmpty}`}>—</span>
+              )}
+            </div>
             <div className={styles.installHint}>
               <code>{plugin.installCommand}</code>
               <CopyButton text={plugin.installCommand} />
             </div>
             <div className={styles.cardLinks}>
-              <Link className={styles.docsLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
+              <RouteLink className={styles.docsLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
                 Plugin page →
-              </Link>
+              </RouteLink>
               <a
                 className={styles.docsLink}
                 href={plugin.repo}
@@ -477,13 +494,22 @@ export default function PluginCatalogPage() {
   // than one undifferentiated wall. Filtering or searching flattens to a grid.
   const grouped = useMemo(() => {
     if (search.trim() || categoryFilter !== "all") return null;
-    const buckets = new Map<string, CatalogPlugin[]>();
-    for (const p of filtered) {
-      const key = CATEGORY_CONFIG[p.category] ? p.category : "general";
-      (buckets.get(key) ?? buckets.set(key, []).get(key)!).push(p);
-    }
-    return CATEGORY_ORDER.filter((c) => buckets.has(c)).map((c) => [c, buckets.get(c)!] as const);
+    return groupCatalogPlugins(filtered);
   }, [filtered, search, categoryFilter]);
+
+  // Same pick as the desktop app (apps/shared pickFeatured): curated ranks from
+  // catalog-curation.json, rotated weekly, shown only while browsing everything.
+  const featured = useMemo(
+    () =>
+      pickFeatured(allPlugins, (p) => ({
+        featured: p.featured,
+        official: p.tier === "official",
+        pictured: Boolean(p.image),
+        addedAt: p.addedAt,
+        stars: p.stars,
+      })),
+    [allPlugins],
+  );
 
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -574,6 +600,11 @@ export default function PluginCatalogPage() {
                 </span>
               </p>
             )}
+            <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.85 }}>
+              <a href="https://portal.nousresearch.com/terms" target="_blank" rel="noopener noreferrer">Terms</a>
+              {" • "}
+              <a href="https://portal.nousresearch.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+            </p>
           </div>
         </header>
 
@@ -765,7 +796,23 @@ export default function PluginCatalogPage() {
               </div>
             </div>
           ) : filtered.length > 0 && grouped ? (
-            grouped.map(([cat, plugins]) => {
+            <>
+            {featured && tierFilter === "all" && !pickerMode && (
+              <CatalogFeatured
+                author={featured.maintainer}
+                cta="View plugin"
+                description={cardSummary(featured.description || "")}
+                href={pluginPagePath(featured.name)}
+                label="Featured plugin"
+                tags={[
+                  tierOf(featured).label,
+                  categoryOf(featured).label,
+                  featured.version && `v${featured.version}`,
+                ]}
+                title={featured.name}
+              />
+            )}
+            {grouped.map(([cat, plugins]) => {
               const conf = CATEGORY_CONFIG[cat];
               return (
                 <section key={cat} className={styles.categorySection} aria-labelledby={`cat-${cat}`}>
@@ -784,7 +831,8 @@ export default function PluginCatalogPage() {
                   </div>
                 </section>
               );
-            })
+            })}
+            </>
           ) : filtered.length > 0 ? (
             <>
               <div className={styles.resultsBar} role="status">

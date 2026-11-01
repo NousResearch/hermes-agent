@@ -18,7 +18,11 @@ import {
   syncApprovalModeForProfile
 } from '@/store/approval-mode'
 
-export function useApprovalModeStatusbarItem(profile: string, requestGateway: ApprovalModeRequester): StatusbarItem {
+export function useApprovalModeStatusbarItem(
+  profile: string,
+  requestGateway: ApprovalModeRequester,
+  gatewayState: string
+): StatusbarItem {
   const { t } = useI18n()
   const copy = t.shell.approvalMode
   const modes = useStore($approvalModes)
@@ -39,8 +43,18 @@ export function useApprovalModeStatusbarItem(profile: string, requestGateway: Ap
   )
 
   useEffect(() => {
+    // The shell (and this chip) mount before the gateway socket opens at
+    // boot, and a sync issued that early rejects with "Hermes gateway
+    // unavailable" — the swallow below then leaves the chip on its
+    // optimistic 'smart' default until some later session event reconciles
+    // it. Gate on the open socket and re-run when it opens (or a reconnect
+    // lands), the same way useStatusSnapshot does.
+    if (gatewayState !== 'open') {
+      return
+    }
+
     void syncApprovalModeForProfile(requestGateway, profile).catch(() => undefined)
-  }, [profile, requestGateway])
+  }, [gatewayState, profile, requestGateway])
 
   return {
     className: mode === 'off' ? 'bg-(--chrome-action-hover) text-foreground' : undefined,

@@ -15,11 +15,12 @@ from __future__ import annotations
 import os
 import re
 import threading
+from collections.abc import Collection
 from pathlib import Path
 
 _PROTOCOL_HEADING = "## Messaging other agents"
 # The legacy section through the next H2 heading (or EOF), plus the blank lines before it.
-_LEGACY_PROTOCOL_RE = re.compile(r"\n*" + re.escape(_PROTOCOL_HEADING) + r"[ \t]*\n.*?(?=\n## |\Z)", re.S)
+_LEGACY_PROTOCOL_RE = re.compile(r"\n*" + re.escape(_PROTOCOL_HEADING) + r"[ \t]*\n.*?(?=\n## |\Z)", re.DOTALL)
 
 
 def strip_legacy_protocol(text: str) -> str:
@@ -64,9 +65,17 @@ def _profile_name(home: Path) -> str:
     return home.name if home.parent.name == "profiles" else "default"
 
 
-def _handle(name: str) -> str:
-    # The mention middleware aliases the default profile as @hermes.
-    return "hermes" if name == "default" else name
+def _handle(name: str, names: Collection[str]) -> str:
+    """The @handle a local profile answers to; ``names`` are the roster's folder ids. The default
+    profile is @hermes only while no real profile holds that name: a pre-reservation
+    ``profiles/hermes`` keeps @hermes, and the default answers to @default."""
+    return "hermes" if name == "default" and "hermes" not in names else name
+
+
+def _profile_for_handle(handle: str, names: Collection[str]) -> str:
+    """The folder id a bare @handle names on this install: @hermes is the default profile's alias
+    only while no real profile holds that name (a pre-reservation ``profiles/hermes`` keeps it)."""
+    return "default" if handle == "hermes" and "hermes" not in names else handle
 
 
 def _roster(root: Path) -> list[tuple[str, Path]]:
@@ -96,10 +105,10 @@ def _read_yaml_dict(path: Path, needle: str | None = None) -> dict | None:
     def _load():
         if not path.is_file():
             return None
-        raw = path.read_text(encoding="utf-8", errors="replace")
+        raw = path.read_text(encoding="utf-8-sig", errors="replace")
         if needle is not None and needle not in raw:
             return None
-        import yaml
+        import hermes_yaml as yaml
 
         data = yaml.safe_load(raw)
         return data if isinstance(data, dict) else None
@@ -167,11 +176,11 @@ def _friendly_names(profile_dir: Path) -> tuple[str, str]:
     return _swallow(_read, ("", ""))
 
 
-def _display_name(name: str, profile_dir: Path) -> str:
+def _display_name(name: str, profile_dir: Path, names: Collection[str]) -> str:
     """Human-facing sender name, in the Desktop's ``botFriendlyNames`` order: Bot Mode title,
     then profile.yaml ``display_name`` (``hermes profile rename``), else the @handle — the
     renamed primary signs as ``Maia (@hermes)``, not ``hermes (@hermes)`` (#89720)."""
-    return next((n for n in _friendly_names(profile_dir) if n), None) or _handle(name)
+    return next((n for n in _friendly_names(profile_dir) if n), None) or _handle(name, names)
 
 
 # Tokens the Desktop mention parser reserves; a bot titled "Hermes" never hijacks @hermes.
@@ -209,7 +218,9 @@ def _peers(root: Path) -> list[str]:
     """Registered peer gateway names (``hermes peer``) from config.yaml, read
     directly (no config-loader import; the section is absent on most installs). Never raises."""
     def _names() -> list[str]:
-        peers = (_read_yaml_dict(root / "config.yaml", "bot_peers") or {}).get("bot_peers")
+        from hermes_cli.config_backend import read_config_doc_readonly
+        doc = read_config_doc_readonly(root / "config.yaml")
+        peers = doc.get("bot_peers") if isinstance(doc, dict) else None
         return sorted(str(n) for n in peers if str(n).strip()) if isinstance(peers, dict) else []
 
     return _swallow(_names, [])
@@ -225,10 +236,14 @@ def _remote_roster(root: Path) -> list[dict]:
     return _swallow(_read, [])
 
 
-def local_taken_forms(root: Path) -> set[str]:
-    """Bare forms this gateway's own profiles answer to (handles + friendly-name slugs); a remote
-    row must not be offered under any of them, since local resolution wins (``_resolve_local_name``)."""
-    return {_handle(name) for name, _d in _roster(root)} | set(local_alias_map(root))
+def local_taken_forms(home: Path) -> set[str]:
+    """Bare forms this install's own profiles answer to: folder ids, @handles and friendly-name
+    slugs. A remote row must not be offered under any of them, since local resolution wins
+    (``_resolve_local_name`` accepts the folder id ``default`` even while the default shows as
+    @hermes). Read from the install root, so a named profile's home sees its siblings too."""
+    root = _hermes_root(home)
+    names = [name for name, _d in _roster(root)]
+    return set(names) | {_handle(name, names) for name in names} | set(local_alias_map(root))
 
 
 def _remote_paragraph(root: Path) -> str:
@@ -271,7 +286,9 @@ def _build_section(home: Path) -> str:
     if not _any_managed(root):
         return ""
 
-    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _roster(root) if name != me]
+    roster = _roster(root)
+    names = [name for name, _d in roster]
+    roster_lines = [_bullet(f"@{_handle(name, names)}", _profile_role(d)) for name, d in roster if name != me]
     roster_block = "\n".join(roster_lines) or "- (no teammates yet)"
 
     return (
@@ -297,10 +314,10 @@ def _build_section(home: Path) -> str:
         "concisely via message_agent to their handle, and if it is a pure FYI "
         "with nothing to add, staying silent is fine — never ping-pong "
         "acknowledgements.\n"
-        f"You are `@{_handle(me)}`. Your teammates (live roster; roles from their "
+        f"You are `@{_handle(me, names)}`. Your teammates (live roster; roles from their "
         "profiles):\n"
         f"{roster_block}"
-        + _remote_paragraph(root)
+        + _remote_paragraph(home)
         + _peer_paragraph(root)
     )
 
@@ -318,19 +335,50 @@ def get_bot_mode_protocol_section(home: str | os.PathLike | None = None, *, forc
 
 # ── capability epoch ─────────────────────────────────────────────────────────
 # Bot Chat sessions are effectively eternal, so "build the prompt once" would strand
-# capability changes (skills, toolsets, MCP, SOUL, roster, peers) forever. The fingerprint
-# hashes exactly that surface; the built prompt embeds it and agent/conversation_loop.py
-# rebuilds only when the stored epoch differs from disk — once per change, never per-turn drift.
+# capability changes (skills, toolsets, MCP, SOUL, roster, peers, model capability
+# overrides that change the prompt) forever. The fingerprint hashes exactly that
+# surface; the built prompt embeds it and agent/conversation_loop.py rebuilds only
+# when the stored epoch differs from disk — once per change, never per-turn drift.
 
 _EPOCH_PREFIX = "Capability epoch: "
 _EPOCH_RE_TEXT = r"Capability epoch: ([0-9a-f]{12})"
 
 
+def _model_prompt_capability_surface(model_cfg: object) -> dict:
+    """``model.*`` overrides whose flip changes a rebuilt prompt, coerced like their consumers.
+
+    ``supports_vision`` uses image routing's strict bool so YAML ``yes`` and ``true`` share
+    one epoch. ``context_length`` is the cap ``build_system_prompt_parts`` uses to truncate
+    context files. Routing keys (provider, default, base_url) are identity lines, not this
+    surface — and no model id is special-cased.
+    """
+    from agent.image_routing import _coerce_capability_bool
+
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+    raw_ctx = model_cfg.get("context_length")
+    ctx = None
+    # bool is an int subclass; ``context_length: true`` is not a window.
+    if isinstance(raw_ctx, bool):
+        ctx = None
+    elif isinstance(raw_ctx, int):
+        ctx = raw_ctx if raw_ctx > 0 else None
+    elif isinstance(raw_ctx, str) and raw_ctx.strip().isdigit():
+        parsed = int(raw_ctx.strip())
+        ctx = parsed if parsed > 0 else None
+    return {
+        "supports_vision": _coerce_capability_bool(model_cfg.get("supports_vision")),
+        "context_length": ctx,
+    }
+
+
 def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     """12-hex digest of the capability surface for ``home``'s profile: disabled skills +
-    enabled toolsets + MCP config, SOUL.md bytes, installed skill names, the Bot-Mode roster
-    (+ roles), peers and the relay roster. Deliberately NOT cached — the point is detecting
-    on-disk drift against a stored prompt's epoch. Never raises ("unavailable" on failure)."""
+    enabled toolsets + MCP config, model capability overrides that change the prompt
+    (``supports_vision``, ``context_length``), SOUL.md bytes, installed skill names, the
+    Bot-Mode roster (+ roles), peers and the relay roster. Deliberately NOT cached — the
+    point is detecting on-disk drift against a stored prompt's epoch. Never raises
+    ("unavailable" on failure)."""
     import hashlib
     import json
 
@@ -340,6 +388,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     try:
         # Canonical loader (managed overlay + env expansion + normalization),
         # scoped to the bot's home via the override the loaders already honor.
+        from agent.skill_utils import parse_config_string_list
         from hermes_cli.config import load_config_readonly
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -349,9 +398,16 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         finally:
             reset_hermes_home_override(token)
         skills_cfg = cfg.get("skills") if isinstance(cfg.get("skills"), dict) else {}
-        tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        surface["model_capabilities"] = _model_prompt_capability_surface(model_cfg)
         surface["disabled_skills"] = sorted(str(s).lower() for s in (skills_cfg.get("disabled") or []))
-        surface["enabled_toolsets"] = sorted(str(t) for t in (tools_cfg.get("enabled_toolsets") or []))
+        # The live selection is platform_toolsets.<platform> minus agent.disabled_toolsets;
+        # tools.enabled_toolsets is written by no surface, so watching it left Bot Chats
+        # blind to `hermes tools enable/disable` (#124211). Raw slices: an edit that leaves
+        # the effective selection unchanged costs one spurious rebuild at most.
+        agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+        surface["platform_toolsets"] = json.dumps(cfg.get("platform_toolsets") or {}, sort_keys=True, default=str)
+        surface["disabled_toolsets"] = sorted(parse_config_string_list(agent_cfg.get("disabled_toolsets")))
         mcp = cfg.get("mcp_servers")
         surface["mcp"] = json.dumps(mcp, sort_keys=True, default=str) if isinstance(mcp, dict) else ""
     except Exception:
@@ -394,7 +450,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     # surface too: registering a peer or (dis)connecting a machine must show up.
     surface["peers"] = _peers(root)
     surface["remote_roster"] = sorted(
-        f"{r['connection_id']}:{r['profile']}:{r['title']}" for r in _remote_roster(root)
+        f"{r['connection_id']}:{r['profile']}:{r['title']}" for r in _remote_roster(resolved)
     )
     return _swallow(
         lambda: hashlib.sha256(json.dumps(surface, sort_keys=True).encode("utf-8")).hexdigest()[:12],

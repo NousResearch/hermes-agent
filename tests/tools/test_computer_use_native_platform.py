@@ -11,7 +11,7 @@ from tools.computer_use import tool
 @pytest.fixture
 def backend(monkeypatch):
     tool.reset_backend_for_tests()
-    monkeypatch.setenv("HERMES_COMPUTER_USE_BACKEND", "noop")
+    monkeypatch.setattr(tool, "_new_backend", lambda mode: tool._NoopBackend())
     # Input actions are approval-gated; a CI runner has no approver, so the gate would block
     # before the dispatch this test is about. Same seam the capture-fence tests use.
     monkeypatch.setattr(tool, "_request_approval", lambda *a, **k: None)
@@ -21,8 +21,8 @@ def backend(monkeypatch):
 
 
 @pytest.mark.parametrize("host_platform", [
-    pytest.param("win32", marks=pytest.mark.windows_only),
-    pytest.param("darwin", marks=pytest.mark.macos_only),
+    pytest.param("win32", marks=pytest.mark.platforms("windows")),
+    pytest.param("darwin", marks=pytest.mark.platforms("macos")),
 ])
 @pytest.mark.parametrize("args, expected_call", [
     ({"action": "capture", "mode": "ax"}, "capture"),
@@ -31,7 +31,7 @@ def backend(monkeypatch):
     ({"action": "list_windows"}, "list_windows"),
 ])
 def test_native_computer_use_dispatches_to_backend(backend, args, expected_call, host_platform):
-    import tools.computer_use_tool  # noqa: F401 - register the real tool handler
+    import tools.computer_use_tool
     from tools.registry import registry
 
     assert sys.platform == host_platform

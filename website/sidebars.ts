@@ -580,6 +580,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/security/security-1password',
                     'user-guide/skills/optional/security/security-godmode',
+                    'user-guide/skills/optional/security/security-leanrea',
                     'user-guide/skills/optional/security/security-oss-forensics',
                     'user-guide/skills/optional/security/security-sherlock',
                     'user-guide/skills/optional/security/security-unbroker',

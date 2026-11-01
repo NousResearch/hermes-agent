@@ -346,6 +346,7 @@ export interface StatusBarSegments {
   compressions: boolean
   duration: boolean
   latency: boolean
+  sessionId: boolean
   subagents: boolean
   tps: boolean
   voice: boolean
@@ -364,7 +365,72 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     subagents: w >= 92,
     cacheHit: w >= 96,
     latency: w >= 104,
-    tps: w >= 110
+    tps: w >= 110,
+    sessionId: w >= 116
+  }
+}
+
+// Durable session id tail segment — opt-in via `session_id`, like git_branch/total_tokens.
+// Visibility is breakpoint + opt-in + id; the caller also gates the render on the tail budget.
+export function sessionIdVisible(
+  statusBarFields: null | ReadonlySet<string>,
+  storedSid: null | string | undefined,
+  cols: number
+): boolean {
+  return !!statusBarFields && statusBarFields.has('session_id') && !!storedSid && statusBarSegments(cols).sessionId
+}
+
+function SessionIdSegment({ storedSid, t }: { storedSid: string; t: Theme }) {
+  return (
+    <Text color={t.color.muted} wrap="truncate-end">
+      {' │ '}
+      {storedSid}
+    </Text>
+  )
+}
+
+// Whether the segment renders: visible AND affordable. Whole-or-nothing like its siblings —
+// un-budgeted it absorbed overflow and truncate-end cut the id's trailing hex discriminator.
+function sessionIdShown(
+  statusBarFields: null | ReadonlySet<string>,
+  storedSid: null | string | undefined,
+  cols: number,
+  fits: (width: number) => boolean,
+  sep: number
+): boolean {
+  return sessionIdVisible(statusBarFields, storedSid, cols) && fits(sep + stringWidth(storedSid!))
+}
+
+type UsageReadouts = {
+  cacheHitText: string
+  showCacheHit: boolean
+  latencyText: string
+  showLatency: boolean
+  tpsText: string
+  showTps: boolean
+}
+
+// Cache-hit % + rolling latency / tokens-per-sec — mirrored from the classic CLI bar (PR #98250).
+// The server omits the keys when no data exists (zero cache reads, Codex app-server with no
+// latency), so these self-hide.
+function usageReadouts(
+  usage: Usage,
+  segs: StatusBarSegments,
+  ok: (field: string) => boolean,
+  fits: (width: number) => boolean
+): UsageReadouts {
+  const prefix = stringWidth(' │ ')
+  const cacheHitText = typeof usage.cache_hit_pct === 'number' ? `◎ ${usage.cache_hit_pct}%` : ''
+  const latencyText = typeof usage.avg_latency_s === 'number' ? `◷ ${usage.avg_latency_s.toFixed(1)}s` : ''
+  const tpsText = typeof usage.avg_tps === 'number' ? `↑ ${Math.round(usage.avg_tps)} t/s` : ''
+
+  return {
+    cacheHitText,
+    latencyText,
+    tpsText,
+    showCacheHit: segs.cacheHit && ok('cache_hit') && !!cacheHitText && fits(prefix + stringWidth(cacheHitText)),
+    showLatency: segs.latency && ok('latency') && !!latencyText && fits(prefix + stringWidth(latencyText)),
+    showTps: segs.tps && ok('tps') && !!tpsText && fits(prefix + stringWidth(tpsText))
   }
 }
 
@@ -552,6 +618,7 @@ export function StatusRule({
   liveSessionCount,
   sessionTitle,
   sessionStartedAt,
+  storedSid,
   turnStartedAt,
   voiceLabel,
   onSessionCountClick,
@@ -669,17 +736,15 @@ export function StatusRule({
     compressions > 0 &&
     fits(SEP + stringWidth(T.status.compressions(compressions)))
 
-  // Cache-hit % + rolling latency / tokens-per-sec — mirrored from the classic
-  // CLI bar (PR #98250). The server omits the keys when no data exists (zero
-  // cache reads, Codex app-server with no latency), so these self-hide.
-  const cacheHitText = typeof usage.cache_hit_pct === 'number' ? `◎ ${usage.cache_hit_pct}%` : ''
-  const showCacheHit = segs.cacheHit && ok('cache_hit') && !!cacheHitText && fits(SEP + stringWidth(cacheHitText))
-  const latencyText = typeof usage.avg_latency_s === 'number' ? `◷ ${usage.avg_latency_s.toFixed(1)}s` : ''
-  const showLatency = segs.latency && ok('latency') && !!latencyText && fits(SEP + stringWidth(latencyText))
-  const tpsText = typeof usage.avg_tps === 'number' ? `↑ ${Math.round(usage.avg_tps)} t/s` : ''
-  const showTps = segs.tps && ok('tps') && !!tpsText && fits(SEP + stringWidth(tpsText))
+  const { cacheHitText, showCacheHit, latencyText, showLatency, tpsText, showTps } = usageReadouts(
+    usage,
+    segs,
+    ok,
+    fits
+  )
 
   const showVoice = segs.voice && ok('voice') && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
+  const showSessionId = sessionIdShown(statusBarFields, storedSid, cols, fits, SEP)
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = segs.bg && ok('bg_tasks') && bgCount > 0 && fits(SEP + stringWidth(T.status.bgTasks(bgCount)))
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
@@ -836,6 +901,7 @@ export function StatusRule({
             {tpsText}
           </Text>
         ) : null}
+        {showSessionId ? <SessionIdSegment storedSid={storedSid!} t={t} /> : null}
         {showVoice ? (
           <Text
             color={
@@ -1005,6 +1071,8 @@ interface StatusRuleProps {
   notice?: Notice | null
   sessionStartedAt?: null | number
   sessionTitle?: string
+  // Durable session id (state.db row) — shown as an opt-in status-bar segment.
+  storedSid?: null | string
   status: string
   // display.status_bar.fields — segment visibility filter shared with the
   // classic CLI bar. null = defaults (everything shows).

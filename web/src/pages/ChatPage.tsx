@@ -661,14 +661,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Copy: Cmd+C on macOS, Ctrl+C or Ctrl+Shift+C elsewhere. Copy only
       // when xterm has a selection; without one Ctrl+C still reaches the TUI
       // as SIGINT.
-      // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
       const copyModifier = isMac ? ev.metaKey : ev.ctrlKey;
-      // Paste on BARE Ctrl+V too (not only Ctrl+Shift+V). Bare Ctrl+V otherwise
-      // falls through to the TUI, whose server-side clipboard read can't see the
-      // browser/OS clipboard → "No image found in clipboard". Routing Ctrl+V
-      // through the same navigator.clipboard path below makes it paste
-      // image-or-text correctly, like Ctrl+Shift+V.
-      const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey;
+      // Paste off macOS on Ctrl+V and Ctrl+Shift+V: bare Ctrl+V would reach
+      // the TUI, whose server-side clipboard read can't see the browser
+      // clipboard. macOS Cmd+V resolves to "native-paste" below instead.
+      const pasteModifier = !isMac && ev.ctrlKey;
 
       const terminalSelection = term.getSelection();
       const shortcut = resolvePtyKeyboardShortcut(
@@ -717,6 +714,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         sendPtyShortcutSequence(wsRef.current, ptyStateRef.current, "\x1bd");
         return false;
       }
+
+      if (shortcut === "native-paste") return true;
 
       if (pasteModifier && ev.key.toLowerCase() === "v") {
         // preventDefault suppresses the DOM paste event, so image paste must

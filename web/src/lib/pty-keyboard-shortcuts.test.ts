@@ -44,6 +44,15 @@ describe('resolvePtyKeyboardShortcut', () => {
       resolvePtyKeyboardShortcut(key({ ctrlKey: true, key: 'Delete' }), false, false),
     ).toBe('delete-word-forward')
   })
+
+  it('leaves macOS Cmd+V to the native paste event, keeps Ctrl+V off macOS', () => {
+    expect(resolvePtyKeyboardShortcut(key({ key: 'v', metaKey: true }), true, false)).toBe(
+      'native-paste',
+    )
+    expect(resolvePtyKeyboardShortcut(key({ ctrlKey: true, key: 'v' }), false, false)).toBe(
+      'pass',
+    )
+  })
 })
 
 describe('sendPtyShortcutSequence', () => {

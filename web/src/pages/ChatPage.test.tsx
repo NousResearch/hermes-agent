@@ -411,6 +411,29 @@ describe("ChatPage", () => {
     }
   });
 
+  // A Cmd+V intercepted for navigator.clipboard.readText() inserts nothing
+  // when the async clipboard read is denied (plain-HTTPS tailnet origins);
+  // the keydown must fall through so the native paste event carries it.
+  it("lets macOS Cmd+V reach the native paste event instead of the async clipboard", async () => {
+    Object.defineProperty(window.navigator, "platform", {
+      configurable: true,
+      value: "MacIntel",
+    });
+    const attach = vi.spyOn(FakeTerminal.prototype, "attachCustomKeyEventHandler");
+    try {
+      await renderChat();
+      const [handler] = attach.mock.calls[0] as unknown as [(ev: KeyboardEvent) => boolean];
+      const keydown = new KeyboardEvent("keydown", { cancelable: true, key: "v", metaKey: true });
+
+      expect(handler(keydown)).toBe(true);
+      expect(keydown.defaultPrevented).toBe(false);
+      expect(navigator.clipboard.readText).not.toHaveBeenCalled();
+    } finally {
+      attach.mockRestore();
+      Reflect.deleteProperty(window.navigator, "platform");
+    }
+  });
+
   it("reconnects on tab return after a hidden-tab close even when a stale upload banner is showing", async () => {
     const { default: ChatPage } = await import("./ChatPage");
     await render(

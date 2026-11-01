@@ -150,17 +150,22 @@ const preamble = () => `  var w = window;
       var sc = document.scrollingElement || document.documentElement;
       var x0 = sc ? sc.scrollLeft : 0;
       var y0 = sc ? sc.scrollTop : 0;
-      requestAnimationFrame(function () {
-        if (!sc || (sc.scrollLeft === x0 && sc.scrollTop === y0)) { return resolve(); }
-        var done = false;
-        var finish = function () {
-          if (done) { return; }
-          done = true;
-          document.removeEventListener('scrollend', finish, true);
-          clearTimeout(timer);
-          resolve();
-        };
-        var timer = setTimeout(finish, 350);
+      var done = false;
+      var frame = 0;
+      var finish = function () {
+        if (done) { return; }
+        done = true;
+        document.removeEventListener('scrollend', finish, true);
+        cancelAnimationFrame(frame);
+        clearTimeout(timer);
+        resolve();
+      };
+      // A locked or occluded guest can run scripts without producing frames.
+      // Bound the frame wait too; locate remeasures the target after this settles.
+      var timer = setTimeout(finish, 350);
+      frame = requestAnimationFrame(function () {
+        if (done) { return; }
+        if (!sc || (sc.scrollLeft === x0 && sc.scrollTop === y0)) { return finish(); }
         document.addEventListener('scrollend', finish, true);
       });
     });

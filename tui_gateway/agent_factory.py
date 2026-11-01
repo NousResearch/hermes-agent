@@ -552,10 +552,16 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         resolve_kwargs = {}
         if str(requested_provider or "").strip().lower() == "custom":
             from hermes_cli.runtime_provider import canonical_custom_identity
-            if recovered := canonical_custom_identity(base_url=override_base_url or None, model=model or None):
+            recovered = canonical_custom_identity(base_url=override_base_url or None, model=model or None)
+            if recovered:
                 requested_provider = recovered
-            if override_base_url:
-                # Failing identity recovery, still hand base_url to the direct-alias branch so pool/env credentials resolve.
+                # A healed identity owns a registered endpoint and key. Forwarding
+                # the explicit base_url here demotes the local-runtime rung and
+                # drops the generated key (401 Invalid API Key). The session-restore
+                # path drops it for the same reason (see _stored_session_runtime_overrides).
+            elif override_base_url:
+                # Recovery failed: still hand base_url to the direct-alias branch so
+                # pool/env credentials resolve.
                 resolve_kwargs["explicit_base_url"] = override_base_url
         resolve_kwargs.update(requested=requested_provider, target_model=model or None)
         overrides = {k: model_override.get(k) for k in ("base_url", "api_key", "api_mode")}

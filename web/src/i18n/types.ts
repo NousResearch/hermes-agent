@@ -378,6 +378,7 @@ export interface Translations {
       auxIntroTail: string;
       autoUseMain: string;
       providerDefault: string;
+      auxInherits: string;
       resetAuxTitle: string;
       resetAuxDescription: string;
       resetAll: string;
@@ -1021,6 +1022,7 @@ export interface Translations {
     hermesLabel: string;
     behindCount: string;
     updateAvailable: string;
+    rollbackToBadge: string;
     latest: string;
     cpuLabel: string;
     cores: string;

@@ -350,6 +350,7 @@ export const en: Translations = {
         'means "use the main model". Override per-task when you want a cheap/fast model for a specific job.',
       autoUseMain: "auto (use main model)",
       providerDefault: "(provider default)",
+      auxInherits: "inherits",
       resetAuxTitle: "Reset auxiliary models",
       resetAuxDescription:
         "Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set.",
@@ -1025,6 +1026,7 @@ export const en: Translations = {
     hermesLabel: "Hermes",
     behindCount: "{count} behind",
     updateAvailable: "update available",
+    rollbackToBadge: "newer than v{version}",
     latest: "latest",
     cpuLabel: "CPU",
     cores: "{count} cores",

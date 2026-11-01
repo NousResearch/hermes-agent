@@ -11,6 +11,7 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
+from fastapi import Request
 
 import hermes_cli.web_routers.cron as cron_routes
 import hermes_cli.web_routers.sessions as session_routes
@@ -74,7 +75,8 @@ def _runs(job_id):
 
 
 async def _detail(session_id):
-    return await session_routes.get_session_detail(session_id, profile='default')
+    # A bare Request (no token principal) is the desktop dashboard's unrestricted caller.
+    return await session_routes.get_session_detail(Request(scope={'type': 'http', 'headers': []}), session_id, profile='default')
 
 
 @pytest.mark.asyncio

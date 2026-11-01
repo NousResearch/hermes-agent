@@ -7,6 +7,9 @@ outbound send with typing patch-in-place and chunking, attachment send paths,
 SSRF guard on attachment download, supervisor reconnect, and authorization
 (including the user_id_alt email match for GOOGLE_CHAT_ALLOWED_USERS).
 
+Regression for #24567: nested Markdown (inline code inside bold) must not leak the
+internal placeholder keys into the outbound text.
+
 Note: the Google libraries may not be installed in the test environment.
 We shim the imports at module load so collection doesn't fail.
 """
@@ -1449,6 +1452,16 @@ class TestFormatMessage:
         """**bold** → *bold* (Chat's bold syntax uses single asterisks)."""
         out = GoogleChatAdapter.format_message("hello **world**")
         assert out == "hello *world*"
+
+    def test_nested_inline_code_inside_bold_restores_placeholders(self):
+        """Bold wrapping inline code expands the outer key before the inner one.
+
+        Each formatting pass protects its match, so the **bold** pass wraps the
+        inline-code placeholder created earlier. Restoring forward substitutes
+        the inner key first and then re-injects it from the outer value.
+        """
+        out = GoogleChatAdapter.format_message("**`broker-dbbb484c5-d8p9w`** is running")
+        assert out == "*`broker-dbbb484c5-d8p9w`* is running"
 
 
     def test_markdown_link_to_chat_anglebracket(self):

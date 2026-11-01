@@ -169,6 +169,32 @@ async def test_run_simple_slash_executes_when_defer_interaction_expired(adapter)
     interaction.delete_original_response.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_session_starting_slash_uses_auto_thread_source(adapter):
+    """A /goal kickoff must carry the new thread source into its loop session."""
+    channel = _FakeTextChannel(channel_id=123, name="general")
+    thread = _FakeThreadChannel(channel_id=456, name="goal-loop", parent_id=123)
+    interaction = SimpleNamespace(
+        channel=channel,
+        channel_id=123,
+        guild_id=1,
+        user=SimpleNamespace(id=42, name="Jezza", display_name="Jezza"),
+        response=SimpleNamespace(defer=AsyncMock()),
+        edit_original_response=AsyncMock(),
+        delete_original_response=AsyncMock(),
+    )
+    adapter._create_thread = AsyncMock(return_value={"success": True, "thread": thread})
+    adapter.handle_message = AsyncMock()
+
+    await adapter._run_simple_slash(interaction, "/goal repair the release", auto_thread=True)
+
+    adapter._create_thread.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_id == "456"
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "456"
+
+
 # ------------------------------------------------------------------
 # Auto-registration from COMMAND_REGISTRY
 # ------------------------------------------------------------------
@@ -543,7 +569,7 @@ def test_register_skill_command_callback_dispatches_by_name(adapter):
     # Stub out _run_simple_slash so we can verify the dispatched text.
     dispatched: list[str] = []
 
-    async def fake_run(_interaction, text):
+    async def fake_run(_interaction, text, *, auto_thread=False):
         dispatched.append(text)
 
     adapter._run_simple_slash = fake_run

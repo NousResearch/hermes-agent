@@ -766,6 +766,18 @@ class TestHydrateTodoStore:
             agent._hydrate_todo_store(history)
         assert not agent._todo_store.has_items()
 
+    @pytest.mark.parametrize("content", [json.dumps("todos"), json.dumps(["todos"])])
+    def test_non_dict_todo_result_does_not_break_hydration(self, agent, content):
+        """A paired tool result that is valid JSON but not an object (a string or list
+        that merely contains the text ``todos``) must be skipped, not crash hydration."""
+        history = [
+            self._assistant_todo_call(),
+            {"role": "tool", "tool_call_id": "c1", "content": content},
+        ]
+        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+            agent._hydrate_todo_store(history)
+        assert not agent._todo_store.has_items()
+
     def test_newer_live_revision_wins_over_history(self, agent):
         agent._todo_store.restore(
             [{"id": "db", "content": "Current", "status": "in_progress"}],

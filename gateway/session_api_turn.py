@@ -17,7 +17,8 @@ api_execution: ContextVar[dict | None] = ContextVar('api_execution', default=Non
 _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
 # Request-owned sinks an API observer may register for its admission's execution.
 _OBSERVER_KEYS = ('stream_delta_callback', 'tool_start_callback', 'tool_complete_callback',
-                  'reasoning_callback', 'status_callback', 'interim_assistant_callback')
+                  'reasoning_callback', 'status_callback', 'interim_assistant_callback',
+                  'provider_event_callback')
 _TOOL_SINKS = {'tool_start_callback', 'tool_complete_callback'}
 _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provider',
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
@@ -505,6 +506,10 @@ def wire_api_observers(agent, owner, want_interim):
         if progress is not None:
             return progress(event_type, *args, **kwargs)
     agent.reasoning_callback = lambda text: publish('reasoning_callback', text)
+    # Replaced (not chained) every turn: a cached agent must not keep a settled turn's sink.
+    agent.provider_event_callback = lambda event: publish('provider_event_callback', event)
+    # agent.provider_events: a turn pinned by the client's model lock fails fast (no fallback to wait for).
+    agent._model_locked = api_runtime_locked() is not None
     agent.status_callback = status_callback
     agent.tool_progress_callback = tool_progress_callback
     if want_interim:

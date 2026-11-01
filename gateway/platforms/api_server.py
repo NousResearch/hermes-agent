@@ -2252,6 +2252,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
+        # Read by agent.provider_events: a pinned turn fails fast instead of waiting on a fallback.
+        agent._model_locked = bool(confirmed_runtime_lock)
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
             else "session_model_override" if session_override

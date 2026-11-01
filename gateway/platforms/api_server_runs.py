@@ -365,6 +365,23 @@ def _mark_shutdown_requested(self) -> int:
     return marked
 
 
+# provider.status payload keys (agent.provider_events); anything else the agent adds stays off the wire.
+_PROVIDER_EVENT_KEYS = ("kind", "provider", "model", "to_provider", "to_model", "attempt", "max",
+                        "wait_seconds", "reset_at", "reason", "phase", "locked")
+
+
+def _make_provider_event_callback(run, run_id: str, loop: asyncio.AbstractEventLoop):
+    """Agent provider-health events (retry / rate_limited / usage_exhausted / fallback / failed) ->
+    ``provider.status`` run events, so a client can say why the reply is late while it waits."""
+    def _callback(event: dict[str, Any]) -> None:
+        if not isinstance(event, dict) or not event.get("kind"):
+            return
+        fields = {k: event[k] for k in _PROVIDER_EVENT_KEYS if event.get(k) is not None}
+        with suppress(Exception):
+            loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "provider.status", **fields))
+    return _callback
+
+
 def _make_run_event_callback(self, run_id: str, loop: asyncio.AbstractEventLoop, *, _api_server):
     """Return a callback that pushes structured events to the run SSE queue."""
     redact_sensitive_text = _api_server.redact_sensitive_text
@@ -1139,7 +1156,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             with observe_api_controls(run.admission, _control_cb):
                 result, usage = await observe_api_turn(
                     run.admission, stream_delta_callback=_text_cb,
-                    tool_start_callback=_tool_start, tool_complete_callback=_tool_complete)
+                    tool_start_callback=_tool_start, tool_complete_callback=_tool_complete,
+                    provider_event_callback=_make_provider_event_callback(run, run_id, loop))
             # The canonical turn has no agent object here; the served pair rides on the
             # committed usage/result runtime metadata when the turn recorded one.
             served_runtime = ((usage or {}).get("runtime") if isinstance(usage, dict) else None) or (
@@ -1149,6 +1167,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 agent = self._create_agent(
                     stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
                     interim_assistant_callback=_interim_cb, **run.agent_kwargs)
+            agent.provider_event_callback = _make_provider_event_callback(run, run_id, loop)
             self._active_run_agents[run_id] = agent
             approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
             result, usage, served_runtime = await _submit_api_worker(
@@ -1174,6 +1193,11 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 route_source=("model_routes" if run.agent_kwargs.get("route")
                               else "raw_request" if any(requested.values()) else "global"))
             _finish(status, fields, output=result.get("final_response", ""), usage=usage, runtime=served_runtime)
+            if status == "completed":
+                with suppress(Exception):
+                    from agent.provider_events import record_model_ok
+                    record_model_ok(str((served_runtime or {}).get("provider") or ""),
+                                    str((served_runtime or {}).get("model") or ""))
     except asyncio.CancelledError:
         _finish("cancelled")
         raise

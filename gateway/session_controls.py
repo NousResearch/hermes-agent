@@ -688,19 +688,26 @@ class AuthorityConnection:
             # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
             display['display_messages'] = display_projection(
                 [row for row in history if not model_only(row)], self.authority.profile_id)
-        return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
-                **await _resume_transcript(self.authority, ref, snapshot, history, omit), **display,
-                'running': snapshot.handle.execution_state == 'running',
-                'authority_epoch': snapshot.handle.authority_epoch,
-                'replay_epoch': snapshot.replay_epoch, 'last_sequence': snapshot.last_sequence,
-                'subscription_id': snapshot.subscription_id, 'revision': snapshot.handle.revision,
-                'execution_generation': snapshot.handle.execution_generation,
-                'pending': [asdict(r) for r in snapshot.pending],
-                'prompts': list(snapshot.prompts), 'info': info,
-                'pending_connection': pending_connection(self.authority, ref.session_id),
-                # Still-waiting server→client requests: the event ring cannot say "still open".
-                'open_requests': open_requests(self.authority.sessions[snapshot.handle.ref.session_id].event_stream,
-                                               snapshot.handle.ref.session_id)}
+        reply = {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
+                 **await _resume_transcript(self.authority, ref, snapshot, history, omit), **display,
+                 'running': snapshot.handle.execution_state == 'running',
+                 'authority_epoch': snapshot.handle.authority_epoch,
+                 'replay_epoch': snapshot.replay_epoch, 'last_sequence': snapshot.last_sequence,
+                 'subscription_id': snapshot.subscription_id, 'revision': snapshot.handle.revision,
+                 'execution_generation': snapshot.handle.execution_generation,
+                 'pending': [asdict(r) for r in snapshot.pending],
+                 'prompts': list(snapshot.prompts), 'info': info,
+                 'pending_connection': pending_connection(self.authority, ref.session_id),
+                 # Still-waiting server→client requests: the event ring cannot say "still open".
+                 'open_requests': open_requests(self.authority.sessions[snapshot.handle.ref.session_id].event_stream,
+                                                snapshot.handle.ref.session_id)}
+        # A client built against the legacy shape restores a waiting question only from this key: its
+        # parser ignores the canonical ``prompts`` array, so without it a clarify asked while that
+        # client was detached is a card the user never sees (the turn then waits out ``clarify_timeout``).
+        from gateway.session_pending_clarify import pending_clarify_payload
+        if (pending_clarify := pending_clarify_payload(snapshot.prompts, ref.session_id)) is not None:
+            reply['pending_clarify'] = pending_clarify
+        return reply
 
     def _spawn_notice(self, ref):
         """Low-disk auto-prune question for this viewer, off the resume reply's path."""

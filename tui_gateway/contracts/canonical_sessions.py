@@ -9,7 +9,7 @@ from pydantic import RootModel
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
-from .sessions import OpenRequestEntry, TodoState
+from .sessions import OpenRequestEntry, PendingClarify, TodoState
 from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
 from .registry import canonical_method
 
@@ -159,6 +159,10 @@ class CanonicalSnapshot(Result):
     todo_state: TodoState | None = None
     # The owner's server→client requests still unanswered (``session_server_requests.open_requests``).
     open_requests: list[OpenRequestEntry] | None = None
+    # A waiting question in the legacy map shape (``session_pending_clarify.pending_clarify_payload``).
+    # Declared here as well as on ``LiveSessionSnapshot``: this is the model the canonical wire is
+    # validated against, and it forbids extras, so an undeclared key fails the reply's contract check.
+    pending_clarify: PendingClarify | None = None
 
 
 class CanonicalListParams(ProfileParams):

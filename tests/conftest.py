@@ -1138,6 +1138,17 @@ def _pytest_disk_temp_root(native: Path) -> Path:
 
 
 def _remove_relocated_basetemp(config) -> None:
+    """Remove the private basetemp created when a run is relocated out of the Hermes home.
+
+    Unconditional, by contract, and *outside* the retention policy on purpose. A relocated
+    basetemp is a runner-owned scratch root (`mkdtemp` under `/var/tmp/hermes-pytest[-uid]`),
+    not a numbered `pytest-N` history entry: pytest's retention only prunes the numbered
+    directories it creates itself, and `pytest_sessionfinish` skips its own removal entirely
+    once a basetemp has been given (`_given_basetemp is not None`). So retention cannot manage
+    this path and this is its only cleanup — plus the 24h idle sweep for runs killed before
+    reaching `pytest_unconfigure`. Deleting it on success is the contract: it is scratch, and
+    a failed sandbox from a relocated run is not a retained artifact.
+    """
     safe = getattr(config, "_hermes_relocated_basetemp", None)
     if safe is not None:
         shutil.rmtree(safe, ignore_errors=True)
@@ -1240,13 +1251,31 @@ def pytest_configure(config):
     """Register markers used by hermetic conftest."""
     _refuse_basetemp_inside_the_checkout(config)
     _require_disk_reserve(config)
-    # Keep a failed test's sandbox (its diagnostics are unique) and prune the rest, so a
-    # successful run leaves nothing and a failing one leaves exactly the evidence.
+    # Retention, and the exact scope of it. These two are INI values that pytest reads when it
+    # builds TempPathFactory in _pytest.tmpdir.pytest_configure; nothing ever reads
+    # ``config.option.tmp_path_retention_*``, so assigning options here would set attributes
+    # nobody consumes and the suite would silently keep pytest's defaults (count 3, policy
+    # "all"). The factory already exists by the time this trylast hook runs, but it reads both
+    # fields lazily inside getbasetemp(), so setting them on the instance is effective and is
+    # the only lever left at this point. Scopes, all three pinned by
+    # tests/test_basetemp_retention_integration.py against real subprocess runs:
+    #
+    #   1. default numbered basetemp -> this policy: keep 3 sessions, drop passing ones.
+    #   2. a --basetemp named by the caller -> pytest gives NO bounded history for it
+    #      (getbasetemp() rm_rf's and reuses that one path; sessionfinish skips removal because
+    #      _given_basetemp is not None). Distinct names therefore accumulate forever, which is
+    #      how 579 basetemps and 76.2 GB appeared in one day. That path is bounded elsewhere:
+    #      scripts/run_tests_parallel.py rejects --basetemp outright, and
+    #      _refuse_basetemp_inside_the_checkout refuses one that lands in this tree.
+    #   3. a basetemp relocated out of the Hermes home -> runner-owned scratch, removed
+    #      unconditionally in pytest_unconfigure; retention deliberately does not apply.
     try:
-        config.option.tmp_path_retention_count = 3
-        config.option.tmp_path_retention_policy = "failed"
+        factory = config._tmp_path_factory
     except AttributeError:  # older pytest: keep the default rather than fail the run
         pass
+    else:
+        factory._retention_count = 3
+        factory._retention_policy = "failed"
     _relocate_basetemp_outside_operator_home(config)
     config.addinivalue_line(
         "markers",

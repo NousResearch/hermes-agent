@@ -52,12 +52,23 @@ def test_a_run_above_the_reserve_is_allowed(monkeypatch):
     suite._require_disk_reserve(_config())
 
 
-def test_retention_keeps_failures_and_prunes_successes():
-    """A successful run leaves nothing; a failing one leaves its sandbox."""
-    assert suite.pytest_configure is not None
+def test_retention_is_set_on_the_factory_that_pytest_actually_reads():
+    """Retention lives on TempPathFactory, not on ``config.option``.
+
+    pytest reads ``tmp_path_retention_count`` / ``tmp_path_retention_policy`` as INI values
+    when it constructs the factory, and reads the two fields again lazily inside
+    ``getbasetemp()``. There is no ``--tmp-path-retention-*`` command-line option, so
+    assigning ``config.option.tmp_path_retention_*`` sets attributes nothing consumes — the
+    suite then silently keeps pytest's defaults (count 3, policy "all") and no passing
+    session is ever pruned. This pins the lever that works; the behaviour it produces is
+    proven against real subprocess runs in test_basetemp_retention_integration.py.
+    """
     option = types.SimpleNamespace()
+    factory = types.SimpleNamespace(_given_basetemp=None)
     config = types.SimpleNamespace(option=option, addinivalue_line=lambda *a, **k: None,
-                                   _tmp_path_factory=types.SimpleNamespace(_given_basetemp=None))
+                                   _tmp_path_factory=factory)
     suite.pytest_configure(config)
-    assert option.tmp_path_retention_policy == "failed"
-    assert option.tmp_path_retention_count == 3
+    assert factory._retention_policy == "failed"
+    assert factory._retention_count == 3
+    assert not hasattr(option, "tmp_path_retention_policy"), (
+        "config.option is not the retention lever; pytest never reads it")

@@ -11,6 +11,20 @@ from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_connect import connect
 
 
+@pytest.mark.parametrize("contract", [
+    "OWNER/REPO",
+    "owner/repo",
+    "https://github.com/OWNER/REPO/pull/123",
+])
+def test_create_task_rejects_placeholder_completion_contract(tmp_path, monkeypatch, contract):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    kb.init_db()
+    with connect() as conn:
+        with pytest.raises(ValueError, match="placeholder"):
+            kb.create_task(conn, title="Publish", completion_contract=contract)
+        assert conn.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
+
+
 @pytest.fixture
 def github(tmp_path, monkeypatch):
     state = {"conclusion": "success", "head": "a" * 40, "reads": 0, "requests": []}

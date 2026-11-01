@@ -70,6 +70,9 @@ _PREAUTH_FETCH = (
     f"(BODY.PEEK[HEADER.FIELDS (FROM AUTHENTICATION-RESULTS {' '.join(h.upper() for h in _AUTOMATED_HEADERS)})]"
     f"<0.{_MAX_PREAUTH_HEADER_BYTES + 1}>)"
 )
+# A pre-authorization check that fails (no usable header payload, or the check raised) leaves the message
+# unseen for the next polls before it is dropped: a server can answer a just-delivered message unreadably.
+_PREAUTH_ATTEMPTS = 5
 # Authentication-Results clause head (``dmarc=pass``), matched only at the start of a clause.
 _AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
 _NO_AUTH_RESULTS_REASON = "no Authentication-Results header"
@@ -216,6 +219,11 @@ def _imap_payload(data: Any) -> Optional[bytes]:
     except (IndexError, TypeError):
         return None
     return bytes(payload) if isinstance(payload, (bytes, bytearray)) else None
+
+
+def _fetch_shape(data: Any) -> str:
+    """The element types of an IMAP FETCH response, for a log line that must not carry header content."""
+    return repr([type(x).__name__ for x in data]) if isinstance(data, list) else type(data).__name__
 
 
 def check_email_requirements() -> bool:
@@ -491,6 +499,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._authserv_id = (extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")).strip().lower()
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
+        self._preauth_failures: dict = {}  # UID -> failed pre-authorization checks so far
         self._poll_task: Optional[asyncio.Task] = None
         self._last_fetch_failed, self._last_fetch_error = False, ""  # "checked, nothing new" vs "the check itself failed"
         # chat_id (sender email) -> last subject + message-id for threading
@@ -667,6 +676,17 @@ class EmailAdapter(BasePlatformAdapter):
             self._set_fatal_error("email_imap_fetch_failed", self._last_fetch_error or "IMAP fetch failed", retryable=True)
             await self._notify_fatal_error()
 
+    def _retry_preauth(self, uid: Any, reason: object) -> bool:
+        """Count a failed pre-authorization check; True while *uid* stays unseen for the next poll."""
+        attempt = self._preauth_failures.get(uid, 0) + 1
+        if attempt >= _PREAUTH_ATTEMPTS:
+            self._preauth_failures.pop(uid, None)
+            return False
+        self._preauth_failures[uid] = attempt
+        logger.warning("[Email] Pre-authorization check for UID %s failed (attempt %d of %d), retrying on the next poll: %s",
+                       uid, attempt, _PREAUTH_ATTEMPTS, reason)
+        return True
+
     def _mark_uid_consumed(self, imap: imaplib.IMAP4, uid: Any) -> None:
         """Remember a rejected UID and mark it seen without fetching its MIME body."""
         self._seen_uids.add(uid)
@@ -688,6 +708,8 @@ class EmailAdapter(BasePlatformAdapter):
                     if header_status != "OK":
                         continue
                     raw_headers = _imap_payload(header_data)
+                    if raw_headers is None and self._retry_preauth(uid, f"no header payload in {_fetch_shape(header_data)}"):
+                        continue
                     if raw_headers is None or len(raw_headers) > _MAX_PREAUTH_HEADER_BYTES:
                         logger.warning("[Email] Unusable pre-authorization headers for UID %s, skipping", uid)
                         self._mark_uid_consumed(imap, uid)
@@ -696,8 +718,11 @@ class EmailAdapter(BasePlatformAdapter):
                         candidate = self._parse_fetched_headers(uid, raw_headers)
                         accepted = candidate is not None and preauthorize(candidate)
                     except Exception as auth_exc:
+                        if self._retry_preauth(uid, auth_exc):
+                            continue
                         logger.error("[Email] Failed to authorize message UID %s, skipping: %s", uid, auth_exc)
                         accepted = False
+                    self._preauth_failures.pop(uid, None)
                     if not accepted:
                         self._mark_uid_consumed(imap, uid)
                         continue

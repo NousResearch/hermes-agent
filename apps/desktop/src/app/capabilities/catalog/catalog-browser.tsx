@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { memo, type ReactNode, useDeferredValue, useEffect, useRef, useState } from 'react'
+import { memo, type ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -365,9 +365,27 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const root = useRef<HTMLDivElement>(null)
   useEffect(() => (CATALOG_POINTER_ENABLED && root.current ? trackCatalogPointer(root.current) : undefined), [])
 
-  const entries = mergeInstalled(data ?? [], installedEntries ?? [], matchInstalled)
-  const visible = isSuperseded ? entries.filter(entry => !isSuperseded(entry)) : entries
-  const filtered = sortCatalog(filterCatalog(visible, facets, deferredQuery, isInstalled, kind), sort, kind)
+  // The skills feed is ~100k rows. The compiler folds these into the same memo
+  // block as the search header, so `query` alone would re-run every pass on each
+  // keystroke and defeat `deferredQuery`. Explicit memos keep them off that path.
+  const entries = useMemo(
+    () => mergeInstalled(data ?? [], installedEntries ?? [], matchInstalled),
+    [data, installedEntries, matchInstalled]
+  )
+
+  const visible = useMemo(
+    () => (isSuperseded ? entries.filter(entry => !isSuperseded(entry)) : entries),
+    [entries, isSuperseded]
+  )
+
+  const filtered = useMemo(
+    () => sortCatalog(filterCatalog(visible, facets, deferredQuery, isInstalled, kind), sort, kind),
+    [visible, facets, deferredQuery, isInstalled, kind, sort]
+  )
+
+  const categories = useMemo(() => catalogCategories(visible), [visible])
+  const sources = useMemo(() => catalogSources(visible, kind), [visible, kind])
+  const tags = useMemo(() => catalogTags(visible, facets.tags, TAG_LIMIT), [visible, facets.tags])
 
   const discover = isDiscoverView(facets, deferredQuery, kind)
   const pageOrder = filtered
@@ -464,7 +482,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
           />
           <CatalogFilterBar
             actions={actions}
-            categories={catalogCategories(visible)}
+            categories={categories}
             facets={facets}
             kind={kind}
             onCategory={filters.toggleCategory}
@@ -474,8 +492,8 @@ export const CatalogBrowser = memo(function CatalogBrowser({
             onTag={filters.toggleTag}
             resultCount={filtered.length}
             sortControl={sortControl}
-            sources={catalogSources(visible, kind)}
-            tags={catalogTags(visible, facets.tags, TAG_LIMIT)}
+            sources={sources}
+            tags={tags}
           />
           {notice}
           {error && entries.length > 0 && (

@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, Memoria"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 2 external memory provider plugins (RetainDB and ByteRover) that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md, and more (such as Honcho, Hindsight, Supermemory and Holographic) are available from the [plugin catalog](./plugins.md). Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 2 external memory provider plugins (RetainDB and ByteRover) that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md, and more (such as Honcho, Hindsight, Supermemory, Holographic and Memoria) are available from the [plugin catalog](./plugins.md). Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -24,6 +24,7 @@ Or set manually in `~/.hermes/config.yaml`:
 memory:
   provider: retaindb  # or byterover,
                       # or honcho / hindsight / supermemory / mem0 / openviking / holographic
+                      # or memoria
                       # (plugin catalog — run `hermes plugins install <name>` first)
 ```
 
@@ -756,6 +757,109 @@ Supermemory used to ship inside the Hermes tree (and as the `hermes-agent[superm
 
 What changes on disk: the plugin appears in `~/.hermes/plugins/supermemory/` and `config.yaml` gains `plugins.enabled: [supermemory]`. The Supermemory SDK is installed from the plugin's own package metadata, so the `hermes-agent[supermemory]` extra is no longer needed. `memory.provider`, `$HERMES_HOME/supermemory.json`, the `SUPERMEMORY_*` keys in `.env` and the memories stored in your Supermemory account are untouched. Verify with `hermes memory status` (provider active) and `hermes plugins list` (plugin installed and enabled).
 
+### Memoria {#memoria}
+
+:::info Plugin catalog
+Memoria is maintained by [MatrixOrigin](https://github.com/matrixorigin/memoria)
+and installed from the [plugin catalog](./plugins.md).
+:::
+
+[Memoria](https://github.com/matrixorigin/memoria) is an open-source persistent
+memory service with semantic retrieval and memory version control, including
+snapshots, branches and rollback. Its Hermes integration provides scoped
+cross-session recall, explicit memory tools and optional background fact extraction.
+
+The plugin uses the free [Memoria Cloud](https://thememoria.ai) by default.
+Users need a memory-service API key but do not need to deploy a database,
+embedding model or extraction model. Self-hosted Memoria deployments are also supported.
+
+| | |
+|---|---|
+| **Best for** | Cross-session facts and preferences with explicit correction and deletion |
+| **Requires** | `hermes plugins install memoria`; a Memoria API key |
+| **Data storage** | Memoria Cloud or self-hosted Memoria; a profile-local SQLite queue for automatic capture |
+| **Cost** | Free Memoria Cloud; self-hosting infrastructure costs apply |
+
+**Tools (6):** `memoria_search`, `memoria_store`, `memoria_update`,
+`memoria_forget`, `memoria_profile`, `memoria_feedback`.
+
+**Setup:**
+
+1. Log in at [Memoria](https://thememoria.ai) and create or copy a memory-service
+   API key. The website login session token is not the API key.
+2. Install the reviewed catalog version:
+
+   ```bash
+   hermes plugins install memoria --yes-deps --enable
+   ```
+
+3. Run the interactive configuration wizard:
+
+   ```bash
+   hermes memory setup
+   ```
+
+   Select **memoria**, paste the API key at the masked prompt, and choose whether
+   to enable automatic capture. If a key is already configured, press Enter to
+   keep it or enter a replacement.
+
+   Enter `true` to upload completed user/assistant turns for background fact
+   extraction, or `false` to use recall and explicit tools without automatic
+   capture. Capture excludes tool results and media and is **disabled by default**.
+   With capture enabled, chat normally; you do not need to name a memory tool
+   on each turn.
+
+   Use the interactive command above for initial configuration. In the tested
+   CLI, `hermes memory setup memoria` only activates the provider and does not
+   prompt for the API key or capture setting.
+4. Check the configuration:
+
+   ```bash
+   hermes memory status
+   ```
+
+   Confirm that the provider is `memoria`, the plugin is installed, and its status
+   is `available`. This checks local readiness, not a live Cloud request.
+5. Exit any existing conversation and start a new one:
+
+   ```bash
+   hermes
+   ```
+
+   Hermes also needs its own chat-model provider credentials; the Memoria key
+   authenticates memory operations only.
+
+For an existing [named profile](../profiles.md), add `-p <profile-name>` to every
+Hermes command above.
+
+**One-time write check:** Ask: "Use `memoria_store` to remember that I prefer
+unsweetened coffee." Confirm that the tool succeeds, then start a new conversation
+in the same profile and ask how you like your coffee. Delete the test preference
+with `memoria_forget` when finished. Hermes's built-in `memory` tool writes local
+`MEMORY.md`/`USER.md`; this plugin does not mirror those writes to Memoria.
+Explicitly naming the tool here verifies installation, rather than being a
+requirement for everyday chat with automatic capture enabled.
+
+**Config:** Non-secret settings live in `$HERMES_HOME/memoria.json`.
+`MEMORIA_API_KEY` is stored separately in the active profile's secret store.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `api_url` | `https://api.thememoria.ai` | API origin; change for self-hosting and do not append `/v1` |
+| `branch` | `main` | Branch used for recall and writes |
+| `auto_recall` | `true` | Recall relevant memories before turns |
+| `auto_capture` | `false` | Opt in to background extraction from completed user/assistant turns |
+| `top_k` | `5` | Maximum recalled results |
+| `context_chars` | `6000` | Character budget for injected recall context |
+
+**Current limitations:** The catalog version is a development preview with local
+CLI acceptance on macOS. Desktop has not been validated, and gateway platforms
+are disabled. Exiting during capture can leave an uncertain queued event that
+requires manual inspection; ambiguous writes are not automatically retried.
+Global semantic deduplication is not guaranteed, and capture can retain
+paraphrases or transient facts. See the [plugin guide](https://github.com/matrixorigin/memoria/tree/main/plugins/hermes)
+for self-hosting, capture recovery and supported behavior.
+
 ### Memori
 
 Structured long-term memory using Memori Cloud, with background completed-turn capture, tool-aware turn context, and explicit recall tools for facts, summaries, quota, signup, and feedback.
@@ -804,6 +908,7 @@ package command. Restart Hermes after successful dependency preparation.
 | **RetainDB** | Cloud | $20/mo | 10 | `requests` | Delta compression |
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** (plugin catalog) | Cloud/Self-hosted | Free/Paid | 4 | `hermes plugins install supermemory` | Context fencing + session graph ingest + multi-container |
+| **Memoria** (plugin catalog) | Cloud/Self-hosted | Free cloud | 6 | `hermes plugins install memoria` | Memory version control + opt-in fact extraction |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
 
 ## Profile Isolation
@@ -811,7 +916,7 @@ package command. Restart Hermes after successful dependency preparation.
 Each provider's data is isolated per [profile](../profiles.md):
 
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
-- **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
+- **Config file providers** (Honcho, Mem0, Hindsight, Supermemory, Memoria) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
 

@@ -11,9 +11,10 @@ in real production traffic.
 
 - **Two arms, one variable.** `baseline` and `fixes` runs differ ONLY by
   `PYTHONPATH` (a checkout of `origin/main` vs your integration branch). Same
-  dedicated Hermes home, same model, same tasks, same reps. Each trial starts
-  its own foreground gateway from that arm's checkout and stops it afterward.
-  The home's configuration and persistent state are retained across trials.
+  dedicated Hermes home, same model, same tasks, same reps. Each `ab_eval run`
+  starts one foreground gateway from that arm's checkout for the whole batch
+  of tasks and repetitions. Switching arms starts a new gateway. The home's
+  configuration and persistent state are retained across batches.
 - **Tasks are traps.** Each of the 9 tasks is constructed so a specific
   failure class fires: `python` vs `python3`/venv confusion, an
   already-applied patch, an ambiguous multi-match edit, wrong-casing search,
@@ -26,16 +27,21 @@ in real production traffic.
   verification).
 - **Verified evidence.** Relay captures exporter configuration when the gateway
   starts. Changing the chat client's environment does not change an existing
-  gateway's trace destination. The runner gives each trial a fresh gateway,
-  waits for outstanding model calls and trace writes, shuts down gracefully,
-  then requires exactly one complete session whose working directory matches
-  the trial. Its Relay
-  `session_uuid` is saved in `meta.jsonl` and checked again when reporting.
+  gateway's trace destination. Each batch keeps one configuration and shared
+  trace stream. After outstanding calls finish and the gateway shuts down,
+  the runner matches each trial's working directory to exactly one session,
+  selects its events by Relay root UUID, and validates the complete session.
+  These events are saved in the existing per-trial files. The Relay
+  `session_uuid` (distinct from the CLI session ID) is saved in `meta.jsonl`
+  and checked again when reporting.
 - **Resume-safe.** Only trials with a successful CLI exit and verified trace
   enter `meta.jsonl`. A startup, chat, shutdown, or trace failure stops the
-  battery with an error; rerunning retries the unrecorded trial. Completed
-  entries are revalidated before being skipped. Missing, malformed, mixed,
-  and incomplete traces are errors, never zero-cost results.
+  battery with an error. Earlier successful chats can be recorded after a
+  failed chat if their traces validate and the gateway stops cleanly. Results
+  are committed after batch shutdown; a hard interruption can require rerunning
+  unrecorded trials. Recorded entries are revalidated before being skipped.
+  Missing, malformed, ambiguous, and incomplete traces are errors, never
+  zero-cost results.
 
 ## Setup
 
@@ -61,7 +67,7 @@ different PID from the gateway, so this runner cannot yet prove ownership.
    the runner refuses to attach; it only shuts down the child it started.
    Do not point `ABEVAL_HOME` at your everyday Hermes home.
 
-   The runner writes a per-run Relay `plugins.toml` using the observability
+   The runner writes a per-batch Relay `plugins.toml` using the observability
    schema supported by the pinned Relay 0.10 runtime (version 4). No Hermes
    observability plugin needs to be enabled. Both checkouts must support the
    foreground gateway and its planned-stop API; use their supported Python
@@ -93,20 +99,21 @@ python3 ab_eval.py report --models "anthropic/claude-sonnet-4.5,qwen/qwen3-coder
 
 ## Reading the results
 
-`wall_s` includes gateway startup and the chat client invocation on every
-trial; waiting for trace completion and shutting down are excluded. Compare
-both arms with this runner: older batches reused a warm gateway inconsistently,
-so their wall times are not directly comparable.
-Trial diagnostics are in `runs/<model>/<arm>/<run_id>/gateway.log`,
-`chat.stdout`, and `chat.stderr`. Traces and logs can contain task data; keep
-the evaluation workspace private.
+`wall_s` measures each chat client invocation. Starting the batch gateway,
+waiting for trace completion, and shutting down are excluded. Background
+gateway warm-up can still affect the first chat; this is not a controlled
+cold-start benchmark. Compare both arms with this runner: older batches reused
+gateways inconsistently, so historical wall times are not directly comparable.
+Trial diagnostics are in `runs/<model>/<arm>/<run_id>/chat.stdout` and
+`chat.stderr`. Each record's `batch_id` points to the gateway log, fixed Relay
+configuration, and shared trace in `results/<model>/<arm>/batches/<batch_id>/`.
+Traces and logs can contain task data; keep the evaluation workspace private.
 
 Older metadata lacks the verified session UUID. Use a fresh `ABEVAL_ROOT` to
 rerun those trials; adding IDs to old records would not repair missing or
-mixed traces. A deliberately shared trace stream remains a valid Relay setup,
-but this runner's contract is one session per trial file. Tasks that delegate
-to subagents or rotate sessions need a separate scoring contract before being
-added to this battery.
+mixed traces. The batch stream contains multiple sessions; each extracted trial
+file must contain exactly one. Tasks that delegate to subagents or rotate
+sessions need a separate scoring contract before being added to this battery.
 
 - Weak models are the signal. Strong models recover from most induced errors
   in one turn, so expect parity there; the fixes' win shows up as fewer

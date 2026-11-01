@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import tomllib
 
@@ -125,7 +126,7 @@ def fake_cli(tmp_path):
     (package / "__init__.py").touch()
     (package / "main.py").write_text(
         """
-import json, os, signal, sys, tomllib
+import json, os, signal, sys, tomllib, uuid
 from pathlib import Path
 home = Path(os.environ["HERMES_HOME"])
 state = home / "gateway_state.json"
@@ -141,6 +142,8 @@ if "gateway" in sys.argv:
         sys.exit(2)
     sink = component["atof"]["sinks"][0]
     trace = Path(sink["output_directory"]) / sink["filename"]
+    with (home / "starts.jsonl").open("a") as output:
+        output.write(json.dumps({"pid": os.getpid(), "tree": str(Path(__file__).parent.parent)}) + "\\n")
     def stop(*args):
         pending = home / "pending.json"
         if pending.exists():
@@ -150,21 +153,26 @@ if "gateway" in sys.argv:
         lock.unlink()
         sys.exit(0)
     signal.signal(signal.SIGTERM, stop)
-    state.write_text(json.dumps({"pid": os.getpid(), "gateway_state": "running", "trace": str(trace)}))
+    state.write_text(json.dumps({"pid": os.getpid(), "gateway_state": "running", "trace": str(trace), "tree": str(Path(__file__).parent.parent)}))
     while True:
         signal.pause()
 else:
     info = json.loads(state.read_text())
-    root = str(info["pid"])
+    root = str(uuid.uuid4())
     def event(name, category, uid, phase, data=None):
         return json.dumps({"kind": "scope", "name": name, "category": category,
             "uuid": uid, "propagation_root_uuid": root, "scope_category": phase,
             "data": data or {}}) + "\\n"
-    events = event("hermes.session", "agent", root, "start", {"cwd": os.getcwd()})
+    events = event("hermes.session", "agent", root, "start", {"cwd": os.getcwd(), "gateway_pid": info["pid"], "tree": info["tree"]})
     for phase in ("start", "end"):
         events += event("completion", "llm", "llm", phase)
     events += event("hermes.session", "agent", root, "end")
-    Path(info["trace"]).write_text(events)
+    with Path(info["trace"]).open("a") as output:
+        output.write(events)
+    # Buffered exporter events become visible only after graceful shutdown.
+    with (home / "pending.json").open("a") as output:
+        for phase in ("start", "end"):
+            output.write(event("auxiliary", "llm", "aux", phase))
     print("client.go settings.ini")
 """,
         encoding="utf-8",
@@ -182,7 +190,7 @@ else:
 
 @pytest.mark.spawns_gateway_lookalike
 @pytest.mark.platforms("posix")  # the fixture gateway uses POSIX signals
-def test_two_trials_use_fresh_gateways_and_flush_before_recording(
+def test_batch_reuses_gateway_switches_code_arms_and_flushes_before_recording(
     tmp_path, monkeypatch, fake_cli
 ):
     home = tmp_path / "home"
@@ -197,14 +205,99 @@ def test_two_trials_use_fresh_gateways_and_flush_before_recording(
     ]
     assert len(records) == 2
     assert len({m["session_uuid"] for m in records}) == 2
+    starts = [
+        json.loads(line) for line in (home / "starts.jsonl").read_text().splitlines()
+    ]
+    assert len(starts) == 1
     for record in records:
-        score = ab_eval.score_run(resdir / f"{record['run_id']}.atof.jsonl")
-        assert score["llm"] == 1
+        path = resdir / f"{record['run_id']}.atof.jsonl"
+        score = ab_eval.score_run(path)
+        assert score["llm"] == 2
+        session = json.loads(path.read_text().splitlines()[0])
+        assert session["data"]["gateway_pid"] == starts[0]["pid"]
+        assert session["data"]["tree"] == str(fake_cli)
     ab_eval.run("baseline", "model", 2, str(fake_cli), ["err_case_search"])
     assert len((resdir / "meta.jsonl").read_text().splitlines()) == 2
+    assert len((home / "starts.jsonl").read_text().splitlines()) == 1
+    fixes_tree = tmp_path / "fixes-tree"
+    shutil.copytree(fake_cli, fixes_tree)
+    ab_eval.run("fixes", "model", 1, str(fixes_tree), ["err_case_search"])
+    starts = [
+        json.loads(line) for line in (home / "starts.jsonl").read_text().splitlines()
+    ]
+    assert len(starts) == 2
+    assert starts[1]["tree"] == str(fixes_tree)
+    fixed_trace = tmp_path / "results/model/fixes/err_case_search-r0.atof.jsonl"
+    session = json.loads(fixed_trace.read_text().splitlines()[0])
+    assert session["data"]["gateway_pid"] == starts[1]["pid"]
+    assert session["data"]["tree"] == str(fixes_tree)
     (resdir / f"{records[0]['run_id']}.atof.jsonl").unlink()
     with pytest.raises(ValueError, match="trace"):
         ab_eval.run("baseline", "model", 2, str(fake_cli), ["err_case_search"])
+
+
+def test_shared_trace_selects_one_trial_even_when_events_interleave(tmp_path):
+    first = trace_events(tmp_path / "first", "first", tool_count=1)
+    second = trace_events(tmp_path / "second", "second", tool_count=3)
+    interleaved = [event for pair in zip(first, second) for event in pair]
+    interleaved.extend(second[len(first) :])
+    path = write_trace(tmp_path / "batch.jsonl", interleaved)
+    for work, expected in (("first", 1), ("second", 3)):
+        events, root = ab_eval.read_trace(path, tmp_path / work, None, shared=True)
+        split = write_trace(tmp_path / f"{work}.jsonl", events)
+        score = ab_eval.score_run(split, work=tmp_path / work, session_uuid=root)
+        assert score["tools"] == expected
+        assert root == work
+
+
+@pytest.mark.parametrize(
+    "damage", ["missing", "ambiguous", "unassociated", "incomplete"]
+)
+def test_shared_trace_requires_unambiguous_complete_trial(tmp_path, damage):
+    work = tmp_path / "trial"
+    events = trace_events(work, "first")
+    if damage == "missing":
+        work = tmp_path / "missing"
+    elif damage == "ambiguous":
+        events.extend(trace_events(work, "second"))
+    elif damage == "unassociated":
+        events[3]["propagation_root_uuid"] = "unknown"
+        events[4]["propagation_root_uuid"] = "unknown"
+    else:
+        events.pop(-2)
+    path = write_trace(tmp_path / "batch.jsonl", events)
+    with pytest.raises(ValueError, match="trace"):
+        ab_eval.read_trace(path, work, None, shared=True)
+
+
+@pytest.mark.spawns_gateway_lookalike
+@pytest.mark.platforms("posix")
+def test_failed_chat_keeps_only_completed_trials_after_batch_flush(
+    tmp_path, monkeypatch, fake_cli
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(ab_eval, "ROOT", tmp_path)
+    monkeypatch.setattr(ab_eval, "HOME", home)
+    monkeypatch.setattr(ab_eval, "make_sandbox", lambda work: None)
+    real_run = subprocess.run
+
+    def fail_second_chat(command, **kwargs):
+        if "chat" in command and kwargs["cwd"].name.endswith("-r1"):
+            return subprocess.CompletedProcess(command, 1, "partial answer", "failed")
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fail_second_chat)
+    with pytest.raises(RuntimeError, match="Chat failed"):
+        ab_eval.run("baseline", "model", 2, str(fake_cli), ["err_case_search"])
+    result = tmp_path / "results/model/baseline"
+    records = [
+        json.loads(line) for line in (result / "meta.jsonl").read_text().splitlines()
+    ]
+    assert [record["run_id"] for record in records] == ["err_case_search-r0"]
+    assert len((home / "starts.jsonl").read_text().splitlines()) == 1
+    assert not (home / "stub-owner").exists()
+    assert ab_eval.score_run(result / "err_case_search-r0.atof.jsonl")["llm"] == 2
 
 
 @pytest.mark.spawns_gateway_lookalike
@@ -241,10 +334,10 @@ def test_cleanup_owns_only_its_child_and_failed_trials_are_not_recorded(
             ab_eval.run("baseline", "model", 1, str(fake_cli), ["err_case_search"])
         assert not (tmp_path / "results/model/baseline/meta.jsonl").exists()
     else:
-        with ab_eval.trial_gateway(env, work):
+        with ab_eval.batch_gateway(env, work):
             owner = json.loads((home / "gateway_state.json").read_text())["pid"]
             with pytest.raises(RuntimeError, match="dedicated, idle home"):
-                with ab_eval.trial_gateway(env, tmp_path):
+                with ab_eval.batch_gateway(env, tmp_path):
                     pytest.fail("must not attach to an existing gateway")
             os.kill(
                 owner, 0
@@ -279,5 +372,5 @@ def test_waits_for_pending_trace_writes_and_bounds_missing_evidence(tmp_path):
 @pytest.mark.platforms("windows")
 def test_windows_launcher_is_refused_before_spawning(tmp_path):
     with pytest.raises(RuntimeError, match="ownership currently requires"):
-        with ab_eval.trial_gateway({}, tmp_path):
+        with ab_eval.batch_gateway({}, tmp_path):
             pytest.fail("unsupported launcher must not be started")

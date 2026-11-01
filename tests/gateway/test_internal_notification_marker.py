@@ -138,6 +138,35 @@ async def test_internal_event_threads_marker_into_agent_run(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failed", [False, True])
+async def test_canonical_delegation_event_threads_validated_projection(monkeypatch, tmp_path, failed):
+    from tools.async_delegation import _internal_event_envelope
+
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "failed": failed, "error": "timeout" if failed else None,
+        "final_response": None if failed else "ack", "messages": [], "tools": [],
+        "history_offset": 0, "last_prompt_tokens": 0,
+    })
+    delegation_id = "deleg_0123456789abcdef0123456789abcdef"
+    event = _event(internal=True, text="[ASYNC DELEGATION COMPLETE]")
+    event.metadata.update(delegation_id=delegation_id, **_internal_event_envelope(delegation_id))
+
+    await runner._handle_message_with_agent(event, _source(), SESSION_KEY, 1)
+
+    kwargs = runner._run_agent.call_args.kwargs
+    assert kwargs["persist_user_display_kind"] == "internal_event"
+    assert kwargs["persist_user_display_metadata"]["event_schema"] == "hermes.internal_event.v1"
+    assert kwargs["persist_user_display_metadata"]["event_id"] == (
+        f"async_delegation:{delegation_id}:terminal"
+    )
+    assert kwargs["persist_user_display_metadata"]["user_originated"] is False
+    rows = _user_entries(runner.session_store.append_to_transcript.call_args_list)
+    assert rows[-1]["display_kind"] == "internal_event"
+    assert rows[-1]["display_metadata"]["event_id"] == event.metadata["event_id"]
+
+
+@pytest.mark.asyncio
 async def test_real_user_event_gets_no_marker(monkeypatch, tmp_path):
     runner = _bootstrap(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(
@@ -150,12 +179,15 @@ async def test_real_user_event_gets_no_marker(monkeypatch, tmp_path):
         }
     )
 
-    await runner._handle_message_with_agent(
-        _event(internal=False), _source(), SESSION_KEY, 1,
-    )
+    from tools.async_delegation import _internal_event_envelope
+    event = _event(internal=False)
+    delegation_id = "deleg_0123456789abcdef0123456789abcdef"
+    event.metadata.update(delegation_id=delegation_id, **_internal_event_envelope(delegation_id))
+    await runner._handle_message_with_agent(event, _source(), SESSION_KEY, 1)
 
     kwargs = runner._run_agent.call_args.kwargs
     assert kwargs["persist_user_display_kind"] is None
+    assert "event_id" not in kwargs["persist_user_display_metadata"]
 
 
 # ── 3: gateway-side fallback rows carry the marker for internal events ─────

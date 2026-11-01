@@ -251,7 +251,7 @@ def create_live_transcripts(
     prune_stale_live_dirs(root=live_transcript_root(home))  # best-effort; never raises
     with _best_effort("creation"):
         # Same id shape as async_delegation's so the dir name matches the handle.
-        deleg_id = delegation_id or f"deleg_{uuid.uuid4().hex[:8]}"
+        deleg_id = delegation_id or f"deleg_{uuid.uuid4().hex}"
         root = live_transcript_root(home)
         made = [LiveTranscriptWriter(deleg_id, i, str(t.get("goal", "")),
                                      context=t.get("context") or context, root=root)

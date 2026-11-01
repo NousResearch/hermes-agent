@@ -289,3 +289,105 @@ def test_onepassword_service_account_refusals_name_the_real_cause(fake_op_servic
     assert all(json.loads(a)[:2] != ["item", "get"] for a in log.read_text(encoding="utf-8-sig").splitlines())
     with pytest.raises(RuntimeError, match="DecodeSACredentials"):
         new_backend().resolve_password("op:item-c")
+
+
+# A stand-in `op` for both unlock modes: desktop-app integration exits 0 with empty stdout (the app
+# vouches per request), account-level auth prints a token. Marker files beside the script select a
+# mode; the log records argv, stdin, and the session env the child actually saw.
+_FAKE_OP_SIGNIN = r'''#!/usr/bin/env python3
+import json, os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+argv = sys.argv[1:]
+stdin = sys.stdin.read() if not sys.stdin.isatty() else ""
+with open(os.path.join(here, "op.log"), "a") as log:
+    log.write(json.dumps({"argv": argv, "stdin": stdin,
+                          "session": {k: v for k, v in os.environ.items() if k.startswith("OP_SESSION")}}) + "\n")
+if argv[:2] == ["signin", "--raw"]:
+    if os.path.exists(os.path.join(here, "bad-signin")):
+        sys.stderr.write("Invalid master password.\n"); sys.exit(1)
+    if os.path.exists(os.path.join(here, "account-auth")):
+        print("SESSION-TOKEN-123"); sys.exit(0)
+    sys.exit(0)  # desktop integration: success, no token, no stderr
+if argv[:1] == ["whoami"]:
+    if os.path.exists(os.path.join(here, "not-signed-in")):
+        sys.stderr.write("\x1b[31m[ERROR] 2026/11/01 not signed in\x1b[0m\n"); sys.exit(1)
+    print("jane@example.com"); sys.exit(0)
+if argv[:2] == ["item", "list"]:
+    print("[]"); sys.exit(0)
+sys.exit(2)
+'''
+
+
+@pytest.fixture
+def fake_op_signin(tmp_path, monkeypatch):
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    exe = tmp_path / "op"
+    exe.write_text(_FAKE_OP_SIGNIN, encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    unlock_mod.lock()
+    no_secrets = lambda name, default="": default
+    with patch("agent.secret_scope.get_secret", side_effect=no_secrets):
+        yield (lambda: OnePasswordLoginBackend({"binary_path": str(exe)})), tmp_path
+    unlock_mod.lock()
+
+
+def _signin_log(tmp_path):
+    return [json.loads(line) for line in (tmp_path / "op.log").read_text(encoding="utf-8-sig").splitlines()]
+
+
+def test_onepassword_desktop_app_auth_stores_sentinel_without_session_env(fake_op_signin):
+    """With the desktop app's CLI integration `op signin --raw` exits 0 with empty stdout. Unlock
+    must verify `op whoami` and remember a sentinel; later reads must carry no session env."""
+    new_backend, tmp_path = fake_op_signin
+    from agent.vault_backends.onepassword import _DESKTOP_AUTH
+
+    backend = new_backend()
+    backend.unlock("correct horse")
+    assert backend.is_unlocked()
+    assert unlock_mod.get_session_token("onepassword") == _DESKTOP_AUTH
+    backend.list_items()
+
+    calls = _signin_log(tmp_path)
+    assert [c["argv"][:1] for c in calls] == [["signin"], ["whoami"], ["item"]]
+    assert calls[0]["argv"][:2] == ["signin", "--raw"] and calls[0]["stdin"].strip() == "correct horse"
+    assert all("correct horse" not in " ".join(c["argv"]) for c in calls), "master password must never be argv"
+    assert calls[0]["session"] == {} and calls[1]["session"] == {}
+    assert calls[2]["session"] == {}, "desktop-delegated requests must carry no OP_SESSION env"
+
+
+def test_onepassword_desktop_app_auth_fails_when_whoami_is_not_signed_in(fake_op_signin):
+    """An empty `op signin --raw` only proves desktop delegation when `op whoami` accepts it."""
+    new_backend, tmp_path = fake_op_signin
+    (tmp_path / "not-signed-in").write_text("", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="1Password unlock failed: .*not signed in") as exc:
+        new_backend().unlock("correct horse")
+    assert "\x1b" not in str(exc.value), "op stderr is scrubbed before surfacing"
+    assert not unlock_mod.is_unlocked("onepassword")
+
+
+def test_onepassword_account_auth_still_stores_the_minted_token(fake_op_signin):
+    """Account-level auth (no desktop integration) keeps minting and sending the real token."""
+    new_backend, tmp_path = fake_op_signin
+    (tmp_path / "account-auth").write_text("", encoding="utf-8")
+
+    backend = new_backend()
+    backend.unlock("correct horse")
+    assert unlock_mod.get_session_token("onepassword") == "SESSION-TOKEN-123"
+    backend.list_items()
+
+    calls = _signin_log(tmp_path)
+    assert [c["argv"][:1] for c in calls] == [["signin"], ["item"]]
+    assert calls[-1]["session"] == {"OP_SESSION": "SESSION-TOKEN-123"}
+
+
+def test_onepassword_signin_failure_raises_with_scrubbed_stderr(fake_op_signin):
+    """A non-zero `op signin --raw` still fails unlock with op's own message."""
+    new_backend, tmp_path = fake_op_signin
+    (tmp_path / "bad-signin").write_text("", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="1Password unlock failed: Invalid master password"):
+        new_backend().unlock("wrong")
+    assert not unlock_mod.is_unlocked("onepassword")

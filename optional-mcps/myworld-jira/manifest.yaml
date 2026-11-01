@@ -1,0 +1,48 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: myworld-jira
+description: Safe Jira practice world for issue search, assignment and workflow transitions.
+source: https://github.com/shashank-yadav/myworld
+
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - myworld==0.2.1
+    - stdio
+    - jira
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - jira_search
+    - jira_get_issue
+    - jira_update_issue
+    - jira_assign_issue
+    - jira_get_transitions
+    - jira_transition_issue
+    - jira_add_comment
+    - jira_get_all_projects
+    - jira_get_project_issues
+
+suggest:
+  keywords:
+    - myworld
+    - jira
+    - issue tracking
+    - practice world
+
+post_install: |
+  myworld-jira runs a local, simulated Jira MCP server over stdio:
+    uvx myworld stdio jira
+
+  No real Jira site is changed. Use it to practice JQL, workflow transitions,
+  assignments, sprint context and stale search results safely.
+
+  More Jira-shaped tools can be enabled with:
+    hermes mcp configure myworld-jira
+

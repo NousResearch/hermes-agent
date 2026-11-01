@@ -227,13 +227,13 @@ def build_wheels(build_set: list[str], specs: dict[str, str], wheelhouse: Path,
 
 TARGET_ENV = {
     "implementation_name": "cpython",
-    "implementation_version": "3.14.6",
+    "implementation_version": "3.14.8",
     "os_name": "posix",
     "platform_machine": "aarch64",
     "platform_release": "",
     "platform_system": "Linux",
     "platform_version": "",
-    "python_full_version": "3.14.6",
+    "python_full_version": "3.14.8",
     "python_version": "3.14",
     # 3.13+ Android CPython reports sys.platform "android" (docs: changed in
     # 3.13), so markers keying on `sys_platform == 'linux'` no longer admit

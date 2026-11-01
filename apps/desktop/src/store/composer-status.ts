@@ -52,7 +52,9 @@ export interface ComposerStatusItem {
 // Writable source for background work, synced from the gateway's process
 // registry (`terminal(background=true)` spawns) via `process.list`.
 export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem[]>>({})
-// When each list was written: the freshness the live-work roster compares against.
+// When the backend snapshot behind each list arrived: the freshness the
+// live-work roster compares against. Local removals (dismiss, auto-clear) carry
+// the snapshot's stamp forward; they are not new backend data.
 const backgroundWrittenAt = new WeakMap<readonly ComposerStatusItem[], number>()
 
 // Stored session ids that have at least one RUNNING background process. The
@@ -288,13 +290,16 @@ export function groupStatusItems(items: readonly ComposerStatusItem[]): StatusGr
   return TYPE_ORDER.filter(type => byType.has(type)).map(type => ({ items: byType.get(type)!, type }))
 }
 
-const writeBackground = (sid: string, items: ComposerStatusItem[]) => {
+const writeBackground = (sid: string, items: ComposerStatusItem[], snapshotAt: number | undefined) => {
   const current = $backgroundStatusBySession.get()
   const next = { ...current }
 
   if (items.length > 0) {
     next[sid] = items
-    backgroundWrittenAt.set(items, Date.now())
+
+    if (snapshotAt !== undefined) {
+      backgroundWrittenAt.set(items, snapshotAt)
+    }
   } else {
     delete next[sid]
   }
@@ -419,7 +424,7 @@ export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessE
     return
   }
 
-  writeBackground(sid, next)
+  writeBackground(sid, next, Date.now())
 }
 
 /** Pull the session's live process snapshot from the gateway. */
@@ -467,7 +472,8 @@ export function dismissBackgroundProcess(sid: string, id: string) {
 
   writeBackground(
     sid,
-    list.filter(item => item.id !== id)
+    list.filter(item => item.id !== id),
+    backgroundWrittenAt.get(list)
   )
 }
 
@@ -544,5 +550,5 @@ export function resetSessionBackground(sid: string) {
   }
 
   dismissedBySession.set(sid, dismissed)
-  writeBackground(sid, [])
+  writeBackground(sid, [], undefined)
 }

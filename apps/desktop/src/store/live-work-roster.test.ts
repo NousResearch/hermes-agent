@@ -1,6 +1,11 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $backgroundRunningSessionIds, $backgroundStatusBySession } from './composer-status'
+import {
+  $backgroundRunningSessionIds,
+  $backgroundStatusBySession,
+  dismissBackgroundProcess,
+  reconcileBackgroundProcesses
+} from './composer-status'
 import { $liveWorkRoster, setLiveWorkRosterSource } from './live-work-roster'
 import { $delegatingSessionIds } from './session-dot-state'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
@@ -9,6 +14,8 @@ const child = (status: SubagentProgress['status'], updatedAt: number) =>
   ({ id: 'c1', index: 0, status, updatedAt }) as unknown as SubagentProgress
 
 afterEach(() => {
+  vi.clearAllTimers()
+  vi.useRealTimers()
   $liveWorkRoster.set({})
   $subagentsBySession.set({})
   $backgroundStatusBySession.set({})
@@ -40,5 +47,21 @@ describe('backend roster feeds rows no mounted tile speaks for', () => {
     setLiveWorkRosterSource('ambient', [{ session_id: 'old-pane', subagents: 0, background: 1 }])
 
     expect($backgroundRunningSessionIds.get()).toContain('old-pane')
+  })
+
+  it('never stamps a local dismissal as a fresher backend snapshot than the roster read', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+    reconcileBackgroundProcesses('pane', [
+      { command: 'a', exit_code: 0, session_id: 'p1', status: 'exited' },
+      { command: 'b', exit_code: 0, session_id: 'p2', status: 'exited' }
+    ])
+    setLiveWorkRosterSource('ambient', [{ session_id: 'pane', subagents: 0, background: 1 }], 2_000)
+
+    vi.setSystemTime(3_000)
+    dismissBackgroundProcess('pane', 'p1')
+
+    expect($backgroundStatusBySession.get().pane?.map(item => item.id)).toEqual(['p2'])
+    expect($backgroundRunningSessionIds.get()).toContain('pane')
   })
 })

@@ -447,13 +447,43 @@ def _new_sdk_client(sdk, kwargs: dict[str, Any], headers: dict[str, str], route:
         merged["Authorization"] = sdk.Omit()
     elif "auth_token" in kwargs and "api_key" not in kwargs:
         merged["X-Api-Key"] = sdk.Omit()
+    route_key = route or kwargs.get("base_url")
+    # The routed profile's default_headers fill missing keys only (#138112): they are a provider's
+    # optional attribution set, while the beta/attribution headers above are functional — and the
+    # Omit() credential sentinels must not be overwritten (that would restore the dual #26970 send).
+    for _k, _v in _profile_default_headers(route_key).items():
+        merged.setdefault(_k, _v)
     # Per-provider ``custom_providers[].extra_headers`` last: the most specific config level wins
     # over the SDK User-Agent and the attribution/beta sets above, on every builder path (init,
     # /model switch, rebuild, auxiliary) — the OpenAI-wire clients already do this (#24293, #9721).
-    merged.update(_custom_provider_extra_headers(route or kwargs.get("base_url")))
+    merged.update(_custom_provider_extra_headers(route_key))
     if merged:
         kwargs["default_headers"] = merged
     return sdk.Anthropic(**kwargs)
+
+
+def _profile_default_headers(base_url) -> dict[str, str]:
+    """``default_headers`` of the registered provider profile routed at *base_url*, else ``{}``.
+    The OpenAI-wire paths already forward profile.default_headers; this transport used to see no
+    profile at all (#138112), so a plugin profile with ``api_mode = anthropic_messages`` could not
+    attach a header. Built-in profiles ship none, so only plugin/custom profiles are affected.
+    Matched on base_url with a trailing ``/v1`` tolerated (the caller's route keeps it, profiles
+    don't); several profiles declaring headers on the same route is ambiguous and applies none.
+    SECURITY: values may carry credentials — never log them."""
+    if not base_url:
+        return {}
+    try:
+        from providers import list_providers
+
+        def _norm(url) -> str:
+            return re.sub(r"/v1/?$", "", str(url or "").rstrip("/"))
+
+        target = _norm(base_url)
+        declared = [p for p in list_providers() if p.default_headers and _norm(p.base_url) == target]
+        return dict(declared[0].default_headers) if len(declared) == 1 else {}
+    except Exception:
+        logger.debug("provider-profile default_headers skipped for Anthropic client", exc_info=True)
+        return {}
 
 
 def _custom_provider_extra_headers(base_url) -> dict[str, str]:

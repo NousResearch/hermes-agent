@@ -34,16 +34,33 @@ _V2_ORPHAN_ONLY_STATUS = {
 _PRE_V2_ONLY_STATUS = {
     "projects": [],
     "pre_v2_projects": [
-        {"path": "/home/user/.hermes/checkpoints/deadbeefcafebabe", "workdir": None, "exists": False},
+        {"path": "/home/user/.hermes/checkpoints/deadbeefcafebabe",
+         "workdir": "/gone/pre-v2-project",  # recorded + observably gone (the only
+                                             # state that is confirmable post-tightening)
+         "exists": False, "orphan_confirmable": True, "unconfirmable_reason": None},
     ],
 }
 
 _MIXED_STATUS = {
     "projects": [
-        {"hash": "abc123", "workdir": "/gone/v2-project", "exists": False, "commits": 4},
+        {"hash": "abc123", "workdir": "/gone/v2-project", "exists": False, "commits": 4,
+         "orphan_confirmable": True, "unconfirmable_reason": None},
     ],
     "pre_v2_projects": [
-        {"path": "/home/user/.hermes/checkpoints/deadbeefcafebabe", "workdir": "/gone/pre-v2-project", "exists": False},
+        {"path": "/home/user/.hermes/checkpoints/deadbeefcafebabe", "workdir": "/gone/pre-v2-project",
+         "exists": False, "orphan_confirmable": True, "unconfirmable_reason": None},
+    ],
+}
+
+# A pre-v2 shadow repo whose HERMES_WORKDIR marker is blank: store_status
+# reports it as NOT orphan_confirmable (the P2 invariant), so the preview
+# must not list it and the allowlist must not bind it.
+_BLANK_MARKER_PRE_V2_STATUS = {
+    "projects": [],
+    "pre_v2_projects": [
+        {"path": "/home/user/.hermes/checkpoints/blankbeefcafebabe", "workdir": "",
+         "exists": False, "orphan_confirmable": False,
+         "unconfirmable_reason": "blank workdir recorded"},
     ],
 }
 
@@ -119,6 +136,235 @@ def test_empty_preview_binds_empty_allowlist(monkeypatch, capsys):
     assert rc == 0
     assert len(prune_calls) == 1
     assert prune_calls[0]["orphan_allowlist"] == set()
+
+
+# ─── P2 invariant: a blank/unreadable marker is neither previewed nor deleted ─
+
+
+def test_blank_marker_pre_v2_not_previewed_nor_allowlisted(monkeypatch, capsys):
+    """P2 fix on PR #147152: a pre-v2 shadow repo whose HERMES_WORKDIR marker
+    is blank is reported by store_status() as orphan_confirmable=False, so the
+    confirmation preview must not list it and the allowlist must not bind it —
+    otherwise the preview would show an orphan that execution skips.
+    """
+    import hermes_cli.checkpoints as checkpoints_cli
+
+    prune_calls: list = []
+    _patch_checkpoint_manager(monkeypatch, _BLANK_MARKER_PRE_V2_STATUS, prune_calls)
+
+    def _unexpected_input(_prompt):
+        raise AssertionError("input() must not be called: no orphans in preview")
+
+    monkeypatch.setattr("builtins.input", _unexpected_input)
+
+    rc = checkpoints_cli.cmd_prune(_ns())
+
+    assert rc == 0
+    assert len(prune_calls) == 1
+    # The blank-marker repo is not an orphan: not previewed, not allowlisted.
+    assert prune_calls[0]["orphan_allowlist"] == set()
+
+
+# ─── confirmation preview names every orphan it will delete ────────────────
+
+# A v2 orphan with no recorded workdir is still confirmable (and deleted), so
+# the preview must name it by its project hash instead of "(unknown)".
+_V2_ORPHAN_NO_WORKDIR_STATUS = {
+    "projects": [
+        {"hash": "deadbeefcafebabe", "workdir": None, "exists": False, "commits": 2,
+         "orphan_confirmable": True, "unconfirmable_reason": None},
+    ],
+    "pre_v2_projects": [],
+}
+
+
+def test_pre_v2_orphan_preview_names_recorded_workdir(monkeypatch, capsys):
+    """A confirmable pre-v2 orphan always has a recorded (non-blank) workdir
+    post-tightening, so the destructive preview names that workdir.
+
+    The shadow-repo-path fallback still exists but is only reachable in
+    ``cmd_status`` (for non-confirmable records); the destructive preview
+    never hits it. The preview must name the workdir a human can inspect
+    before confirming — and never print "(unknown)".
+    """
+    import hermes_cli.checkpoints as checkpoints_cli
+
+    prune_calls: list = []
+    _patch_checkpoint_manager(monkeypatch, _PRE_V2_ONLY_STATUS, prune_calls)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    rc = checkpoints_cli.cmd_prune(_ns())
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "/gone/pre-v2-project" in out
+    assert "(unknown)" not in out
+    assert prune_calls == []
+
+
+def test_v2_orphan_preview_falls_back_to_project_hash(monkeypatch, capsys):
+    """Same rule for v2 records: a confirmable orphan whose workdir is gone is
+    named by its project hash, not "(unknown)"."""
+    import hermes_cli.checkpoints as checkpoints_cli
+
+    prune_calls: list = []
+    _patch_checkpoint_manager(monkeypatch, _V2_ORPHAN_NO_WORKDIR_STATUS, prune_calls)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    rc = checkpoints_cli.cmd_prune(_ns())
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "checkpoint deadbeefcafebabe" in out
+    assert "(unknown)" not in out
+    assert prune_calls == []
+
+
+def test_cmd_status_names_v2_row_by_hash_when_workdir_missing(monkeypatch, capsys):
+    """Independent-review observation ②: `cmd_status` still printed
+    "(unknown)" for a v2 row whose workdir is missing, while the pre-v2 section
+    falls back to the shadow repo path — asymmetric. A v2 record's identity is
+    its project hash, so the row names it `checkpoint <hash>` instead."""
+    import hermes_cli.checkpoints as checkpoints_cli
+
+    status = {
+        "base": "/home/user/.hermes/checkpoints",
+        "total_size_bytes": 0, "store_size_bytes": 0, "legacy_size_bytes": 0,
+        "project_count": 1,
+        "projects": [
+            {"hash": "deadbeefcafebabe", "workdir": None, "exists": False,
+             "commits": 3, "orphan_confirmable": True, "unconfirmable_reason": None,
+             "last_touch": 0},
+        ],
+        "pre_v2_projects": [], "legacy_archives": [],
+    }
+    monkeypatch.setattr(
+        "tools.checkpoint_maintenance.store_status", lambda *a, **k: status,
+    )
+
+    rc = checkpoints_cli.cmd_status(_ns())
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "checkpoint deadbeefcafebabe" in out
+    assert "(unknown)" not in out
+
+
+def test_orphan_label_defensive_fallback():
+    """Independent-review observation ①: a record with neither a workdir nor a
+    recorded id gets a neutral "(no recorded identity)" placeholder — never the
+    old misleading "(unknown)" that named nothing."""
+    import hermes_cli.checkpoints as checkpoints_cli
+
+    label = checkpoints_cli._orphan_label
+    # Defensive: nothing to name.
+    assert label({}) == "(no recorded identity)"
+    assert label({"workdir": None}, pre_v2=True) == "(no recorded identity)"
+    # Recorded workdir always wins.
+    assert label({"workdir": "/w", "hash": "abc"}, pre_v2=False) == "/w"
+    # v2 identity is the project hash; pre-v2 identity is the shadow repo path.
+    assert label({"hash": "abc"}, pre_v2=False) == "checkpoint abc"
+    assert label({"path": "/p", "hash": "abc"}, pre_v2=True) == "/p"
+
+
+def test_orphan_verdict_layout_rules():
+    """Independent-review observation ① (deepseek pass): the orphan predicate
+    was two mirrored implementations (store_status vs prune_checkpoints) that
+    could drift. It is now one shared _orphan_verdict; this pins both layouts'
+    rules so the single implementation stays correct."""
+    import tools.checkpoint_maintenance as cm
+
+    v = cm._orphan_verdict
+    # Pre-v2 (no parent-identity channel, blank workdir kept).
+    assert v("", require_parent_identity=False, blank_workdir_confirmable=False) == (
+        False, "blank workdir recorded")
+    # Pre-v2 with an absent marker (workdir None) is kept too: no record of
+    # where the project was, so we cannot confirm it is gone.
+    assert v(None, require_parent_identity=False, blank_workdir_confirmable=False) == (
+        False, "no workdir recorded (marker absent)")
+    assert v("/w", marker_unreadable=True, require_parent_identity=False,
+             blank_workdir_confirmable=False) == (
+        False, "shadow repo marker is unreadable")
+    # v2 shared store: blank/missing workdir is confirmable (the production
+    # path normalizes a missing workdir to "" before calling, so None here is
+    # reachable only from tests).
+    assert v("", require_parent_identity=True, blank_workdir_confirmable=True) == (
+        True, None)
+    assert v(None, require_parent_identity=True, blank_workdir_confirmable=True) == (
+        True, None)
+
+
+def test_unreachable_reason_parent_gone_wording(tmp_path):
+    """Independent-review observation ⑤ (deepseek pass): pre-v2 has no
+    parent-identity metadata channel, so "no parent identity recorded" is a
+    category error there — it gets the same conservative wording as v2, while
+    a v2 record that *could* have recorded one keeps the specific message."""
+    import tools.checkpoint_maintenance as cm
+
+    workdir = str(tmp_path / "gone" / "proj")
+    assert cm._workdir_unreachable_reason(
+        workdir, require_parent_identity=False
+    ) == "parent path gone; deletion not corroborated (conservative)"
+    assert cm._workdir_unreachable_reason(
+        workdir, require_parent_identity=True
+    ) == "parent path gone and no parent identity recorded"
+
+
+# ─── cmd_status surfaces pre-v2 shadow repos with their reason ─────────────
+
+
+def test_cmd_status_lists_pre_v2_shadow_repos(monkeypatch, capsys):
+    """Finding #3 on PR #147152: `checkpoints status` previously only walked
+    `projects`, so a pre-v2 shadow repo's "unreachable but not prunable"
+    reason was invisible in the CLI (it only existed in the store_status()
+    API). The pre-v2 rows must now be displayed with the same classification
+    the prune preview binds to, falling back to the shadow repo path when the
+    workdir is blank/missing so the row still names the directory.
+    """
+    import hermes_cli.checkpoints as checkpoints_cli
+
+    blank_path = "/home/user/.hermes/checkpoints/blankbeefcafebabe"
+    orphan_path = "/home/user/.hermes/checkpoints/deadbeefcafebabe"
+    status = {
+        "base": "/home/user/.hermes/checkpoints",
+        "total_size_bytes": 0,
+        "store_size_bytes": 0,
+        "legacy_size_bytes": 0,
+        "project_count": 0,
+        "projects": [],
+        "pre_v2_projects": [
+            {"path": blank_path, "workdir": "",
+             "exists": False, "orphan_confirmable": False,
+             "unconfirmable_reason": "blank workdir recorded"},
+            {"path": orphan_path, "workdir": None,
+             "exists": False, "orphan_confirmable": True, "unconfirmable_reason": None},
+        ],
+        "legacy_archives": [],
+    }
+    monkeypatch.setattr(
+        "tools.checkpoint_maintenance.store_status", lambda *a, **k: status,
+    )
+
+    rc = checkpoints_cli.cmd_status(_ns())
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Pre-v2 section is headed and shows both rows.
+    assert "Pre-v2 shadow repos (2):" in out
+    # Blank workdir row: falls back to the shadow repo path (not "(unknown)"),
+    # displays unreachable + reason + the "won't prune" note.
+    assert blank_path in out
+    assert "unreachable" in out
+    assert "blank workdir recorded" in out
+    assert "pre-v2 shadow repo; prune won't treat it as an orphan" in out
+    # Orphan_confirmable row (workdir None): its own row shows STATE=orphan.
+    # Match on the row line so the weak `"orphan" in out` substring (which the
+    # "won't treat it as an orphan" note already satisfies) can't false-pass.
+    orphan_line = next(
+        line for line in out.splitlines()
+        if orphan_path in line
+    )
+    assert orphan_line.rstrip().endswith("orphan")
 
 
 

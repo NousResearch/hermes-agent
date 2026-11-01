@@ -19,7 +19,7 @@ class ProcessNotificationBatch:
 
     def _live(self, registry) -> list:
         return [(event, text) for event, text in self.notifications
-                if not registry.is_completion_consumed(event.get("session_id", ""))]
+                if not registry.completion_already_observed(event.get("session_id", ""))]
 
     def render(self, registry) -> str | None:
         messages = [text for _event, text in self._live(registry)]

@@ -217,7 +217,7 @@ class TestTerminalSchema:
 # =========================================================================
 
 class TestCompletionConsumed:
-    """Test that wait/log consume completion notifications while poll stays read-only."""
+    """wait/log consume completions; poll stays read-only but a poll after the exit counts as observed."""
 
     def test_wait_marks_completion_consumed(self, registry):
         """wait() returning exited status marks session as consumed."""
@@ -240,18 +240,33 @@ class TestCompletionConsumed:
         assert registry.is_completion_consumed("proc_wait")
 
 
-    def test_poll_observed_does_not_suppress_gateway_watcher(self, registry):
-        """The gateway/tui watcher gate (is_completion_consumed) must stay False
-        after a read-only poll, so the autonomous delivery turn still fires
-        even though the CLI drain was deduped (#10156)."""
+    def test_poll_after_exit_marks_completion_observed_not_consumed(self, registry):
+        """A poll taken after the exit returned the exit code and output tail, so every
+        announcing surface skips the completion (#94455). poll() itself stays read-only:
+        it does not mark the output consumed."""
         s = _make_session(sid="proc_gw", notify_on_complete=True, output="done")
         s.exited = True
         s.exit_code = 0
         registry._finished[s.id] = s
 
         registry.poll("proc_gw")
-        # The gateway watcher gate is untouched, so it still delivers.
         assert not registry.is_completion_consumed("proc_gw")
+        assert registry.completion_already_observed("proc_gw")
+
+    def test_poll_while_running_keeps_exit_notification(self, registry):
+        """#10156: a status poll while the process still runs must not suppress the
+        notification for the exit that happens later."""
+        s = _make_session(sid="proc_run", notify_on_complete=True, output="")
+        registry._running[s.id] = s
+
+        assert registry.poll("proc_run")["status"] == "running"
+        s.exited = True
+        s.exit_code = 0
+        with patch.object(registry, "_write_checkpoint"):
+            registry._move_to_finished(s)
+
+        assert not registry.completion_already_observed("proc_run")
+        assert [evt["session_id"] for evt, _text in registry.drain_notifications()] == ["proc_run"]
 
 
     def test_wait_and_log_still_skip_cli_drain(self, registry):

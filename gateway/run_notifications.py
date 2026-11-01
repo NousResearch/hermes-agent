@@ -1864,9 +1864,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             has_new_output = current_output_len > last_output_len
             last_output_len = current_output_len
             if session.exited:
-                # Agent-notify: inject a synthetic message unless the agent already consumed the result via
-                # wait/log (poll() is read-only and deliberately does NOT mark consumed).
-                if agent_notify and not process_registry.is_completion_consumed(session_id):
+                # Agent-notify: inject a synthetic message unless the agent already has the result
+                # (wait/log, or a poll taken after the exit — see completion_already_observed).
+                if agent_notify and not process_registry.completion_already_observed(session_id):
                     completion_evt = self._build_process_completion_event(watcher, session, session_id)
                     synth_text = format_process_notification(completion_evt)
                     if not synth_text:
@@ -1912,12 +1912,12 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                         "Process watcher: completion for %s was refused %d times; falling back to the "
                         "notify_mode=%s notice", session_id, completion_attempts, notify_mode,
                     )
-                # Text-only notification; skip when already consumed via wait/log (the agent_notify branch
-                # FALLS THROUGH here, hence the re-check).
-                if process_registry.is_completion_consumed(session_id):
+                # Text-only notification; skip when the agent already has the result (the agent_notify
+                # branch FALLS THROUGH here, hence the re-check).
+                if process_registry.completion_already_observed(session_id):
                     logger.debug(
-                        "Process watcher: completion for %s already consumed "
-                        "via wait/log — skipping raw notification (#65379)", session_id,
+                        "Process watcher: completion for %s already observed "
+                        "via wait/log/poll — skipping raw notification (#65379)", session_id,
                     )
                     break
                 if notify_mode in {"concise", "all", "result"} or (

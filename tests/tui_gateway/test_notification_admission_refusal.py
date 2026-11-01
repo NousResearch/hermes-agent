@@ -49,7 +49,8 @@ def test_refused_notification_retains_result_without_spending_attempts(tmp_path,
             else:
                 namespace['_notif_dispatch_completions']('live', session, [(event, 'result')],
                     SimpleNamespace(completion_queue=process_registry.completion_queue,
-                                    is_completion_consumed=lambda _: False), None)
+                                    is_completion_consumed=lambda _: False,
+                                    completion_already_observed=lambda _: False), None)
             assert process_registry.completion_queue.get_nowait() == event
             assert session['running'] is False
         assert not any(e[0] == 'message.start' for e in emitted), emitted
@@ -66,7 +67,8 @@ def test_refused_notification_retains_result_without_spending_attempts(tmp_path,
         else:
             namespace['_notif_dispatch_completions']('live', session, [(event, 'result')],
                 SimpleNamespace(completion_queue=process_registry.completion_queue,
-                                is_completion_consumed=lambda _: False), None)
+                                is_completion_consumed=lambda _: False,
+                                    completion_already_observed=lambda _: False), None)
         assert len(accepted) == 1 and process_registry.completion_queue.empty()
     finally:
         process_registry.completion_queue = original_queue

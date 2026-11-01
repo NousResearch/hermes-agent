@@ -37,9 +37,10 @@ class AdmittingHandler(AsyncMock):
 class _FakeRegistry:
     """Return pre-canned sessions, then None once exhausted."""
 
-    def __init__(self, sessions, consumed=False):
+    def __init__(self, sessions, consumed=False, poll_observed=False):
         self._sessions = list(sessions)
         self._consumed = consumed
+        self._poll_observed = poll_observed
 
     def get(self, session_id):
         if self._sessions:
@@ -48,6 +49,9 @@ class _FakeRegistry:
 
     def is_completion_consumed(self, session_id):
         return self._consumed
+
+    def completion_already_observed(self, session_id):
+        return self._consumed or self._poll_observed
 
 
 def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
@@ -155,6 +159,32 @@ async def test_consumed_completion_skips_raw_notification(monkeypatch, tmp_path)
 
     adapter.send.assert_not_awaited()
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_poll_after_exit_skips_agent_notify_and_raw_notification(monkeypatch, tmp_path):
+    """#94455: a poll() taken after the exit already returned the exit code and output to the
+    agent, so the watcher must neither inject a synthetic completion turn nor push a raw notice."""
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="echo done", started_at=None,
+    )]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions, poll_observed=True))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=True)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    watcher = {**_watcher_dict(), "notify_on_complete": True}
+
+    await runner._run_process_watcher(watcher)
+
+    runner._enqueue_process_completion_notification.assert_not_awaited()
+    adapter.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

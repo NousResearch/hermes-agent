@@ -1,0 +1,13 @@
+=== Hermes Build Log ===
+Started: 2026-08-07 04:07:19 UTC
+
+Actions performed:
+1. Backed up custom files from hermes-agent repo to ~/.hermes/backup-custom-1786074851/
+2. Removed custom files from hermes-agent source tree (tools/tencentdb_client.py, .claude-flow, .codegraph, .swarm, claude-flow.config.json, plugins/memory/memory_tencentdb_v2, ruvector.db, scripts/push_ruflo_to_tencentdb.py, scripts/verify_tencentdb_setup.sh, skills/ruflo-workflows, test files)
+3. Reset hermes-agent repository to official upstream (NouResearch/hermes-agent) via git reset --hard upstream/main
+4. Restored custom files to ~/.hermes/ (plugins/memory_tencentdb_v2, tools/tencentdb_client.py, scripts/, skills/, .claude-flow, .codegraph, .swarm, ruvector.db, etc.)
+5. Pushed custom files to user's remote repository (louislhs-dotcom/hermes-agent) via force push, updating origin/main with the customizations on top of official base.
+6. Separation complete: hermes-agent source is clean and tracks official; custom files reside in ~/.hermes/ and are picked up by Hermes.
+
+End: 2026-08-07 04:07:19 UTC
+

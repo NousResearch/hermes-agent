@@ -168,8 +168,8 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   eviction (`run_agent_cache.py::_run_release_in_profile_scope` — TTL, LRU and memory-pressure
   eviction all route through it so `on_session_end`/memory flush hit the OWNING profile's provider),
   shutdown (`run_shutdown.py::_finalize_session`), post-turn media delivery
-  (`platforms/base.py::_media_delivery_scope`), deferred callbacks (pickers, reactions — capture the
-  routed home at command time, re-enter the scope in the callback), notifiers and outbound webhooks.
+  (`platforms/base.py::_media_delivery_scope`), deferred callbacks (pickers, reactions, slash-confirm
+  opt-outs - capture the routed home at command time, re-enter the scope in the callback), notifiers and outbound webhooks.
   Resolve the owning home from the session record (`profile_home`, `agent:<profile>:` key), never
   from `os.environ`, which holds the launch profile. Why: eviction that flushed under the launch scope
   wrote a secondary profile's memories into the default profile's store, silently.

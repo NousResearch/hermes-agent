@@ -250,8 +250,11 @@ hermes profile rename mybot assistant
 
 The rename also migrates the profile's persisted session/routing identity — session keys
 (`agent:<old>:*`), `sessions.profile_name`, heartbeats, and routing/delivery rows — to the new
-name. A live multiplexed gateway owns that migration (it holds the routing index in memory), so
-when it is running the CLI delegates to it. Checkpoint (`/rollback`) history of workspaces that
+name. The profile's Desktop, Webapp and CLI chats and its API sessions are owned by its home
+directory, which the rename moves, so their ownership records move to the new home too, along with
+the scope of the credentials each chat froze when it started. A live multiplexed gateway owns that
+migration (it holds the routing index in memory), so when it is running the CLI delegates to it; if it
+already serves the new name, the chats come back there without a restart. Checkpoint (`/rollback`) history of workspaces that
 live inside the profile directory is rekeyed to their new path as well, so it stays reachable
 after the rename; `hermes profile migrate-identity` retries that step too if it was reported as
 failed.
@@ -265,7 +268,8 @@ hermes profile migrate-identity <old-name> <new-name>
 Retries the identity migration of a rename that already completed. Run it if `hermes profile
 rename` warned that the live gateway could not migrate session identity: restart the gateway
 (it reloads the routing index from the database, so the migration lands), or stop it — with no
-gateway holding the store the command performs the durable rewrite itself.
+gateway holding the store the command performs the durable rewrite itself. It also repairs a profile
+renamed by an older release, whose chats every resume refuses with `profile_mismatch`.
 
 The migration is driven by the rows that still name `<old>`, so `profiles/<old>` does not have
 to exist; only `<new>` is checked. Idempotent — re-running a completed migration succeeds with

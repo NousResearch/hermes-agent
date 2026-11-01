@@ -679,7 +679,11 @@ def migrate_profile_identity_verb(runner):
     (#111926). The live multiplexer owns the routing index in memory and writes it back
     periodically, so a CLI-side rewrite of ``agent:<old>:*`` would be clobbered on the next save;
     the CLI therefore asks this process to rekey both durable stores AND ``SessionStore._entries``.
+    A profile this process already serves under the new name (a rescan served it first, or this is the
+    ``hermes profile migrate-identity`` retry) refused its chats when it was served; they are recovered
+    on its authority, on the owner loop, once they are its own (``recover_rekeyed_profile``).
     Runs on the control-socket executor thread; ``rekey_profile_routing`` takes the store lock."""
+    loop = asyncio.get_running_loop()
 
     def _handler(params: dict) -> dict:
         old, new = str(params.get("old") or "").strip(), str(params.get("new") or "").strip()
@@ -702,7 +706,17 @@ def migrate_profile_identity_verb(runner):
                 acquired.append(profile_db)
                 db_counts["profile"] = profile_db.rekey_profile_state(old, new)
             rekeyed = store.rekey_profile_routing(old, new)
-            return {"ok": True, "rekeyed": rekeyed, "db": db_counts}
+            answer = {"ok": True, "rekeyed": rekeyed, "db": db_counts}
+            if profile_path is not None:
+                from gateway.run_runtime import recover_rekeyed_profile
+                recovery = asyncio.run_coroutine_threadsafe(
+                    recover_rekeyed_profile(runner, profile_path.parent), loop)
+                try:
+                    answer["recovered"] = recovery.result(timeout=5.0)
+                except TimeoutError:
+                    # The identity is migrated; the recovery keeps running on the loop.
+                    answer["recovered"] = "pending"
+            return answer
         except Exception as exc:
             logger.warning("Profile identity migration failed for %r->%r: %s", old, new, exc)
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}

@@ -487,6 +487,24 @@ async def serve_profile_runtime(runner, name, home):
     return authority
 
 
+async def recover_rekeyed_profile(runner, home):
+    """Recover, on the authority already serving *home*, the records a rename's identity migration just
+    re-owned (``migrate-profile-identity``). Serving refused each one while it still named the old home,
+    so this runs the serve's own local-session and API-turn recovery again: they restore what is now
+    this profile's, schedule its queued work and re-arm its closes, and leave what is already live
+    alone. False when *home* is not served: serving it later recovers them."""
+    from gateway.session_authorities import owner_scope
+    from gateway.session_local_recovery import recover_local_sessions
+    registry = getattr(runner, 'session_authorities', None)
+    authority = registry.for_home(home) if registry is not None else None
+    if authority is None or getattr(authority, 'retiring', False):
+        return False
+    with owner_scope(authority):
+        recover_local_sessions(authority, schedule=True)
+        _recover_published_api_turns(runner, authority)
+    return True
+
+
 def _drop_retired_local_adapter(authority):
     """A LOCAL adapter still bound to this profile's previous authority, once that authority fully
     retired, gives way to *authority*'s own: restore and create otherwise refuse every local session

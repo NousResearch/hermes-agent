@@ -671,13 +671,18 @@ class SessionGatewayMixin:
         self._write_sql("DELETE FROM gateway_hygiene_state WHERE session_key = ?", (session_key,))
 
     def rekey_profile_state(self, old_name: str, new_name: str) -> dict[str, int]:
-        """Atomically rewrite exact profile identity in this state database."""
+        """Atomically rewrite exact profile identity in this state database.
+
+        The renamed profile's own store also re-owns the gateway records naming its old home
+        (``hermes_state_local_rekey``), in the same transaction as the rows and routing they match."""
         old, new = (old_name or "").strip(), (new_name or "").strip()
         counts: dict[str, int] = {}
         if not old or not new or old == new:
             return counts
         old_ns, new_ns = f"agent:{old}:", f"agent:{new}:"
         ns_len = len(old_ns)
+        from hermes_state_local_rekey import rekey_owner_records, renamed_owner_ids
+        owner_ids = renamed_owner_ids(self.db_path, old, new)
 
         def _do(conn):
             existing = {row[0] for row in conn.execute(
@@ -775,6 +780,10 @@ class SessionGatewayMixin:
                     "UPDATE gateway_routing SET session_key = ?, entry_json = ? WHERE rowid = ?",
                     (new_session_key, new_json, rowid))
             counts["gateway_routing"] = len(routing)
+            if owner_ids is not None:
+                counts.update(rekey_owner_records(
+                    conn, old_id=owner_ids[0], new_id=owner_ids[1], old_ns=old_ns, new_ns=new_ns,
+                    old_name=old, new_name=new))
 
         self._execute_write(_do)
         return counts

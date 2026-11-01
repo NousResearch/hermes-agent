@@ -47,3 +47,36 @@ def test_auto_decompose_tick_reads_launch_profile_secrets_under_multiplex(monkey
     assert decomposed == 1
     assert seen["value"] == "launch-profile-key"
     assert ss.current_secret_scope() is None
+
+
+def test_auto_decompose_board_pin_stays_inside_the_tick(monkeypatch, tmp_path):
+    """Boards are an isolation boundary: while the tick decomposes one board, every other thread
+    in the gateway (turns, kanban tools, spawned subprocesses) must keep resolving its own board."""
+    import threading
+
+    import hermes_cli
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    kb.create_board("work")
+    kb.create_board("clientb")
+    kb.set_current_board("work")
+    monkeypatch.setattr(kwd, "_board_slugs", lambda kb: ["clientb"])
+
+    seen = {}
+
+    def fake_decompose(task_id, author=None):
+        seen["tick"] = kb.get_current_board()
+        other = threading.Thread(target=lambda: seen.update(other=kb.get_current_board()))
+        other.start()
+        other.join()
+        return SimpleNamespace(ok=True, fanout=False, child_ids=None, reason=None)
+
+    fake = SimpleNamespace(list_triage_ids=lambda: ["t1"], decompose_task=fake_decompose)
+    monkeypatch.setitem(sys.modules, "hermes_cli.kanban_decompose", fake)
+    monkeypatch.setattr(hermes_cli, "kanban_decompose", fake, raising=False)
+
+    assert asyncio.run(_to_thread_process_service(_dispatcher().auto_decompose_tick, 5)) == 1
+    assert seen["tick"] == "clientb"
+    assert seen["other"] == "work"

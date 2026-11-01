@@ -200,9 +200,11 @@ class MattermostAdapter(BasePlatformAdapter):
             base["file_ids"] = file_ids
         payload = _with_mentions_disabled(base)
         if self._reply_mode == "thread":
-            # root_id from reply_to, else metadata["thread_id"]/["root_id"], resolved to the true thread root.
-            candidate = reply_to or (
-                isinstance(metadata, dict) and (metadata.get("thread_id") or metadata.get("root_id")))
+            # RPC turns use an admission UUID as reply_to, not a Mattermost post ID.
+            # Preserve the platform thread before resolving a native reply target.
+            candidate = (
+                isinstance(metadata, dict) and (metadata.get("thread_id") or metadata.get("root_id"))
+            ) or reply_to
             if candidate:
                 payload["root_id"] = await self._resolve_root_id(str(candidate))
         return await self._post_preserving_thread(chat_id, payload, metadata)
@@ -303,12 +305,12 @@ class MattermostAdapter(BasePlatformAdapter):
         return await self._send_url_as_file(chat_id, image_url, caption, reply_to, "image", metadata)
 
     async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None,
-                              reply_to: Optional[str] = None, metadata: _Metadata = None) -> SendResult:
+                              reply_to: Optional[str] = None, metadata: _Metadata = None, **kwargs: Any) -> SendResult:
         return await self._send_local_file(chat_id, image_path, caption, reply_to, metadata=metadata)
 
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: _Metadata = None) -> SendResult:
+        reply_to: Optional[str] = None, metadata: _Metadata = None, **kwargs: Any) -> SendResult:
         return await self._send_local_file(chat_id, file_path, caption, reply_to, file_name, metadata)
 
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
@@ -316,7 +318,7 @@ class MattermostAdapter(BasePlatformAdapter):
         return await self._send_local_file(chat_id, audio_path, caption, reply_to, metadata=metadata)
 
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None,
-                         reply_to: Optional[str] = None, metadata: _Metadata = None) -> SendResult:
+                         reply_to: Optional[str] = None, metadata: _Metadata = None, **kwargs: Any) -> SendResult:
         return await self._send_local_file(chat_id, video_path, caption, reply_to, metadata=metadata)
 
     def format_message(self, content: str) -> str:

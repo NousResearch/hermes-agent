@@ -196,6 +196,83 @@ class TestMattermostSend:
 
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reply_to,thread_metadata",
+        [
+            ("f2dc2735-b8fc-4ccb-b17c-4b331d7f3fde", {"thread_id": "thread_root"}),
+            ("f2dc2735-b8fc-4ccb-b17c-4b331d7f3fde", {"root_id": "thread_root"}),
+            ("native_reply", {"thread_id": "thread_root"}),
+            ("native_reply", {}),
+        ],
+        ids=["rpc-thread", "rpc-legacy-root", "native-thread", "native-reply"],
+    )
+    @pytest.mark.parametrize("send_kind", ["text", "document"])
+    async def test_send_preserves_platform_thread(
+        self, reply_to, thread_metadata, send_kind, tmp_path
+    ):
+        """RPC admission IDs must not replace the platform thread on delivery."""
+        self.adapter._reply_mode = "thread"
+
+        async def get_post(endpoint):
+            posts = {
+                "posts/thread_root": {"id": "thread_root", "root_id": ""},
+                "posts/native_reply": {"id": "native_reply", "root_id": "thread_root"},
+            }
+            return posts.get(endpoint, {})
+
+        async def post_message(endpoint, payload):
+            if payload.get("root_id") not in (None, "thread_root"):
+                self.adapter._last_post_status = 400
+                self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
+                return {}
+            return {"id": "delivered_post"}
+
+        self.adapter._api_get = AsyncMock(side_effect=get_post)
+        self.adapter._api_post = AsyncMock(side_effect=post_message)
+
+        metadata = {**thread_metadata, "notify": True}
+        if send_kind == "document":
+            document = tmp_path / "result.txt"
+            document.write_text("CI result", encoding="utf-8")
+            self.adapter._upload_file = AsyncMock(return_value="uploaded_file")
+            result = await self.adapter.send_document(
+                "channel_1", str(document), caption="CI result",
+                reply_to=reply_to, metadata=metadata,
+            )
+        else:
+            result = await self.adapter.send(
+                "channel_1", "CI result", reply_to=reply_to, metadata=metadata,
+            )
+
+        assert result.success is True
+        self.adapter._api_post.assert_awaited_once()
+        payload = self.adapter._api_post.call_args.args[1]
+        assert payload["root_id"] == "thread_root"
+        if send_kind == "document":
+            assert payload["file_ids"] == ["uploaded_file"]
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["send_image_file", "send_document", "send_video"])
+    async def test_local_media_accepts_base_adapter_options(self, method, tmp_path):
+        """Optional base-adapter keywords must not prevent file delivery."""
+        media = tmp_path / "attachment.bin"
+        media.write_bytes(b"attachment content")
+        self.adapter._upload_file = AsyncMock(return_value="uploaded_file")
+        self.adapter._api_post = AsyncMock(return_value={"id": "delivered_post"})
+
+        result = await getattr(self.adapter, method)(
+            "channel_1", str(media), caption="Attachment", extra_option=True,
+        )
+
+        assert result.success is True
+        self.adapter._upload_file.assert_awaited_once()
+        self.adapter._api_post.assert_awaited_once()
+        payload = self.adapter._api_post.call_args.args[1]
+        assert payload["file_ids"] == ["uploaded_file"]
+        assert payload["message"] == "Attachment"
+
+    @pytest.mark.asyncio
     async def test_progress_send_with_invalid_thread_root_never_falls_back_flat(self):
         """Tool/status/progress bubbles must stay quiet when the thread is broken."""
         self.adapter._reply_mode = "thread"

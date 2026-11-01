@@ -31,7 +31,7 @@ import {
 } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
-import { purgeInFlightTurnJournals, recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
+import { ownerPendingTurns, purgeInFlightTurnJournals, recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { latestSessionTodoSnapshot } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
@@ -2177,14 +2177,13 @@ export function useSessionActions({
           )
         }
 
-        // Crash-survivable turn progress: fold a journaled in-flight tail
-        // (persisted by use-session-state-cache while the turn streamed;
-        // survives renderer/app death) back onto the restored transcript. The
-        // backend's own inflight projection is already inside
-        // `preferredWithRuntimeChanges`, so this merge only adds the locally
-        // recorded structure that the backend's text-only snapshot cannot carry.
+        // Crash-survivable turn progress: fold a journaled in-flight tail (persisted while the turn streamed;
+        // survives renderer/app death) back onto the restored transcript. The backend's own inflight projection
+        // is already inside `preferredWithRuntimeChanges`, so this merge only adds the structure its text-only
+        // snapshot cannot carry, and nothing once the owner's pending list shows the journaled turn finished.
         const inFlightRecovery = recoverInFlightTurnJournal(storedSessionId, preferredWithRuntimeChanges, {
-          keepPending: resumedRunning
+          keepPending: resumedRunning,
+          owner: ownerPendingTurns(resumed.info?.pending_submissions)
         })
 
         recoveredInFlightTail = inFlightRecovery.applied

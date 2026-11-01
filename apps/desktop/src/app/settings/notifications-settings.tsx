@@ -26,6 +26,7 @@ import {
 import { notify } from '@/store/notifications'
 
 import { CONTROL_TEXT } from './constants'
+import { NotificationsExtraSlot } from './notifications-contrib'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 import { notificationKindSettingId, SETTING_IDS, settingElementId } from './settings-manifest'
 import { useSettingDeepLink } from './use-setting-deep-link'
@@ -121,6 +122,8 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
               onChange={on => setNativeNotifyKind(kind, on)}
             />
           ))}
+
+          <NotificationsExtraSlot />
         </>
       )}
 

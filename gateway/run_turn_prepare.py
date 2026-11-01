@@ -104,7 +104,8 @@ class GatewayTurnPrepareMixin:
         keeps a launch-policy session on its own route (see ``_resolve_policy_agent_runtime``)."""
         from gateway.run import (
             _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
-            _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
+            _resolve_direct_alias_agent_runtime, _resolve_runtime_agent_kwargs,
+            _resolve_runtime_agent_kwargs_for_provider,
         )
         from gateway.session_policy import policy_for_source
         # Every exit path starts clean: a stale notice must never attach to another session's next
@@ -119,6 +120,25 @@ class GatewayTurnPrepareMixin:
             self._rehydrate_session_model_override(skey)
         _override_state = self._peek_session_state(skey) if skey else None
         override = _override_state.conversation.model_override if _override_state else None
+        # Choose the final model *before* resolving any provider. A session alias
+        # outranks a channel alias, which outranks the profile default; the entire
+        # selected route must replace default/channel/session credentials together.
+        selected_model = model
+        cfg = getattr(self, "config", None)
+        if cfg and source is not None:
+            ch = _get_channel_override(
+                cfg, source.platform, str(source.chat_id) if source.chat_id else "",
+                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+            )
+            if ch and ch.model:
+                selected_model = ch.model
+        if override and override.get("model"):
+            selected_model = override["model"]
+        direct_alias_runtime = _resolve_direct_alias_agent_runtime(selected_model)
+        if direct_alias_runtime is not None:
+            alias_model, alias_runtime = direct_alias_runtime
+            return _recover_or_remember_model(self, skey, alias_model), alias_runtime
         if override:
             override_model = override.get("model", model)
             override_runtime = {

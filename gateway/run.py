@@ -2453,6 +2453,41 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str, target_model: Opti
         "capabilities": dict(runtime.get("capabilities") or {})}
 
 
+def _resolve_direct_alias_agent_runtime(model: str) -> Optional[tuple[str, dict]]:
+    """Resolve a gateway-selected alias as one route before constructing AIAgent.
+
+    None means the name is not configured; an invalid configured alias fails
+    closed instead of sending its short name (or another route's key) on the wire.
+    """
+    requested_model = str(model or "").strip()
+    if not requested_model:
+        return None
+    from hermes_cli.config import load_config
+    from hermes_cli.model_switch import resolve_startup_model_route
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    cfg = load_config()
+    declared = (cfg.get("model_aliases") or {})
+    simple = (cfg.get("model") or {}).get("aliases") or {}
+    if requested_model.lower() not in {str(k).lower() for k in (*declared, *simple)}:
+        return None
+    try:
+        route = resolve_startup_model_route(requested_model, alias_config=cfg)
+        if route is None or not route.model or not route.provider:
+            raise ValueError("incomplete alias model/provider")
+        runtime = resolve_runtime_provider(
+            requested=route.provider, explicit_base_url=route.base_url or None,
+            explicit_api_key=route.api_key or None, target_model=route.model,
+        )
+        return route.model, {
+            **_runtime_agent_kwargs(runtime),
+            "request_overrides": dict(runtime.get("request_overrides") or {}),
+            "capabilities": dict(runtime.get("capabilities") or {}),
+        }
+    except Exception as exc:
+        raise RuntimeError(f"Configured model alias {requested_model!r} could not be resolved") from exc
+
+
 def _deep_merge_request_overrides(base: Optional[dict], override: Optional[dict]) -> dict:
     """Merge request_overrides dicts, deep-merging nested dictionaries."""
     from hermes_cli.config import _deep_merge

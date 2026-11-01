@@ -140,3 +140,28 @@ fallback_providers:
     assert runtime_kwargs["api_key"] == "sk-openrouter"
 
 
+def test_gateway_expands_configured_direct_alias_before_creating_agent(monkeypatch):
+    """A gateway turn must send a direct alias's wire model, not its short name."""
+    runner = _make_runner()
+    direct_runtime = {
+        "provider": "openrouter", "api_key": "alias-key",
+        "base_url": "https://openrouter.example/v1", "api_mode": "chat_completions",
+    }
+    monkeypatch.setattr(
+        gateway_run, "_resolve_direct_alias_agent_runtime",
+        lambda model: ("z-ai/glm-5.3-flash", dict(direct_runtime)) if model == "zdr-flash" else None,
+    )
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs",
+        lambda: (_ for _ in ()).throw(AssertionError("alias route must supply the default runtime")),
+    )
+
+    model, runtime = runner._resolve_session_agent_runtime(
+        session_key="agent:sharik:signal:dm:test",
+        user_config={"model": {"default": "zdr-flash"}},
+    )
+
+    assert model == "z-ai/glm-5.3-flash"
+    assert runtime == direct_runtime
+
+

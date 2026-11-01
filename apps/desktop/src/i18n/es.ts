@@ -1155,7 +1155,8 @@ export const esOverrides = {
       timezone: 'Zona horaria',
       display: {
         personality: 'Personalidad',
-        showReasoning: 'Bloques de razonamiento'
+        showReasoning: 'Bloques de razonamiento',
+        busyInputMode: 'Enter durante la ejecución'
       },
       desktop: {
         repoScanEnabled: 'Detección automática de repositorios',
@@ -1330,7 +1331,9 @@ export const esOverrides = {
       fallbackProviders: 'Entradas proveedor:model de respaldo para probar si falla el modelo predeterminado.',
       display: {
         personality: 'Estilo predeterminado del asistente para sesiones nuevas.',
-        showReasoning: 'Muestra secciones de razonamiento cuando el backend las proporcione.'
+        showReasoning: 'Muestra secciones de razonamiento cuando el backend las proporcione.',
+        busyInputMode:
+          'Define qué hace un mensaje enviado mientras el agente está en ejecución. Interrupt redirige el turno actual, Steer lo añade al siguiente resultado de herramienta sin detener el turno y Queue lo ejecuta como siguiente turno. La CLI, la TUI y las pasarelas de mensajería leen el mismo ajuste.'
       },
       desktop: {
         repoScanEnabled: 'Busca repositorios Git en carpetas locales para mostrarlos en Proyectos.',

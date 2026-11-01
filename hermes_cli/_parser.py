@@ -122,6 +122,9 @@ Examples:
                                   home (also --profile) — e.g. hermes -p coder gateway stop
     hermes -s hermes-agent-dev,github-auth
     hermes -w                     Start in isolated git worktree
+    hermes start                  Alias for gateway start
+    hermes stop                   Alias for gateway stop
+    hermes restart                Alias for gateway restart
     hermes sessions list          List past sessions
     hermes sessions browse        Interactive session picker
     hermes sessions rename ID T   Rename/title a session

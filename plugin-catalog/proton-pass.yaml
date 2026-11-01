@@ -1,0 +1,17 @@
+name: proton-pass
+repo: https://github.com/aditya123123123123/proton-pass-hermes-plugin
+sha: 94d1522c7cf6e0ad682cb16a0f8e9d9cfd4a3c3b
+description: "Allowlisted Proton Pass login autofill through Hermes Browser Vault. Disclosure — invokes the user-installed Proton Pass pass-cli and its network authentication/metadata operations, reads only Hermes-profile connection metadata, obtains the personal access token through Hermes's protected secret API, creates a fresh temporary CLI session per operation, and restricts retrieval to explicitly allowlisted vault items and exact browser origins; no telemetry, background process, Keychain, .env, auth.json, browser-profile, or vendor-session-file reads."
+maintainer: Aditya Jhalani
+tier: community
+category: tools
+docs_url: https://github.com/aditya123123123123/proton-pass-hermes-plugin#readme
+version: "0.2.1"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - PROTON_PASS_PERSONAL_ACCESS_TOKEN

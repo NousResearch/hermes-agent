@@ -18,6 +18,8 @@ import threading
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
+from media_constants import MEDIA_IMAGE_EXTS, MEDIA_VIDEO_EXTS
+
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -910,8 +912,6 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
 
 
 # Audio routing is centralized in gateway.platforms.base.should_send_media_as_audio().
-_VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
-_IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
 
 
 def _send_media_via_adapter(
@@ -943,9 +943,9 @@ def _send_media_via_adapter(
             ext = _sched.Path(media_path).suffix.lower()
             if should_send_media_as_audio(route_platform, ext, is_voice=_is_voice):
                 method, path_kw = "send_voice", "audio_path"
-            elif ext in _VIDEO_EXTS:
+            elif ext in MEDIA_VIDEO_EXTS:
                 method, path_kw = "send_video", "video_path"
-            elif ext in _IMAGE_EXTS:
+            elif ext in MEDIA_IMAGE_EXTS:
                 method, path_kw = "send_image_file", "image_path"
             else:
                 method, path_kw = "send_document", "file_path"

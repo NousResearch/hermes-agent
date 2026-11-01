@@ -90,12 +90,12 @@ def hermes_argv(*args: str) -> list[str]:
 def run_hermes(fh: FakeHome, args: list[str], *, extra_env: dict[str, str] | None = None,
                timeout: float = 120.0) -> subprocess.CompletedProcess:
     return subprocess.run(hermes_argv(*args), env=fh.env(extra_env), cwd=str(fh.root), stdin=subprocess.DEVNULL,
-                          capture_output=True, text=True, timeout=timeout)
+                          capture_output=True, text=True, timeout=timeout, check=False)
 
 
 def spawn_hermes(fh: FakeHome, args: list[str], *, extra_env: dict[str, str] | None = None,
                  log: Path) -> subprocess.Popen:
-    out = open(log, "w", encoding="utf-8")  # noqa: SIM115 - closed when the child is reaped
+    out = open(log, "w", encoding="utf-8")
     try:
         return subprocess.Popen(hermes_argv(*args), env=fh.env(extra_env), cwd=str(fh.root),
                                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, text=True)
@@ -210,8 +210,12 @@ def start_anthropic_rig(root: Path, decide: Callable[[dict[str, Any]], Any], *,
                         expires_at_ms: int | None = None) -> AnthropicOAuthRig:
     """``expires_at_ms`` is the seeded row's clock expiry; default: an hour ahead, so only the
     vendor's 401 (early revocation/expiry) can trigger the refresh."""
+    from tests.e2e.core.providers._anthropic_helpers import become_subreaper
     from tests.fakes.providers.oauth_token_server import OAuthTokenServer, TLSInterceptProxy, make_test_ca
 
+    # The child's first connect spawns the profile's gateway daemon (detached, reparented to init);
+    # as subreaper it stays in this test's tree so ``kill_tagged`` passes the live-system guard.
+    become_subreaper()
     ca = make_test_ca(root / "ca", ANTHROPIC_TOKEN_HOSTS)
     tokens = OAuthTokenServer().start()
     proxy = TLSInterceptProxy(tokens, ca, ANTHROPIC_TOKEN_HOSTS).start()

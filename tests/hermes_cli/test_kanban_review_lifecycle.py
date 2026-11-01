@@ -649,7 +649,6 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
 
     def spawn(task, workspace):
         captured.append(list(task.skills or []))
-        return None
 
     # The hermetic home ships no skill tree, so give it the specialist skill
     # this card force-loads: create-time validation now rejects any explicitly

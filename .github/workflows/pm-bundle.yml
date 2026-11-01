@@ -34,6 +34,7 @@ on:
   pull_request:
     paths:
       - 'pm/**'
+      - '!pm/**/*.md'
       - 'scripts/bundles/**'
       - 'scripts/ci/desktop_build_cache.py'
       - '.github/actions/desktop-build-cache/**'
@@ -63,24 +64,24 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          # TODO(ethie): restore the linux legs once the ubuntu-latest-32-*
+          # TODO(ethie): restore the linux legs once the blacksmith-32vcpu-ubuntu-2404-*
           # larger runners are re-imaged to Ubuntu 24.04. They currently boot
           # ubuntu-22.04 (glibc 2.35), and the prebuilt llama-server staged by
           # the native payload requires GLIBC_2.38, so verification fails.
           # - label: linux-x64
-          #   runner: ubuntu-latest-32-core
+          #   runner: blacksmith-32vcpu-ubuntu-2404
           # - label: linux-arm64
-          #   runner: ubuntu-latest-32-arm-core
+          #   runner: blacksmith-32vcpu-ubuntu-2404-arm
           - label: darwin-arm64
             runner: macos-15
           - label: darwin-x64
             runner: macos-15-intel
           - label: win32-x64
-            runner: windows-latest-32-core
+            runner: blacksmith-32vcpu-windows-2025
           - label: win32-arm64
             runner: windows-latest-32-arm-core
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           # Default to the exact candidate commit (github.sha); inputs.ref
           # remains an escape hatch for a focused manual reproduction.

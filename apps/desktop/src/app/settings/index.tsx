@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { type ComponentType, useCallback, useEffect, useMemo, useRef } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router'
 
 import { codiconIcon } from '@/components/ui/codicon'
@@ -18,6 +18,7 @@ import {
   Info,
   Keyboard,
   KeyRound,
+  Network,
   RefreshCw,
   Search,
   Settings2,
@@ -54,6 +55,13 @@ import { KeybindSettings } from './keybind-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
 import { movedSettingsTabRedirect } from './moved-tabs'
 import { NotificationsSettings } from './notifications-settings'
+import {
+  PAGE_SCOPED_PARAMS,
+  PLUGINS_NAV_ICON,
+  pluginSettingsNavChildren,
+  PluginSettingsPane,
+  usePluginSettingsRoute
+} from './plugin-settings'
 import { SettingsBreadcrumbContext } from './primitives'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
@@ -61,11 +69,13 @@ import { SettingsSubpageHeader } from './subpage-navigation'
 import { resolveSettingsSubpage, settingsSubpageIcon, settingsSubpages } from './subpages'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 import { vaultOwnerKey, VaultSettings } from './vault-settings'
+import { useWebAccessAvailable, WebAccessSettings } from './web-access-settings'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
   'providers',
   'gateway',
+  'web-access',
   // Legacy alias: the Connections page merged into Gateways. Kept in the enum
   // so saved `?tab=connections` deep links still resolve (redirected below).
   'connections',
@@ -75,8 +85,21 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'notifications',
   'billing',
   'sessions',
+  'plugins',
   'about'
 ]
+
+// Pages that take nothing but the resolved sub-page.
+const SUBPAGE_VIEWS: Partial<Record<SettingsViewId, ComponentType<{ subpage?: string }>>> = {
+  'config:appearance': AppearanceSettings,
+  about: AboutSettings,
+  // 'connections' renders the unified page too so the frame before the alias
+  // redirect lands doesn't flash the fallback view.
+  connections: GatewaySettings,
+  gateway: GatewaySettings,
+  keybinds: KeybindSettings,
+  notifications: NotificationsSettings
+}
 
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const scopeProfile = useStore($settingsScopeProfile)
@@ -85,9 +108,10 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
 
-  // MCP and Plugins moved out of Settings into Capabilities. Keep old
-  // `/settings?tab=mcp|plugins` deep links working — `useRouteEnumParam` would
-  // silently coerce the unknown tab to the default view otherwise.
+  // MCP moved out of Settings into Capabilities. Keep old `/settings?tab=mcp`
+  // deep links working — `useRouteEnumParam` would silently coerce the unknown
+  // tab to the default view otherwise. (`tab=plugins` is live: Settings ▸
+  // Plugins hosts each plugin's own settings pages.)
   useEffect(() => {
     const redirect = movedSettingsTabRedirect(search)
 
@@ -113,20 +137,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     (view: SettingsViewId, page?: string) => {
       const next = new URLSearchParams(search)
 
-      for (const key of [
-        'page',
-        'field',
-        'setting',
-        'key',
-        'aux',
-        'session',
-        'kind',
-        'label',
-        'origin',
-        'pview',
-        'kview',
-        'bview'
-      ]) {
+      for (const key of [...PAGE_SCOPED_PARAMS, 'pview', 'kview', 'bview']) {
         next.delete(key)
       }
 
@@ -168,7 +179,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     (tab: SettingsViewId, param: string, value: string, fallback: string) => {
       const params = new URLSearchParams(search)
 
-      for (const key of ['page', 'field', 'setting', 'key', 'aux', 'session', 'kind', 'label', 'origin']) {
+      for (const key of PAGE_SCOPED_PARAMS) {
         params.delete(key)
       }
 
@@ -192,6 +203,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   )
 
   const openKeysView = useCallback((view: KeysView) => openSubView('keys', 'kview', view, 'tools'), [openSubView])
+
+  const plugins = usePluginSettingsRoute(activeView === 'plugins')
 
   const importInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -230,6 +243,15 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       notifyError(err, t.settings.resetFailed)
     }
   }
+
+  const webAccessAvailable = useWebAccessAvailable()
+
+  // Where the nav hides Web Access, its deep link lands on Gateways, like the Connections alias.
+  useEffect(() => {
+    if (activeView === 'web-access' && !webAccessAvailable) {
+      setActiveView('gateway')
+    }
+  }, [activeView, setActiveView, webAccessAvailable])
 
   const navGroups: OverlayNavGroup[] = useMemo(
     () =>
@@ -350,6 +372,18 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             label: t.settings.nav.gateway,
             onSelect: () => setActiveView('gateway')
           },
+          // Serving the Webapp from THIS machine: only the native app on its local connection.
+          ...(webAccessAvailable
+            ? [
+                {
+                  active: activeView === 'web-access',
+                  icon: Network,
+                  id: 'web-access',
+                  label: t.settings.gateway.webAccess.title,
+                  onSelect: () => setActiveView('web-access')
+                }
+              ]
+            : []),
           {
             active: activeView === 'keybinds',
             icon: Keyboard,
@@ -388,6 +422,15 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             onSelect: () => setActiveView('sessions')
           },
           {
+            active: activeView === 'plugins',
+            children: pluginSettingsNavChildren(plugins.entries, plugins.target, plugins.open),
+            gapBefore: true,
+            icon: PLUGINS_NAV_ICON,
+            id: 'plugins',
+            label: t.settings.nav.plugins,
+            onSelect: () => plugins.open(null)
+          },
+          {
             active: activeView === 'about',
             gapBefore: true,
             icon: Info,
@@ -418,9 +461,11 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       billingView,
       canViewPlans,
       keysView,
+      plugins,
       providerView,
       subpage,
       t,
+      webAccessAvailable,
       setActiveView,
       openProviderView,
       openKeysView,
@@ -515,45 +560,46 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     </>
   )
 
-  const activeSettingsContent =
-    activeView === 'config:appearance' ? (
-      <AppearanceSettings subpage={subpage} />
-    ) : activeView === 'about' ? (
-      <AboutSettings subpage={subpage} />
-    ) : activeView === 'gateway' || activeView === 'connections' ? (
-      // 'connections' renders the unified page too so the frame before
-      // the alias redirect lands doesn't flash the fallback view.
-      <GatewaySettings subpage={subpage} />
-    ) : activeView === 'keybinds' ? (
-      <KeybindSettings subpage={subpage} />
-    ) : activeView.startsWith('config:') ? (
-      <ConfigSettings
-        activeSectionId={activeView.slice('config:'.length)}
-        importInputRef={importInputRef}
-        onConfigSaved={onConfigSaved}
-        onMainModelChanged={onMainModelChanged}
-        subpage={subpage}
-      />
-    ) : activeView === 'providers' ? (
-      <ProvidersSettings
-        key={scopeProfile}
-        onClose={onClose}
-        onConfigSaved={onConfigSaved}
-        onMainModelChanged={onMainModelChanged}
-        onViewChange={setProviderView}
-        view={providerView}
-      />
-    ) : activeView === 'keys' ? (
-      <KeysSettings view={keysView} />
-    ) : activeView === 'notifications' ? (
-      <NotificationsSettings subpage={subpage} />
-    ) : activeView === 'billing' ? (
-      <BillingSettings />
-    ) : activeView === 'vault' ? (
-      <VaultSettings key={vaultOwnerKey(activeConnectionId, scopeProfile)} subpage={subpage} />
-    ) : (
-      <SessionsSettings subpage={subpage} />
-    )
+  const SubpageView = SUBPAGE_VIEWS[activeView]
+
+  const activeSettingsContent = SubpageView ? (
+    <SubpageView subpage={subpage} />
+  ) : activeView.startsWith('config:') ? (
+    <ConfigSettings
+      activeSectionId={activeView.slice('config:'.length)}
+      importInputRef={importInputRef}
+      onConfigSaved={onConfigSaved}
+      onMainModelChanged={onMainModelChanged}
+      subpage={subpage}
+    />
+  ) : activeView === 'providers' ? (
+    <ProvidersSettings
+      key={scopeProfile}
+      onClose={onClose}
+      onConfigSaved={onConfigSaved}
+      onMainModelChanged={onMainModelChanged}
+      onViewChange={setProviderView}
+      view={providerView}
+    />
+  ) : activeView === 'keys' ? (
+    <KeysSettings view={keysView} />
+  ) : activeView === 'billing' ? (
+    <BillingSettings />
+  ) : activeView === 'web-access' ? (
+    <WebAccessSettings />
+  ) : activeView === 'plugins' ? (
+    <PluginSettingsPane
+      entries={plugins.entries}
+      missing={plugins.missing}
+      onOpen={plugins.open}
+      pending={plugins.pending}
+      target={plugins.target}
+    />
+  ) : activeView === 'vault' ? (
+    <VaultSettings key={vaultOwnerKey(activeConnectionId, scopeProfile)} subpage={subpage} />
+  ) : (
+    <SessionsSettings subpage={subpage} />
+  )
 
   return (
     <OverlayView closeLabel={t.settings.closeSettings} edgeBadge={searchPill} onClose={onClose}>

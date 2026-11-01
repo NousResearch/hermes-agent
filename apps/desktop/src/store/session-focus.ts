@@ -8,34 +8,55 @@ import { $selectedStoredSessionId } from './session'
 
 // A chat surface: the primary's workspace or a session tile. Everything else a
 // zone can show — the sessions list, Files, Terminal, a preview tab — is chrome.
-const isChatPane = (paneId?: string): boolean => paneId === 'workspace' || Boolean(paneId?.startsWith('session-tile:'))
+export const TILE_PANE_PREFIX = 'session-tile:'
+
+const isChatPane = (paneId?: string): boolean => paneId === 'workspace' || Boolean(paneId?.startsWith(TILE_PANE_PREFIX))
 
 // Chrome can own keyboard focus, but working in it (navigating the sessions
 // list, browsing Files, typing in Terminal) must not replace the chat being
 // worked in with the route's (possibly hidden) primary — the Files rail and
 // statusbar follow this chat, so they would jump projects mid-click.
-const $lastContentGroup = atom<null | string>(null)
+// Remember the pane: a preview can replace its group's active chat tab.
+const $lastContentPane = atom<null | string>(null)
 
-$activeTreeGroup.subscribe(groupId => {
+const rememberContentPane = () => {
+  const groupId = $activeTreeGroup.get()
   const tree = $layoutTree.get()
   const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
 
   if (!groupId || isChatPane(active)) {
-    $lastContentGroup.set(groupId)
+    $lastContentPane.set(active ?? null)
+
+    return
   }
-})
+
+  // Chrome owns focus: follow the remembered group when it fronts another
+  // chat (⌘1..9, drag-to-split) so a preview covering it later keeps it.
+  const last = $lastContentPane.get()
+  const content = last && tree ? findGroupOfPane(tree, last) : null
+
+  if (content && isChatPane(content.active)) {
+    $lastContentPane.set(content.active)
+  }
+}
+
+$activeTreeGroup.subscribe(rememberContentPane)
+$layoutTree.listen(rememberContentPane)
 
 export const $focusedTreePaneId = computed(
-  [$activeTreeGroup, $layoutTree, $workspaceMode, $lastContentGroup],
-  (groupId, tree, workspaceMode, lastContentGroup) => {
+  [$activeTreeGroup, $layoutTree, $workspaceMode, $lastContentPane],
+  (groupId, tree, workspaceMode, lastContentPane) => {
     let active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
 
     if (groupId && tree && !isChatPane(active)) {
-      const content = lastContentGroup ? findGroup(tree, lastContentGroup) : null
-      active = (content ?? findGroupOfPane(tree, 'workspace'))?.active
+      // Keep the remembered chat while chrome or a preview covers it.
+      active =
+        lastContentPane && findGroupOfPane(tree, lastContentPane)
+          ? lastContentPane
+          : findGroupOfPane(tree, 'workspace')?.active
     }
 
-    if (active?.startsWith('session-tile:')) {
+    if (active?.startsWith(TILE_PANE_PREFIX)) {
       return active
     }
 
@@ -44,7 +65,7 @@ export const $focusedTreePaneId = computed(
     if (workspaceMode === 'bots' && tree) {
       const mainActive = findGroupOfPane(tree, 'workspace')?.active
 
-      if (mainActive?.startsWith('session-tile:')) {
+      if (mainActive?.startsWith(TILE_PANE_PREFIX)) {
         return mainActive
       }
     }
@@ -62,8 +83,6 @@ export const $focusedTreePaneId = computed(
  *  `session-states` ⇄ `preview` a load cycle. The inputs (the layout tree and
  *  the primary selection) are both leaf stores, so every consumer can share one
  *  derivation without dragging session-states in. */
-export const TILE_PANE_PREFIX = 'session-tile:'
-
 export const $focusedSessionIsTile = computed($focusedTreePaneId, active =>
   Boolean(active?.startsWith(TILE_PANE_PREFIX))
 )

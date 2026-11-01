@@ -1,9 +1,9 @@
-// Defaults must run before bundled modules resolve paths or onboarding flags.
+// Defaults must run before bundled modules resolve paths or feature flags.
 // An esbuild define would replace reads, not populate the child process env.
 // Match scripts/releases/bundle_env.py and the channel request decoder.
 const ALLOWED_KEYS = new Set([
   'HERMES_HOME', 'HERMES_DATA_DIR_SUFFIX', 'HERMES_DESKTOP_USER_DATA_DIR',
-  'HERMES_SHARED_AUTH_DIR', 'HERMES_GUEST_ONBOARDING', 'HERMES_SKIP_INTRO'
+  'HERMES_SHARED_AUTH_DIR', 'HERMES_PREVIEW_FULL_CONNECTORS'
 ])
 
 /** Validate a bundle environment object: plain object of identifiers to

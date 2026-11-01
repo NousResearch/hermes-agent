@@ -9,11 +9,9 @@ import time
 from typing import Any, Callable, Iterable, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_workflow
 
-_STATUS_ICONS = {
-    "todo": "◻", "ready": "▶", "running": "●", "scheduled": "⏱",
-    "blocked": "⊘", "done": "✓", "archived": "—",
-}
+_STATUS_ICONS = {c.key: c.icon for c in kanban_workflow.DEFAULT_WORKFLOW} | {kanban_workflow.ARCHIVED: "—"}
 
 _TASK_DICT_FIELDS = (
     "id", "title", "body", "assignee", "status", "priority", "tenant",

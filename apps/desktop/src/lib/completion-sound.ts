@@ -1,9 +1,14 @@
 // Completion sound bank for agent turn-end cues.
-// Fourteen curated presets for A/B in Settings → Appearance. Default is variant 1.
+// Fourteen curated presets for A/B in Settings → Appearance, plus variant 0
+// ("None") to turn the cue off. Default is variant 1.
 
 import { getAudioContext } from '@/lib/audio-context'
 import { ownsAmbientCue } from '@/store/ambient'
-import { $completionSoundVariantId, resolveCompletionSoundVariantId } from '@/store/completion-sound'
+import {
+  $completionSoundVariantId,
+  NO_COMPLETION_SOUND_VARIANT_ID,
+  resolveCompletionSoundVariantId
+} from '@/store/completion-sound'
 import { $hapticsMuted } from '@/store/haptics'
 
 type OscType = OscillatorType
@@ -219,6 +224,13 @@ const C5 = 523.25
 const C6 = 1046.5
 
 export const COMPLETION_SOUND_VARIANTS: readonly CompletionSoundVariant[] = [
+  // Variant 0 = "None": playVariant returns before touching the AudioContext,
+  // so this play hook is never invoked.
+  {
+    id: 0,
+    name: 'None',
+    play: () => undefined
+  },
   {
     id: 1,
     name: 'Two-note comfort',
@@ -381,6 +393,11 @@ export const COMPLETION_SOUND_VARIANTS: readonly CompletionSoundVariant[] = [
 ] as const
 
 function playVariant(variantId: number) {
+  // "None": bail before any WebAudio scheduling so silence costs nothing.
+  if (variantId === NO_COMPLETION_SOUND_VARIANT_ID) {
+    return
+  }
+
   const variant = COMPLETION_SOUND_VARIANTS.find(v => v.id === variantId)
 
   if (!variant) {
@@ -418,17 +435,24 @@ function playVariant(variantId: number) {
 }
 
 // Audition the selected variant from settings. Bypasses the haptics mute toggle so
-// sound design can be compared even when turn-end cues are silenced.
+// sound design can be compared even when turn-end cues are silenced. "None" stays
+// silent — playVariant never schedules it.
 export function previewCompletionSound(variantId?: number) {
   playVariant(resolveCompletionSoundVariantId(variantId ?? $completionSoundVariantId.get()))
 }
 
 // Plays the selected completion cue on any `message.complete`. Pass a dedupeKey
-// (the session id) so only one window beeps when several are open — the mute
-// check runs first, so a muted window never claims the cue out from under an
-// audible peer.
+// (the session id) so only one window beeps when several are open — the mute and
+// "None" checks run first, so a silent window never claims the cue out from under
+// an audible peer.
 export function playCompletionSound(dedupeKey?: string) {
   if ($hapticsMuted.get()) {
+    return
+  }
+
+  // "None" bails here — before the ownsAmbientCue claim — for the same reason
+  // as the mute check above: a silent window must not steal the cue.
+  if ($completionSoundVariantId.get() === NO_COMPLETION_SOUND_VARIANT_ID) {
     return
   }
 
@@ -438,7 +462,8 @@ export function playCompletionSound(dedupeKey?: string) {
     return play()
   }
 
-  void ownsAmbientCue(`sound:${dedupeKey}`).then(owns => owns && play())
+  // A user can mute this window while the ownership request is in flight.
+  void ownsAmbientCue(`sound:${dedupeKey}`).then(owns => owns && !$hapticsMuted.get() && play())
 }
 
 interface AirPuffSpec {

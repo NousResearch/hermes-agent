@@ -92,6 +92,18 @@ it('coalesces polls, backs off failures, and skips checks while an update owns t
   await other
 })
 
+// Review K132345 P3: main defers the warning on a LIVE marker only (an async
+// owner-liveness judgement), so a dead marker Desktop never deletes cannot
+// suppress it forever.
+it('an asynchronous isUpdating defers only while it answers true', async () => {
+  let updating = true
+  const check = createBundleSkewChecker(STAMP, gitCounting('2\n'), { isUpdating: async () => updating })
+
+  expect(await check(REPO)).toEqual({ desktopCommitsBehind: null, outOfSync: false })
+  updating = false
+  expect(await check(REPO)).toEqual({ desktopCommitsBehind: 2, outOfSync: true })
+})
+
 describe('isFallbackCommit', () => {
   it('matches the all-zero placeholder at any stamp length', () => {
     expect(isFallbackCommit('0'.repeat(40))).toBe(true)
@@ -326,6 +338,38 @@ describe('detectBundleSkew against a real git repo', () => {
     const result = await detectBundleSkew({ commit: base, source: 'local' }, realGitRun(repoRoot), repoRoot)
 
     expect(result).toEqual(expected)
+  })
+
+  // A change and its revert in one update range: `hermes update` reuses the packaged app because
+  // its inputs are byte-identical, so a commit count alone would warn until some later desktop
+  // change happened to rebuild it.
+  it('is quiet when runtime commits since the stamp net to no change', async () => {
+    const { repoRoot } = makeScratchRepo()
+    const git = scratchGit(repoRoot)
+
+    writeFiles(repoRoot, ['apps/desktop/src/app/shell.tsx'])
+    git('add', '.')
+    git('commit', '-q', '-m', 'built')
+    const stamp = git('rev-parse', 'HEAD')
+    writeFileSync(join(repoRoot, 'apps/desktop/src/app/shell.tsx'), 'export const broken = true\n')
+    git('commit', '-q', '-am', 'renderer change')
+    git('revert', '--no-edit', 'HEAD')
+
+    const runGit = realGitRun(repoRoot)
+
+    expect(await detectBundleSkew({ commit: stamp, source: 'local' }, runGit, repoRoot)).toEqual({
+      desktopCommitsBehind: 2,
+      outOfSync: false
+    })
+
+    writeFiles(repoRoot, ['apps/desktop/src/app/new-feature.tsx'])
+    git('add', '.')
+    git('commit', '-q', '-m', 'real renderer change')
+
+    expect(await detectBundleSkew({ commit: stamp, source: 'local' }, runGit, repoRoot)).toEqual({
+      desktopCommitsBehind: 3,
+      outOfSync: true
+    })
   })
 
   // The #92233 install, reproduced: the update rewrote the tree onto a fresh

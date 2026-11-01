@@ -29,6 +29,7 @@ import { actionAllowedInInput, comboFromEvent, IS_MAC, isEditableTarget, isFocus
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { markKeybindHandled } from '@/lib/keybinds/handled-keys'
 import { registerBuiltinActionRunner } from '@/lib/keybinds/plugin-actions'
+import { handleSidePaneEscape } from '@/lib/keybinds/side-pane-escape'
 import { stepReasoningEffort, writeSessionReasoningEffort } from '@/lib/reasoning-step'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { $commandPaletteOpen, openCommandPalettePage, toggleCommandPalette } from '@/store/command-palette'
@@ -672,6 +673,11 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // ⌘/Ctrl+L moves focus to the composer. Bubble phase so capture-phase
     // claimants run first; the priority ladder lives in focus-chord.ts.
     window.addEventListener('keydown', handleComposerFocusChord)
+    // Escape in a side pane folds it before the chat's Esc-to-cancel sees the
+    // key. Bubble phase on `document`: React handlers inside the pane (rename
+    // inputs, pickers) claim Escape first, and `document` still runs ahead of
+    // the composer's window-level listener.
+    document.addEventListener('keydown', handleSidePaneEscape)
 
     return () => {
       window.removeEventListener('keydown', onKeyDown, { capture: true })
@@ -680,6 +686,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       window.removeEventListener('contextmenu', onContextMenu, { capture: true })
       window.removeEventListener('paste', handleWindowPaste)
       window.removeEventListener('keydown', handleComposerFocusChord)
+      document.removeEventListener('keydown', handleSidePaneEscape)
     }
   }, [])
 }

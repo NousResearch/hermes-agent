@@ -28,5 +28,9 @@ def mirror_url(sha256: str) -> str:
 def pinned_source(url: str, dest: Path, sha256: str) -> Source:
     archive = mirror_url(sha256)
     # The lock records registry.npmjs.org; a user's npm mirror serves the same pinned bytes (#123132).
-    url = npm_registry_url(url, os.environ)
-    return Source(url, dest, sha256, fallbacks=() if url == archive else (archive,))
+    mirrored = npm_registry_url(url, os.environ)
+    return Source(mirrored, dest, sha256,
+                  fallbacks=() if mirrored == archive else (archive,),
+                  # A closed network's registry is plain http as often as not; the user
+                  # configured that origin, and the lock's SHA256 still verifies the bytes.
+                  allow_plain_http=mirrored != url and mirrored.startswith("http://"))

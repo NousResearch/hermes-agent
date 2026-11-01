@@ -150,6 +150,11 @@ dependencies = [
   "uvicorn>=0.31.0,<1; python_version >= '3.14'",
   "httptools>=0.6.3,<0.9; python_version >= '3.14'",
   "watchfiles>=0.20,<2; python_version >= '3.14'",
+  # API server gateway adapter imports aiohttp.web directly when
+  # API_SERVER_ENABLED=true. Keep it in core so local/browser API users do not
+  # need the broad messaging extra for the API server to bind.
+  # aiohttp 3.14.5: prior CVEs + GHSA-9xw5-w5jj-pvcg/GHSA-2g87-pp6c-29x5/GHSA-5wr8-gcqf-gqf3 family (same patched floor as [messaging]).
+  "aiohttp==3.14.5; python_version >= '3.14'",
   # Streaming multipart uploads for the dashboard file manager (NS-501).
   # FastAPI's UploadFile/Form depend on python-multipart; it is NOT pulled in
   # by fastapi itself, so the dashboard's multipart upload endpoint would 500

@@ -52,6 +52,12 @@ class _DripWire:
         self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}/v1"
 
 
+def _set_cap(monkeypatch, tmp_path, cap):
+    """``agent.stream_max_lifetime`` in a temp HERMES_HOME config.yaml, read by the real loader."""
+    (tmp_path / "config.yaml").write_text(f"agent:\n  stream_max_lifetime: {cap}\n")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+
 @pytest.fixture
 def drip_wire():
     w = _DripWire()
@@ -60,9 +66,9 @@ def drip_wire():
     w.server.server_close()
 
 
-def test_cap_cuts_a_stream_that_never_goes_quiet(drip_wire, monkeypatch):
+def test_cap_cuts_a_stream_that_never_goes_quiet(drip_wire, monkeypatch, tmp_path):
+    _set_cap(monkeypatch, tmp_path, 1.5)
     monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "1.0")
-    monkeypatch.setenv("HERMES_STREAM_MAX_LIFETIME", "1.5")
     monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
     monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "2")
     agent = run_agent.AIAgent(
@@ -84,11 +90,10 @@ def test_cap_cuts_a_stream_that_never_goes_quiet(drip_wire, monkeypatch):
     assert call("short").choices[0].message.content == "."
 
 
-def test_cap_is_off_by_default_and_never_undercuts_the_stale_timeout(monkeypatch):
-    monkeypatch.delenv("HERMES_STREAM_MAX_LIFETIME", raising=False)
+def test_yaml_key_is_off_by_default_and_never_undercuts_the_stale_timeout(monkeypatch, tmp_path):
     assert DEFAULT_CONFIG["agent"]["stream_max_lifetime"] == 0
-    monkeypatch.setenv("HERMES_STREAM_MAX_LIFETIME", "60")
+    _set_cap(monkeypatch, tmp_path, 60)
     assert resolve_stream_max_lifetime(180.0) == 180.0
     assert resolve_stream_max_lifetime(float("inf")) == 60.0
-    monkeypatch.setenv("HERMES_STREAM_MAX_LIFETIME", "0")
+    _set_cap(monkeypatch, tmp_path, 0)
     assert resolve_stream_max_lifetime(180.0) == 0.0

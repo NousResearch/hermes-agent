@@ -3,8 +3,8 @@
 The stale-stream detector bounds the gap BETWEEN chunks and resets on every
 chunk, so a stream that keeps yielding data but never finishes (a gateway
 trickling chunks, a runaway generation) is never cut. ``agent.stream_max_lifetime``
-(env ``HERMES_STREAM_MAX_LIFETIME``) caps the wall-clock time since the current
-attempt started; it never resets on chunk arrival. Default ``0`` = off, so a
+caps the wall-clock time since the current attempt started; it never resets on
+chunk arrival. Default ``0`` = off, so a
 legitimately long reasoning stream is never cut unless the user asks for it.
 """
 
@@ -13,8 +13,6 @@ from __future__ import annotations
 import logging
 import math
 import time
-
-from utils import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +30,11 @@ def resolve_stream_max_lifetime(stale_timeout: float | None) -> float:
             configured = float(value)
     except Exception:  # unreadable config = the documented default (off)
         logger.debug("stream_max_lifetime: config unreadable, cap off", exc_info=True)
-    cap = env_float("HERMES_STREAM_MAX_LIFETIME", configured)
-    if not cap or cap <= 0 or not math.isfinite(cap):
+    if configured <= 0 or not math.isfinite(configured):
         return 0.0
     if stale_timeout is not None and math.isfinite(stale_timeout):
-        cap = max(cap, stale_timeout)
-    return cap
+        return max(configured, stale_timeout)
+    return configured
 
 
 class StreamLifetimeExceeded(TimeoutError):
@@ -45,6 +42,7 @@ class StreamLifetimeExceeded(TimeoutError):
     delivering chunks, so the user-facing error names the setting, not the endpoint."""
 
     def __init__(self, elapsed: float, cap: float):
+        self.cap = cap
         super().__init__(
             f"Response still streaming after {elapsed:.0f}s, cut by agent.stream_max_lifetime ({cap:g}s). "
             f"Raise agent.stream_max_lifetime, or set it to 0 to turn the cap off, if this model "

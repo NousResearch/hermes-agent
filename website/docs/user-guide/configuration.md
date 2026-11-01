@@ -1368,7 +1368,7 @@ Hermes has separate timeout layers for streaming, plus a stale detector for non-
 |---------|---------|----------------|--------------|
 | Socket read timeout | 120s | Auto-raised to 1800s | `HERMES_STREAM_READ_TIMEOUT` |
 | Stale stream detection | 180s | Raised to a 900s ceiling (`agent.local_stream_stale_timeout`) | `HERMES_STREAM_STALE_TIMEOUT` |
-| Stream max lifetime (opt-in) | Off (`0`) | Same | `agent.stream_max_lifetime` or `HERMES_STREAM_MAX_LIFETIME` |
+| Stream max lifetime (opt-in) | Off (`0`) | Same | `agent.stream_max_lifetime` |
 | Stale non-stream detection | 90s | Auto-disabled when left implicit | `providers.<id>.stale_timeout_seconds` or `HERMES_API_CALL_STALE_TIMEOUT` |
 | Responses first-event watchdog | 120s | Raised to the 900s ceiling (`agent.local_stream_stale_timeout`) | `HERMES_CODEX_TTFB_TIMEOUT_SECONDS` |
 | API call (non-streaming) | 1800s | Unchanged | `providers.<id>.request_timeout_seconds` / `timeout_seconds` or `HERMES_API_TIMEOUT` |

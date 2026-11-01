@@ -7,15 +7,45 @@
  *   port: listen port (default: 8888)
  *
  * Environment:
- *   API_PORT: GitNexus serve backend port (default: 4747)
+ *   API_PORT:       GitNexus serve backend port (default: 4747)
+ *   GITNEXUS_USER:  Enable Basic Auth (required if GITNEXUS_PASS is set)
+ *   GITNEXUS_PASS:  Enable Basic Auth (required if GITNEXUS_USER is set)
  */
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 const API_PORT = parseInt(process.env.API_PORT || '4747');
 const DIST_DIR = process.argv[2] || './dist';
 const PORT = parseInt(process.argv[3] || '8888');
+const AUTH_USER = process.env.GITNEXUS_USER || '';
+const AUTH_PASS = process.env.GITNEXUS_PASS || '';
+const AUTH_ENABLED = !!(AUTH_USER && AUTH_PASS);
+
+function checkAuth(req, res) {
+  const header = req.headers.authorization || '';
+  const [scheme, encoded] = header.split(' ');
+  if (scheme !== 'Basic') return false;
+
+  const [user, pass] = Buffer.from(encoded, 'base64').toString().split(':');
+  // Constant-time comparison to prevent timing attacks
+  const userOk = crypto.timingSafeEqual
+    ? crypto.timingSafeEqual(Buffer.from(user), Buffer.from(AUTH_USER))
+    : user === AUTH_USER;
+  const passOk = crypto.timingSafeEqual
+    ? crypto.timingSafeEqual(Buffer.from(pass), Buffer.from(AUTH_PASS))
+    : pass === AUTH_PASS;
+  return userOk && passOk;
+}
+
+function sendAuthRequired(res) {
+  res.writeHead(401, {
+    'WWW-Authenticate': 'Basic realm="GitNexus Explorer", charset="UTF-8"',
+    'Content-Type': 'text/plain',
+  });
+  res.end('Authentication required');
+}
 
 const MIME = {
   '.html': 'text/html',
@@ -77,6 +107,10 @@ function serveStatic(req, res) {
 }
 
 const server = http.createServer((req, res) => {
+  if (AUTH_ENABLED && !checkAuth(req, res)) {
+    sendAuthRequired(res);
+    return;
+  }
   if (req.url.startsWith('/api')) {
     proxyToApi(req, res);
   } else {
@@ -89,4 +123,6 @@ server.listen(PORT, () => {
   console.log(`  Web UI: http://localhost:${PORT}/`);
   console.log(`  API:    http://localhost:${PORT}/api/repos`);
   console.log(`  Backend: http://127.0.0.1:${API_PORT}`);
+  if (AUTH_ENABLED) console.log(`  Auth:   Basic (user=${AUTH_USER})`);
+  else console.log('  Auth:   none (set GITNEXUS_USER + GITNEXUS_PASS to enable)');
 });

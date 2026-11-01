@@ -49,6 +49,21 @@ def _fake_spawn_factory(spawns: list):
     return fake_spawn
 
 
+def _install_review_skill(home, profile: str = "reviewer") -> None:
+    """Materialize a real profile home with the forced ``sdlc-review`` skill
+    installed, so the forced-skill preflight (``_forced_review_skill_issues``) resolves
+    this profile as eligible instead of ``lookup_error``."""
+    profile_home = home / "profiles" / profile
+    profile_home.mkdir(parents=True, exist_ok=True)
+    (profile_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    skill_dir = profile_home / "skills" / "devops" / "sdlc-review"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: sdlc-review\ndescription: Review test fixture.\n---\n\n# Review\n",
+        encoding="utf-8",
+    )
+
+
 # ---------------------------------------------------------------------------
 # 1. Standalone daemon resolves max_in_progress (P1a)
 # ---------------------------------------------------------------------------
@@ -206,6 +221,7 @@ def test_review_lane_gets_reserved_slot_under_ready_backlog(
         cfgmod, "load_config",
         lambda *a, **k: {"kanban": {"review_dispatch": True}},
     )
+    _install_review_skill(kanban_home)
 
     spawns: list = []
     with kbc.connect() as conn:
@@ -277,6 +293,7 @@ def test_unguarded_review_reserves_the_only_ready_slot(
         cfgmod, "load_config",
         lambda *a, **k: {"kanban": {"review_dispatch": True}},
     )
+    _install_review_skill(kanban_home)
 
     spawns: list = []
     with kbc.connect() as conn:
@@ -348,6 +365,7 @@ def test_review_budget_still_bounded_by_shared_cap(
         cfgmod, "load_config",
         lambda *a, **k: {"kanban": {"review_dispatch": True}},
     )
+    _install_review_skill(kanban_home)
 
     spawns: list = []
     with kbc.connect() as conn:

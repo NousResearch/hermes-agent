@@ -150,7 +150,9 @@ def _scan_local_changes(git_cmd: list[str], cwd: Path, untracked_targets=()) -> 
     blocks no pull or checkout, so with *untracked_targets* (every ref the update may land on) only the
     colliding ones are moved; without targets, or when a target tree is unreadable, all of them are."""
     from hermes_cli.update_cmd_git import _git_run
-    status = _git_run(git_cmd, ["status", "--porcelain", "-z"], cwd, check=True)
+    # Explicit mode: status.showUntrackedFiles=no would hide every untracked entry, and an empty
+    # leave-set means the stash takes them all.
+    status = _git_run(git_cmd, ["status", "--porcelain", "-z", "--untracked-files=normal"], cwd, check=True)
     if not status.stdout.strip():
         return None
     records = _porcelain_records(status.stdout)
@@ -160,6 +162,13 @@ def _scan_local_changes(git_cmd: list[str], cwd: Path, untracked_targets=()) -> 
     return _LocalChanges(
         porcelain=status.stdout, tracked=len(untracked) < len(records),
         stash_untracked=tuple(collide), leave_untracked=tuple(u for u in untracked if u not in collide))
+
+
+def _target_would_move_head(git_cmd: list[str], cwd: Path, target_ref: str) -> bool:
+    """True unless *target_ref* is HEAD or an ancestor of it (nothing to pull). An unresolvable
+    target answers True: the update fails on it later, and asking first is the safe side."""
+    probe = _git_quiet(git_cmd, ["merge-base", "--is-ancestor", f"{target_ref}^{{commit}}", "HEAD"], cwd)
+    return probe is None or probe.returncode != 0
 
 
 def _literal(path: str, *magic: str) -> str:

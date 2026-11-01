@@ -5,8 +5,10 @@ the autostash and deleted from disk on every update; declining the restore then 
 """
 
 import subprocess
+import sys
 
-from hermes_cli import update_cmd_stash
+import hermes_cli.main as cli_main
+from hermes_cli import update_cmd, update_cmd_stash
 
 
 def _git(cwd, *args):
@@ -28,6 +30,7 @@ def _behind_clone(tmp_path):
     _git(up, "add", ".")
     _git(up, "commit", "-qm", "adds pkg/new.py")
     _git(work, "fetch", "-q", "origin")
+    _git(work, "config", "status.showUntrackedFiles", "no")  # the scan must not inherit display settings
     (work / "a.txt").write_text("a\nmine\n")  # tracked edit
     (work / "pkg").mkdir()
     (work / "pkg" / "new.py").write_text("my copy\n")  # untracked, collides with the update
@@ -63,3 +66,25 @@ def test_declining_up_front_discards_without_a_stash_entry(tmp_path, monkeypatch
     assert not (work / "pkg" / "new.py").exists()
     assert (work / "stray" / "big.bin").exists()
     _git(work, "merge", "--ff-only", "-q", "origin/main")
+
+
+def test_up_to_date_checkout_never_offers_to_delete(tmp_path, monkeypatch):
+    work = _behind_clone(tmp_path)
+    _git(work, "stash", "push", "-q", "--include-untracked")
+    _git(work, "merge", "--ff-only", "-q", "origin/main")
+    (work / "a.txt").write_text("a\nmine\n")  # dirty, already on the target commit
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", work)
+    monkeypatch.chdir(work)
+    for stream in (sys.stdin, sys.stdout):
+        monkeypatch.setattr(stream, "isatty", lambda: True, raising=False)
+
+    def refuse(*_a):
+        raise AssertionError("asked keep/delete on an update with nothing to pull")
+    monkeypatch.setattr("builtins.input", refuse)
+
+    plan = update_cmd._prepare_checkout_for_update(
+        ["git"], "main", "main", is_fork=False, assume_yes=False, gateway_mode=False,
+        gw_input_fn=None, switch_branch=False, _windows_gateway_resume=None)
+
+    assert plan.commit_count == 0
+    assert "a.txt" in _git(work, "stash", "show", "--name-only", plan.auto_stash_ref)  # kept, not deleted

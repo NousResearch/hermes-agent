@@ -6,7 +6,12 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/compone
 import { FieldHint } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
-import { createRemoteDir, readDesktopDir, setDesktopFsRemotePicker } from '@/lib/desktop-fs'
+import {
+  createRemoteDir,
+  type DesktopFsSessionScope,
+  readDesktopDir,
+  setDesktopFsRemotePicker
+} from '@/lib/desktop-fs'
 import { displayPath, pathLeaf } from '@/lib/display-path'
 import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
@@ -45,6 +50,8 @@ function childPath(parent: string, name: string) {
 interface PendingSelection {
   defaultPath: string
   resolve: (paths: string[]) => void
+  /** The chat the pick is for: browsing and New folder go to its owner. */
+  scope?: DesktopFsSessionScope
   title: string
 }
 
@@ -63,13 +70,13 @@ export function RemoteFolderPicker() {
 
   useEffect(() => {
     setDesktopFsRemotePicker({
-      selectPaths: options =>
+      selectPaths: (options, scope) =>
         new Promise(resolve => {
           const defaultPath = clean(options?.defaultPath || '/')
           setCurrentPath(defaultPath)
           setNewFolderName(null)
           setNewFolderError(null)
-          setPending({ defaultPath, resolve, title: options?.title || r.remotePickerTitle })
+          setPending({ defaultPath, resolve, scope, title: options?.title || r.remotePickerTitle })
         })
     })
 
@@ -85,7 +92,7 @@ export function RemoteFolderPicker() {
     setLoading(true)
     setError(null)
 
-    void readDesktopDir(currentPath)
+    void readDesktopDir(currentPath, pending.scope)
       .then(result => {
         if (!active) {
           return
@@ -167,7 +174,7 @@ export function RemoteFolderPicker() {
     setNewFolderError(null)
 
     try {
-      const created = await createRemoteDir(childPath(currentPath, name))
+      const created = await createRemoteDir(childPath(currentPath, name), pending?.scope)
       navigate(clean(created))
     } catch (err) {
       setNewFolderError(r.remotePickerCreateFolderFailed(err instanceof Error ? err.message : String(err)))

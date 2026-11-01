@@ -66,7 +66,7 @@ describe('RemoteFolderPicker', () => {
     fireEvent.change(input, { target: { value: 'fresh-project' } })
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    await waitFor(() => expect(createRemoteDir).toHaveBeenCalledWith('/home/me/fresh-project'))
+    await waitFor(() => expect(createRemoteDir).toHaveBeenCalledWith('/home/me/fresh-project', undefined))
 
     // The picker lands inside the new folder, so Select picks it.
     await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Folder name' })).toBeNull())

@@ -479,3 +479,20 @@ def test_filter_reconcile_never_reuses_other_credentials(two_profiles):
     assert not reg._same_server_route(server, cfg_b)
     assert reg.reapply_tool_filters({"x": cfg_b}) == 0
     assert registry.get_tool_names_for_toolset("mcp-x") == []
+
+
+def test_filter_reconcile_defers_until_live_tool_manifest_is_available(two_profiles):
+    """A connected transport without a completed tools/list is not a tool revocation."""
+    import tools.mcp_tool as core
+    from tools import mcp_tool_registration as reg
+
+    scope = two_profiles("a")
+    cfg = {"url": "https://mcp.example/x"}
+    incomplete = SimpleNamespace(
+        session=object(), _config=cfg, _registered_tool_names=[],
+    )
+    with core._lock:
+        core._servers[(scope, "x")] = incomplete
+
+    assert reg.reapply_tool_filters({"x": cfg}) == 0
+    assert core._servers[(scope, "x")] is incomplete

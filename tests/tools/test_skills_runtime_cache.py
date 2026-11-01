@@ -65,6 +65,8 @@ def test_real_python_compilation_does_not_freeze_update(skill_tree):
     ".pytest_cache/v/cache/nodeids",
     "scripts/.mypy_cache/3.11/helper.data.json",
     "scripts/.ruff_cache/0.15.0/abc",
+    ".venv/pyvenv.cfg",
+    ".venv/lib/python3.11/site-packages/pkg/__init__.py",
     "scripts/helper.pyc", "scripts/helper.pyo",
 ])
 def test_runtime_cache_is_not_hash_or_diff_content(skill_tree, cache_path):
@@ -98,6 +100,19 @@ def test_source_cache_is_neither_seeded_nor_recorded(skill_tree):
     ss._write_manifest({})
     assert ss.sync_skills(quiet=True)["copied"] == ["demo"]
     assert not (dest / "scripts/__pycache__").exists()
+
+
+def test_skill_local_venv_is_never_synced_into_profiles(skill_tree):
+    src, dest = skill_tree
+    _write(src, ".venv/pyvenv.cfg", "home = /usr/bin/python\n")
+    _write(src, ".venv/lib/python3.11/site-packages/pkg/__init__.py", "")
+    _write(src, "SKILL.md", "---\nname: demo\n---\n# Changed upstream\n")
+    assert ss.sync_skills(quiet=True)["updated"] == ["demo"]
+    assert not (dest / ".venv").exists()
+    ss._rmtree_writable(dest)
+    ss._write_manifest({})
+    assert ss.sync_skills(quiet=True)["copied"] == ["demo"]
+    assert not (dest / ".venv").exists()
 
 
 def test_legacy_cache_hash_migrates_only_with_matching_origin(skill_tree):

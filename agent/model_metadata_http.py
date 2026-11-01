@@ -7,6 +7,29 @@ from contextlib import contextmanager
 TOTAL_DEADLINE_S = 15.0
 
 
+def auth_headers(api_key: object = "", base_url: str = "") -> dict[str, str]:
+    """Use chat's exact-route provider headers; values may contain secrets."""
+    import httpx
+    from agent.command_token_source import materialize_probe_api_key
+    from hermes_cli.config import get_custom_provider_extra_headers
+
+    token = materialize_probe_api_key(api_key)
+    headers = httpx.Headers({"Authorization": f"Bearer {token}"} if token else {})
+    headers.update(get_custom_provider_extra_headers(base_url))
+    return dict(headers)
+
+
+def metadata_cache_key(base_url: str) -> str:
+    """Partition probe memos by profile and configured header identity, never raw secrets."""
+    import json
+    from agent.credential_persistence import fingerprint_secret_value
+    from hermes_cli.config import get_custom_provider_extra_headers
+    from hermes_constants import hermes_home_key
+
+    identity = json.dumps([hermes_home_key(), get_custom_provider_extra_headers(base_url)], sort_keys=True)
+    return f"{base_url}#{fingerprint_secret_value(identity)}"
+
+
 def resolve_verify(base_url: str = ""):
     from agent.ssl_verify import resolve_httpx_verify
 

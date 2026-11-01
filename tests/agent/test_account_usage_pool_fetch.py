@@ -164,7 +164,8 @@ def test_anthropic_fetch_honors_explicit_api_key_and_marks_model_scoped_windows(
     assert scopes == {"Current session": "account", "Current week": "account",
                       "Opus week": "model", "Sonnet week": "model"}
     percents = {w.label: w.used_percent for w in snapshot.windows}
-    assert percents["Opus week"] == 100.0 and percents["Current session"] == 30.0
+    assert percents == {"Current session": 0.3, "Current week": 0.2,
+                        "Opus week": 1.0, "Sonnet week": 0.4}
 
 
 def test_read_only_fetch_remembered_under_identity_slot(monkeypatch, tmp_path):

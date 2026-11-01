@@ -43,8 +43,9 @@ class WriteResult:
     """Result from writing a file."""
     bytes_written: int = 0
     dirs_created: bool = False
-    # True when the on-disk sha256 matched the intended content; None when the
-    # backend couldn't verify (no sha256sum). A mismatch is a hard error, never a flag.
+    # True when the on-disk sha256 matched the intended content. write_file
+    # fail-closes when the hash cannot be taken or does not match — a missing
+    # sha256sum is an error, not a success with this field omitted.
     verified: Optional[bool] = None
     _content_sha256: Optional[str] = None
     lint: Optional[dict[str, Any]] = None

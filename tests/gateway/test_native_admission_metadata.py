@@ -127,3 +127,39 @@ async def test_native_codec_closed_metadata_contract_and_reply_expected(tmp_path
                     and any(k.arg == 'metadata' for k in node.keywords)):
                 producers.add(path.relative_to(REPO).as_posix())
     assert producers == {'plugins/platforms/whatsapp/adapter.py'}, producers
+
+
+@pytest.mark.asyncio
+async def test_non_whatsapp_metadata_is_dropped_not_refused(tmp_path, monkeypatch):
+    """A third-party adapter stamps free-form context on its events (documented on
+    ``MessageEvent.metadata``); native admission drops a non-WhatsApp platform's dict
+    metadata at the envelope instead of refusing every inbound message (#146220).
+    A non-dict is malformed and still refuses; WhatsApp's closed contract is unchanged."""
+    from types import SimpleNamespace
+
+    from gateway.session import SessionSource
+    from gateway.session_envelope import _event_clause, _native_metadata
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
+    platform = Platform._add_pseudo_member('openmail')
+    runner.adapters = {platform: SimpleNamespace(platform=platform)}
+    # The metadata contract under test is upstream of authorization; the pseudo platform has
+    # no allowlist, so stub the user check instead of wiring a real adapter's gating.
+    monkeypatch.setattr(runner, '_is_user_authorized_for_source', lambda source, **_: True)
+    source = SessionSource(platform=platform, chat_id='sender@example.com', chat_type='dm',
+                           user_id='sender@example.com', thread_id='inbox-1')
+    metadata = {'openmail_inbox_id': 'c3adcb15', 'openmail_thread_id': 'e46eb5b9',
+                'openmail_message_id': 'm-1', 'openmail_mode': 'channel'}
+    event = MessageEvent(text='hello', source=source, message_id='m-1', metadata=metadata)
+    assert _native_metadata(event) == {}
+    assert _event_clause(runner, event, None, False) is None
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='openmail')
+    try:
+        envelope_event = snapshot_native(runner, event)['native_text_v1']['event']
+        assert 'metadata' not in envelope_event
+        restored = restore_native(snapshot_native(runner, event))
+        assert restored.text == 'hello'
+        assert restored.metadata == {}
+        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+            snapshot_native(runner, replace(event, metadata=['not', 'a', 'dict']))
+    finally:
+        authority.db.close()

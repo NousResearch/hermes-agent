@@ -652,7 +652,11 @@ def reapply_tool_filters(servers: dict[str, dict]) -> int:
             with _core._lock:
                 key = _resolve_server_key(name, scope, current=False)
                 server = _core._servers.get(key)
-            if server is None or getattr(server, "session", None) is None:
+            # A transport may already be present in the ledger before its native
+            # tool manifest is available. Without that manifest we cannot safely
+            # infer which existing registrations should be revoked or restored.
+            if (server is None or getattr(server, "session", None) is None
+                    or not hasattr(server, "_tools") or not hasattr(server, "tool_timeout")):
                 continue
 
             borrowed = _key_scope(key) != scope

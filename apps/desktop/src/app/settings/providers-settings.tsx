@@ -20,6 +20,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
+import { connectedCredentialLine, credentialRemoveIsCliManaged } from '@/lib/provider-credential-copy'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { confirm } from '@/store/confirm'
@@ -293,10 +294,14 @@ function ConnectedProviderRow({
             {copy.connected}
           </span>
         </div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.flowSubtitles[provider.flow]}</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          {connectedCredentialLine(provider.status, t.onboarding.flowSubtitles[provider.flow])}
+        </p>
         {showHint && (
           <p className="mt-0.5 truncate text-[0.68rem] leading-5 text-muted-foreground/70">
-            {provider.flow === 'external' ? copy.removeExternalGeneric(title) : copy.removeKeyManaged(title)}
+            {credentialRemoveIsCliManaged(provider.status) && provider.flow === 'external'
+              ? copy.removeExternalGeneric(title)
+              : copy.removeKeyManaged(title)}
           </p>
         )}
       </RowButton>

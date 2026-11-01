@@ -98,3 +98,25 @@ def test_packaged_runtime_uses_explicit_stamp_without_tool_downloads(tmp_path, m
     from pm.package import InstallError
     with pytest.raises(InstallError, match="PM runtime"):
         runtime.runtime_command(project / "worker.py")
+
+
+def test_currency_probe_without_a_ready_runtime_answers_the_callers_unknown(tmp_path, monkeypatch):
+    """A cold PM runtime cannot check currency: the caller chooses what that means (#143478)."""
+    from pm import client
+    from pm.package import InstallError
+
+    monkeypatch.setattr(client, "is_runtime", lambda: False)
+
+    def cold(operation, arguments, **kwargs):
+        raise InstallError("pm-runtime", "not installed or outdated and lazy installs are disabled")
+
+    monkeypatch.setattr(client, "_request", cold)
+    assert client.venv_is_current(project_root=tmp_path) is False, "a launch's sync relies on False to run"
+    assert client.venv_is_current(project_root=tmp_path, if_unknown=None) is None
+
+    def broken(operation, arguments, **kwargs):
+        raise InstallError("venv", "invalid recorded dependency state")
+
+    monkeypatch.setattr(client, "_request", broken)
+    with pytest.raises(InstallError):
+        client.venv_is_current(project_root=tmp_path, if_unknown=None)

@@ -27,21 +27,9 @@ def is_clean_task(result: Any, agent: Any, *, user_input: bool, display_kind: st
     return is_anonymous_agent(agent)
 
 
-def _in_setup_profile(session: dict) -> bool:
-    # The setup chat is not a task: counting its last turn made the offer come due during the first real task.
-    from pathlib import Path
-
-    from hermes_cli.profiles import SETUP_PROFILE_MARKER
-    from hermes_constants import get_hermes_home
-    home = session.get("profile_home")
-    return ((Path(home) if home else get_hermes_home()) / SETUP_PROFILE_MARKER).is_file()
-
-
 def note_task_done(session: dict, result: Any, agent: Any, display_kind: str | None) -> None:
     """Record a clean free-tier task for the sign-in offer. Never fails the turn."""
     try:
-        if _in_setup_profile(session):
-            return
         if is_clean_task(result, agent, user_input=bool(session.get("_turn_user_input")), display_kind=display_kind):
             from hermes_cli.free_tier_offer import record_task_done
             record_task_done()

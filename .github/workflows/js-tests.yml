@@ -3,6 +3,11 @@ name: JS Tests
 
 on:
   workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
 
 jobs:
   check:
@@ -14,10 +19,12 @@ jobs:
     #
     # One larger runner installs one time. vitest, tsc and eslint each size
     # their own worker pool from the core count.
-    runs-on: ubuntu-latest-32-core
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
       - name: Set up the locked JS build toolchain
         id: node
         uses: ./.github/actions/setup-pm
@@ -38,15 +45,14 @@ jobs:
 
       # setup-pm caches npm downloads, not the installed workspace tree.
       # The job then extracts the full workspace node_modules
-      # again and runs the postinstalls again, which includes the Electron
-      # binary fetch. This caches the installed tree itself, keyed on the
+      # again and runs the native postinstalls again. Electron's binary is
+      # prepared explicitly below. This caches the installed tree itself, keyed on the
       # lockfile, and skips ``npm ci`` on an exact hit. There are no
       # restore-keys: a partial hit leaves a stale tree, so anything other
       # than an exact lockfile match reinstalls from the start.
       #
-      # This install runs WITH scripts, so the tree holds the postinstall
-      # artifacts. The postinstall of electron unpacks its binary into
-      # node_modules/electron/dist, which is inside the cached tree.
+      # This install runs WITH scripts, so the tree holds native lifecycle
+      # artifacts and the explicitly prepared Electron dist, both inside the cached tree.
       #
       # The ~/.cache/electron download cache stays out of the key on purpose.
       # ``npm ci`` is skipped on a hit, so nothing reads that cache. It only
@@ -68,6 +74,20 @@ jobs:
         if: steps.node-modules-cache.outputs.cache-hit != 'true'
         with:
           command: npm ci
+
+      - name: Prepare locked Electron runtime before parallel checks
+        run: node scripts/build/electron-runtime.mjs --source .
+
+      # The WhatsApp bridge is a standalone npm package, outside the root
+      # workspaces, so run-workspace-checks never sees it. Two of its suites
+      # import @whiskeysockets/baileys, so install its own lockfile first;
+      # --ignore-scripts because the tests need no native build.
+      - name: Install WhatsApp bridge dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: npm ci --ignore-scripts --no-audit --no-fund --prefix scripts/whatsapp-bridge
+      - name: Run WhatsApp bridge node tests
+        run: node --test scripts/whatsapp-bridge/*.test.mjs
 
       # Every check runs at the same time. The step fails only after all of
       # them finish. There are two reasons this is not ``npm run --ws check``.

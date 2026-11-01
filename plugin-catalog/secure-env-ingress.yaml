@@ -1,16 +1,17 @@
 name: secure-env-ingress
 repo: https://github.com/web3blind/hermes-secure-env-plugin
-sha: 78737e35e68e2b2954083d773b3ee8bcf926e921
+sha: a6c306299f5ad324ccd48e87195ec7150cf9be12
 subdir: secure_env_ingress
-description: "One-use HTTPS forms for missing environment secrets, native encrypted Browser Vault logins/TOTP setup keys, standalone verification codes, and approved secret operations outside chat and LLM input. Disclosure — /senv setup supplies a skill using sudo for host packages and TLS setup after approval; the TLS listener binds all interfaces by default; pre_gateway_dispatch observes gateway messages to bind commands to their sender. In interactive Telegram sessions, browser_vault saves logins or fills a code field through the captured browser supervisor without explicitly submitting the site form. Browser Use compatibility does not prove the latest named tab association. secure_operation executes administrator-allowlisted, SHA-256-pinned external Python consumers with gateway privileges; consumers are trusted, not sandboxed, and none are enabled by default. Secret input is not persisted by this mode; consumers must enforce their own handling policy. Links are bearer authorization, not submitter identity; cancellation cannot stop an already-running consumer."
+description: "One-use HTTPS forms for missing environment secrets, native encrypted Browser Vault logins/TOTP setup keys and payment cards, retained exact-parent login/password and saved TOTP filling, protected payment-field filling, nested verification codes/passcodes and guarded indexed code groups, and approved secret operations outside chat and LLM input. Disclosure — /senv setup supplies a skill using sudo for host packages and TLS setup after approval; the TLS listener binds all interfaces by default; pre_gateway_dispatch observes gateway messages to bind commands to their sender. Interactive Telegram secret entry uses secure_env_vault; secure_login_fill consumes existing native Vault handles without registering a login backend. Browser writes require an explicitly selected existing parent and the public captured-CDP dispatch API, retain the original transport and exact document/control guards, and fail closed on reconnect, profile or human-control lease changes; tab creation ownership is not required. No native fill fallback or explicit site-form submission occurs. Payment filling requires separate native consent; explicit resume requires existing nonempty values to match Vault. Card storage includes encrypted CVC. Site input callbacks, especially 3-D Secure, may authorize or auto-submit an operation. Unknown outcomes require external verification before retry. secure_operation executes administrator-allowlisted, SHA-256-pinned external Python consumers with gateway privileges; consumers are trusted, not sandboxed, and none are enabled by default. Secret input is not persisted by this mode; consumers must enforce their own handling policy. Links are bearer authorization, not submitter identity; cancellation cannot stop an already-running consumer. Setup bootstrap reads the profile .env directly to obtain TELEGRAM_ALLOWED_USERS owner IDs."
 maintainer: web3blind
 tier: community
 category: tools
-version: "0.6.4"
-docs_url: https://github.com/web3blind/hermes-secure-env-plugin#readme
+version: "0.8.3"
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/web3blind/hermes-secure-env-plugin/blob/a6c306299f5ad324ccd48e87195ec7150cf9be12/README.md
 platforms: [linux]
 capabilities:
-  provides_tools: [browser_vault, secure_operation]
+  provides_tools: [secure_env_vault, secure_login_fill, secure_payment_fill, secure_operation]
   provides_hooks: [pre_gateway_dispatch]
   provides_middleware: []
   requires_env: []

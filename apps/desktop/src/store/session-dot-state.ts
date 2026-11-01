@@ -28,6 +28,8 @@ import { computed } from 'nanostores'
 import { stableArray, stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
+import { $liveWorkRoster, noteEventFed, rosterLiveIds } from './live-work-roster'
+import { $pausedQueueSessionIds } from './owner-queue-reconcile'
 import { $messagingSessions, $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
 import {
   $attentionSessionIds,
@@ -49,18 +51,29 @@ import { $subagentsBySession, activeSubagentCount } from './subagents'
 // lineageAliases covers whichever tip of the conversation a surface holds.
 let delegatingIds: readonly string[] = []
 export const $delegatingSessionIds = computed(
-  [$subagentsBySession, $sessionStates, $sessions],
-  (bySession, states, sessions) => {
+  [$subagentsBySession, $sessionStates, $sessions, $liveWorkRoster],
+  (bySession, states, sessions, roster) => {
     const ids = new Set<string>()
+    const eventFedAt = new Map<string, number>()
 
     for (const [runtimeId, items] of Object.entries(bySession)) {
-      if (activeSubagentCount(items) === 0) {
+      if (items.length === 0) {
         continue
       }
 
-      for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) {
-        ids.add(alias)
+      const aliases = lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)
+      noteEventFed(eventFedAt, aliases, Math.max(...items.map(item => item.updatedAt || 0)))
+
+      if (activeSubagentCount(items) > 0) {
+        for (const alias of aliases) {
+          ids.add(alias)
+        }
       }
+    }
+
+    // Rows no current event feed speaks for (off screen, every row after a reload).
+    for (const alias of rosterLiveIds(roster, 'subagents', eventFedAt, sessions)) {
+      ids.add(alias)
     }
 
     return (delegatingIds = stableArray(delegatingIds, [...ids]))
@@ -70,13 +83,17 @@ export const $delegatingSessionIds = computed(
 export type SessionDotState = 'background' | 'draft' | 'idle' | 'needs-input' | 'stalled' | 'unread' | 'working'
 
 /** The sidebar row's arc. A quiet turn is still authoritatively running, so
- *  `stalled` keeps it; a blocking prompt drops it, because the amber dot is the
- *  louder cue and two treatments at once fight each other. */
-export const showsRunningArc = (state: SessionDotState): boolean => state === 'stalled' || state === 'working'
+ *  `stalled` keeps it; so does `background`, because a turn that ended on
+ *  delegate_task(background=true) or terminal(background=true) still has work
+ *  running in the session, and a row with no arc read as finished. A blocking
+ *  prompt drops it, because the amber dot is the louder cue and two treatments
+ *  at once fight each other. The dot still tells background apart (hollow). */
+export const showsRunningArc = (state: SessionDotState): boolean =>
+  state === 'background' || state === 'stalled' || state === 'working'
 
-/** Whether this turn is the session's own, live: brighter title, and the row's
- *  age yields to the actions menu. Wider than the arc — a turn waiting on an
- *  answer has not ended. */
+/** Whether the session is live: brighter title, and the row's age yields to
+ *  the actions menu. Wider than the arc — a turn waiting on an answer has not
+ *  ended. */
 export const hasLiveTurn = (state: SessionDotState): boolean => showsRunningArc(state) || state === 'needs-input'
 
 /** The buckets the sidebar's status filter and ordering work in. `stalled` and
@@ -109,9 +126,10 @@ export const $sessionDotStateById = computed(
     $unreadFinishedSessionIds,
     $draftSessionIds,
     $sessions,
-    $unreadWriteGuard
+    $unreadWriteGuard,
+    $pausedQueueSessionIds
   ],
-  (attention, working, stalled, background, delegating, unread, draft, sessions, unreadWriteGuard) => {
+  (attention, working, stalled, background, delegating, unread, draft, sessions, unreadWriteGuard, paused) => {
     const next: Record<string, SessionDotState> = {}
 
     const claim = (ids: readonly string[], state: SessionDotState) => {
@@ -163,6 +181,9 @@ export const $sessionDotStateById = computed(
     // claim as background processes — and it yields to `working` below the
     // moment the parent turn itself is live (synchronous orchestrator children).
     claim(delegating, 'background')
+    // A queue paused behind a turn lost in a restart waits on the user's Discard, and a turn that
+    // never finished must not read as finished-unread. A turn actually running speaks over it.
+    claim(paused, 'needs-input')
     claim(working, 'working')
 
     // Stalled REFINES working rather than rivalling it — the turn is still

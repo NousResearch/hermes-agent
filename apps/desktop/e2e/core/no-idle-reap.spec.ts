@@ -1,13 +1,18 @@
 /**
- * Support f502bc6f: a "This device" profile's local `hermes serve` child was SIGTERM'd by the pool
- * idle reaper (60 min with nothing streamed), leaving "This device · Backend offline". A local
- * child hosts its profile's cron jobs and bot chats with nobody watching, so it is never retired
- * for being idle. The idle windows are pinned to their 60s floor so two reaper ticks fit the test.
+ * Support f502bc6f: a "This device" profile's local backend was SIGTERM'd by the Desktop pool idle
+ * reaper (60 min with nothing streamed), leaving "This device · Backend offline". A local profile's
+ * backend hosts its cron jobs and bot chats with nobody watching, so it is never torn down for being
+ * idle while the app runs.
+ *
+ * Desktop no longer owns per-profile backend children: every local profile attaches to the one host
+ * gateway (`hermes gateway ensure`). The invariant here: an attached, idle secondary profile keeps
+ * the same gateway process(es) and the same endpoint past the retired reaper's 60s idle floor plus
+ * two of its 60s ticks, and re-dialing it attaches instead of spawning.
  */
 
 import * as path from 'node:path'
 
-import { expect, test } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 
 import {
   backendProcesses,
@@ -19,46 +24,49 @@ import {
 } from './harness'
 import { startScriptedProvider } from './provider'
 
-const IDLE_MS = 60_000
+// The retired pool's idle floor (60s) plus two reaper ticks (60s each) and slack.
+const OLD_IDLE_WINDOW_MS = 60_000 + 2 * 60_000 + 5_000
 
-test('a local profile backend is never idle-reaped', async () => {
-  test.setTimeout(300_000)
+function dialReviewer(page: Page) {
+  return page.evaluate(async () => {
+    const conn = await (window as any).hermesDesktop.getConnectionFor({ connectionId: 'local', profile: 'reviewer' })
+
+    return { baseUrl: String(conn?.baseUrl ?? ''), mode: String(conn?.mode ?? ''), profile: String(conn?.profile ?? '') }
+  })
+}
+
+const gatewayPids = (box: ReturnType<typeof createCoreSandbox>) =>
+  backendProcesses(box)
+    .map(p => p.pid)
+    .sort((a, b) => a - b)
+
+test('an idle local profile stays attached to its gateway', async () => {
+  test.setTimeout(360_000)
   const provider = await startScriptedProvider()
   const box = createCoreSandbox('no-idle-reap')
   writeProviderHome(box.hermesHome, provider.url)
   writeProviderHome(path.join(box.hermesHome, 'profiles', 'reviewer'), provider.url)
 
-  const { app, page } = await launchCoreApp(
-    coreAppEnv(box, {
-      HERMES_DESKTOP_POOL_IDLE_MS: String(IDLE_MS),
-      HERMES_DESKTOP_POOL_PINNED_IDLE_MS: String(IDLE_MS),
-      // One process per profile: the pooled child the reaper used to kill.
-      HERMES_DESKTOP_ISOLATED_BACKEND: '1'
-    })
-  )
+  const { app, page } = await launchCoreApp(coreAppEnv(box))
 
   try {
     await waitForInteractive(app, page)
-    const before = new Set(backendProcesses(box).map(p => p.pid))
 
-    await page.evaluate(() =>
-      (window as any).hermesDesktop.getConnectionFor({
-        connectionId: 'local',
-        profile: 'reviewer',
-        priority: 'foreground'
-      })
-    )
+    const attached = await dialReviewer(page)
+    expect(attached.mode, 'reviewer dials the local gateway').toBe('local')
+    expect(attached.baseUrl, 'reviewer has a gateway endpoint').toMatch(/^http:\/\/127\.0\.0\.1:\d+/)
 
-    const child = backendProcesses(box).find(p => !before.has(p.pid))
-    expect(child, 'a pooled backend for reviewer').toBeDefined()
+    const before = gatewayPids(box)
+    expect(before.length, 'a local gateway is running').toBeGreaterThan(0)
 
-    // Two reaper ticks past both idle windows, with nothing touching or streaming.
-    await page.waitForTimeout(IDLE_MS + 2 * 60_000 + 5_000)
+    // Nothing touches or streams on reviewer for longer than any idle window the old pool used.
+    await page.waitForTimeout(OLD_IDLE_WINDOW_MS)
 
-    expect(
-      backendProcesses(box).map(p => p.pid),
-      'reviewer backend still running'
-    ).toContain(child!.pid)
+    expect(gatewayPids(box), 'the same gateway process(es) still run').toEqual(before)
+
+    const redial = await dialReviewer(page)
+    expect(redial, 'reviewer is still attached to the same endpoint').toEqual(attached)
+    expect(gatewayPids(box), 're-dial attaches, never spawns').toEqual(before)
   } finally {
     await app.close().catch(() => undefined)
     await provider.close()

@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import hermes_yaml as yaml
 
 from hermes_cli.plugin_validate import validate_plugin_dir
@@ -269,7 +271,8 @@ class TestRequiresHermesSpec:
 
 class TestDesktopSurface:
     """Catalog-listed desktop plugins must stay inside the SDK surface: the renderer loader gives
-    plugin.js full app authority, so prototype patching / app-chunk imports are refused at admission."""
+    plugin.js full app authority, so app-chunk imports and the like are refused at admission. Prototype
+    writes are not linted (review reads them by hand): a bundled library's own classes look the same."""
 
     def _desktop_plugin(self, tmp_path, js: str) -> Path:
         d = tmp_path / "desk"
@@ -286,6 +289,25 @@ class TestDesktopSurface:
         ))
         report = validate_plugin_dir(d)
         assert any(name == "desktop surface" and ok for name, ok, _ in report.checks)
+        assert not [w for w in report.warnings if w.startswith("desktop surface review")]
+
+    def test_raw_bridge_and_app_markup_selectors_warn_for_review(self, tmp_path):
+        """squad-hub / novel-reader shapes: the raw native bridge and the app's layout markup selected
+        from CSS text or ``closest()`` pass the refusal rules, so review gets a warning (listed plugins
+        still need the bridge where the SDK has no verb). A comment naming them is not a use."""
+        d = self._desktop_plugin(tmp_path, (
+            "// window.hermesDesktop.readDir and [data-slot=x] are what we avoid\n"
+            "const git = () => window.hermesDesktop?.git || null\n"
+            "rules.push('[data-tree-tab=\"bots:pane\"]{display:none!important}')\n"
+            "const root = el.closest('[data-tree-split]')\n"
+        ))
+        report = validate_plugin_dir(d)
+        assert any(name == "desktop surface" and ok for name, ok, _ in report.checks)
+        [warning] = [w for w in report.warnings if w.startswith("desktop surface review")]
+        assert "raw bridge window.hermesDesktop (desktop/plugin.js:2)" in warning
+        assert "app markup selector (desktop/plugin.js:3)" in warning
+        assert "app markup selector (desktop/plugin.js:4)" in warning
+        assert ":1)" not in warning
 
     def test_script_regex_literal_is_not_injection_but_string_is(self, tmp_path):
         d = self._desktop_plugin(tmp_path, (
@@ -325,10 +347,25 @@ class TestDesktopSurface:
         assert desktop_surface_hits(d) == [
             "app DOM reach (desktop/plugin.js:2)",
             "app DOM reach (desktop/plugin.js:3)",
-            "prototype patching (desktop/plugin.js:4)",
         ]
 
-    def test_prototype_patch_and_chunk_import_fail(self, tmp_path):
+    def test_preview_guest_reach_fails_and_the_sdk_door_stays_clean(self, tmp_path):
+        """Grabbing or minting a ``<webview>`` to script the preview page skips the declared
+        capability and the user's per-origin consent behind ``ctx.preview``; the SDK door is clean."""
+        d = self._desktop_plugin(tmp_path, (
+            "const title = await ctx.preview.executeJavaScript('document.title')\n"
+            "document.querySelector('webview').executeJavaScript('document.cookie')\n"
+            "const [guest] = document.getElementsByTagName(\"webview\")\n"
+            "const own = document.createElement('webview')\n"
+            "const label = 'webview'\n"
+        ))
+        assert desktop_surface_hits(d) == [
+            "preview guest reach (desktop/plugin.js:2)",
+            "preview guest reach (desktop/plugin.js:3)",
+            "preview guest reach (desktop/plugin.js:4)",
+        ]
+
+    def test_chunk_import_fails_and_prototype_writes_are_left_to_review(self, tmp_path):
         d = self._desktop_plugin(tmp_path, (
             "const raw = Storage.prototype.setItem\n"
             "Storage.prototype.setItem = function (k, v) { return raw.call(this, k, v) }\n"
@@ -338,7 +375,7 @@ class TestDesktopSurface:
         report = validate_plugin_dir(d)
         failed = {name: detail for name, ok, detail in report.checks if not ok}
         assert "desktop surface" in failed
-        assert "prototype patching (desktop/plugin.js:2)" in failed["desktop surface"]
+        assert "prototype patching" not in failed["desktop surface"]
         assert "dynamic import outside the SDK (desktop/plugin.js:3)" in failed["desktop surface"]
         assert ":4)" not in failed["desktop surface"]
 
@@ -510,3 +547,75 @@ def test_install_deps_probe_imports_from_the_synced_environment(tmp_path: Path, 
         pass
     checks = {c["name"]: c for c in json.loads(capsys.readouterr().out)["checks"]}
     assert checks["capability probe"]["ok"], checks["capability probe"]["detail"]
+
+
+OAUTH_MANIFEST = dict(BASE_MANIFEST, requires_env=[{"name": "FIXTURE_CLIENT_ID"}, {"name": "FIXTURE_CLIENT_SECRET"}])
+
+
+def _oauth_entry(**overrides) -> dict:
+    entry = {"id": "google", "authorize_url": "https://accounts.example.com/o/oauth2/auth",
+             "token_url": "https://oauth2.example.com/token", "scopes": ["https://api.example.com/auth/docs"],
+             "client_id_env": "FIXTURE_CLIENT_ID", "client_secret_env": "FIXTURE_CLIENT_SECRET",
+             "hosts": ["docs.example.com"]}
+    return {**entry, **overrides}
+
+
+def test_oauth_block_passes_and_a_token_url_in_code_is_only_a_warning(tmp_path):
+    plugin = _make_plugin(tmp_path, manifest=dict(OAUTH_MANIFEST, oauth=[_oauth_entry(hosts=["docs.example.com",
+                                                                                           "collect.example.net"])]))
+    (plugin / "client.py").write_text('TOKEN_URL = "https://oauth2.example.com/token"\n', encoding="utf-8")
+
+    report = validate_plugin_dir(plugin)
+
+    assert report.ok, report.failures
+    assert [ok for name, ok, _ in report.checks if name == "oauth"] == [True]
+    assert any("oauth2.example.com/token" in warning for warning in report.warnings)
+    assert [w for w in report.warnings if "shares no domain" in w] == [
+        "oauth 'google': host collect.example.net shares no domain with accounts.example.com, oauth2.example.com; "
+        "check the provider owns it"]
+
+
+@pytest.mark.parametrize("change, problem", [
+    ({"id": "Google"}, "id"),
+    ({"authorize_url": "http://accounts.example.com/o/oauth2/auth"}, "authorize_url"),
+    ({"authorize_url": "http://127.0.0.1:8080/auth"}, "must use https"),  # no loopback exception
+    ({"token_url": "http://[::1]:8080/token"}, "must use https"),
+    ({"client_secret_env": "OPENROUTER_API_KEY"}, "Hermes uses itself"),  # would be POSTed to token_url
+    ({"client_id_env": "TELEGRAM_BOT_TOKEN"}, "Hermes uses itself"),
+    ({"client_secret_env": "MATRIX_PASSWORD"}, "Hermes uses itself"),  # platform secrets too
+    ({"id": 123}, "id"),
+    ({"authorize_url": "https://accounts.example.com/o/oauth2/auth#consent"}, "authorize_url"),
+    ({"token_url": "https://[oauth2.example.com/token"}, "token_url"),
+    ({"token_url": "https://oauth2.example.com:https/token"}, "token_url"),
+    ({"scopes": []}, "scopes"),
+    ({"hosts": ["https://docs.example.com"]}, "hosts"),
+    ({"hosts": ["docs.example.com:8443"]}, "hosts"),
+    ({"hosts": ["10.0.0.1"]}, "hosts"),
+    ({"client_id_env": "fixture_client_id"}, "client_id_env"),
+    ({"client_secret_env": "UNDECLARED_SECRET"}, "UNDECLARED_SECRET"),
+    ({"id": "openai-codex"}, "openai-codex"),
+])
+def test_oauth_form_errors_fail_admission(tmp_path, change, problem):
+    plugin = _make_plugin(tmp_path, manifest=dict(OAUTH_MANIFEST, oauth=[_oauth_entry(**change)]))
+
+    report = validate_plugin_dir(plugin)
+
+    assert [ok for name, ok, _ in report.checks if name == "oauth"] == [False]
+    assert any(problem in failure for failure in report.failures), report.failures
+
+
+def test_oauth_given_as_a_mapping_fails_admission(tmp_path):
+    plugin = _make_plugin(tmp_path, manifest=dict(OAUTH_MANIFEST, oauth={}))
+
+    report = validate_plugin_dir(plugin)
+
+    assert [ok for name, ok, _ in report.checks if name == "oauth"] == [False]
+    assert any("must be a list" in failure for failure in report.failures), report.failures
+
+
+def test_oauth_in_a_plugin_keyed_custom_fails_admission(tmp_path):
+    plugin = _make_plugin(tmp_path, manifest=dict(OAUTH_MANIFEST, name="custom", oauth=[_oauth_entry()]))
+
+    report = validate_plugin_dir(plugin)
+
+    assert [ok for name, ok, _ in report.checks if name == "oauth"] == [False]

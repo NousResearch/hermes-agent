@@ -3,6 +3,7 @@ Entries are joined by ``ENTRY_DELIMITER``; budgets are in chars (model-independe
 Module state that tests monkeypatch (``get_memory_dir``, ``fcntl``/``msvcrt``) stays
 in ``tools.memory_tool`` and is read lazily."""
 
+import itertools
 import logging
 import os
 import re
@@ -34,11 +35,17 @@ def _scan_memory_content(content: str) -> Optional[str]:
 # Why the last refusal/failure in this context happened, for the shared metric only (a closed name from
 # shared_metrics_contract.MEMORY_OP_FAILURE_CLASSES); never part of the result the model sees.
 FAILURE_CLASS: ContextVar[str] = ContextVar("memory_failure_class", default="other")
+_BACKUP_FAILED = " (BACKUP FAILED — file unchanged on disk)"
 
 
 def _error(message: str, failure_class: str, **extra) -> dict[str, Any]:
     FAILURE_CLASS.set(failure_class)
     return {"success": False, "error": message, **extra}
+
+
+def _store_target(filename: str) -> str:
+    """The memory tool target that owns a store file, for hints that show the call to make."""
+    return "user" if filename == "USER.md" else "memory"
 
 
 def _drift_error(path: Path, bak_path: str) -> dict[str, Any]:
@@ -50,8 +57,9 @@ def _drift_error(path: Path, bak_path: str) -> dict[str, Any]:
         f"either rewrite the file as a clean §-delimited list of entries, or move the extra "
         f"content out — then retry. This guard exists to prevent silent data loss (issue #26045)."
     ), "drift", drift_backup=bak_path, remediation=(
-        "Open the .bak file, integrate the missing entries into the memory tool one at a time via "
-        "memory(action=add, content=...), then remove or rewrite the original file to a clean state."))
+        "Open the .bak file, integrate the missing entries into the memory tool with one add op per entry via "
+        f"memory(target='{_store_target(path.name)}', operations=[{{action: 'add', content: ...}}]), then remove or "
+        "rewrite the original file to a clean state."))
 
 
 def _read_failed_error(path: Path) -> dict[str, Any]:
@@ -120,6 +128,34 @@ def _no_match_error(entries: list[str], old_text: str, verb: str, **extra) -> di
 
 def _over_limit(new_total: int, limit: int) -> str:
     return f"would put memory at {new_total:,}/{limit:,} chars: free at least {new_total - limit:,} chars"
+
+
+# Patch content cannot be empty, and 'remove' would drop the sibling facts in the entry.
+PATCH_DROP_HINT = "To drop text inside an entry, patch a longer span that contains it; 'remove' deletes the whole entry."
+
+
+def _repeated_span_message(old_text: str, count: int) -> str:
+    return (f"'{old_text}' appears {count} times in the matched entry, and patch edits one span. "
+            f"Include more surrounding text so old_text occurs once.")
+
+
+def _span_occurrences(text: str, span: str) -> int:
+    """Occurrences of *span* in *text*, overlapping ones included: '00' occurs twice in '1000'."""
+    return sum(text.startswith(span, i) for i in range(len(text) - len(span) + 1))
+
+
+def _patch_entry(entry: str, old_text: str, new_text: str) -> tuple[Optional[str], str, str]:
+    """``(patched entry, "", "none")``, or ``(None, error, failure class)`` when the span occurs more
+    than once in the entry, the edit changes nothing, or the patched entry fails the threat scan.
+    Single and batch patches both go through here, so they share one rule."""
+    if (count := _span_occurrences(entry, old_text)) > 1:
+        return None, _repeated_span_message(old_text, count), "ambiguous"
+    patched = entry.replace(old_text, new_text, 1)
+    if patched == entry:
+        return None, f"Patch is a no-op: '{old_text}' -> '{new_text}' leaves the entry unchanged.", "invalid_args"
+    if scan_error := _scan_memory_content(patched):
+        return None, scan_error, "scan_blocked"
+    return patched, "", "none"
 
 
 def _pinned_index(entries: list[str], matched_entry: str) -> Optional[int]:
@@ -198,7 +234,8 @@ class MemoryStore:
                 return entry
             logger.warning("Memory entry from %s blocked at load time: %s", filename, ", ".join(findings))
             return (f"[BLOCKED: {filename} entry contained threat pattern(s): {', '.join(findings)}. "
-                    f"Removed from system prompt; use memory(action=remove) to delete the original.]")
+                    f"Removed from system prompt; use memory(action=remove, target='{_store_target(filename)}') "
+                    f"to delete the original.]")
 
         for target in ("memory", "user"):
             path = self._path_for(target)
@@ -289,6 +326,16 @@ class MemoryStore:
         return self._consolidation_failure(
             _error(message, "over_budget", current_entries=self._entries_for(target), usage=self._usage(target)))
 
+    def _add_overflow(self, target: str, content: str, limit: int) -> dict[str, Any]:
+        """A lone add over budget, legacy or one-item batch: the model has not consolidated yet,
+        so the live entries come back (its prompt snapshot may predate other sessions' writes)."""
+        over = len(ENTRY_DELIMITER.join(self._entries_for(target) + [content])) - limit
+        return self._failure_with_entries(target, (
+            f"Memory at {self._char_count(target):,}/{limit:,} chars; adding this entry ({len(content)} chars) "
+            f"would exceed the limit by {over:,} chars. Retry as ONE 'operations' batch that "
+            f"removes or shortens (patch) stale entries from current_entries below to free at least "
+            f"{over:,} chars AND adds this entry — the limit is checked only on the batch result."))
+
     def _batch_failure(self, target: str, message: str, failure_class: str,
                        closest_entries: Optional[list[str]] = None) -> dict[str, Any]:
         """Batch-abort failure WITHOUT ``current_entries``: the store did not change and the
@@ -304,8 +351,8 @@ class MemoryStore:
         """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
         or an error dict, then persist and return the success response. The reload aborts
         on an existing-but-unreadable file (even append-only ``add`` rewrites the whole
-        file) and, unless *skip_drift*, on external drift (flushing would discard
-        un-roundtrippable content). Drift check and parse use the SAME raw snapshot —
+        file) and, unless *skip_drift*, refuses a write that adds or rewrites text while an
+        entry is over the whole-file limit (it may hold free text a flush would discard). Drift check and parse use the SAME raw snapshot —
         a failed second read used to count as "no drift". The closure may return a
         third value, a dict merged into the success payload (``_error``'s ``**extra``
         convention) — e.g. the full text a replace overwrote (#117952). ANY dict the closure
@@ -316,19 +363,35 @@ class MemoryStore:
             raw, read_ok = self._read_raw_checked(path)
             if not read_ok:
                 return _read_failed_error(path)
-            bak = None if skip_drift else self._detect_external_drift(target, raw)
-            self._set_entries(target, list(dict.fromkeys(self._parse_entries(raw))))
-            if bak:
-                return _drift_error(path, bak)
+            oversized = not skip_drift and self._has_oversized_entry(target, raw)
+            before = list(dict.fromkeys(self._parse_entries(raw)))
+            self._set_entries(target, before)
+            FAILURE_CLASS.set("other")  # read below: only this closure's refusal counts
             result = mutate(self._entries_for(target), self._char_limit(target))
             if isinstance(result, dict):
+                # Over budget beside an oversized entry: that entry is the obstacle, so report
+                # the drift (with its snapshot) rather than a budget the model cannot meet.
+                if oversized and result.get("success") is False and FAILURE_CLASS.get() == "over_budget":
+                    return _drift_error(path, self._drift_backup(target, raw))
                 return result
+            extra_fields = dict(result[2]) if len(result) > 2 else {}
+            # An oversized entry is either free text appended without a delimiter or an entry written before the limit was lowered. Pruning is the way
+            # back under a lowered limit, so a write that only deletes entries proceeds; one that
+            # drops an oversized entry keeps the snapshot first, as it may hold appended text.
+            if oversized:
+                if not set(result[0]) <= set(before):
+                    return _drift_error(path, self._drift_backup(target, raw))
+                limit = self._char_limit(target)
+                if any(len(e) > limit for e in before if e not in result[0]):
+                    bak = self._drift_backup(target, raw)
+                    if bak.endswith(_BACKUP_FAILED):  # no copy, no delete of possibly glued text
+                        return _drift_error(path, bak)
+                    extra_fields["drift_backup"] = bak
             self._set_entries(target, result[0])
             from hermes_constants import mkdir_under_hermes_home
 
             mkdir_under_hermes_home(path.parent)
             self._write_file(path, result[0])
-            extra_fields = result[2] if len(result) > 2 else {}
             return self._success_response(target, result[1], **extra_fields)
 
     def add(self, target: str, content: str) -> dict[str, Any]:
@@ -343,12 +406,7 @@ class MemoryStore:
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
             if len(ENTRY_DELIMITER.join(entries + [content])) > limit:
-                new_total = len(ENTRY_DELIMITER.join(entries + [content]))
-                return self._failure_with_entries(target, (
-                    f"Memory at {self._char_count(target):,}/{limit:,} chars; adding this entry ({len(content)} chars) "
-                    f"would exceed the limit by {new_total - limit:,} chars. Retry as ONE 'operations' batch that "
-                    f"removes or shortens (replace) stale entries from current_entries below to free at least "
-                    f"{new_total - limit:,} chars AND adds this entry — the limit is checked only on the batch result."))
+                return self._add_overflow(target, content, limit)
             return entries + [content], "Entry added."
         # Append-only: skip the drift guard (appending never clobbers foreign
         # content) but still refuse a failed read — add rewrites the WHOLE file.
@@ -367,6 +425,41 @@ class MemoryStore:
         if scan_error := _scan_memory_content(new_content):
             return _error(scan_error, "scan_blocked")
         return self._edit(target, old_text.strip(), new_content, matched_entry)
+
+    def patch(self, target: str, old_text: str, new_text: str,
+              matched_entry: Optional[str] = None) -> dict[str, Any]:
+        """Find the entry containing *old_text* and replace that one span with *new_text*;
+        the rest of the entry is preserved verbatim. This is the partial-edit shape
+        ``replace`` deliberately is not (replace overwrites the WHOLE entry). A span that
+        occurs more than once in the entry is rejected rather than edited everywhere."""
+        if not (old_text or "").strip():
+            return _error("old_text cannot be empty.", "missing_old_text")
+        if new_text is None or not str(new_text).strip():
+            return _error(f"new_text cannot be empty. {PATCH_DROP_HINT}", "missing_content")
+        # The span keeps its whitespace: it is part of the text being replaced ("tea " -> "coffee ").
+        return self._patch(target, old_text, str(new_text), matched_entry)
+
+    def _patch(self, target: str, old_text: str, new_text: str,
+               matched_entry: Optional[str] = None) -> dict[str, Any]:
+        """Locked find-and-splice inside the matched entry (#124582)."""
+        def _apply(entries, limit):
+            idx = self._locate(entries, old_text, "patch", matched_entry)
+            if isinstance(idx, dict):
+                return idx
+            before = entries[idx]
+            after, message, failure_class = _patch_entry(before, old_text, new_text)
+            if after is None:
+                return _error(message, failure_class)
+            patched = entries[:idx] + [after] + entries[idx + 1:]
+            new_total = len(ENTRY_DELIMITER.join(patched))
+            if new_total > limit:
+                return self._failure_with_entries(target, (
+                    f"Patch would put memory at {new_total:,}/{limit:,} chars. Shorten the new "
+                    f"text, or 'remove' other stale or less important entries to make room "
+                    f"(see current_entries below), then retry — all in this turn."))
+            return patched, "Entry patched.", {
+                "patched_entry_before": before, "patched_entry_after": after}
+        return self._mutate(target, _apply)
 
     def remove(self, target: str, old_text: str, matched_entry: Optional[str] = None) -> dict[str, Any]:
         """Remove the entry containing old_text substring."""
@@ -419,41 +512,52 @@ class MemoryStore:
         return self._mutate(target, _apply)
 
     @staticmethod
-    def _apply_batch_op(working: list[str], act: str, content: str, old_text: str,
-                        pos: str, matched_entry: Optional[str] = None) -> tuple[Optional[str], Any, str]:
-        """Apply one batch op to *working*; return ``(error message, previous content, failure class)`` —
-        on a zero-match error the second value is that op's ``closest_entries`` instead.
+    def _apply_batch_op(working: list[str], act: str, content: str, old_text: str, pos: str,
+                        matched_entry: Optional[str] = None) -> tuple[Optional[str], Any, str, Optional[str]]:
+        """Apply one batch op to *working*; return ``(error message, previous content, failure class,
+        patched entry)`` — on a zero-match error the second value is that op's ``closest_entries``
+        instead, and the fourth is the entry a patch produced (None for every other op).
         Previous content is captured before each replace/remove, under the store lock.
         It is published only after the entire batch has been validated and persisted.
         A staged op's *matched_entry* selects exactly that entry, as in ``_locate``.
         """
         if act == "add":
             if not content:
-                return f"{pos}: content is required.", None, "missing_content"
+                return f"{pos}: content is required.", None, "missing_content", None
             if content not in working:  # idempotent -- skip duplicate, don't fail the batch
                 working.append(content)
-            return None, None, "none"
-        if act not in ("replace", "remove"):
-            return f"{pos}: unknown action. Use add, replace, or remove.", None, "invalid_args"
-        if not old_text:
-            return f"{pos}: old_text is required.", None, "missing_old_text"
+            return None, None, "none", None
+        if act not in ("replace", "remove", "patch"):
+            return f"{pos}: unknown action. Use add, patch, or remove.", None, "invalid_args", None
+        if not old_text.strip():
+            return f"{pos}: old_text is required.", None, "missing_old_text", None
         if act == "replace" and not content:
             return (f"{pos}: content is required — set this operation object's own 'content' to the COMPLETE "
-                    f"new entry (or use action='remove' to delete)."), None, "missing_content"
+                    f"new entry (or use action='remove' to delete)."), None, "missing_content", None
+        if act == "patch" and not content.strip():
+            return (f"{pos}: content is required — set this operation object's own 'content' to the new "
+                    f"text for the old_text span. {PATCH_DROP_HINT}"), None, "missing_content", None
         if matched_entry is not None:
             idx = _pinned_index(working, matched_entry)
             if idx is None:
-                return f"{pos}: {_stale_entry_message(matched_entry)}", None, "stale_entry"
+                return f"{pos}: {_stale_entry_message(matched_entry)}", None, "stale_entry", None
         else:
             idx, ambiguous = _find_unique_match(working, old_text)
             if ambiguous:
-                return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.", None, "ambiguous"
+                return (f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.", None,
+                        "ambiguous", None)
             if idx is None:
                 miss = _no_match_error(working, old_text, act)
-                return f"{pos}: {miss['error']}", miss.get("closest_entries"), "no_match"
+                return f"{pos}: {miss['error']}", miss.get("closest_entries"), "no_match", None
         previous_content = working[idx]
-        working[idx:idx + 1] = [content] if act == "replace" else []
-        return None, previous_content, "none"
+        if act != "patch":
+            working[idx:idx + 1] = [content] if act == "replace" else []
+            return None, previous_content, "none", None
+        patched, message, failure_class = _patch_entry(previous_content, old_text, content)
+        if patched is None:
+            return f"{pos}: {message}", None, failure_class, None
+        working[idx:idx + 1] = [patched]
+        return None, previous_content, "none", patched
 
     def apply_batch(self, target: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
@@ -470,6 +574,9 @@ class MemoryStore:
         return self._batch(target, operations, commit=False)
 
     def _batch(self, target: str, operations: list[dict[str, Any]], *, commit: bool) -> dict[str, Any]:
+        from tools.memory_tool import _memory_target_error
+        if target_error := _memory_target_error(self, target, operations):
+            return target_error
         if not operations:
             return _error("operations list is empty.", "invalid_args")
         ops = [op or {} for op in operations]
@@ -481,41 +588,59 @@ class MemoryStore:
 
         def _apply(entries, limit):
             working = list(entries)  # only committed if the whole batch validates
-            matched = []  # per op, the entry a replace/remove selected (None for add)
+            matched = []  # per op, the entry a replace/patch/remove selected (None for add)
+            produced = {}  # 1-based op index -> the entry a patch produced
             for i, op in enumerate(ops):
                 act = op.get("action")
-                msg, previous_content, failure_class = self._apply_batch_op(
-                    working, act, (op.get("content") or op.get("new_text") or "").strip(),
-                    (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})",
+                content, old_text = op.get("content") or op.get("new_text") or "", op.get("old_text") or ""
+                if act != "patch":  # whole-entry actions; a patch span keeps its whitespace
+                    content, old_text = content.strip(), old_text.strip()
+                msg, previous_content, failure_class, after = self._apply_batch_op(
+                    working, act, content, old_text, f"Operation {i + 1} ({act or 'unknown'})",
                     op.get("matched_entry"))
                 if msg:  # a failed op's second value is its closest_entries (or None)
                     return self._batch_failure(target, msg, failure_class, closest_entries=previous_content)
                 matched.append(previous_content)
-            if entries and not working:
+                if after is not None:
+                    produced[i + 1] = after
+            if entries and not working and not (len(ops) == 1 and ops[0].get("action") == "remove"):
                 # #103419: a consolidation batch that removes the last entry would
-                # commit an empty file as a normal successful write. Refuse; single
-                # remove() is the deliberate-wipe path.
+                # commit an empty file as a normal successful write. Refuse; a batch of
+                # exactly one remove is the deliberate single delete (operations[] is the
+                # memory tool's only advertised shape), and unattended forks never get
+                # that far: the #105921 delete gate stages their removes.
                 label = self._path_for(target).name
                 return self._batch_failure(target, (
                     f"Refusing to empty {label}: this batch would remove every entry from a "
                     f"previously non-empty store. Keep at least one entry — merge overlapping "
                     f"entries into a shorter one instead of removing the last one. To delete the "
-                    f"final entry deliberately, use single remove() calls."), "would_empty")
+                    f"final entry deliberately, remove it alone in a one-item batch."), "would_empty")
             new_total = len(ENTRY_DELIMITER.join(working))  # budget check against the FINAL state only
-            if new_total > limit:
+            # A remove-only batch or a lone duplicate add never grows the store, so like the
+            # legacy remove/add it is not refused for excess left by a lowered cap.
+            grows = not (all(op.get("action") == "remove" for op in ops)
+                         or (len(ops) == 1 and working == entries))
+            if grows and new_total > limit:
+                if len(ops) == 1 and ops[0].get("action") == "add":  # the advertised single add
+                    return self._add_overflow(target, (ops[0].get("content") or ops[0].get("new_text") or "").strip(), limit)
                 return self._batch_failure(target, (
                     f"Applying all {len(operations)} operations {_over_limit(new_total, limit)} more. Add "
-                    f"removes or shorter replacements of other stale entries to the same batch, then retry."),
+                    f"removes or shortening patches of other stale entries to the same batch, then retry."),
                     "over_budget")
             if not commit:
                 return {"success": True, "matched_entries": matched}
             # op index -> full entry text its replace/remove selected (#117952), 1-based to
             # match the "Operation N" error numbering the model sees for failed ops.
-            replaced, removed = {}, {}
+            replaced, removed, patched = {}, {}, {}
             for i, (op, previous_content) in enumerate(zip(ops, matched), 1):
                 if previous_content is not None:
-                    (replaced if op.get("action") == "replace" else removed)[i] = previous_content
+                    result_map = {"replace": replaced, "patch": patched, "remove": removed}.get(op.get("action"))
+                    if result_map is not None:
+                        result_map[i] = previous_content
             replaced_fields = {"replaced_entries": replaced} if replaced else {}
+            if patched:
+                replaced_fields["patched_entries"] = patched
+                replaced_fields["patched_entries_after"] = produced
             if removed:
                 replaced_fields["removed_entries"] = removed
             return working, f"Applied {len(operations)} operation(s).", replaced_fields
@@ -588,19 +713,28 @@ class MemoryStore:
         except OSError as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
-    def _detect_external_drift(self, target: str, raw: str) -> Optional[str]:
-        """``.bak.<ts>`` snapshot path if *raw* shows external drift, else None. The one
-        signal is an entry over the whole-file limit: no tool-written entry can be, so it is
-        free-form text appended without delimiters, and replacing that "entry" would discard
-        it. Layout differences (blank lines around ``§``, empty entries, padding) are NOT
-        drift: parsing only strips whitespace, so the flush loses nothing but whitespace, and
-        refusing there blocked every replace/remove on a hand-formatted file for good (#107270)."""
-        if max(map(len, self._parse_entries(raw)), default=0) <= self._char_limit(target):
-            return None
+    def _has_oversized_entry(self, target: str, raw: str) -> bool:
+        """True when one entry in *raw* is longer than the whole-file limit. A tool write
+        never produces one, so it is free-form text appended without delimiters, or an entry
+        written before the limit was lowered. Layout differences (blank lines around ``§``,
+        empty entries, padding) are NOT drift: parsing only strips whitespace, so the flush
+        loses nothing but whitespace, and refusing there blocked every replace/remove on a
+        hand-formatted file for good (#107270)."""
+        return max(map(len, self._parse_entries(raw)), default=0) > self._char_limit(target)
+
+    def _drift_backup(self, target: str, raw: str) -> str:
+        """``.bak.<ts>[.<n>]`` snapshot of *raw* before a drift refusal or a delete that drops an
+        oversized entry. Created exclusively: two snapshots in the same second never overwrite
+        each other, since a later delete's snapshot no longer holds what an earlier one removed."""
         path = self._path_for(target)
-        bak_path = path.with_suffix(path.suffix + f".bak.{int(time.time())}")
-        try:
-            bak_path.write_text(raw, encoding="utf-8")
-        except OSError:
-            return str(bak_path) + " (BACKUP FAILED — file unchanged on disk)"
-        return str(bak_path)
+        stem = path.suffix + f".bak.{int(time.time())}"
+        for n in itertools.count():
+            bak_path = path.with_suffix(stem + (f".{n}" if n else ""))
+            try:
+                with open(bak_path, "x", encoding="utf-8") as fh:
+                    fh.write(raw)
+                return str(bak_path)
+            except FileExistsError:
+                continue
+            except OSError:
+                return str(bak_path) + _BACKUP_FAILED

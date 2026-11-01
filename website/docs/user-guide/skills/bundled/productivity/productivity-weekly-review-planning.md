@@ -21,7 +21,7 @@ Weekly reset: commitments, stalled work, next-week plan.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Weekly-Review`, `Planning`, `Tasks`, `Calendar`, `Productivity` |
-| Related skills | [`obsidian`](../../bundled/note-taking/note-taking-obsidian.md), [`notion`](../../bundled/productivity/productivity-notion.md), [`airtable`](../../bundled/productivity/productivity-airtable.md), [`google-workspace`](../../bundled/productivity/productivity-google-workspace.md), [`email-inbox-triage`](../../bundled/email/email-email-inbox-triage.md) |
+| Related skills | [`obsidian`](../../bundled/note-taking/note-taking-obsidian.md), [`notion`](../../optional/productivity/productivity-notion.md), [`airtable`](../../optional/productivity/productivity-airtable.md), [`google-workspace`](../../bundled/productivity/productivity-google-workspace.md), [`email-inbox-triage`](../../bundled/email/email-email-inbox-triage.md) |
 
 ## Reference: full SKILL.md
 

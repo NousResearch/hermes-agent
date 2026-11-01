@@ -723,7 +723,15 @@ interface UnionAgentRow {
    *  only source of a REMOTE row's title, since profiles.list is asked of the
    *  active gateway alone. */
   profileMetadata?: Pick<RosterRow, 'display_name' | 'has_avatar' | 'title' | 'ui_meta'>
+  /** False when the source lists the profile but does not serve it. */
+  reachable?: boolean
   targetProfile?: string
+}
+
+/** A source can be up and still not serve a profile it lists. Only an explicit
+ *  `reachable: false` says so: a native roster never sets the field. */
+function unservedFlag(agent: UnionAgentRow): Pick<RosterRow, 'unserved'> {
+  return agent.reachable === false ? { unserved: true } : {}
 }
 
 /** The union roster payload. `primaryConnectionId` is served by Electron but
@@ -862,10 +870,12 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
     }
   }
 
-  await reconcileBotMeta(Array.isArray(local?.profiles) ? local.profiles : [], issuedAt)
+  const profiles = claimDefaultHandles(Array.isArray(local?.profiles) ? local.profiles : [])
+  await reconcileBotMeta(profiles, issuedAt)
 
   return {
     ...(local && typeof local === 'object' ? local : {}),
+    ...(Array.isArray(local?.profiles) ? { profiles } : {}),
     fetchedAt: issuedAt
   }
 }
@@ -1079,6 +1089,7 @@ export function mergeMultiSourceRoster(
         targetProfile: agent.targetProfile || profile
       }
       row.sourceScoped = true
+      Object.assign(row, unservedFlag(agent))
 
       continue
     }
@@ -1107,7 +1118,8 @@ export function mergeMultiSourceRoster(
         targetProfile: agent.targetProfile || profile
       },
       remoteSource: true,
-      sourceScoped: true
+      sourceScoped: true,
+      ...unservedFlag(agent)
     })
   }
 
@@ -1158,7 +1170,7 @@ export function mergeMultiSourceRoster(
 
   return {
     ...local,
-    profiles
+    profiles: claimDefaultHandles(profiles)
   }
 }
 
@@ -1166,13 +1178,37 @@ export function mergeMultiSourceRoster(
  *  handle (bare name, or name-device when the profile exists on several
  *  registered sources) — prefer it when present. The primary profile's
  *  callable alias is 'hermes' — the mention middleware resolves it back to
- *  'default' — so the word 'default' never surfaces in the UI. */
+ *  'default' — so the word 'default' never surfaces in the UI, unless a real
+ *  `hermes` profile on the same source holds that handle (`claimDefaultHandles`). */
 export function botHandle(name: string, bot?: Partial<RosterRow> | null): string {
-  if (bot?.handle && bot.handle !== name) {
+  if (bot?.handle && bot.handle !== name && !(bot.hermesHandleTaken && bot.handle === 'hermes')) {
     return bot.handle
   }
 
-  return (name || '').trim().toLowerCase() === 'default' ? 'hermes' : name
+  return (name || '').trim().toLowerCase() === 'default' && !bot?.hermesHandleTaken ? 'hermes' : name
+}
+
+/** The row's own `handle` as a mention form, lowercased. A stale 'hermes'
+ *  handle on a default row whose source has a real 'hermes' profile is that
+ *  profile's tag, not this row's (same rule as `botHandle`). */
+function claimableRowHandle(bot: Partial<RosterRow>): string {
+  return bot.handle && !(bot.hermesHandleTaken && bot.handle === 'hermes') ? String(bot.handle).toLowerCase() : ''
+}
+
+/** Mark each default row whose source also lists a real `hermes` profile, so
+ *  that profile keeps @hermes and the roster never shows two (the backend's
+ *  `tools/bot_mode_probe._handle` applies the same rule). Rows group by
+ *  connection; rows without one are the active source. */
+export function claimDefaultHandles<T extends Partial<RosterRow>>(rows: T[]): T[] {
+  const taken = new Set(
+    rows.filter(row => String(row?.name || '').trim() === 'hermes').map(row => String(row?.connectionId || ''))
+  )
+
+  return rows.map(row =>
+    String(row?.name || '').trim() === 'default' && taken.has(String(row?.connectionId || ''))
+      ? { ...row, hermesHandleTaken: true }
+      : row
+  )
 }
 
 /** Taggable @-forms derived from a bot's friendly names — the core profile
@@ -1351,8 +1387,10 @@ export function resolveRosterMentions(
     const name = String(bot.name || '').toLowerCase()
     const forms = new Set([handle, name])
 
-    if (bot.handle) {
-      forms.add(String(bot.handle).toLowerCase())
+    const rowHandle = claimableRowHandle(bot)
+
+    if (rowHandle) {
+      forms.add(rowHandle)
     }
 
     // Renamed bots are taggable by their friendly names too — the core
@@ -1490,7 +1528,9 @@ export function sourceByConnection(sources: GatewaySource[] | null | undefined):
   )
 }
 
-/** Copy current source health onto a row without changing its owner. */
+/** Copy current source health onto a row without changing its owner. A row
+ *  its source lists but does not serve stays unreachable while the source is
+ *  up: the pane re-annotates rows before seating a first selection. */
 export function annotateBotSource(bot: RosterRow, sources: GatewaySource[] | null | undefined): RosterRow {
   const id = String(bot?.connectionId || '').trim()
 
@@ -1518,7 +1558,7 @@ export function annotateBotSource(bot: RosterRow, sources: GatewaySource[] | nul
     ...(source.installId ? { installId: source.installId } : {}),
     sourceError: source.error || null,
     sourceMissing: false,
-    sourceReachable: source.reachable
+    sourceReachable: source.reachable && !bot.unserved
   }
 }
 

@@ -1,6 +1,5 @@
 import os
 import sys
-import tempfile
 import threading
 import types
 from importlib.util import module_from_spec, spec_from_file_location
@@ -204,10 +203,6 @@ def _install_fake_tools_package():
         EnvironmentConnectionError=_DummyConnectionError,
     )
     sys.modules["tools.environments.local"] = types.SimpleNamespace(LocalEnvironment=_DummyEnvironment)
-    sys.modules["tools.environments.singularity"] = types.SimpleNamespace(
-        _get_scratch_dir=lambda: Path(tempfile.gettempdir()),
-        SingularityEnvironment=_DummyEnvironment,
-    )
     sys.modules["tools.environments.ssh"] = types.SimpleNamespace(SSHEnvironment=_DummyEnvironment)
     sys.modules["tools.environments.docker"] = types.SimpleNamespace(DockerEnvironment=_DummyEnvironment)
     sys.modules["tools.environments.modal"] = types.SimpleNamespace(ModalEnvironment=_DummyEnvironment)
@@ -226,14 +221,13 @@ def test_browser_use_explicit_local_mode_stays_local_even_when_managed_gateway_i
     })
 
     with patch.dict(os.environ, env, clear=True):
-        _load_tool_module("tools.browser_tool", "browser_tool.py")
-        browser_tool_cloud = sys.modules["tools.browser_tool_cloud"]
+        browser_session_cloud = _load_tool_module("tools.browser_session_cloud", "browser_session_cloud.py")
 
-        local_mode = browser_tool_cloud._is_local_mode()
-        provider = browser_tool_cloud._get_cloud_provider()
+        provider = browser_session_cloud.get_cloud_provider()
+        local_backend = browser_session_cloud.is_local_backend()
 
-    assert local_mode is True
     assert provider is None
+    assert local_backend is True  # no SSRF guard: the browser really is this host's
 
 
 def test_browserbase_does_not_use_gateway_only_configuration():

@@ -196,6 +196,7 @@ class TestKanbanGatesRespectContext:
 # run_job wiring
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("cron_owner")
 class TestRunJobKanbanIsolation:
     @staticmethod
     def _install_stubs(monkeypatch, observed: dict, agent_cls=None):
@@ -207,6 +208,8 @@ class TestRunJobKanbanIsolation:
 
         class FakeAgent:
             def __init__(self, **kwargs):
+                self.session_id = kwargs["session_id"]
+                self.task_id = self.session_id
                 observed["dispatcher_owned_during_init"] = (
                     is_dispatcher_owned_worker_context()
                 )
@@ -255,7 +258,7 @@ class TestRunJobKanbanIsolation:
     @staticmethod
     def _job(job_id="kanban-iso"):
         return {
-            "id": job_id, "name": "kanban-iso-job",
+            "id": job_id, "name": "kanban-iso-job", "prompt": "hi", "model": "test-model",
             "workdir": None, "schedule_display": "manual",
         }
 
@@ -301,7 +304,8 @@ class TestRunJobKanbanIsolation:
 
         class ExplodingAgent:
             def __init__(self, **kwargs):
-                pass
+                self.session_id = kwargs["session_id"]
+                self.task_id = self.session_id
 
             def run_conversation(self, *_a, **_kw):
                 raise RuntimeError("boom")
@@ -379,7 +383,9 @@ def test_dispatcher_grants_only_the_assigned_worker_scope(tmp_path, monkeypatch)
         f"open({str(output)!r}, 'w').write(json.dumps(result))\n"
     )
     worker.chmod(0o700)
-    monkeypatch.setenv("HERMES_BIN", str(worker))
+    # Observe the real spawn grant without launching an owner or inference.
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._worker_argv",
+                        lambda *_args: [sys.executable, str(worker)])
     # Building a new worker under an existing task must replace, not inherit, its scope.
     monkeypatch.setenv("HERMES_KANBAN_TASK", "prior-task")
     # A dispatcher launched from an agent's shell carries the descendant fence itself; the worker it
@@ -387,7 +393,8 @@ def test_dispatcher_grants_only_the_assigned_worker_scope(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", str(tmp_path))
     pid = _default_spawn(task, str(tmp_path), board="default")
     assert pid is not None
-    os.waitpid(pid, 0)  # windows-footgun: ok — Linux-only real dispatcher spawn
+    _, status = os.waitpid(pid, 0)  # windows-footgun: ok — Linux-only real dispatcher spawn
+    assert os.waitstatus_to_exitcode(status) == 0
     result = json.loads(output.read_text())
     assert result["ok"] and result["beat"] is True, result
     assert kb.get_task(conn, tid).status == "done"

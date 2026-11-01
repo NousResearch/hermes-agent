@@ -119,6 +119,12 @@ def _hermes_home_points_at_production(value: str) -> bool:
 # system default so the import-time hook stays a no-op. The parallel runner
 # exports its own disk-backed TMPDIR anyway.
 from hermes_constants import SCRATCH_DIR_MARKER_ENV, SCRATCH_TMP_ENV_VARS
+import hermes_constants
+
+# The hourly scratch prune runs in a detached child process. An import-time boot hook during
+# collection must not start one: mark this process's once-per-process prune done. Tests that
+# reload hermes_constants reset that flag, so the per-test fixture below stubs the spawn itself.
+hermes_constants._scratch_pruned_once = True
 
 _HERMES_EXPORTED_TMP = os.environ.get(SCRATCH_DIR_MARKER_ENV, "")
 if _HERMES_EXPORTED_TMP:
@@ -250,6 +256,7 @@ from tests._fixtures.live_system_guard import (
     _LIVE_SYSTEM_GUARD_BYPASS_MARK,
     _live_system_guard,
 )
+from tests._fixtures.model_peer import model_peer  # fixture registers here
 from tests._fixtures.platform_gating import _platforms_gate_reason, _reject_contradictory_platform_marks
 
 
@@ -309,6 +316,17 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
         monkeypatch.setattr(_hc, "_PINNED_PROCESS_HERMES_HOME", None, raising=False)
     except Exception:
         pass
+    # The install probe looks past HERMES_HOME (other roots, gateway services, the launcher on
+    # PATH) and writes a marker at a fixed per-user path: confine it to this test's directory.
+    from hermes_cli import install_state
+
+    isolated_places = install_state.Places(markers=(tmp_path / "machine-marker",),
+                                           sources=(install_state._active_root,))
+    monkeypatch.setattr(install_state, "machine_places", lambda: isolated_places)
+    install_state.probe.cache_clear()
+    from hermes_cli import onboarding_due
+
+    onboarding_due.reset_for_tests()
     # Per-TEST host-rendezvous dir (see the session-level block at the top): the
     # host gateway/serve record is shared per OS user by design, so without this
     # one test's published owner makes the next test's lifecycle code attach to it.
@@ -363,6 +381,10 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     tui_server_mod = sys.modules.get("tui_gateway.server")
     if tui_server_mod is not None and hasattr(tui_server_mod, "_served_profile_homes"):
         monkeypatch.setattr(tui_server_mod, "_served_profile_homes", set())
+    # A classic CLI's gateway-session toolset reader is process-global too (``_ensure_gateway_session``).
+    tools_config_mod = sys.modules.get("hermes_cli.tools_config")
+    if tools_config_mod is not None and hasattr(tools_config_mod, "_gateway_plugin_toolsets"):
+        monkeypatch.setattr(tools_config_mod, "_gateway_plugin_toolsets", None)
 
     hermes_state_mod = sys.modules.get("hermes_state")
     if hermes_state_mod is not None and hasattr(hermes_state_mod, "DEFAULT_DB_PATH"):
@@ -685,6 +707,18 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
         )
 
     monkeypatch.setattr(_kdbc, "connect", _guarded_connect)
+
+
+@pytest.fixture(autouse=True)
+def scratch_prune_spawns(monkeypatch):
+    """No test starts a real detached scratch prune (one would outlive the test, and get any
+    Popen mock the test installed): ``spawn_prune`` only records the scratch dir it was given.
+    A test that needs the real child runs a launcher in a subprocess."""
+    import hermes_constants_scratch_detach
+
+    spawned: list = []
+    monkeypatch.setattr(hermes_constants_scratch_detach, "spawn_prune", spawned.append)
+    return spawned
 
 
 # ── Live state.db write guard ───────────────────────────────────────────────
@@ -1060,6 +1094,59 @@ def _remove_relocated_basetemp(config) -> None:
         shutil.rmtree(safe, ignore_errors=True)
 
 
+def _processes_with_hermes_home_under(roots) -> list[int]:
+    """PIDs (never this process) whose environment names a ``HERMES_HOME`` inside one of *roots*.
+
+    Linux only (``/proc/<pid>/environ``; unreadable entries are another user's and skipped).
+    Elsewhere the scan is empty: a test-spawned daemon there is the per-test guard's problem.
+    """
+    if not sys.platform.startswith("linux") or not os.path.isdir("/proc"):
+        return []
+    resolved = [Path(r).resolve() for r in roots if r]
+    found = []
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{entry.name}/environ", "rb") as handle:
+                environ = handle.read().split(b"\0")
+        except OSError:
+            continue
+        home = next((item[12:] for item in environ if item.startswith(b"HERMES_HOME=")), None)
+        if not home:
+            continue
+        try:
+            path = Path(os.fsdecode(home)).resolve()
+        except (OSError, ValueError):
+            continue
+        if any(path == root or path.is_relative_to(root) for root in resolved):
+            found.append(int(entry.name))
+    return found
+
+
+def _reap_session_hermes_processes(config) -> list[int]:
+    """SIGTERM every process still running against a Hermes home this session created.
+
+    Tests that run a real ``hermes chat -q`` child get a grandchild ``gateway run`` (detached, own
+    session) that no per-test subprocess patch can see, and pytest's tmp cleanup removes only
+    directories: each one used to outlive the run at ~250 MB. The session basetemp and the session
+    sandbox home bound exactly what this run created, so nothing else is ever signalled.
+    """
+    import signal
+
+    factory = getattr(config, "_tmp_path_factory", None)
+    # The basetemp pytest already created (never create one at teardown just to scan it).
+    roots = [getattr(config, "_hermes_relocated_basetemp", None), os.environ.get("HERMES_TEST_SANDBOX_HOME"),
+             getattr(factory, "_basetemp", None)]
+    pids = _processes_with_hermes_home_under(roots)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    return pids
+
+
 def _pinned_mcp_sdk_version() -> str:
     """The ``mcp==X`` pin carried by the ``[mcp]`` extra in pyproject.toml."""
     import tomllib
@@ -1095,6 +1182,7 @@ def require_mcp_2_sdk():
 
 
 def pytest_unconfigure(config):
+    _reap_session_hermes_processes(config)
     _remove_relocated_basetemp(config)
 
 
@@ -1305,6 +1393,45 @@ def _audio_playback_guard(request, monkeypatch):
     yield
 
 
+# ── Live Nous services fence ─────────────────────────────────────────────────
+# A test home starts with no Nous identity, so any path that ends in a hosted
+# connector action (connect, rename, status, the tool's first call) mints a REAL
+# guest on the production Portal: up to GUEST_MINT_TIMEOUT_SECONDS per test,
+# red whenever the Portal is slow, and a new guest identity on production on
+# every CI run. The same holds for billing, plan limits, the dashboard OAuth
+# provider and every other client built on a Nous URL. Refusing the name lookup
+# covers all of them at once (httpx, urllib, aiohttp and asyncio all resolve
+# through socket.getaddrinfo), and fails exactly like an offline host, which is
+# the path production already handles. Tests of these clients stub the
+# transport (tests/hermes_cli/anon_portal.py routes httpx at a fake Portal), so
+# they never reach the lookup. Live canaries opt in with ``@pytest.mark.live``.
+_NOUS_SERVICE_DOMAINS = ("nousresearch.com", "staging-nousresearch.com")
+
+
+def _is_nous_service_host(host) -> bool:
+    name = (host.decode() if isinstance(host, bytes) else str(host or "")).lower().rstrip(".")
+    return any(name == domain or name.endswith("." + domain) for domain in _NOUS_SERVICE_DOMAINS)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_nous_services(request, monkeypatch):
+    if request.node.get_closest_marker("live"):
+        return
+    import socket
+
+    real_getaddrinfo = socket.getaddrinfo
+
+    def fenced_getaddrinfo(host, *args, **kwargs):
+        if _is_nous_service_host(host):
+            raise socket.gaierror(
+                socket.EAI_NONAME,
+                f"test fence: {host!r} is a live Nous service; stub the HTTP layer "
+                "(tests/hermes_cli/anon_portal.py) or mark the test live")
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", fenced_getaddrinfo)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_computer_use_approval_state():
     """Reset the computer-use explicit approval callback after every test.
@@ -1414,6 +1541,24 @@ from hermes_cli.gui_uninstall import packaged_gui_app_paths
 _REAL_INSTALLED_GUI_APPS = sorted({
     os.path.normcase(form) for app in packaged_gui_app_paths() if os.path.lexists(app)
     for form in (os.path.abspath(app), os.path.realpath(app))})
+
+
+@pytest.fixture(autouse=True)
+def _forbid_real_user_path_writes(monkeypatch):
+    """Fail a test that would add an entry to the real Windows User PATH.
+
+    The registry has no temporary-home equivalent: a test home that reached
+    these writers stayed on the developer's PATH after the run. Tests of the
+    writers' callers inject fakes (``write_user_path=``) or stub them.
+    """
+    if sys.platform != "win32":
+        return
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("TEST BUG: write to the real Windows User PATH (HKCU\\Environment)")
+
+    monkeypatch.setattr("hermes_cli._launchers._register_windows_user_path", refuse)
+    monkeypatch.setattr("hermes_cli._install_repair._write_user_path_raw", refuse)
 
 
 @pytest.fixture(autouse=True)

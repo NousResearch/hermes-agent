@@ -39,17 +39,19 @@ interface ContextBreakdownOptions {
  *  `invalidateContextBreakdown` bumps a per-session generation that both
  *  call sites (slash.ts after a successful compress, lifecycle.ts on
  *  reclaim) fire, forcing an immediate refetch. An untrustworthy answer —
- *  an outright failure, or a ZEROED breakdown from the backend's
- *  agent-is-None branch (`context_max: 0`) — retries on a bounded backoff;
+ *  an outright failure, or a ZEROED breakdown (`context_max: 0` and no
+ *  categories) — retries on a bounded backoff;
  *  once the ladder is exhausted the cached breakdown is EVICTED so the
  *  meter goes dark honestly rather than showing numbers known to be
  *  stale. */
 
 /** A breakdown the backend computed from a live agent carries a real
- *  context_max (the compressor's context_length). Zero means the
- *  `agent is None` branch answered from empty metadata — not data. */
+ *  context_max (the compressor's context_length). With no resident agent the
+ *  gateway still measures the session's frozen prompt, tools and transcript
+ *  but knows no window, so categories without a capacity are data; only a
+ *  breakdown with neither is empty. */
 function isZeroedBreakdown(breakdown: ContextBreakdown): boolean {
-  return !(breakdown.context_max > 0)
+  return !(breakdown.context_max > 0) && !breakdown.categories?.length
 }
 
 const RETRY_DELAYS_MS = [1_000, 4_000, 12_000]

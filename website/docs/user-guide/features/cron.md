@@ -14,6 +14,7 @@ Cron jobs can:
 
 - schedule one-shot or recurring tasks
 - pause, resume, edit, trigger, and remove jobs
+- stop a run that is already in flight, without touching the job's schedule
 - attach zero, one, or multiple skills to a job
 - deliver results back to the origin chat, local files, or configured platform targets
 - run in fresh agent sessions with the normal static tool list
@@ -41,6 +42,19 @@ Whichever provider a job resolves to, its provider-specific request settings (e.
 :::warning
 Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron management tools inside cron executions to prevent runaway scheduling loops.
 :::
+
+## Admission recovery
+
+Agent-backed runs retain their fire identity until output and a durable delivery handoff are recorded.
+The scheduler reconciles unfinished receipts on each tick, including after an owner restart. A known
+terminal result is handed to the delivery queue without running the agent again; duplicate handoffs
+and bookkeeping use the original fire identity. Delivery interrupted after a send claim stays
+unknown and is not retried automatically.
+
+An interrupted execution or a prepared fire that cannot be found stays paused for operator review.
+Recovery never creates another admission for it. Paused jobs are not automatically resumed, even
+when their completed result is recovered. `hermes cron run` exits nonzero for a known synchronous
+execution failure; background dispatch is not a terminal success/failure verdict.
 
 ## Creating scheduled tasks
 
@@ -197,6 +211,32 @@ When `workdir` is set:
 Each agent run binds its `workdir` to that run's unique task identity. Workdir jobs therefore use the normal parallel pool without mutating process-global terminal state or leaking paths between concurrent runs. Set `cron.max_parallel_jobs` if you want to limit total cron concurrency.
 :::
 
+## Per-job timezone
+
+By default a job's cron expression is read in your profile's timezone (`timezone:` in `config.yaml`). A job can pin its own zone instead, so one profile can serve several markets:
+
+```bash
+hermes cron create "0 9 * * 1-5" --timezone Asia/Hong_Kong "HK market open brief"
+hermes cron create "0 9 * * 1-5" --timezone America/New_York "US market open brief"
+```
+
+- The expression is the pinned zone's **wall clock**: `0 9 * * *` fires at 09:00 in that zone, and stays at 09:00 across that zone's DST changes.
+- Omit it (or pass `--timezone ""` on edit) to inherit the profile timezone. A job without the field behaves exactly as before.
+- An offset-less one-shot timestamp (`2026-06-01T09:00:00`) is also read in the job's zone; a timestamp that carries its own offset is already an instant.
+- Changing the zone recomputes `next_run_at` immediately, so the next fire happens at the new zone's wall clock.
+- An `interval` job has a fixed duration and no wall clock, so a pin has no effect on it.
+
+## Catch-up window
+
+A missed cron occurrence is run late only inside a catch-up window: half the job's period, clamped to 2 minutes–2 hours. `--grace-minutes` overrides that per job (0–1440):
+
+```bash
+hermes cron edit market-open --grace-minutes 0    # never catch up: skip a missed occurrence
+hermes cron edit market-open --grace-minutes 180  # run up to 3h late
+```
+
+`0` means never catch up; `--grace-minutes ""` restores the computed window. It only applies to cron expressions — `once` and `interval` schedules have no missed wall clock to catch up on.
+
 ## Editing jobs
 
 You do not need to delete and recreate jobs just to change them.
@@ -254,6 +294,7 @@ hermes cron list
 hermes cron pause <job_id_or_name>
 hermes cron resume <job_id_or_name>
 hermes cron run <job_id_or_name>
+hermes cron cancel <job_id_or_name>
 hermes cron remove <job_id_or_name>
 hermes cron edit <job_id_or_name> [...flags]
 hermes cron status
@@ -264,15 +305,59 @@ What they do:
 
 - `pause` — keep the job but stop scheduling it
 - `resume` — re-enable the job. A recurring job whose slot came due while it was paused keeps that slot due, so the next tick fires one catch-up run (or logs the skip when `cron.catch_up_missed: false`) instead of silently jumping to the next occurrence; otherwise the next future run is computed
-- `run` — trigger the job on the next scheduler tick
+- `run` — trigger the job on the next scheduler tick. A manual run is an extra fire: the scheduled run still happens and the `repeat` count is not spent, so test-firing an `in 30m` reminder keeps the real one (a run once the slot is already due is that scheduled run)
+- `cancel` — stop the job's **current** run (see [Stopping a run in flight](#stopping-a-run-in-flight))
 - `remove` — delete it entirely
 - `edit` — modify schedule, prompt, delivery, etc.
+- `tick` — run one scheduler pass and exit (for a system crontab or other external
+  scheduler). **The gateway must be running:** agent jobs execute inside the gateway, and a
+  tick never starts one. With no gateway up, agent jobs are skipped with a logged reason
+  (`hermes cron list` shows it) and fire on the next tick after `hermes gateway start`; their
+  schedule is not advanced or penalised. `no_agent` script jobs still run from a bare tick.
 
-**Name-based lookup.** All four mutating verbs (`pause`, `resume`, `run`, `remove`, `edit`) plus the agent's `cronjob_manage` tool now accept a job **name** (case-insensitive) in place of the hex ID. The agent and CLI both prefer an exact ID match if one exists; ambiguous name matches (multiple jobs sharing the same name) are refused with the full list of candidate IDs so you can pick one explicitly. Names are not unique, so this guard is load-bearing — it prevents silently mutating the wrong job when two share a name.
+**Name-based lookup.** The mutating verbs (`pause`, `resume`, `run`, `cancel`, `remove`, `edit`) plus the agent's `cronjob_manage` tool now accept a job **name** (case-insensitive) in place of the hex ID. The agent and CLI both prefer an exact ID match if one exists; ambiguous name matches (multiple jobs sharing the same name) are refused with the full list of candidate IDs so you can pick one explicitly. Names are not unique, so this guard is load-bearing — it prevents silently mutating the wrong job when two share a name.
 
 ### Pausing everything: `hermes pause`
 
 `hermes pause [--reason ...]` is the global emergency stop (`hermes resume` lifts it). While it is engaged no scheduled cron fire starts, whichever door it arrives through: the built-in ticker skips its dispatch, the managed-cron (hosted scheduler) fire webhook answers `503` with `Retry-After: 60` so the scheduler redelivers the fire after you resume, and the [misfire catch-up](#misfire-catch-up) sweep stays idle instead of force-firing everything that was held back. Runs already in flight are never killed, and nothing is lost: due work catches up on the first tick or sweep after `hermes resume`. Explicit manual runs (`hermes cron run`, the dashboard's Trigger button) are an operator override and still execute while paused.
+
+### Stopping a run in flight: `hermes cron cancel`
+
+`pause` only suppresses future fires — a run that is already executing keeps going until it
+finishes or hits a timeout. When a run is wedged (a script blocked on network I/O, an agent
+turn that will not end), stop just that run:
+
+```bash
+hermes cron cancel <job_id_or_name>
+hermes cron cancel <job_id_or_name> --reason "wedged on the staging API"
+```
+
+The schedule is untouched: the job stays enabled and its next fire happens as planned. What
+changes is the current run.
+
+- **Script jobs** (`--script`, including [no-agent mode](#no-agent-mode-script-only-jobs)) get the
+  whole process tree terminated — `SIGTERM` to the script's process group, escalating to
+  `SIGKILL` after a grace period, and backgrounded grandchildren included. This is the same
+  teardown a script timeout already performs, so nothing new is left running behind the job.
+- **Agent jobs** have the in-flight turn interrupted at its next checkpoint.
+
+The cancel is a *request*, not a kill: it is recorded against that run's execution id and picked
+up at the run's next cancel check (well under a second for a script). The run then books a
+`cancelled` row with its reason, so `hermes cron runs <job_id>` shows why it stopped instead of an
+unexplained timeout or a bare failure. A cancelled run sends no failure notice and does not count
+toward the job's failure streak. The same stop is available as `POST /api/cron/jobs/{id}/cancel`,
+as the agent's `cronjob_manage` action `cancel`, and in the Desktop: a job with a run in flight
+shows **Stop** in its header (it reads **Stopping…** until the run has booked its `cancelled`
+row, then a *Run cancelled* toast confirms it).
+
+**Removing a job stops its live run.** `hermes cron remove` (and the dashboard/Desktop delete or
+the agent's `remove` action) cancels a run that is in flight, booked `cancelled` with the reason
+"job removed while running", instead of letting it keep spending tokens on a result nothing
+will keep.
+
+Cancelling a job with nothing running is a safe no-op that says so, and a cancel that arrives
+after the run has already finished changes nothing. A cancel cannot undo side effects the run
+already performed — it stops the run, it does not roll it back.
 
 ### Creating a job paused (safe canary)
 
@@ -622,9 +707,8 @@ error. A delivery failure does not count toward the job's `failure_streak`
 - `bot-chat:<profile>` targets another profile **on the same machine**. Names are validated against `hermes profile list` when the job is created; profiles on other gateways or machines can never be targeted, so same-named profiles across machines are unambiguous.
 - Each delivery costs the target bot one full agent turn — mind the schedule frequency.
 - Composes with other targets (`bot-chat,telegram`) but is never included in `all`.
-- If the canonical chat is open in a mailbox-capable Desktop/TUI backend, delivery is **durably queued immediately**, whether the bot is idle or busy. Only that live owner runs the incoming turn; cron does not start a competing CLI writer. If a CLI-only or older unsupported owner holds the chat, cron retains the never-started output under the sending profile's `cron/bot_chat_pending/<receipt-id>.json`. Later scheduler ticks deliver after that owner releases the chat, in admission order. Deferred work retains its admitted destination home and receipt ID even if the scheduler's launch root changes; a missing/renamed destination is not recreated or resolved to another profile. A `transferred` pending record points to the live-owner receipt, not a failed turn. Malformed JSON records are retained and logged without blocking other queued outputs. With no owner, the existing `hermes chat -c "Bot Chat" --create-if-missing` lane remains available (normal session ownership checks still apply). That child uses the exact destination home already checked by cron, including custom roots; inherited `HOME` or a changed active profile cannot redirect it. Its whole environment is the **destination** profile's, as a standalone `hermes -p <profile>` would build it: the sending gateway's `.env` settings, bridged `TERMINAL_*` policy, platform authorization gates and credentials are dropped, and the destination's own secrets are overlaid. A missing destination directory is refused before launch, not recreated. A deferred request is claimed before launching that lane; interruption or an uncertain subprocess result never causes an automatic resend.
-- Never-started outputs have no TTL: if an unsupported owner never releases, they remain queued rather than being silently dropped. Receipts retain their payloads indefinitely. An unexpected delivery exception is logged and retained as `ambiguous`, without stopping sibling deliveries in that drain; claimed/ambiguous attempts are never automatically replayed.
-- **Queued is not completed.** Cron records receipt IDs and `queued`/`claimed` statuses in `last_delivery_queued`, with delivery outcome `queued` (neither delivered nor failed). A successful job shows `delivery_queued`; genuine errors on other targets still take precedence as delivery failures. The bot may complete later. The durable receipt in the target profile's `runtime/bot_live_delivery/<receipt-id>.json` is authoritative; cron's historical status is not automatically refreshed.
+- If the canonical chat is open in a mailbox-capable Desktop/TUI backend, delivery is **durably queued immediately**, whether the bot is idle or busy. Only that live owner runs the incoming turn; cron does not start a competing CLI writer. A profile that has no Bot Chat yet gets one created on first delivery. If the target profile's gateway is not running, the run is recorded `delivery_failed` with the reason (the output stays in `hermes cron runs`; it is not redelivered automatically) and cron never starts its own Bot Chat turn.
+- **Queued is not completed.** Cron records receipt IDs and `queued`/`claimed` statuses in `last_delivery_queued`, with delivery outcome `queued` (neither delivered nor failed). A successful job shows `delivery_queued`; genuine errors on other targets still take precedence as delivery failures. The bot may complete later. The durable receipt in the target profile's `runtime/bot_live_delivery/<receipt-id>.json` is authoritative for the turn itself. For an agent job the send rides the gateway delivery queue, and once the gateway has handed it to the bot the run settles to `ok` (accepted, not answered) while `last_delivery_queued` keeps the receipt; a refused hand-off settles to `delivery_failed`. Script-only (`no_agent`) Bot Chat deliveries stay `delivery_queued`: cron never rewrites that history when the bot's turn later completes.
 - Rechecking the same execution inspects its existing receipt, even if the owner has disappeared. It never falls back to another writer after acceptance. `failed`, `cancelled`, or `ambiguous` receipts are not automatically replayed; inspect the chat and receipt before intentionally starting new work. Each new cron execution has a distinct delivery ID.
 
 ### Routing intent (`all`)
@@ -876,19 +960,9 @@ cron:
 
 Or set the `HERMES_CRON_MEDIA_SEND_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 300s default. A timed-out attachment is recorded in the job's run status as a partial delivery failure (the text still delivers).
 
-## Bot Chat delivery timeout
+## Bot Chat delivery completion
 
-A `bot-chat` delivery runs a full agent turn in the target bot's chat, so its bound is minutes, not seconds — 600s by default:
-
-```yaml
-# ~/.hermes/config.yaml
-cron:
-  bot_chat_delivery_timeout_seconds: 900
-```
-
-A timed-out delivery is recorded in `last_delivery_error`; the bot's turn may still complete on its own.
-
-The cap bounds the bot's **turn** only. When that turn messages a teammate (`message_agent`), the delivery process stays alive afterwards — bounded by `terminal.oneshot_completion_wait_seconds` — so the teammate's reply can land in the Bot Chat; that wait is not part of the delivery and is never counted against, or cut short by, this cap.
+A `bot-chat` delivery is admitted to the target profile's running gateway and executed there as a full agent turn. The job's run status records the admission receipt (`delivery_outcome=queued`) until the target's durable receipt settles; a retry of the same run reuses the same receipt and never re-admits. If the target profile's gateway is not running, the run is recorded `delivery_failed` and no local fallback turn is run.
 
 ## Standalone send timeout
 
@@ -922,7 +996,7 @@ Semantics:
 - `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
 - No tokens, no model, no provider fallback — the job never touches the inference layer.
 
-`.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). Scripts must resolve inside `$HERMES_HOME/scripts/` — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; paths that escape it are rejected. A Python `script` or `monitor_script` can also pin a user-managed venv (for packages the Hermes runtime doesn't carry) by passing `--interpreter ~/venvs/.../bin/python` at create/edit time — see [Using your own Python environment](../../guides/cron-script-only.md#using-your-own-python-environment). The Hermes-managed venv stays Hermes-owned; nothing is installed or restored automatically. The subprocess environment is sanitized, so provider API credentials and other Hermes-managed secrets are **not** inherited by cron scripts.
+`.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). `script` is always a **file**, never a command line: `--script "echo hi"` is refused at creation (write the command into `~/.hermes/scripts/hi.sh` and pass `hi.sh`). Scripts must resolve inside `$HERMES_HOME/scripts/` — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; paths that escape it are rejected. A Python `script` or `monitor_script` can also pin a user-managed venv (for packages the Hermes runtime doesn't carry) by passing `--interpreter ~/venvs/.../bin/python` at create/edit time — see [Using your own Python environment](../../guides/cron-script-only.md#using-your-own-python-environment). The Hermes-managed venv stays Hermes-owned; nothing is installed or restored automatically. The subprocess environment is sanitized (`_sanitize_subprocess_env`), so provider API credentials and other Hermes-managed secrets are **not** inherited by cron scripts.
 
 #### Giving a script a credential
 
@@ -1091,8 +1165,27 @@ job later than its existing grace window (half its period, clamped to 120 second
 hours) is re-anchored to its next future occurrence without firing now. The skip is
 logged. Jobs inside grace and explicit manual triggers still run normally; if the
 next occurrence cannot be computed, the existing run-once fallback is preserved.
-This does not change one-shot expiry, resume behavior, or the hosted-provider sweep
-below. There is no per-job override.
+This does not change resume behavior or the hosted-provider sweep below.
+
+**Per job.** A job can override the default with `catch_up`:
+
+```bash
+hermes cron create "0 7 * * 1-5" "Morning brief" --catch-up off   # a stale brief is useless: skip
+hermes cron edit <job> --catch-up on                                # always run once on return
+```
+
+(`cronjob_manage` takes `catch_up: true|false`; the Desktop job editor has the same choice as
+**Missed runs**: *Use the default*, *Run once when back*, *Skip them*.) Without it, recurring jobs
+skip a miss past an explicit `--grace-minutes` and otherwise follow `cron.catch_up_missed`;
+one-shots keep their 120-second grace: a reminder missed by more than
+that is dropped. A one-shot with `--catch-up on` instead fires once, late, when the scheduler is
+back. `--catch-up on` also beats `--grace-minutes`: the grace sets when a run counts as missed,
+and the job still runs once for it.
+
+**Missed runs are visible.** Every slot the scheduler passes over is booked as one `missed ×N`
+row in the execution ledger: `missed ×3 (skipped, catch-up off; next run …)` for a skip, and
+`missed ×2 (collapsed into one catch-up run)` beside the one run that caught up for three slots.
+The rows show in `hermes cron runs <job>` and in the dashboard/Desktop run history.
 
 ### Misfire catch-up
 

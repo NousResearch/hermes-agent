@@ -255,6 +255,8 @@ export interface ConnectOptions {
   /** With `reconnect`, the existing account to repair; the only address an unnamed account has. */
   connectionId?: string
   reconnect?: boolean
+  /** Where the browser's return shows the user; the Connectors page when absent. */
+  returnRoute?: string
 }
 
 export interface ConnectorConnect {
@@ -282,7 +284,7 @@ export function useConnectConnector(scope: ProfileScope): ConnectorConnect {
         // The start already lists the new or repaired account as pending; the list must not wait for the settle.
         invalidateConnectors(scope, 'accounts')
 
-        return { ok: true, operation: startAccountOperation(scope, [slug], snapshot, request) }
+        return { ok: true, operation: startAccountOperation(scope, [slug], snapshot, request, options?.returnRoute) }
       } catch (error) {
         return { error: asConnectorError(error), ok: false }
       } finally {

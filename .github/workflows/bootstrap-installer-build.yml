@@ -41,18 +41,18 @@ env:
 jobs:
   windows-x64:
     name: Hermes-Setup.exe (windows x64, signed)
-    runs-on: windows-latest
+    runs-on: blacksmith-2vcpu-windows-2025
     environment: release-signing
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
         with:
-          node-version: 24.11.1
+          node-version: 26.12.1
 
       - name: Fresh cache dirs
         shell: bash
@@ -151,18 +151,18 @@ jobs:
 
   macos-arm64:
     name: Hermes-Setup.dmg (macos arm64, signed + notarized)
-    runs-on: macos-latest
+    runs-on: blacksmith-12vcpu-macos-latest
     environment: release-signing
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
         with:
-          node-version: 24.11.1
+          node-version: 26.12.1
 
       - name: Fresh cache dirs
         run: |

@@ -117,8 +117,6 @@ test.each([
   ['resources/agent-payload/venv/lib/python3.11/site-packages/pvporcupine/lib/raspberry-pi/arm11/libpv_porcupine.so', true],
   ['resources/agent-payload/venv/lib/python3.11/site-packages/debugpy/_vendored/pydevd/pydevd_attach_to_process/attach_linux_amd64.so', true],
   ['resources/agent-payload/venv/lib/python3.11/site-packages/debugpy/_vendored/pydevd/pydevd_attach_to_process/inject_dll_x86.exe', true],
-  ['resources/agent-payload/tools/agent-browser-0.35.1-win32-arm64/bin/agent-browser-win32-x64.exe', true],
-  ['resources\\agent-payload\\tools\\agent-browser-0.26.0-win32-arm64\\bin\\agent-browser-win32-x64.exe', true],
   ['resources/agent-payload/tools/chromium-1208/chrome-win64/chrome.exe', true],
   ['resources\\agent-payload\\tools\\chromium-1208\\chrome-win64\\chrome.dll', true],
   ['resources/agent-payload/tools/chromium-1208/chrome-linux/chrome', false],

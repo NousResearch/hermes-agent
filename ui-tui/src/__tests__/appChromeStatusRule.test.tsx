@@ -442,7 +442,30 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
 
     expect(rendered).toContain('◎ 87%')
     expect(rendered).toContain('◷ 3.2s')
-    expect(rendered).toContain('↑ 50 t/s')
+    expect(rendered).toContain('↓ 50 t/s')
+  })
+
+  it('prefers the live streaming rate while a turn runs', () => {
+    const element = StatusRule({ ...baseProps, busy: true, cols: 160, liveTps: 12.4, usage: perfUsage })
+
+    expect(textContent(element)).toContain('↓ 12 t/s')
+  })
+
+  it('falls back to the server average once the turn is over', () => {
+    const element = StatusRule({ ...baseProps, busy: false, cols: 160, liveTps: 12.4, usage: perfUsage })
+
+    expect(textContent(element)).toContain('↓ 50 t/s')
+  })
+
+  it('shows session token totals as input-up output-down', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 160,
+      usage: { ...perfUsage, input: 12_300, output: 4_500 }
+    })
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('↑ 12k ↓ 4.5k')
   })
 
   it('self-hides when the server omits the keys', () => {

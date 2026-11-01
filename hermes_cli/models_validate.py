@@ -536,7 +536,7 @@ def _validate_anthropic_messages(req: _Request) -> dict[str, Any]:
     listing that simply doesn't name the slug (vendors alias ids: ``kimi-k3`` is served as ``k3``)."""
     from hermes_cli import models as _m
 
-    models = _m.fetch_api_models(req.api_key, req.base_url, api_mode=req.api_mode)
+    models = _m.fetch_api_models(req.api_key, req.base_url, api_mode=req.api_mode, headers=req.headers)
     if models is None:
         return _soft_accept(
             f"Note: could not verify `{req.requested}` against this endpoint's model listing.  Many "
@@ -633,7 +633,7 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
             # product line.
             return _reject(
                 f"Model `{req.requested}` was not found in this provider's catalog.{match.suggestion_text}")
-    api_models = _m.fetch_api_models(req.api_key, req.base_url)
+    api_models = _m.fetch_api_models(req.api_key, req.base_url, headers=req.headers)
     if api_models is None:
         return None
     if req.normalized == "gemini":

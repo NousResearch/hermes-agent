@@ -394,6 +394,11 @@ def _extract_title_text(content: str) -> str:
     would otherwise be persisted as the session title."""
     if not content:
         return ""
+    # Mistral's GLM endpoints return ``message.content`` as a list of typed
+    # blocks (thinking/text) even on non-streamed calls; flatten before the
+    # str-only parsing below ('list' object has no attribute 'strip').
+    if not isinstance(content, str):
+        content = flatten_message_text(content, sep="\n")
     raw = content.strip()
     fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", raw, re.DOTALL)
     if fenced:

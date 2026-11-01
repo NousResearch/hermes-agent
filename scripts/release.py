@@ -614,6 +614,7 @@ def prune_old_canaries(args) -> None:
         if date is not None and date < cutoff:
             doomed.append(tag)
     _prune_old_commit_claims(args, push_remote)
+    _prune_old_channel_claims(args, push_remote)
     if not doomed:
         print("✓ No canaries older than 14 days.")
         return
@@ -640,17 +641,56 @@ def prune_old_canaries(args) -> None:
 
 def _prune_old_commit_claims(args, push_remote: str) -> None:
     """Delete commit build claim tags older than 90 days (r2.COMMIT_KEEP_DAYS, the window their
-    claim archives keep). They own no GitHub release, so only the remote tag goes. Dated by the
-    tag's own UTC stamp; anything that does not parse is kept."""
+    claim archives keep)."""
     from hermes_cli.update_channel import commit_timestamp
     from scripts.releases.r2 import COMMIT_KEEP_DAYS
 
-    cutoff = (datetime.now(UTC) - timedelta(days=COMMIT_KEEP_DAYS)).strftime("%Y%m%d")
-    tags = git("tag", "--list", "commit.*", "--sort=-creatordate")
+    _prune_claim_tags(args, push_remote, "commit", commit_timestamp, COMMIT_KEEP_DAYS, set())
+
+
+def _channel_head_claims() -> set[str] | None:
+    """Every channel head's claim tag, from the authenticated channel records; None without R2
+    credentials (then no channel claim is pruned)."""
+    from scripts.releases import r2
+
+    if not all(os.environ.get(name) for name in (
+            "CLOUDFLARE_R2_ACCOUNT_ID", "CLOUDFLARE_R2_ACCESS_KEY_ID", "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
+            "CLOUDFLARE_R2_BUCKET")):
+        return None
+    from scripts.releases.channels import R2ChannelStore
+
+    store = R2ChannelStore(*r2.credentials())
+
+    def read_json(key: str) -> object:
+        found = store.get(key) if key else None
+        return json.loads(found[0]) if found is not None else None
+
+    from scripts.releases.channel_retention import PreviewRetention
+
+    return PreviewRetention(read_json).live_claims(store.keys("releases/channels/"))
+
+
+def _prune_old_channel_claims(args, push_remote: str) -> None:
+    """Delete channel claim tags older than 14 days, never the claim a channel head names."""
+    from hermes_cli.update_channel import channel_timestamp
+
+    heads = _channel_head_claims()
+    if heads is None:
+        print("Channel claims kept: set the R2 credentials to prune them "
+              "(each channel's head is read from its record).")
+        return
+    _prune_claim_tags(args, push_remote, "channel", channel_timestamp, 14, heads)
+
+
+def _prune_claim_tags(args, push_remote: str, kind: str, timestamp, days: int, keep: set[str]) -> None:
+    """Commit and channel claims own no GitHub release, so only the remote tag goes. Dated by the
+    tag's own UTC stamp; anything that does not parse, and anything in ``keep``, is kept."""
+    cutoff = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y%m%d")
+    tags = git("tag", "--list", f"{kind}.*", "--sort=-creatordate")
     doomed = [tag for tag in (tags.split("\n") if tags else [])
-              if (stamp := commit_timestamp(tag)) is not None and stamp[:8] < cutoff]
+              if (stamp := timestamp(tag)) is not None and stamp[:8] < cutoff and tag not in keep]
     if not doomed:
-        print(f"✓ No commit build claims older than {COMMIT_KEEP_DAYS} days.")
+        print(f"✓ No {kind} build claims older than {days} days.")
         return
     for tag in doomed:
         if not args.publish:
@@ -689,7 +729,8 @@ def main():
                              "nowhere; its builds page is releases/tag/<claim>/index.html. Takes "
                              "--only/--with/--without (starting from the stable default minus "
                              "upgrade, install-e2e and windows-store) and --[no-]require-green. Add "
-                             "--channel NAME to publish into an updatable R2 channel instead.")
+                             "--channel NAME to claim channel.<stamp>-v<version> instead: the same "
+                             "pipeline (minus upgrade and windows-store) then advances that R2 channel.")
     parser.add_argument("--bundle-env", action="append", default=[], metavar="NAME=VALUE",
                         help="Bake a non-secret environment default into a commit desktop bundle. "
                              "Repeat for multiple variables. Runtime environment values win.")
@@ -697,8 +738,9 @@ def main():
                         help="Clear an inherited variable at desktop launch, even when set. "
                              "Uses an explicit empty value; repeat for multiple variables.")
     parser.add_argument("--prune-canaries", action="store_true",
-                        help="Delete canary releases+tags older than 14 days and commit build "
-                             "claim tags older than 90 days")
+                        help="Delete canary releases+tags older than 14 days, commit build "
+                             "claim tags older than 90 days and channel claim tags older than 14 "
+                             "days (never a channel head's; needs the R2 credentials)")
     parser.add_argument("--publish", action="store_true",
                         help="Actually create the tag and GitHub release (otherwise dry run)")
     parser.add_argument("--remote", type=str,
@@ -768,9 +810,7 @@ def main():
             args.only or args.with_lanes or args.without_lanes or not args.require_green):
         parser.error("--only/--with/--without/--no-require-green need --canary, --build-commit "
                      "or the release command")
-    if validate_arguments(parser, args):
-        if args.only or args.with_lanes or args.without_lanes or not args.require_green:
-            parser.error("channel builds do not take --only/--with/--without/--no-require-green yet")
+    if validate_arguments(parser, args) and not args.channel:
         cmd_channel(args)
         return
     if (args.bundle_env or args.bundle_unset) and args.build_commit is None:

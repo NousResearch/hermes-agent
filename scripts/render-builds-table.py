@@ -421,23 +421,26 @@ def render_page(tag: str, assets_by_app: dict, base_url: str,
                 smoke_results: dict | None = None, commit: str | None = None,
                 bundle_env: dict[str, str | None] | None = None) -> str:
     """The tag/channel page: the release-body download table as HTML."""
-    from hermes_cli.update_channel import is_commit_tag
+    from hermes_cli.update_channel import is_channel_tag, is_preview_tag
 
-    if is_commit_tag(tag):
-        # A commit build publishes to no channel and owns no GitHub release: its page lives only
-        # in its claim archive and links its source commit.
+    if is_preview_tag(tag):
+        # A commit or channel build owns no GitHub release: its page lives only in its claim archive
+        # and links its source commit.
         if not commit or not re.fullmatch(r"[0-9a-f]{40}", commit):
-            raise ValueError("A commit build page needs its exact source commit")
+            raise ValueError("A commit or channel build page needs its exact source commit")
         commit_url = f"https://github.com/{quote(repo, safe='/')}/commit/{commit}"
+        kind = "channel" if is_channel_tag(tag) else "commit"
+        reach = ("Installs from it update along its channel only: never a release, feed or Store listing."
+                 if kind == "channel" else "It updates nothing: no release, channel, feed or Store listing.")
         body = [
-            "<h1>Hermes Desktop commit build</h1>",
-            f"<p>Commit build <code>{html.escape(tag)}</code> of {_link(commit_url)}<code>{commit}</code></a>. "
-            "It updates nothing: no release, channel, feed or Store listing. Only objects this build "
+            f"<h1>Hermes Desktop {kind} build</h1>",
+            f"<p>{kind.capitalize()} build <code>{html.escape(tag)}</code> of "
+            f"{_link(commit_url)}<code>{commit}</code></a>. {reach} Only objects this build "
             "actually staged in the bucket are listed.</p>",
         ]
     else:
         if bundle_env:
-            raise ValueError("Only a commit build page lists bundle defaults")
+            raise ValueError("Only a commit or channel build page lists bundle defaults")
         tag_url = f"https://github.com/{quote(repo, safe='/')}/releases/tag/{quote(tag, safe='')}"
         body = [
             f"<h1>Hermes Desktop {r2.channel_for_tag(tag)} builds</h1>",
@@ -474,7 +477,8 @@ def render_page(tag: str, assets_by_app: dict, base_url: str,
         ))
     body.extend(smoke_html(smoke_results))
     body.extend(_bundle_env_html(bundle_env))
-    title = "Hermes Desktop commit build" if is_commit_tag(tag) else f"Hermes Desktop {r2.channel_for_tag(tag)} builds"
+    title = (f"Hermes Desktop {'channel' if is_channel_tag(tag) else 'commit'} build" if is_preview_tag(tag)
+             else f"Hermes Desktop {r2.channel_for_tag(tag)} builds")
     return _page(title, tag, body)
 
 
@@ -652,29 +656,33 @@ def _render_commit_summary(args, smoke_results: dict) -> int:
 
 
 def _write_tag_page(args, archive: str, assets: dict, incomplete: list[str], smoke_results: dict) -> None:
-    """The archive's own page. A commit build's page links its commit and lists its bundle defaults."""
-    from hermes_cli.update_channel import is_commit_tag
+    """The archive's own page. A commit or channel build's page links its commit and lists its bundle
+    defaults."""
+    from hermes_cli.update_channel import is_preview_tag
     from scripts.releases.bundle_env import decode
 
     extra = ({"commit": args.candidate_commit, "bundle_env": decode(args.bundle_env_json)}
-             if is_commit_tag(archive) else {})
+             if is_preview_tag(archive) else {})
     write_page(r2.staging_key_for(archive, "index.html"),
                render_page(archive, assets, args.r2_base_url, incomplete, args.run_url,
                            repo=args.repo, smoke_results=smoke_results, **extra),
                args.r2_base_url)
 
 
-def _finish_commit_build(args, parser, archive: str, block: str, names: list[str]) -> int:
-    """A commit build owns no GitHub release and no channel page: its claim archive's page
-    (already written) and the run summary are its whole publication."""
+def _finish_preview_build(args, parser, archive: str, block: str, names: list[str]) -> int:
+    """A commit or channel build owns no GitHub release and no shared channel page: its claim
+    archive's page (already written) and the run summary are its whole page."""
+    from hermes_cli.update_channel import is_channel_tag
+
+    kind = "Channel" if is_channel_tag(args.tag) else "Commit"
     if args.pending_run_url:
-        parser.error("A commit build has no release body to hold a builds-in-progress link")
+        parser.error(f"A {kind.lower()} build has no release body to hold a builds-in-progress link")
     if args.summary_out:
         with open(args.summary_out, "a", encoding="utf-8") as out:
-            out.write(f"## Commit build {args.tag}\n\n"
+            out.write(f"## {kind} build {args.tag}\n\n"
                       f"Builds page: {r2.public_url_for(args.r2_base_url, r2.staging_key_for(archive, 'index.html'))}\n\n"
                       + block)
-    print(f"✓ Commit build page rendered for {args.tag} ({len(names)} assets scanned)")
+    print(f"✓ {kind} build page rendered for {args.tag} ({len(names)} assets scanned)")
     return 0
 
 
@@ -779,10 +787,10 @@ def main() -> int:
         if not args.dry_run:
             _write_tag_page(args, archive, assets, incomplete, smoke_results)
 
-    from hermes_cli.update_channel import is_commit_tag
+    from hermes_cli.update_channel import is_preview_tag
 
-    if is_commit_tag(args.tag):
-        return _finish_commit_build(args, parser, archive, block, names)
+    if is_preview_tag(args.tag):
+        return _finish_preview_build(args, parser, archive, block, names)
 
     # Keep the per-tag diagnostic page even when GitHub cannot supply a draft.
     view = subprocess.run(

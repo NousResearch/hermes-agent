@@ -118,6 +118,20 @@ def _require_commit_tag_pairing(commit_build: str | None, tag: str | None) -> No
         raise ValueError("A commit build tag requires HERMES_BUILD_COMMIT (the commit identity)")
 
 
+def _release_payload_tag(tag: str | None, payload: str, distribution: str | None,
+                         update_mechanism: str) -> bool:
+    """Desktop channel identities require their request; Termux remains an APT-owned runtime.
+
+    Its channel claim names an archived package/suite, not a desktop updater identity.
+    """
+    if not tag:
+        return False
+    if update_channel.STABLE_TAG_RE.fullmatch(tag) or update_channel.is_canary_tag(tag):
+        return True
+    return (update_channel.is_channel_tag(tag)
+            and (payload, distribution, update_mechanism) == ("runtime", "apt-termux", "external"))
+
+
 def build_stamp(
     *,
     update_mechanism: str,
@@ -159,7 +173,8 @@ def build_stamp(
     if channel_request is not None:
         from scripts.bundles.desktop_prepare import git, require_source, validate_channel_request
         channel_request = validate_channel_request(channel_request)
-        if os.environ.get("HERMES_BUILD_COMMIT") or os.environ.get("HERMES_PAYLOAD_TAG"):
+        if os.environ.get("HERMES_BUILD_COMMIT") or os.environ.get("HERMES_PAYLOAD_TAG") not in (
+                None, "", channel_request["releaseTag"]):
             raise ValueError("channel request conflicts with commit-build or tag identity")
         if os.environ.get("HERMES_DESKTOP_VARIANT") != "bundled" or update_mechanism not in {"electron-updater", "app-installer"}:
             raise ValueError("channel builds require a bundled native update owner")
@@ -252,13 +267,13 @@ def build_stamp(
     payload = "bundled" if variant == "store" else (variant or "bootstrap")
     tag = os.environ.get("HERMES_PAYLOAD_TAG") or None
 
-    _stable_tag = re.compile(r"^v(0|[1-9]\d{0,2})\.\d+\.\d+$")
-    if payload != "bootstrap" and not commit_build and channel_request is None and not (
-        tag and (_stable_tag.match(tag) or update_channel.is_canary_tag(tag))
+    if payload != "bootstrap" and not commit_build and channel_request is None and not _release_payload_tag(
+        tag, payload, distribution, update_mechanism,
     ):
         raise SystemExit(
             f"write_install_stamp: HERMES_DESKTOP_VARIANT={payload} requires "
-            f"HERMES_PAYLOAD_TAG=vX.Y.Z or canary.YYYYMMDDTHHMMSSZ-vX.Y.Z (got {tag!r})"
+            "a stable/canary tag, an admitted desktop channel request, or an "
+            f"external apt-termux runtime channel claim (HERMES_PAYLOAD_TAG={tag!r})"
         )
 
     stamp = {

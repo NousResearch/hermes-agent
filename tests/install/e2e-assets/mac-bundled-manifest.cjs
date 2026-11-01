@@ -2,13 +2,10 @@
 const { isDeepStrictEqual } = require('node:util')
 
 function channelStampAssertions(stamp, request) {
-  const expected = { channelBuild: request, commit: request.commit, tag: null, source: 'channel-build',
-    branch: null, dirty: false, baseVersion: request.sourceVersion,
+  // A channel build carries its claim as its tag (its request's releaseTag).
+  const expected = { channelBuild: request, commit: request.commit, tag: request.releaseTag ?? null,
+    source: 'channel-build', branch: null, dirty: false, baseVersion: request.sourceVersion,
     displayVersion: `${request.sourceVersion} (${request.channel} #${request.sequence}, ${request.commit.slice(0, 7)})` }
-  if (request.receiverCandidate) Object.assign(expected, {
-    channelBuild: undefined, tag: request.releaseTag, source: 'build',
-    displayVersion: request.version, receiverProtocol: 1,
-  })
   return Object.entries(expected).filter(([key, value]) => !isDeepStrictEqual(stamp?.[key], value))
     .map(([key]) => `stamp.${key} disagrees with admitted channel request`)
 }

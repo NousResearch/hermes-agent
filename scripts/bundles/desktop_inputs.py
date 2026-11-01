@@ -62,8 +62,15 @@ def identity_environment(request: BuildRequest, variant: str, inherited: Mapping
     if request.channel_request is not None:
         env["_HERMES_CHANNEL_REQUEST_JSON"] = json.dumps(request.channel_request, sort_keys=True)
         env["GITHUB_REPOSITORY"] = request.channel_request["repository"]
-        for key in ("HERMES_BUILD_COMMIT", "HERMES_PAYLOAD_TAG", "GITHUB_REF_NAME"):
-            env.pop(key, None)
+        env.pop("HERMES_BUILD_COMMIT", None)
+        # A channel claim versions and archives the packages exactly like a canary's tag; the
+        # request (its releaseTag is that claim) supplies the channel identity.
+        if request.tag is not None:
+            env["HERMES_PAYLOAD_TAG"] = request.tag
+            env["GITHUB_REF_NAME"] = request.tag
+        else:
+            env.pop("HERMES_PAYLOAD_TAG", None)
+            env.pop("GITHUB_REF_NAME", None)
     elif request.tag is None:
         env["HERMES_BUILD_COMMIT"] = request.commit
         env.pop("HERMES_PAYLOAD_TAG", None)

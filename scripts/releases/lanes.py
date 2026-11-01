@@ -61,6 +61,11 @@ CANARY = frozenset(NAMES) - {"upgrade"}
 # covered by `smoke` and `bootstrap-version`. The Store is stable's and canary's only.
 COMMIT_REFUSED = frozenset({"upgrade", "install-e2e", "windows-store"})
 COMMIT = DEFAULT - COMMIT_REFUSED
+# A channel build is the stable default minus the signed-package upgrade arms (they pair packages
+# of one app identity; upgrading from the channel's own head is a follow-up) and the Store, which
+# is stable's and canary's only. install-e2e runs: a channel build is an updatable install.
+CHANNEL_REFUSED = frozenset({"upgrade", "windows-store"})
+CHANNEL = DEFAULT - CHANNEL_REFUSED
 
 DESKTOP = ("windows", "macos-arm64", "macos-intel")
 WINDOWS = ("windows", "windows-store")
@@ -98,6 +103,8 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
     "publish-canary": ("desktop-channel",),
     # A commit build publishes nowhere: it renders the builds page of whatever it built.
     "publish-commit": ("bundles",),
+    # A channel build advances its R2 channel head, so like a canary it needs the full desktop set.
+    "publish-channel": ("desktop-channel",),
     "transitions-darwin-arm64": ("macos-arm64", "upgrade"),
     "transitions-darwin-x64": ("macos-intel", "upgrade"),
     "transitions-win32": ("windows", "upgrade"),
@@ -112,19 +119,23 @@ CANDIDATE_CALLS = tuple(job for job in JOB_LANES if job.startswith("candidates-"
 # publication jobs belong to some policies, and each runs only under those. A stable release
 # publishes its bundles to the stable channels and the Store; a canary publishes the same accepted
 # candidate to the canary channels and never touches a stable head or the Store; a commit build
-# publishes nowhere (its builds page lives in its own claim archive) and pushes no Docker tag.
-POLICIES = ("stable", "canary", "commit")
+# publishes nowhere (its builds page lives in its own claim archive) and pushes no Docker tag; a
+# channel build moves only its own R2 channel head, through the channel CAS.
+POLICIES = ("stable", "canary", "commit", "channel")
 POLICY_JOBS: dict[str, frozenset[str]] = {
     "publish-bundles": frozenset({"stable"}),
     "publish-canary": frozenset({"canary"}),
     "publish-commit": frozenset({"commit"}),
+    "publish-channel": frozenset({"channel"}),
     "publish-docker": frozenset({"stable", "canary"}),
 }
 # The lane set a claim of each policy starts from, and the lanes it can never run: a canary is its
 # own app identity, so no signed package of it can upgrade anything (see CANARY); a commit build
-# runs no upgrade test and builds no Store package (see COMMIT).
-POLICY_BASE = {"stable": DEFAULT, "canary": CANARY, "commit": COMMIT}
-POLICY_REFUSED = {"stable": frozenset(), "canary": frozenset({"upgrade"}), "commit": COMMIT_REFUSED}
+# runs no upgrade test and builds no Store package (see COMMIT); a channel build runs no signed
+# upgrade arm and builds no Store package (see CHANNEL).
+POLICY_BASE = {"stable": DEFAULT, "canary": CANARY, "commit": COMMIT, "channel": CHANNEL}
+POLICY_REFUSED = {"stable": frozenset(), "canary": frozenset({"upgrade"}), "commit": COMMIT_REFUSED,
+                  "channel": CHANNEL_REFUSED}
 
 # Candidate handoff group and manifest target, each with the lane that builds it.
 HANDOFF_LANE = {"win32-x64": "windows-build", "win32-arm64": "windows-build", "windows-universal": "windows-build",

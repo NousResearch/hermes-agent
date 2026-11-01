@@ -15,6 +15,7 @@ import zipfile
 from pathlib import Path, PureWindowsPath
 from typing import Iterable
 
+from scripts.bundles.stamp_provenance import stamp_matches
 from scripts.releases import lanes as lane_set
 from scripts.releases.stable import read_admitted_candidate, accepted_smoke_results, validate_candidates
 from scripts.termux.deb_version import deb_version_for_tag
@@ -35,39 +36,16 @@ def release_channel(tag: str) -> str:
 
     The tag decides, never a caller flag, so a stable candidate can never write a canary feed or
     the reverse (scripts/termux/deb_version.py and scripts/releases/r2.py key on it the same way)."""
-    from hermes_cli.update_channel import is_canary_tag, is_commit_tag
+    from hermes_cli.update_channel import is_canary_tag, is_preview_tag
 
-    if is_commit_tag(tag):
-        raise ValueError(f"Commit builds publish to no release channel: {tag!r}")
+    if is_preview_tag(tag):
+        raise ValueError(f"Commit and channel builds publish to no release channel: {tag!r}")
     return "canary" if is_canary_tag(tag) else "stable"
 
 
 def sha256_file(file: Path) -> str:
     with file.open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
-
-
-def stamp_matches(stamp: dict, tag: str, commit: str, *, channel_request: dict | None = None) -> None:
-    if channel_request is not None and channel_request.get("receiverCandidate"):
-        if (stamp.get("channelBuild") is not None or stamp.get("source") != "build"
-                or stamp.get("receiverProtocol") != 1 or stamp.get("displayVersion") != channel_request["version"]
-                or stamp.get("commit") != commit or stamp.get("tag") != channel_request["releaseTag"]
-                or stamp.get("baseVersion") != channel_request["sourceVersion"]):
-            raise ValueError("Receiver candidate must use ordinary stable update ownership")
-        return
-    if channel_request is not None:
-        if (stamp.get("source") != "channel-build" or stamp.get("channelBuild") != channel_request
-                or stamp.get("commit") != channel_request["commit"] or stamp.get("tag")):
-            raise ValueError("Built package provenance does not match the channel request")
-        return
-    if (stamp.get("commit") != commit or stamp.get("tag") != tag
-            or stamp.get("baseVersion") != release_version(tag)):
-        raise ValueError("Built package provenance does not match the release")
-    from hermes_cli.update_channel import is_commit_tag
-
-    # A commit build's packages refuse every update (source commit-build); a release's never do.
-    if (stamp.get("source") == "commit-build") != is_commit_tag(tag):
-        raise ValueError("Built package update ownership does not match the release kind")
 
 
 def single(items):
@@ -158,8 +136,11 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
         with tempfile.TemporaryDirectory() as temp:
             subprocess.run(["dpkg-deb", "--extract", str(package), temp], check=True)
             stamps = list(Path(temp).rglob("install-stamp.json"))
-            if not any((data := json.loads(p.read_text(encoding="utf-8-sig"))).get("commit") == commit and data.get("tag") == tag for p in stamps):
+            matching = [data for p in stamps if (data := json.loads(p.read_text(encoding="utf-8-sig"))).get("commit") == commit
+                        and data.get("tag") == tag]
+            if not matching:
                 raise ValueError("Termux package has no matching provenance")
+            stamp_matches(single(matching), tag, commit, termux=True)
     else:
         raise ValueError("Unknown platform")
     if channel_request is not None:

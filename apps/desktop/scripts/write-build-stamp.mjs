@@ -245,12 +245,6 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
   }
 
   if (channelBuild) base.channelBuild = channelBuild
-  // Rehearsal receivers use the real stable update path, never preview resolution.
-  if (channelBuild?.receiverCandidate) {
-    delete base.channelBuild
-    base.source = 'build'
-    base.displayVersion = channelBuild.version
-  }
   if (variant === 'bundled') base.receiverProtocol = 1
 
   const updateMechanism = {
@@ -272,7 +266,7 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
     distribution: "desktop-app",
 
     updateMechanism: commitBuild ? 'external' : updateMechanism,
-    tag: channelBuild?.receiverCandidate ? channelBuild.releaseTag : env.HERMES_PAYLOAD_TAG || null,
+    tag: env.HERMES_PAYLOAD_TAG || null,
     ...(bundleEnv ? { bundleEnv } : {}),
     ...(bundled ? { runtime: payload.runtime } : {})
   }

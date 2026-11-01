@@ -22,6 +22,8 @@ export interface ChannelBuild {
   repository: string
   commit: string
   sourceVersion: string
+  /** The claim (channel., canary.) or release tag whose version and quad the packages carry. */
+  releaseTag?: string
   version: string
   windowsVersion: string
   identity: ChannelIdentity
@@ -32,7 +34,6 @@ export interface ChannelBuild {
 export interface ChannelRequest extends ChannelBuild {
   schema: 1
   controllerCommit?: string
-  releaseTag?: string
   /** Attempt ref naming the immutable archive; only the releases/tag/ prefix reads it. */
   archiveRef?: string
 }
@@ -400,11 +401,13 @@ function request(fields: Fields): ChannelRequest {
     throw new Error('Noncanonical request publicBase')
   }
 
-  const releaseTag = fields.optional('releaseTag', /^(?:canary\.20\d{6}T\d{6}Z-)?v\d+\.\d+\.\d+$/)
+  // A stable release tag, a canary, or a channel build's own claim (its packages' release identity).
+  const releaseTag = fields.optional('releaseTag', /^(?:(?:canary|channel)\.20\d{6}T\d{6}Z-)?v\d+\.\d+\.\d+$/)
 
-  const canaryRelease: boolean = /^canary\./.test(releaseTag || '')
+  // Stamped claims carry the yy.mmdd.hh.mmss quad of their build time; a stable release has revision 0.
+  const stampedRelease: boolean = /^(?:canary|channel)\./.test(releaseTag || '')
 
-  const windowsVersion = fields.text('windowsVersion', canaryRelease ? /^\d+\.\d+\.\d+\.\d+$/ : /^\d+\.\d+\.\d+\.0$/)
+  const windowsVersion = fields.text('windowsVersion', stampedRelease ? /^\d+\.\d+\.\d+\.\d+$/ : /^\d+\.\d+\.\d+\.0$/)
 
   if (windowsVersion.split('.').some((part: string): boolean => Number(part) > 65535)) {
     throw new Error('Invalid Windows version')

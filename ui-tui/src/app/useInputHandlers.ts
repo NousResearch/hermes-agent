@@ -39,6 +39,10 @@ const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl 
 
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
 
+/** Alt+K retries a retained input (every hint says so). Ctrl+K stays the composer's kill-to-end. */
+export const isQueueRetryKey = (key: { ctrl: boolean; meta: boolean }, ch: string): boolean =>
+  key.meta && !key.ctrl && ch.toLowerCase() === 'k'
+
 /** Text or attachments in the composer: Ctrl+D must not exit over an unsent draft (#116443). */
 export const composerHasDraft = (cState: { input: string; inputBuf: string[]; tokens?: unknown[] }): boolean =>
   Boolean(cState.input || cState.inputBuf.length || cState.tokens?.length)
@@ -864,7 +868,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    if (isAction(key, ch, 'k') && cRefs.queueRef.current.length && live.sid) {
+    if (isQueueRetryKey(key, ch) && cRefs.queueRef.current.length && live.sid) {
       const next = cActions.dequeue(true)
 
       if (next) {

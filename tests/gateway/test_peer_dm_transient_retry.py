@@ -119,3 +119,71 @@ async def test_peer_dm_retries_a_transient_turn_once_and_still_reports_a_permane
     assert resp2.status == 200
     assert len(seen2) == 1, "auth is never auto-retried: it cannot be fixed by a re-run"
     assert body2["message"]["content"] == AUTH_WALL["final_response"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("outcomes,expected_code", [
+    ([AUTH_WALL], 1),
+    ([RATE_LIMIT, RATE_LIMIT], 1),
+    ([RATE_LIMIT, _ok("recovered")], 0),
+    ([_ok("")], 0),
+])
+async def test_peer_dm_exit_reflects_final_agent_outcome(tmp_path, monkeypatch, capsys,
+                                                       as_json, outcomes, expected_code):
+    """Real HTTP route and CLI client must agree on the final turn's typed verdict."""
+    import asyncio
+    import json
+    from types import SimpleNamespace
+    from hermes_cli.subcommands import peer
+
+    adapter, sid = _adapter(tmp_path)
+    seen = []
+    agents = [_fake_agent(seen, outcome) for outcome in outcomes]
+    monkeypatch.setattr(peer, "_ensure_bot_chat", lambda *_: sid)
+    monkeypatch.setattr(adapter, "_create_agent", lambda **_: agents.pop(0))
+    try:
+        async with TestClient(TestServer(_app(adapter))) as client:
+            code = await asyncio.to_thread(peer._peer_dm, SimpleNamespace(json=as_json),
+                                           DM, "other", "research", str(client.make_url("/"))[:-1], "key")
+        captured = capsys.readouterr()
+        assert code == expected_code
+        assert len(seen) == len(outcomes)
+        final = outcomes[-1]
+        if as_json:
+            payload = json.loads(captured.out)
+            assert payload["peer"] == "other"
+            assert payload["profile"] == "research"
+            assert payload["session_id"] == sid
+            assert payload["reply"] == final["final_response"]
+            if expected_code:
+                assert payload["failed"] is True
+                assert payload["error"] == final["error"]
+                assert payload["failure_reason"] == final["failure_reason"]
+        elif expected_code:
+            assert final["final_response"] in captured.err
+            assert not captured.out
+        else:
+            assert captured.out.strip() == (final["final_response"] or "(no reply)")
+    finally:
+        adapter._session_db.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_completion_redacts_new_error_fields(tmp_path, monkeypatch):
+    adapter, sid = _adapter(tmp_path)
+    secret = "fixture-secret-not-a-real-credential"
+    outcome = {**AUTH_WALL, "error": f"OPENAI_API_KEY={secret}",
+               "failure_reason": f"AUTH_TOKEN={secret}"}
+    monkeypatch.setattr(adapter, "_create_agent", lambda **_: _fake_agent([], outcome))
+    try:
+        async with TestClient(TestServer(_app(adapter))) as client:
+            response = await client.post(f"/api/sessions/{sid}/chat", json={"message": DM})
+            body = await response.json()
+        assert response.status == 200
+        assert body["failed"] is True
+        assert secret not in body["error"]
+        assert secret not in body["failure_reason"]
+        assert "OPENAI_API_KEY=" in body["error"]
+    finally:
+        adapter._session_db.close()

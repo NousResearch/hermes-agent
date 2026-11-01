@@ -39,7 +39,7 @@ def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
         return tool_error("doc_token is required")
     client = get_client()
     if client is None:
-        return tool_error("Feishu client not available (not in a Feishu comment context)")
+        return tool_error("Feishu client not available")
     try:
         request = build_request("GET", _RAW_CONTENT_URI, paths={"document_id": doc_token})
     except ImportError:

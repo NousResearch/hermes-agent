@@ -87,9 +87,9 @@ def _scan_context_content(content: str, filename: str, *, user_authored: bool = 
     "context" scope only (strict-scope SSH-backdoor/persistence/exfil patterns are too aggressive for a
     cloned repo's docs); blocking, not warning, because the file would otherwise enter the prompt verbatim.
 
-    *user_authored* (SOUL.md in the user's own HERMES_HOME): a hit is WARNED and the file still loads.
-    SOUL.md sits in the same trust class as config.yaml — file-tool writes to it go through the
-    protected-instruction approval gate (``tools/file_tools_write_guards.py``) and project checkouts never
+    *user_authored* (a local file in the user's own HERMES_HOME): a hit is WARNED and the file still loads.
+    SOUL.md and the assignee profile's AGENTS.md sit in the same trust class as config.yaml — file-tool writes
+    go through the protected-instruction approval gate (``tools/file_tools_write_guards.py``), and project checkouts never
     supply it — so a user who *documents* "ignore previous instructions" in their security guidance
     must not lose their whole identity file to a one-line log entry (#112570). Project-dir files
     (repo AGENTS.md / .cursorrules / .hermes.md) arrive with the checkout and keep blocking, and so does
@@ -1545,19 +1545,54 @@ def load_soul_md(context_length: Optional[int] = None, home_override: Path | Non
         # distribution profile (hermes_cli/profile_distribution.py, DEFAULT_DIST_OWNED) with no scan and no
         # approval gate, so it is NOT the user's own file: when distribution.yaml owns SOUL.md (a manifest
         # with no `distribution_owned` list owns the whole payload) a scanner hit keeps BLOCKING.
-        from hermes_cli.profile_distribution import read_manifest
-        try:
-            manifest = read_manifest(soul_path.parent)
-            user_authored = manifest is None or (bool(manifest.distribution_owned)
-                                                 and "SOUL.md" not in manifest.distribution_owned)
-        except Exception as e:  # unparseable manifest is still a distribution: fail closed
-            logger.debug("Could not read distribution manifest next to %s: %s", soul_path, e)
-            user_authored = False
+        user_authored = _profile_file_is_user_authored(soul_path)
         return _truncate_content(_scan_context_content(content, "SOUL.md", user_authored=user_authored), "SOUL.md",
                                  context_length=context_length, read_path=str(soul_path))
     except Exception as e:
         logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
         return None
+
+
+def _profile_file_is_user_authored(path: Path) -> bool:
+    """A profile distribution's owned context files stay untrusted; local profile files are user-authored."""
+    try:
+        from hermes_cli.profile_distribution import read_manifest
+        manifest = read_manifest(path.parent)
+        return manifest is None or (bool(manifest.distribution_owned) and path.name not in manifest.distribution_owned)
+    except Exception as e:  # unparseable manifest is still a distribution: fail closed
+        logger.debug("Could not read distribution manifest next to %s: %s", path, e)
+        return False
+
+
+def profile_agents_candidate(home: Path) -> tuple[str, Path, str] | None:
+    """First non-empty profile AGENTS instruction file, using the standard override precedence."""
+    empty_candidate = None
+    for name in ("AGENTS.override.md", "AGENTS.md", "agents.md"):
+        path = home / name
+        if not _exists_or_denied(path):
+            continue
+        content = _read_context_file(path)
+        if content:
+            return name, path, content
+        empty_candidate = (name, path, content)
+    return empty_candidate
+
+
+def _foreign_profile_context(path: Path, active_home: Path) -> bool:
+    """Whether a project AGENTS candidate belongs to a different named Hermes profile."""
+    try:
+        from hermes_cli.profiles import _get_profiles_root
+        profiles_root = _get_profiles_root()
+        try:
+            profile_parts = path.absolute().relative_to(profiles_root.absolute()).parts
+        except ValueError:
+            profile_parts = path.resolve().relative_to(profiles_root.resolve()).parts
+        if not profile_parts:
+            return False
+        candidate_home = (profiles_root / profile_parts[0]).resolve()
+        return active_home.resolve() != candidate_home
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 def _read_context_file(path: Path) -> str:
@@ -1571,9 +1606,11 @@ def _read_context_file(path: Path) -> str:
         return ""
 
 
-def _context_section(content: str, label: str, warn_name: str, path: Path, context_length: Optional[int]) -> str:
+def _context_section(
+    content: str, label: str, warn_name: str, path: Path, context_length: Optional[int], *, user_authored: bool = False,
+) -> str:
     """Threat-scan *content*, render it as ``## <label>``, cap it to the budget (*warn_name* labels warnings)."""
-    body = f"## {label}\n\n{_scan_context_content(content, label)}"
+    body = f"## {label}\n\n{_scan_context_content(content, label, user_authored=user_authored)}"
     return _truncate_content(body, warn_name, context_length=context_length, read_path=str(path))
 
 
@@ -1648,11 +1685,22 @@ _CONTEXT_FILE_CANDIDATES = {
 }
 
 
-def discover_context_files(cwd_path: Path) -> list[tuple[str, str, Path, str]]:
+def discover_context_files(
+    cwd_path: Path, *, profile_home: Path | None = None,
+) -> list[tuple[str, str, Path, str]]:
     """Every project-context file on disk as ``(kind, label, path, content)`` in priority order.
     ``content == ""`` means empty or unreadable — such a file is never loaded."""
-    return [(kind, label, path, content)
-            for kind, finder in _CONTEXT_FILE_CANDIDATES.items() for label, path, content in finder(cwd_path)]
+    profile_candidate = profile_agents_candidate(profile_home) if profile_home is not None else None
+    profile_path = profile_candidate[1].resolve() if profile_candidate else None
+    return [
+        (kind, label, path, content)
+        for kind, finder in _CONTEXT_FILE_CANDIDATES.items()
+        for label, path, content in finder(cwd_path)
+        if kind != "agents_md" or profile_home is None or (
+            not _foreign_profile_context(path, profile_home)
+            and (profile_path is None or path.resolve() != profile_path)
+        )
+    ]
 
 
 def _project_context_suppressed(cwd: Optional[str], cwd_path: Path, allow_install_tree_fallback: bool) -> bool:
@@ -1673,7 +1721,7 @@ def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     return ""
 
 
-def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None, *, profile_home: Path | None = None) -> str:
     """AGENTS.md — merged directory chain from git root down to cwd.
 
     Each directory on the chain (see ``_agents_md_candidates``) contributes its ``AGENTS.override.md`` /
@@ -1686,7 +1734,14 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     """
     sections: list[str] = []
     seen_content: set = set()
+    profile_candidate = profile_agents_candidate(profile_home) if profile_home is not None else None
+    profile_path = profile_candidate[1].resolve() if profile_candidate else None
     for label, candidate, content in _agents_md_candidates(cwd_path):
+        if profile_home is not None and (
+            _foreign_profile_context(candidate, profile_home)
+            or (profile_path is not None and candidate.resolve() == profile_path)
+        ):
+            continue
         if content and content not in seen_content:  # else: empty, or an identical copy along the chain
             seen_content.add(content)
             sections.append(_context_section(content, label, label, candidate, context_length))
@@ -1720,18 +1775,22 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
 def build_context_files_prompt(
     cwd: Optional[str] = None, skip_soul: bool = False, context_length: Optional[int] = None,
     allow_install_tree_fallback: bool = False, home_override: Path | None = None,
+    include_profile_agents: bool = False,
 ) -> str:
     """Discover and load context files for the system prompt (each capped, see ``_get_context_file_max_chars``).
 
     Only ONE project context type loads, first found wins: .hermes.md/HERMES.md (walk to git root) →
     AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
+    ``include_profile_agents`` adds the assignee profile's instruction file for Kanban workers and excludes
+    another profile's AGENTS.md from workspace context discovery.
     """
     from agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return ""
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
+    profile_home = Path(home_override) if home_override is not None else get_hermes_home()
     if _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
         logger.warning(
             "skipping project-context discovery: working-directory resolution fell back to the Hermes "
@@ -1739,12 +1798,23 @@ def build_context_files_prompt(
         )
         sections = []
     else:
-        sections = [_load_hermes_md(cwd_path, context_length) or _load_agents_md(cwd_path, context_length)
+        sections = [_load_hermes_md(cwd_path, context_length) or _load_agents_md(
+            cwd_path, context_length, profile_home=profile_home if include_profile_agents else None)
                     or _load_claude_md(cwd_path, context_length) or _load_cursorrules(cwd_path, context_length)]
+    if include_profile_agents:
+        candidate = profile_agents_candidate(profile_home)
+        if candidate and candidate[2]:
+            _name, path, content = candidate
+            label = "Assignee profile AGENTS.md"
+            user_authored = _profile_file_is_user_authored(path)
+            sections.append(_context_section(content, label, label, path, context_length,
+                                             user_authored=user_authored))
     if not skip_soul:
         sections.append(load_soul_md(context_length, home_override=home_override))
     sections = [s for s in sections if s]
     if not sections:
         return ""
-    return ("# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n"
-            + "\n".join(sections))
+    heading = ("# Project and Profile Context\n\nThe following project and assignee profile context files "
+               "have been loaded and should be followed:\n\n" if include_profile_agents else
+               "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n")
+    return heading + "\n".join(sections)

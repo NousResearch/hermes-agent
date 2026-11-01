@@ -3166,6 +3166,7 @@ export interface SessionResumeParams {
   eager_build?: boolean
   close_on_disconnect?: boolean
   inline_images?: boolean
+  auto_continue?: boolean
 }
 export interface SessionResumeResult {
   session_id: string

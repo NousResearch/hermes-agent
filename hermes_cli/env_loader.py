@@ -7,6 +7,7 @@ import io
 import itertools
 import logging
 import os
+import stat
 import sys
 import threading
 from pathlib import Path
@@ -23,6 +24,75 @@ logger = logging.getLogger(__name__)
 # The ONLY env vars sanitized on load: credentials must be pure ASCII (they become HTTP header values);
 # arbitrary user env vars are never silently altered.
 _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
+
+_CWD_ENV_BLOCKED_PREFIXES = (
+    "HERMES_",
+    "_HERMES_",
+    "TERMINAL_",
+    "MESSAGING_",
+    "SECURITY_",
+    "APPROVAL_",
+    "SMART_APPROVAL_",
+    "AUXILIARY_APPROVAL_",
+    "BROWSER_",
+    "TIRITH_",
+    "YOLO_",
+    "REDACT_",
+    "DYLD_",
+    "LD_",
+    "PYTHON",
+    "BASH_",
+    "GIT_",
+    "SSH_",
+    "PIP_",
+    "UV_",
+)
+
+_CWD_ENV_BLOCKED_NAMES = frozenset(
+    {
+        "BASH_ENV",
+        "BASHOPTS",
+        "CDPATH",
+        "CLASSPATH",
+        "CURL_CA_BUNDLE",
+        "DOCKER_HOST",
+        "ENV",
+        "GIT_SSH_COMMAND",
+        "HOME",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "IFS",
+        "JAVA_TOOL_OPTIONS",
+        "JDK_JAVA_OPTIONS",
+        "_JAVA_OPTIONS",
+        "NODE_EXTRA_CA_CERTS",
+        "NODE_OPTIONS",
+        "NODE_PATH",
+        "NO_PROXY",
+        "PATH",
+        "PERL5OPT",
+        "PERL5LIB",
+        "PS4",
+        "REQUESTS_CA_BUNDLE",
+        "RUBYOPT",
+        "RUBYLIB",
+        "SHELLOPTS",
+        "SSL_CERT_DIR",
+        "SHELL",
+        "SSL_CERT_FILE",
+        "SSLKEYLOGFILE",
+        "SUDO_PASSWORD",
+        "TMPDIR",
+        "USERPROFILE",
+        "VIRTUAL_ENV",
+        "WSS_PROXY",
+    }
+)
+
+_WARNED_CWD_ENV_KEYS: set[tuple[str, str]] = set()
 
 # Once-per-process guards: load_hermes_dotenv() runs repeatedly (user + project env, gateway hot-reload,
 # lazy imports mid-turn, tests) so warnings/logs fire once per key/path/home.
@@ -649,14 +719,191 @@ def _load_user_dotenv(path: Path, *, load_pass: int) -> bool:
     return True
 
 
+def _trusted_cwd_env_path(
+    home_path: Path,
+    cwd_path: Path | None = None,
+    *,
+    use_terminal_cwd: bool = False,
+) -> Path | None:
+    """Return an opted-in CWD .env path, or None outside the trust boundary.
+
+    Trust is configured only in the user-controlled ``config.yaml``. A marker
+    inside the repository cannot opt itself in. Entries are exact directories,
+    resolved before comparison so a symlink cannot silently widen trust.
+    """
+    from hermes_cli.config_backend import get_config_backend
+    from ruamel.yaml.error import YAMLError
+
+    backend = get_config_backend()
+    backend.boot(home_path)
+    try:
+        config = backend.read_user_doc_readonly(home_path) or {}
+    except (OSError, ValueError, YAMLError):
+        logger.debug("Cannot read CWD dotenv trust config", exc_info=True)
+        return None
+    try:
+        from hermes_cli import managed_scope
+
+        if backend.honors_managed_config():
+            config = managed_scope.apply_managed_overlay(config)
+    except (OSError, ValueError, YAMLError):
+        logger.debug("Cannot apply managed CWD dotenv trust config", exc_info=True)
+        return None
+    if not isinstance(config, dict):
+        return None
+    dotenv_config = config.get("dotenv")
+    if not isinstance(dotenv_config, dict):
+        return None
+    trusted_cwds = dotenv_config.get("trusted_cwds")
+    if not isinstance(trusted_cwds, list):
+        return None
+
+    if cwd_path is not None:
+        candidate_dir = cwd_path.expanduser().resolve()
+    elif use_terminal_cwd:
+        terminal_config = config.get("terminal")
+        configured_cwd = (
+            terminal_config.get("cwd")
+            if isinstance(terminal_config, dict)
+            else None
+        )
+        terminal_backend = (
+            str(
+                terminal_config.get("backend")
+                or terminal_config.get("env_type")
+                or "local"
+            ).strip().lower()
+            if isinstance(terminal_config, dict)
+            else "local"
+        )
+        if (
+            isinstance(configured_cwd, str)
+            and configured_cwd not in ("", ".", "auto", "cwd")
+        ):
+            configured_path = Path(
+                os.path.expandvars(configured_cwd)
+            ).expanduser()
+            candidate_dir = (
+                configured_path.resolve()
+                if configured_path.is_absolute()
+                else Path.cwd().resolve()
+            )
+        elif terminal_backend == "local":
+            candidate_dir = Path(
+                os.environ.get("MESSAGING_CWD") or Path.home()
+            ).expanduser().resolve()
+        else:
+            # A placeholder for a remote/container backend has no local host
+            # directory whose .env can be read safely.
+            return None
+    else:
+        # The local CLI/TUI contract is `cd /dir && hermes`; cli.load_cli_config
+        # intentionally replaces terminal.cwd with os.getcwd() for this mode.
+        candidate_dir = Path.cwd().resolve()
+    for raw_path in trusted_cwds:
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        # Trust entries are literal absolute paths. Environment expansion or
+        # ``~`` would make trust depend on mutable process state.
+        trusted_path = Path(raw_path)
+        if (
+            not trusted_path.is_absolute()
+            or "$" in raw_path
+            or "%" in raw_path
+            or "~" in raw_path
+        ):
+            continue
+        try:
+            if trusted_path.resolve() == candidate_dir:
+                candidate = candidate_dir / ".env"
+                if candidate.is_symlink():
+                    return None
+                return candidate if candidate.is_file() else None
+        except OSError:
+            continue
+    return None
+
+def _cwd_env_key_allowed(name: str) -> bool:
+    upper_name = name.upper()
+    if upper_name in _CWD_ENV_BLOCKED_NAMES:
+        return False
+    return not upper_name.startswith(_CWD_ENV_BLOCKED_PREFIXES)
+
+def _read_trusted_cwd_dotenv(path: Path) -> dict[str, str | None]:
+    """Read a regular non-symlink dotenv file without interpolation."""
+    from dotenv import dotenv_values
+
+    before = path.stat(follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError(f"not a regular file: {path}")
+
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags)
+    try:
+        opened = os.fstat(fd)
+        if not os.path.samestat(before, opened) or not stat.S_ISREG(opened.st_mode):
+            raise OSError(f"dotenv file changed while opening: {path}")
+        raw = b""
+        while True:
+            chunk = os.read(fd, 64 * 1024)
+            if not chunk:
+                break
+            raw += chunk
+    finally:
+        os.close(fd)
+
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
+    return dict(dotenv_values(stream=io.StringIO(text), interpolate=False))
+
+def _load_trusted_cwd_dotenv(
+    path: Path,
+    *,
+    override: bool,
+    protected_names: set[str] | None = None,
+) -> None:
+    """Load allowed values from an explicitly trusted project dotenv file."""
+    values = _read_trusted_cwd_dotenv(path)
+    protected_names = protected_names or set()
+
+    path_key = str(path.resolve())
+    for name, value in values.items():
+        if value is None:
+            continue
+        if not _cwd_env_key_allowed(name):
+            warning_key = (path_key, name.upper())
+            if warning_key not in _WARNED_CWD_ENV_KEYS:
+                _WARNED_CWD_ENV_KEYS.add(warning_key)
+                print(
+                    f"  Warning: ignored protected variable {name} from {path}",
+                    file=sys.stderr,
+                )
+            continue
+        if name.upper() in protected_names:
+            continue
+        if override or name not in os.environ:
+            os.environ[name] = value
+            _LOADED_DOTENV_KEYS.add(name)
+    _sanitize_loaded_credentials()
+
+
 def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
     project_env: str | os.PathLike | None = None,
+    cwd_env: bool = False,
+    cwd_path: str | os.PathLike | None = None,
+    use_terminal_cwd: bool | None = None,
     load_external_secrets: bool = True,
 ) -> list[Path]:
     """Load Hermes env files: ``~/.hermes/.env`` overrides stale shell exports; project ``.env`` is a dev
-    fallback that only fills gaps when the user env exists (and overrides shell vars when it does not)."""
+    fallback that only fills gaps when the user env exists (and overrides shell vars when it does not).
+    With ``cwd_env``, exact directories in ``dotenv.trusted_cwds`` may supply unprotected variables;
+    profile-owned names still win and untrusted project files never authorize themselves."""
     from agent.safe_worker_policy import worker_config_snapshot
 
     # The private bootstrap supplies credentials explicitly; do not rehydrate
@@ -713,9 +960,36 @@ def load_hermes_dotenv(
     if project_env_path and project_env_path.exists():
         _sanitize_env_file_if_needed(project_env_path)
 
-    if user_env.exists() and _load_user_dotenv(user_env, load_pass=load_pass):
+    gateway_owned_env = {"_HERMES_GATEWAY": os.environ.get("_HERMES_GATEWAY")}
+    if os.environ.get("_HERMES_GATEWAY") == "1":
+        gateway_owned_env["TERMINAL_CWD"] = os.environ.get("TERMINAL_CWD")
+    user_env_loaded = user_env.exists() and _load_user_dotenv(user_env, load_pass=load_pass)
+    if user_env_loaded:
         loaded.append(user_env)
         _clear_known_keys_missing_from_dotenv(user_env)  # mirrors reload_env(): inherited keys must not leak
+
+    # Gateway routing markers belong to the launching process, never to a dotenv file.
+    for name, value in gateway_owned_env.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+    if use_terminal_cwd is None:
+        use_terminal_cwd = os.environ.get("_HERMES_GATEWAY") == "1"
+    cwd_env_path = (
+        _trusted_cwd_env_path(
+            home_path, Path(cwd_path) if cwd_path is not None else None,
+            use_terminal_cwd=use_terminal_cwd,
+        ) if cwd_env else None
+    )
+    if cwd_env_path is not None and cwd_env_path.resolve() != user_env.resolve() and (
+        project_env_path is None or cwd_env_path.resolve() != project_env_path.resolve()
+    ):
+        protected_names = (
+            {name.upper() for name in _env_keys_defined_in_dotenv(user_env)} if user_env_loaded else set()
+        )
+        _load_trusted_cwd_dotenv(cwd_env_path, override=True, protected_names=protected_names)
+        loaded.append(cwd_env_path)
 
     # .op.env AFTER .env so .env wins, but the bootstrap OP_SERVICE_ACCOUNT_TOKEN reaches
     # apply_onepassword_secrets() even in cron with no shell state; gitignored so the token never enters
@@ -725,7 +999,7 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(op_env, override=False, load_pass=load_pass)
 
     if project_env_path and project_env_path.exists():
-        _load_dotenv_with_fallback(project_env_path, override=not user_env.exists(), load_pass=load_pass)
+        _load_dotenv_with_fallback(project_env_path, override=not (user_env.exists() or cwd_env_path is not None), load_pass=load_pass)
         loaded.append(project_env_path)
 
     # The override=True loads above wrote the raw .env line (``__BITWARDEN_MANAGED__`` placeholder, stale

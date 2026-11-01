@@ -221,6 +221,8 @@ def _start_loopback_receiver(flow) -> http.server.HTTPServer:
     from tools.mcp_oauth import _parse_redirect_query
 
     class _Handler(http.server.BaseHTTPRequestHandler):
+        timeout = 2  # an idle browser preconnect must not hold the redirect (see tools/mcp_oauth.py)
+
         def do_GET(self):
             parsed = urlparse(self.path)
             if parsed.path.rstrip("/") not in ("/callback", ""):

@@ -647,6 +647,15 @@ def _make_agent(
     # Load hooks alongside the same profile config used to construct this agent.
     from agent.shell_hooks import register_from_config
     register_from_config(cfg)
+    # Config-owned outbound webhooks arm on the same surface as shell hooks:
+    # cli/gateway/serve entrypoints register them at startup, but TUI/dashboard
+    # agents are built HERE, so without this parity line ``hooks.outbound``
+    # subscribers silently receive zero events from every Desktop session.
+    # Both registrations are idempotent per (home, event, url) — safe on every
+    # agent build, and a config edit lands on the next session like shell hooks.
+    from agent.outbound_webhooks import register_from_config as register_outbound_webhooks
+
+    register_outbound_webhooks(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     fallback_notice = runtime.pop("_fallback_notice", None)

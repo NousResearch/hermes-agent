@@ -79,8 +79,13 @@ def record_tools(root: Path, lock_path: Path, target: str, entries: dict[str, st
         version, artifacts = lock.version(name), lock.artifacts(name, target)
         if not entry.is_dir() or not version or not artifacts:
             raise ValueError(f"incomplete payload tool: {name}")
-        facts.record(name, version, entry_name, get_package(name).env(entry, target), store,
-                     target=target, artifacts=[a["sha256"] for a in artifacts], digest=tree_digest(entry))
+        package = get_package(name)
+        # Digest with the package's mutable layer excluded (python's
+        # site-packages carries the bundle's preinstalled deps and every user
+        # pip install after that; drift there is not damage, #138689).
+        facts.record(name, version, entry_name, package.env(entry, target), store,
+                     target=target, artifacts=[a["sha256"] for a in artifacts],
+                     digest=tree_digest(entry, package.digest_skip_dirs))
     if entries:
         _share_metadata(facts.path)
 

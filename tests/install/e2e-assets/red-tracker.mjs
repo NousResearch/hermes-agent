@@ -6,9 +6,10 @@
  * "Install & Update E2E" run. A red run (any leg failed, was cancelled, or timed
  * out) opens the issue labelled `install-e2e-red`, or rewrites the body of the
  * one already open, so the issue always names the CURRENT red legs and the run
- * that produced them. A green run closes it with a pointer to that run. Never a
- * second issue and never a comment per red run: subscribers hear about the open
- * and the close, and the body is the live state in between.
+ * that produced them. A green run closes it with a pointer to that run.
+ * Repositories with Issues disabled skip tracking. Never a second issue and
+ * never a comment per red run: subscribers hear about the open and the close,
+ * and the body is the live state in between.
  *
  *   node tests/install/e2e-assets/red-tracker.mjs --run-id <id> [--dry-run]
  *
@@ -85,6 +86,11 @@ async function main() {
   const repo = process.env.GITHUB_REPOSITORY;
   const runId = values['run-id'];
   if (!repo || !runId || !/^\d+$/.test(runId)) throw new Error('need GITHUB_REPOSITORY and a numeric --run-id');
+  const repository = JSON.parse(gh(['api', `repos/${repo}`, '--jq', '{has_issues}']));
+  if (!repository.has_issues) {
+    console.log(`tracker skipped: GitHub Issues are disabled for ${repo}`);
+    return;
+  }
   const run = JSON.parse(gh(['api', `repos/${repo}/actions/runs/${runId}`]));
   const jobs = gh(['api', '--paginate', `repos/${repo}/actions/runs/${runId}/jobs?per_page=100`,
     '--jq', '.jobs[] | {name, conclusion, html_url, steps: [.steps[]? | {name, conclusion}]}'])

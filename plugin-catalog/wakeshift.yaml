@@ -1,0 +1,16 @@
+name: wakeshift
+title: Wakeshift
+repo: https://github.com/wakeshift/hermes-plugin
+sha: a6ab14b616b8fffb51beb0a14301efef5d087344
+description: "Wakes your Hermes chats when Wakeshift-enabled MCP servers you've added have news for them: a price drop, a finished build or a reply starts a new turn in the chat that asked for it, even while it's idle, framed as outside information rather than as you. Works for API server (gateway) and CLI chats. Disclosure — contacts only the Wakeshift servers it trusts (https://app.wakeshift.ai unless you set plugins.entries.wakeshift.settings.issuers): fetches their signing keys, exchanges signed beacons from MCP tool results for each chat's stream link, holds those streams open in background threads while Hermes runs, and acknowledges delivered messages; no telemetry. Starts runs on Hermes's own API server at 127.0.0.1 with the API server's key (read through agent.secret_scope). Fills in the harness argument (hermes), and the chat's own session_key when the model omits it, on calls to Wakeshift-enabled tools. On Hermes 0.22.3 and later, waking hermes chat CLI conversations needs plugins.entries.wakeshift.allow_gateway_injection: true, which the user turns on; without it the plugin tells the chat the command. Removes Wakeshift beacons from MCP tool results and adds a one-line note. Stores each connected chat's stream links and session keys, one per server (which include access tokens), cached signing keys and delivery state under $HERMES_HOME/wakeshift (files 0600). Never answers approvals and runs no shell commands. Wakeshift's Connector Terms (https://wakeshift.ai/connector-terms) and Privacy Policy (https://wakeshift.ai/privacy) apply."
+maintainer: wakeshift
+tier: community
+category: automation
+version: "2026.11.01.1755+dc270c6"
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/wakeshift/hermes-plugin#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: [transform_tool_result, pre_llm_call, on_session_end]
+  provides_middleware: [tool_request]
+  requires_env: []

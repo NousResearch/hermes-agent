@@ -239,3 +239,28 @@ def test_text_mirrors_as_message_delta(server, emits):
     ]
 
 
+def test_complete_rows_carry_no_preview_field(server, emits):
+    """``ToolCompletePayload`` declares no ``preview`` field, so reusing the
+    open tool row verbatim logged a wire-contract violation for every mirrored
+    child tool completion (#133226)."""
+    from tui_gateway.contracts.events import ToolCompletePayload
+
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
+
+    _relay(server, "subagent.tool", tool_name="terminal", preview="ls", child_session_id="child-1")
+    _relay(server, "subagent.complete", child_session_id="child-1", status="completed", summary="ok")
+
+    child = [(e, p) for e, s, p in emits if s == "live-1"]
+    assert [e for e, _ in child] == [
+        "message.start",
+        "tool.start",
+        "tool.complete",
+        "message.complete",
+    ]
+    # The start row keeps its preview; the complete row must validate against
+    # its closed contract (extra_forbidden on preview).
+    assert child[1][1]["preview"] == "ls"
+    ToolCompletePayload.model_validate(child[2][1])
+    assert "preview" not in child[2][1]
+
+

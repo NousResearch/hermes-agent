@@ -6,7 +6,13 @@ import { $backgroundStatusBySession } from '@/store/composer-status'
 import { $goalsBySession } from '@/store/goals'
 import { $sessionControlBySession } from '@/store/session-control'
 import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
-import { $todosBySession, clearSessionTodos, restoreSessionTodosFromSnapshot } from '@/store/todos'
+import {
+  $todosBySession,
+  clearActiveSessionTodos,
+  clearSessionTodos,
+  restoreSessionTodosFromSnapshot,
+  setSessionTodos
+} from '@/store/todos'
 
 import { QueuePanel } from '../queue-panel'
 
@@ -43,7 +49,7 @@ afterEach(() => {
   clearSessionTodos('owner')
 })
 
-it('offers a collapsed read-only checklist from an idle session, without a running spinner', () => {
+it('offers an expanded read-only checklist from an idle session, without a running spinner', () => {
   restoreSessionTodosFromSnapshot(
     'owner',
     {
@@ -58,10 +64,24 @@ it('offers a collapsed read-only checklist from an idle session, without a runni
   render(stack())
 
   const review = screen.getByRole('button', { name: /Previous tasks 1\/2/ })
-  expect(review.getAttribute('aria-expanded')).toBe('false')
+  expect(review.getAttribute('aria-expanded')).toBe('true')
+  expect(screen.getByText('Still open')).toBeTruthy()
+  expect(screen.queryByLabelText('Running')).toBeNull()
+  fireEvent.click(review)
   expect(screen.queryByText('Still open')).toBeNull()
   fireEvent.click(review)
   expect(screen.getByText('Still open')).toBeTruthy()
+})
+
+it('keeps the checklist visible when the live list retires at turn end', () => {
+  setSessionTodos('owner', [{ id: 'todo', content: 'Retained task', status: 'in_progress' }], 1)
+  render(stack())
+  expect(screen.getByText('Retained task')).toBeTruthy()
+
+  act(() => clearActiveSessionTodos('owner'))
+
+  expect(screen.getByRole('button', { name: /Previous tasks 0\/1/ }).getAttribute('aria-expanded')).toBe('true')
+  expect(screen.getByText('Retained task')).toBeTruthy()
   expect(screen.queryByLabelText('Running')).toBeNull()
 })
 

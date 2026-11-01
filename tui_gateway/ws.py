@@ -415,6 +415,30 @@ class _SendFailed(Exception):
     """Raised by handle_ws._reply when a reply could not be written: ends the read loop."""
 
 
+def _log_refusal(peer, method, req, resp):
+    """Log a refused request, which otherwise reaches the client and nothing else.
+
+    A refusal (``4001 invalid_params`` / ``permission_denied`` / ``stale_generation``) is answered
+    to the caller and never written to ``agent.log``; a client whose request was silently rejected
+    then looks like a client that never sent anything, and the turn it wanted waits or never starts.
+    The method, the code and the parameter NAMES are always logged. A few parameters are safe to
+    print by value because they are short enum-ish routing fields — a refused ``source`` label names
+    the client bug outright — while user text (prompts, answers) never appears.
+    """
+    try:
+        error = resp.get('error') if isinstance(resp, dict) else None
+        if not isinstance(error, dict):
+            return
+        params = req.get('params') if isinstance(req, dict) else None
+        keys = sorted(params) if isinstance(params, dict) else []
+        named = {key: params[key] for key in ('source', 'model', 'provider', 'operation')
+                 if isinstance(params, dict) and isinstance(params.get(key), (str, int))}
+        _log.warning('ws request refused peer=%s method=%s code=%s message=%s param_keys=%s values=%s',
+                     peer, method, error.get('code'), error.get('message'), keys, named)
+    except Exception:  # pragma: no cover - logging must never break a reply
+        _log.debug('refusal logging failed', exc_info=True)
+
+
 async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: str | None = None,
                     operator: bool = False) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``. *auth_identity* is the server-minted
@@ -485,6 +509,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                          "ws dispatch-crash reply send failed peer=%s id=%s method=%s", peer, req_id, req_method)
             return
         if resp is not None:
+            _log_refusal(peer, req_method, req, resp)
             await _reply(resp, "send_failed_after_response",
                          "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
 

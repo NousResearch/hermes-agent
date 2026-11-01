@@ -208,7 +208,9 @@ def build_write_denied_paths(home: str) -> set[str]:
 
 
 # Home-relative credential directories (POSIX paths). Also dropped from profile exports (hermes_cli.profiles).
-HOME_CREDENTIAL_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh", ".config/gcloud")
+# On Windows gcloud, the GitHub CLI and Gpg4win keep theirs under %APPDATA% (~/AppData/Roaming), not ~/.config.
+HOME_CREDENTIAL_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh", ".config/gcloud",
+                        "AppData/Roaming/gcloud", "AppData/Roaming/GitHub CLI", "AppData/Roaming/gnupg")
 
 
 def build_write_denied_prefixes(home: str) -> list[str]:

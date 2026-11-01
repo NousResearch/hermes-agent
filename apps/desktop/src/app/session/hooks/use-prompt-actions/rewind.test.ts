@@ -486,6 +486,51 @@ describe('resolveDurableRowId', () => {
     expect(await resolveDurableRowId(request, 'sid', 'real prompt', 0)).toBe(11)
   })
 
+  it('never resolves to a row a compression archived', async () => {
+    const archivedFirst = { role: 'user', text: 'continue', row_id: 11, archived: true }
+
+    const request = gatewayWith([
+      archivedFirst,
+      { role: 'assistant', text: 'reply', row_id: 12, archived: true },
+      { role: 'user', text: 'continue', row_id: 14 }
+    ])
+
+    // The live row is the only candidate, whatever the renderer ordinal says.
+    expect(await resolveDurableRowId(request, 'sid', 'continue', 0)).toBe(14)
+    // An archived-only match is no target: plain resubmit, not a refused rewind.
+    expect(await resolveDurableRowId(gatewayWith([archivedFirst]), 'sid', 'continue', 0)).toBeUndefined()
+  })
+
+  it('counts archived turns in the ordinal space that settles an ambiguous match', async () => {
+    const request = gatewayWith([
+      { role: 'user', text: 'a', row_id: 1, archived: true },
+      { role: 'user', text: 'b', row_id: 3, archived: true },
+      { role: 'user', text: 'continue', row_id: 10 },
+      { role: 'user', text: 'x', row_id: 12 },
+      { role: 'user', text: 'continue', row_id: 14 }
+    ])
+
+    // The renderer shows the archived turns too: ordinal 2 is the older live
+    // duplicate, not the newest turn, so no guessed cut.
+    expect(await resolveDurableRowId(request, 'sid', 'continue', 2)).toBeUndefined()
+    expect(await resolveDurableRowId(request, 'sid', 'continue', 4)).toBe(14)
+  })
+
+  it('refuses ordinal guesses when the archive budget truncated the history', async () => {
+    const request = gatewayWith([
+      { role: 'user', text: 'archived', row_id: 7, archived: true, archived_truncated: true },
+      { role: 'user', text: 'continue', row_id: 10 },
+      { role: 'user', text: 'x', row_id: 12 },
+      { role: 'user', text: 'continue', row_id: 14 }
+    ])
+
+    // Two earlier archived turns are absent. Rendered ordinal 3 is the older
+    // duplicate, even though it looks like the newest in this shorter reply.
+    expect(await resolveDurableRowId(request, 'sid', 'continue', 3)).toBeUndefined()
+    // A unique live match needs no ordinal guess and remains usable.
+    expect(await resolveDurableRowId(request, 'sid', 'x', 4)).toBe(12)
+  })
+
   it('refuses ambiguous matches unless the target is provably the newest turn', async () => {
     const request = gatewayWith([
       { role: 'user', text: 'same text', row_id: 11 },

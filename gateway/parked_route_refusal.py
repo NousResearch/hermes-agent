@@ -102,6 +102,10 @@ def drop_rejected_route(adapter, source):
     name = getattr(adapter, 'name', None) or getattr(getattr(source, 'platform', None), 'value', '?')
     chat_id = getattr(source, 'chat_id', '?')
     profile = getattr(source, '_rejected_route_profile', None)
+    if getattr(source, '_protected_channel_rejected', False) is True:
+        logger.warning('[%s] Dropping inbound event for %s: protected channel identity was not verified',
+                       name, chat_id)
+        return
     if adapter is None or not profile_parked(getattr(adapter, 'gateway_runner', None), profile):
         logger.warning(
             '[%s] Dropping inbound event for %s: explicit profile route targets an unserved profile', name, chat_id)

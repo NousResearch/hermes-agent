@@ -1001,11 +1001,18 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         skills_prompt, loaded_skills, missing_skills = result
         if missing_skills:
             from agent.skill_commands import format_missing_skills
-            # A typo'd name must not crash a kanban worker; only a fully-missing set fails loudly.
-            if not loaded_skills:
+            # A typo'd name must not crash a kanban worker; and a dispatcher-owned worker
+            # (HERMES_KANBAN_DB pinned) keeps running even when the whole set is missing —
+            # crashing there strands the card as running until a human reclaims it (#54088).
+            if not loaded_skills and not os.environ.get("HERMES_KANBAN_DB"):
                 raise ValueError(format_missing_skills(missing_skills))
-            logger.warning("Skipping %s. Continuing with: %s. List available skills with `hermes skills list`.",
-                           format_missing_skills(missing_skills), ", ".join(loaded_skills))
+            if loaded_skills:
+                logger.warning("Skipping %s. Continuing with: %s. List available skills with `hermes skills list`.",
+                               format_missing_skills(missing_skills), ", ".join(loaded_skills))
+            else:
+                logger.warning("Kanban worker: no requested skill resolved (%s); continuing without "
+                               "preloaded skills. List available skills with `hermes skills list`.",
+                               format_missing_skills(missing_skills))
         if skills_prompt:
             self.system_prompt = "\n\n".join(p for p in (self.system_prompt, skills_prompt) if p).strip()
         self.preloaded_skills += [name for name in loaded_skills if name not in self.preloaded_skills]

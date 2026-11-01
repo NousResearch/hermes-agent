@@ -120,9 +120,9 @@ def check_sandbox_requirements() -> bool:
 
 # Per-tool stub templates: (signature, docstring, args_dict_expr — the JSON payload sent over RPC).
 _TOOL_STUBS = {
-    "web_search": ("query: str, limit: int = 5",
-        '"""Search the web. Returns dict with data.web list of {url, title, description}."""',
-        '{"query": query, "limit": limit}'),
+    "web_search": ("query: str, limit: int = 5, depth: str = None",
+        '"""Search the web. depth: "quick" | "standard" (default) | "deep". Returns dict with data.web list of {url, title, description}."""',
+        '{"query": query, "limit": limit, "depth": depth}'),
     "web_extract": ("urls: list, char_limit: int = None",
         '"""Extract content from URLs (no LLM summarization). Returns dict with results list of {url, title, content, error}. Pages over char_limit (default 15000) are head+tail truncated with the full text stored on disk; the content footer gives the path. content is markdown."""',
         '{"urls": urls, "char_limit": char_limit}'),
@@ -861,7 +861,7 @@ def _get_execution_mode() -> str:
 
 # Per-tool documentation lines for the execute_code description, in canonical display order.
 _TOOL_DOC_LINES = [
-    ("web_search", "  web_search(query: str, limit: int = 5) -> dict\n"
+    ("web_search", "  web_search(query: str, limit: int = 5, depth: str = None) -> dict\n"
      "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}"),
     ("web_extract", "  web_extract(urls: list[str], char_limit: int = None) -> dict\n"
      "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown.\n"

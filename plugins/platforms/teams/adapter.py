@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import sys
+import uuid
 from collections import deque
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -371,6 +372,9 @@ class TeamsAdapter(BasePlatformAdapter):
         self._require_mention: bool = self._parse_require_mention(config)
         # Outbound activity ids (bounded) so require_mention can exempt replies to our own messages.
         self._sent_ids: deque = deque(maxlen=500)
+        # prompt id → (command preview, reason) for the resolved card; button data carries only the id,
+        # because a copy per button can push a long non-ASCII command past Teams' ~28 KB card cap.
+        self._approval_previews: dict[str, tuple[str, str]] = {}
 
     @staticmethod
     def _parse_require_mention(config) -> bool:
@@ -645,11 +649,13 @@ class TeamsAdapter(BasePlatformAdapter):
         choice = _APPROVAL_CHOICES.get(hermes_action)
         if not choice:
             return self._invoke_message(t("platform.teams.approval.unknown_action"))
+        # Cards sent before a restart (or by an older build) carry cmd/desc in the button data instead.
+        cmd, desc = self._approval_previews.get(data.get("prompt_id", ""), (data.get("cmd", ""), data.get("desc", "")))
         if not has_blocking_approval(session_key):
-            body = _approval_body(data.get("cmd", ""), data.get("desc", ""))
+            body = _approval_body(cmd, desc)
             return self._invoke_card([*body, TextBlock(text=t("platform.shared.approval_expired"), wrap=True)])
         resolve_gateway_approval(session_key, choice)
-        body = _approval_body(data.get("cmd", ""), data.get("desc", ""))
+        body = _approval_body(cmd, desc)
         body.append(TextBlock(text=t(_APPROVAL_LABEL_KEYS[choice]), wrap=True, weight="Bolder"))
         return self._invoke_card(body)
 
@@ -675,6 +681,7 @@ class TeamsAdapter(BasePlatformAdapter):
         return None
 
     _EA_CMD_BUDGET = 2000
+    _EA_PREVIEWS_KEPT = 256
     _EA_CARD_ACTIONS = {"once": "approve_once", "session": "approve_session", "always": "approve_always", "deny": "deny"}
     _EA_CARD_STYLES = {"primary": "positive", "danger": "destructive"}
 
@@ -682,9 +689,13 @@ class TeamsAdapter(BasePlatformAdapter):
         """Adaptive Card: the shared text is split into its header / fenced command / reason blocks."""
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
-        # Button data carries the card's own command preview, so the resolved card shows what was asked.
+        # The resolved card shows the prompt's own command preview, looked up by id on click.
         cmd = self._truncate_preview(prompt.command, self._EA_CMD_BUDGET)
-        btn_data_base = {"session_key": prompt.session_key, "cmd": cmd, "desc": prompt.description}
+        prompt_id = uuid.uuid4().hex
+        self._approval_previews[prompt_id] = (cmd, prompt.description)
+        if len(self._approval_previews) > self._EA_PREVIEWS_KEPT:
+            self._approval_previews.pop(next(iter(self._approval_previews)))
+        btn_data_base = {"session_key": prompt.session_key, "prompt_id": prompt_id}
         actions = []
         for label, choice, style in prompt.actions:
             kw = {"style": self._EA_CARD_STYLES[style]} if style else {}

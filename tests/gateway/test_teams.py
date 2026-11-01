@@ -1,5 +1,6 @@
 """Tests for the Microsoft Teams platform adapter plugin."""
 
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -1174,3 +1175,17 @@ async def test_resolved_card_shows_the_prompts_full_command_preview():
             patch("tools.approval.resolve_gateway_approval", return_value=1):
         body = await adapter._on_card_action(ctx)
     assert command in " ".join(str(block.text) for block in body)
+
+
+@pytest.mark.anyio
+async def test_long_non_ascii_command_keeps_button_data_small():
+    """Button data carries an id, not a copy of the preview per button, so a long CJK command
+    cannot push the card past Teams' ~28 KB limit."""
+    adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+    adapter._app, adapter._send_card = object(), AsyncMock()
+    command = "cat > notes.md <<'EOF'\n" + "这是一个很长的中文文档内容。" * 200 + "\nEOF"
+    buttons = []
+    with patch.object(sys.modules[TeamsAdapter.__module__], "ExecuteAction", lambda **kw: buttons.append(kw)):
+        await adapter.send_exec_approval(chat_id="c1", command=command, session_key="s1", description="flagged")
+    assert len(buttons) == 4
+    assert sum(len(json.dumps(b["data"], ensure_ascii=False).encode()) for b in buttons) < 1024

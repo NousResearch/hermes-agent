@@ -1158,3 +1158,84 @@ def test_threaded_llm_pass_keeps_callers_profile_scope(curator_env, tmp_path, mo
     assert not (root / "skills" / ".curator_state").exists(), "thread wrote the ROOT home's state"
     state = json.loads((profile / "skills" / ".curator_state").read_text(encoding="utf-8-sig"))
     assert state["last_run_summary"].endswith("llm: stub")
+
+
+def test_run_llm_review_surfaces_truncated_turn_verdict(curator_env, monkeypatch):
+    """#137967: a review turn cut off near the model's window returns a partial envelope
+    stamped failure_reason='truncated'; _run_llm_review must carry that verdict out
+    (error + failure_reason) instead of passing the loop's cut-off notice off as the
+    pass's own summary."""
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+
+    class _StubAgent:
+        def __init__(self, *args, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, user_message=None, **kwargs):
+            return {
+                "final_response": "The model's reply was cut off before it finished. Nothing was changed.",
+                "completed": False, "partial": True,
+                "failure_reason": "truncated", "failure_retryable": True,
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"provider": "openai-api", "default": "gpt-4o-mini"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"model": {"provider": "openai-api", "default": "gpt-4o-mini"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {"provider": "openai-api", "api_key": "k",
+                           "base_url": "https://api.example/v1"},
+    )
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta.get("failure_reason") == "truncated"
+    assert "truncated" in str(meta.get("error"))
+
+
+def test_truncated_pass_is_recorded_not_silent(curator_env, monkeypatch):
+    """#137967: a truncated consolidation pass must leave durable signals — the state flag,
+    the marked run summary, the notified summary and the run report's llm_failure_reason —
+    because the run otherwise looks completed (last_run_at advances) and the unprocessed
+    skill candidates are silently dropped. A later healthy pass clears the flag."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
+
+    def _truncated(prompt):
+        return {"final": "cut off", "summary": "cut off", "model": "m", "provider": "p",
+                "tool_calls": [], "error": "review ended early (truncated)",
+                "failure_reason": "truncated"}
+
+    monkeypatch.setattr(c, "_run_llm_review", _truncated)
+    notified = []
+    c.run_curator_review(on_summary=notified.append, synchronous=True, consolidate=True)
+
+    state = c.load_state()
+    assert state["last_run_llm_failure_reason"] == "truncated"
+    assert "ended early (truncated)" in state["last_run_summary"]
+    payload = json.loads(
+        (Path(state["last_report_path"]) / "run.json").read_text(encoding="utf-8-sig"))
+    assert payload["llm_failure_reason"] == "truncated"
+    assert payload["llm_error"]
+    assert any("ended early (truncated)" in s for s in notified)
+
+    monkeypatch.setattr(c, "_run_llm_review", lambda prompt: {
+        "final": "ok", "summary": "ok", "model": "m", "provider": "p",
+        "tool_calls": [], "error": None})
+    c.run_curator_review(synchronous=True, consolidate=True)
+
+    assert c.load_state().get("last_run_llm_failure_reason") is None

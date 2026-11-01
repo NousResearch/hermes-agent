@@ -3085,6 +3085,14 @@ def _normalize_empty_agent_response(
     (``HTTP 400: {...}``) is rewritten too: returned unchanged, chat sanitizers turn it into a
     generic provider-failed reply and the user never sees /compact. Curated agent text survives.
     """
+    # A system producer (lease loss, watchdog, eviction) stopped the turn with nothing to show: nobody
+    # asked for that silence, so say who stopped it. Gateway-only; refs #84207 #138011 #144503.
+    _system_issuer = _system_interrupt_issuer(agent_result)
+    _visible = (response or "").strip()
+    # The waiting-for-model sentinel is stripped before send (_sanitize_gateway_user_text), so it is silence too.
+    if _system_issuer and (_visible in ("", "Operation interrupted.")
+                           or _visible.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)):
+        return t("gateway.errors.interrupted_by_system", issuer=_system_issuer)
     is_overflow = is_context_overflow_failure_result(agent_result, history_len)
     if response and not (is_overflow and _looks_like_gateway_provider_error(response)):
         return response
@@ -3152,6 +3160,20 @@ def _normalize_empty_agent_response(
         return t("gateway.errors.previous_turn_cleanup")
 
     return response
+
+
+def _system_interrupt_issuer(agent_result: dict) -> str:
+    """Plain-words issuer of an ``interrupted_by_system(<issuer>)`` turn, or "" for anything else.
+    Human stops stay silent; the gateway's own shutdown sends its restart notice instead."""
+    reason = str(agent_result.get("turn_exit_reason") or "")
+    if not agent_result.get("interrupted") or agent_result.get("failed") or not reason.endswith(")"):
+        return ""
+    # interrupted_during_api_call(<issuer>) is the same system stop landing mid model call.
+    prefix = next((p for p in ("interrupted_by_system(", "interrupted_during_api_call(") if reason.startswith(p)), "")
+    if not prefix:
+        return ""
+    issuer = reason[len(prefix):-1].replace("_", " ").strip()
+    return "" if issuer == _INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN else issuer
 
 
 def _is_gateway_hidden_reasoning_incomplete_turn(agent_result: dict) -> bool:

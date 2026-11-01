@@ -682,6 +682,7 @@ gateway:
     session_storage_unavailable: "⚠️ Oturum depolaması geçici olarak kullanılamadı; konuşma geçmişinizi korumak için bu tur durduruldu. Mesajınız kaydedilmiş olmalı — lütfen kısa süre sonra yeniden gönderin."
     generic_failed: "⚠️ Bir sorun oluştu ve bu yanıtı tamamlayamadım. Yeniden denemek için /retry, yeni bir konuşma başlatmak için /new kullanın. Teknik ayrıntılar gateway günlüğünde (`hermes logs`)."
     interrupted_before_start: "⚠️ Mesajınız işleme başlamadan önce kesildi (muhtemelen yakın zamandaki bir /stop nedeniyle). Lütfen yeniden gönderin."
+    interrupted_by_system: "⚠️ Bu tur sizin tarafınızdan değil, sistem tarafından durduruldu ({issuer}). Yapılmakta olan işlem tamamlanmamış olabilir. Devam etmek için bir mesaj gönderin."
     processing_incomplete: "işleme tamamlanmadı"
     stopped_before_finishing: "⚠️ Bitiremeden durmak zorunda kaldım{reason}. Yeniden denemek için /retry, konuşma çok uzadıysa /compress kullanın."
     no_response: "⚠️ İşleme tamamlandı ancak yanıt üretilmedi. Bu geçici bir hata olabilir — mesajınızı yeniden göndermeyi deneyin."

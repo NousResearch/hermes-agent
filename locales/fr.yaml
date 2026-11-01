@@ -791,6 +791,7 @@ gateway:
     session_storage_unavailable: "⚠️ Le stockage des sessions était temporairement indisponible ; ce tour a donc été arrêté pour protéger l'historique de votre conversation. Votre message devrait déjà être enregistré — renvoyez-le dans un instant."
     generic_failed: "⚠️ Une erreur s'est produite et je n'ai pas pu terminer cette réponse. Utilisez /retry pour réessayer, ou /new pour démarrer une nouvelle conversation. Les détails techniques sont dans le journal du gateway (`hermes logs`)."
     interrupted_before_start: "⚠️ Votre message a été interrompu avant le début du traitement (probablement par un /stop récent). Veuillez le renvoyer."
+    interrupted_by_system: "⚠️ Ce tour a été arrêté par le système ({issuer}), pas par vous. Ce qui était en cours peut être incomplet. Envoyez un message pour continuer."
     processing_incomplete: "traitement incomplet"
     stopped_before_finishing: "⚠️ J'ai dû m'arrêter avant de terminer{reason}. Utilisez /retry pour réessayer, ou /compress si cette conversation est devenue très longue."
     no_response: "⚠️ Le traitement s'est terminé mais aucune réponse n'a été générée. Il s'agit peut-être d'une erreur passagère — essayez de renvoyer votre message."

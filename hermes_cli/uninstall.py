@@ -798,6 +798,7 @@ def run_uninstall(args):
     from hermes_cli.gui_uninstall import desktop_userdata_dir
     if (desktop_userdata := desktop_userdata_dir()).exists():
         print(f"  Desktop: {desktop_userdata}  (app data - kept by 'Keep data', removed by 'Full uninstall')")
+    print("  Local commits, branches and any uncommitted work inside the checkout are deleted with it, without backup.")
     print()
 
     if named_profiles:
@@ -873,6 +874,7 @@ def _print_uninstall_dry_run(*, project_root: Path, hermes_home: Path, full_unin
     print("  • Hermes wrapper scripts and Hermes-managed node/npm/npx symlinks")
     print("  • Desktop Chat GUI artifacts")
     print(f"  • Code checkout: {project_root}")
+    print("    (includes any local commits, branches and uncommitted work — not backed up)")
     from hermes_cli.gui_uninstall import desktop_userdata_dir
     userdata = desktop_userdata_dir()
     if not full_uninstall:

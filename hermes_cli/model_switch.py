@@ -1800,13 +1800,27 @@ def switch_model(
     return _build_switch_result(st)
 
 
+def selection_derives_wire_per_model(result: ModelSwitchResult) -> bool:
+    """Whether the selected provider picks the wire per model, so a saved ``model.api_mode`` would describe
+    only this pick: its profile overrides ``api_mode_for_model`` (whatever it answers for this model), or
+    ``model_derived_api_mode`` answers for it (OpenCode Zen/Go, Nous). Pure: the override check comes first,
+    so no plugin hook runs on a selection path."""
+    from hermes_cli.runtime_provider import _per_model_profile
+    key = str(result.target_provider or "").strip().lower()
+    if _per_model_profile(key) is not None:
+        return True
+    return model_derived_api_mode(key, result.new_model) is not None
+
+
 def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg: Any) -> dict[str, Any]:
     """The ONE config.yaml shape a persisted model selection produces, as ``model.<key>`` -> value
     (``None`` = clear). ``current_model_cfg`` is the on-disk ``model:`` block (raw).
 
     base_url/api_mode are freshly resolved for the target route, so they are always synced —
     ``None`` when the target has none — otherwise the OLD provider's endpoint/wire-protocol lingers
-    (#25106). A context pin is dropped only when its route identity changed (fail-closed).
+    (#25106). ``api_mode`` is also ``None`` for a provider that derives it per model
+    (``selection_derives_wire_per_model``), so it never pins the other models of that provider. A
+    context pin is dropped only when its route identity changed (fail-closed).
     Non-custom targets resolve credentials from env/auth.json/the pool, so an inline
     ``model.api_key`` is a leftover that would contaminate later custom resolution. For custom
     targets the inline key belongs to ONE endpoint: it survives only a same-route re-pick (same
@@ -1819,9 +1833,13 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     dashboard re-adds an explicitly submitted key / the target provider's own pointer after this
     (``_apply_main_model_assignment`` / ``_resolve_assignment_credentials``)."""
     model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
+    # The runtime re-derives a per-model wire for whichever model it resolves; a pinned api_mode would
+    # describe only this pick and leak onto the provider's other models (delegation, cron, aux, ``-m``).
+    per_model_wire = selection_derives_wire_per_model(result)
     updates: dict[str, Any] = {
         "default": result.new_model, "provider": result.target_provider,
-        "base_url": result.base_url or None, "api_mode": result.api_mode or None,
+        "base_url": result.base_url or None,
+        "api_mode": None if per_model_wire else (result.api_mode or None),
     }
     if "context_length" in model_cfg:
         from hermes_cli.route_identity import should_clear_context_pin

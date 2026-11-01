@@ -486,7 +486,13 @@ def _classic_cli_fields(authority, ref, live, agent, policy):
     api_mode = getattr(agent, 'api_mode', None) if agent is not None else None
     if api_mode is None and policy is not None:
         with contextlib.suppress(Exception):
-            api_mode = (policy.effective(authority, secrets=False)[0].get('model') or {}).get('api_mode')
+            cfg, model = policy.effective(authority, secrets=False)
+            model_cfg = cfg.get('model') or {}
+            api_mode = model_cfg.get('api_mode')
+            if not api_mode:  # a per-model-wire provider saves none: show what the next turn derives (no key)
+                from hermes_cli.model_switch import model_derived_api_mode
+                api_mode = model_derived_api_mode(str(model_cfg.get('provider') or ''),
+                                                  str(model or model_cfg.get('default') or model_cfg.get('model') or ''))
     hint = None
     if agent is not None and getattr(agent, 'api_key', None):
         from agent.redact import mask_secret

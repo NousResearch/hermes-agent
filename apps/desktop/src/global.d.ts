@@ -288,6 +288,8 @@ declare global {
         // Remembers last use without interrupting a live workspace switch or
         // replacing an explicit default route.
         remember: (name: string | null) => Promise<DesktopActiveProfile>
+        // Mirrors each connection's last-used profile so main boots a remote primary on it.
+        rememberConnections?: (record: Record<string, string>) => Promise<void>
         // Persists the desktop's profile choice and relaunches the local
         // backend under the new HERMES_HOME (reloads the window). Pass null to
         // clear the preference.

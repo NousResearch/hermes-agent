@@ -20,6 +20,7 @@ import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import safe_url_for_log
+from gateway.platforms.base_media_names import capped_document_name, safe_cache_extension
 
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
@@ -613,7 +614,8 @@ def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> st
     platforms where POSIX mode bits are advisory (Windows): falls back to a
     plain write rather than failing the media write.
     """
-    filepath = cache_dir / f"{prefix}_{uuid.uuid4().hex[:12]}{ext}"
+    # ``ext`` is caller-supplied; safe_cache_extension keeps it a bare `.suffix`, so it cannot escape.
+    filepath = cache_dir / f"{prefix}_{uuid.uuid4().hex[:12]}{safe_cache_extension(ext)}"
     try:
         fd = os.open(str(filepath), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     except OSError:
@@ -1421,11 +1423,8 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
     """Save raw document bytes to the cache as ``doc_{uuid12}_{original_name}`` and return
     the absolute path; raises ValueError if the sanitized path escapes the cache directory."""
     cache_dir = get_document_cache_dir()
-    # Sanitize: strip directory components, null bytes, and control characters
-    safe_name = (Path(filename).name if filename else "document").replace("\x00", "").strip()
-    if not safe_name or safe_name in {".", ".."}:
-        safe_name = "document"
-    filepath = cache_dir / f"doc_{uuid.uuid4().hex[:12]}_{safe_name}"
+    # One component, bounded length, openable on Windows; the whys live in base_media_names.
+    filepath = cache_dir / f"doc_{uuid.uuid4().hex[:12]}_{capped_document_name(filename)}"
     # Final safety check: ensure path stays inside cache dir
     if not filepath.resolve().is_relative_to(cache_dir.resolve()):
         raise ValueError(f"Path traversal rejected: {filename!r}")

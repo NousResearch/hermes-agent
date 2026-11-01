@@ -27,6 +27,8 @@ DAEMON_STRIPPED_ENV = (
     "HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_SINGLE_QUERY_SESSION",
     "HERMES_EPHEMERAL_SYSTEM_PROMPT", "HERMES_PREFILL_MESSAGES_FILE", "HERMES_INFERENCE_PROVIDER",
     "HERMES_ENABLE_PROJECT_PLUGINS", "HERMES_TUI_CLIENT_ENV",
+    # The dashboard login one chat PTY names on its own ticket (#144140): that chat's, never the daemon's.
+    "HERMES_TUI_SESSION_SUBJECT",
     # A terminal's shell under a systemd service (gnome-terminal-server, a user unit) carries these; the
     # unmanaged daemon would then identify as "systemd" and maintenance would refuse it as supervised.
     "INVOCATION_ID", "JOURNAL_STREAM",

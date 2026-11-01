@@ -88,8 +88,9 @@ def _process_ancestors(pid: int) -> set[int]:
 def _key_segments(key: str) -> tuple[str, str]:
     """``(profile, resume)`` a keep-alive key was registered under.
 
-    Registry keys read ``token\\0profile\\0resume``; a key without those
-    segments — a chat that was never resumed from — yields ``("", "")``.
+    Registry keys read ``token\\0profile\\0resume``, then ``\\0subject`` when a
+    signed-in login opened the chat; a key without those segments — a chat that
+    was never resumed from — yields ``("", "")``.
     Session ids are only unique within a profile's store, so a resume target
     is identified by both.
     """

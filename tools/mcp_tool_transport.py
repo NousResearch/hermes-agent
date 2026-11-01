@@ -520,11 +520,16 @@ class MCPServerTransportMixin:
     def _build_oauth_auth(self, url: str, config: dict):
         """OAuth 2.1 PKCE via the central MCPOAuthManager (one provider reused across reconnects and
         CLI paths). Setup failures re-raise (after a warning) so only this server is reported failed."""
+        self._oauth_auth = None
         if self._auth_type != "oauth":
             return None
         try:
             from tools.mcp_oauth_manager import get_manager
-            return get_manager().get_or_build_provider(self.name, url, config.get("oauth"))
+            self._oauth_auth = get_manager().get_or_build_provider(self.name, url, config.get("oauth"))
+            if self._oauth_auth is not None:
+                self._oauth_auth._hermes_ssl_verify = config.get("ssl_verify", True)
+                self._oauth_auth._hermes_client_cert = _resolve_client_cert(self.name, config)
+            return self._oauth_auth
         except Exception as exc:
             logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
             raise

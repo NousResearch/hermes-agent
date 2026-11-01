@@ -926,6 +926,117 @@ class TestPruneCheckpointsLegacy:
         assert (base / "garbage-dir").exists()
 
 
+class TestPruneCheckpointsPreV2PreviewExecutionParity:
+    """P2 fix on PR #147152: `store_status()`'s pre-v2 ``orphan_confirmable``
+    must agree with what ``prune_checkpoints()`` actually deletes, including
+    the blank-marker and unreadable-marker edge cases that the old
+    ``(not wd)`` truthiness check previewed as prunable while execution
+    skipped them.
+    """
+
+    @staticmethod
+    def _seed_shadow(
+        base, name, workdir=None, *, blank_marker=False, unreadable_marker=False,
+    ):
+        shadow = base / name
+        shadow.mkdir(parents=True)
+        (shadow / "HEAD").write_text("ref: refs/heads/main\n")
+        (shadow / "info").mkdir()
+        (shadow / "info" / "exclude").write_text("node_modules/\n")
+        if blank_marker:
+            # Marker exists but strips to "" — a blank HERMES_WORKDIR.
+            (shadow / "HERMES_WORKDIR").write_text("\n")
+        elif unreadable_marker:
+            marker = shadow / "HERMES_WORKDIR"
+            marker.write_text(str(workdir) + "\n")
+            marker.chmod(0o000)
+        elif workdir is not None:
+            (shadow / "HERMES_WORKDIR").write_text(str(workdir) + "\n")
+        # No marker file at all when workdir is None and not blank/unreadable.
+        return shadow
+
+    def test_blank_marker_not_confirmable_nor_deleted(self, tmp_path):
+        base = tmp_path / "checkpoints"
+        gone = tmp_path / "was-deleted"
+        blank_repo = self._seed_shadow(base, "aaaa" * 4, gone, blank_marker=True)
+
+        info = store_status(checkpoint_base=base)
+        entry = info["pre_v2_projects"][0]
+        assert entry["orphan_confirmable"] is False
+        assert entry["unconfirmable_reason"] == "blank workdir recorded"
+
+        result = prune_checkpoints(retention_days=0, checkpoint_base=base, delete_orphans=True)
+        assert result["deleted_orphan"] == 0
+        assert blank_repo.exists()
+
+    def test_unreadable_marker_not_confirmable_nor_deleted(self, tmp_path):
+        base = tmp_path / "checkpoints"
+        gone = tmp_path / "was-deleted"
+        repo = self._seed_shadow(base, "bbbb" * 4, gone, unreadable_marker=True)
+        try:
+            info = store_status(checkpoint_base=base)
+            entry = info["pre_v2_projects"][0]
+            assert entry["marker_unreadable"] is True
+            assert entry["orphan_confirmable"] is False
+            assert entry["unconfirmable_reason"] == "shadow repo marker is unreadable"
+
+            result = prune_checkpoints(retention_days=0, checkpoint_base=base, delete_orphans=True)
+            assert result["deleted_orphan"] == 0
+            assert repo.exists()
+        finally:
+            (repo / "HERMES_WORKDIR").chmod(0o644)  # allow tmp cleanup
+
+    def test_none_marker_is_confirmable_orphan_and_deleted(self, tmp_path):
+        base = tmp_path / "checkpoints"
+        repo = self._seed_shadow(base, "cccc" * 4, None)  # no marker file
+
+        info = store_status(checkpoint_base=base)
+        entry = info["pre_v2_projects"][0]
+        assert entry["orphan_confirmable"] is True
+        assert entry["unconfirmable_reason"] is None
+
+        result = prune_checkpoints(retention_days=0, checkpoint_base=base, delete_orphans=True)
+        assert result["deleted_orphan"] == 1
+        assert not repo.exists()
+
+    def test_preview_set_equals_execution_set(self, tmp_path):
+        """The core invariant: the set of pre-v2 repos the preview marks
+        ``orphan_confirmable`` is exactly the set prune deletes, across all
+        marker states (blank / unreadable / missing / live / gone)."""
+        base = tmp_path / "checkpoints"
+        alive = tmp_path / "alive"
+        alive.mkdir()
+        gone = tmp_path / "was-deleted"
+        repos = {
+            "blank": self._seed_shadow(base, "aaaa" * 4, gone, blank_marker=True),
+            "unreadable": self._seed_shadow(base, "bbbb" * 4, gone, unreadable_marker=True),
+            "none": self._seed_shadow(base, "cccc" * 4, None),
+            "live": self._seed_shadow(base, "dddd" * 4, alive),
+            "gone": self._seed_shadow(base, "eeee" * 4, gone),
+        }
+        try:
+            info = store_status(checkpoint_base=base)
+            # Map each shadow path back to its semantic key, then compare
+            # confirmable sets. Only the missing-marker and genuinely-deleted-
+            # workdir repos are confirmable; blank and unreadable markers are
+            # preserved.
+            by_path = {str(repo): name for name, repo in repos.items()}
+            confirmable = {
+                by_path[p["path"]] for p in info["pre_v2_projects"] if p["orphan_confirmable"]
+            }
+            assert confirmable == {"none", "gone"}
+
+            result = prune_checkpoints(retention_days=0, checkpoint_base=base, delete_orphans=True)
+            assert result["deleted_orphan"] == 2
+            deleted = {name for name, repo in repos.items() if not repo.exists()}
+            assert deleted == {"none", "gone"}
+        finally:
+            for repo in repos.values():
+                marker = repo / "HERMES_WORKDIR"
+                if marker.exists():
+                    marker.chmod(0o644)
+
+
 class TestPruneCheckpointsV2:
     """v2 pruning walks the shared store's projects/ metadata."""
 

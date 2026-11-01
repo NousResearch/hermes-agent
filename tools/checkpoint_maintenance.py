@@ -97,26 +97,17 @@ def _workdir_is_observably_gone(
         if parent == path:
             return False
         if not parent.is_dir():
-            # The parent path does not resolve. That is either a genuine
+            # The parent path does not resolve. That could be a genuine
             # deletion of the parent (project moved / parent removed from a
             # still-mounted filesystem) or a detached volume whose mount
-            # point itself vanished. Distinguish the two by walking up to the
-            # nearest existing ancestor: if it sits on the same device as the
-            # recorded parent, the parent was deleted from a live filesystem
-            # and the project is genuinely orphaned; otherwise the parent's
-            # device is not observable and we stay conservative (an unmount
-            # can hide the parent, and we must not delete restore points over
-            # a transient mount state).
-            if parent_dev is not None:
-                ancestor = parent
-                while not ancestor.exists() and ancestor != ancestor.parent:
-                    ancestor = ancestor.parent
-                if ancestor.exists():
-                    try:
-                        if ancestor.stat().st_dev == parent_dev:
-                            return True
-                    except OSError:
-                        return False
+            # point itself vanished. We cannot distinguish the two from the
+            # parent's own absence alone (``st_dev`` equality with a
+            # surviving ancestor does NOT prove the parent was deleted — the
+            # parent may have been a mount point that was removed or a
+            # volume remounted under a new name), so stay conservative: a
+            # missing parent is never evidence of a deletable orphan. Such
+            # projects surface as ``unreachable`` in ``checkpoints status``
+            # (see ``_workdir_unreachable_reason``) instead of being pruned.
             return False
         if parent_dev is not None and parent_ino is not None:
             st = parent.stat()
@@ -170,9 +161,13 @@ def _workdir_unreachable_reason(
         return "workdir path is a filesystem root"
     try:
         if not parent.is_dir():
-            # Parent gone. Distinguish a moved/deleted parent on a live
-            # filesystem (which would have been confirmable) from a detached
-            # volume, by walking to the nearest existing ancestor.
+            # Parent gone. The deletion pass never treats a missing parent as
+            # a confirmable orphan (`_workdir_is_observably_gone` returns False
+            # unconditionally here — a missing parent could equally be a
+            # detached/unmounted volume, and st_dev equality with a surviving
+            # ancestor does NOT prove the parent was deleted). This walk only
+            # *classifies why* for the human (volume drift vs. plain absence);
+            # it never flips the verdict back to confirmable.
             if parent_dev is None:
                 return "parent path gone and no parent identity recorded"
             ancestor = parent
@@ -189,7 +184,7 @@ def _workdir_unreachable_reason(
                     f"volume identity drift: recorded parent_dev {parent_dev}, "
                     f"nearest existing ancestor {ancestor} has st_dev {ancestor_dev}"
                 )
-            return "parent path gone with an unresolvable parent identity"
+            return "parent path gone; deletion not corroborated (conservative)"
         st = parent.stat()
         if parent_dev is not None and parent_ino is not None:
             if (st.st_dev, st.st_ino) != (parent_dev, parent_ino):
@@ -634,22 +629,38 @@ def store_status(checkpoint_base: Optional[Path] = None) -> dict:
     out["pre_v2_projects"] = []
     for r in _pre_v2_shadow_repos(base):
         wd = r["workdir"]
-        confirmable = (not wd) or _workdir_is_observably_gone(
-            wd, None, None, require_parent_identity=False
+        marker_unreadable = bool(r.get("marker_unreadable", False))
+        # Mirror the deletion pass's pre-v2 orphan condition exactly: an
+        # unreadable marker or a blank workdir is NOT prunable there, and only
+        # ``None`` (unset) workdir is treated as an orphan. Using ``not wd``
+        # (truthiness) here would preview a blank HERMES_WORKDIR as prunable
+        # while execution skips it — the exact divergence this PR removes.
+        confirmable = (
+            not marker_unreadable
+            and (
+                wd is None
+                or _workdir_is_observably_gone(
+                    wd, None, None, require_parent_identity=False
+                )
+            )
         )
+        if confirmable:
+            reason = None
+        elif marker_unreadable:
+            reason = "shadow repo marker is unreadable"
+        elif not wd:
+            reason = "blank workdir recorded"
+        else:
+            reason = _workdir_unreachable_reason(
+                wd, None, None, require_parent_identity=False
+            )
         out["pre_v2_projects"].append({
             "path": str(r["path"]),
             "workdir": wd,
             "exists": r["exists"],
-            "marker_unreadable": r.get("marker_unreadable", False),
+            "marker_unreadable": marker_unreadable,
             "orphan_confirmable": confirmable,
-            "unconfirmable_reason": (
-                None
-                if confirmable
-                else _workdir_unreachable_reason(
-                    wd, None, None, require_parent_identity=False
-                )
-            ),
+            "unconfirmable_reason": reason,
         })
 
     for child in base.iterdir():

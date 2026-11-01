@@ -53,8 +53,37 @@ def cmd_status(args: argparse.Namespace) -> int:
                 state = "unreachable"
             print(f"  {wd:<60}  {p.get('commits', 0):>7}  {_fmt_age(p.get('last_touch')):>12}  {state}")
             if state == "unreachable":
-                print(f"    unreachable but not prunable: {p.get('unconfirmable_reason') or 'unknown'}")
-                print("    (prune leaves this record; clean up manually if the project is truly gone)")
+                print(f"    unreachable but not prunable as an orphan: {p.get('unconfirmable_reason') or 'unknown'}")
+                print("    (prune won't treat it as an orphan; retention still drops it once older than --retention-days)")
+
+    # Pre-v2 per-project shadow repos: shown separately because they carry no
+    # commits/last_touch (they are git repos under base/<hash>/HEAD, not
+    # entries in the shared store). Reuses the same orphan_confirmable /
+    # unconfirmable_reason classification the prune preview binds to, so the
+    # human sees the same "unreachable but not prunable" reason for a pre-v2
+    # shadow repo that prune will skip.
+    pre_v2 = info.get("pre_v2_projects", [])
+    if pre_v2:
+        print()
+        print(f"Pre-v2 shadow repos ({len(pre_v2)}):")
+        print(f"  {'WORKDIR':<60}  STATE")
+        for p in pre_v2[: getattr(args, "limit", None) or 20]:
+            # Fall back to the shadow repo's own path so a blank/missing
+            # workdir row still names the directory the human may need to
+            # inspect or clean up by hand.
+            wd = p.get("workdir") or p.get("path") or "(unknown)"
+            if len(wd) > 60:
+                wd = "…" + wd[-59:]
+            if p.get("exists"):
+                state = "live"
+            elif p.get("orphan_confirmable"):
+                state = "orphan"
+            else:
+                state = "unreachable"
+            print(f"  {wd:<60}  {state}")
+            if state == "unreachable":
+                print(f"    unreachable but not prunable as an orphan: {p.get('unconfirmable_reason') or 'unknown'}")
+                print("    (pre-v2 shadow repo; prune won't treat it as an orphan)")
 
     legacy = info.get("legacy_archives", [])
     if legacy:

@@ -8,6 +8,11 @@ Mirrors ``hermes_cli/goals.py``: same aux-client pattern, same "empty config
 => skip, don't crash" tolerance. One shot, no retry loop. JSON mode is not
 requested (works on providers without it); the parse is lenient and falls
 back to "whole reply is the body" so a malformed reply never strands a task.
+
+A leading ``Word:`` label on the title is load-bearing — the board's
+automation dispatches on it (``Spec:`` -> spec, ``Build:`` -> build, ...) —
+so the model is told to copy it verbatim, and the label is re-attached from
+the ORIGINAL title afterwards whatever the model returns.
 """
 
 from __future__ import annotations
@@ -53,6 +58,11 @@ heading, in this order:
 Rules:
   - Keep the tightened title close in meaning to the original idea — do
     NOT invent a different project.
+  - The title may begin with a ROUTING LABEL — a short word followed by a
+    colon, e.g. "Spec:" or "Build:". That label is not part of the title
+    text: copy it VERBATIM (same word, same capitalisation, same colon)
+    at the very start of the title you return, and tighten only the prose
+    after it. Never expand it into a word ("Specify ...") and never drop it.
   - If the original idea is already detailed, preserve its substance and
     just reformat into the sections above.
   - Never add invented requirements the user didn't hint at.
@@ -66,6 +76,68 @@ Current title: {title}
 Current body:
 {body}
 """
+
+
+# A leading ``Word:`` on a card title is a ROUTING LABEL, not prose: the
+# board's automation dispatches on it (``Spec:`` -> the spec writer,
+# ``Build:`` -> the builder, ...). The model rewrites the title PROSE, so
+# the label is carried over from the original title instead of being
+# re-derived from the model's reply -- a model that answers "Specify the
+# money tracker stitch" for "Spec: 2026-10-31-money-tracker-stitch" has
+# dropped the label, and the card silently stops being dispatched.
+#
+# The label is one short token followed by a colon. ``(?![/])`` keeps a URL
+# scheme (``http://example.com``) from being read as a label.
+_TITLE_LABEL_RE = re.compile(r"^(?P<label>[A-Za-z][A-Za-z0-9_-]{0,23}:)(?![/])(?P<space>[ \t]*)")
+
+
+def _title_label(title: str) -> tuple[str, str]:
+    """``(label, space)`` of the leading routing label of ``title``.
+
+    ``label`` is the token and its colon (``"Spec:"``); ``space`` is the
+    whitespace that follows it. ``("", "")`` when the title has no label.
+    """
+    match = _TITLE_LABEL_RE.match(title or "")
+    if not match:
+        return "", ""
+    return match.group("label"), match.group("space")
+
+
+def _title_prose(title: str) -> str:
+    """The title text after its leading routing label ("" when it has none)."""
+    label, space = _title_label(title)
+    if not label:
+        return ""
+    return (title or "")[len(label) + len(space):].strip()
+
+
+def _restore_title_label(original: str, rewritten: str) -> str:
+    """Re-attach ``original``'s leading routing label to ``rewritten``.
+
+    The label is a contract with the board's automation, so it survives the
+    rewrite verbatim -- same word, same capitalisation, same spacing. A reply
+    that echoes a label of its own has that label replaced by the original
+    one (the model may not re-route a card); a reply that echoes none gets
+    the original label prepended. A title with no label is returned
+    unchanged.
+    """
+    label, space = _title_label(original)
+    if not label:
+        return rewritten
+    rewritten = (rewritten or "").strip()
+    echoed, _echoed_space = _title_label(rewritten)
+    if echoed:
+        rest = rewritten[len(echoed):].strip()
+        return label + space + rest
+    prose = _title_prose(original)
+    if prose:
+        # The model rewrote only the LABEL, expanding it into a word
+        # ("Spec:" -> "Specify <prose>") and leaving the prose untouched.
+        # That is a mangled label, not new prose: keep the original title.
+        head, _, tail = rewritten.partition(" ")
+        if head and tail == prose and head.lower().startswith(label[:-1].lower()):
+            return label + space + prose
+    return label + space + rewritten
 
 
 @dataclass
@@ -219,6 +291,10 @@ def specify_task(
         new_title, new_body = _title_body(parsed)
         if new_body is None and new_title is None:
             return SpecifyOutcome(task_id, False, "LLM response missing title and body")
+    if new_title:
+        # The label is the card's routing key: the model's prose replaces
+        # the title, the ORIGINAL label is carried over untouched.
+        new_title = _restore_title_label(task.title or "", new_title)
 
     with kbc.connect_closing() as conn:
         ok = kb.specify_triage_task(

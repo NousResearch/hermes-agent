@@ -350,6 +350,25 @@ class TestNormalizeConverseResponse:
         assert result.usage.cache_read_input_tokens == 900
         assert result.usage.cache_creation_input_tokens == 300
 
+    @pytest.mark.parametrize("stop_reason", [
+        "model_context_window_exceeded", "malformed_model_output", "malformed_tool_use",
+    ])
+    def test_unfinished_stop_is_a_truncation_not_a_finished_tool_call(self, stop_reason):
+        """Converse stop reasons that mean the output did not finish (the window filled, or the
+        model emitted malformed output / a malformed tool call) must reach truncation recovery as
+        "length", like max_tokens, instead of running the half-written tool call."""
+        from agent.bedrock_adapter import normalize_converse_response
+        response = {
+            "output": {"message": {"role": "assistant", "content": [
+                {"text": "Writing the file now."},
+                {"toolUse": {"toolUseId": "call_cut", "name": "write_file", "input": {}}},
+            ]}},
+            "stopReason": stop_reason,
+            "usage": {"inputTokens": 190000, "outputTokens": 10000},
+        }
+        result = normalize_converse_response(response)
+        assert result.choices[0].finish_reason == "length"
+
     def test_tool_use_response(self):
         from agent.bedrock_adapter import normalize_converse_response
         response = {

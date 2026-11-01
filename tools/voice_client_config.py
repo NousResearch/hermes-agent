@@ -31,19 +31,21 @@ TTS_WIRE_ELEVENLABS = "elevenlabs-tts"
 
 
 def _client_direct_enabled() -> bool:
+    """Relay is the floor: only a value that clearly says "on" hands keys to the client."""
     try:
         from hermes_cli.config import load_config
         voice_cfg = load_config().get("voice") or {}
         if not isinstance(voice_cfg, dict):
-            return True
+            return False
         value = voice_cfg.get("client_direct", True)
     except Exception:
-        return True
-    if isinstance(value, bool):
-        return value
+        logger.warning("voice config unreadable; client-direct voice stays off", exc_info=True)
+        return False
+    if isinstance(value, (bool, int, float)):
+        return bool(value)
     if isinstance(value, str):
-        return value.strip().lower() not in {"0", "false", "no", "off"}
-    return True
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
 
 
 def _relay(reason: str) -> dict[str, Any]:

@@ -42,7 +42,13 @@ vi.mock('@/store/session-states', async importOriginal => ({
 
 vi.mock('@/store/session-request-router', async importOriginal => ({
   ...(await importOriginal<typeof RequestRouter>()),
-  requestForSessionProfile: (owner: unknown) => h.request(owner)
+  requestForSessionProfile: (
+    owner: unknown,
+    _ambient: unknown,
+    _method: string,
+    _params: unknown,
+    timeoutMs?: number
+  ) => h.request(owner, timeoutMs)
 }))
 
 const { $gateway } = await import('@/store/gateway')
@@ -110,18 +116,73 @@ describe('useLiveWorkRoster', () => {
     expect(callsFor('bot2')).toBe(1)
   })
 
-  it('interval ticks skip a cold idle owner but keep reading one whose last read showed work', async () => {
+  it('interval ticks skip a cold idle owner and re-dial a cold busy one once a minute', async () => {
     withRows({ idle: 'idle', busy: 'busy' })
     h.request.mockImplementation(async (owner: unknown) =>
       owner === 'busy' ? { sessions: [{ session_id: 'busy', subagents: 1 }] } : { sessions: [] }
     )
     renderHook(() => useLiveWorkRoster())
     await tick(0)
-    await tick()
-    await tick()
+    await tick(50_000)
+    expect(callsFor('busy')).toBe(1)
+    await tick(10_000)
+    expect(callsFor('busy')).toBe(2)
+    await tick(60_000)
 
     expect(callsFor('idle')).toBe(1)
     expect(callsFor('busy')).toBe(3)
+  })
+
+  it('a hung source never freezes the others: they keep publishing and clear when work ends', async () => {
+    withRows({ hung: 'hung', live: 'live' })
+    h.open.add('::hung').add('::live')
+    let running = true
+    h.request.mockImplementation((owner: unknown) => {
+      if (owner === 'hung') {
+        return new Promise(() => undefined)
+      }
+
+      return Promise.resolve({ sessions: owner === 'live' && running ? [{ session_id: 'job', background: 1 }] : [] })
+    })
+    renderHook(() => useLiveWorkRoster())
+    await tick(0)
+    expect($liveWorkRoster.get()['::live']?.sessions.job?.background).toBe(1)
+
+    running = false
+    await tick()
+    expect($liveWorkRoster.get()['::live']?.sessions).toEqual({})
+    // The hung read is never stacked, and it rides a one-tick timeout.
+    expect(callsFor('hung')).toBe(1)
+    expect(h.request.mock.calls.find(c => c[0] === 'hung')?.[1]).toBe(10_000)
+  })
+
+  it('window focus respects an active backoff and coalesces bursts', async () => {
+    withRows({ flaky: 'flaky' })
+    h.request.mockImplementation(async (owner: unknown) => {
+      if (owner === 'flaky') {
+        throw new Error('socket closed')
+      }
+
+      return { sessions: [] }
+    })
+    renderHook(() => useLiveWorkRoster())
+    await tick(0)
+    await tick(5_000)
+
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+    })
+    await tick(0)
+    expect(callsFor('flaky')).toBe(1)
+    expect(callsFor('ambient')).toBe(2)
+
+    await tick(1_000)
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+      window.dispatchEvent(new Event('focus'))
+    })
+    await tick(0)
+    expect(callsFor('ambient')).toBe(2)
   })
 
   it('keeps retrying a source through transient failures until it recovers', async () => {

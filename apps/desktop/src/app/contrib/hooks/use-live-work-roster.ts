@@ -10,6 +10,10 @@ import { isSessionOwnerRoute, requestForSessionProfile, type SessionOwnerScope }
 import { knownOwnerForSession } from '@/store/session-states'
 
 const POLL_MS = 10_000
+// A closed socket whose last read showed work is re-dialed this often, not every tick.
+const COLD_BUSY_MS = 60_000
+// Window focus re-reads every source at most this often (alt-tab bursts).
+const FOCUS_MIN_GAP_MS = 5_000
 const MAX_BACKOFF_MS = 5 * 60_000
 
 interface RosterResult {
@@ -38,8 +42,10 @@ function rosterSources(): Map<string, RosterSource> {
   const ambientKey = isActivePrimary() ? gatewayRouteState(null, activeGatewayProfileKey()).key : 'ambient'
   const sources = new Map<string, RosterSource>([[ambientKey, { open: true, owner: undefined }]])
 
+  // One row list per tick, each owner resolved against its own row: resolving
+  // through the whole list per row made a tick O(rows²).
   for (const row of ownerLookupSessionRows()) {
-    const owner = knownOwnerForSession(row.id)
+    const owner = knownOwnerForSession(row.id, [row])
 
     if (!owner) {
       continue
@@ -58,12 +64,13 @@ function rosterSources(): Map<string, RosterSource> {
 /** App-level hydration of `$liveWorkRoster` (sidebar rows not on screen, and
  *  every row after a reload / socket reconnect): one `subagent.roster` read per
  *  backend on connect and window focus, then every 10 s while the window is
- *  visible. Interval ticks are passive: after a source's first read on this
- *  connection they read only sockets already open (plus sources whose last read
- *  showed live work, so a finished child clears), never re-dialing an idle
- *  historical owner every tick just to learn nothing runs there. A
- *  backend without the RPC stops for this connection; any other failure backs
- *  off and keeps retrying, so a recovered socket comes back on its own. */
+ *  visible. Each source reads and publishes on its own, with a one-tick request
+ *  timeout, so a hung backend never freezes the other sources' rows. Interval
+ *  ticks are passive: after a source's first read on this connection they read
+ *  only sockets already open, plus a closed one whose last read showed work once
+ *  a minute (so a finished child clears without re-dialing every tick). A backend
+ *  without the RPC stops for this connection; any other failure backs off (focus
+ *  included) and keeps retrying, so a recovered socket comes back on its own. */
 export function useLiveWorkRoster() {
   const gatewayState = useStore($gatewayState)
 
@@ -76,25 +83,28 @@ export function useLiveWorkRoster() {
     }
 
     let cancelled = false
-    let pending = false
+    let lastHydrate = -Infinity
+    let current = new Set<string>()
+    const inFlight = new Set<string>()
     const unsupported = new Set<string>()
-    // Sources read at least once on this connection: rows that load after the
-    // connect (the session list, a newly shown profile) get their first read.
-    const read = new Set<string>()
+    // When each source was last asked on this connection: rows that load after
+    // the connect (the session list, a newly shown profile) get their first read.
+    const sentAt = new Map<string, number>()
     const backoff = new Map<string, { failures: number; until: number }>()
 
     const readSource = async (key: string, owner: SessionOwnerScope, ambient: ReturnType<typeof ambientRequestFor>) => {
-      const sentAt = Date.now()
-      read.add(key)
+      const at = Date.now()
+      sentAt.set(key, at)
+      inFlight.add(key)
 
       try {
-        const result = await requestForSessionProfile<RosterResult>(owner, ambient, 'subagent.roster', {})
-
-        if (!cancelled) {
-          setLiveWorkRosterSource(key, Array.isArray(result?.sessions) ? result.sessions : [], sentAt)
-        }
-
+        const result = await requestForSessionProfile<RosterResult>(owner, ambient, 'subagent.roster', {}, POLL_MS)
         backoff.delete(key)
+
+        // A source whose rows left the sidebar mid-read stays pruned.
+        if (!cancelled && current.has(key)) {
+          setLiveWorkRosterSource(key, Array.isArray(result?.sessions) ? result.sessions : [], at)
+        }
       } catch (error) {
         if (isMissingRpcMethod(error)) {
           unsupported.add(key)
@@ -106,62 +116,65 @@ export function useLiveWorkRoster() {
         if (!cancelled) {
           setLiveWorkRosterSource(key, null)
         }
+      } finally {
+        inFlight.delete(key)
       }
     }
 
-    const refresh = async (hydrate: boolean) => {
+    const refresh = (hydrate: boolean) => {
       const gateway = $gateway.get()
 
-      if (cancelled || pending || !gateway) {
+      if (cancelled || !gateway) {
         return
       }
 
-      pending = true
       const ambient = ambientRequestFor(gateway)
       const sources = rosterSources()
       const roster = $liveWorkRoster.get()
       const now = Date.now()
+      current = new Set(sources.keys())
 
-      try {
-        await Promise.all(
-          [...sources].map(([key, { open, owner }]) => {
-            const due = hydrate || now >= (backoff.get(key)?.until ?? 0)
-            const warm = hydrate || open || !read.has(key) || rosterSourceHasWork(roster, key)
-
-            return unsupported.has(key) || !due || !warm ? undefined : readSource(key, owner, ambient)
-          })
-        )
-
-        if (cancelled) {
-          return
+      // Owners whose rows left the sidebar stop contributing.
+      for (const key of Object.keys(roster)) {
+        if (!current.has(key)) {
+          setLiveWorkRosterSource(key, null)
         }
+      }
 
-        // Owners whose rows left the sidebar stop contributing.
-        for (const key of Object.keys($liveWorkRoster.get())) {
-          if (!sources.has(key)) {
-            setLiveWorkRosterSource(key, null)
-          }
+      for (const [key, { open, owner }] of sources) {
+        const last = sentAt.get(key)
+        const due = !inFlight.has(key) && !unsupported.has(key) && now >= (backoff.get(key)?.until ?? 0)
+
+        const warm =
+          hydrate || open || last === undefined || (rosterSourceHasWork(roster, key) && now - last >= COLD_BUSY_MS)
+
+        if (due && warm) {
+          void readSource(key, owner, ambient)
         }
-      } finally {
-        pending = false
       }
     }
 
-    void refresh(true)
+    const hydrate = () => {
+      if (Date.now() - lastHydrate >= FOCUS_MIN_GAP_MS) {
+        lastHydrate = Date.now()
+        refresh(true)
+      }
+    }
+
+    hydrate()
 
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
-        void refresh(false)
+        refresh(false)
       }
     }, POLL_MS)
 
-    const onFocus = () => void refresh(true)
-    window.addEventListener('focus', onFocus)
+    window.addEventListener('focus', hydrate)
 
     return () => {
       cancelled = true
       window.clearInterval(timer)
-      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('focus', hydrate)
     }
   }, [gatewayState])
 }

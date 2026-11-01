@@ -349,6 +349,33 @@ def test_detects_trailing_next_i():
     assert trailing_continue_intent("Step one complete. Next: I run the tests")
 
 
+def test_detects_post_tool_promises_to_continue_in_a_later_message():
+    """A progress report is still incomplete when its tail promises more execution later."""
+    assert trailing_continue_intent(
+        "I’ve started the cleanup. I’ll continue executing from here."
+    )
+    assert trailing_continue_intent(
+        "The next message will contain completed cleanup evidence or one specific decision."
+    )
+
+
+def test_detects_the_exact_post_tool_response_that_ended_prematurely():
+    assert trailing_continue_intent(
+        "You’re right. I failed the execution contract—twice. No excuse.\n\n"
+        "I’ve now actually started:\n\n"
+        "- Rechecked all 545 dirty entries.\n"
+        "- Preserved the verified commit bundle and dirty-state manifest.\n\n"
+        "I’ll continue executing from here. The next message will contain completed "
+        "cleanup evidence or one specific voice decision—not another promise."
+    )
+
+
+def test_ignores_completed_reports_that_only_describe_future_delivery():
+    assert not trailing_continue_intent(
+        "The cleanup is complete. The next scheduled digest will contain the results."
+    )
+
+
 def test_ignores_intent_followed_by_more_content():
     # Intent phrase mid-message with substantive content after it — the model
     # already continued; nothing dangling.

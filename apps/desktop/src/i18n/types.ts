@@ -10,6 +10,7 @@ import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
 import type { AppTourTranslations } from './types_app_tour'
+import type { AppearancePetsCopy } from './types_appearance_pets'
 import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
 import type { CatalogTranslations } from './types_catalog'
@@ -868,6 +869,8 @@ export interface Translations extends NoticeTranslations {
       embedsReset: (count: number) => string
       resumeLastSessionTitle: string
       resumeLastSessionDesc: string
+      inlinePreviewWideTitle: string
+      inlinePreviewWideDesc: string
       product: string
       productDesc: string
       technical: string
@@ -885,41 +888,7 @@ export interface Translations extends NoticeTranslations {
       installed: (name: string) => string
       removeTheme: string
       importedBadge: string
-      pet: {
-        title: string
-        intro: string
-        restartHint: string
-        scaleTitle: string
-        scaleDesc: string
-        roamTitle: string
-        roamDesc: string
-        chooseTitle: string
-        chooseDesc: string
-        searchPlaceholder: string
-        unreachable: string
-        noMatch: (query: string) => string
-        installedTag: string
-        generatedTag: string
-        countCapped: (cap: number, total: number) => string
-        count: (n: number) => string
-        uninstall: (name: string) => string
-        delete: (name: string) => string
-        deleteTitle: (name: string) => string
-        deleteBody: string
-        deleteConfirm: string
-        rename: (name: string) => string
-        renameTitle: string
-        renamePlaceholder: string
-        renameSave: string
-        exportPet: (name: string) => string
-        adoptFailed: (slug: string) => string
-        uninstallFailed: (slug: string) => string
-        renameFailed: (slug: string) => string
-        exportFailed: (slug: string) => string
-        noneAvailable: string
-        turnOnFailed: string
-        turnOffFailed: string
-      }
+      pet: AppearancePetsCopy
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>

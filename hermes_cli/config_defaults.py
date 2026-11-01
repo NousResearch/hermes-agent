@@ -6,16 +6,9 @@ docs of config.yaml.
 
 from hermes_cli.config_defaults_auxiliary import _aux
 
-#: Image every container terminal backend (docker/modal/daytona, the singularity plugin) uses unless the
-#: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
-#: (the 3.14 pin shipped between the two without a migration); a saved config still holding one
-#: is the template copied, and the config migration unsets it, never a user's own pin.
-DEFAULT_SANDBOX_IMAGE = "nousresearch/hermes-sandbox:desktop"
-LEGACY_SANDBOX_IMAGES = ("nikolaik/python-nodejs:python3.11-nodejs20", "nikolaik/python-nodejs:python3.14-nodejs22")
-LEGACY_SANDBOX_IMAGE = LEGACY_SANDBOX_IMAGES[0]
-# Vercel Sandbox managed image (Vercel deprecated its `runtime` presets in Aug 2026).
-DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
-LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
+# Sandbox image constants live in config_defaults_sandbox; re-exported here for existing importers.
+from hermes_cli.config_defaults_sandbox import (DEFAULT_SANDBOX_IMAGE, DEFAULT_VERCEL_IMAGE, LEGACY_SANDBOX_IMAGE,
+                                               LEGACY_SANDBOX_IMAGES, LEGACY_VERCEL_RUNTIME)
 
 
 DEFAULT_CONFIG = {
@@ -2305,6 +2298,12 @@ DEFAULT_CONFIG = {
         # Max active messages per session for in-memory export (`hermes sessions export`); checked
         # per session, so full-DB backups of small sessions work.
         "max_export_messages": 20000,
+        # Import guards (session/profile/foreign-session import, dashboard endpoint); 0 disables.
+        "import_max_sessions": 500,
+        "import_max_messages_per_session": 10000,
+        "import_max_total_messages": 50000,
+        "import_max_session_bytes": 5 * 1024 * 1024,
+        "import_max_total_bytes": 25 * 1024 * 1024,
         # Seconds before a local session with no viewer is ended (resumable) once its turn settles; 0 = never; after a
         # restart also >= 6h idle. Unset: dashboard.ws_orphan_reap_grace_s: 0 / startup_orphan_sweep: false opt out.
         "orphan_end_grace_s": 300.0,

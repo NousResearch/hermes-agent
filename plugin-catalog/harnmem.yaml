@@ -1,15 +1,15 @@
 name: harnmem
 repo: https://github.com/ys118/harnmem
-sha: 1ea75ca3c8fc4c7e12522467eaa4afeadce3c99d
+sha: f042fe255dd15366699d1c8246e7dd1ff73ee300
 subdir: packages/hermes-harnmem
-version: "0.1.0"
+version: "0.1.1"
 title: HarnMem
 description: >-
   Cross-harness long-term memory for Hermes: injects a byte-stable memory
   snapshot each turn, exposes harnmem_write/search/read/forget/status tools, and
   can extract new memories when a session ends. Memories are plain Markdown under
-  ~/.harnmem, shared with the pi, Claude Code, Codex, opencode, DSH, Grok and
-  Cursor adapters; the engine itself never opens a network connection.
+  ~/.harnmem, shared with the pi, Claude Code, Codex, opencode, DSH,
+  Grok, Cursor and omp adapters; the engine itself never opens a network connection.
   Disclosure — with auto-extract enabled the plugin sends the session transcript
   to the OpenAI-compatible endpoint you configure, runs a local Node.js child
   process for every memory operation, and spawns a short-lived detached extractor
@@ -19,7 +19,7 @@ maintainer: ys118
 tier: community
 category: memory
 requires_hermes: ">=0.22.5"
-docs_url: https://github.com/ys118/harnmem/blob/1ea75ca3c8fc4c7e12522467eaa4afeadce3c99d/docs/design/13-hermes-adapter.md
+docs_url: https://github.com/ys118/harnmem/blob/f042fe255dd15366699d1c8246e7dd1ff73ee300/docs/design/13-hermes-adapter.md
 readme: true
 capabilities:
   provides_tools:

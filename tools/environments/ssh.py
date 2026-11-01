@@ -171,7 +171,8 @@ class SSHEnvironment(BaseEnvironment):
         """Upload a single file via scp over ControlMaster."""
         self._run_ssh(f"mkdir -p {shlex.quote(str(Path(remote_path).parent))}", timeout=10)
         scp_cmd = ["scp"] + (["-o", f"ControlPath={self.control_socket}"] if _SSH_MULTIPLEX else [])
-        scp_cmd += self._target_flags("-P") + [host_path, f"{self.user}@{self.host}:{remote_path}"]
+        scp_host = f"[{self.host}]" if ":" in self.host else self.host
+        scp_cmd += self._target_flags("-P") + [host_path, f"{self.user}@{scp_host}:{remote_path}"]
         result = run_capture(scp_cmd, timeout=30)
         if result.returncode != 0:
             raise _sync_error(f"scp failed: {result.stderr.strip()}", f"File sync to {self.user}@{self.host}")

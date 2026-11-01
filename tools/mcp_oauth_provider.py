@@ -182,7 +182,10 @@ class HermesProviderMixin:
             metadata = OAuthMetadata.model_validate_json(await response.aread())
         except ValidationError:
             return response
-        if not metadata_issued_by_origin(metadata, self.context.auth_server_url, response):
+        if not (
+            metadata_issued_by_origin(metadata, self.context.auth_server_url, response)
+            or metadata_matches_root_slash_equivalent(metadata, self.context.auth_server_url, response)
+        ):
             return response
         self._hermes_logger.info(
             "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s is the origin of the "
@@ -549,6 +552,22 @@ def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, respon
     origin = f"{parts.scheme}://{parts.netloc}"
     derived = f"{origin}/.well-known/oauth-authorization-server{path}"
     return str(response.url) == derived and str(metadata.issuer).rstrip("/") == origin
+
+
+def metadata_matches_root_slash_equivalent(metadata: Any, auth_server_url: str | None, response: Any) -> bool:
+    """Accept only the exact host-root ``issuer`` slash mismatch seen with Google OAuth metadata."""
+    if not auth_server_url or response.status_code != 200:
+        return False
+    advertised = urlsplit(auth_server_url)
+    if (advertised.path not in ("", "/") or advertised.username is not None or advertised.password is not None
+            or advertised.query or advertised.fragment):
+        return False
+    origin = f"{advertised.scheme}://{advertised.netloc}"
+    advertised_url = str(auth_server_url)
+    issuer_url = str(metadata.issuer)
+    if {advertised_url, issuer_url} != {origin, f"{origin}/"}:
+        return False
+    return str(response.url) in {f"{origin}{path}" for path in _ASM_DISCOVERY_PATHS}
 
 
 def google_offline_access_params(context: Any) -> dict[str, str]:

@@ -476,9 +476,12 @@ class SessionSessionsMixin:
 
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session ended; the first end_reason wins (a compression split must keep
-        ``'compression'`` even if a stale end_session() lands later); reopen_session() to re-end."""
+        ``'compression'`` even if a stale end_session() lands later); a deliberately archived row
+        remains retired, so a later automatic teardown cannot make it recoverable; reopen_session()
+        to re-end."""
         self._execute_write(lambda conn: self._end_and_bump(
-            conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
+            conn, "UPDATE sessions SET ended_at = ?, end_reason = ? "
+                  "WHERE id = ? AND ended_at IS NULL AND archived = 0",
             (time.time(), end_reason, session_id), session_id, end_reason,
         ))
 

@@ -205,7 +205,7 @@ def _present_with_selected_transport(*, command: str, description: str, pattern_
     transport reaches a built-in surface only under the explicit
     ``transport_fallback: builtin`` opt-in."""
     name, fallback = _ctx._get_approval_transport_config()
-    if name == "builtin":
+    if name == "builtin" or _ctx._get_approval_transport_mode() == "mirror":
         return {"selected": False}
 
     try:

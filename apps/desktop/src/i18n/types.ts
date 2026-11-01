@@ -3360,6 +3360,8 @@ export interface Translations extends NoticeTranslations {
     noOutput: string
     cancelling: string
     cancelInstall: string
+    cancelledTitle: string
+    cancelledDesc: string
     transcriptSaved: string
     copiedOutput: string
     copyOutput: string

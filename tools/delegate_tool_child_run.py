@@ -137,6 +137,10 @@ def _signal_child_stop(child: Any, *reason: str, tool_reason: str = "parent dele
                 and hasattr(child, "_interrupt_requested")):
             child._interrupt_requested = True
 
+# Tail of the child's streamed text returned when it times out, fails or is stopped (~3k tokens).
+_PARTIAL_OUTPUT_CHARS = 12_000
+
+
 # ── 0-API-call timeout diagnostic ────────────────────────────────────────────
 
 def _format_thread_stack(frame: Any, indent: str) -> list[str]:
@@ -593,7 +597,7 @@ def _build_tool_trace(messages: Any) -> list[dict[str, Any]]:
     return tool_trace
 
 def _build_result_entry(
-    child: Any, result: dict[str, Any], task_index: int, duration: float, schema: _SchemaOutcome,
+    child: Any, result: dict[str, Any], task_index: int, duration: float, schema: _SchemaOutcome, streamed: str = "",
 ) -> dict[str, Any]:
     """Parent-visible result entry (status, exit_reason, tool trace, tokens, cost).
     ``status``/``exit_reason``/``truncated`` follow the ``_run_single_child`` contract; a structured failure always
@@ -612,12 +616,18 @@ def _build_result_entry(
         placeholders = {"", summary.strip(), "Operation interrupted."}
         partial = next((t for m in reversed(result.get("messages") or []) if m.get("role") == "assistant"
                         and (t := flatten_message_text(m.get("content")).strip()) not in placeholders), "")
+        # A stop mid-stream leaves the reply only in the streamed text (never persisted as a message).
+        partial = partial or (streamed if streamed not in placeholders else "")
         if partial:
             interrupt_note, summary = summary.strip(), partial
     elif result.get("failed") or result.get("error"):
         # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
         # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
         status, exit_reason = "failed", "error"
+        # What the child wrote before failing is the parent's only salvage; the error keeps its own field.
+        if streamed:
+            result = {**result, "error": result.get("error") or summary}
+            summary = streamed
     else:
         # exit_reason ("completed" vs "max_iterations") tells the parent HOW the task ended; completed=False with no
         # failure = budget exhaustion. A declared schema still violated after the bounded retry does NOT fail the
@@ -765,6 +775,8 @@ class _ChildRun:
     parent_task_id: Optional[str] = None
     wall_start: float = 0.0
     parent_reads_snapshot: list = field(default_factory=list)
+    # Bounded copy of the streamed reply text: a timeout returns the child's useful work instead of ``summary: None``.
+    streamed_parts: list = field(default_factory=list)
 
     def elapsed(self) -> float:
         return round(time.monotonic() - self.child_start, 2)
@@ -773,7 +785,14 @@ class _ChildRun:
         """Stream callback forwarding the child's reply text up the progress relay so gateway watch windows mirror it
         live (subagent.text → message.delta). Inert under CLI/TUI: their progress handlers ignore non-tool events."""
         if delta:
+            self.streamed_parts.append(delta)
+            if len(self.streamed_parts) > 64:
+                self.streamed_parts[:] = [self.partial_output()]
             _safe_progress(self.child_progress_cb, "subagent.text", preview=delta)
+
+    def partial_output(self) -> str:
+        """The last ``_PARTIAL_OUTPUT_CHARS`` of what the child streamed so far (empty when it streamed nothing)."""
+        return "".join(self.streamed_parts)[-_PARTIAL_OUTPUT_CHARS:].strip()
 
     def attach_worktree(self, entry_dict: dict[str, Any]) -> dict[str, Any]:
         """Inspect + prune the child worktree, reporting into the entry (no-op without isolation)."""
@@ -1003,7 +1022,8 @@ class _ChildRun:
             _err += f" Diagnostic: {diagnostic_path}"
         status = "timeout" if is_timeout else "error"
         _error_entry = {
-            "task_index": task_index, "status": status, "summary": None, "error": _err, "exit_reason": status,
+            "task_index": task_index, "status": status, "summary": self.partial_output() or None, "error": _err,
+            "exit_reason": status,
             "api_calls": child_api_calls, "duration_seconds": duration,
             "timeout_seconds": timeout_cause if is_timeout else None,
             "timed_out_after_seconds": duration if is_timeout else None,
@@ -1014,7 +1034,9 @@ class _ChildRun:
             "_child_role": getattr(child, "_delegate_role", None),
             "diagnostic_path": diagnostic_path,
         }
-        _error_entry = self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
+        _error_entry = self.finish_failed(
+            _error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc),
+            summary=_error_entry["summary"] or "")
         close_deferred = is_timeout and not future.done()
         if close_deferred:
             _defer_close_after_timeout(child, future)

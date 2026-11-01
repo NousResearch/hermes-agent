@@ -40,6 +40,7 @@ class _StubChild:
         hang_seconds: float = 5.0,
         subagent_id: str = "sa-0-stubabc",
         tool_schema=None,
+        stream_text: str = "",
     ):
         self._subagent_id = subagent_id
         self._delegate_depth = 1
@@ -63,6 +64,7 @@ class _StubChild:
         self._api_call_count = api_call_count
         self._hang = threading.Event()
         self._hang_seconds = hang_seconds
+        self._stream_text = stream_text
 
     def get_activity_summary(self):
         return {
@@ -73,6 +75,8 @@ class _StubChild:
         }
 
     def run_conversation(self, user_message, task_id=None, stream_callback=None):
+        if stream_callback and self._stream_text:
+            stream_callback(self._stream_text)
         self._hang.wait(self._hang_seconds)
         return {"final_response": "", "completed": False, "api_calls": self._api_call_count}
 
@@ -169,6 +173,18 @@ class TestRunSingleChildTimeoutDump:
         assert "without making any API call" in result["error"]
         assert "Diagnostic:" in result["error"]
         assert str(dump_path) in result["error"]
+
+    def test_timeout_preserves_streamed_partial_summary(self, hermes_home, monkeypatch):
+        child = _StubChild(
+            api_call_count=1,
+            hang_seconds=10.0,
+            stream_text="Useful partial finding before the slow tool call.",
+        )
+
+        result = self._invoke_with_short_timeout(child, monkeypatch)
+
+        assert result["status"] == "timeout"
+        assert result["summary"] == "Useful partial finding before the slow tool call."
 
 
     # ── explicit timeout metadata (#51690, salvaged from PR #60378) ────

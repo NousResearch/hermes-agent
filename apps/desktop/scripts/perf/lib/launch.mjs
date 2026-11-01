@@ -6,7 +6,11 @@
 //   · its own --user-data-dir  → its own Electron single-instance lock, so it
 //     never collides with (or steals focus from) the user's running `hgui`.
 //   · its own HERMES_HOME      → its own backend + sessions, no shared state.
-//   · its own --remote-debugging-port → a private CDP endpoint.
+//   · its own CDP endpoint, from the `HERMES_DESKTOP_CDP_PORT` env the app
+//     child itself appends the `--remote-debugging-port` switch from. The
+//     port must NOT ride argv: on Linux+NVIDIA+Wayland the entry launcher
+//     re-executes with `--ozone-platform`, and Chromium in that launcher
+//     binds the argv port first — the app child can never take it over.
 //   · HERMES_DESKTOP_BOOT_FAKE=1 → deterministic boot overlay.
 // The synthetic scenarios drive `$messages` directly, so no LLM credits are
 // spent regardless of the isolated backend.
@@ -253,7 +257,14 @@ export async function startIsolatedInstance({
     const spawnAt = Date.now()
     const electron = spawn(
       electronBin,
-      ['.', `--user-data-dir=${userData}`, `--remote-debugging-port=${port}`, ...ANTI_THROTTLE_FLAGS],
+      // NB: no `--remote-debugging-port` on argv. On Linux+NVIDIA+Wayland the
+      // entry launcher re-executes the app with `--ozone-platform=<backend>`,
+      // and Chromium in that launcher process binds the argv debug port before
+      // the real app child can (bind() failed: Address already in use) — the
+      // launcher's devtools then serves an empty target list to every attach.
+      // The app's own CDP resolver (electron/dev-cdp.ts) appends the switch in
+      // the app child itself, from the `HERMES_DESKTOP_CDP_PORT` env below.
+      ['.', `--user-data-dir=${userData}`, ...ANTI_THROTTLE_FLAGS],
       { cwd: DESKTOP_DIR, stdio: ['ignore', 'inherit', 'inherit'], env }
     )
     children.push(electron)

@@ -81,9 +81,9 @@ Manual `/compress` on every surface (CLI, gateway, TUI, ACP) runs through
 `--preview` / `--aggressive`; surfaces only parse their own argv, install `after_messages` and render).
 
 Two layers: gateway session hygiene (85% threshold) and the agent `ContextCompressor` (50%,
-configurable; per-model overrides; failure cooldown after provider-proven overflow). The algorithm
-prunes old tool results first (no LLM call), then picks boundaries, then generates a structured
-summary with the `auxiliary` compression model. In-place compaction keeps a single stable session
+floored at 75% below 512K windows, configurable; per-model overrides; failure cooldown after
+provider-proven overflow). The algorithm prunes old tool results first (no LLM call), then picks
+boundaries, then generates a structured summary with the `auxiliary` compression model. In-place compaction keeps a single stable session
 id; native Responses/Codex compaction paths are provider-specific. A stalled summary stream retries
 once on `auxiliary.compression.fallback_chain`, and a repeated stall (a stall-class failure already on
 the cooldown ladder) ends with the deterministic fallback summary through the same pipeline — never a

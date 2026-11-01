@@ -6,10 +6,18 @@ guardrail's canned text, flagged only by ``amazon-bedrock-guardrailAction`` in t
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 CFG = {"bedrock": {"guardrail": {"guardrail_identifier": "gr-1", "guardrail_version": "DRAFT", "trace": "enabled"}}}
+
+# The Claude/Bedrock routes build a real AnthropicBedrock client, so the tests below need the
+# optional `anthropic` extra (CI syncs it in .github/workflows/tests.yml). The hermetic suite
+# forbids the mid-run lazy install that would fetch it, so name the extra in the skip.
+_ANTHROPIC_EXTRA = "requires the optional `anthropic` extra (uv sync --extra anthropic)"
 
 
 def test_anthropic_bedrock_client_carries_configured_guardrail_headers():
+    pytest.importorskip("anthropic", reason=_ANTHROPIC_EXTRA)
     with patch("hermes_cli.config.load_config_readonly", return_value=CFG):
         from agent.anthropic_adapter import build_anthropic_bedrock_client
         client = build_anthropic_bedrock_client("us-east-2")

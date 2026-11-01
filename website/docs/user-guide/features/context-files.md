@@ -12,7 +12,7 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 
 | File | Purpose | Discovery |
 |------|---------|-----------| 
-| **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
+| **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root at startup + subdirectories progressively |
 | **AGENTS.override.md** | Personal, per-directory override of AGENTS.md (typically gitignored) | CWD at startup + subdirectories progressively |
 | **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
 | **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
@@ -138,7 +138,7 @@ Context files are loaded by `build_context_files_prompt()` in `agent/prompt_buil
 
 1. **Path extraction** — after each tool call, file paths are extracted from arguments (`path`, `workdir`, shell commands)
 2. **Ancestor walk** — the directory and up to 5 parent directories are checked (stopping at already-visited directories)
-3. **Hint loading** — if an `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` is found, it's loaded (first match per directory)
+3. **Hint loading** — if a `.hermes.md`/`HERMES.md`, `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` is found, it's loaded (first match per directory, same priority as at startup)
 4. **Security scan** — same prompt injection scan as startup files
 5. **Truncation** — capped at 32,000 characters per file (a fixed preview cap; `context_file_max_chars` and the model's context window do not change it). An oversized hint keeps its head/tail marker pointing at the full file and is logged, but does not raise the chat truncation warning that startup context files do
 6. **Injection** — appended to the tool result, so the model sees it in context naturally

@@ -465,6 +465,75 @@ class TestJobCRUD:
             completed = get_job(job["id"])["repeat"]["completed"]
             assert completed == expected and type(completed) is int
 
+    def test_invalid_repeat_times_is_normalized(self, tmp_cron_dir):
+        """A hand-edited "times" (string, float, negative, Infinity) or a non-dict "repeat"
+        must not kill mark_job_run (`times > 0` TypeError / `.get` AttributeError) and
+        freeze the whole store — the sibling of the repeat.completed normalization."""
+        import json
+        from cron.jobs import JOBS_FILE, get_job, mark_job_run
+
+        job = create_job(prompt="t", schedule="every 1h", repeat=3)
+
+        def set_repeat(value):
+            payload = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+            payload["jobs"][0]["repeat"] = value
+            JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        # "3" crashed mark_job_run with TypeError; 2.0 rendered "2.0/3"; -5 disabled the
+        # limit; Infinity raised OverflowError in int().
+        for value, expected in (
+            ({"times": "3", "completed": 0}, 3),
+            ({"times": 2.0, "completed": 0}, 2),
+            ({"times": -5, "completed": 0}, None),
+            ({"times": float("inf"), "completed": 0}, None),
+        ):
+            set_repeat(value)
+            mark_job_run(job["id"], success=True)
+            stored = get_job(job["id"])
+            assert stored is not None
+            assert stored["repeat"]["times"] == expected
+            assert type(stored["repeat"]["times"]) is type(expected)
+        # A non-dict repeat crashed every .get() reader; normalized to {} = infinite.
+        set_repeat("banana")
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"])["repeat"] == {}
+
+    def test_canonical_forever_times_none_is_not_flagged_invalid(self, tmp_cron_dir, caplog):
+        """`create_job` persists {"times": None, "completed": 0} for every recurring job
+        (times None = forever). The normalization must accept None as the canonical infinite
+        form: flagging it invalid would set `repair` on EVERY load, so the ticker rewrites
+        jobs.json and logs "Auto-repaired" every tick on a perfectly healthy install."""
+        import logging
+
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        create_job(prompt="t1", schedule="every 1h")
+        create_job(prompt="t2", schedule="every 2h", repeat=None)
+
+        before = JOBS_FILE.read_bytes()
+        with caplog.at_level(logging.WARNING, logger="cron.jobs"):
+            for _ in range(3):
+                load_jobs()
+
+        # No persistence storm: three loads, zero rewrites.
+        assert JOBS_FILE.read_bytes() == before
+        # No warning storm.
+        assert not [r for r in caplog.records if "Auto-repaired" in r.getMessage()]
+
+    def test_canonical_forever_times_none_survives_mark_job_run(self, tmp_cron_dir):
+        """The None-times form must keep its infinite semantics through the normalizers:
+        a run on a forever job leaves times None (not coerced to an int) and increments
+        completed only."""
+        from cron.jobs import get_job, mark_job_run
+
+        job = create_job(prompt="t", schedule="every 1h", repeat=None)
+        assert job["repeat"]["times"] is None
+
+        mark_job_run(job["id"], success=True)
+        stored = get_job(job["id"])
+        assert stored["repeat"]["times"] is None
+        assert stored["repeat"]["completed"] == 1
+
     def test_oneshot_turned_recurring_becomes_forever(self, tmp_cron_dir):
         """A one-shot budget must not survive a schedule change to a recurring kind.
 

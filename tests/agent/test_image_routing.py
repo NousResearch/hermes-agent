@@ -478,6 +478,41 @@ class TestFormatCompatibility:
             f"BMP must be transcoded to PNG for cross-provider compatibility, got: {url[:60]}"
         )
 
+    def test_opaque_heic_photo_transcodes_to_jpeg_not_png(self, tmp_path: Path):
+        """An iPhone HEIC is a lossy photo: lossless PNG only inflates it (a 24MP
+        photo of ~2.5 MB became a ~30 MB base64 part and 413'd the request alone).
+        It must land as JPEG, and smaller than the PNG encoding of the same pixels."""
+        import io
+
+        import pytest
+        Image = pytest.importorskip("PIL.Image", reason="Pillow not installed; transcode is best-effort")
+        pillow_heif = pytest.importorskip("pillow_heif", reason="HEIC plugin not installed")
+        pillow_heif.register_heif_opener()
+        from agent.image_routing import _file_to_data_url
+
+        # Noise, not a flat fill: flat colour compresses to nothing in any format.
+        pixels = Image.effect_noise((256, 192), 64).convert("RGB")
+        img_path = tmp_path / "IMG_0001.png"  # desktop uploads keep a .png name on HEIC bytes
+        pixels.save(img_path, format="HEIF")
+        url = _file_to_data_url(img_path)
+        assert url is not None and url.startswith("data:image/jpeg;base64,"), url[:40] if url else url
+        png = io.BytesIO()
+        pixels.save(png, format="PNG")
+        assert len(base64.b64decode(url.split(",", 1)[1])) < len(png.getvalue())
+
+    def test_heic_with_alpha_keeps_png(self, tmp_path: Path):
+        """JPEG has no alpha channel: a transparent HEIC must still become PNG."""
+        import pytest
+        Image = pytest.importorskip("PIL.Image", reason="Pillow not installed; transcode is best-effort")
+        pillow_heif = pytest.importorskip("pillow_heif", reason="HEIC plugin not installed")
+        pillow_heif.register_heif_opener()
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "cutout.heic"
+        Image.new("RGBA", (16, 16), (255, 0, 0, 80)).save(img_path, format="HEIF")
+        url = _file_to_data_url(img_path)
+        assert url is not None and url.startswith("data:image/png;base64,")
+
 
     def test_png_passes_through_no_transcode(self, tmp_path: Path):
         """Universal-safe formats must NOT be re-encoded — preserves bytes."""

@@ -24,7 +24,9 @@ private vision check.
 
 For custom/local-only tools do NOT edit core: create `~/.hermes/plugins/<name>/plugin.yaml` +
 `__init__.py` and call `ctx.register_tool(...)`; plugin toolsets are discovered automatically and
-toggled without touching `tools/` or `toolsets.py` (`plugins/AGENTS.md`).
+toggled without touching `tools/` or `toolsets.py` (`plugins/AGENTS.md`). A plugin tool that should be
+everywhere the core tools are (CLI, cron, every messaging platform) passes
+`include_in_messaging_toolsets=True` to `ctx.register_tool(...)` instead of patching `_HERMES_CORE_TOOLS`.
 
 1. `tools/your_tool.py`:
    ```python

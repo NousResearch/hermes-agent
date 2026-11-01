@@ -716,6 +716,8 @@ def _fallback_session_info(session: dict) -> dict:
     cwd = _session_cwd(session)
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
+        "coding_workspace": session.get("coding_workspace"),
+        "agent_worktree": session.get("agent_worktree"),
         **_lazy_info_route(session, {}), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
     }
 

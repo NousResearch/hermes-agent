@@ -707,6 +707,9 @@ class SessionAuthority:
             from hermes_state_runtime import find_session_admission
             return find_session_admission(self.db, principal_id=actor.subject,
                                           session_id=request.ref.session_id, request_id=request.request_id)
+        if admitted() is None:
+            from gateway.session_coding_workspace import verify_admission
+            await verify_admission(self, request.ref)
         payload = {'text': request.payload['text'], **finite, **admit_surface(request.payload),
                    **admit_display(request.payload), **admit_cli_turn(request.payload),
                    **admit_attachments(request.payload.get('attachments'), admitted=admitted)}

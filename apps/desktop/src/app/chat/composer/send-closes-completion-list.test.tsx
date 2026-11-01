@@ -10,7 +10,9 @@
 // default was not prevented moves focus to the button, as Chromium does.
 import { AssistantRuntimeProvider, useExternalStoreRuntime } from '@assistant-ui/react'
 import type { ThreadMessageLike } from '@assistant-ui/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, createEvent, fireEvent, render } from '@testing-library/react'
+import { useState } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -41,22 +43,26 @@ function Harness({ busy = false, onSubmit }: { busy?: boolean; onSubmit: (text: 
     onNew: async () => {}
   })
 
+  const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }))
+
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <MemoryRouter>
-        <I18nProvider configClient={null} initialLocale="en">
-          <ChatBar
-            busy={busy}
-            disabled={false}
-            gateway={null}
-            onCancel={vi.fn()}
-            onSteer={vi.fn(async () => true)}
-            onSubmit={onSubmit}
-            state={state}
-          />
-        </I18nProvider>
-      </MemoryRouter>
-    </AssistantRuntimeProvider>
+    <QueryClientProvider client={client}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <MemoryRouter>
+          <I18nProvider configClient={null} initialLocale="en">
+            <ChatBar
+              busy={busy}
+              disabled={false}
+              gateway={null}
+              onCancel={vi.fn()}
+              onSteer={vi.fn(async () => true)}
+              onSubmit={onSubmit}
+              state={state}
+            />
+          </I18nProvider>
+        </MemoryRouter>
+      </AssistantRuntimeProvider>
+    </QueryClientProvider>
   )
 }
 

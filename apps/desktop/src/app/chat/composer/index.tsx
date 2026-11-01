@@ -10,6 +10,7 @@ import {
   useRef
 } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { useTourMarker } from '@/app/chat/tour-marker'
 import type { GatewayRequester } from '@/app/contrib/types'
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
@@ -46,6 +47,7 @@ import { useTheme } from '@/themes'
 import { AttachmentList } from './attachments'
 import { deriveBusySubmitState } from './busy-submit-state'
 import { ComposerDockGlow, QueuedEditBanner } from './chat-bar-parts'
+import { CodingWorkspaceControls } from './coding-workspace-controls'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -115,6 +117,7 @@ import {
   resolveExactLinkPaste,
   selectionLinkLabel
 } from './url-refs'
+import { useCodingWorkspace } from './use-coding-workspace'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
 /** Grid areas for the menu / input / controls row: one row when roomy, input
@@ -192,6 +195,10 @@ export function ChatBar({
   const awaitingInput = useStore(scope.$awaitingInput)
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
   const activeQueueSessionKey = useComposerQueueScopeKey(queueSessionKey, sessionId, freshDraftKey)
+  const storedSessionId = useStore(useSessionView().$storedId)
+  // Coding workspace drafts stay on the shared pre-session key: submit and
+  // session.create resolve a fresh chat's scope as null ('__new__').
+  const codingWorkspace = useCodingWorkspace(queueSessionKey || sessionId || null, !sessionId && !storedSessionId)
   const statusDrawer = useStatusDrawer(activeQueueSessionKey)
   const { codingDrawerId, collapsed: statusDrawerCollapsed, statusDrawerId, toggle: toggleStatusDrawer } = statusDrawer
 
@@ -427,6 +434,7 @@ export function ChatBar({
   // The submit engine — the orchestration seam where draft + queue meet. Owns
   // the submit decision tree, the send-with-restore primitive, and steer.
   const { queueDraft, steerDraft, submitDraft } = useComposerSubmit({
+    cwd,
     busyInputMode,
     activeQueueSessionKey,
     activeQueueSessionKeyRef,
@@ -1120,6 +1128,7 @@ export function ChatBar({
       onPickFiles={onPickFiles}
       onPickFolders={onPickFolders}
       onPickImages={onPickImages}
+      onWorkInProject={codingWorkspace.owner ? codingWorkspace.enable : undefined}
       state={state}
     />
   )
@@ -1454,7 +1463,7 @@ export function ChatBar({
                   // track past the surface — and every `w-full` child (the fade,
                   // the input/controls row) laid out against that phantom width
                   // and got clipped by overflow-hidden, send button first.
-                  'group/composer-surface relative z-4 isolate grid grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr] overflow-hidden rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))]',
+                  'group/composer-surface relative z-4 isolate grid grid-cols-[minmax(0,1fr)] grid-rows-[auto_auto_1fr] overflow-hidden rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))]',
                   COMPOSER_DROP_FADE_CLASS,
                   dragActive && COMPOSER_DROP_ACTIVE_CLASS
                 )}
@@ -1462,6 +1471,17 @@ export function ChatBar({
                 ref={composerSurfaceRef}
               >
                 <div aria-hidden className={composerInputBacking} />
+                {/* The "where am I working" strip is the surface's own header
+                    row: draft pickers before the first Send, the bound
+                    workspace summary after it. Same slot, same chrome, so
+                    sending never moves the row or changes its background. */}
+                {codingWorkspace.visible && codingWorkspace.owner && (
+                  <CodingWorkspaceControls
+                    draft={codingWorkspace.draft}
+                    onSelectFolder={path => void codingWorkspace.selectFolder(path)}
+                    owner={codingWorkspace.owner}
+                  />
+                )}
                 {codingRowShown && (
                   <StatusDrawerContent collapsed={statusDrawerCollapsed} id={codingDrawerId}>
                     <CodingStatusRow
@@ -1478,12 +1498,16 @@ export function ChatBar({
                       // and stops probing git / GitHub for a surface that has no
                       // branch to show. Cheaper than a second composer.
                       repoPath={botChat ? undefined : cwd}
+                      sessionId={botChat ? undefined : sessionId}
                     />
                   </StatusDrawerContent>
                 )}
                 <div
                   className={cn(
-                    'relative z-1 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-[inherit] px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',
+                    // Row 3 explicitly: the two header tracks above (draft pickers /
+                    // bound summary) collapse to zero when empty, so the input
+                    // still owns the 1fr track whether zero, one, or both render.
+                    'relative z-1 row-start-3 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-[inherit] px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',
                     scrolledUp
                       ? 'opacity-30 group-hover/composer-dock:opacity-100 group-focus-within/composer-dock:opacity-100'
                       : 'opacity-100'
@@ -1502,7 +1526,15 @@ export function ChatBar({
                   <VoiceActivity state={voiceActivityState} />
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && <QueuedEditBanner onExit={exitQueuedEdit} />}
-                  {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
+                  {attachments.length > 0 && (
+                    <AttachmentList
+                      attachments={attachments}
+                      onRemove={onRemoveAttachment}
+                      onUseAsProject={
+                        codingWorkspace.owner ? path => void codingWorkspace.selectFolder(path) : undefined
+                      }
+                    />
+                  )}
                   <div className={cn('grid w-full', controlRowGridClass(singleColumn, stacked))}>
                     <div className="flex translate-y-[3px] items-start gap-(--composer-control-gap) self-start [grid-area:menu]">
                       {contextMenu}

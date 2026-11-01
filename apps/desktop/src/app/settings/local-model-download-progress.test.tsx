@@ -6,6 +6,7 @@ import type * as Notifications from '@/store/notifications'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
 vi.mock('@/hermes', () => ({
+  cancelLocalDownload: vi.fn(),
   pauseLocalDownload: vi.fn(),
   resumeLocalDownload: vi.fn()
 }))
@@ -19,7 +20,7 @@ vi.mock('@/store/local-runtime-jobs', (): object => ({
   watchLocalRuntimeJobs: vi.fn()
 }))
 
-import { pauseLocalDownload, resumeLocalDownload } from '@/hermes'
+import { cancelLocalDownload, pauseLocalDownload, resumeLocalDownload } from '@/hermes'
 
 import {
   downloadStatusText,
@@ -66,6 +67,19 @@ afterEach(() => {
 })
 
 describe('LocalModelDownloadActions', () => {
+  it('offers Cancel without pretending oMLX supports pause or resume', async () => {
+    vi.mocked(cancelLocalDownload).mockResolvedValue({ ok: true, cancel_requested: true })
+    renderActions(job({ can_cancel: true, can_pause: false }))
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }))
+    await waitFor(() => expect(cancelLocalDownload).toHaveBeenCalledWith('j1', undefined))
+    expect(screen.queryByRole('button', { name: /pause|resume/i })).toBeNull()
+  })
+
+  it('keeps cancellation pending until the backend has stopped the worker', () => {
+    renderActions(job({ can_cancel: false, cancel_requested: true }))
+    expect((screen.getByRole('button', { name: /^cancel$/i }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
   it('running download without explicit can_pause shows NO control (no guessing about old backends)', () => {
     renderActions(job({}))
 
@@ -163,6 +177,8 @@ describe('isDownloadPhase', () => {
 
 // The status copy as a locale supplies it; the composer only assembles it.
 const statusCopy = {
+  downloadCached: (size: string) => `${size} already downloaded`,
+  downloadReceived: (size: string) => `${size} received`,
   downloadEta: (time: string) => `~${time} left`,
   downloadEtaHours: (hours: number, minutes: number) => (minutes ? `${hours} h ${minutes} min` : `${hours} h`),
   downloadEtaMinutes: (count: number) => `${count} min`,
@@ -174,6 +190,24 @@ const statusCopy = {
 }
 
 describe('downloadStatusText', () => {
+  it('shows received network bytes while reconstruction is buffered', () => {
+    const text = downloadStatusText(
+      job({ cached_bytes: 8 * 2 ** 30, done_bytes: 8 * 2 ** 30, total_bytes: 18 * 2 ** 30, received_bytes: 2 ** 30 }),
+      statusCopy
+    )
+
+    expect(text).toBe('Downloading · 8.0 GB of 18.0 GB · 8.0 GB already downloaded · 1.0 GB received')
+  })
+
+  it('labels a large cached baseline rather than implying it just crossed the network', () => {
+    const text = downloadStatusText(
+      job({ cached_bytes: 8.5 * 2 ** 30, done_bytes: 9 * 2 ** 30, total_bytes: 18 * 2 ** 30 }),
+      statusCopy
+    )
+
+    expect(text).toBe('Downloading · 9.0 GB of 18.0 GB · 8.5 GB already downloaded')
+  })
+
   it('composes state, bytes, speed and ETA while bytes move', () => {
     const text = downloadStatusText(
       job({ bytes_per_sec: 24 * (1 << 20), done_bytes: 1 << 30, eta_seconds: 120, total_bytes: 4 * (1 << 30) }),

@@ -20,6 +20,8 @@ import {
 import { ListRow, Pill } from './primitives'
 
 type SideloadedModel = LocalModelsStatus['models'][number]
+type ModelRowStatus = Pick<LocalModelsStatus, 'active_model_id'> &
+  Partial<Pick<LocalModelsStatus, 'loaded_models' | 'placement'>>
 
 interface Residency {
   isLoaded: boolean
@@ -27,8 +29,8 @@ interface Residency {
   livePlacement: LocalModelPlacement | undefined
 }
 
-function residencyOf(status: LocalModelsStatus, modelId: null | string | undefined): Residency {
-  const residency: string | undefined = modelId ? status.loaded_models[modelId] : undefined
+function residencyOf(status: ModelRowStatus, modelId: null | string | undefined): Residency {
+  const residency: string | undefined = modelId ? status.loaded_models?.[modelId] : undefined
 
   return {
     isLoaded: residency === 'loaded' || residency === 'ready',
@@ -96,7 +98,12 @@ function EjectModelButton({ modelId }: ModelIdProps): ReactElement {
   )
 }
 
-function DeleteModelButton({ modelId }: ModelIdProps): ReactElement {
+interface DeleteModelButtonProps extends ModelIdProps {
+  disabled?: boolean
+  onDelete?: (modelId: string) => Promise<void>
+}
+
+function DeleteModelButton({ modelId, disabled, onDelete }: DeleteModelButtonProps): ReactElement {
   const scope: LocalModelsActionScope = useLocalModelsActionScope()
   const [deleting, setDeleting] = useState<boolean>(false)
 
@@ -108,7 +115,7 @@ function DeleteModelButton({ modelId }: ModelIdProps): ReactElement {
     setDeleting(true)
 
     try {
-      await deleteModel(scope, modelId)
+      await (onDelete ? onDelete(modelId) : deleteModel(scope, modelId))
     } finally {
       setDeleting(false)
     }
@@ -117,7 +124,9 @@ function DeleteModelButton({ modelId }: ModelIdProps): ReactElement {
   return (
     <Tip label={scope.copy.deleteAction}>
       <Button
+        aria-label={scope.copy.deleteAction}
         className={cn(deleting && '[&_svg]:animate-spin')}
+        disabled={disabled || deleting}
         onClick={() => void handleDelete()}
         size="icon"
         variant="ghost"
@@ -285,12 +294,22 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
 }
 
 export interface SideloadedModelRowProps {
-  model: SideloadedModel
-  status: LocalModelsStatus
+  model: Pick<SideloadedModel, 'id' | 'size_label'>
+  status: ModelRowStatus
   jobs: readonly LocalRuntimeJob[]
+  disabled?: boolean
+  onActivate?: (modelId: string) => Promise<void>
+  onDelete?: (modelId: string) => Promise<void>
 }
 
-export function SideloadedModelRow({ model: m, status, jobs }: SideloadedModelRowProps): ReactElement {
+export function SideloadedModelRow({
+  model: m,
+  status,
+  jobs,
+  disabled,
+  onActivate,
+  onDelete
+}: SideloadedModelRowProps): ReactElement {
   const scope: LocalModelsActionScope = useLocalModelsActionScope()
   const { copy } = scope
   const isActive = status.active_model_id === m.id
@@ -311,8 +330,8 @@ export function SideloadedModelRow({ model: m, status, jobs }: SideloadedModelRo
           ) : (
             <Button
               className={cn(activating && '[&_svg]:animate-spin')}
-              disabled={anyActivationRunning(jobs)}
-              onClick={() => void activateModel(scope, m.id, m.id)}
+              disabled={disabled || anyActivationRunning(jobs)}
+              onClick={() => void (onActivate ? onActivate(m.id) : activateModel(scope, m.id, m.id))}
               size="sm"
             >
               {activating ? <Loader2 /> : <Check />}
@@ -322,7 +341,7 @@ export function SideloadedModelRow({ model: m, status, jobs }: SideloadedModelRo
 
           {residency.isLoaded && <EjectModelButton modelId={m.id} />}
 
-          <DeleteModelButton modelId={m.id} />
+          <DeleteModelButton disabled={disabled} modelId={m.id} onDelete={onDelete} />
         </div>
       }
       description={<span>{copy.addedByYou}</span>}

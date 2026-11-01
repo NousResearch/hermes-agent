@@ -1191,6 +1191,8 @@ export const zhHantSettings = {
       quickstartConfigure: '讓我選擇',
       downloaded: '已下載',
       downloadAction: size => `下載 · ${size}`,
+      downloadCached: size => `${size} 已下載`,
+      downloadReceived: size => `${size} 已接收`,
       downloadProgress: (done, total) => `${done} / ${total}`,
       downloadStatusRunning: '下載中',
       downloadSpeed: rate => `${rate}`,

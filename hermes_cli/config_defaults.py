@@ -2697,6 +2697,8 @@ DEFAULT_CONFIG = {
     # Managed llama.cpp runtime (docs: user-guide/local-models): official binaries, one supervised
     # llama-server in router mode. No context/VRAM knobs by design.
     "local_runtime": {
+        "engine": "llamacpp",  # Local Models browsing preference, not a provider switch.
+        "omlx_enabled": False,  # Independent lifecycle; retains llama.cpp's enabled preference.
         # Off = detection-only (Hermes still finds an external llama-server you run).
         "enabled": False,
         # Engine versions and every dependent library are pinned by pm/lock.json.

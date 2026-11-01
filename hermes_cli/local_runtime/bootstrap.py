@@ -412,6 +412,20 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
     falls back to configured providers."""
     global _SUPERVISOR, _SERVING_ENGINE
     section = (config or {}).get("local_runtime") or {}
+    if not force:
+        from hermes_cli.local_runtime import omlx
+
+        if omlx.is_configured(config):
+            if section.get("omlx_enabled"):
+                try:
+                    omlx.start()
+                except Exception as exc:
+                    logger.warning("managed oMLX unavailable: %s", exc)
+            return None
+        model = (config or {}).get("model") or {}
+        provider = model.get("provider", "") if isinstance(model, dict) else ""
+        if section.get("engine") == "omlx" and provider not in ("llamacpp", "llama.cpp", "llama-cpp"):
+            return None
     if not force and not section.get("enabled"):
         return None
     if _SUPERVISOR is not None:

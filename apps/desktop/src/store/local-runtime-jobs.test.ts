@@ -86,6 +86,15 @@ async function pollTick() {
 }
 
 describe('local runtime jobs store — pause/settle contract', () => {
+  it('settles cancelled downloads without success or failure notifications', async () => {
+    backend.jobs = [job({ job_id: 'cancelled-download' })]
+    await pollTick()
+    backend.jobs = [job({ job_id: 'cancelled-download', status: 'cancelled' })]
+    await pollTick()
+    expect(notify).not.toHaveBeenCalled()
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
   it('running→error still toasts exactly once', async () => {
     backend.jobs = [job({ done_bytes: 10, job_id: 'j-err' })]
     await pollTick()

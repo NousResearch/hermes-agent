@@ -6,10 +6,11 @@ description: Run models entirely on your own machine — no account, no API key,
 
 # Local Models
 
-Hermes can run open models entirely on your own machine. It downloads and
-manages the inference engine (llama.cpp), picks the right build of each
-model for your hardware, and handles memory so you never configure context
-sizes, GPU layers, or quantization. You pick a model; Hermes does the rest.
+Hermes can run open models entirely on your own machine. In Desktop's
+**Local Models** settings, choose **llama.cpp** or, on Apple Silicon Macs,
+**oMLX**. Hermes installs and manages either engine. The llama.cpp catalog
+picks model builds and manages context and GPU placement for your hardware;
+oMLX uses a separate library of MLX-format models.
 
 Nothing leaves your computer: no account, no API key, and no network access
 after a model is downloaded.
@@ -37,11 +38,11 @@ Partial downloads use PM's writable `cache/partials` area, outside a signed
 app package. Range-capable hosts resume missing bytes. Hosts without Range
 support restart the current file. Completed files are reused.
 
-## Getting started
+## Getting started with llama.cpp
 
 1. Open **Settings → Providers → Local Models** (or choose **Run models
    locally** during onboarding).
-2. Click **Install runtime**. Hermes downloads the official llama.cpp
+2. Select **llama.cpp**, then click **Install runtime**. Hermes downloads the official llama.cpp
    build for your hardware (a few hundred MB), verifies it, and keeps it
    updated.
 3. Pick a model from the catalog and click **Download**.
@@ -57,7 +58,45 @@ installs the pinned engine, downloads the model with live progress, starts
 the server, and makes the model your default. Models already on disk are
 offered too. Ctrl+C pauses a download; choosing the model again resumes it.
 
-## How Hermes picks what to download
+## Using oMLX on Apple Silicon
+
+1. Open **Settings → Providers → Local Models** and choose **oMLX**.
+2. Click **Install runtime**. Installation progress and failures appear on the same page.
+3. Enter an MLX-format Hugging Face repository and click **Download model**.
+4. Click **Use** beside a downloaded model to make it the default for new chats.
+
+The **Turn on** and **Turn off** buttons control the Hermes-managed oMLX
+server. Changing the engine selector alone changes which library you are
+viewing; **Use** changes the model for new chats. Existing conversations
+and cloud-provider settings are not replaced just by viewing another engine.
+Downloaded MLX models use the same model rows, **Use** action, and delete
+confirmation as llama.cpp. Turn off oMLX before deleting a model; select a
+different model before deleting the currently configured one.
+
+oMLX requires macOS 15 or newer on Apple Silicon. The engine selector is
+hidden on unsupported backend hosts, and the API rejects selecting oMLX
+there; Intel Macs are not supported even if they support Metal. Hermes installs a
+checksum-pinned, self-contained upstream app bundle into its private runtime
+directory, not `/Applications`, and serves only on `127.0.0.1:18081` with a
+private API key. An occupied port fails explicitly; Hermes never takes over
+an unrelated oMLX server. Model downloads report snapshot bytes and percentage.
+Files already downloaded are labeled explicitly, so a resumed download can
+start above zero. Xet reconstructs files in batches; Hermes does not infer
+network speed or an ETA from those bursts. Received network bytes and speed
+are shown separately when the downloader reports them. Retrying a failed
+download reuses its cached files. **Cancel** stops an active oMLX model
+download and keeps partial files for retry; it does not stop inference or
+delete installed models. Pause/resume controls are not yet supported.
+The CLI's **Local models** setup
+still uses llama.cpp; the engine choice is in Desktop.
+
+MLX models and llama.cpp GGUF files are different formats. Hermes keeps their
+libraries separate and does not convert, delete, or redownload existing GGUF
+files when you choose oMLX. Switch back to **llama.cpp** at any time to use
+that library. The curated llama.cpp recommendations, GGUF fit estimates,
+context growth, and pause/resume guarantees below apply to llama.cpp, not oMLX.
+
+## How llama.cpp picks what to download
 
 Every model in the catalog is priced against **your machine** before you
 download anything. Each row shows:
@@ -85,7 +124,7 @@ maker can set a different default, and Hermes recommends that model
 whenever it fits. When no model reaches the floor, Hermes recommends none,
 and you can still choose any model that fits.
 
-## How memory management works
+## How llama.cpp memory management works
 
 Local models live or die by memory placement, so Hermes manages it
 end-to-end and exposes no knobs:
@@ -153,6 +192,7 @@ documented for CLI and headless use:
 
 ```yaml
 local_runtime:
+  engine: llamacpp   # llamacpp | omlx; Desktop's library selection
   enabled: false     # true = start the managed server with Hermes.
                      # The desktop "Use" button sets this automatically.
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu

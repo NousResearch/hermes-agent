@@ -179,3 +179,22 @@ test('app quit kills shells without telling the tabs they exited', async () => {
   assert.equal(local.fake.pty.kill.mock.calls.length >= 1, true)
   assert.equal(local.sender.send.mock.calls.filter(([channel]) => String(channel).endsWith(':exit')).length, 0)
 })
+
+test("an SSH tab finds the pool's tunnel published under its bootstrap key (#97345)", () => {
+  // The pool's single writer keys the tunnel by its bootstrap scope and stamps the registry id.
+  const pool = new Map([['ssh:nas.lan:work', { registryConnectionId: 'nas', ssh: { host: 'nas.lan' } }]])
+
+  assert.deepEqual(terminalGatewayTarget({ connectionId: 'nas', profile: 'work' }, registry, pool), {
+    scope: 'ssh:nas.lan:work',
+    ssh: { host: 'nas.lan' }
+  })
+  assert.equal(terminalGatewayTarget({ connectionId: 'nas', profile: 'work' }, registry, new Map()), 'pending')
+})
+
+test('a tab that recorded no gateway adopts This device when its shell ran here', async () => {
+  const { start } = register(null)
+  const ownerless = await spawnFor(start, {})
+
+  assert.notEqual(ownerless.argv?.[0], '/usr/bin/ssh')
+  assert.equal(ownerless.session.connectionId, 'local')
+})

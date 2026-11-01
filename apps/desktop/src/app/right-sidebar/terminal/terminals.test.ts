@@ -40,6 +40,23 @@ describe('terminal store persistence', () => {
     ])
   })
 
+  it('a restored tab keeps the gateway it recorded; a later adoption never moves it', async () => {
+    const first = await loadTerminalStore()
+    const nasTab = first.createTerminal('/repo', { connectionId: 'nas', profile: 'work' })
+    const freshTab = first.createTerminal('/repo')
+
+    // Relaunch: the SSH tab must not come back gateway-less (it would follow the Sessions pick).
+    vi.resetModules()
+    const { $terminals, adoptTerminalGateway } = await loadTerminalStore()
+
+    expect($terminals.get().find(term => term.id === nasTab)).toMatchObject({ connectionId: 'nas', profile: 'work' })
+
+    adoptTerminalGateway(nasTab, { connectionId: 'local' })
+    adoptTerminalGateway(freshTab, { connectionId: 'local' })
+    expect($terminals.get().find(term => term.id === nasTab)).toMatchObject({ connectionId: 'nas', profile: 'work' })
+    expect($terminals.get().find(term => term.id === freshTab)?.connectionId).toBe('local')
+  })
+
   it('persists user tabs and history synchronously, skipping agent mirrors', async () => {
     const { createTerminal, ensureAgentTerminal, renameTerminal, selectTerminal, updateTerminalReviveBuffer } =
       await loadTerminalStore()

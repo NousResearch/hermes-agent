@@ -273,9 +273,22 @@ export function registerTerminalIpc({
   // edited gateway reconnects and a removed one says so.
   function disposeTerminalSessionsForSshScope(scope: string) {
     for (const [id, info] of [...terminalSessions.entries()]) {
-      if (info.sshScope === scope) {
-        info.outputGate.exit({ code: null, signal: 'disconnected' })
-        disposeTerminalSession(id)
+      if (info.sshScope !== scope) {
+        continue
+      }
+
+      info.outputGate.exit({ code: null, signal: 'disconnected' })
+
+      // An attached tab got the exit and the flush already disposed the
+      // session. An unattached one keeps its entry (as a normal exit does) so
+      // the late attach still delivers `disconnected` and arms Enter; only the
+      // shell stops now.
+      if (terminalSessions.has(id)) {
+        try {
+          info.pty.kill()
+        } catch {
+          // Already gone.
+        }
       }
     }
   }

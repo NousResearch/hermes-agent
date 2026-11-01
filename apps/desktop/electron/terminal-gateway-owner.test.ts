@@ -54,7 +54,12 @@ function fakePty() {
   return {
     listeners,
     pty: {
-      kill: vi.fn(() => listeners.exit?.({ exitCode: null, signal: '1' })),
+      // A real PTY reports its exit once, however often kill() runs.
+      kill: vi.fn(() => {
+        const exit = listeners.exit
+        listeners.exit = null
+        exit?.({ exitCode: null, signal: '1' })
+      }),
       onData: vi.fn(),
       onExit: vi.fn((callback: typeof listeners.exit) => {
         listeners.exit = callback
@@ -139,6 +144,27 @@ test('an SSH teardown leaves the tab disconnected instead of closing it', async 
     exits.map(([, payload]) => payload),
     [{ code: null, signal: 'disconnected' }]
   )
+})
+
+test('an SSH teardown before the tab attaches still delivers disconnected on attach', async () => {
+  const { api, start } = register(null)
+  const nas = await spawnFor(start, { connectionId: 'nas', profile: 'default' })
+  const attach = handles.map.get('hermes:terminal:attach') as (event: unknown, id: string) => boolean
+
+  api.disposeTerminalSessionsForSshScope('conn:nas::default')
+
+  // The shell stops at once; the session lives on until the exit is delivered.
+  assert.equal(nas.fake.pty.kill.mock.calls.length >= 1, true)
+  assert.equal(attach({ sender: nas.sender }, nas.session.id), true)
+
+  const exits = nas.sender.send.mock.calls.filter(([channel]) => String(channel).endsWith(':exit'))
+
+  assert.deepEqual(
+    exits.map(([, payload]) => payload),
+    [{ code: null, signal: 'disconnected' }]
+  )
+  // Delivered once, then the session is gone.
+  assert.equal(attach({ sender: nas.sender }, nas.session.id), false)
 })
 
 test('app quit kills shells without telling the tabs they exited', async () => {

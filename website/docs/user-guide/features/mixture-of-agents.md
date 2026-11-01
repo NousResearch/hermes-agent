@@ -257,3 +257,18 @@ So MoA does not sacrifice prompt caching on either call type. Its only real cost
 - Credential failures on one reference model do not abort the turn. Hermes includes the failure in the reference context and continues with whatever models returned.
 - MoA increases model-call count. A single model iteration can involve multiple reference calls plus the aggregator call.
 - A preset can be a fallback entry (`fallback_providers: [{provider: moa, model: <preset>}]`). When the primary fails, Hermes activates the preset itself — references and aggregator, with `moa://local` as the virtual endpoint — the same way `/model <preset> --provider moa` does. The entry is skipped when the preset does not resolve or its aggregator has no credentials.
+
+### Managed local-router admission
+
+MoA automatically limits references that resolve to the bundled llama.cpp router to its
+admitted resident-model count. A router running with `--models-max 1` receives those
+references sequentially, so each configured advisor can contribute. Other endpoints
+continue in parallel, including cloud advisors in a mixed preset. Aliases and named
+providers pointing at the same managed endpoint share its budget within the Hermes process.
+
+The capacity comes from the supervisor's live, ownership-checked process receipt. Older
+receipts without a capacity field conservatively admit one request. External routers are
+not assigned a guessed capacity. Interrupting a turn cancels references still waiting for
+a slot; requests already in flight retain their slot until they complete, and their late
+usage is still accounted for. The configured reference timeout applies to each dispatched
+request.

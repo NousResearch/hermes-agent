@@ -159,6 +159,48 @@ def test_deny_projection_preserves_data_and_path_rules(deny_config):
     for unresolved in ('${NAME}', '"${NAME}"', r'"a\cb"', r'a\qb', "'unclosed"):
         assert _split_env_string(unresolved) is None
 
+
+@pytest.mark.parametrize("command", (
+    "eval 'sudo -n id -u'", "eval sudo -n id -u", "eval -- 'sudo -n id -u'",
+    "eval 'true; /usr/bin/sudo -n id -u'", "bash -c \"eval 'sudo -n id -u'\"",
+    "env -S '${SYNTHETIC} sudo -n id -u'", "env -S 'sudo -n id -u ${SYNTHETIC}'",
+    "env -S '${SYNTHETIC}' sudo -n id -u", "$SYNTHETIC sudo -n id -u",
+    "env -S '${SYNTHETIC}sudo -n id -u'",
+    "env -S '${SYNTHETIC}${OTHER}sudo -n id -u'",
+    "env -S 'su${SYNTHETIC}do -n id -u'",
+    'env -S \'"${SYNTHETIC}sudo" -n id -u\'',
+    # eval takes no options: zsh reports `-x` as a missing command and runs the rest.
+    "eval '-x; sudo -n id -u'", "eval -- '-x; sudo -n id -u'", "${SYNTHETIC} sudo -n id -u",
+    # A substitution with no output vanishes like an unset variable (bash, sh, zsh).
+    "`true` sudo -n id -u", "$(true; true) sudo -n id -u", "eval '`true` sudo -n id -u'",
+))
+@pytest.mark.parametrize("guard", (mod.check_dangerous_command, mod.check_all_command_guards))
+def test_deny_descends_into_eval_and_unresolved_env_split(command, guard, deny_config, clean_env):
+    """eval code and unresolvable env -S strings still run their command: deny it."""
+    deny_config(["sudo", "sudo *"], mode="off")
+    assert approval_floors._match_user_deny_rule(command) == "sudo *", command
+    result = guard(command, "local")
+    assert result.get("user_deny") is True, (command, result)
+    assert result["approved"] is False
+
+
+def test_eval_and_dollar_projection_keep_argument_data(deny_config):
+    """Only code eval would run is projected; its arguments' data stays data."""
+    deny_config(["sudo", "sudo *"])
+    for command in ("echo eval sudo -n id", "eval 'printf %s sudo'", "eval echo sudo",
+                    "printf '%s' \"eval 'sudo -n id'\"", '"$HOME/bin/tool" sudo',
+                    r"env -S 'printf %s \${IGNORED} sudo'",
+                    # env -S splits an argv: a separator after an expansion is data.
+                    "env -S 'true ${SYNTHETIC}; sudo -n id'", "env -S '$SYNTHETIC sudo -n id'",
+                    'env -S \'"${SYNTHETIC}" sudo -n id\'',
+                    # A command word that cannot expand to nothing keeps its tail as arguments.
+                    "'$SYNTHETIC' sudo -n id", r"\$SYNTHETIC sudo -n id", "tool$SYNTHETIC sudo -n id",
+                    '"$SYNTHETIC" sudo -n id', '"`true`" sudo -n id', r"\`true\` sudo -n id",
+                    "tool`true` sudo -n id", '"$(true)" sudo -n id', "$? sudo -n id",
+                    "${#SYNTHETIC} sudo -n id", "${SYNTHETIC:-tool} sudo -n id"):
+        assert approval_floors._match_user_deny_rule(command) is None, command
+
+
 class TestDenyBeatsYolo:
     def test_deny_blocks_under_yolo_env(self, deny_config, clean_env, monkeypatch):
         deny_config(["git push --force*"])

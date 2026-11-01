@@ -13,6 +13,7 @@ import importlib
 import importlib.metadata
 import importlib.util
 import logging
+import os
 import re
 import sys
 import threading
@@ -32,6 +33,104 @@ if TYPE_CHECKING:  # pragma: no cover
     from hermes_cli.plugins import LoadedPlugin, PluginContext
 
 logger = logging.getLogger("hermes_cli.plugins")
+
+# Bookkeeping the loader records for every plugin, or lifecycle callbacks that
+# are not a user-facing surface. A zero-registration warning must ignore these
+# or every load (tool-override policy) and every on_unload-only plugin matches.
+_NON_SURFACE_KINDS = frozenset({
+    "tool_override_policy",
+    "on_unload",
+    "background_task",
+})
+
+
+def _required_env_name(entry: Any) -> str:
+    """Env var name from a ``requires_env`` string or ``{name: ...}`` dict.
+
+    Descriptions, URLs, and secret values on the dict form are ignored.
+    """
+    if isinstance(entry, str):
+        return entry.strip()
+    if isinstance(entry, dict):
+        name = entry.get("name")
+        if isinstance(name, str):
+            return name.strip()
+    return ""
+
+
+def _missing_required_env_names(manifest: PluginManifest) -> list[str]:
+    """Declared ``requires_env`` names that are unset in the process environment.
+
+    Only names are returned. Values are checked for presence and never copied.
+    """
+    entries = manifest.requires_env or ()
+    if isinstance(entries, str) or not isinstance(entries, (list, tuple)):
+        return []
+    missing: list[str] = []
+    for entry in entries:
+        name = _required_env_name(entry)
+        if name and not os.environ.get(name):
+            missing.append(name)
+    return missing
+
+
+def _warn_missing_required_env(manifest: PluginManifest) -> None:
+    """Warn when declared required env vars are absent (#2765 / #58692)."""
+    missing = _missing_required_env_names(manifest)
+    if not missing:
+        return
+    logger.warning(
+        "Plugin '%s' is missing required environment variable(s): %s. "
+        "Tools or other surfaces may not be registered — ensure these "
+        "are set in the process environment that loads plugins.",
+        manifest.name,
+        ", ".join(missing),
+    )
+
+
+def _active_registration_ids(manager: Any, plugin_key: str) -> set[int]:
+    """Ids of ledger rows this plugin already owns (including persistent ones)."""
+    owned = getattr(manager, "_ownership_ledger", {}).get(plugin_key, ())
+    return {id(reg) for reg in owned if getattr(reg, "active", False)}
+
+
+def _registered_surface_kinds(
+    manager: Any, plugin_key: str, before_ids: set[int],
+) -> set[str]:
+    """Surface kinds added during this load. Bookkeeping kinds are excluded."""
+    owned = getattr(manager, "_ownership_ledger", {}).get(plugin_key, ())
+    return {
+        reg.kind
+        for reg in owned
+        if reg.active
+        and id(reg) not in before_ids
+        and reg.kind not in _NON_SURFACE_KINDS
+    }
+
+
+def _warn_zero_registration(
+    manager: Any, manifest: PluginManifest, plugin_key: str,
+    before_ids: set[int], loaded: Any,
+) -> None:
+    """Warn when ``register()`` finished without adding a surface (#2765).
+
+    Deferred platform loaders register nothing at discovery time and are
+    exempt. Providers, skills, CLI commands, secret sources, and other
+    ledgered surfaces count, so those plugins are not false positives
+    (#58692). Names of env vars are not repeated here, and values are not
+    read.
+    """
+    if getattr(loaded, "deferred", False):
+        return
+    if _registered_surface_kinds(manager, plugin_key, before_ids):
+        return
+    logger.warning(
+        "Plugin '%s' registered zero tools, hooks, middleware, "
+        "commands, CLI commands, and other surfaces. If it "
+        "requires environment variables, ensure they are set "
+        "in the process environment that loads plugins.",
+        manifest.name,
+    )
 
 _NS_PARENT = "hermes_plugins"
 _MODULE_NAMESPACE_LOCK = threading.RLock()
@@ -553,6 +652,7 @@ class PluginLoaderMixin:
             plugin_key, manifest.source, manifest.kind, manifest.path,
         )
         if manifest.portable:
+            _warn_missing_required_env(manifest)
             self._load_portable_plugin(manifest, loaded)
             return
         # requires_hermes gate: skip cleanly (no import, no traceback) on a version mismatch.
@@ -568,9 +668,15 @@ class PluginLoaderMixin:
         self._track_tool_override_policy(manifest, module_name)
         ctx = PluginContext(manifest, self)
         in_host = self._runs_in_plugin_host(manifest)
+        # Snapshot after the tool-override policy row so that bookkeeping
+        # registration is not mistaken for a surface this load added.
+        surfaces_before = _active_registration_ids(self, plugin_key)
 
         def _import_and_register() -> bool:
             """Import + register() — the part a plugin controls, so the part the deadline covers."""
+            # Before register(), so a plugin that returns early still explains
+            # itself. Names only — never the variable's value.
+            _warn_missing_required_env(manifest)
             # Declared language packs register before any plugin code runs, inside the same ledger slice
             # so a failing register() unwinds them too.
             self._register_declared_locales(manifest, ctx)
@@ -610,6 +716,9 @@ class PluginLoaderMixin:
                 from hermes_cli.plugins_ledger import _hook_source_of
 
                 self._drop_fallback_hooks(_hook_source_of(manifest.name, loaded.module))
+                _warn_zero_registration(
+                    self, manifest, plugin_key, surfaces_before, loaded,
+                )
         except (Exception, SystemExit) as exc:
             # SystemExit too: a plugin module with an unguarded ``main()``/``sys.exit()`` must not take the
             # whole process (and every other plugin's registry) down with it; KeyboardInterrupt still propagates.

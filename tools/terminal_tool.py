@@ -170,6 +170,11 @@ def _check_all_guards(command: str, env_type: str,
                                   has_host_access=has_host_access)
 
 
+def check_command_guards(command: str, env_type: str, has_host_access: bool = False) -> dict:
+    """Run the terminal approval contract for plugin-owned command transports."""
+    return _check_all_guards(command, env_type, has_host_access=has_host_access)
+
+
 from tools.environments.base import EnvironmentConnectionError
 
 

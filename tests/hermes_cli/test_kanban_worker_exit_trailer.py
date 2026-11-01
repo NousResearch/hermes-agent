@@ -104,32 +104,35 @@ def test_violation_budget_trip_holds_until_operator_unblock(kanban_home):
 
 
 def test_plain_budget_trip_still_auto_recovers(kanban_home):
-    """A unified-budget trip carries no ``sticky`` marker, so the two recovery paths on main
-    survive: raising the dispatcher ``failure_limit`` past the counter promotes the card, and
-    ``assign_task`` to a fresh profile (counter reset by design) promotes it too."""
+    """A unified-budget trip carries no ``sticky`` marker, so raising the dispatcher
+    ``failure_limit`` past the counter promotes the card again.
+
+    A profile handoff is deliberately NOT a recovery path: the retry budget is per
+    task, so ``assign_task`` preserves ``consecutive_failures`` and a re-dispatched
+    card that fails again goes straight back to ``blocked``. See
+    ``test_kanban_failure_budget.py``."""
     with kbc.connect() as conn:
-        tids = [kb.create_task(conn, title=t, assignee="a") for t in ("raise-limit", "reassign")]
-        for tid in tids:
-            for i in range(2):
-                kbd._record_task_failure(
-                    conn, tid, error=f"boom{i}", outcome="crashed", failure_limit=2,
-                    release_claim=False, end_run=False,
-                )
-            assert kb.get_task(conn, tid).status == "blocked"
-        assert kb.recompute_ready(conn, failure_limit=2) == 0
-
-        assert kb.recompute_ready(conn, failure_limit=5) == 2
-        assert kb.get_task(conn, tids[0]).status == "ready"
-
+        tid = kb.create_task(conn, title="raise-limit", assignee="a")
         for i in range(2):
             kbd._record_task_failure(
-                conn, tids[1], error=f"again{i}", outcome="crashed", failure_limit=2,
+                conn, tid, error=f"boom{i}", outcome="crashed", failure_limit=2,
                 release_claim=False, end_run=False,
             )
-        assert kb.get_task(conn, tids[1]).status == "blocked"
-        kb.assign_task(conn, tids[1], "other-profile")
-        assert kb.recompute_ready(conn, failure_limit=2) == 1
-        assert kb.get_task(conn, tids[1]).status == "ready"
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert kb.recompute_ready(conn, failure_limit=2) == 0
+
+        assert kb.recompute_ready(conn, failure_limit=5) == 1
+        assert kb.get_task(conn, tid).status == "ready"
+
+        # Re-dispatching after a handoff must not launder the spent budget.
+        kb.assign_task(conn, tid, "other-profile")
+        for i in range(2):
+            kbd._record_task_failure(
+                conn, tid, error=f"again{i}", outcome="crashed", failure_limit=2,
+                release_claim=False, end_run=False,
+            )
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert kb.recompute_ready(conn, failure_limit=2) == 0
 
 
 def test_exit_single_query_writes_trailer_only_for_kanban_workers(monkeypatch, capsys):

@@ -43,7 +43,7 @@ _MAX_SCHEMA_DEPTH = 32
 # Docker through its mounts. The others keep the model's files on another machine.
 _HOST_READABLE_BACKENDS = frozenset({"local", "docker"})
 _UNSAFE_NAME_CHARS = re.compile(r"[\x00-\x1f\x7f<>:\"|?*\\/]")
-_MAX_NAME_CHARS = 150
+_MAX_NAME_BYTES = 150
 
 Path_ = tuple[str, ...]
 # Composed tool name -> argument paths that are file inputs; an empty tuple means "none".
@@ -322,4 +322,6 @@ def _safe_name(name: str) -> str:
     """A basename safe on every OS: no separators, control characters, or ``.``/``..``."""
     base = re.split(r"[\\/]", name)[-1]
     cleaned = _UNSAFE_NAME_CHARS.sub("_", base).strip().strip(".")
-    return cleaned[-_MAX_NAME_CHARS:] or "file"
+    # POSIX filename limits count bytes; leave room for the timestamp and collision suffix.
+    # Keep the end (including the extension), dropping only a split leading UTF-8 character.
+    return cleaned.encode("utf-8")[-_MAX_NAME_BYTES:].decode("utf-8", errors="ignore") or "file"

@@ -12,6 +12,7 @@ import { useEffect, useRef } from 'react'
 import { canonicalOwnerProfile } from '@/api/canonical-protocol'
 import { createGatewayEventDedupe } from '@/app/gateway/gateway-event-dedupe'
 import { reportStartupLatency } from '@/app/gateway/report-startup-latency'
+import { followWindowRoute, sendWindowRoute } from '@/app/gateway/window-route'
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
 import type { DesktopBootProgress, HermesConnection, HermesWindowState } from '@/global'
 import { HermesGateway } from '@/hermes'
@@ -318,16 +319,9 @@ export function useGatewayBoot({
       }
 
       callbacksRef.current.onConnectionReady(next)
+      // Before setConnection so followWindowRoute's echo dedupes against it.
+      sendWindowRoute(next, { force: true })
       setConnection(next)
-      desktop?.setActiveConnectionRoute?.(
-        next
-          ? {
-              connectionId: next.connectionId ?? null,
-              profile: next.profile,
-              registryScoped: next.registryScoped === true
-            }
-          : null
-      )
     }
 
     if (!desktop) {
@@ -336,6 +330,8 @@ export function useGatewayBoot({
 
       return () => void (cancelled = true)
     }
+
+    const offWindowRoute = followWindowRoute()
 
     // Store-driven switches (Sessions switcher → selectConnection) commit
     // through beginGatewaySwitch(), which runs this window's machine-context
@@ -1729,6 +1725,7 @@ export function useGatewayBoot({
 
     return () => {
       cancelled = true
+      offWindowRoute()
       offSwitchLifecycle()
       endGatewaySwitch()
       clearReconnectTimer()

@@ -157,6 +157,20 @@ class TestProxyEnvironmentDnsDelegation:
         with _resolves_to("198.18.0.23"):
             assert is_safe_url(url) is expected
 
+    @pytest.mark.parametrize("url, expected", [
+        # the C2C file-attachment host, over https, on a network (Clash TUN /
+        # corporate proxy / VPN) that resolves it into the 198.18.0.0/15
+        # benchmark range — downloads were silently dropped before #47123
+        ("https://grouptalk.c2c.qq.com/asn.com/qqdownloadftnv5?id=xxx", True),
+        # exception is an exact host match — subdomains stay blocked
+        ("https://evil.grouptalk.c2c.qq.com/download?id=xxx", False),
+        # ... and requires https
+        ("http://grouptalk.c2c.qq.com/asn.com/qqdownloadftnv5?id=xxx", False),
+    ])
+    def test_qq_c2c_grouptalk_hostname_exception(self, url, expected):
+        with _resolves_to("198.18.2.16"):
+            assert is_safe_url(url) is expected
+
 
 class TestAsyncIsSafeUrl:
     """async_is_safe_url must match is_safe_url (runs DNS in a thread pool)."""

@@ -9,6 +9,7 @@ failures are fail-OPEN (``continue``); the turn budget is the backstop.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -55,6 +56,7 @@ DEFAULT_GATE_MAX_RETRIES = 3
 _MAX_BARRIER_WAIT_S = 30 * 60
 # Bounded tail of a failed gate's combined stdout/stderr fed back to the agent.
 _GATE_OUTPUT_TAIL_CHARS = 3000
+_JUDGE_FEEDBACK_MAX_CHARS = 2000
 
 
 CONTINUATION_PROMPT_TEMPLATE = (
@@ -427,6 +429,9 @@ class GoalState:
     last_turn_at: float = 0.0
     last_verdict: Optional[str] = None        # "done" | "blocked" | "continue" | "wait" | "skipped"
     last_reason: Optional[str] = None
+    # Worker instructions have provenance; last_reason remains a diagnostic history field.
+    pending_feedback: Optional[str] = None
+    feedback_fingerprint: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
     consecutive_parse_failures: int = 0       # judge-output parse failures in a row
     # Tracked separately from parse failures: a broken API key returns 401 every call and must
@@ -467,6 +472,8 @@ class GoalState:
             max_turns=int(data.get("max_turns") or DEFAULT_MAX_TURNS),
             last_verdict=data.get("last_verdict"),
             last_reason=data.get("last_reason"),
+            pending_feedback=data.get("pending_feedback"),
+            feedback_fingerprint=data.get("feedback_fingerprint"),
             paused_reason=data.get("paused_reason"),
             subgoals=[str(s).strip() for s in raw_subgoals if str(s).strip()] if isinstance(raw_subgoals, list) else [],
             waiting_on_pid=(int(data["waiting_on_pid"]) if data.get("waiting_on_pid") else None),
@@ -482,6 +489,21 @@ class GoalState:
 
     def has_contract(self) -> bool:
         return self.contract is not None and not self.contract.is_empty()
+
+    def criteria_fingerprint(self) -> str:
+        """Bind feedback to criteria, excluding budgets, waits and gate execution records."""
+        criteria = {
+            "goal": self.goal,
+            "contract": GoalContract.from_dict(self.contract.to_dict() if self.contract else None).to_dict(),
+            "subgoals": self.subgoals,
+            "gates": [(g.command, g.timeout_seconds, g.max_retries) for g in self.gates],
+        }
+        raw = json.dumps(criteria, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def clear_feedback(self) -> None:
+        self.pending_feedback = None
+        self.feedback_fingerprint = None
 
     def render_subgoals_block(self) -> str:
         """Numbered ``- N. text`` block; empty when there are no subgoals."""
@@ -1147,6 +1169,9 @@ class GoalManager:
     # --- mutation -----------------------------------------------------
 
     def _save(self) -> Optional[GoalState]:
+        if self._state and self._state.feedback_fingerprint != self._state.criteria_fingerprint():
+            # A later restoration of old criteria must not resurrect superseded feedback.
+            self._state.clear_feedback()
         save_goal(self.session_id, self._state)
         return self._state
 
@@ -1218,6 +1243,7 @@ class GoalManager:
         self._state.status = "done"
         self._state.last_verdict = "done"
         self._state.last_reason = reason
+        self._state.clear_feedback()
         self._save()
 
     # --- /subgoal user controls ---------------------------------------
@@ -1499,6 +1525,8 @@ class GoalManager:
 
         state.turns_used += 1
         state.last_turn_at = time.time()
+        # Every new gate/judge outcome supersedes the pending instructions, including failures.
+        state.clear_feedback()
 
         # Gates run BEFORE the judge: a failing gate is deterministic evidence the goal is not done,
         # so the judge is skipped and the gate's output drives the next turn (same turn budget).
@@ -1508,6 +1536,7 @@ class GoalManager:
                 return self._budget_pause(state, "gate_failed", gate_decision.get("reason", ""), note=" (a quality gate is still failing)")
             return gate_decision
 
+        evaluated_fingerprint = state.criteria_fingerprint()
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
             contract=state.contract if state.has_contract() else None, active_delegations=active_delegations,
@@ -1519,6 +1548,10 @@ class GoalManager:
         # separately because persistent API errors (401, DNS) mean a broken config.
         state.consecutive_parse_failures = state.consecutive_parse_failures + 1 if parse_failed else 0
         state.consecutive_transport_failures = state.consecutive_transport_failures + 1 if transport_failed else 0
+        actionable_reason = self._actionable_feedback_reason(state)
+        if actionable_reason:
+            state.pending_feedback = _truncate(actionable_reason, _JUDGE_FEEDBACK_MAX_CHARS)
+            state.feedback_fingerprint = evaluated_fingerprint
 
         if verdict == "wait" and wait_directive:
             parked = self._apply_wait_directive(wait_directive, reason, active_delegations=active_delegations)
@@ -1571,15 +1604,54 @@ class GoalManager:
         s = self._state
         if not s or s.status != "active":
             return None
+        feedback = self._continuation_feedback(s)
         # Contract first (it carries the verification surface); subgoals fold in as extra criteria.
         if s.has_contract():
             contract_block = s.contract.render_block()
             if s.subgoals:
                 contract_block = f"{contract_block}\n{_render_extra_criteria(s.subgoals)}"
-            return CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(goal=s.goal, contract_block=contract_block)
+            prompt = CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(goal=s.goal, contract_block=contract_block)
+            return prompt + feedback
         if s.subgoals:
-            return CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(goal=s.goal, subgoals_block=s.render_subgoals_block())
-        return CONTINUATION_PROMPT_TEMPLATE.format(goal=s.goal)
+            prompt = CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
+                goal=s.goal, subgoals_block=s.render_subgoals_block())
+            return prompt + feedback
+        return CONTINUATION_PROMPT_TEMPLATE.format(goal=s.goal) + feedback
+
+    @staticmethod
+    def _actionable_feedback_reason(state: GoalState) -> str:
+        """Select actionable rejections, never failure diagnostics."""
+        reason = (state.last_reason or "").strip()
+        is_placeholder = (
+            not reason
+            or reason == "no reason provided"
+            or reason.startswith((
+                "empty response (", "auxiliary client unavailable",
+                "goal_judge auxiliary client unavailable:", "judge error:",
+                "judge returned empty response", "judge reply was not JSON:",
+            ))
+            or reason.endswith("(wait verdict had no target — continuing)")
+        )
+        if (
+            state.last_verdict != "continue"
+            or state.consecutive_parse_failures
+            or state.consecutive_transport_failures
+            or is_placeholder
+        ):
+            return ""
+        return reason
+
+    @staticmethod
+    def _continuation_feedback(state: GoalState) -> str:
+        """Only replay feedback proven applicable to the current criteria."""
+        if not state.pending_feedback or state.feedback_fingerprint != state.criteria_fingerprint():
+            return ""
+        return (
+            "\n\nThe previous completion claim was rejected by the goal judge. "
+            "Address this feedback in your next response and include the requested concrete evidence "
+            "instead of referring to earlier turns:\n"
+            f"{state.pending_feedback}"
+        )
 
     def render_contract(self) -> str:
         """Public helper for the /goal show + /goal draft slash commands."""

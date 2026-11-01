@@ -1854,6 +1854,8 @@ def run_conversation(
         finally:
             end_voice_turn_route(agent)
     settle_held_final(agent, result)
+    from agent.primary_auth_fallback import lead_failed_turn_with_primary_auth
+    lead_failed_turn_with_primary_auth(agent, result)
     result = export_current_turn_boundary(agent, result, user_message)
     if isinstance(result, dict):
         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))

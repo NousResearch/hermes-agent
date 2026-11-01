@@ -133,8 +133,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+        rules, rulesets_unavailable = _branch_rules(repo, branch, profile_home)
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
@@ -142,8 +141,8 @@ def collect_acceptance(contract: str, published_pr: str | None,
                                     for r in rule["parameters"]["required_status_checks"])
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         if not required:
-            receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
-            return receipt
+            return _when_no_required_checks(
+                receipt, repo, sha, number, branch, profile_home, rulesets_unavailable)
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
                      paginate=True, profile_home=profile_home)
         runs = [run for page in pages for run in page["check_runs"]]
@@ -196,3 +195,107 @@ def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:
     if is_run and check.get("status") != "completed":
         return "pending"
     return {"success": "success", "failure": "failure", "error": "infra", "pending": "pending"}.get(outcome, "infra")
+
+
+def _branch_rules(repo: str, branch: str, profile_home: str | None):
+    """Return ruleset pages and whether rulesets are unavailable.
+
+    GitHub Free private repos answer ``rules/branches`` with HTTP 403
+    ("Upgrade to GitHub Pro or make this repository public"). That is "no
+    rulesets configured", not a bad login. 401/404, and a 403 on any other
+    endpoint, stay auth failures. 5xx and network errors still propagate.
+    """
+    endpoint = f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100"
+    try:
+        return _api(endpoint, paginate=True, profile_home=profile_home), False
+    except _GateAuthError as exc:
+        if str(exc).startswith("HTTP 403 ") and "/rules/branches/" in str(exc):
+            return [], True
+        raise
+
+
+def _when_no_required_checks(
+    receipt, repo, sha, number, branch, profile_home, rulesets_unavailable,
+):
+    if rulesets_unavailable:
+        return _accept_from_head_checks(receipt, repo, sha, number, branch, profile_home)
+    receipt["detail"] = (
+        "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
+    )
+    return receipt
+
+
+# Skipped/neutral checks did not vote. On a free-plan repo the deploy jobs are
+# often skipped while test and build succeeded; counting them as infra would
+# keep a green PR uncompletable, which is the bug this fallback exists to fix.
+_IGNORED_OBSERVED = frozenset({"skipped", "neutral"})
+
+
+def _observed_classification(check: dict, sha: str, *, is_run: bool) -> str:
+    outcome = check.get("conclusion") if is_run else check.get("state")
+    if outcome in _IGNORED_OBSERVED:
+        return "skipped"
+    return _classify(check, sha, outcome, is_run)
+
+
+def _record_observed(receipt: dict, check: dict, name, classification: str) -> None:
+    receipt["checks"].append({
+        "name": name,
+        "id": check.get("id"),
+        "url": check.get("html_url") or check.get("target_url"),
+        "head_sha": check.get("head_sha", check.get("sha")),
+        "classification": classification,
+        "conclusion": check.get("conclusion", check.get("state")),
+    })
+
+
+def _accept_from_head_checks(receipt, repo, sha, number, branch, profile_home) -> dict:
+    """No rulesets and no classic required checks: use checks that actually ran."""
+    pages = _api(
+        f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
+        paginate=True, profile_home=profile_home)
+    runs = [run for page in pages for run in page.get("check_runs", [])]
+    if not pages or len({run["id"] for run in runs}) != pages[0]["total_count"]:
+        raise ValueError("Incomplete check-run pagination")
+    statuses = [
+        {**status, "sha": sha}
+        for page in _api(
+            f"repos/{repo}/commits/{sha}/statuses?per_page=100",
+            paginate=True, profile_home=profile_home)
+        for status in page
+    ]
+    current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
+    if (current["head"]["sha"] != sha or current["base"]["ref"] != branch
+            or (current["state"] == "closed" and not current.get("merged"))):
+        receipt.update(
+            classification="stale",
+            detail="PR head/base changed while collecting evidence; retry.")
+        return receipt
+    outcomes = []
+    for run in runs:
+        classification = _observed_classification(run, sha, is_run=True)
+        outcomes.append(classification)
+        _record_observed(receipt, run, run.get("name"), classification)
+    latest = {}
+    for status in statuses:
+        context = status.get("context")
+        if not isinstance(context, str):
+            continue
+        previous = latest.get(context)
+        if previous is None or (status.get("id") or 0) >= (previous.get("id") or 0):
+            latest[context] = status
+    for status in latest.values():
+        classification = _observed_classification(status, sha, is_run=False)
+        outcomes.append(classification)
+        _record_observed(receipt, status, status.get("context"), classification)
+    evidence = [item for item in outcomes if item != "skipped"]
+    receipt["classification"] = next(
+        (item for item in evidence if item != "success"),
+        "success" if evidence else "missing",
+    )
+    receipt["ok"] = receipt["classification"] == "success"
+    receipt["detail"] = (
+        "Rulesets API returned HTTP 403 (GitHub Free has no rulesets); "
+        "acceptance resolved from check-runs and statuses on the head SHA."
+    )
+    return receipt

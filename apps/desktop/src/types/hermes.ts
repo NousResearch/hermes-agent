@@ -1227,6 +1227,7 @@ export interface ProjectInfo {
   board_slug: null | string
   primary_path: null | string
   archived: boolean
+  auto_pull?: boolean
   created_at: number
   folders: ProjectFolder[]
 }

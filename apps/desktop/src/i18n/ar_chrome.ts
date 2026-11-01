@@ -248,6 +248,7 @@ export const arChrome = {
       menu: 'إجراءات',
       menuRename: 'إعادة تسمية…',
       menuAppearance: 'المظهر',
+      menuAutoPull: 'سحب تلقائي',
       noColor: 'بلا لون',
       menuAddFolder: 'إضافة مجلد',
       menuSetActive: 'تعيين كنشط',

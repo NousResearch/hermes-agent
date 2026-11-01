@@ -54,6 +54,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     project_sub("bind-board", "Bind a kanban board to a project").add_argument(
         "board", nargs="?", default="", help="Board slug (omit to unbind)"
     )
+    project_sub("auto-pull", "Fast-forward a clean default branch at session start").add_argument(
+        "state", choices=("on", "off"), help="on = pull when the checkout is clean and behind")
     parser.set_defaults(_project_parser=parser)
     return parser
 
@@ -124,6 +126,7 @@ def _print_project(proj) -> None:
     for label, value in (("about", proj.description), ("board", proj.board_slug), ("primary", proj.primary_path)):
         if value:
             print(f"  {label}:{' ' * (8 - len(label))}{value}")
+    print(f"  auto-pull: {'on' if proj.auto_pull else 'off'}")
     if proj.folders:
         print("  folders:")
         for f in proj.folders:
@@ -209,6 +212,13 @@ def _flag_command(op: str, verb: str):
 
 
 @_with_project
+def _cmd_auto_pull(args, conn, proj) -> str:
+    on = args.state == "on"
+    pdb.update_project(conn, proj.id, auto_pull=on)
+    return f"auto-pull {'on' if on else 'off'} for {proj.slug}"
+
+
+@_with_project
 def _cmd_bind_board(args, conn, proj) -> str:
     pdb.update_project(conn, proj.id, board_slug=args.board)
     if not args.board.strip():
@@ -238,4 +248,5 @@ _HANDLERS = {
     "archive": _flag_command("archive_project", "Archived"),
     "restore": _flag_command("restore_project", "Restored"),
     "bind-board": _cmd_bind_board,
+    "auto-pull": _cmd_auto_pull,
 }

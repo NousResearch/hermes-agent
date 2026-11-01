@@ -25,6 +25,7 @@ export const deProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   menu: 'Aktionen',
   menuRename: 'Umbenennen…',
   menuAppearance: 'Aussehen',
+  menuAutoPull: 'Automatisch pullen',
   noColor: 'Keine Farbe',
   menuAddFolder: 'Ordner hinzufügen',
   menuSetActive: 'Als aktiv festlegen',

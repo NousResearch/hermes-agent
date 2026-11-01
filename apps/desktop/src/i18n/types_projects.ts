@@ -24,6 +24,7 @@ export interface SidebarProjectsTranslations {
   menu: string
   menuRename: string
   menuAppearance: string
+  menuAutoPull: string
   noColor: string
   menuAddFolder: string
   menuSetActive: string

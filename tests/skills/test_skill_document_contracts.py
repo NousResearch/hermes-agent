@@ -71,8 +71,17 @@ def test_required_references_are_present_and_routed(skill, references):
     (SOCIAL, (), ("image-generation-workflow",)),
     # The skill forbids a timed blind approval and must not ship one in its own recipes:
     # a fixed `sleep` + bare `Enter` answers whatever the pane happens to show by then.
-    (CLAUDE_CODE, ("Never send a blind `Enter` on a timer",),
-     (r'terminal\(command="sleep\s+[\d.]+\s*&&\s*tmux send-keys -t \S+ Enter',)),
+    # Reading the pane is not enough: the trust dialog grants the repository's allow
+    # rules, so it is accepted only for the folder the task already covers, and `❯`
+    # alone is not readiness (a dialog's selected option uses it too).
+    (CLAUDE_CODE, ("Never send a blind `Enter` on a timer",
+                   "the folder it names is the one you were asked to work in",
+                   "no dialog with numbered options"),
+     (r'terminal\(command="sleep\s+[\d.]+\s*&&\s*tmux send-keys -t \S+ Enter',
+      # Typing a task on a timer is the same race in any session: its final Enter
+      # would accept a first-visit trust dialog. Read first, then type, stays allowed.
+      r"sleep\s+[\d.]+\s*&&\s*tmux send-keys -t \S+ '",
+      r"default selection is correct", r"just press Enter")),
 ])
 def test_document_obligations(skill, required, forbidden):
     _, body = _document(skill)

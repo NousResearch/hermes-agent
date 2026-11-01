@@ -76,9 +76,12 @@ terminal(command="tmux new-session -d -s claude-work -x 140 -y 40")
 # Launch Claude Code inside it
 terminal(command="tmux send-keys -t claude-work 'cd /path/to/project && claude' Enter")
 
-# Wait for startup, then send your task
-# (after ~3-5 seconds for the welcome screen)
-terminal(command="sleep 5 && tmux send-keys -t claude-work 'Refactor the auth module to use JWT tokens' Enter")
+# Wait for startup (~3-5 seconds), then read the screen before typing:
+# on a first visit the workspace trust dialog is showing (see Dialog 1)
+terminal(command="sleep 5 && tmux capture-pane -t claude-work -p -S -40")
+# Send the task only when the capture shows the empty input box and no dialog with numbered options
+# (Dialog 1/2): a dialog's selected option is also marked `❯`
+terminal(command="tmux send-keys -t claude-work 'Refactor the auth module to use JWT tokens' Enter")
 
 # Monitor progress by capturing the pane
 terminal(command="sleep 15 && tmux capture-pane -t claude-work -p -S -50")
@@ -102,10 +105,10 @@ Claude Code presents up to two confirmation dialogs on first launch. You MUST ha
 
 ### Dialog 1: Workspace Trust (first visit to a directory)
 ```
-❯ 1. Yes, I trust this folder    ← DEFAULT (just press Enter)
+❯ 1. Yes, I trust this folder    ← DEFAULT
   2. No, exit
 ```
-**Handling:** `tmux send-keys -t <session> Enter` — default selection is correct.
+**Handling:** capture the pane first (`tmux capture-pane -t <session> -p -S -60`). Send `Enter` only when the capture shows this dialog, the folder it names is the one you were asked to work in, and any allow rules or extra directories it lists are ones that task already permits. Accepting trusts the whole git repository (from a worktree, the main checkout): it applies the allow rules and `additionalDirectories` in its `.claude/settings.json` and lets hooks from settings files run there. Otherwise choose `2. No, exit` and report back. An already-trusted folder shows no dialog, so there is nothing to answer.
 
 ### Dialog 2: Individual Permission Prompts (normal flow)
 
@@ -125,14 +128,17 @@ A narrower opt-in than the full bypass is `--permission-mode acceptEdits`: file 
 # Default launch — keep permission prompts enabled
 terminal(command="tmux send-keys -t claude-work 'claude \"your task\"' Enter")
 
-# Handle trust dialog (Enter for default "Yes")
-terminal(command="sleep 4 && tmux send-keys -t claude-work Enter")
+# Handle trust dialog — read the pane first, then answer what the capture shows
+terminal(command="sleep 4 && tmux capture-pane -t claude-work -p -S -30")
+# Only once that capture shows the trust dialog for the folder you were asked to
+# work in (see Dialog 1), with "Yes" selected:
+terminal(command="tmux send-keys -t claude-work Enter")
 
 # Now wait for Claude to work
 terminal(command="sleep 15 && tmux capture-pane -t claude-work -p -S -60")
 ```
 
-**Note:** After the first trust acceptance for a directory, the trust dialog won't appear again.
+**Note:** Claude Code stores an accepted trust for the git repository root (outside a repository, for that folder), so later launches anywhere in the repository skip the dialog. Started directly in your home directory, trust lasts only for that session and the dialog returns on every launch.
 
 ### Opt-in: --dangerously-skip-permissions (isolated environments only)
 
@@ -504,8 +510,10 @@ terminal(command="cd /path/to/repo && git diff main...feature-branch | claude -p
 ```
 terminal(command="tmux new-session -d -s review -x 140 -y 40")
 terminal(command="tmux send-keys -t review 'cd /path/to/repo && claude -w pr-review' Enter")
-terminal(command="sleep 5 && tmux send-keys -t review Enter")  # Trust dialog
-terminal(command="sleep 2 && tmux send-keys -t review 'Review all changes vs main. Check for bugs, security issues, race conditions, and missing tests.' Enter")
+terminal(command="sleep 5 && tmux capture-pane -t review -p -S -30")  # Trust dialog: read it
+terminal(command="tmux send-keys -t review Enter")  # only when the capture above shows the trust dialog for this repo (Dialog 1)
+terminal(command="sleep 2 && tmux capture-pane -t review -p -S -30")  # read again: empty input box, no dialog with numbered options
+terminal(command="tmux send-keys -t review 'Review all changes vs main. Check for bugs, security issues, race conditions, and missing tests.' Enter")
 terminal(command="sleep 30 && tmux capture-pane -t review -p -S -60")
 ```
 
@@ -752,7 +760,7 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 5. **Claude may use `python` instead of `python`** — on systems without a `python` symlink, Claude's bash commands will fail on first try but it self-corrects.
 6. **Session resumption requires same directory** — `--continue` finds the most recent session for the current working directory.
 7. **`--json-schema` needs enough `--max-turns`** — Claude must read files before producing structured output, which takes multiple turns.
-8. **Trust dialog only appears once per directory** — first-time only, then cached.
+8. **Trust dialog appears until the repository is trusted** — then cached per repository root, except in your home directory, where it is asked on every launch.
 9. **Background tmux sessions persist** — always clean up with `tmux kill-session -t <name>` when done.
 10. **Slash commands (like `/commit`) only work in interactive mode** — in `-p` mode, describe the task in natural language instead.
 11. **`--bare` skips OAuth** — requires `ANTHROPIC_API_KEY` env var or an `apiKeyHelper` in settings.

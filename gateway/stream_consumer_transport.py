@@ -63,11 +63,44 @@ class StreamTransportMixin:
                 logger.debug(fail_log, e)
             return False
 
-    async def _send_frame(self, text: str, *, finalize: bool):
-        """One native-stream frame; every frame carries the same chat/reply/turn routing."""
+    async def _send_frame(self, text: str, *, finalize: bool, seal_boundary: bool = False):
+        """Route one frame. Opt-in adapters may declare seal_boundary to close a segment
+        without retaining turn-final reconciliation state; old adapters get no new kwarg."""
+        kwargs = {}
+        if (seal_boundary and self._native_immutable_prefix()
+                and "seal_boundary" in inspect.signature(self.adapter.send_stream_frame).parameters):
+            kwargs["seal_boundary"] = True
         return await self.adapter.send_stream_frame(
             text, finalize=finalize, chat_id=self.chat_id, reply_to=self._initial_reply_to_id,
-            turn_id=self._turn_id)
+            turn_id=self._turn_id, **kwargs)
+
+    async def _recover_boundary_stream(self, text: str) -> bool:
+        """Reconcile a failed immutable seal against the adapter's ACK receipt."""
+        identity = dict(turn_id=self._turn_id, chat_id=self.chat_id,
+                        reply_to=self._initial_reply_to_id)
+        recover = getattr(self.adapter, "recover_native_stream_boundary", None)
+        if not callable(recover) or not await recover(**identity):
+            return False
+        receipt = getattr(self.adapter, "native_stream_acknowledged_prefix", None)
+        if callable(receipt):
+            self._last_sent_text = receipt(**identity)
+        metadata = self._metadata_for_send() or {}
+        metadata["_interim_send"] = True
+        try:
+            result = await self.adapter.send(
+                self.chat_id, text, reply_to=self._initial_reply_to_id, metadata=metadata)
+        except Exception:
+            logger.warning("Immutable boundary fallback send failed", exc_info=True)
+            return False
+        if not result.success:
+            if callable(receipt):
+                self._last_sent_text = receipt(**identity)
+            return False
+        self._last_sent_text = text
+        release = getattr(self.adapter, "release_native_stream_boundary", None)
+        if callable(release):
+            release(**identity)
+        return True
 
     def _close_native_state(self) -> None:
         """Mark the native stream closed (next content re-seeds or falls back)."""
@@ -148,6 +181,10 @@ class StreamTransportMixin:
                          "falling back to edit", self.chat_id, self.cfg.chat_type)
         return bool(supported)
 
+    def _native_immutable_prefix(self) -> bool:
+        """Adapter opt-in: raw native frames are immutable cumulative prefixes."""
+        return getattr(type(self.adapter), "NATIVE_STREAM_IMMUTABLE_PREFIX", False) is True
+
     def _resolve_native_streaming(self) -> bool:
         """Native streaming (send_stream_frame for ALL frames): a BasePlatformAdapter with
         class-level SUPPORTS_NATIVE_STREAMING and a truthy supports_native_streaming probe."""
@@ -203,6 +240,16 @@ class StreamTransportMixin:
         """Seal an orphaned draft stream on turn death (stale exit / cancel): else the live
         indicator stays forever and armed interception state leaks into the next turn.
         Never sets delivery flags."""
+        if (self._use_native_streaming and self._native_stream_opened
+                and self._native_immutable_prefix()):
+            text = self._last_sent_text
+            await self._try_frame(
+                self._send_frame(text, finalize=True),
+                "native stream abandonment finalize failed: %s",
+            )
+            self._close_native_state()
+            self._reopen_seeded_eagerly = False
+            return
         if not self._use_draft_streaming:
             return
         if getattr(type(self.adapter), "abandon_open_draft", None) is None:
@@ -315,12 +362,18 @@ class StreamTransportMixin:
         """Send or edit the streaming message; True if delivered.  ``finalize`` marks the
         last edit.  Transport order: native frame → draft frame → edit existing → first
         send; a transport returns None to fall through to the next."""
+        if (self._native_immutable_prefix() and self._fallback_final_send
+                and finalize and is_turn_final):
+            # The native failure already transferred final ownership to the
+            # buffered fallback; don't preview-send here and then send it again.
+            return False
         text = self._clean_for_display(text)
         # Stream-is-the-message draft frames must stay prefix-stable: a closing ```
         # on a mid-code-block frame makes frame N not a prefix of N+1 and the
         # connector re-appends the whole snapshot.  The final is still fence-closed.
         pre_fence_text = text
-        text = ensure_closed_code_fences(text)
+        if not (self._use_native_streaming and self._native_immutable_prefix()):
+            text = ensure_closed_code_fences(text)
         # A bare cursor renders as a stray tofu box on some clients.
         visible_stripped = (text.replace(self.cfg.cursor, "") if self.cfg.cursor else text).strip()
         if not visible_stripped:
@@ -387,14 +440,30 @@ class StreamTransportMixin:
         # WeCom renders each finalize as a separate bubble: only the turn-final and
         # boundaries close the stream, not segment breaks.
         finalize = finalize and is_turn_final
+        if self._native_immutable_prefix() and self._last_sent_text and not text.startswith(self._last_sent_text):
+            # Divergence means the acknowledged stream cannot represent this answer.
+            # Close exactly the acknowledged prefix, then retain the complete answer
+            # for one buffered final send; never pretend it was delivered.
+            logger.error("Immutable native stream diverged; closing prefix and buffering final")
+            prefix = self._last_sent_text
+            self._degrade_native_to_buffered_send()
+            self._enter_fallback_mode(prefix)
+            try:
+                await self._send_frame(prefix, finalize=True)
+            except Exception:
+                logger.warning("Could not close divergent immutable native prefix", exc_info=True)
+            # The caller must not fall through to the ordinary send path on
+            # this same tick. buffer_only defers the authoritative answer to done.
+            return False
         if not finalize and text == self._last_sent_text:
             return True  # unchanged — skip
 
         # Mark a finalize frame delivered OPTIMISTICALLY, before the ack wait: WeCom
         # renders the bytes before the ack, so a gateway join-cancel mid-wait must not
         # strand final_content_delivered=False and duplicate the send (docs/rca-wecom-
-        # stream-final-ack-timeout-duplicate.md).  A definitive failure rolls it back.
-        if finalize:
+        # stream-final-ack-timeout-duplicate.md). Immutable opt-in adapters require an ACK;
+        # their attempted bytes may differ from their confirmed prefix.
+        if finalize and not self._native_immutable_prefix():
             self._mark_final_delivered(record=text)  # recorded: stale frame can't suppress
         if await self._try_frame(self._send_frame(text, finalize=finalize),
                                  "send_stream_frame raised, disabling native streaming: %s"):
@@ -402,7 +471,7 @@ class StreamTransportMixin:
             self._last_sent_text = text
             self._native_last_pushed_len = len(text)
             if finalize:
-                self._mark_final_delivered()
+                self._mark_final_delivered(record=text)
             return True
 
         # Definitive failure: roll back the optimistic mark so the edit/send
@@ -411,12 +480,29 @@ class StreamTransportMixin:
             self._final_response_sent = False
             self._final_content_delivered = False
             self._delivered_final_text = None
-        # Subsequent frames take the edit/send fallback; the adapter marks the chat
-        # expired so it doesn't retry the dead stream.
+        # Immutable native failures may have committed the last accepted prefix.
+        # Close that exact prefix and defer fallback until got_done; never send a
+        # preview or a rewritten full answer on the failing tick.
+        if self._native_immutable_prefix():
+            prefix = self._last_sent_text
+            self._degrade_native_to_buffered_send()
+            if prefix:
+                try:
+                    await self._send_frame(prefix, finalize=True)
+                except Exception:
+                    logger.warning("Could not close failed immutable native prefix", exc_info=True)
+                # Optional synchronous receipt seam: closure may have committed a timed-out
+                # attempted frame. Only the adapter knows the now-confirmed prefix.
+                receipt = getattr(self.adapter, "native_stream_acknowledged_prefix", None)
+                if callable(receipt):
+                    prefix = receipt(turn_id=self._turn_id, chat_id=self.chat_id,
+                                     reply_to=self._initial_reply_to_id)
+                self._last_sent_text = prefix
+                self._enter_fallback_mode(prefix)
+            return False
+
+        # Other native adapters keep the established immediate send/edit fallback.
         self._use_native_streaming = False
-        # Best-effort close of an opened bubble (the seed frame has zero length but
-        # still opens it).  DO NOT mark delivered: the frame closes the bubble but
-        # WeCom may not render the content (errcode 6000 race).
         if self._native_stream_opened:
             try:
                 await self._send_frame(text, finalize=True)

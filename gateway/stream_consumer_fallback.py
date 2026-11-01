@@ -51,6 +51,8 @@ class StreamFallbackMixin:
         """Return only the part of final_text the user has not already seen."""
         prefix = self._fallback_prefix or self._visible_prefix()
         if prefix and final_text.startswith(prefix):
+            if self._native_immutable_prefix():
+                return final_text[len(prefix):]
             cut = len(prefix)
             # ``prefix`` is whatever the last successful edit put on screen. Edits
             # fire on a throttle tick, not at a word boundary, so that prefix can
@@ -109,6 +111,11 @@ class StreamFallbackMixin:
         # Balance fences BEFORE computing the continuation so the closing fence
         # reaches the user even when only the tail is delivered.
         final_text = ensure_closed_code_fences(self._clean_for_display(text))
+        if (self._native_immutable_prefix() and self._fallback_prefix
+                and not final_text.startswith(self._fallback_prefix)):
+            logger.error("Immutable native final rewrites acknowledged content; refusing full resend")
+            self._fallback_final_send = False
+            return
         continuation = self._continuation_text(final_text)
         self._fallback_final_send = False
         if not continuation.strip():
@@ -140,6 +147,8 @@ class StreamFallbackMixin:
                 self._last_sent_text = last_successful_chunk
                 self._fallback_prefix = ""
                 return
+            if self._native_immutable_prefix() and self._fallback_prefix:
+                self._fallback_prefix += chunk
             sent_any_chunk = True
             last_successful_chunk = chunk
             last_message_id = result.message_id or last_message_id
@@ -226,6 +235,9 @@ class StreamFallbackMixin:
         SendResult.  Exceptions propagate (callers decide whether a raise is "ambiguous")."""
         kwargs = dict(chat_id=self.chat_id, content=content,
                       metadata=self._metadata_for_send(final=True))
+        if self._native_immutable_prefix() and self._fallback_prefix:
+            kwargs["metadata"] = dict(kwargs["metadata"] or {})
+            kwargs["metadata"]["_native_fallback_prefix"] = self._fallback_prefix
         if reply_to is not None:
             kwargs["reply_to"] = reply_to
         result = None

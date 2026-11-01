@@ -23,7 +23,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
-    KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
+    KANBAN_LIST_SCHEMA, KANBAN_RECLAIM_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
     KANBAN_SCHEDULE_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
@@ -1257,6 +1257,22 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
         return False
 
 
+@_kanban_handler("kanban_reclaim")
+def _handle_reclaim(args: dict, **kw) -> str:
+    """Release a running claim through the operator flow, optionally parking it."""
+    _reject_delegated_child_mutation("kanban_reclaim")
+    _require_orchestrator_tool("kanban_reclaim")
+    tid = _require_task_id(args)
+    reason = _redact(_require_text(args, "reason", "reason is required — explain why to reclaim"))
+    park = _parse_bool_arg(args, "park")
+    with _board(args.get("board")) as (kb, conn):
+        reclaimed = kb.reclaim_task(conn, tid, reason=reason)
+        # A reviewer run lands back in ``review``, which block_task cannot park: report it, never fail the reclaim.
+        parked = bool(reclaimed and park and kb.block_task(conn, tid, reason=reason))
+        task = kb.get_task(conn, tid)
+        return _ok(task_id=tid, reclaimed=reclaimed, parked=parked, status_after=task.status if task else None)
+
+
 @_kanban_handler("kanban_unblock")
 def _handle_unblock(args: dict, **kw) -> str:
     """Transition a blocked task to ready, or todo while parents remain open."""
@@ -1290,8 +1306,8 @@ def _handle_link(args: dict, **kw) -> str:
 
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
-# kanban_list / kanban_unblock route the board and are hidden from task workers.
-_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+# Board-routing tools are hidden from task workers.
+_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock", "kanban_reclaim"})
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
@@ -1307,6 +1323,7 @@ _TOOLS = (
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
+    ("kanban_reclaim", KANBAN_RECLAIM_SCHEMA, _handle_reclaim, "⏹"),
     ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
 
 for _name, _sch, _handler, _emoji in _TOOLS:

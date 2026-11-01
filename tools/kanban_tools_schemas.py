@@ -520,6 +520,19 @@ KANBAN_CREATE_SCHEMA = _schema(
     ["title", "assignee"],
 )
 
+KANBAN_RECLAIM_SCHEMA = _schema(
+    "kanban_reclaim",
+    "Stop a running card's worker and release its claim (orchestrators only). "
+    "Use park=true to keep the dispatcher from restarting it; the result says whether it was parked.",
+    {
+        "task_id": _prop("string", "Running task id to reclaim."),
+        "reason": _prop("string", "Why this worker's claim should be released."),
+        "park": {**_prop("boolean", "Block the card after reclaiming it; defaults to false."),
+                 "default": False},
+    },
+    ["task_id", "reason"],
+)
+
 KANBAN_UNBLOCK_SCHEMA = _schema(
     "kanban_unblock",
     (

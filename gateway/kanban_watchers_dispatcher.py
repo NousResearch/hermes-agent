@@ -173,17 +173,54 @@ class _KanbanDispatcher:
         self.disabled_corrupt_boards.pop(slug, None)
         return True
 
+    def _board_dispatch_caps(self, slug: str) -> tuple[dict, bool]:
+        """Per-board dispatch caps for one tick (FR #118116).
+
+        Returns ``(caps, board_override)`` where ``caps`` holds the effective
+        ``max_spawn`` / ``max_in_progress_per_profile`` for this board, resolved
+        per-board (board.json override > global config). ``board_override`` is
+        True only when board.json actually pinned at least one cap — the global
+        default is read once at boot and is never overwritten.
+        """
+        from hermes_cli import kanban_ops
+        caps, applied = {}, False
+        try:
+            meta = self.kb.read_board_metadata(slug)
+        except Exception:
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        for key in ("max_spawn", "max_in_progress_per_profile"):
+            value = kanban_ops._positive_int_or_none(meta.get(key))
+            if value is not None:
+                caps[key] = value
+                applied = True
+            else:
+                caps[key] = getattr(self.settings, key)  # global (boot value)
+        return caps, applied
+
     def tick_once_for_board(self, slug: str) -> Optional[object]:
         """Run one dispatch_once for a specific board.
 
         The per-board DB is opened explicitly so boards never share a
-        connection or claim across each other.
+        connection or claim across each other. ``max_spawn`` and
+        ``max_in_progress_per_profile`` are resolved per board (board.json
+        override > global config) so each board can pin its own concurrency caps.
         """
         conn = None
         fingerprint = self.board_db_fingerprint(slug)
         if not self._quarantine_lifted(slug, fingerprint):
             return None
         kwargs = {k: v for k, v in asdict(self.settings).items() if k != "interval"}
+        caps, board_override = self._board_dispatch_caps(slug)
+        kwargs["max_spawn"] = caps["max_spawn"]
+        kwargs["max_in_progress_per_profile"] = caps["max_in_progress_per_profile"]
+        if board_override:
+            logger.info(
+                "kanban dispatcher: board %s uses per-board caps %s "
+                "(board.json override)", slug,
+                {k: v for k, v in caps.items() if v is not None},
+            )
         try:
             # No explicit init_db(): connect() runs the migration once per
             # process (see the matching note in the notifier collector).

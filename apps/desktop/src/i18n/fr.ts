@@ -5094,6 +5094,8 @@ export const frOverrides = {
       timedOutSystemLine:
         "Le délai d'approbation a expiré — la commande n'a pas été exécutée. Demandez à Hermes de réessayer ou augmentez la limite dans Paramètres → Sécurité → Délai d'approbation.",
       openSafetySettings: 'Ouvrir les paramètres de sécurité',
+      askHermesToTryAgain: 'Demander à Hermes de réessayer',
+      retryStale: "Hermes est passé à autre chose et n'a plus besoin de cette commande. Demandez plutôt une nouvelle tentative.",
       run: 'Exécuter',
       command: 'Commande',
       moreOptions: "Plus d'options d'approbation",

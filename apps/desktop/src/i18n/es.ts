@@ -5072,6 +5072,8 @@ export const esOverrides = {
       timedOutSystemLine:
         'Se agotó el tiempo de aprobación: el comando no se ejecutó. Pide a Hermes que lo intente de nuevo o sube el límite en Configuración → Seguridad → Tiempo de aprobación.',
       openSafetySettings: 'Abrir configuración de seguridad',
+      askHermesToTryAgain: 'Pedir a Hermes que lo intente de nuevo',
+      retryStale: 'Hermes ha avanzado y ya no necesita ese comando. Pide un intento nuevo.',
       run: 'Ejecutar',
       command: 'Comando',
       moreOptions: 'Más opciones de aprobación',

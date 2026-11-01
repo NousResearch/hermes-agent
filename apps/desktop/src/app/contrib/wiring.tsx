@@ -47,7 +47,7 @@ import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { $interfaceMode, shownInMode } from '@/store/interface-mode'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
 import {
   $onboardingChatOpener,
@@ -507,6 +507,29 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [activeSessionIdRef, busyRef, selectedStoredSessionIdRef, updateSessionState]
   )
 
+  const retryTimedOutApproval = useCallback(
+    async (sessionId: string, command: string) => {
+      const text = `Do you still need to run this command? If yes, ask me for permission to run it again. If not, continue with your current approach.\n\nCommand:\n${command}`
+
+      try {
+        const result = await requestGateway<{ status?: string }>('session.steer', { session_id: sessionId, text })
+
+        if (result?.status !== 'queued') {
+          notify({ kind: 'warning', message: translateNow('assistant.approval.retryStale') })
+
+          return false
+        }
+
+        return true
+      } catch {
+        notify({ kind: 'warning', message: translateNow('assistant.approval.retryStale') })
+
+        return false
+      }
+    },
+    [requestGateway]
+  )
+
   const { handleGatewayEvent, handleServerRequest } = useMessageStream({
     activeGatewayProfile,
     activeSessionIdRef,
@@ -514,6 +537,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     queryClient,
     refreshHermesConfig,
     refreshSessions,
+    retryTimedOutApproval,
     sessionStateByRuntimeIdRef,
     updateSessionState
   })

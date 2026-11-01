@@ -66,6 +66,7 @@ interface MessageStreamOptions {
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
   refreshSessions: () => Promise<void>
+  retryTimedOutApproval?: (sessionId: string, command: string) => Promise<boolean>
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
   updateSessionState: (
     sessionId: string,
@@ -149,6 +150,7 @@ export function useMessageStream({
   queryClient,
   refreshHermesConfig,
   refreshSessions,
+  retryTimedOutApproval,
   sessionStateByRuntimeIdRef,
   updateSessionState
 }: MessageStreamOptions) {
@@ -1268,6 +1270,7 @@ export function useMessageStream({
     queryClient,
     refreshHermesConfig,
     scheduleSessionsRefresh,
+    retryTimedOutApproval: retryTimedOutApproval ?? (async () => false),
     sessionInterrupted,
     sessionStateByRuntimeIdRef,
     updateSessionState,

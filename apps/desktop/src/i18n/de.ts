@@ -5086,6 +5086,8 @@ export const deOverrides = {
       timedOutSystemLine:
         'Die Freigabe ist abgelaufen — der Befehl wurde nicht ausgeführt. Bitten Sie Hermes, es erneut zu versuchen, oder erhöhen Sie das Limit unter Einstellungen → Sicherheit → Freigabe-Timeout.',
       openSafetySettings: 'Sicherheitseinstellungen öffnen',
+      askHermesToTryAgain: 'Hermes erneut fragen',
+      retryStale: 'Hermes ist inzwischen weitergegangen und benötigt diesen Befehl nicht mehr. Bitte fordere stattdessen einen neuen Versuch an.',
       run: 'Ausführen',
       command: 'Befehl',
       moreOptions: 'Weitere Genehmigungsoptionen',

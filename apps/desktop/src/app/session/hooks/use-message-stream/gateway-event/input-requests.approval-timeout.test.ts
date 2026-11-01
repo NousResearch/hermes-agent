@@ -11,11 +11,15 @@ import type { GatewayEventContext } from './types'
 // bar disappears and the tool row then shows a model-facing "BLOCKED …" result.
 // The transcript must gain a human system line that says what happened and
 // where the wait is configured; a cancel for any other reason stays silent.
-function context(reason: string, updateSessionState: ReturnType<typeof vi.fn>): GatewayEventContext {
+function context(
+  reason: string,
+  updateSessionState: ReturnType<typeof vi.fn>,
+  retryTimedOutApproval = vi.fn(async () => true)
+): GatewayEventContext {
   const payload = { id: 'srv-1', method: 'approval', reason }
 
   return {
-    deps: { flushQueuedDeltas: vi.fn(), updateSessionState } as unknown as GatewayEventContext['deps'],
+    deps: { flushQueuedDeltas: vi.fn(), retryTimedOutApproval, updateSessionState } as unknown as GatewayEventContext['deps'],
     event: { payload, session_id: 's1', type: 'request.cancel' },
     explicitSid: 's1',
     fromActiveSource: () => true,
@@ -50,7 +54,9 @@ describe('approval request.cancel', () => {
       updater({ messages: [] })
     )
 
-    expect(handleInputRequestEvent(context('timeout', updateSessionState))).toBe(true)
+    const retryTimedOutApproval = vi.fn(async () => true)
+
+    expect(handleInputRequestEvent(context('timeout', updateSessionState, retryTimedOutApproval))).toBe(true)
     expect($approvalRequests.get()['s1']).toBeUndefined()
 
     const next = updateSessionState.mock.results[0]?.value as {
@@ -63,8 +69,13 @@ describe('approval request.cancel', () => {
     expect(next.messages[0].parts[0].text).not.toMatch(/BLOCKED|Do NOT/)
 
     const toast = $notifications.get()[0]
+    expect(toast?.detail).toBe('rm -rf build')
     toast?.action?.onClick()
     expect($routeRequest.get()?.path).toBe('/settings?tab=config:safety')
+
+    expect(toast?.secondaryAction?.label).toMatch(/ask Hermes to try again/i)
+    toast?.secondaryAction?.onClick()
+    expect(retryTimedOutApproval).toHaveBeenCalledWith('s1', 'rm -rf build')
   })
 
   it('withdraws a queued request without dropping the front approval', () => {

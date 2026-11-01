@@ -49,6 +49,7 @@ export interface GatewayEventDeps {
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
   scheduleSessionsRefresh: () => void
+  retryTimedOutApproval?: (sessionId: string, command: string) => Promise<boolean>
   sessionInterrupted: (sessionId: string) => boolean
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
   updateSessionState: (

@@ -4005,6 +4005,8 @@ export interface Translations extends NoticeTranslations {
       reconnect: string
       timedOutSystemLine: string
       openSafetySettings: string
+      askHermesToTryAgain: string
+      retryStale: string
       run: string
       command: string
       commandDetails: string

@@ -165,14 +165,21 @@ def convert_tools_to_anthropic(tools: list[dict]) -> list[dict]:
 
 
 def _image_block_from_openai_url(url: str) -> dict[str, Any]:
-    """OpenAI image URL / data URL -> Anthropic ``image`` block. An inline subtype the API rejects
-    (svg+xml, bmp, tiff) 400s every replay once in history: an SVG is rasterized to PNG when a
-    rasterizer is installed, anything else unsupported becomes a text placeholder."""
-    from tools.vision_tools_image_prep import rasterize_svg_data_url, unsupported_inline_image_media_type
+    """OpenAI image URL / data URL -> Anthropic ``image`` block. The API checks ``media_type`` against
+    the payload's magic bytes, so the bytes win over the label: a JPEG screenshot embedded under a
+    caller's ``image/png`` hint 400s every replay once in history. So does an inline format the API
+    rejects (svg+xml, bmp, tiff), by label or by bytes: an SVG is rasterized to PNG when a rasterizer
+    is installed, anything else unsupported becomes a text placeholder."""
+    from agent.image_routing import _sniff_mime_from_base64
+    from tools.vision_tools_image_prep import (_ANTHROPIC_SUPPORTED_MEDIA_TYPES, rasterize_svg_data_url,
+                                               unsupported_inline_image_media_type)
     url = str(url or "").strip()
     if not url.startswith("data:"):
         return {"type": "image", "source": {"type": "url", "url": url}}
-    unsupported = unsupported_inline_image_media_type(url)
+    data = url.partition(",")[2]
+    if (sniffed := _sniff_mime_from_base64(data)) in _ANTHROPIC_SUPPORTED_MEDIA_TYPES:
+        return {"type": "image", "source": {"type": "base64", "media_type": sniffed, "data": data}}
+    unsupported = unsupported_inline_image_media_type(url) or sniffed
     if unsupported == "image/svg+xml" and (png_url := rasterize_svg_data_url(url)) is not None:
         url, unsupported = png_url, None
     if unsupported is not None:
@@ -450,7 +457,8 @@ def _tool_result_content(m: dict[str, Any]) -> Any:
             multimodal_blocks = [_text_block(str(content["text_summary"]))]
     elif isinstance(content, list):
         converted = _content_parts_to_anthropic_blocks(content)
-        if _has_block_type(converted, {"image"}):
+        # A rejected image leaves a placeholder; dumping the source parts instead resends its payload as text.
+        if _has_block_type(converted, {"image"}) or _has_block_type(content, {"image_url", "input_image"}):
             multimodal_blocks = converted
     if multimodal_blocks is None:  # back-compat: blocks stashed under a private key
         stashed = m.get("_anthropic_content_blocks")

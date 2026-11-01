@@ -20,6 +20,7 @@ import pytest
 from agent.context_compressor import SUMMARY_PREFIX
 from agent.conversation_compression_reply_anchor import (
     _ensure_compressed_keeps_last_assistant_reply,
+    _reply_insertion_index,
 )
 import itertools
 
@@ -88,6 +89,250 @@ def _tool_chain(*call_ids):
             {"role": "tool", "content": "ok", "tool_call_id": call_id},
         ]
     return rows
+
+
+def test_later_text_twin_does_not_move_reply_past_tool_followers(caplog):
+    """Regression for #138173: a dropped early text follower must not make the
+    reply cross a later tool round whose ids still locate its original slot."""
+    def tool_call(call_id):
+        return {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": call_id, "type": "function", "function": {"name": "read", "arguments": "{}"}}],
+        }
+
+    def tool_result(call_id):
+        return {"role": "tool", "tool_call_id": call_id, "content": f"result {call_id}"}
+
+    reply = {"role": "assistant", "content": "Starting the work now."}
+    original = [
+        {"role": "user", "content": "start"}, reply, {"role": "user", "content": "continue"},
+        tool_call("call_1"), tool_result("call_1"), {"role": "user", "content": "continue"},
+        tool_call("call_2"), tool_result("call_2"),
+    ]
+    compressed = [
+        {"role": "user", "content": SUMMARY}, tool_call("call_1"), tool_result("call_1"),
+        {"role": "user", "content": "continue"}, tool_call("call_2"), tool_result("call_2"),
+    ]
+
+    assert _reply_insertion_index(original[2:], compressed) == 1
+    with caplog.at_level("WARNING", logger="agent.conversation_compression_reply_anchor"):
+        inserted = _ensure_compressed_keeps_last_assistant_reply(original, compressed)
+
+    assert inserted is None
+    assert any("strict role alternation" in record.getMessage() for record in caplog.records)
+    assert [message["role"] for message in compressed] == ["user", "assistant", "tool", "user", "assistant", "tool"]
+
+
+@pytest.mark.parametrize("shape", ["S1", "S2", "S3"])
+@pytest.mark.parametrize(
+    ("identity_key", "identity_side"),
+    [(None, None), ("_row_id", "original"), ("_row_id", "compressed"),
+     ("message_uid", "original"), ("message_uid", "compressed")],
+)
+def test_first_surviving_follower_retains_reply(shape, identity_key, identity_side):
+    """S1: steer after tools; S2: two text followers; S3: metadata-stripped tools."""
+    followers = [{"role": "user", "content": "please do X"}]
+    if shape != "S2":
+        followers += _tool_chain("call_1")
+    if shape != "S3":
+        followers += [{"role": "user", "content": "and Y"}]
+    compressed = [{"role": "user", "content": SUMMARY}, *[dict(m) for m in followers]]
+    if identity_key:
+        rows = followers if identity_side == "original" else compressed[1:]
+        for i, row in enumerate(rows, 1):
+            row[identity_key] = i if identity_key == "_row_id" else f"uid-{i}"
+    original = [
+        {"role": "user", "content": "start the task " * 100},
+        {"role": "assistant", "content": REPLY}, *followers,
+    ]
+
+    assert _reply_insertion_index(followers, compressed) == 1
+    inserted = _ensure_compressed_keeps_last_assistant_reply(original, compressed)
+
+    assert inserted is compressed[1]
+    assert inserted["content"] == REPLY
+    assert [m["content"] for m in compressed[2:]] == [m["content"] for m in followers]
+    assert _count_reply(compressed) == 1
+
+
+@pytest.mark.parametrize("identity_key", ["_row_id", "message_uid"])
+@pytest.mark.parametrize("stripped_twin", [False, True])
+def test_durable_follower_bounds_later_text_twin(identity_key, stripped_twin):
+    """A durable user follower bounds a text twin even without any tool round."""
+    identity = 7 if identity_key == "_row_id" else "follower-7"
+    followers = [
+        {"role": "user", "content": "continue"},
+        {"role": "user", "content": "identified", identity_key: identity},
+    ]
+    if stripped_twin:
+        followers = [{"role": "user", "content": "continue", identity_key: identity}]
+    compressed = [
+        {"role": "user", "content": SUMMARY}, dict(followers[-1]),
+        {"role": "user", "content": "continue"},
+    ]
+    original = [
+        {"role": "user", "content": "start " * 300},
+        {"role": "assistant", "content": REPLY}, *followers,
+    ]
+    assert _reply_insertion_index(followers, compressed) == 1
+    assert _ensure_compressed_keeps_last_assistant_reply(original, compressed) is compressed[1]
+
+
+def test_first_text_follower_uses_last_normalized_occurrence():
+    follower = {"role": "user", "content": [{"type": "text", "text": " continue  "}]}
+    compressed = [
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "content": "older reply"},
+        {"role": "user", "content": "continue"},
+        {"role": "user", "content": "and Y"},
+    ]
+    original = [
+        {"role": "user", "content": "start " * 300},
+        {"role": "assistant", "content": REPLY}, follower, compressed[-1],
+    ]
+    assert _reply_insertion_index(original[2:], compressed) == 2
+    # The last occurrence is next to an older assistant: recovery must still yield.
+    assert _ensure_compressed_keeps_last_assistant_reply(original, compressed) is None
+    assert _count_reply(compressed) == 0
+
+
+def test_incomparable_identity_kinds_allow_text_fallback():
+    follower = {"role": "user", "content": "continue", "_row_id": 3}
+    compressed = [
+        {"role": "user", "content": SUMMARY},
+        {"role": "user", "content": "continue", "message_uid": "uid-3"},
+        *_tool_chain("call_1"),
+    ]
+    assert _reply_insertion_index([follower], compressed) == 1
+
+
+@pytest.mark.parametrize("identity_key", ["_row_id", "message_uid"])
+@pytest.mark.parametrize("kind", ["text", "call", "result"])
+def test_conflicting_durable_identities_do_not_match(identity_key, kind):
+    follower = {"role": "user", "content": "continue"}
+    if kind != "text":
+        follower = _tool_chain("call_1")[0 if kind == "call" else 1]
+    follower[identity_key] = 1 if identity_key == "_row_id" else "uid-1"
+    twin = dict(follower)
+    twin[identity_key] = 2 if identity_key == "_row_id" else "uid-2"
+    compressed = [{"role": "user", "content": SUMMARY}, twin,
+                  {"role": "tool", "content": "unrelated", "tool_call_id": "other"}]
+    assert _reply_insertion_index([follower], compressed) == len(compressed)
+
+
+@pytest.mark.parametrize("kind", ["call", "result"])
+@pytest.mark.parametrize("identity_key", ["_row_id", "message_uid"])
+@pytest.mark.parametrize("side", ["original", "compressed"])
+def test_one_sided_identity_preserves_tool_bound(kind, identity_key, side):
+    follower = _tool_chain("call_1")[0 if kind == "call" else 1]
+    kept = dict(follower)
+    (follower if side == "original" else kept)[identity_key] = (
+        1 if identity_key == "_row_id" else "uid-1"
+    )
+    compressed = [{"role": "user", "content": SUMMARY}, kept]
+    assert _reply_insertion_index([follower], compressed) == 1
+
+
+@pytest.mark.parametrize("kind", ["text", "call", "result"])
+@pytest.mark.parametrize("shared_key", ["_row_id", "message_uid"])
+@pytest.mark.parametrize("both_shared", [False, True])
+def test_mixed_identity_conflict_does_not_reinsert_before_history(kind, shared_key, both_shared):
+    follower = {"role": "user", "content": "continue"}
+    if kind != "text":
+        follower = _tool_chain("call_1")[0 if kind == "call" else 1]
+    follower.update(_row_id=8, message_uid="new")
+    older = dict(follower)
+    older[shared_key] = 7 if shared_key == "_row_id" else "old"
+    if not both_shared:
+        older.pop("message_uid" if shared_key == "_row_id" else "_row_id")
+    tail = {"role": "user", "content": "next task"}
+    compressed = [{"role": "user", "content": SUMMARY}, older, *_tool_chain("older"), tail]
+    original = [
+        {"role": "user", "content": "old history " * 300},
+        older, *_tool_chain("older"),
+        {"role": "assistant", "content": REPLY}, follower, tail,
+    ]
+
+    inserted = _ensure_compressed_keeps_last_assistant_reply(original, compressed)
+
+    assert inserted is compressed[-2]
+    assert inserted["content"] == REPLY
+    assert compressed[1] is older
+    assert compressed[-1] is tail
+    assert _count_reply(compressed) == 1
+
+
+@pytest.mark.parametrize("identity", [{}, {"_row_id": 8}, {"message_uid": "new"},
+                                      {"_row_id": 8, "message_uid": "new"}])
+def test_safe_first_follower_survives_later_reused_tool_ids(identity):
+    followers = [
+        {"role": "user", "content": FOLLOWER, **identity}, *_tool_chain("call_0"),
+        {"role": "user", "content": "steer"}, *_tool_chain("call_0"),
+    ]
+    compressed = [{"role": "user", "content": SUMMARY}, *[dict(m) for m in followers]]
+    original = [
+        {"role": "user", "content": "old history " * 300},
+        {"role": "assistant", "content": REPLY}, *followers,
+    ]
+
+    inserted = _ensure_compressed_keeps_last_assistant_reply(original, compressed)
+
+    assert inserted is compressed[1]
+    assert inserted["content"] == REPLY
+    assert compressed[2:] == followers
+    assert _count_reply(compressed) == 1
+    _assert_no_same_role_adjacency(compressed)
+
+
+@pytest.mark.parametrize("identity_keys", [("_row_id",), ("message_uid",), ("_row_id", "message_uid")])
+@pytest.mark.parametrize("identified_roles", [("assistant",), ("tool",), ("assistant", "tool")])
+def test_durable_reused_tool_follower_bounds_dropped_text_twin(identity_keys, identified_roles, caplog):
+    """Reused pairing ids must not hide a durable bound before a later text twin."""
+    followers = [
+        {"role": "user", "content": "continue"}, *_tool_chain("call_0"),
+        {"role": "user", "content": "continue"}, *_tool_chain("call_0"),
+    ]
+    for i, row in enumerate(followers, 1):
+        if row["role"] in identified_roles:
+            row.update({key: i if key == "_row_id" else f"uid-{i}" for key in identity_keys})
+    original = [
+        {"role": "user", "content": "old history " * 300},
+        {"role": "assistant", "content": REPLY}, *followers,
+    ]
+    compressed = [{"role": "user", "content": SUMMARY}, *[dict(m) for m in followers[1:]]]
+    before = list(compressed)
+
+    # A call locates index 1; its result alone locates index 2. Both seams
+    # border the first assistant and must yield to the existing neighbor guard.
+    expected_index = 1 if "assistant" in identified_roles else 2
+    assert _reply_insertion_index(followers, compressed, reused_ids=frozenset({"call_0"})) == expected_index
+    with caplog.at_level("WARNING", logger="agent.conversation_compression_reply_anchor"):
+        inserted = _ensure_compressed_keeps_last_assistant_reply(original, compressed)
+
+    assert inserted is None
+    assert compressed == before
+    assert _count_reply(compressed) == 0
+    assert any("strict role alternation" in r.getMessage() for r in caplog.records)
+    _assert_no_same_role_adjacency(compressed)
+
+
+@pytest.mark.parametrize("identity_key", ["_row_id", "message_uid"])
+@pytest.mark.parametrize("side", ["original", "compressed"])
+def test_one_sided_identity_does_not_disambiguate_reused_tools(identity_key, side):
+    followers = _tool_chain("call_0", "call_0")
+    compressed = [{"role": "user", "content": SUMMARY}, *[dict(m) for m in followers]]
+    for i, row in enumerate(followers if side == "original" else compressed[1:], 1):
+        row[identity_key] = i if identity_key == "_row_id" else f"uid-{i}"
+    original = [
+        {"role": "user", "content": "old history " * 300},
+        {"role": "assistant", "content": REPLY}, *followers,
+    ]
+    before = list(compressed)
+
+    assert _reply_insertion_index(followers, compressed, reused_ids=frozenset({"call_0"})) is None
+    assert _ensure_compressed_keeps_last_assistant_reply(original, compressed) is None
+    assert compressed == before
 
 
 def _seed(tmp_path, tail_rows, fold, follower):
@@ -161,6 +406,96 @@ class TestEngineDropsReplyEndToEnd:
     LCM fold (long just-delivered reply summarized away, next-turn user row
     kept): the reply row must stay ACTIVE in state.db after commit, while
     genuinely old rows are still archived (compression itself keeps working)."""
+
+    @pytest.mark.parametrize("reused_ids", [False, True])
+    def test_first_follower_order_is_committed_and_reloaded(self, tmp_path, reused_ids):
+        from agent.conversation_compression import _message_text
+        from hermes_state import SessionDB
+
+        followers = [{"role": "user", "content": FOLLOWER}, *_tool_chain("call_1"),
+                     {"role": "user", "content": "and Y"}]
+        fold = [{"role": "user", "content": SUMMARY}, *[dict(m) for m in followers]]
+        db, session_id, _, agent = _seed(tmp_path, [], fold, FOLLOWER)
+        if reused_ids:
+            followers = [{"role": "user", "content": FOLLOWER}, *_tool_chain("call_0"),
+                         {"role": "user", "content": "steer"}, *_tool_chain("call_0"),
+                         {"role": "user", "content": "and Y"}]
+        for row in followers[:-1]:
+            db.append_message(
+                session_id, row["role"], row["content"],
+                tool_calls=row.get("tool_calls"), tool_call_id=row.get("tool_call_id"),
+            )
+        messages = [*db.get_messages_as_conversation(session_id, include_row_ids=True), followers[-1]]
+        if reused_ids:
+            first_follower = messages[-len(followers)]
+            first_follower["message_uid"] = "first-follower"
+            fold = [{"role": "user", "content": SUMMARY}, dict(first_follower),
+                    *[dict(m) for m in followers[1:]]]
+            agent.context_compressor.compress.return_value = fold
+
+        out = _compress(agent, messages)
+        live = db.get_messages_as_conversation(session_id)
+        db.close()
+        reloaded_db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            reloaded = reloaded_db.get_messages_as_conversation(session_id)
+        finally:
+            reloaded_db.close()
+        expected = [fold[0], {"role": "assistant", "content": REPLY}, *followers]
+        for view in (out, live, reloaded):
+            # Persistence normalizes whitespace and empty tool-call content;
+            # compare visible rows in order, with tool pairing checked below.
+            assert [(m["role"], _message_text(m).strip()) for m in view] == [
+                (m["role"], _message_text(m).strip()) for m in expected
+            ]
+            assert _count_reply(view) == 1
+            _assert_no_same_role_adjacency(view)
+            call_id = "call_0" if reused_ids else "call_1"
+            assert view[3]["tool_calls"][0]["id"] == view[4]["tool_call_id"] == call_id
+
+    @pytest.mark.parametrize("identity_keys", [("_row_id",), ("message_uid",), ("_row_id", "message_uid")])
+    def test_dropped_follower_reused_tool_order_is_committed_and_reloaded(self, tmp_path, identity_keys):
+        from agent.conversation_compression import _message_text
+        from hermes_state import SessionDB
+
+        db, session_id, _, agent = _seed(tmp_path, [], [], "continue")
+        followers = [
+            {"role": "user", "content": "continue"}, *_tool_chain("call_0"),
+            {"role": "user", "content": "continue"}, *_tool_chain("call_0"),
+        ]
+        followers[2]["content"] = "first round result"
+        followers[5]["content"] = "second round result"
+        for row in followers:
+            db.append_message(
+                session_id, row["role"], row["content"],
+                tool_calls=row.get("tool_calls"), tool_call_id=row.get("tool_call_id"),
+            )
+        messages = db.get_messages_as_conversation(session_id, include_row_ids=True)
+        kept = [dict(m) for m in messages[-len(followers) + 1:]]
+        for row in kept:
+            for key in ("_row_id", "message_uid"):
+                if key not in identity_keys:
+                    row.pop(key, None)
+        fold = [{"role": "user", "content": SUMMARY}, *kept]
+        agent.context_compressor.compress.return_value = fold
+        # Snapshot the engine's order before the real compression path can mutate it.
+        expected = [(m["role"], _message_text(m).strip()) for m in fold]
+
+        try:
+            out = _compress(agent, messages)
+            live = db.get_messages_as_conversation(session_id, repair_alternation=False)
+        finally:
+            db.close()
+        reloaded_db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            reloaded = reloaded_db.get_messages_as_conversation(session_id, repair_alternation=False)
+        finally:
+            reloaded_db.close()
+        for view in (out, live, reloaded):
+            assert [(m["role"], _message_text(m).strip()) for m in view] == expected
+            assert _count_reply(view) == 0
+            _assert_no_same_role_adjacency(view)
+            assert [m["tool_call_id"] for m in view if m["role"] == "tool"] == ["call_0", "call_0"]
 
     def _compress_and_read(self, db, session_id, agent, messages, tail_role):
         out_messages = _compress(agent, messages)

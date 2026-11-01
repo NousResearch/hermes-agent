@@ -14,6 +14,17 @@ test('first soft attempt with alive backend returns soft restart', () => {
   assert.equal(decision.attempt, 1)
 })
 
+test('an unusable installed runtime reinstalls immediately without spending the soft-restart budget', () => {
+  const decision = decideBootstrapRepair({
+    attempt: 1,
+    primaryBackendAlive: false,
+    runtimeUsable: false
+  })
+
+  assert.equal(decision.hardReinstall, true)
+  assert.equal(decision.attempt, 1)
+})
+
 test('soft restart budget exhausts at maxSoftAttempts+1 and escalates', () => {
   const decision = decideBootstrapRepair({
     attempt: 4,

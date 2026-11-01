@@ -81,6 +81,7 @@ import type { AppearanceSubpageId } from './appearance-subpages'
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
+import { LinuxWindowControlsSetting } from './linux-window-controls-setting'
 import { MinimizeToTraySetting } from './minimize-to-tray-setting'
 import { PetSettings } from './pet-settings'
 import { ListRow, RowFootnoteAction, SectionHeading, SettingsContent, ToggleRow } from './primitives'
@@ -786,12 +787,12 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
           {show('window-layout') && (
             <div id={settingElementId(ids.minimizeToTray)}>
+              <LinuxWindowControlsSetting />
               <MinimizeToTraySetting />
             </div>
           )}
 
-          {/* Linux has neither half of this setting (see TRANSLUCENCY_SUPPORTED),
-              so the row is absent there rather than offering a dead lever. */}
+          {/* Linux has neither half of this setting, so the row is absent, not a dead lever. */}
           {show('window-layout') && TRANSLUCENCY_SUPPORTED && (
             <ListRow
               action={

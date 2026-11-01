@@ -1,5 +1,6 @@
 import type { Translations } from '@/i18n'
 import { hostHas } from '@/lib/host-capabilities'
+import { linuxWindowControlsAvailable } from '@/lib/platform'
 import { NATIVE_NOTIFICATION_KINDS } from '@/store/native-notifications'
 import { canUseQuickEntry } from '@/store/quick-entry'
 import { TRANSLUCENCY_SUPPORTED } from '@/store/translucency'
@@ -94,6 +95,14 @@ export const SETTINGS_MANIFEST = {
       ['titlebar', 'settings gear', 'layout', 'HUD', 'left', 'right', 'tabs'],
       'appActions'
     ),
+    windowControls: {
+      ...appearanceSetting(
+        'window-layout',
+        ['window buttons', 'minimize', 'maximize', 'close', 'titlebar', 'tiling'],
+        'windowControls'
+      ),
+      available: linuxWindowControlsAvailable
+    },
     minimizeToTray: {
       subpage: 'window-layout',
       keywords: ['tray', 'background', 'minimize', 'dock', 'taskbar', 'menu bar'],

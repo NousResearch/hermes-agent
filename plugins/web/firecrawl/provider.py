@@ -69,8 +69,9 @@ def _wt():
 
 
 def _env(name: str) -> str:
-    from hermes_cli.config import get_env_value
-    return (get_env_value(name) or "").strip()
+    # Same prefer-dotenv lookup as the other keyed web providers (#65459 / #40190).
+    from agent.web_search_provider import get_provider_env
+    return get_provider_env(name)
 
 
 def _get_direct_firecrawl_config() -> Optional[tuple]:
@@ -84,7 +85,6 @@ def _get_direct_firecrawl_config() -> Optional[tuple]:
     if _is_explicit_firecrawl_selection():
         return "keyless", {"api_url": _FIRECRAWL_CLOUD_API_URL}, ("direct-keyless", _FIRECRAWL_CLOUD_API_URL, None)
     return None
-
 
 def _is_explicit_firecrawl_selection() -> bool:
     from plugins.web.keyless_mcp import _web_config_selects

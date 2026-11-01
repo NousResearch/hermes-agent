@@ -62,6 +62,7 @@ describe('active work bridge', () => {
       isMinimized: () => true,
       webContents: { isDestroyed: () => false, setBackgroundThrottling: vi.fn() }
     })
+
     const owner = minimizedWindow()
     const peer = minimizedWindow()
     const throttle = createStreamThrottle()
@@ -84,6 +85,7 @@ describe('active work bridge', () => {
 
     const releaseFirst = retainVoiceStreamPaint()
     const releaseSecond = retainVoiceStreamPaint()
+
     try {
       try {
         expect(setActiveWork).toHaveBeenLastCalledWith({ ...work, voiceActive: true })

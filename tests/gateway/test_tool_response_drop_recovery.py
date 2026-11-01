@@ -328,3 +328,53 @@ class TestPostStopInterruptSwallow:
             "Cached agent with a set interrupt flag must be evicted on /stop "
             "so the flag cannot kill the session's next message (#44212)"
         )
+
+
+class TestIdlessSendIsNotEvidenceOfDelivery:
+    """A final that reports success without a message id used to be finalized as delivered.
+
+    ``delivery_obligations`` finalizes on ``SendResult.success`` and prunes a delivered row, so an
+    id-less success stranded a genuinely lost final with no recovery and no log line. Two live shapes
+    produce it: the Telegram rich fast-path when the API result carries no ``message_id``, and
+    ``_send_chunks`` when the formatter reduces non-empty content to zero chunks (which also
+    stringifies a missing id, so the literal ``"None"`` reaches the check).
+    """
+
+    @staticmethod
+    def _confirm(result, text="uma resposta com conteudo real"):
+        return BasePlatformAdapter._confirm_delivery_result(
+            _DummyAdapter(Platform.TELEGRAM), text, _make_event(Platform.TELEGRAM), result
+        )
+
+    def test_idless_success_becomes_unconfirmed_retryable(self):
+        out = self._confirm(SendResult(success=True, message_id=None))
+        assert out.success is False
+        assert out.error == "unconfirmed_delivery_no_message_id"
+        assert out.retryable is True, "the ledger must be able to redeliver it"
+
+    def test_stringified_none_is_not_an_id(self):
+        out = self._confirm(SendResult(success=True, message_id="None"))
+        assert out.success is False, "str(None) out of _send_chunks is not a delivery receipt"
+
+    @pytest.mark.parametrize("message_id", ["42", "msg-1"])
+    def test_a_real_message_id_is_left_alone(self, message_id):
+        src = SendResult(success=True, message_id=message_id)
+        assert self._confirm(src) is src
+
+    def test_a_genuine_failure_is_left_alone(self):
+        src = SendResult(success=False, error="flood_control:30", retryable=True)
+        assert self._confirm(src) is src
+
+    @pytest.mark.parametrize("text", ["", "   \n  "])
+    def test_nothing_owed_keeps_its_success(self, text):
+        src = SendResult(success=True, message_id=None)
+        assert self._confirm(src, text) is src, (
+            "the whitespace guard in every adapter legitimately reports an empty final as a success; "
+            "downgrading it would leave the ledger retrying a turn that owed nothing"
+        )
+
+    def test_the_downgrade_is_logged(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="gateway.platforms.base"):
+            self._confirm(SendResult(success=True, message_id=None))
+        assert "no message id" in caplog.text
+

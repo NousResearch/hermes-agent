@@ -5,6 +5,7 @@ export const deModelMenu = {
   editModels: 'Modelle bearbeiten…',
   followDefault: 'Standard aus den Einstellungen verwenden',
   refreshModels: 'Modelle aktualisieren',
+  portalCta: 'Über Nous Portal auf Hunderte weitere Modelle zugreifen',
   favorites: 'Favoriten',
   addFavorite: 'Zu Favoriten hinzufügen',
   removeFavorite: 'Aus Favoriten entfernen',

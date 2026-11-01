@@ -255,6 +255,7 @@ export const zhHantChrome = {
       editModels: '編輯模型…',
       followDefault: '使用設定中的預設模型',
       refreshModels: '重新整理模型',
+      portalCta: '透過 Nous Portal 使用數百種更多模型',
       favorites: '我的最愛',
       addFavorite: '加入我的最愛',
       removeFavorite: '從我的最愛移除',

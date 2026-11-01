@@ -29,7 +29,7 @@ import {
   stripGeneratedImageEchoes
 } from '@/lib/generated-images'
 import { isTodoToolName, nextTodosFromToolEvent, parseTodoRevision } from '@/lib/todos'
-import { turnDoneNotificationBody } from '@/lib/turn-done-notification-body'
+import { shouldNotifyTurnDone, turnDoneNotificationBody } from '@/lib/turn-done-notification-body'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
@@ -1160,12 +1160,16 @@ export function useMessageStream({
         void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
       }
 
-      dispatchNativeNotification({
-        body: turnDoneNotificationBody(text, translateNow('notifications.native.turnDoneBody')),
-        kind: 'turnDone',
-        sessionId,
-        title: translateNow('notifications.native.turnDoneTitle')
-      })
+      // A quiet/control-only completion carries no visible text (the gateway blanks
+      // intentional-silence machinery turns); it must not raise an OS notification.
+      if (shouldNotifyTurnDone(text)) {
+        dispatchNativeNotification({
+          body: turnDoneNotificationBody(text, translateNow('notifications.native.turnDoneBody')),
+          kind: 'turnDone',
+          sessionId,
+          title: translateNow('notifications.native.turnDoneTitle')
+        })
+      }
     },
     [hydrateFromStoredSession, scheduleSessionsRefresh, updateSessionState]
   )

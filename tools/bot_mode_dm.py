@@ -232,6 +232,17 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _err(msg, roster=teammates, peers=peers)
 
     body = str(message or "").strip()
+    # [SILENT] is a delivery-control token, not message content: a trailing bare marker line
+    # (a habit from reply-suppression rules) would render verbatim in the recipient's Bot Chat
+    # GUI. Strip trailing bare-marker lines only; a token inside prose is left alone.
+    try:
+        from gateway.response_filters import is_intentional_silence_response
+        lines = body.splitlines()
+        while lines and is_intentional_silence_response(lines[-1]):
+            lines.pop()
+        body = "\n".join(lines).strip()
+    except Exception:
+        pass
     if not body:
         return _err("message is required — compose what you want to say to that agent.")
     if len(body) > MESSAGE_MAX_CHARS:

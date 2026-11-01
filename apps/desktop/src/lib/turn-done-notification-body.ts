@@ -11,6 +11,18 @@
 export const TURN_DONE_BODY_MAX = 140
 export const TURN_DONE_BODY_FALLBACK = 'Message complete.'
 
+/**
+ * Whether a completed turn should raise the native turn-done notification at all.
+ * A turn that settles with NO visible text is a quiet/control-only completion (the
+ * gateway blanks intentional-silence machinery turns — internal notifications,
+ * background-completion wakes — before the frame reaches the client). Notifying
+ * "Message complete." for those is noise the user explicitly asked to remove;
+ * every genuine reply, alert or recap carries text and still notifies.
+ */
+export function shouldNotifyTurnDone(content: string | null | undefined): boolean {
+  return Boolean((content ?? '').trim())
+}
+
 export function turnDoneNotificationBody(
   content: string | null | undefined,
   fallback: string = TURN_DONE_BODY_FALLBACK

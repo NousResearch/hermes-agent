@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { TURN_DONE_BODY_FALLBACK, TURN_DONE_BODY_MAX, turnDoneNotificationBody } from './turn-done-notification-body'
+import { TURN_DONE_BODY_FALLBACK, TURN_DONE_BODY_MAX, shouldNotifyTurnDone, turnDoneNotificationBody } from './turn-done-notification-body'
 
 // Mirrors the minified 0.20.0 Studio bundle helper quoted in #88488:
 //   Xn(n?.content || e.title || "Message complete.", 140)
@@ -66,5 +66,19 @@ describe('turnDoneNotificationBody', () => {
   it('ignores a blank i18n fallback and still avoids an empty body', () => {
     expect(turnDoneNotificationBody('', '')).toBe(TURN_DONE_BODY_FALLBACK)
     expect(turnDoneNotificationBody(null, '   ')).toBe(TURN_DONE_BODY_FALLBACK)
+  })
+})
+
+describe('shouldNotifyTurnDone', () => {
+  it('suppresses the notification for a quiet/control-only completion (empty text)', () => {
+    expect(shouldNotifyTurnDone('')).toBe(false)
+    expect(shouldNotifyTurnDone('   ')).toBe(false)
+    expect(shouldNotifyTurnDone(null)).toBe(false)
+    expect(shouldNotifyTurnDone(undefined)).toBe(false)
+  })
+
+  it('keeps notifying for any genuine reply, alert or recap', () => {
+    expect(shouldNotifyTurnDone('Daily recap: all systems nominal.')).toBe(true)
+    expect(shouldNotifyTurnDone('SMART failure on nas-disk2!')).toBe(true)
   })
 })

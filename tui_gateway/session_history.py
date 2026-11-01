@@ -322,6 +322,13 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
             content_text = _coerce_message_text(m.get("content"), image_urls=image_urls)
         if _is_display_hidden_marker(role, content_text):
             continue
+        if role == "assistant" and not m.get("tool_calls"):
+            # A bare intentional-silence control token ([SILENT]/NO_REPLY) is a delivery decision,
+            # not content: the live completion frame already blanks it, so the stored row must not
+            # resurface as a bubble on hydrate/backfill. The durable row itself is preserved.
+            from gateway.response_filters import is_intentional_silence_response
+            if is_intentional_silence_response(content_text):
+                continue
         if role == "user":
             content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)
             # A pre_llm_call veto stores a placeholder; the transcript shows what the user typed.

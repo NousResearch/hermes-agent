@@ -905,7 +905,8 @@ def _persisted_turn_receipt(st: _TurnRun, raw: Any, status: str) -> dict | None:
             committed_row_id(before) is not None and committed_row_id(before) == committed_row_id(after)))
 
 
-def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):
+def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int,
+                           display_kind: str | None = None):
     """``(payload, raw, status)`` for message.complete; retains/clears the inflight turn and
     settles the hosted-room terminal receipt."""
     result, agent = st.result, st.agent
@@ -926,6 +927,14 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     receipt = _persisted_turn_receipt(st, raw, status)
     if _is_bot_mode_session(session):
         raw = _bot_mode_delivery_text(raw, successful=status == "complete")
+    else:
+        # Same control-token blanking for machinery turns on the desktop/TUI surface (internal
+        # notifications, background-completion wakes): a successful bare [SILENT] must not become
+        # a visible bubble or a native-notification body. User-addressed turns keep their text —
+        # genuine replies, alerts and error diagnostics are never swallowed.
+        from gateway.response_filters import silence_allowed
+        if silence_allowed(display_kind, None):
+            raw = _bot_mode_delivery_text(raw, successful=status == "complete")
     payload = {"text": raw, "usage": _get_usage(agent), "status": status}
     if receipt:
         payload["persisted_turn"] = receipt
@@ -1174,7 +1183,8 @@ def _run_prompt_submit(
                 display_metadata, turn_author, text)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
-            payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
+            payload, raw, status = _complete_turn_payload(session, st, status_note, cols,
+                                                          display_kind=display_kind)
             if status == "complete":
                 # Before message.complete: the desktop re-reads the sign-in offer on that event.
                 from tui_gateway.free_tier_task_done import note_task_done

@@ -339,6 +339,30 @@ def test_remote_scan_full_authoritative_replaces_cache(tmp_path):
     assert stale not in joined
 
 
+@pytest.mark.parametrize("typed_root", ["~/x", "absolute"])
+def test_remote_scan_reads_tilde_paths_like_the_policy_key(tmp_path, monkeypatch, typed_root):
+    """A root or excluded path typed with ``~`` names the home directory's, as the policy's cache key
+    reads it: the root ``~/x`` is walked and its repo recorded, and the excluded ``~/x/skip`` is
+    skipped, whether the root is typed with ``~`` or absolute."""
+    from hermes_cli import projects_db as pdb
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    kept, skipped = home / "x" / "kept-repo", home / "x" / "skip" / "skipped-repo"
+    for repo in (kept, skipped):
+        (repo / ".git").mkdir(parents=True)  # what the scan looks for
+    root = "~/x" if typed_root == "~/x" else str(home / "x")
+    policy = {"enabled": True, "roots": [root], "exclude_paths": ["~/x/skip"]}
+
+    with pdb.connect_closing() as conn:
+        authoritative = server._scan_discovered_repos_remote(conn, policy)
+        joined = [r["root"] for r in pdb.list_discovered_repos(conn)]
+
+    assert authoritative
+    assert str(kept) in joined
+    assert str(skipped) not in joined
+
+
 def test_terminal_session_persists_its_launch_cwd():
     """A terminal session's cwd IS its workspace, so the row must record it.
 

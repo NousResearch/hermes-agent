@@ -73,6 +73,8 @@ export const slashCmdCoreEn = {
     copy: {
       copiedCharsOne: (count: string) => `copied ${count} character`,
       copiedCharsOther: (count: string) => `copied ${count} characters`,
+      cutCharsOne: (count: string) => `cut ${count} character`,
+      cutCharsOther: (count: string) => `cut ${count} characters`,
       clipboardFailed: 'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence',
       usage: 'usage: /copy [number]',
       nothingToCopy: 'nothing to copy — start a conversation first',

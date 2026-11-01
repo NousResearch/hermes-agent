@@ -14,7 +14,7 @@ import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 
 import { $agentDockCollapsed } from './agentRoster.js'
-import { getInputSelection } from './inputSelectionStore.js'
+import { atHistoryBoundary, getInputSelection } from './inputSelectionStore.js'
 import {
   type GatewayRpc,
   type InputHandlerActions,
@@ -273,7 +273,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // legacy server→client request resolves its response frame locally.
       if (overlay.approval.sharedControl) {
         return gateway
-          .rpc<SharedControlRespondResponse>('approval.respond', { choice: 'deny', ...sharedControlParams(overlay.approval) })
+          .rpc<SharedControlRespondResponse>('approval.respond', {
+            choice: 'deny',
+            ...sharedControlParams(overlay.approval)
+          })
           .then(r => r && fresh() && settle())
       }
 
@@ -681,27 +684,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return clearSelection()
     }
 
-    if (key.upArrow && !cState.inputBuf.length) {
-      const inputSel = getInputSelection()
-      const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
+    if ((key.upArrow || key.downArrow) && !cState.inputBuf.length) {
+      const direction = key.upArrow ? -1 : 1
 
-      const noLineAbove =
-        !cState.input || (cursor !== null && cState.input.lastIndexOf('\n', Math.max(0, cursor - 1)) < 0)
-
-      if (noLineAbove) {
-        cycleQueue(1) || cycleHistory(-1)
-
-        return
-      }
-    }
-
-    if (key.downArrow && !cState.inputBuf.length) {
-      const inputSel = getInputSelection()
-      const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
-      const noLineBelow = !cState.input || (cursor !== null && cState.input.indexOf('\n', cursor) < 0)
-
-      if (noLineBelow || cState.historyIdx !== null) {
-        cycleQueue(-1) || cycleHistory(1)
+      if (atHistoryBoundary(cState.input, direction, getUiState().arrowKeyMode)) {
+        cycleQueue(key.upArrow ? 1 : -1) || cycleHistory(direction)
 
         return
       }

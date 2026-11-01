@@ -32,7 +32,10 @@ const graphemes = (value: string) =>
 // delegates to wrap-ansi — so any drift between the two algorithms parks the
 // hardware cursor several cells away from the last rendered character.
 // Sourcing both from wrap-ansi guarantees agreement.
-function visualLines(value: string, cols: number): VisualLine[] {
+function visualLines(source: string, cols: number): VisualLine[] {
+  // wrap-ansi normalizes to NFC. Keep offsets in the original editable buffer.
+  const value = source.normalize('NFC')
+
   if (!value.length) {
     return [{ start: 0, end: 0 }]
   }
@@ -96,7 +99,25 @@ function visualLines(value: string, cols: number): VisualLine[] {
 
   // wrap-ansi collapses an empty input into [""] which we already handled
   // above; preserve the invariant that lines is never empty for any input.
-  return lines.length ? lines : [{ start: 0, end: 0 }]
+  return originalLineOffsets(source, value, lines.length ? lines : [{ start: 0, end: 0 }])
+}
+
+function originalLineOffsets(source: string, normalized: string, lines: VisualLine[]): VisualLine[] {
+  if (source === normalized) {
+    return lines
+  }
+
+  const offsets = [0]
+
+  for (const part of seg().segment(source)) {
+    const length = part.segment.normalize('NFC').length
+
+    for (let i = 1; i <= length; i++) {
+      offsets.push(i === length ? part.index + part.segment.length : part.index)
+    }
+  }
+
+  return lines.map(line => ({ start: offsets[line.start]!, end: offsets[line.end]! }))
 }
 
 function widthBetween(value: string, start: number, end: number) {
@@ -168,6 +189,28 @@ export function offsetFromPosition(value: string, row: number, col: number, cols
 
 export function inputVisualHeight(value: string, columns: number) {
   return cursorLayout(value, value.length, columns).line + 1
+}
+
+/** Navigate the same wrapped rows that are painted by TextInput. */
+export function visualLineNav(value: string, cursor: number, direction: -1 | 1, columns: number, goal?: number) {
+  const position = cursorLayout(value, cursor, columns)
+  const target = position.line + direction
+  const lines = visualLines(value, columns)
+
+  if (target < 0 || target >= lines.length) {
+    return null
+  }
+
+  const offset = offsetFromPosition(value, target, goal ?? position.column, columns)
+  const row = lines[target]!
+
+  // At a soft wrap the end offset belongs to the NEXT row. Stay on this row's
+  // final grapheme instead of leaving the cursor on the row we tried to leave.
+  if (offset === row.end && lines[target + 1]?.start === row.end) {
+    return row.start + (graphemes(value.slice(row.start, row.end)).at(-1)?.index ?? 0)
+  }
+
+  return offset
 }
 
 export function composerPromptWidth(promptText: string) {

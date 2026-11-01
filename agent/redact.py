@@ -1020,7 +1020,8 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if not text:
         return text
     # Vault secrets are a hard model-egress boundary: scrubbed regardless of the redact_secrets preference.
-    text = redact_registered_vault_values(text)
+    from agent.redact_cards import redact_card_values  # grouped card numbers + the live checkout's CVC
+    text = redact_registered_vault_values(redact_card_values(text))
     if not (force or _redact_enabled()):
         return text
     # ``secret_file`` is authoritative: a caller that classified the source as secret-bearing must not

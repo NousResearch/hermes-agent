@@ -1013,6 +1013,10 @@ def _configured_aux_model(sections: tuple, env_vars: tuple) -> Optional[str]:
 async def _handle_vision_analyze(args: dict[str, Any], **kw: Any) -> str:
     image_url, question, region = args.get("image_url", ""), args.get("question", ""), args.get("region")
     task_id = kw.get("task_id")
+    from tools.browser_vault_card_guard import image_refusal
+    card_refusal = await asyncio.to_thread(image_refusal, task_id, str(image_url or ""))
+    if card_refusal:  # a capture taken while a payment card is filled would show the card number
+        return json.dumps({"success": False, "error_type": "card_filled", "error": card_refusal})
     # No concurrency gate around the whole analysis — the CPU burst is bounded inside the
     # encode/resize step, so multi-image fan-out keeps full request concurrency.
     if _should_use_native_vision_fast_path():

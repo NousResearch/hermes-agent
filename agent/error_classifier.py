@@ -271,6 +271,8 @@ _CONTEXT_OVERFLOW_PATTERNS = (
     # Together/Fireworks-style: "Input length 131393 exceeds the maximum allowed input length of 131040
     # tokens."  No other pattern in this list matches that wording. (port of anomalyco/opencode#37848)
     "maximum allowed input length",
+    # BytePlus Ark: "Input exceeds the context limit (1048568 tokens)" (port of Kilo-Org/kilocode#15479)
+    "context limit",
 )
 
 # Last entry: OpenRouter 404 when no endpoint supports tool calling —

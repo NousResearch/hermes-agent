@@ -23,6 +23,7 @@ from agent.message_metadata import (
     TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
+from agent.route_verdicts import ROUTE_VERDICT_FIELDS
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
@@ -2122,8 +2123,7 @@ _SWITCH_SNAPSHOT_FIELDS = (
     "model", "provider", "requested_provider", "base_url", "api_mode", "api_key", "client",
     "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
     "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
-    "_credential_pool", "_credential_pool_entry_id",
-    "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected",
+    "_credential_pool", "_credential_pool_entry_id", *ROUTE_VERDICT_FIELDS,
 )
 _MISSING = object()
 
@@ -2282,8 +2282,8 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     # New api_mode may need a different transport.
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
-    from agent.turn_recovery_codex import reset_codex_reasoning_replay
-    reset_codex_reasoning_replay(agent)
+    from agent.route_verdicts import reset_route_verdicts
+    reset_route_verdicts(agent)
     if api_key:
         agent.api_key = api_key
     # Reload the credential pool on provider change: a pool with a mismatched provider makes

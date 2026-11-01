@@ -924,3 +924,56 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+def test_deepseek_responses_route_prices_from_the_snapshot(monkeypatch):
+    """A custom-named provider entry fronting DeepSeek's own host is DeepSeek.
+
+    The billing-route resolver keys on the provider name first, so a
+    "deepseek-responses" entry (the config name over api.deepseek.com) missed the
+    bundled DeepSeek snapshot AND the provider-name-keyed models.dev fallback:
+    every session on it reported cost status "unknown". The endpoint host must
+    select the DeepSeek rate card.
+    """
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("endpoint metadata should not be fetched")
+        ),
+    )
+
+    cost = estimate_usage_cost(
+        "deepseek-flash",
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000),
+        provider="deepseek-responses",
+        base_url="https://api.deepseek.com",
+    )
+
+    entry = _OFFICIAL_DOCS_PRICING[("deepseek", "deepseek-flash")]
+    assert cost.status == "estimated"
+    assert cost.source == "official_docs_snapshot"
+    assert cost.amount_usd == (
+        entry.input_cost_per_million + entry.output_cost_per_million + entry.cache_read_cost_per_million
+    )
+    assert resolve_billing_route(
+        "deepseek-flash", provider="deepseek-responses", base_url="https://api.deepseek.com"
+    ).provider == "deepseek"
+
+
+def test_deepseek_rates_do_not_leak_to_a_relay_host(monkeypatch):
+    """Only DeepSeek's own host selects the card, not the provider name.
+
+    A relay serving deepseek-flash may bill differently; it must stay unknown
+    rather than inherit DeepSeek list prices.
+    """
+    monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", lambda *_a, **_k: {})
+
+    cost = estimate_usage_cost(
+        "deepseek-flash",
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000),
+        provider="deepseek-responses",
+        base_url="https://deepseek-relay.example.com/v1",
+    )
+
+    assert cost.status == "unknown"
+

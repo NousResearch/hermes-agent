@@ -29,7 +29,7 @@ import { $pinnedSessionIds, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $sessions } from '@/store/session'
 
-import { forgetPinSyncState } from './session-pin-sync'
+import { $unconfirmedPinWrites, forgetPinSyncState } from './session-pin-sync'
 
 const SWEEP_CONCURRENCY = 4
 // After the first list payload, let boot settle (pin reconcile, resume probes)
@@ -84,8 +84,26 @@ async function sessionVerdict(id: string): Promise<Verdict> {
     return 'unknown'
   }
 
+  const evictStalePinIfArchivedOrUnpinned = (session: unknown): void => {
+    if (!session || typeof session !== 'object') {
+      return
+    }
+
+    const row = session as { archived?: boolean; pinned?: boolean }
+
+    if (
+      (row.archived === true || row.pinned === false) &&
+      $pinnedSessionIds.get().includes(id) &&
+      !$unconfirmedPinWrites.get().has(id)
+    ) {
+      forgetPinSyncState(id)
+      unpinSession(id)
+    }
+  }
+
   try {
-    await getSession(id)
+    const session = await getSession(id)
+    evictStalePinIfArchivedOrUnpinned(session)
 
     return 'alive'
   } catch (error) {
@@ -106,7 +124,8 @@ async function sessionVerdict(id: string): Promise<Verdict> {
 
   for (const profile of otherProfiles) {
     try {
-      await getSession(id, profile)
+      const session = await getSession(id, profile)
+      evictStalePinIfArchivedOrUnpinned(session)
 
       return 'alive'
     } catch (error) {

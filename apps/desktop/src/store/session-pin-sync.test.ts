@@ -586,4 +586,23 @@ describe('watchSessionPins remote pull', () => {
     expect($pinnedSessionIds.get()).toContain('maint-pin')
     expect(patch).not.toHaveBeenCalled()
   })
+
+  it('does not fire redundant PATCH pinned=true when server row already has pinned=true (C1)', async () => {
+    $pinnedSessionIds.set(['already-pinned'])
+    $sessions.set([row('already-pinned', { pinned: true, profile: 'default' })])
+    await flush()
+
+    expect(patch).not.toHaveBeenCalled()
+    expect($pinnedSessionIds.get()).toEqual(['already-pinned'])
+  })
+
+  it('fences rescoped localStorage pins against server pinned=false across multiple session refreshes (C1/M6)', async () => {
+    $pinnedSessionIds.set(['stale-rescope-pin'])
+    resetSessionPinMirror()
+    $sessions.set([row('stale-rescope-pin', { pinned: false, profile: 'default' })])
+    await flush()
+
+    expect(patch).not.toHaveBeenCalled()
+    expect($pinnedSessionIds.get()).toEqual([])
+  })
 })

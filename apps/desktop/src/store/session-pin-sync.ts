@@ -24,7 +24,7 @@
 import { atom } from 'nanostores'
 
 import { setSessionPinnedRemote } from '@/hermes'
-import { onConnectionScopeChange } from '@/lib/connection-scoped'
+import { isRescopingConnectionScope, onConnectionScopeChange } from '@/lib/connection-scoped'
 import { isMissingRestEndpoint, isOfflineMaintenance } from '@/lib/gateway-rpc'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -45,6 +45,8 @@ import type { SessionInfo } from '@/types/hermes'
 const mirrored = new Set<string>()
 // pin ids awaiting their row so we can resolve the owning profile before PATCH.
 const pending = new Set<string>()
+// pin ids loaded from localStorage during a connection rescope (not a fresh user toggle).
+const rescopedPending = new Set<string>()
 // pin ids whose PATCH was refused with terminal 409 offline maintenance or 404 missing endpoint on this scope;
 // kept fenced so neither the push pass retries on every slice refresh nor pullRemotePins drops the local pin.
 const maintenanceFenced = new Set<string>()
@@ -343,6 +345,7 @@ function reconcileInner(): void {
     if (!current.has(id)) {
       mirrored.delete(id)
       pending.delete(id)
+      rescopedPending.delete(id)
       maintenanceFenced.delete(id)
 
       // Removal owns the durable write; a separate unpin would race its
@@ -354,9 +357,15 @@ function reconcileInner(): void {
   }
 
   // Newly pinned: hold until we can resolve the row (for its profile).
+  const rescoping = isRescopingConnectionScope()
+
   for (const id of current) {
     if (!mirrored.has(id)) {
       pending.add(id)
+
+      if (rescoping) {
+        rescopedPending.add(id)
+      }
     }
   }
 
@@ -370,6 +379,18 @@ function reconcileInner(): void {
     }
 
     pending.delete(id)
+    const fromRescope = rescopedPending.delete(id)
+
+    if (!isOptimisticRow(row) && row.pinned === true) {
+      mirrored.add(id)
+      continue
+    }
+
+    if (fromRescope && !isOptimisticRow(row) && row.pinned === false) {
+      mirrored.add(id)
+      continue
+    }
+
     mirrored.add(id)
     void writePin(id, true, row.profile).catch((err: unknown) => {
       if (isMissingRestEndpoint(err) || isOfflineMaintenance(err)) {
@@ -414,8 +435,13 @@ export function watchSessionPins(): void {
 export function resetSessionPinMirror(): void {
   mirrored.clear()
   pending.clear()
+  rescopedPending.clear()
   maintenanceFenced.clear()
   unconfirmed.clear()
+  for (const id of $pinnedSessionIds.get()) {
+    pending.add(id)
+    rescopedPending.add(id)
+  }
   publishUnconfirmed()
 }
 
@@ -428,6 +454,7 @@ export function resetSessionPinMirror(): void {
 export function forgetPinSyncState(id: string): void {
   mirrored.delete(id)
   pending.delete(id)
+  rescopedPending.delete(id)
   maintenanceFenced.delete(id)
   unconfirmed.delete(id)
 }

@@ -10,7 +10,6 @@ import {
 } from '@/lib/session-source'
 import { gatewayActivationEpoch } from '@/store/gateway'
 import {
-  $pinnedSessionIds,
   $sessionsLimit,
   $sidebarFiltersActive,
   bumpSessionsLimit,
@@ -50,6 +49,7 @@ import {
   type SessionTombstoneGenerationSnapshot,
   tombstoneRowIds
 } from '@/store/session-removal'
+import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $sessionTiles, $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
 import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions'
@@ -136,7 +136,7 @@ function publishMessagingRows(rows: SessionInfo[], scopeProfile: string): Sessio
 function sessionsToKeep(scope?: string): Set<string> {
   const keep = new Set<string>([
     ...$workingSessionIds.get(),
-    ...$pinnedSessionIds.get(),
+    ...$unconfirmedPinWrites.get(),
     ...getRecentlySettledSessionIds()
   ])
 

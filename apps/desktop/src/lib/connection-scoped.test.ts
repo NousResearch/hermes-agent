@@ -33,4 +33,23 @@ describe('connectionScopeSuffix', () => {
       connectionScopeSuffix(remote('default', 'https://gw-b.example'), false)
     )
   })
+
+  it('keeps SSH remote suffix stable across ephemeral tunnel port rotations (C4)', () => {
+    const tunnelA = {
+      baseUrl: 'http://127.0.0.1:53759',
+      connectionId: 'mini',
+      mode: 'remote' as const,
+      profile: 'default',
+      remoteHost: 'mini',
+      remoteKind: 'ssh' as const
+    }
+    const tunnelB = {
+      ...tunnelA,
+      baseUrl: 'http://127.0.0.1:62809'
+    }
+
+    expect(connectionScopeSuffix(tunnelA, false)).toBe(`.remote.${encodeURIComponent('ssh://mini')}`)
+    expect(connectionScopeSuffix(tunnelB, false)).toBe(connectionScopeSuffix(tunnelA, false))
+    expect(connectionScopeSuffix(tunnelB, true)).toBe(connectionScopeSuffix(tunnelA, true))
+  })
 })

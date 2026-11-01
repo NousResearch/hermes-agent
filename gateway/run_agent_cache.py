@@ -33,6 +33,35 @@ _OVERRIDE_APPLY_KEYS = (
 )
 
 
+def refresh_cached_agent_credential_pool(agent: Any, runtime: dict) -> None:
+    """Update recovery candidates on a cache hit without changing its active route or client."""
+    from agent.credential_pool import credential_pool_entry_serves_endpoint, credential_pool_matches_provider
+    from hermes_cli.route_identity import normalize_route_base_url
+
+    pool = runtime.get("credential_pool")
+    if pool is None or pool is getattr(agent, "_credential_pool", None) or getattr(agent, "_fallback_activated", False):
+        return
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    endpoint = normalize_route_base_url(getattr(agent, "base_url", None))
+    if not provider or provider != str(runtime.get("provider") or "").strip().lower():
+        return
+    if not endpoint or endpoint != normalize_route_base_url(runtime.get("base_url")):
+        return
+    if not credential_pool_matches_provider(pool, provider, base_url=endpoint):
+        return
+    api_key = getattr(agent, "api_key", None)
+    if not api_key:
+        return
+    entry = next((entry for entry in pool.entries() if entry.runtime_api_key == api_key
+                  and credential_pool_entry_serves_endpoint(entry, endpoint)), None)
+    if entry is None:
+        return
+    # The cache signature includes the bearer, but pool membership/cooldowns can change without it.
+    # Match the live key: this agent may have rotated since its cached signature was computed.
+    agent._credential_pool = pool
+    agent._credential_pool_entry_id = entry.id
+
+
 def _first_agent(entry: Any) -> Any:
     """Unwrap a cache entry (``(agent, sig, ...)`` tuple or bare agent) to its agent."""
     return entry[0] if isinstance(entry, tuple) and entry else entry

@@ -92,5 +92,12 @@ def route_on(field: str) -> Callable[[Request], None]:
 
 
 def private_launch(state: Any) -> bool:
-    """Webapp on an unauthenticated bind: the launch link is the only way in."""
-    return policy(state).launch_link and not getattr(state, "auth_required", False)
+    """Webapp on an unauthenticated bind: the launch link is the only way in. A loopback Webapp that only a
+    public URL put behind sign-in is private to this machine: outside any request (a ticket minted on the
+    gateway's own loopback routes) it is private, since the tab or socket the ticket opens comes directly."""
+    gate = getattr(state, "auth_required", False)
+    if getattr(gate, "private_for_direct", False):
+        from hermes_cli.web_server_boundary import direct_local_context
+        if direct_local_context() is None:
+            return policy(state).launch_link
+    return policy(state).launch_link and not gate

@@ -467,10 +467,10 @@ _SDK_HEADER_NAMES = {name.lower(): name for name in (
 )}
 
 
-def _canonicalize_sdk_header_names(headers: Dict[str, Any]) -> Dict[str, Any]:
+def _canonicalize_sdk_header_names(headers: dict[str, Any]) -> dict[str, Any]:
     """Respell SDK-owned header names the way the SDK does so they override its defaults; for
     case-variants of the same name, the last one wins (``custom_providers`` extra_headers last)."""
-    out: Dict[str, Any] = {}
+    out: dict[str, Any] = {}
     for name, value in headers.items():
         canonical = _SDK_HEADER_NAMES.get(name.lower(), name)
         out.pop(canonical, None)
@@ -478,7 +478,7 @@ def _canonicalize_sdk_header_names(headers: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def _custom_provider_extra_headers(base_url) -> Dict[str, str]:
+def _custom_provider_extra_headers(base_url) -> dict[str, str]:
     """``extra_headers`` of the ``custom_providers`` entry routed at *base_url*, else ``{}``.
     SECURITY: values routinely carry credentials (Cloudflare Access tokens) — never log them."""
     if not base_url:

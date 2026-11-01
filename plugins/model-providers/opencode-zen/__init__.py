@@ -120,6 +120,8 @@ opencode_zen = OpenCodeZenProfile(
     name="opencode-zen", aliases=("opencode", "opencode_zen", "zen"), env_vars=("OPENCODE_ZEN_API_KEY",),
     base_url="https://opencode.ai/zen/v1", default_headers=LazyHeaders(_ATTRIBUTION_HEADERS),
     default_aux_model="gemini-3-flash",
+    # Same declared output ceiling as opencode-go below (#110126 Layer 1).
+    default_max_tokens=65536,
 )
 
 opencode_go = OpenCodeGoProfile(
@@ -132,6 +134,12 @@ opencode_go = OpenCodeGoProfile(
     # and the rejected row stays in history so every later call dies too. Images in user
     # messages are fine, so vision itself keeps working via the text-summary downgrade.
     supports_vision_tool_messages=False,
+    # Declared output ceiling (#110126 Layer 1). The Zen relays otherwise apply
+    # their own very large default, so a reasoning model can spend the whole
+    # budget on hidden thinking and return ``finish_reason="length"`` with a
+    # truncated/empty body - which the compressor then treats as a hard summary
+    # failure and aborts without rotating the session. Mirrors qwen-oauth's 65536.
+    default_max_tokens=65536,
 )
 
 register_provider(opencode_zen)

@@ -295,17 +295,65 @@ def _filter_secret_env(
             out[key] = value
 
 
+def _apply_terminal_env_hardening(env: dict) -> None:
+    """Force non-interactive git + drop package-publish tokens on *env*.
+
+    Called at the end of every local spawn-env builder so an inherited
+    ``GIT_TERMINAL_PROMPT=1`` (or a restored package token) cannot survive on
+    the process environment. Shell-level session snapshots can still overwrite
+    these after ``source``; that path is re-hardened in
+    ``tools.environments.base_session_env._wrap_command_script`` via
+    :func:`_post_source_env_hardening_script`.
+    """
+    for key in (
+        "NPM_TOKEN",
+        "NPM_AUTH_TOKEN",
+        "NODE_AUTH_TOKEN",
+        "PYPI_TOKEN",
+        "TWINE_PASSWORD",
+        "CARGO_REGISTRY_TOKEN",
+    ):
+        env.pop(key, None)
+    # Non-interactive git: never hang a tool subprocess on credential prompts
+    # (clone/fetch/push over https). Assign unconditionally so an inherited
+    # GIT_TERMINAL_PROMPT=1 cannot re-enable prompts.
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    # Git Credential Manager (Windows default helper) — match internal git
+    # policy in hermes_cli._subprocess_compat.
+    env["GCM_INTERACTIVE"] = "Never"
+
+
+def _post_source_env_hardening_script() -> str:
+    """Shell snippet re-applied *after* session-snapshot ``source``.
+
+    Login-profile / session-snapshot state is dumped with ``export -p`` and
+    re-sourced before each command. That can restore package-registry tokens
+    and re-enable git prompting even when the Popen env was sanitized. Re-run
+    the filters immediately before the user command so the trust boundary
+    holds at execution time.
+    """
+    return (
+        "unset -v NPM_TOKEN NPM_AUTH_TOKEN NODE_AUTH_TOKEN "
+        "PYPI_TOKEN TWINE_PASSWORD CARGO_REGISTRY_TOKEN 2>/dev/null || true\n"
+        "export GIT_TERMINAL_PROMPT=0\n"
+        "export GCM_INTERACTIVE=Never"
+    )
+
+
 def _finalize_child_env(env: dict) -> dict:
     """Guards shared by every spawn surface: profile-home propagation, session-context
     bridging, Hermes-owned PYTHONPATH + venv-marker strip, MSYS defaults, delegate_task
-    Kanban scrub. Returns the (possibly new) dict."""
+    Kanban scrub, package-token and non-interactive git posture. Returns the
+    (possibly new) dict."""
     _apply_profile_home(env)
     _inject_session_context_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
     strip_supervised_process_identity(env)
     _apply_windows_msys_bash_env_defaults(env)
     from agent.delegation_context import delegated_child_subprocess_env
-    return delegated_child_subprocess_env(env)
+    env = delegated_child_subprocess_env(env)
+    _apply_terminal_env_hardening(env)
+    return env
 
 
 def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
@@ -801,6 +849,9 @@ def _make_run_env(env: dict) -> dict:
     if published:
         run_env.update(published)
         run_env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
+    # Bot Desktop overlay can land after _finalize_child_env; re-apply the
+    # same non-interactive git / package-token policy.
+    _apply_terminal_env_hardening(run_env)
     return run_env
 
 

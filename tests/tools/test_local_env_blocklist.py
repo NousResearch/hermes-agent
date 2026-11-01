@@ -50,6 +50,7 @@ HERMES_DASHBOARD_OIDC_CLIENT_SECRET HERMES_ANON_API_SECRET HERMES_MEET_REALTIME_
 GATEWAY_ALLOWED_USERS GATEWAY_ALLOW_ALL_USERS GH_TOKEN GITHUB_APP_ID
 GITHUB_APP_PRIVATE_KEY_PATH GITHUB_APP_INSTALLATION_ID MODAL_TOKEN_ID MODAL_TOKEN_SECRET
 DAYTONA_API_KEY VERCEL_OIDC_TOKEN VERCEL_TOKEN VERCEL_PROJECT_ID VERCEL_TEAM_ID GATEWAY_RELAY_ID
+NPM_TOKEN NPM_AUTH_TOKEN NODE_AUTH_TOKEN PYPI_TOKEN TWINE_PASSWORD CARGO_REGISTRY_TOKEN
 AUXILIARY_VISION_API_KEY AUXILIARY_WEB_EXTRACT_API_KEY AUXILIARY_APPROVAL_API_KEY
 AUXILIARY_MY_PLUGIN_TASK_API_KEY AUXILIARY_VISION_BASE_URL AUXILIARY_COMPRESSION_BASE_URL
 GATEWAY_RELAY_SECRET GATEWAY_RELAY_DELIVERY_KEY GATEWAY_RELAY_SESSION_TOKEN
@@ -1618,3 +1619,106 @@ class TestSanePathIncludesHomebrew:
             result = _make_run_env({})
         assert result["Path"] == windows_env["Path"]
         assert "PATH" not in result
+
+
+class TestPackageRegistryTokens:
+    """npm/PyPI/Cargo publish tokens must not leak into agent subprocesses."""
+
+    def test_package_registry_tokens_stripped(self):
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        tokens = {
+            "NPM_TOKEN": "npm-secret",
+            "NPM_AUTH_TOKEN": "npm-auth",
+            "NODE_AUTH_TOKEN": "node-auth",
+            "PYPI_TOKEN": "pypi-secret",
+            "TWINE_PASSWORD": "twine-secret",
+            "CARGO_REGISTRY_TOKEN": "cargo-secret",
+        }
+        with patch.dict(os.environ, {"PATH": "/usr/bin", **tokens}, clear=True):
+            result_env = _make_run_env({})
+        for var in tokens:
+            assert var not in result_env, f"{var} leaked into subprocess env"
+        sanitized = _sanitize_subprocess_env({"PATH": "/usr/bin", **tokens})
+        for var in tokens:
+            assert var not in sanitized, f"{var} leaked into sanitized env"
+        for var in tokens:
+            assert var in _HERMES_PROVIDER_ENV_BLOCKLIST
+
+    def test_git_terminal_prompt_disabled(self):
+        """Subprocess env must set GIT_TERMINAL_PROMPT=0 (non-interactive git)."""
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        result = _sanitize_subprocess_env({"PATH": "/usr/bin"})
+        assert result.get("GIT_TERMINAL_PROMPT") == "0"
+        with patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=True):
+            run_env = _make_run_env({})
+        assert run_env.get("GIT_TERMINAL_PROMPT") == "0"
+
+    def test_git_terminal_prompt_inherited_enabled_is_overridden(self):
+        """An inherited GIT_TERMINAL_PROMPT=1 must be forced back to 0."""
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        # _sanitize_subprocess_env path: enabled value supplied via base_env.
+        result = _sanitize_subprocess_env(
+            {"PATH": "/usr/bin", "GIT_TERMINAL_PROMPT": "1"}
+        )
+        assert result.get("GIT_TERMINAL_PROMPT") == "0"
+
+        # Foreground run path (_make_run_env) with inherited enabled prompt
+        # via os.environ (merged as os.environ | env).
+        with patch.dict(
+            os.environ, {"PATH": "/usr/bin", "GIT_TERMINAL_PROMPT": "1"}, clear=True
+        ):
+            run_env = _make_run_env({})
+        assert run_env.get("GIT_TERMINAL_PROMPT") == "0"
+
+
+class TestPostSourceSnapshotHardening:
+    """Session snapshot source can restore tokens / git prompt; re-harden after."""
+
+    def test_post_source_script_unsets_package_tokens_and_forces_git(self):
+        from tools.environments.local import _post_source_env_hardening_script
+
+        script = _post_source_env_hardening_script()
+        assert "NPM_TOKEN" in script
+        assert "CARGO_REGISTRY_TOKEN" in script
+        assert "GIT_TERMINAL_PROMPT=0" in script
+        assert "GCM_INTERACTIVE=Never" in script
+
+    def test_wrap_command_reapplies_hardening_after_snapshot_source(self):
+        from tools.environments.base import BaseEnvironment
+
+        class _Stub(BaseEnvironment):
+            def cleanup(self):
+                pass
+
+            def _run_bash(self, *a, **k):
+                raise NotImplementedError
+
+        env = _Stub(cwd="/tmp", timeout=10)
+        env._snapshot_ready = True
+        env._snapshot_path = "/tmp/hermes-snap-test.sh"
+        wrapped = env._wrap_command("echo hi", "/tmp")
+        src_i = wrapped.find("source ")
+        hard_i = wrapped.find("GIT_TERMINAL_PROMPT=0")
+        eval_i = wrapped.find("eval '")
+        assert src_i != -1 and hard_i != -1 and eval_i != -1
+        assert src_i < hard_i < eval_i
+        assert "unset -v NPM_TOKEN" in wrapped
+        assert "GCM_INTERACTIVE=Never" in wrapped
+
+    def test_make_run_env_sets_gcm_interactive(self):
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        with patch.dict(os.environ, {"PATH": "/usr/bin", "GCM_INTERACTIVE": "Always"}, clear=True):
+            run_env = _make_run_env({})
+        assert run_env.get("GCM_INTERACTIVE") == "Never"
+        assert run_env.get("GIT_TERMINAL_PROMPT") == "0"
+
+        result = _sanitize_subprocess_env(
+            {"PATH": "/usr/bin", "NPM_TOKEN": "x", "GIT_TERMINAL_PROMPT": "1"}
+        )
+        assert "NPM_TOKEN" not in result
+        assert result.get("GIT_TERMINAL_PROMPT") == "0"
+        assert result.get("GCM_INTERACTIVE") == "Never"

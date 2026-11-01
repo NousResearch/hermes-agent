@@ -141,6 +141,39 @@ def _positive_seconds(value, label):
     return value
 
 
+def _device_request_scope(context) -> "str | None":
+    """Scope for the device grant, ``offline_access`` included when the authorization server supports it.
+
+    The browser flow derives its scope on the SDK's 401-challenge path, which appends
+    ``offline_access`` when the authorization server advertises it and the client can use refresh
+    tokens (SEP-2207) — that is what keeps a refresh token alive. The device flow is Hermes-owned and
+    never sees that path, so it used to send only the user-configured scope, and servers that gate
+    refresh tokens behind ``offline_access`` forced a fresh device visit every access-token lifetime.
+    An explicitly configured scope stays the base (the user may have deliberately narrowed it); with
+    none configured the base is the resource's advertised scopes, then the authorization server's,
+    the SDK's own priority. Derived here rather than through the SDK helper: its signature differs
+    between SDK generations, and a device registration always carries the refresh_token grant.
+    Refresh permission belongs to the authorization server's metadata, not the MCP tool scopes, so
+    it is read from there even when the resource lists only its tool scopes.
+    """
+    metadata = context.oauth_metadata
+    prm = context.protected_resource_metadata
+    scope = context.client_metadata.scope
+    if not scope:
+        for advertised in (getattr(prm, "scopes_supported", None), getattr(metadata, "scopes_supported", None)):
+            if advertised:
+                scope = " ".join(advertised)
+                break
+    as_scopes = getattr(metadata, "scopes_supported", None) or []
+    as_grants = getattr(metadata, "grant_types_supported", None)
+    if "offline_access" not in as_scopes or (as_grants is not None and "refresh_token" not in as_grants):
+        return scope or None
+    requested = (scope or "").split()
+    if "offline_access" not in requested:
+        requested.append("offline_access")
+    return " ".join(requested)
+
+
 async def _authorize(client, provider, cfg):
     from tools.mcp_oauth_provider import google_offline_access_params
     from tools.mcp_tool import sdk_httpx
@@ -218,6 +251,11 @@ async def login_device(name, server_url, oauth_config):
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
             await _discover(client, provider)
+            # Bind the request scope where the SDK binds its own (Step 3 of the browser flow): the
+            # registration advertises it, the device request sends it, and a token response that
+            # omits ``scope`` (RFC 6749 §5.1: granted == requested) persists it, so a later refresh
+            # that omits ``scope`` carries the real grant forward and SEP-2350 step-up unions from it.
+            provider.context.client_metadata.scope = _device_request_scope(provider.context)
             await _register(client, provider, cfg)
             tokens = await _authorize(client, provider, cfg)
     except (ValueError, TypeError, KeyError):

@@ -54,6 +54,12 @@ def _client_config(cfg):
         # /footer saved wins over the global one (T7).
         from gateway.display_config import local_display_config
         result['display'] = local_display_config(result['display'])
+        # ``display.submit_key`` names a composer keybinding ("enter" / "cmd_enter"), not a
+        # credential; the ``*_key`` masker would hand Ink "***" and silently pin the default.
+        display = cfg.get('display')
+        submit_key = display.get('submit_key') if isinstance(display, dict) else None
+        if isinstance(submit_key, str):
+            result['display']['submit_key'] = submit_key
     # Allowlisted after redaction: ``record_key`` is a keybinding, not a credential, but the
     # structural masker treats every ``*_key`` leaf as one. The voice section's real secrets
     # (``api_key``) never enter the projection.

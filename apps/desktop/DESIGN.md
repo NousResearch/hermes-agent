@@ -522,6 +522,20 @@ long transcript or a busy terminal.
 
 - Keyboard ownership follows focus. The focused surface wins its keys; shell
   shortcuts must not steal a terminal's or editor's bindings.
+- Zone tabs have one keyboard entry point at the selected tab. Arrows follow
+  the strip's orientation; Home/End move focus, Enter/Space activate, and Tab
+  leaves the tabs. Delete invokes an available close action and retains focus
+  on a surviving sibling. Restoring a vertical rail retains its tab focus.
+  The collapsed rail keeps the zone context menu on its outer surface; its
+  inner tab list owns vertical keyboard navigation.
+- Tab-header focus belongs to navigation: session activation and queued composer
+  focus retries must not redirect it. Explicit composer focus still works.
+  Entering a split's tab strip selects its visible chat as the typing recipient
+  without moving focus into the editor; hidden tabs must not receive that input.
+- Sidebar keyboard stops are real controls: session title, reorder handle and
+  actions, not timestamps. Focus uses existing theme tokens, stays distinct from
+  selection, and reveals hover-only controls. Focused/open actions replace their
+  metadata tail; real metadata actions remain independently reachable.
 - Focusing the Sessions sidebar preserves the last active chat's visual emphasis.
   Dimming still distinguishes session panes; sidebar navigation must not desaturate
   the chat or transfer its active highlight to a hidden primary tab.
@@ -569,7 +583,21 @@ The detailed state contract lives in the scoped
 
 - `cursor-pointer` at the primitive level (Button, dropdown/select) — don't
   hardcode it per call site.
-- Global focus-ring reset; titlebar actions have no active-background state.
+- Keep keyboard focus visible through existing control primitives and theme
+  tokens; never globally suppress outlines or focus rings. Preserve native
+  focus indicators on controls without a themed replacement. Titlebar actions
+  have no active-background state.
+- Each control has one focus treatment: its existing ring, outline, or field
+  border. Suppress the native outline only when that replacement is visible.
+  In forced-colors mode, use one system-color outline on the focused control
+  (or its field wrapper); don't outline unfocused menu rows or containers.
+  Keep command-picker input and selected-row fallback outlines inset so scroll
+  and group clipping cannot cut off their edges.
+  Inline message editors delegate focus chrome to their card border, just like
+  the main composer; their inner contenteditable must not add a second outline.
+- Keyboard users can activate image viewers and return to their available
+  opener when the viewer closes. Composer focus-follow must preserve focus
+  returning from a floating layer while updating the owning chat surface.
 - `Esc` closes every dismissable overlay/dialog (install/onboarding excluded);
   close is an x-icon, not the word "Close".
 

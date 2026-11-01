@@ -285,3 +285,36 @@ def test_docs_append_carries_tab_id_and_refuses_ambiguous_writes(api_module, mon
         api_module.docs_append(types.SimpleNamespace(doc_id="doc1", text="more", tab=None))
     err = json.loads(capsys.readouterr().err)
     assert "tabs" in err and len(err["tabs"]) == 3
+
+
+def test_sheets_row_and_column_edits_target_the_named_tab(api_module, monkeypatch, capsys):
+    """Tab refs resolve by case-insensitive title or sheetId (never a guess), user-facing
+    1-based rows / column letters become 0-based Sheets ranges, and an insert at the top
+    does not ask to inherit formatting from a row that does not exist (Google rejects it)."""
+    sheets = {"sheets": [
+        {"properties": {"sheetId": 0, "title": "Budget", "index": 0, "gridProperties": {"rowCount": 100}}},
+        {"properties": {"sheetId": 812, "title": "Raw data", "index": 1}},
+    ]}
+    sent = []
+
+    def fake_gws(parts, params=None, body=None):
+        if parts[-1] == "batchUpdate":
+            sent.extend(body["requests"])
+            return {"replies": [{}]}
+        return sheets
+
+    monkeypatch.setattr(api_module, "_run_gws", fake_gws)
+    lines = api_module.sheets_lines
+    lines(types.SimpleNamespace(sheet_id="s", tab="budget", at="1", count=2, op="insert", axis="ROWS"))
+    lines(types.SimpleNamespace(sheet_id="s", tab="812", at="AB", count=1, op="delete", axis="COLUMNS"))
+    assert sent == [
+        {"insertDimension": {"range": {"sheetId": 0, "dimension": "ROWS", "startIndex": 0, "endIndex": 2},
+                             "inheritFromBefore": False}},
+        {"deleteDimension": {"range": {"sheetId": 812, "dimension": "COLUMNS", "startIndex": 27, "endIndex": 28}}},
+    ]
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit):
+        api_module.sheets_delete_tab(types.SimpleNamespace(sheet_id="s", tab="Sheet1"))
+    assert [t["title"] for t in json.loads(capsys.readouterr().err)["tabs"]] == ["Budget", "Raw data"]
+    assert len(sent) == 2

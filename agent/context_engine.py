@@ -140,6 +140,22 @@ class ContextEngine(ABC):
         """
         return None
 
+    def cache_plan(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
+    ) -> Any:
+        """Return a cache plan for THIS request, or ``None`` to keep the host's.
+
+        Additive and no-op by default. The host identity-checks the bound method,
+        as for ``select_context()``, and skips inherited defaults entirely, keeping
+        the host's plan byte-identical without per-request copies.
+
+        ``messages`` and ``tools`` are request-local copies after ``select_context``
+        and the host's cache decoration. Return an object with ``.messages`` and
+        ``.tools`` attributes (the shape ``build_prompt_cache_plan`` returns) to
+        replace that plan, or ``None`` to keep it.
+        """
+        return None
+
     def on_turn_complete(self, messages: list[dict[str, Any]], usage: dict[str, Any] | None = None, **kwargs: Any) -> None:
         """Observe a finished turn (complement of ``select_context()``) to index/update
         routing state for the next request.

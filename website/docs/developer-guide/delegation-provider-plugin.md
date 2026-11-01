@@ -140,7 +140,8 @@ A non-profile route without `fallback_providers` of its own gets `delegation.fal
 
 A `DelegationRouteError` from `route_task`, a parameter your backend did not declare, a value outside
 your parameter's `enum`, an unknown
-`reasoning_effort`, a tier the route does not offer, or a credential the route cannot resolve refuses
+`reasoning_effort`, a tier the route does not offer, a credential the route cannot resolve, or a bad
+`max_iterations` or `child_timeout_seconds` refuses
 **that task only**: no child is built for it, its result entry is
 `{"status": "error", "error": "<your message>", "route": {"backend": "<name>", "refused": true}}`, and
 the other tasks run. A background call lists refused entries under `refused` in its dispatch payload.

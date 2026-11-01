@@ -68,10 +68,10 @@ export const zhDelegationRouting: DelegationRoutingTranslations = {
   tierHint: '仅适用于提供该选项的模型。',
   turnsLabel: '轮次上限',
   turnsPlaceholder: '使用全局上限',
-  turnsHint: '此路由上子代理的最大轮次。',
+  turnsHint: '此路由上子智能体的最大轮次。',
   timeoutLabel: '超时（秒）',
   timeoutPlaceholder: '使用全局超时',
-  timeoutHint: '此路由上的子代理空闲多少秒后停止。0 表示禁用；小于 30 的值按 30 处理。',
+  timeoutHint: '此路由上的子智能体空闲多少秒后停止。0 表示禁用；小于 30 的值按 30 处理。',
   optional: '可选',
   errors: {
     required: '必填',

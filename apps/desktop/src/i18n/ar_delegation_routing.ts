@@ -67,9 +67,9 @@ export const arDelegationRouting: DelegationRoutingTranslations = {
   tierFast: 'سريعة',
   tierUltrafast: 'فائقة السرعة',
   tierHint: 'فقط في النماذج التي توفرها.',
-  turnsLabel: 'حد الأدوار',
+  turnsLabel: 'حد الدورات',
   turnsPlaceholder: 'يستخدم الحد العام',
-  turnsHint: 'الحد الأقصى للأدوار لوكيل فرعي على هذا المسار.',
+  turnsHint: 'الحد الأقصى للدورات لوكيل فرعي على هذا المسار.',
   timeoutLabel: 'المهلة (بالثواني)',
   timeoutPlaceholder: 'يستخدم المهلة العامة',
   timeoutHint:

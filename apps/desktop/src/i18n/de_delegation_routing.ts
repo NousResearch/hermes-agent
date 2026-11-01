@@ -75,9 +75,9 @@ export const deDelegationRouting: DelegationRoutingTranslations = {
   tierFast: 'Schnell',
   tierUltrafast: 'Ultraschnell',
   tierHint: 'Nur bei Modellen, die das anbieten.',
-  turnsLabel: 'Zuglimit',
+  turnsLabel: 'Rundenlimit',
   turnsPlaceholder: 'Verwendet das globale Limit',
-  turnsHint: 'Maximale Anzahl Züge für einen Subagenten auf dieser Route.',
+  turnsHint: 'Maximale Anzahl Runden für einen Subagenten auf dieser Route.',
   timeoutLabel: 'Zeitlimit (Sekunden)',
   timeoutPlaceholder: 'Verwendet das globale Zeitlimit',
   timeoutHint:

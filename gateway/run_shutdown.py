@@ -30,6 +30,10 @@ from gateway.restart import (
 from gateway.run_common import _UNSET
 from gateway.run_runtime import interrupt_side_agents, managed_turn_count, stop_managed_turns
 from gateway.run_shutdown_session_end import GatewaySessionEndMixin
+from gateway.shutdown_notify_dedup import (
+    _record_shutdown_notify_sent, _should_suppress_shutdown_notify,
+    _shutdown_notify_cooldown_seconds, _shutdown_notify_dest_key,
+)
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 
 # Log-record parity with the origin module.
@@ -1110,6 +1114,20 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             dedup_key = _delivery_target_key(platform.value, home.chat_id, home.thread_id, profile=profile)
             if dedup_key in notified:
                 continue
+            # Persisted cross-process dedup (#71180). The in-memory set above dies with the
+            # process; a prior gateway that already broadcast to this home channel within the
+            # cooldown suppresses this one. Fail-open: any state read error sends.
+            dest_key = _shutdown_notify_dest_key(
+                platform.value, str(home.chat_id),
+                str(home.thread_id) if home.thread_id else None,
+                profile=str(profile) if profile else None,
+            )
+            if _should_suppress_shutdown_notify(dest_key, _shutdown_notify_cooldown_seconds()):
+                logger.info(
+                    "Shutdown notification suppressed for home channel %s:%s (within cooldown)",
+                    platform.value, home.chat_id,
+                )
+                continue
             try:
                 metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=adapter)
             except Exception as e:
@@ -1117,11 +1135,12 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                     "Failed to send shutdown notification to home channel %s:%s: %s", platform.value, home.chat_id, e,
                 )
                 continue
-            async def _send_home(adapter=adapter, home=home, platform=platform, metadata=metadata):
+            async def _send_home(adapter=adapter, home=home, platform=platform, metadata=metadata, dest_key=dest_key):
                 if await self._send_shutdown_notice(
                     adapter, str(home.chat_id), msg, "home channel", platform.value, metadata=metadata,
                 ):
                     notified.add(dedup_key)
+                    _record_shutdown_notify_sent(dest_key)
             from gateway.warning_notifications import present_notification
             from gateway.run import _async_profile_runtime_scope
             # present_notification reads the ACTIVE profile's display settings: bind the served one's.

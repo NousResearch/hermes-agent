@@ -2110,6 +2110,10 @@ DEFAULT_CONFIG = {
         # "discord connect timed out" / "Timeout waiting for connection to Discord" restart loops. ``0`` or
         # negative disables the timeout entirely (wait indefinitely).
         "platform_connect_timeout": 30,
+        # Seconds to suppress a repeat home-channel "gateway shutting down" notice across
+        # process restarts (#71180). WSL suspend/resume and similar host cycles restart the
+        # gateway and would otherwise flood the home channel. 0 disables dedup (always send).
+        "shutdown_notify_cooldown": 60,
         # Event-loop liveness watchdog: a daemon thread probes the asyncio loop; after consecutive
         # missed probes it dumps all-thread stacks and hard-exits with the service-restart code so
         # systemd/launchd revives the process instead of leaving a wedged-but-alive zombie.

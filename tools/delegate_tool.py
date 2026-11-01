@@ -468,7 +468,8 @@ def _build_children(
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=route.creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                model=route.creds["model"], max_iterations=route.max_iterations or max_iterations,
+                task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **_route_overrides(route),
             )
         except ValueError as exc:
@@ -478,6 +479,9 @@ def _build_children(
                 _close_child(built, "Failed to close child after a refused sibling")
             return [], str(exc)
         pin_child_service_tier(child, route.creds)
+        if route.child_timeout_seconds is not None:
+            # _ChildRun.await_child reads this before the global delegation.child_timeout_seconds.
+            child._delegate_child_timeout = route.child_timeout_seconds
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
                 child._delegate_output_schema = _task_schema

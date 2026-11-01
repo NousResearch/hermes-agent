@@ -27,6 +27,12 @@ Route vocabulary (:meth:`DelegationProvider.route_task` returns a dict with any 
   scope helpers a multiplexed gateway uses for a routed turn. A profile route ignores the other
   route keys; the profile's own config decides them.
 * ``label`` - short text shown with the child's progress and result (e.g. the option title).
+* ``max_iterations`` - a whole number of 1 or more: the turn limit for this child. It replaces
+  ``delegation.max_iterations`` for this task only. Any other value refuses the task. A profile
+  route ignores it.
+* ``child_timeout_seconds`` - a number of 0 or more: the idle timeout for this child, with the same
+  meaning as ``delegation.child_timeout_seconds`` (0 disables, floor 30 s). It replaces the global
+  value for this task only. Any other value refuses the task. A profile route ignores it.
 
 A backend's own settings live under ``delegation.backends.<backend name>`` (:meth:`DelegationProvider.settings`),
 never beside the core ``delegation`` keys.
@@ -35,6 +41,7 @@ never beside the core ``delegation`` keys.
 from __future__ import annotations
 
 import abc
+import math
 from typing import Any, Mapping
 
 from agent.provider_base import ProviderBase
@@ -51,7 +58,24 @@ RESERVED_TASK_PARAMETERS = frozenset({
 ROUTE_KEYS = frozenset({
     "model", "provider", "base_url", "api_key", "api_mode", "request_overrides",
     "reasoning_effort", "service_tier", "fallback_providers", "profile", "label",
+    "max_iterations", "child_timeout_seconds",
 })
+
+
+def valid_route_max_iterations(value: Any) -> bool:
+    """A route's ``max_iterations``: a whole number of 1 or more (never a bool)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def valid_route_child_timeout(value: Any) -> bool:
+    """A route's ``child_timeout_seconds``: a finite int/float of 0 or more (never a bool). An int too large for a
+    float is not representable as seconds."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value) and value >= 0
+    except OverflowError:
+        return False
 
 
 class DelegationRouteError(ValueError):

@@ -8,10 +8,12 @@ export interface ModelRouteDraft {
   model: string
   reasoning_effort: string
   service_tier: string
+  max_iterations: string
+  child_timeout_seconds: string
 }
 
 export type RouteField = keyof ModelRouteDraft
-export type RouteError = 'duplicate' | 'required' | 'spaces'
+export type RouteError = 'duplicate' | 'required' | 'spaces' | 'turns' | 'seconds'
 
 /** Saved as written: an explicit `normal` turns a provider's own Fast setting off; no tier leaves it alone. */
 export const SERVICE_TIERS = ['normal', 'fast', 'ultrafast'] as const
@@ -22,7 +24,9 @@ export const emptyRouteDraft = (): ModelRouteDraft => ({
   provider: '',
   model: '',
   reasoning_effort: '',
-  service_tier: ''
+  service_tier: '',
+  max_iterations: '',
+  child_timeout_seconds: ''
 })
 
 export const draftFromRoute = (route: DelegationModelRoute): ModelRouteDraft => ({
@@ -31,7 +35,9 @@ export const draftFromRoute = (route: DelegationModelRoute): ModelRouteDraft => 
   provider: route.provider ?? '',
   model: route.model ?? '',
   reasoning_effort: route.reasoning_effort ?? '',
-  service_tier: route.service_tier ?? ''
+  service_tier: route.service_tier ?? '',
+  max_iterations: route.max_iterations == null ? '' : String(route.max_iterations),
+  child_timeout_seconds: route.child_timeout_seconds == null ? '' : String(route.child_timeout_seconds)
 })
 
 /** Field → problem, empty when the draft can be saved. `taken` = names of the OTHER routes.
@@ -62,6 +68,19 @@ export function validateRouteDraft(
     errors.provider = 'required'
   }
 
+  const turns = draft.max_iterations.trim()
+
+  if (turns && !(/^[1-9]\d*$/.test(turns) && Number.isSafeInteger(Number(turns)))) {
+    errors.max_iterations = 'turns'
+  }
+
+  const seconds = draft.child_timeout_seconds.trim()
+
+  // The pattern already rules out signs, so finite is the only numeric check left.
+  if (seconds && !(/^\d+(\.\d+)?$/.test(seconds) && Number.isFinite(Number(seconds)))) {
+    errors.child_timeout_seconds = 'seconds'
+  }
+
   return errors
 }
 
@@ -74,7 +93,7 @@ export function routeFromDraft(draft: ModelRouteDraft, previous?: DelegationMode
     const value = draft[field].trim()
 
     if (value) {
-      next[field] = value
+      next[field] = field === 'max_iterations' || field === 'child_timeout_seconds' ? Number(value) : value
     } else {
       delete next[field]
     }

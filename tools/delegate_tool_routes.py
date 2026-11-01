@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
 
 from agent.delegation_provider import (
-    RESERVED_TASK_PARAMETERS, ROUTE_KEYS, DelegationProvider, DelegationRouteError,
+    RESERVED_TASK_PARAMETERS, ROUTE_KEYS, DelegationProvider, DelegationRouteError, valid_route_child_timeout,
+    valid_route_max_iterations,
 )
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -39,6 +40,8 @@ class TaskRoute:
     label: Optional[str] = None
     backend: str = "default"
     error: Optional[str] = None
+    max_iterations: Optional[int] = None
+    child_timeout_seconds: Optional[float] = None
 
     def report(self) -> Optional[dict[str, Any]]:
         """The ``route`` a backend-routed task's result carries (None for the default backend's unlabelled route)."""
@@ -238,7 +241,9 @@ def _resolve_route(route: dict[str, Any], parent_agent: Any, backend: str) -> Ta
     if route.get("service_tier") not in (None, ""):
         from tools.delegate_tool_tuning import task_service_tier
         creds = {**creds, **task_service_tier(str(route["service_tier"]), creds, parent_agent)}
-    return TaskRoute(creds, route, route.get("reasoning_effort"), None, None, backend)
+    return TaskRoute(creds, route, route.get("reasoning_effort"), None, None, backend,
+                     max_iterations=route.get("max_iterations"),
+                     child_timeout_seconds=route.get("child_timeout_seconds"))
 
 
 def _route_to_task_route(route: dict[str, Any], parent_agent: Any, cache: dict[str, TaskRoute],
@@ -263,6 +268,41 @@ def _check_backend_effort(index: int, route: Mapping[str, Any], config: Mapping[
         raise DelegationRouteError(
             f"Task {index}: unknown reasoning_effort {effort!r} on this route. "
             f"Use none or one of: {', '.join(VALID_REASONING_EFFORTS)}.")
+
+
+_LIMIT_KEYS = ("max_iterations", "child_timeout_seconds")
+
+
+def _without_config_echoes(route: dict[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:
+    """Drop limits equal to the ``delegation`` section's own (a ``dict(config)`` fallback route carries them):
+    delegate_task and the child run read those globals themselves, under the globals' own rules."""
+    echoes = {key for key in _LIMIT_KEYS if route.get(key) is not None
+              and type(route[key]) is type(config.get(key)) and route[key] == config.get(key)}
+    return {k: v for k, v in route.items() if k not in echoes} if echoes else route
+
+
+def _check_route_max_iterations(index: int, route: Mapping[str, Any]) -> None:
+    """A backend's ``max_iterations`` must be a whole number of 1 or more: a bad value refuses this task,
+    never falls back to the global limit. A profile route ignores the field, so it is not checked."""
+    value = route.get("max_iterations")
+    if value is None or route.get("profile"):
+        return
+    if not valid_route_max_iterations(value):
+        raise DelegationRouteError(
+            f"Task {index}: max_iterations on this route must be a whole number of 1 or more (got {value!r})."
+        )
+
+
+def _check_route_child_timeout(index: int, route: Mapping[str, Any]) -> None:
+    """A backend's ``child_timeout_seconds`` must be a number of 0 or more: a bad value refuses this task,
+    never falls back to the global timeout. A profile route ignores the field, so it is not checked."""
+    value = route.get("child_timeout_seconds")
+    if value is None or route.get("profile"):
+        return
+    if not valid_route_child_timeout(value):
+        raise DelegationRouteError(
+            f"Task {index}: child_timeout_seconds on this route must be a number of 0 or more (got {value!r})."
+        )
 
 
 def _undeclared_error(provider: DelegationProvider, index: int, names: list[str], config: Mapping[str, Any]) -> str:
@@ -324,8 +364,10 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
     routes: list[TaskRoute] = []
     for i, task in enumerate(task_list):
         try:
-            route = _route_one(provider, declared, i, task, config)
+            route = _without_config_echoes(_route_one(provider, declared, i, task, config), config)
             _check_backend_effort(i, route, config)
+            _check_route_max_iterations(i, route)
+            _check_route_child_timeout(i, route)
             routes.append(_route_to_task_route(route, parent_agent, cache, config, provider.name))
         except ValueError as exc:  # DelegationRouteError, the credential resolver's and the tier check's refusals
             routes.append(TaskRoute({}, {}, backend=provider.name, error=str(exc)))

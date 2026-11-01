@@ -132,6 +132,18 @@ def test_a_managed_install_refuses_every_routing_write_with_the_reason(client, h
     ([{"name": "a", "description": "x", "model": "m"}], "provider"),
     ([{"name": "a", "description": "x", "provider": "p", "model": "m", "service_tier": "warp"}], "service tier"),
     ([{"name": "a", "description": "x", "provider": "p", "model": "m", "reasoning_effort": "huge"}], "reasoning"),
+    ([{"name": "a", "description": "x", "provider": "p", "model": "m", "max_iterations": 0}], "max_iterations"),
+    ([{"name": "a", "description": "x", "provider": "p", "model": "m", "max_iterations": "abc"}], "max_iterations"),
+    ([{"name": "a", "description": "x", "provider": "p", "model": "m", "child_timeout_seconds": -5}], "child_timeout_seconds"),
+    ([{"name": "a", "description": "x", "provider": "p", "model": "m", "child_timeout_seconds": "soon"}], "child_timeout_seconds"),
+    ([{"name": "a", "description": "x", "provider": "p", "model": "m", "max_iterations": True}], "max_iterations"),
+    ([{"name": "a", "description": "x", "provider": "p", "model": "m", "max_iterations": "²"}], "max_iterations"),
+    ([{"name": "a", "description": "x", "provider": "p", "model": "m", "child_timeout_seconds": "nan"}], "child_timeout_seconds"),
+    ([{"name": "a", "description": "x", "provider": "p", "model": "m", "child_timeout_seconds": "inf"}], "child_timeout_seconds"),
+    ([{"name": "a", "description": "x", "provider": "p", "model": "m", "child_timeout_seconds": True}], "child_timeout_seconds"),
+    ([{"name": "a", "description": "x", "provider": "p", "model": "m", "child_timeout_seconds": 10**400}], "child_timeout_seconds"),
+    ([{"name": "a", "description": "x", "provider": "p", "model": "m", "max_iterations": 2**53}], "max_iterations"),
+    ([{"name": "a", "description": "x", "provider": "p", "model": "m", "max_iterations": "9" * 5000}], "max_iterations"),
 ])
 def test_invalid_model_routes_are_refused_before_anything_is_written(client, homes, options, problem):
     _root, work = homes
@@ -139,6 +151,7 @@ def test_invalid_model_routes_are_refused_before_anything_is_written(client, hom
     resp = client.put("/api/delegation/backends/model_map?profile=work", json={"options": options})
     assert resp.status_code == 400
     assert problem in resp.json()["detail"]
+    assert len(resp.json()["detail"]) < 200
     assert (work / "config.yaml").read_text(encoding="utf-8") == before
 
 
@@ -178,3 +191,30 @@ def test_profile_routes_only_name_existing_profiles(client, homes):
     assert resp.status_code == 200, resp.text
     assert _delegation(work)["backends"]["profile_routes"] == {
         "profiles": [{"name": "default", "description": "The main one"}], "default": "default"}
+
+
+@pytest.mark.parametrize("sent, stored", [(15, 15), ("15", 15), (" 15 ", 15), (2**53 - 1, 2**53 - 1), ("", None), (None, None)])
+def test_route_max_iterations_is_saved_as_a_whole_number(client, homes, sent, stored):
+    _root, work = homes
+    option = {"name": "scout", "description": "Quick look", "provider": "openrouter", "model": "m"}
+    if sent is not None:
+        option["max_iterations"] = sent
+    resp = client.put("/api/delegation/backends/model_map?profile=work", json={"options": [option]})
+    assert resp.status_code == 200, resp.text
+    (saved,) = _delegation(work)["backends"]["model_map"]["options"]
+    assert saved.get("max_iterations") == stored
+
+
+@pytest.mark.parametrize(
+    "sent, stored",
+    [(300, 300), ("300", 300), (" 300 ", 300), (0, 0), ("0", 0), (2.5, 2.5), ("", None), (None, None)],
+)
+def test_route_child_timeout_is_saved_as_a_number(client, homes, sent, stored):
+    _root, work = homes
+    option = {"name": "scout", "description": "Quick look", "provider": "openrouter", "model": "m"}
+    if sent is not None:
+        option["child_timeout_seconds"] = sent
+    resp = client.put("/api/delegation/backends/model_map?profile=work", json={"options": [option]})
+    assert resp.status_code == 200, resp.text
+    (saved,) = _delegation(work)["backends"]["model_map"]["options"]
+    assert saved.get("child_timeout_seconds") == stored

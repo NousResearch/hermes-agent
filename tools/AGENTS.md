@@ -157,7 +157,8 @@ subagent_auto_approve, inherit_mcp_toolsets, max_iterations, backend, backends`.
 delegation provider (`agent/delegation_provider.py`, `ctx.register_delegation_provider`; its settings live in
 `delegation.backends.<name>`) that answers each task's route (`tools/delegate_tool_routes.py`: model/provider fields
 resolved like the `delegation` section, `service_tier` checked like `/fast` in `delegate_tool_tuning.py`, or `profile` →
-the child is built, leases and converses inside that profile's scope) and may add enum-checked per-task schema params; it
+the child is built, leases and converses inside that profile's scope; a model route may also set `max_iterations` and
+`child_timeout_seconds`, overriding the globals for its children, and a bad value refuses that task) and may add enum-checked per-task schema params; it
 never owns lifecycle. The `default` strategy is the bundled `plugins/delegation/default` plugin (no core special case
 beyond selecting it). Fails closed: an unusable backend is a tool error naming it (never a silent `default`), an
 unroutable task is refused alone (`TaskRoute.error`), as is a task sending a parameter its backend lacks. A session routes on the backend its `delegate_task` was built from (`agent._delegation_backend`, pinned with its tools), so a save applies at `/new` or `--now` (`agent/delegation_backends.py`). Internal `credentials_cfg` callers (/review) and the lifecycle API bypass it. **Child processes:** a child's background

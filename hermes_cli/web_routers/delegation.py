@@ -150,6 +150,51 @@ def _check_default(default: Optional[str], names: list[str], what: str) -> Optio
     return value or None
 
 
+def _shown(value: Any) -> str:
+    """The refused value as the error shows it, cut so a pasted novel does not come back as the detail."""
+    text = repr(value)
+    return text if len(text) <= 40 else f"{text[:37]}..."
+
+
+# The desktop editor transports max_iterations as a JS number; anything above Number.MAX_SAFE_INTEGER would come
+# back rounded or as null on the next save of the route map, so the save path refuses it up front.
+_MAX_EDITOR_TURNS = 2**53 - 1
+
+
+def _clean_route_limits(label: str, entry: dict) -> dict[str, Any]:
+    """The route's ``max_iterations``/``child_timeout_seconds``: the editor sends text, so decimal strings become
+    numbers; blank omits the field; anything else the route rules refuse is a 400."""
+    from agent.delegation_provider import valid_route_child_timeout, valid_route_max_iterations
+
+    limits: dict[str, Any] = {}
+    turns = entry.get("max_iterations")
+    if isinstance(turns, str):
+        turns = turns.strip() or None
+    if turns is not None:
+        if isinstance(turns, str) and turns.isdecimal() and len(turns) <= len(str(_MAX_EDITOR_TURNS)):
+            turns = int(turns)
+        if not valid_route_max_iterations(turns) or turns > _MAX_EDITOR_TURNS:
+            raise _bad_request(f"{label}: max_iterations must be a whole number from 1 to {_MAX_EDITOR_TURNS} "
+                               f"(got {_shown(entry.get('max_iterations'))}).")
+        limits["max_iterations"] = turns
+    seconds = entry.get("child_timeout_seconds")
+    if isinstance(seconds, str):
+        seconds = seconds.strip() or None
+    if seconds is not None:
+        if isinstance(seconds, str):
+            try:
+                seconds = float(seconds)
+            except ValueError:
+                seconds = None
+        if not valid_route_child_timeout(seconds):
+            raise _bad_request(f"{label}: child_timeout_seconds must be a number of 0 or more "
+                               f"(got {_shown(entry.get('child_timeout_seconds'))}).")
+        if isinstance(seconds, float) and seconds.is_integer():
+            seconds = int(seconds)
+        limits["child_timeout_seconds"] = seconds
+    return limits
+
+
 def _clean_model_option(index: int, entry: dict, stored: dict[str, dict]) -> dict[str, Any]:
     from agent.delegation_provider import ROUTE_KEYS
     from agent.fast_mode import STATIC_TIERS, parse_exact_service_tier
@@ -183,8 +228,10 @@ def _clean_model_option(index: int, entry: dict, stored: dict[str, dict]) -> dic
         row["service_tier"] = tier
     if isinstance(entry.get("fallback_providers"), list):
         row["fallback_providers"] = entry["fallback_providers"]
+    row.update(_clean_route_limits(label, entry))
     # Route fields the editor never touches (request_overrides, label, profile) round-trip as stored.
-    validated = {*_OPTION_TEXT_KEYS, "api_key", "reasoning_effort", "service_tier", "fallback_providers"}
+    validated = {*_OPTION_TEXT_KEYS, "api_key", "reasoning_effort", "service_tier", "fallback_providers",
+                 "max_iterations", "child_timeout_seconds"}
     for field in sorted(ROUTE_KEYS - validated):
         if entry.get(field) not in (None, "", [], {}):
             row[field] = entry[field]

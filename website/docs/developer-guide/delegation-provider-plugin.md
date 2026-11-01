@@ -112,6 +112,12 @@ A route is a dict with any of:
   same gates as `/fast` (and, for `ultrafast`, the signed-in Codex account's catalog). A tier the
   route does not offer refuses the task; otherwise it applies to that child only and is re-applied
   after the child is built, so a custom provider's `extra_body` cannot restore another tier.
+- `max_iterations`: a whole number of 1 or more. The turn limit for children on this route; overrides
+  `delegation.max_iterations`. The settings editor's save path also caps it at 2^53 − 1, the largest
+  whole number its JavaScript transport carries exactly.
+- `child_timeout_seconds`: a number of 0 or more. The idle timeout for children on this route, with the
+  same meaning as `delegation.child_timeout_seconds` (0 disables it; values under 30 are raised to 30);
+  overrides the global value.
 - `profile`: the name of a Hermes profile. The child runs **as that profile**: its `config.yaml`,
   primary model and credentials (a `model.default` alias or named provider resolves exactly as at
   CLI startup), credential pool, fallback chain, reasoning (`agent.reasoning_effort` and
@@ -125,6 +131,8 @@ A route is a dict with any of:
 - `label`: short text identifying the route (an option title, a profile name).
 
 Unknown keys are dropped. On a profile route, `service_tier` and `reasoning_effort` are ignored too.
+A `max_iterations` or `child_timeout_seconds` that is not a valid value refuses the task with a tool
+error, like a bad `reasoning_effort`. A profile route ignores both.
 
 A non-profile route without `fallback_providers` of its own gets `delegation.fallback_providers`; return
 `"fallback_providers": []` to disable fallback for a route. A profile route keeps its profile's chain.
@@ -133,7 +141,8 @@ A non-profile route without `fallback_providers` of its own gets `delegation.fal
 
 A `DelegationRouteError` from `route_task`, a parameter your backend did not declare, a value outside
 your parameter's `enum`, an unknown
-`reasoning_effort`, a tier the route does not offer, or a credential the route cannot resolve refuses
+`reasoning_effort`, a tier the route does not offer, a credential the route cannot resolve, or a bad
+`max_iterations` or `child_timeout_seconds` refuses
 **that task only**: no child is built for it, its result entry is
 `{"status": "error", "error": "<your message>", "route": {"backend": "<name>", "refused": true}}`, and
 the other tasks run. A background call lists refused entries under `refused` in its dispatch payload.

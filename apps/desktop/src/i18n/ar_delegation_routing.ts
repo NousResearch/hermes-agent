@@ -67,8 +67,21 @@ export const arDelegationRouting: DelegationRoutingTranslations = {
   tierFast: 'سريعة',
   tierUltrafast: 'فائقة السرعة',
   tierHint: 'فقط في النماذج التي توفرها.',
+  turnsLabel: 'حد الدورات',
+  turnsPlaceholder: 'يستخدم الحد العام',
+  turnsHint: 'الحد الأقصى للدورات لوكيل فرعي على هذا المسار.',
+  timeoutLabel: 'المهلة (بالثواني)',
+  timeoutPlaceholder: 'يستخدم المهلة العامة',
+  timeoutHint:
+    'ثوانٍ من الخمول قبل إيقاف وكيل فرعي على هذا المسار. القيمة 0 تعطّلها؛ والقيم الأقل من 30 تُستخدم كـ 30.',
   optional: 'اختياري',
-  errors: { required: 'مطلوب', spaces: 'بلا مسافات', duplicate: 'مسار آخر يستخدم هذا الاسم بالفعل' },
+  errors: {
+    required: 'مطلوب',
+    spaces: 'بلا مسافات',
+    duplicate: 'مسار آخر يستخدم هذا الاسم بالفعل',
+    turns: 'استخدم عددًا صحيحًا يساوي 1 أو أكثر.',
+    seconds: 'استخدم عددًا يساوي 0 أو أكثر.'
+  },
   saveRoute: 'حفظ المسار',
   createRoute: 'إضافة مسار',
 

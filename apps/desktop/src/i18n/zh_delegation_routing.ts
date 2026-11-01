@@ -66,8 +66,20 @@ export const zhDelegationRouting: DelegationRoutingTranslations = {
   tierFast: '快速',
   tierUltrafast: '极速',
   tierHint: '仅适用于提供该选项的模型。',
+  turnsLabel: '轮次上限',
+  turnsPlaceholder: '使用全局上限',
+  turnsHint: '此路由上子智能体的最大轮次。',
+  timeoutLabel: '超时（秒）',
+  timeoutPlaceholder: '使用全局超时',
+  timeoutHint: '此路由上的子智能体空闲多少秒后停止。0 表示禁用；小于 30 的值按 30 处理。',
   optional: '可选',
-  errors: { required: '必填', spaces: '不能包含空格', duplicate: '其他路由已使用此名称' },
+  errors: {
+    required: '必填',
+    spaces: '不能包含空格',
+    duplicate: '其他路由已使用此名称',
+    turns: '请输入不小于 1 的整数。',
+    seconds: '请输入不小于 0 的数字。'
+  },
   saveRoute: '保存路由',
   createRoute: '添加路由',
 

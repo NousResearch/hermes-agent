@@ -22,6 +22,10 @@ export interface DelegationModelRoute {
   base_url?: string
   reasoning_effort?: string
   service_tier?: string
+  /** Turn limit for a child on this route; unset = delegation.max_iterations. */
+  max_iterations?: number
+  /** Idle timeout in seconds for a child on this route; 0 disables; unset = delegation.child_timeout_seconds. */
+  child_timeout_seconds?: number
   /** Display-only preview when set; sending it back keeps the stored key. */
   api_key?: string
   fallback_providers?: unknown[]

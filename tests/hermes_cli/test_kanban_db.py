@@ -720,6 +720,57 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
         assert len(kb.list_runs(conn, t)) == 0
 
 
+def test_delete_task_removes_attachments_and_reaps_blobs(kanban_home):
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="with-attachment")
+        att_id = kb.store_attachment_bytes(conn, t, "report.txt", b"data", uploaded_by="worker")
+        att = kb.get_attachment(conn, att_id)
+        assert Path(att.stored_path).is_file()
+
+        assert kb.delete_task(conn, t)
+
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_attachments WHERE task_id = ?", (t,)
+        ).fetchone()[0] == 0
+        assert not Path(att.stored_path).exists()
+
+
+def test_delete_task_keeps_blob_still_referenced_by_another_task(kanban_home):
+    with kbc.connect() as conn:
+        src = kb.create_task(conn, title="shared-src")
+        other = kb.create_task(conn, title="shares-blob")
+        att_id = kb.store_attachment_bytes(conn, src, "report.txt", b"data")
+        shared = kb.get_attachment(conn, att_id)
+        kb.add_attachment(
+            conn, other, filename=shared.filename, stored_path=shared.stored_path
+        )
+
+        assert kb.delete_task(conn, src)
+
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_attachments WHERE task_id = ?", (src,)
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_attachments WHERE task_id = ?", (other,)
+        ).fetchone()[0] == 1
+        assert Path(shared.stored_path).is_file()
+
+
+def test_delete_archived_task_removes_attachments_and_reaps_blobs(kanban_home):
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="archived-with-attachment")
+        att_id = kb.store_attachment_bytes(conn, t, "report.txt", b"data")
+        att = kb.get_attachment(conn, att_id)
+        assert kb.archive_task(conn, t)
+
+        assert kb.delete_archived_task(conn, t) is True
+
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_attachments WHERE task_id = ?", (t,)
+        ).fetchone()[0] == 0
+        assert not Path(att.stored_path).exists()
+
+
 
 
 # ---------------------------------------------------------------------------

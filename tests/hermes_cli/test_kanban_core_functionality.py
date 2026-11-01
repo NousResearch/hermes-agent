@@ -483,6 +483,39 @@ def test_migration_backfills_inflight_run_for_legacy_db(kanban_home):
         conn.close()
 
 
+def test_completion_run_records_actor_and_source(kanban_home):
+    """Regression for #137585: a zero-duration completion identifies its authority."""
+    conn = kbc.connect()
+    try:
+        operator_task = kb.create_task(conn, title="operator completion")
+        assert kb.complete_task(conn, operator_task, result="applied by host")
+        operator_run = kb.latest_run(conn, operator_task)
+        assert operator_run.completion_source == "operator"
+        assert operator_run.completion_actor == "operator"
+
+        worker_task = kb.create_task(conn, title="worker completion", assignee="coder")
+        claimed = kb.claim_task(conn, worker_task)
+        assert claimed is not None
+        assert kb.complete_task(
+            conn, worker_task, result="worker output", expected_run_id=claimed.current_run_id,
+        )
+        worker_run = kb.latest_run(conn, worker_task)
+        assert worker_run.completion_source == "worker"
+        assert worker_run.completion_actor == "coder"
+
+        external_task = kb.create_task(conn, title="external completion")
+        assert kb.complete_task(
+            conn, external_task, result="curator applied artifact",
+            completion_source="external", completion_actor="curator:session-42",
+        )
+        external_run = kb.latest_run(conn, external_task)
+        assert (external_run.completion_source, external_run.completion_actor) == (
+            "external", "curator:session-42",
+        )
+    finally:
+        conn.close()
+
+
 
 
 

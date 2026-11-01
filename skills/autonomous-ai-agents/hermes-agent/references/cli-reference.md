@@ -65,12 +65,14 @@ hermes bundles              Skill bundles (one /<name> alias loads several skill
 ### MCP Servers
 
 ```
-hermes mcp add NAME (--url or --command) | remove | list | test NAME
+hermes mcp add NAME [--yes] (--url URL | --command CMD [--args ...])
+hermes mcp remove NAME | list | test NAME
 hermes mcp catalog | install NAME     Curated catalog install
 hermes mcp configure NAME             Toggle tool selection
 hermes mcp-serve                      Run Hermes as an MCP server (mcp-serve plugin)
 ```
 Details (transport, tool discovery, catalog): `references/native-mcp.md`.
+For automated `mcp add` calls, always pass `--yes` before `--args`; the user approves additions and removals.
 
 ### Gateway (Messaging Platforms)
 

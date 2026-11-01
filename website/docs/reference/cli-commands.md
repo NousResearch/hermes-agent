@@ -1624,7 +1624,7 @@ Manage MCP (Model Context Protocol) server configurations. Running Hermes itself
 | *(none)* or `picker` | Interactive catalog picker — browse Nous-approved MCPs and install/enable/disable. |
 | `catalog` | List Nous-approved MCPs (plain text, scriptable). |
 | `install <name>` | Install a catalog entry (e.g. `hermes mcp install deepwiki`). |
-| `add <name> [--url URL] [--command CMD] [--auth oauth\|header] [--args ...]` | Add a custom MCP server with automatic tool discovery. `--args` passes the remaining argv to the stdio command, so put it last. |
+| `add <name> [--url URL] [--command CMD] [--auth oauth\|header] [-y\|--yes] [--args ...]` | Add a custom MCP server with automatic tool discovery. `-y`/`--yes` skips every prompt: each takes its default, authentication follows `--auth`, all discovered tools are enabled and an existing server is kept; OAuth sign-in still runs. Header auth requires the server's key in `.env`. `--args` passes the remaining argv to the stdio command, so put it last. |
 | `remove <name>` (alias: `rm`) | Remove an MCP server from config. |
 | `list` (alias: `ls`) | List configured MCP servers. |
 | `test <name>` | Test connection to an MCP server. |

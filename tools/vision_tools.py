@@ -529,10 +529,27 @@ def _profile_rejects_tool_media(provider: str, model: str = "") -> bool:
     (xiaomi/MiMo "text is not set"). ``supports_vision`` alone must not
     override this, or the multimodal tool-result envelope 400s every turn
     and the image never enters context (#89981).
+
+    A config-declared ``supports_vision_tool_messages: false`` vetoes the same
+    lane for an endpoint that ACCEPTS a tool-role image part but silently drops
+    the pixels (an OpenAI-compatible server that answers 200 and hands the
+    model only the envelope's text placeholder). See
+    :func:`agent.image_routing.lookup_supports_vision_tool_messages`.
     """
     try:
         from providers import routed_model_rejects_vision_tool_messages
         return routed_model_rejects_vision_tool_messages(provider, model)
+    except Exception:
+        return False
+
+
+def _config_rejects_tool_media(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> bool:
+    """True when config.yaml declares the route cannot carry images in tool results."""
+    if not cfg:
+        return False
+    try:
+        from agent.image_routing import lookup_supports_vision_tool_messages
+        return lookup_supports_vision_tool_messages(provider, model, cfg) is False
     except Exception:
         return False
 
@@ -563,6 +580,8 @@ def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[dict[st
     results are known to carry media or the per-model capability lookup (config override → catalog incl. the
     profile's ``model_capabilities`` → local probes) attests the model as vision-capable."""
     if _profile_rejects_tool_media(provider, model):
+        return False
+    if _config_rejects_tool_media(provider, model, cfg):
         return False
     if _supports_media_in_tool_results(provider, model):
         return True

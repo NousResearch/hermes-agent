@@ -8,6 +8,8 @@ media caches and every other path is read inside the sandbox via exec-read.
 
 import base64
 import importlib
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -280,6 +282,29 @@ class TestExecReadSafety:
                     "/workspace/missing.png", isrc.ResolveContext(task_id="t1"))
         # Diagnostic surfaced — the user can act on it.
         assert "No such file or directory" in str(excinfo.value)
+
+    @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash to run the exec-read")
+    @pytest.mark.asyncio
+    async def test_failed_read_reports_shell_error_not_base64_garbage(self, tmp_path, monkeypatch):
+        """A read that fails inside the sandbox must surface the shell's error. Without
+        pipefail the pipeline exits with tr's 0, the error text is base64-decoded, and the
+        user sees 'Only base64 data is allowed' instead of 'No such file or directory'."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        bash = shutil.which("bash")  # a bare "bash" on Windows finds System32's WSL launcher first
+
+        def bash_execute(cmd, **kw):
+            # Like the real backends: bash -c, stderr folded into output.
+            proc = subprocess.run([bash, "-c", cmd], stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True, timeout=30, check=False)
+            return {"returncode": proc.returncode, "output": proc.stdout}
+
+        with patch("tools.image_source._get_active_env",
+                   return_value=SimpleNamespace(execute=bash_execute)):
+            with pytest.raises(isrc.SourceNotFound) as excinfo:
+                await isrc.resolve_image_source(
+                    "/nonexistent-hermes-test-dir/missing.png", isrc.ResolveContext(task_id="t1"))
+        assert "missing.png: No such file or directory" in str(excinfo.value)
 
 
 class TestSvgNormalization:

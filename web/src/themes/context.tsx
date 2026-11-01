@@ -461,14 +461,20 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     [userThemeDefs],
   );
 
+  /** Per-profile override: changes what is RENDERED without touching the
+   *  global preference (`themeName`, `localStorage`, the server). `undefined`
+   *  = no override, render the global theme. Owned by `useProfileTheme`. */
+  const [overrideName, setOverrideName] = useState<string | undefined>(undefined);
+  const renderedName = overrideName ?? themeName;
+
   // Apply the active theme (and re-assert the font override at its tail)
   // whenever the theme, the resolver, OR the font override changes. Folding
   // font into the same effect means clearing the override re-runs applyTheme,
   // which restores the theme's own font; setting it re-asserts the override.
   useEffect(() => {
     _ACTIVE_FONT_OVERRIDE = fontId;
-    applyTheme(resolveTheme(themeName));
-  }, [themeName, resolveTheme, fontId]);
+    applyTheme(resolveTheme(renderedName));
+  }, [renderedName, resolveTheme, fontId]);
 
   // Load server-side themes (built-ins + user YAMLs) once on mount.
   useEffect(() => {
@@ -567,17 +573,37 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     api.setFontPref(next).catch(() => {});
   }, []);
 
+  /** Render `name` instead of the global theme, or pass `undefined` to go back
+   *  to the global one. Unlike `setTheme` this writes nothing: no state the
+   *  user chose globally, no `localStorage`, no server call. */
+  const setThemeOverride = useCallback(
+    (name: string | undefined) => {
+      if (name === undefined) {
+        setOverrideName(undefined);
+        return;
+      }
+      const known =
+        name in BUILTIN_THEMES ||
+        availableThemes.some((t) => t.name === name) ||
+        name in userThemeDefs;
+      setOverrideName(known ? name : undefined);
+    },
+    [availableThemes, userThemeDefs],
+  );
+
   const value = useMemo<ThemeContextValue>(
     () => ({
-      theme: resolveTheme(themeName),
+      theme: resolveTheme(renderedName),
       themeName,
+      activeThemeName: renderedName,
       availableThemes,
       setTheme,
+      setThemeOverride,
       fontId,
       fontChoices: FONT_CHOICES,
       setFont,
     }),
-    [themeName, availableThemes, setTheme, resolveTheme, fontId, setFont],
+    [renderedName, themeName, availableThemes, setTheme, setThemeOverride, resolveTheme, fontId, setFont],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
@@ -596,6 +622,8 @@ const ThemeContext = createContext<ThemeContextValue>({
     description: t.description,
   })),
   setTheme: () => {},
+  setThemeOverride: () => {},
+  activeThemeName: "default",
   fontId: THEME_DEFAULT_FONT_ID,
   fontChoices: FONT_CHOICES,
   setFont: () => {},
@@ -604,8 +632,14 @@ const ThemeContext = createContext<ThemeContextValue>({
 interface ThemeContextValue {
   availableThemes: ThemeListEntry[];
   setTheme: (name: string) => void;
+  /** Render another theme without changing the global preference (see the
+   *  provider). `undefined` clears the override. */
+  setThemeOverride: (name: string | undefined) => void;
   theme: DashboardTheme;
+  /** The GLOBAL theme preference (what `setTheme` persists). */
   themeName: string;
+  /** The theme actually rendered: the override when one is set, else `themeName`. */
+  activeThemeName: string;
   /** Active font-override id (`THEME_DEFAULT_FONT_ID` = no override). */
   fontId: string;
   /** Curated font catalog for the picker. */

@@ -31,14 +31,15 @@ import {
 
 type FakeChildProcess = EventEmitter & {
   stdout: EventEmitter
+  stderr: EventEmitter
 }
 
-// A minimal stand-in for a spawned child process: an EventEmitter with a
-// stdout EventEmitter, matching the surface waitForDashboardPort consumes
-// (child.stdout.on('data'), child.on('exit'|'error') + the .off() teardown).
+// A minimal stand-in for a spawned child process: an EventEmitter with stdout
+// and stderr streams, matching the surface waitForDashboardPort consumes.
 function makeFakeChild(): FakeChildProcess {
   const child = new EventEmitter() as FakeChildProcess
   child.stdout = new EventEmitter()
+  child.stderr = new EventEmitter()
 
   return child
 }
@@ -328,12 +329,12 @@ test('the merged-tail seed does not match prose that merely names the sentinel',
 // ---------------------------------------------------------------------------
 
 test('a completion banner re-arms the deadline past the original timeout', async () => {
-  // The backend prints venv_sync's banner (finishing an owed update tail)
+  // venv_sync prints this completion banner on stderr (finishing an owed tail)
   // after the normal budget would have expired. The wait must keep waiting
   // while the repair is in progress, then resolve on the late announcement.
   const child = makeFakeChild()
   const p = waitForDashboardPort(child, 40)
-  child.stdout.emit('data', 'hermes: finishing an interrupted source update...\n')
+  child.stderr.emit('data', 'hermes: finishing an interrupted source update...\n')
   // Past the original 40ms deadline: without the banner grace this wait has
   // already rejected. Give the "repair" a moment, then announce.
   await new Promise(resolve => setTimeout(resolve, 80))
@@ -353,7 +354,7 @@ test(
     const wait = waitForDashboardPort(child, 20)
     wait.catch(() => {}) // mark handled; the assertion below re-awaits
 
-    child.stdout.emit('data', 'hermes: finishing an interrupted source update...\n')
+    child.stderr.emit('data', 'hermes: finishing an interrupted source update...\n')
     await assert.rejects(
       wait,
       /Timed out waiting for Hermes backend port announcement .* while an update completion was in progress/

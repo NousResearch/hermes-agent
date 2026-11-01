@@ -23,11 +23,19 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
 
 
 def _board_task_counts(slug: str) -> dict[str, int]:
-    """``{status: count}`` for a board. Safe to call on an empty DB."""
+    """``{status: count}`` for a board. Safe to call on an empty DB.
+
+    Resolves the board's OWN DB file (:func:`kb.board_db_path`), not
+    ``kanban_db_path(board=slug)``: inside a worker-fenced session the latter
+    resolves every slug through the dispatcher-injected ``HERMES_KANBAN_DB``
+    pin, so ``boards list`` printed the pinned board's counts on every row
+    (t_5dedbbe8).
+    """
     try:
-        if not kb.kanban_db_path(board=slug).exists():
+        db_path = kb.board_db_path(slug)
+        if not db_path.exists():
             return {}
-        with kbc.connect_closing(board=slug) as conn:
+        with kbc.connect_closing(db_path=db_path) as conn:
             rows = conn.execute("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status").fetchall()
         return {r["status"]: int(r["n"]) for r in rows}
     except Exception:
@@ -55,6 +63,10 @@ def _cmd_boards_list(args: argparse.Namespace) -> int:
         b["is_current"] = (b["slug"] == current)
         b["counts"] = _board_task_counts(b["slug"])
         b["total"] = sum(b["counts"].values())
+        # Physical per-board file. ``read_board_metadata`` derives ``db_path``
+        # through ``kanban_db_path``, which a worker-pinned session collapses
+        # onto the pinned file for every slug (see :func:`kb.board_db_path`).
+        b["db_path"] = str(kb.board_db_path(b["slug"]))
     if _json_out(args, boards):
         return 0
     if not boards:
@@ -128,13 +140,28 @@ def _cmd_boards_switch(args: argparse.Namespace) -> int:
 
 
 def _cmd_boards_show(args: argparse.Namespace) -> int:
+    """Print one board's metadata, DB path and task counts.
+
+    ``boards show <slug>`` describes that board; bare ``boards show`` describes
+    the active one. Both read the board's OWN DB (``kb.board_db_path``) so a
+    worker-pinned session cannot report the pinned board's counts here either.
+    """
     current = kb.get_current_board()
-    meta = kb.read_board_metadata(current)
-    counts = _board_task_counts(current)
-    print(f"Current board: {current}\n  Display name: {meta.get('name', '')}")
+    slug = current
+    if getattr(args, "slug", None):
+        # ``must_exist=True`` returns ``(None, rc)`` with a non-zero rc when the
+        # slug is missing, so a zero rc always carries a slug.
+        normed, rc = _board_slug_arg(args, "show", must_exist=True)
+        if rc:
+            return rc
+        slug = normed or current
+    meta = kb.read_board_metadata(slug)
+    counts = _board_task_counts(slug)
+    print(f"{'Current board' if slug == current else 'Board'}: {slug}\n"
+          f"  Display name: {meta.get('name', '')}")
     if meta.get("description"):
         print(f"  Description:  {meta['description']}")
-    print(f"  DB path:      {meta['db_path']}\n"
+    print(f"  DB path:      {kb.board_db_path(slug)}\n"
           f"  Tasks:        {sum(counts.values())} total" + (f" ({_fmt_counts(counts)})" if counts else ""))
     return 0
 

@@ -131,19 +131,29 @@ def split_history_for_partial_compress(
     exchanges kept verbatim.
 
     Exchanges are counted by ``user`` messages so the tail always starts on a user turn and
-    ``compressed_head + tail`` keeps alternation valid. Returns ``(history, [])`` when the head
+    ``compressed_head + tail`` keeps alternation valid. A ``display_kind`` row counts only when the
+    model answered it: a wake (process completion, auto-continue) starts a turn, while a timeline
+    marker would take a kept slot and a mid-turn ``/steer`` would cut its turn in two. Returns ``(history, [])`` when the head
     would be empty (or there are no user turns), signaling the caller to fall back to full
     compression rather than rotating the session for a no-op.
     """
+    from agent.prompt_builder import STEER_DISPLAY_KIND
+
     keep_last = max(keep_last, 1)
     if not history:
         return [], []
+
+    def starts_exchange(idx: int) -> bool:
+        kind = history[idx].get("display_kind")
+        if history[idx].get("role") != "user" or kind == STEER_DISPLAY_KIND:
+            return False
+        return not kind or (idx + 1 < len(history) and history[idx + 1].get("role") == "assistant")
 
     # Walk backwards to the earliest of the most recent `keep_last` user-message starts.
     boundary = None
     seen = 0
     for idx in range(len(history) - 1, -1, -1):
-        if history[idx].get("role") == "user":
+        if starts_exchange(idx):
             boundary = idx
             seen += 1
             if seen >= keep_last:

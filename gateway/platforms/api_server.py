@@ -113,7 +113,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
-from gateway.platforms import api_server_runs as _api_runs
+from gateway.platforms import api_server_profile_plugins as _profile_plugins, api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.api_server_bot_chat import reset_local_title_owner
@@ -1524,12 +1524,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return _profile_runtime_scope(get_profile_dir(profile))
 
     async def _handle_profile_ingress(self, request: web.Request) -> web.StreamResponse:
-        """``/p/<profile>/<tail>`` → the served profile's shared-listener adapter (already scoped by the
-        prefix middleware); a profile with no adapter for the path is a 404, never the default's."""
-        from gateway.platforms.shared_ingress import dispatch_profile_ingress
-        return await dispatch_profile_ingress(
-            self.gateway_runner, _api_request_profile.get(), request.match_info.get("tail", ""), request,
-            scoped=True)
+        """``/p/<profile>/<tail>`` → the named profile's OWN plugin routes, else its shared-listener
+        adapter (already scoped by the prefix middleware); never the default's (404)."""
+        return await _profile_plugins.handle_profile_ingress(self, request)
 
     def _make_profile_prefix_middleware(self):
         """Reject unknown /p/<profile>/ prefixes and scope the request home."""
@@ -4001,6 +3998,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
             # Plugin-registered native handlers, wired before AppRunner.setup() freezes the router.
             self._wire_plugin_handlers(self._app)
+            _profile_plugins.attach_profile_plugin_apps(self, self._app)  # /p/<named>/api/plugins/*
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
 # Bind directly instead of probing 127.0.0.1 first — the old single-family pre-probe raced the
@@ -4070,6 +4068,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         files, #37011).
         """
         self._mark_disconnected()
+        _profile_plugins.begin_closing_profile_plugin_apps(self)
         # getattr: disconnect() tolerates bare __new__ fixtures (pinned in test_api_server_run_idempotency).
         routed = getattr(self, "_response_stores", {})
         stores = [s for s in (getattr(self, "_response_store", None), *list(routed.values())) if s is not None]
@@ -4089,6 +4088,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 await self._runner.cleanup()
                 self._runner = None
         finally:
+            await _profile_plugins.close_profile_plugin_apps(self)  # listener drained: none in use
             _api_runs._close_run_state(self)  # after site.stop(): no late request re-mints the executor
             self._close_cached_session_dbs()
             self._app = None

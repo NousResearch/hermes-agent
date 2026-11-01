@@ -395,6 +395,7 @@ export const zhOverrides = {
       'view.showTerminal': '显示终端',
       'view.selectionToComposer': '将选区发送到输入框',
       'view.terminalCopy': '复制终端选区',
+      'view.copySelection': '复制选中文字',
       'view.terminalPaste': '粘贴到终端',
       'view.closeTab': '关闭标签',
       'view.reopenTab': '重新打开已关闭的标签',

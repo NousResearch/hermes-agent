@@ -618,6 +618,7 @@ export const frOverrides = {
       'view.closeTerminal': 'Fermer le terminal',
       'view.selectionToComposer': 'Envoyer la sélection au compositeur',
       'view.terminalCopy': 'Copier la sélection du terminal',
+      'view.copySelection': 'Copier la sélection',
       'view.terminalPaste': 'Coller dans le terminal',
       'view.closeTab': "Fermer l'onglet",
       'view.reopenTab': "Rouvrir l'onglet fermé",

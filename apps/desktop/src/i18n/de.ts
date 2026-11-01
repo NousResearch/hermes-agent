@@ -618,6 +618,7 @@ export const deOverrides = {
       'view.closeTerminal': 'Terminal schließen',
       'view.selectionToComposer': 'Auswahl an Composer senden',
       'view.terminalCopy': 'Terminal-Auswahl kopieren',
+      'view.copySelection': 'Auswahl kopieren',
       'view.terminalPaste': 'In Terminal einfügen',
       'view.closeTab': 'Tab schließen',
       'view.reopenTab': 'Geschlossenen Tab wieder öffnen',

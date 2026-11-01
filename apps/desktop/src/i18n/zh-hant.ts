@@ -15,6 +15,12 @@ import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
 
+  keybinds: {
+    actions: {
+      'view.copySelection': '複製選取文字'
+    }
+  },
+
   catalog: {
     add: '新增',
     added: '已新增',

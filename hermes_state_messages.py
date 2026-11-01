@@ -26,7 +26,8 @@ from hermes_state_compaction_display import later_tool_copy_ids, not_a_later_too
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
 from hermes_state_identity import (
-    _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json, _uid_list)
+    _absorbed_uids_json, _active_summary_source_uids, _fold_summary_carrier, _restore_identity_columns,
+    _restore_summary_source_activity, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json, _uid_list)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -1125,21 +1126,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         """Fixed-width durable identity for indexed display-generation lookup."""
         return hashlib.sha256(repr(key).encode("utf-8", "surrogatepass")).digest()
 
-    @staticmethod
-    def _fold_summary_carrier(row, key: Any, first_by_uid: dict) -> Any:
-        """The display identity both display reads give *row*, scanning rows in ``id`` order.
-
-        A compaction carrier keeps its message's ``message_uid`` but not its content (the prior tail
-        wrapped around the summary), so it is a copy of the first row with that uid: shown once."""
-        uid = row["message_uid"]
-        if not uid:
-            return key
-        if row["_compressed_summary"]:
-            return first_by_uid.get(uid, key)
-        first_by_uid.setdefault(uid, key)
-        return key
-
-    def _dedupe_display_generations(self, rows, *, drop_removed: bool = False):
+    def _dedupe_display_generations(self, rows, *, drop_removed: bool = False,
+                                    preserve_summary_markers: bool = False):
         """Collapse compaction generations so each logical message appears once (the protected tail is copied
         into each generation: same role/content/timestamp, different ``active``/id); prefer the live row, then
         the newest. The ONE definition every display projection shares. *rows* must be ordered by ``id``.
@@ -1147,13 +1135,16 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         *drop_removed*: *rows* also hold the removed rows (``active=0, compacted=0``: rewound, or replaced by a
         newer copy) and ``compacted``. A message whose newest copy is removed is not shown, so a rewind in a
         compression child never brings back the parent's copy. Copies share the display key or ``message_uid``
-        (a micro-compaction merge also stands for the rows it absorbed)."""
+        (a micro-compaction merge also stands for the rows it absorbed).
+        *preserve_summary_markers*: summary-source reads retain physical checkpoint boundaries and order
+        surviving raw copies by their current generation, rather than folding them into display history."""
         seen: dict[tuple[Any, ...], Any] = {}
         first_id: dict[tuple[Any, ...], int] = {}
         uid_key: dict[Any, tuple[Any, ...]] = {}  # message_uid -> the display key of its first copy
         removed: dict[Any, bool] = {}  # copy identity -> its newest copy is removed (rows come in id order)
         identities: dict[tuple[Any, ...], list[Any]] = {}
         removed_ts: set[Any] = set()
+        checkpoints = []
         rows = rows if isinstance(rows, list) else list(rows)
         later_copies = later_tool_copy_ids(self, rows)  # a compacted tool result paints once, as its original
         if drop_removed:
@@ -1176,12 +1167,15 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                 removed.update(dict.fromkeys(copies, gone))
                 if gone:
                     continue
+            if preserve_summary_markers and row["_compressed_summary"]:
+                checkpoints.append(row)
+                continue
             if self._is_model_only_row(row) or row["id"] in later_copies:
                 continue
             key = key or self._display_dedupe_key(row)
             # Only the summary carrier folds by uid: other rewritten copies (a pruned tool stub) must keep
             # their archived original visible.
-            key = self._fold_summary_carrier(row, key, uid_key)
+            key = _fold_summary_carrier(row, key, uid_key)
             cur = seen.get(key)
             if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
                 seen[key] = row
@@ -1192,6 +1186,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         keys = sorted(seen, key=first_id.__getitem__)
         if drop_removed:
             keys = [key for key in keys if not any(removed[copy] for copy in identities[key])]
+        if preserve_summary_markers:
+            return sorted([*(seen[key] for key in keys), *checkpoints], key=lambda row: row["id"])
         return [seen[key] for key in keys]
 
     def _reconcile_display_orders(self, conn, session_id: str) -> None:
@@ -1218,7 +1214,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             updates = []
             for row in rows:
                 last_id = row["id"]
-                identity = self._fold_summary_carrier(
+                identity = _fold_summary_carrier(
                     row, self._display_identity(self._display_dedupe_key(row)), uid_identity)
                 # A row already holding this identity keeps its stored slot (an in-place prune changes a
                 # row's content, not its place); otherwise the slot is the identity's first row.
@@ -1517,9 +1513,14 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
     def get_messages_as_conversation(self, session_id: str, include_ancestors: bool = False,
                                      include_inactive: bool = False, repair_alternation: bool = False,
                                      include_row_ids: bool = False,
-                                     include_compacted: bool = False) -> list[dict[str, Any]]:
+                                     include_compacted: bool = False,
+                                     include_summary_markers: bool = False) -> list[dict[str, Any]]:
         """Load messages in OpenAI format. ``include_compacted`` (deduped display history) is for DISPLAY reads
-        only: the model-fed restore must not regrow what compaction summarized away. ``repair_alternation``
+        only: the model-fed restore must not regrow what compaction summarized away.
+        ``include_summary_markers`` preserves synthetic compaction rows for audit/re-derivation callers.
+        Together with ``include_compacted``, it retains checkpoint positions and marks live source rows
+        with ``_summary_source_active`` so re-derivation cannot pull protected tail rows into the summary.
+        ``repair_alternation``
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
         per-request repair forever), preserving summary markers before repair so derivative context
         cannot merge with an original user turn; the stored transcript is never mutated."""
@@ -1527,11 +1528,15 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         rows = self._fetch_conversation_rows(
             self._resume_lineage_ids(session_id) if include_ancestors else [session_id],
             self._active_clause(include_inactive, include_compacted), with_session_id=False, with_compacted=display)
+        source_active_uids = (_active_summary_source_uids(rows, session_id)
+                              if display and include_summary_markers else None)
         if include_compacted:
-            rows = self._dedupe_display_generations(rows, drop_removed=display)
+            rows = self._dedupe_display_generations(
+                rows, drop_removed=display, preserve_summary_markers=include_summary_markers)
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,
             repair_alternation=repair_alternation, include_row_ids=include_row_ids,
-            include_summary_markers=repair_alternation)
+            include_summary_markers=include_summary_markers or repair_alternation,
+            source_active_uids=source_active_uids)
 
     def conversation_revision(self, session_id: str, include_ancestors: bool = False) -> tuple:
         """A cheap fingerprint of what ``get_messages_as_conversation`` (live rows) would load: the
@@ -1570,7 +1575,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
 
     def _rows_to_conversation(self, rows, *, session_id: str, include_ancestors: bool, repair_alternation: bool,
                               include_row_ids: bool = False,
-                              include_summary_markers: bool = False) -> list[dict[str, Any]]:
+                              include_summary_markers: bool = False,
+                              source_active_uids: set[str] | None = None) -> list[dict[str, Any]]:
         """Decode fetched rows (ordered by id, pre-filtered) into OpenAI format, stable key order. Every dict is
         stamped ``_DB_PERSISTED_MARKER_KEY`` (born durable) so an identity-losing handoff never re-appends the
         transcript on flush. Unaddressed live-replay projections also carry the stored-row CAS digest: if a later rewrite
@@ -1614,6 +1620,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                 lift_data_use(msg)
             if include_summary_markers and row["_compressed_summary"]:
                 msg["_compressed_summary"] = True
+            _restore_summary_source_activity(row, msg, source_active_uids, session_id)
             msg.update(
                 (col, row[col]) for col in ("timestamp", "tool_call_id", "tool_name", "effect_disposition") if row[col])
             if row["tool_calls"]:

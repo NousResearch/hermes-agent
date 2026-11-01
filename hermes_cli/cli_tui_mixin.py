@@ -38,6 +38,7 @@ from prompt_toolkit.layout.processors import (
 from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.widgets import TextArea
 from typing import Optional
+from utils import file_signature
 
 from hermes_cli import cli_enter_burst as _enter_burst
 from hermes_cli.cli_enter_burst import RAPID_INPUT_ENTER_WINDOW_S as _RAPID_INPUT_ENTER_WINDOW_S

@@ -47,6 +47,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | Command | Purpose |
 |---------|---------|
 | `hermes chat` | Interactive or one-shot chat with the agent. |
+| `hermes infer` | Invoke a configured model for one prompt without starting an agent session. |
 | `hermes model` | Interactively choose the default provider and model. |
 | `hermes moa` | Configure named Mixture of Agents presets selectable from the model picker. |
 | `hermes fallback` | Manage fallback providers tried when the primary model errors. |
@@ -254,6 +255,50 @@ hermes -z "summarize this repo" --usage-file ~/.hermes/cache/scratch/usage.json
 jq .total_including_auxiliary.estimated_cost_usd ~/.hermes/cache/scratch/usage.json
 jq .auxiliary.by_task ~/.hermes/cache/scratch/usage.json      # what did title generation / vision cost?
 ```
+
+## `hermes infer`
+
+```bash
+hermes infer "Classify this message" --json
+printf '%s' 'Message to classify' | hermes infer - --json
+hermes infer - --schema ./classification.schema.json --json < ./message.txt
+hermes infer "Explain this result" --json --include-response
+```
+
+`infer` sends one user prompt through the selected route and prints its text to
+stdout. Pass `-` or omit the prompt to read standard input. `--json` prints an
+envelope with `ok`, `text`, `parsed`, `provider`, `model`, `usage`, and `error`.
+An optional `--schema` file requests JSON output and validates the response
+locally; it requires the optional `jsonschema` package. If the response is
+invalid JSON or does not match the schema, `--json` still prints the raw model
+text, route, usage, and a machine-readable `error.code` (`invalid_json` or
+`schema_mismatch`) and exits nonzero. Other request failures return an envelope
+with `text: null` and `error.code: request_failed`. Without `--json`, failures
+write only an error to stderr. Schema validation does not trigger a repair
+request; configured provider retries and fallbacks still apply, so one invocation
+may make more than one provider request. A script can inspect the returned text
+and apply a local transformation or alternate schema
+without another model request. `--max-tokens` requests an output limit and
+`--timeout` sets a request timeout; neither is a universal hard bound across
+providers, adapters, retries, and fallbacks.
+
+For provider diagnostics, `--json --include-response` adds `response`: a JSON
+snapshot of the completion object returned to Hermes by its model client. It
+can expose fields such as `finish_reason`, refusal data, or additional choices
+that are not represented in `text`. The shape varies by provider and adapter;
+it is not the original upstream HTTP payload. The ordinary envelope fields are
+the stable interface for scripts. If no response arrives, `response` is `null`.
+`ok` reports request and requested-validation success, not whether the model's
+answer is useful or whether a refusal should count as a failure for a script.
+
+The command uses the profile's configured provider, model, credentials, and
+fallback policy, including Hermes model aliases. Supply both `--provider` and
+`--model` to select another configured route. `-p` selects a named profile.
+No `AIAgent`, session, memory, skills, or tool schemas are loaded. The reported
+provider is the route used after any configured fallback; the model is the
+response's model ID when the provider supplies one, otherwise the selected
+route's model ID. A no-agent cron script can call this command and decide what
+to print for delivery.
 
 ## `hermes model`
 

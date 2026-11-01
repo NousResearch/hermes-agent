@@ -19,7 +19,7 @@ import {
   setModelPreset
 } from '@/store/model-presets'
 import { notify } from '@/store/notifications'
-import { $defaultReasoningEffort, markComposerSelectionManual } from '@/store/session'
+import { $defaultReasoningEffort, markComposerEffortManual } from '@/store/session'
 
 import type { ModelMenuController } from './model-catalog-menu'
 
@@ -118,7 +118,7 @@ export function useModelMenuController({
     setModelPreset(row.provider, row.model, patch)
 
     if (touchesPrimary) {
-      markComposerSelectionManual()
+      markComposerEffortManual()
     }
 
     void applyModelPreset(patch, {

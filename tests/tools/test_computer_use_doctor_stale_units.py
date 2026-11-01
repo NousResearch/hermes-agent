@@ -11,7 +11,7 @@ import json
 import os
 from io import StringIO
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -55,7 +55,8 @@ def _run_doctor_json(monkeypatch, home, daemon_probe=lambda *_a, **_kw: None):
          patch("sys.stdout", out):
         code = doctor.run_doctor(json_output=True)
     select.assert_called_once_with("cua-driver")
-    open_mcp.assert_called_once_with(str(installed.binary))
+    # The doctor spawns the resolved standard-mode invocation (command, argv, env); no endpoint is configured here.
+    open_mcp.assert_called_once_with(str(installed.binary), (str(installed.binary), ("mcp",), ANY))
     return code, json.loads(out.getvalue())
 
 

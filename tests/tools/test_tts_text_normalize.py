@@ -81,3 +81,31 @@ def test_prepare_spoken_text_closes_colon_on_single_line():
     assert prepare_spoken_text("Here is the list:") == "Here is the list."
     # ...but a digit-preceded colon is a ratio and must stay intact.
     assert prepare_spoken_text("Final score 3:2") == "Final score 3:2"
+
+
+def test_prepare_spoken_text_strips_unterminated_code_fence():
+    # A reply cut off mid-generation leaves a fence opener with no closer, so
+    # the closed-fence pass never fires and the raw source is read aloud.
+    spoken = prepare_spoken_text("Here is the plan.\n```python\nprint('step one')")
+
+    assert "print" not in spoken
+    assert "step one" not in spoken
+    assert "Here is the plan" in spoken
+
+
+def test_prepare_spoken_text_keeps_prose_after_a_closed_fence():
+    # The unterminated-fence pass must not re-match a fence that IS closed and
+    # swallow the prose that follows it.
+    spoken = prepare_spoken_text("Here is the plan.\n```py\nprint(1)\n```\nThat is it.")
+
+    assert "print" not in spoken
+    assert "That is it" in spoken
+
+
+def test_prepare_spoken_text_keeps_mid_sentence_backtick_run():
+    # A backtick run inside a sentence is not a fence opener. Text discussing
+    # markdown syntax must survive intact.
+    spoken = prepare_spoken_text("The syntax is three backticks ``` to open a block.")
+
+    assert "to open a block" in spoken
+    assert "three backticks" in spoken

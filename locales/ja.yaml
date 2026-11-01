@@ -42,6 +42,7 @@ approval:
     second_one: "{count} 秒"
     second_other: "{count} 秒"
 gateway:
+  redelivered_due: "[再送信 · 元の予定時刻 {when}]"
   approval_expired: "⚠️ 承認の有効期限が切れました（エージェントはもう待機していません）。エージェントに再試行を依頼してください。"
   draining: "⏳ 再起動前に {count} 個のアクティブエージェントの終了を待っています..."
   goal_cleared: "✓ 目標をクリアしました。"

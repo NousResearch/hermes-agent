@@ -42,6 +42,7 @@ approval:
     second_one: "{count} soicind"
     second_other: "{count} soicind"
 gateway:
+  redelivered_due: "[Athsheolta · bhí sé dlite ar dtús {when}]"
   approval_expired: "⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht níos mó). Iarr ar an ngníomhaire iarracht eile a dhéanamh."
   draining: "⏳ Ag fanacht le {count} gníomhaire(í) gníomhach roimh atosú..."
   goal_cleared: "✓ Sprioc glanta."

@@ -1,4 +1,4 @@
-import { host, randomUuid } from '@hermes/plugin-sdk'
+import { host, profileVisibleName, randomUuid } from '@hermes/plugin-sdk'
 
 import type { GroupMember } from './types'
 
@@ -17,6 +17,8 @@ export interface CanonicalRoomMember {
   profile: string
   handle: string
   display_name?: string
+  /** Read-time primary name from this room's authority; never persisted or used for routing. */
+  current_display_name?: string
   target?: Record<string, unknown>
 }
 
@@ -130,10 +132,15 @@ export async function createCanonicalGroup(
     profiles.add(profile.toLowerCase())
     handles.add(handle.toLowerCase())
 
+    // Only configured names override the gateway's existing handle fallback.
+    const display_name = profileVisibleName({ ...member, name: '', bot_title: member.title })
+
     return {
       member_id: profile, profile, handle,
-      target: { kind: 'local', profile },
-      ...(member.display_name ? { display_name: member.display_name } : {})
+      // hosted_rooms caps an actor label at 200 chars; an over-long configured
+      // title must not reject the whole group, so omit it and keep the handle.
+      ...(display_name && display_name.length <= 200 ? { display_name } : {}),
+      target: { kind: 'local', profile }
     }
   })
 

@@ -1958,6 +1958,10 @@ export { APPROVAL_RESPOND_TIMEOUT_MS } from '@hermes/shared'
 /** THE id minter: a v4 UUID on every origin. `crypto.randomUUID` exists only in secure contexts,
  *  so a Webapp opened over plain HTTP from another machine has none. */
 export { randomUuid } from '@hermes/shared'
+/** THE user-visible profile name policy (Bot title → core display name → legacy
+ *  id). Presentation only: never use the result for routing, permissions or a
+ *  storage key — the canonical profile id remains the identity. */
+export { type ProfileNameMetadata, profileVisibleName } from '@hermes/shared'
 /** Hermes' reasoning levels, so a plugin surfacing a thinking depth uses the
  *  same scale as the rest of the app (labels: `reasoningEffortLabel`). */
 export {

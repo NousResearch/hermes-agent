@@ -31,6 +31,106 @@ const originalDesktop = window.hermesDesktop
 beforeEach(() => { Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined }) })
 afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.hermesDesktop = originalDesktop; vi.unstubAllGlobals() })
 
+it.each(['source-a', 'source-b'])('projects legacy group names only from its own authority (%s) across every row and preserves routing', async connectionId => {
+  const binding = { connectionId, profile: 'team', roomId: 'legacy-names' }
+  const members = [
+    { member_id: 'seat-1', profile: 'u52a9-u624b', handle: 'helper-2', display_name: 'u52a9-u624b', target: { kind: 'local', profile: 'u52a9-u624b' } },
+    { member_id: 'seat-2', profile: 'u52a9-u624b', handle: 'peer-helper', display_name: 'Peer snapshot', target: { kind: 'peer', peer_id: 'other-gateway', profile: 'u52a9-u624b' } },
+    { member_id: 'seat-3', profile: 'plain', handle: 'old-plain' }
+  ]
+  const stored = structuredClone(members)
+  const action = { kind: 'approval', member_id: 'seat-1', task_id: 'task:original', execution_generation: 7, request_id: 'request:original' }
+  let title = connectionId === 'source-a' ? '中文助手 A' : '中文助手 B'
+  request.mockImplementation(async (route, method) => {
+    if (method === 'profiles.list') {return { profiles: [
+      { name: 'u52a9-u624b', ui_meta: { 'hermes-bots': { title: route.connectionId === connectionId ? title : 'WRONG SOURCE' } } },
+      { name: 'plain', display_name: 'Plain current name' }
+    ] }}
+    if (method === 'groups.state') {return { room: { name: 'Room', members }, driver_status: {
+      working: true, member_activity: [{ member_id: 'seat-1', status: 'running' }], pending_actions: [action]
+    } }}
+    if (method === 'groups.log') {return { events: [
+      { seq: 1, kind: 'message.member', actor: { kind: 'member', id: 'seat-1', display_name: 'Old snapshot' }, payload: { text: 'Hello from member' } },
+      { seq: 2, kind: 'turn.failed', payload: { member_id: 'seat-1', error: 'Previous error' } }
+    ] }}
+    return {}
+  })
+  const view = render(<CanonicalGroupWorkspace binding={binding} />)
+  await waitFor(() => expect(screen.getByRole('status').textContent).toBe(`Working: ${title}`))
+  // The current primary name unifies roster, message, failed-work notice and approval row.
+  expect(screen.getAllByText(title)).toHaveLength(4)
+  expect(screen.getByText('Peer snapshot')).toBeTruthy()
+  expect(screen.getByText('Plain current name')).toBeTruthy()
+  expect(screen.queryByText('Old snapshot')).toBeNull()
+  const box = screen.getByRole('textbox') as HTMLTextAreaElement
+  await waitFor(() => expect(box.disabled).toBe(false))
+  fireEvent.change(box, { target: { value: '@hel' } })
+  fireEvent.mouseDown(screen.getByText('@helper-2'))
+  expect(box.value).toBe('@helper-2 ')
+  fireEvent.change(box, { target: { value: '@helper-2 Keep this draft' } })
+  title = '重命名助手'
+  view.rerender(<CanonicalGroupWorkspace binding={binding} visible={false} />)
+  view.rerender(<CanonicalGroupWorkspace binding={binding} />)
+  await waitFor(() => expect(screen.getByRole('status').textContent).toBe(`Working: ${title}`))
+  expect(box.value).toBe('@helper-2 Keep this draft')
+  fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.approve')).toBe(true))
+  expect(request.mock.calls.find(call => call[1] === 'groups.approve')?.[2]).toEqual({
+    profile: 'team', room_id: binding.roomId, member_id: 'seat-1', task_id: 'task:original', execution_generation: 7, request_id: 'request:original', choice: 'once'
+  })
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(false))
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(true))
+  expect(request.mock.calls.find(call => call[1] === 'groups.send')?.[2].payload.text).toBe('@helper-2 Keep this draft')
+  expect(members).toEqual(stored)
+  expect(request.mock.calls.filter(call => call[1] === 'profiles.list')).toHaveLength(4)
+  for (const [route, method, params] of request.mock.calls) {
+    expect(route).toMatchObject({ connectionId, profile: 'team', targetProfile: 'team', mode: 'remote' })
+    expect(params.profile).toBe('team')
+    expect(method.startsWith('groups.') || method === 'profiles.list').toBe(true)
+    expect(['groups.rename', 'profiles.configure', 'groups.create']).not.toContain(method)
+  }
+})
+
+it.each(['reject', 'metadata-free'])('keeps group snapshots, history and sending usable when display metadata is unavailable (%s)', async mode => {
+  const binding = { connectionId: 'owner-source', profile: 'team', roomId: 'metadata-fallback' }
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'profiles.list') {
+      if (mode === 'reject') {throw new Error('profiles.list unavailable')}
+      return { profiles: [{ name: 'worker' }, { name: 'legacy', display_name: 'legacy' }] }
+    }
+    if (method === 'groups.state') {return { room: { name: 'Room', members: [
+      { member_id: 'seat', profile: 'worker', handle: 'frozen-worker', display_name: 'Stored primary name' },
+      { member_id: 'old-seat', profile: 'legacy', handle: 'frozen-legacy' }
+    ] }, driver_status: { pending_actions: [{ kind: 'retry', member_id: 'seat', task_id: 'task', execution_generation: 3 }] } }}
+    if (method === 'groups.log') {return { events: [
+      { seq: 1, kind: 'message.member', actor: { kind: 'member', id: 'seat', display_name: 'Historical author' }, payload: { text: 'Old reply' } }
+    ] }}
+    return {}
+  })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await screen.findByText('Historical author')
+  expect(screen.getAllByText('Stored primary name')).toHaveLength(2)
+  expect(screen.getByText('frozen-legacy')).toBeTruthy()
+  expect(screen.queryByRole('alert')).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.retry')).toBe(true))
+  expect(request.mock.calls.find(call => call[1] === 'groups.retry')?.[2]).toEqual({
+    room_id: binding.roomId, member_id: 'seat', task_id: 'task', execution_generation: 3, profile: 'team'
+  })
+  const box = screen.getByRole('textbox') as HTMLTextAreaElement
+  await waitFor(() => expect(box.disabled).toBe(false))
+  fireEvent.change(box, { target: { value: '@frozen-worker hello' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(true))
+  expect(request.mock.calls.find(call => call[1] === 'groups.send')?.[2].payload.text).toBe('@frozen-worker hello')
+  for (const [route, method, params] of request.mock.calls) {
+    expect(route).toMatchObject({ connectionId: binding.connectionId, profile: 'team', targetProfile: 'team' })
+    expect(params.profile).toBe('team')
+    expect(method.startsWith('groups.') || method === 'profiles.list').toBe(true)
+  }
+})
+
 it('preserves the unsent draft when only the room display name changes', async () => {
   request.mockImplementation(async (_route, method) => method === 'groups.state'
     ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})

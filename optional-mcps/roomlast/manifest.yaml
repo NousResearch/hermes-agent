@@ -1,0 +1,42 @@
+# Vendor-hosted remote MCP catalog submission; approval follows maintainer review.
+manifest_version: 1
+
+name: roomlast
+description: "Find last-minute hotels, compare room offers, and continue on RoomLast to book."
+source: https://www.roomlast.com/help/roomlast-connectors
+
+transport:
+  type: http
+  url: https://mcp.roomlast.com/mcp
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - search_accommodations
+    - get_accommodation_details
+    - get_accommodation_offers
+
+suggest:
+  keywords:
+    - "roomlast"
+    - "last-minute hotels"
+  hosts:
+    - roomlast.com
+  examples:
+    - "Find a Seattle hotel for tonight for two adults."
+    - "Compare last-minute rooms and cancellation terms."
+
+post_install: |
+  No account, API key or credentials are required. Restart the session
+  after installation to discover the enabled read-only tools.
+
+  Search last-minute hotels for tonight or tomorrow, inspect property facts
+  and compare room offers. Private RoomLast price bands are masked. Exact
+  prices, sign-in, booking and payment continue on roomlast.com. The MCP
+  tools never create reservations or take payments; availability can change.
+
+  Documentation: https://www.roomlast.com/help/roomlast-connectors
+  Privacy: https://www.roomlast.com/privacy
+  Contact: leo@pageonelab.com.

@@ -470,7 +470,8 @@ DEFAULT_CONFIG = {
     # and merged are removed; dirty or unpushed ones are archived to refs/hermes/archive/<tree>
     # first (`hermes worktree restore <name>`). Live trees and Kanban t_<hex> trees are never touched.
     "worktrees": {
-        "archive_dirty": True,  # false = never remove a dirty/unpushed tree (the pre-archive behaviour)
+        # false = never remove a dirty/unpushed tree (the pre-archive behaviour, exactly).
+        "archive_dirty": True,
         # Untracked files larger than this (MB) are not archived, so a tree holding one is kept.
         "archive_max_file_mb": 50,
         # The sweep deletes archive refs older than this many days. 0 keeps them forever.
@@ -478,7 +479,6 @@ DEFAULT_CONFIG = {
         # Optional size budget (GB) for idle trees: past it the oldest idle trees are archived and
         # removed first. Live, young and Kanban trees are never counted or touched. 0 = off.
         "max_total_gb": 0,
-        "install_state_retention_days": 14,  # installs/<key> of a missing checkout, unused this long, goes; 0 = never
     },
     # Filesystem checkpoints: snapshot the working directory once per turn (on the first
     # write_file/patch call); restore with /rollback. Opt-in via `hermes chat --checkpoints` or
@@ -1040,9 +1040,9 @@ DEFAULT_CONFIG = {
             "secret": "",
             "session_ttl_seconds": 0,  # 0 → plugin default (12h)
         },
-        "session_token_auth": {"enabled": True},  # session_token plugin: a provisioned HERMES_DASHBOARD_SESSION_TOKEN (literal or file:<path>) authorizes the gated dashboard; enabled: false opts out
-        # Drain-control token auth (dashboard_auth/drain plugin): the secret is NOT here (env
-        # HERMES_DASHBOARD_DRAIN_SECRET); no-op unless >=256-bit, weak secrets rejected (fail-closed).
+        # Drain-control token auth (dashboard_auth/drain plugin). The secret is NOT here: env
+        # HERMES_DASHBOARD_DRAIN_SECRET; no-op unless >=256-bit, weak secrets rejected
+        # (fail-closed). scope = capability label; min_secret_chars in url-safe-b64 chars.
         "drain_auth": {"scope": "drain", "min_secret_chars": 43},
         # Public URL (env HERMES_DASHBOARD_PUBLIC_URL): full authority (scheme + host + optional
         # prefix, e.g. https://example.com/hermes) for the OAuth redirect_uri; its hostname is
@@ -1541,6 +1541,8 @@ DEFAULT_CONFIG = {
         # require_mention); limit = max messages scanned.
         "history_backfill": True,
         "history_backfill_limit": 50,
+        "inline_text_attachments": True,  # false caches text attachments without adding their contents to the prompt
+        "max_attachment_bytes": 32 * 1024 * 1024,  # per-document download cap; 0 disables the cap
         # Replay messages missed while offline, after reconnect/startup.
         "missed_message_backfill": {
             "enabled": False,
@@ -2081,15 +2083,6 @@ DEFAULT_CONFIG = {
         # OTLP destination. headers_env maps header names to ENVIRONMENT VARIABLE NAMES (never
         # secret values); values are read from the environment at export time.
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
-    },
-    # Native hosted-room Discussion ceilings, shared by all members per discussion.
-    # Positive integers only (no unlimited/0). Read from the root owner's config at service
-    # startup for all hosted rooms; restart the owning service after changing them.
-    "hosted_rooms": {
-        "discussion": {
-            "max_rounds": 3,
-            "max_messages": 10,
-        },
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
         "unmanaged_idle_exit_seconds": 600,  # client-auto-started gateway only; 0 disables

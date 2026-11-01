@@ -1,0 +1,39 @@
+name: Dependency Review
+
+# Scan dependency manifest / lockfile deltas in PRs for newly introduced
+# vulnerable packages.  Complements osv-scanner.yml (which checks the
+# current pinned set on a schedule) by catching vulnerable *additions*
+# before they land on main.
+#
+# Uses GitHub's officially recommended actions/dependency-review-action,
+# pinned by full commit SHA per supply-chain policy.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'ui-tui/package.json'
+      - 'website/package.json'
+      - 'website/package-lock.json'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
+        with:
+          fail-on-severity: moderate
+          # License checks disabled — vulnerability blocking only.
+          # License policy review, if needed, should be a separate
+          # advisory-only workflow to avoid mixing concerns.
+          license-check: false

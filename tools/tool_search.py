@@ -137,7 +137,20 @@ def _core_tool_names() -> frozenset[str]:
 
 # Session-gated GUI toolsets: off ``_HERMES_CORE_TOOLS`` so non-GUI clients never pay
 # their schema; once enabled they stay direct unless the deferral list names them.
-_DIRECT_SURFACE_TOOLSETS = CLIENT_SURFACE_TOOLSETS | TOOLSET_SESSION_PLATFORMS.keys()
+_DIRECT_SURFACE_TOOLSETS = frozenset(CLIENT_SURFACE_TOOLSETS | TOOLSET_SESSION_PLATFORMS.keys())
+
+
+def session_direct_toolsets() -> frozenset:
+    """Toolsets that skip tool search in the current session: ``_DIRECT_SURFACE_TOOLSETS`` plus the
+    ``PlatformEntry.direct_toolsets`` of the session's platform. Those stay direct only on their own
+    platform; every other session keeps deferring them, where a ``TOOLSET_SESSION_PLATFORMS`` toolset
+    does not exist at all. A session's platform is fixed for its life, so its tool surface is too."""
+    from gateway.platform_registry import platform_registry
+    from gateway.session_context import get_session_env
+    platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip()
+    entry = platform_registry.get(platform) if platform else None
+    return _DIRECT_SURFACE_TOOLSETS.union(entry.direct_toolsets if entry else ())
+
 
 # Event-triggered tools deferred BY DEFAULT (a catalog stub suffices). Keep the curated
 # list in DEFAULT_CONFIG so config discovery and runtime behavior cannot drift. An explicit
@@ -149,8 +162,8 @@ _DEFAULT_DEFERRED_TOOLS = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defe
 
 def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) -> bool:
     """True if a tool is *eligible* for deferral: named in ``defer_tools`` (curated set or
-    user override), OR an MCP tool, OR neither core nor a session-gated GUI surface (i.e. a
-    plugin tool). Bridge names never defer."""
+    user override), OR an MCP tool, OR neither core nor a session-gated GUI surface nor a toolset
+    this session's platform keeps direct (i.e. a plugin tool). Bridge names never defer."""
     if name in BRIDGE_TOOL_NAMES:
         return False
     if defer_tools is not None and name in defer_tools:
@@ -159,7 +172,7 @@ def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) 
         return False
     toolset = _registry_toolset(name)  # None (unregistered/malformed) never defers
     return toolset is not None and (
-        toolset.startswith("mcp-") or toolset not in _DIRECT_SURFACE_TOOLSETS)
+        toolset.startswith("mcp-") or toolset not in session_direct_toolsets())
 
 
 def _tool_def_names(tool_defs: Iterable[dict[str, Any]]) -> Iterable[str]:

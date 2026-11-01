@@ -48,6 +48,7 @@ from agent.turn_api_request import build_api_request
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, OPEN_TURN_TAIL_ROLES, failed_turn_notice, site_copy
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
+from agent.content_steering import ContentSteerPersistenceError, content_steering_turn
 from agent.turn_iteration_prep import (
     announce_api_call,
     apply_retry_restarts,
@@ -1637,6 +1638,19 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
     return None
 
 
+def _prepare_content_iteration(agent, s):
+    if _run_phase(begin_iteration, agent, s).action == "break":
+        return False
+    _run_phase(prepare_iteration, agent, s)
+    try:
+        agent._content_steering.after_tools(agent, s.messages, s.conversation_history)
+    except ContentSteerPersistenceError:
+        s._turn_exit_reason, s.final_response, s.failed = "session_persistence_failed", "", True
+        return False
+    return True
+
+
+@content_steering_turn
 def _run_conversation_turn(
     agent,
     user_message: Any,
@@ -1745,9 +1759,8 @@ def _run_conversation_turn(
     while _prelude_action != "break" and (
         (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call
     ):
-        if _run_phase(begin_iteration, agent, s).action == "break":
+        if not _prepare_content_iteration(agent, s):
             break
-        _run_phase(prepare_iteration, agent, s)
         _run_phase(assemble_api_request, agent, s)
         _pg = _run_phase(run_preflight_gate, agent, s)
         if _pg.action == "return":
@@ -1791,6 +1804,7 @@ def _run_conversation_turn(
             if _run_phase(handle_outer_loop_error, agent, s, e=e).action == "break":
                 break
 
+    agent._content_steering.seal()
     result = _finalize_from_state(agent, s)
     if s._compression_timeout_exhausted:
         # Reuse the gateway's context-recovery contract: transcript stays intact while

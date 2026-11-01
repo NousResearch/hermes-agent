@@ -31,6 +31,7 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
+from agent.context_compressor_background import _LEAN_BACKGROUND_HEADING, _build_background_section, _strip_background_section
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_window import CompactionWindowMixin
 from agent.context_compressor_prune import ProactivePruneMixin
@@ -998,8 +999,6 @@ def _build_recovery_footer(session_id: str, region_len: int) -> str:
     )
 
 
-# Detailed session log comes from the SAME single summary request (one aux LLM
-# call per attempt); coverage via input sampling, exact needles via anchor index.
 # One flat 2-3K-token summary cannot carry a 400K+ region's specifics — the eval showed recall collapsing to
 # ~33% when the big tail (which accidentally archived restated facts) shrank. The detailed,
 # identifier-preserving session log is produced by the SAME single summary request as the narrative summary
@@ -1008,7 +1007,6 @@ def _build_recovery_footer(session_id: str, region_len: int) -> str:
 # regions comes from even record sampling (see ``_sample_summary_records``), and exact-needle defense comes
 # from the LLM-free anchor index below.
 _LEAN_SESSION_LOG_HEADING = "## Detailed Session Log (oldest first)"
-# Extra output-token guidance for the session-log section (single response).
 _LEAN_SESSION_LOG_BUDGET_TOKENS = 4_000
 # Lean-mode prompt section appended to the summary template (byte-pinned prompt text).
 _LEAN_SESSION_LOG_SECTION = f"""
@@ -3590,12 +3588,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         """Append deterministic lean-mode sections to a summary; no-op in legacy mode."""
         if getattr(self, "tail_mode", "lean") != "lean":
             return summary
+        summary = _strip_background_section(summary)
         for heading, build in (
             (_LEAN_ANCHOR_HEADING, lambda: _redact_compaction_text(_build_anchor_index(turns_to_summarize))),
             (_LEAN_USER_MESSAGES_HEADING, lambda: _redact_compaction_text(_build_verbatim_user_section(turns_to_summarize))),
+            (_LEAN_BACKGROUND_HEADING, lambda: _redact_compaction_text(_build_background_section(self))),
             (_LEAN_RECOVERY_HEADING, lambda: _build_recovery_footer(getattr(self, "_session_id", "") or "", len(turns_to_summarize))),
         ):
-            if heading not in summary:
+            if heading == _LEAN_BACKGROUND_HEADING or heading not in summary:
                 summary += build()
         return summary
 

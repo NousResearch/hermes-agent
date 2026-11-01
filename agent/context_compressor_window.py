@@ -63,7 +63,15 @@ class CompactionWindowMixin:
 
     def _adopt_prepared_summary(self, prepared: PreparedSummary) -> str:
         """Adopt a prepared summary as an inline summary call would have left it; returns the handoff text."""
+        from agent.context_compressor import _redact_compaction_text
+        from agent.context_compressor_background import _build_background_section, _strip_background_section
         from agent.prepared_compaction import adopt
 
         adopt(self, prepared)
-        return prepared.summary
+        if getattr(self, "tail_mode", "lean") != "lean":
+            return prepared.summary
+        # Processes can start or finish after preparation; use the live session lineage and registry.
+        section = _redact_compaction_text(_build_background_section(self))
+        if self._previous_summary is not None:
+            self._previous_summary = _strip_background_section(self._previous_summary) + section
+        return _strip_background_section(prepared.summary) + section

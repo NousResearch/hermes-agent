@@ -71,6 +71,23 @@ def test_mixed_provenance_diagnostic_is_read_only(tmp_path, monkeypatch, capsys)
     assert {p: p.read_bytes() for p in plugins.rglob('*') if p.is_file()} == before
 
 
+def test_subdirectory_install_row_is_good_standing_not_drift_warning(tmp_path):
+    """#126910: a row-only install whose recorded source pins a subdir is a subdirectory install
+    (the ``.git`` stays in the temp clone) — doctor must not warn it as provenance drift, while
+    the subdir-less row that really lost its ``.git`` still warns."""
+    plugins = tmp_path / "plugins"
+    _make_plugin(plugins, "subdir", sidecar={
+        "source": "https://example.com/o/r.git#plugins/otel",
+        "revision": "a" * 40, "pinned": False})
+    _make_plugin(plugins, "drifty", sidecar={"source": "https://example.com/x.git"})
+    rows = ds._plugin_provenance_rows(plugins)
+    assert any(kind == "ok" and "'subdir'" in text and "good standing" in text
+               for kind, text, detail in rows)
+    assert not any(kind == "warn" and "'subdir'" in text for kind, text, detail in rows)
+    assert any(kind == "warn" and "'drifty'" in text and "reinstall" in f"{text}{detail}"
+               for kind, text, detail in rows)
+
+
 # --- doctor-side wiring -------------------------------------------------
 
 

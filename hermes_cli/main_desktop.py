@@ -198,11 +198,12 @@ _DESKTOP_STAGING_PREFIX = ".staging-"
 
 _DESKTOP_PREVIOUS_SUFFIX = ".previous"
 
-# A real-time file scanner (AV/EDR) holds a short exclusive handle on a freshly packed
-# release/win-unpacked tree; the promotion rename then fails with a sharing violation
-# (WinError 32 / 5 -> PermissionError) and succeeds a moment later on identical input (#112544).
+# A real-time file scanner (AV/EDR) can hold an exclusive handle on the 200+ MB
+# live Hermes.exe for several seconds after the Desktop processes exit.  A 3.5s
+# budget was too short on slower Windows hosts and turned a healthy staged build
+# into a failed update.  Give the scanner a bounded 30.5s to release the handle.
 # Only PermissionError is retried: EXDEV/ENOENT-class failures are permanent.
-_DESKTOP_SWAP_RENAME_RETRY_DELAYS_S = (0.5, 1.0, 1.0, 1.0)
+_DESKTOP_SWAP_RENAME_RETRY_DELAYS_S = (0.5, 1.0, 2.0, 4.0, 8.0, 15.0)
 
 
 def _rename_riding_out_file_lock(src: Path, dst: Path) -> None:

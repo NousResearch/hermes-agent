@@ -36,6 +36,10 @@ def _is_silence_narration(content: Optional[str]) -> bool:
     return bool(stripped) and len(stripped) <= 64 and bool(_SILENCE_NARRATION.match(stripped))
 
 
+class DeliveryNotDispatchedError(RuntimeError):
+    """The adapter proves no provider send was attempted; another transport may be tried."""
+
+
 class PartialDeliveryError(RuntimeError):
     """A split send failed after earlier chunks were delivered (``raw_response["partial_overflow"]``).
     Callers must not fall back to re-sending the whole payload: the recipient already has the head."""
@@ -330,5 +334,9 @@ class DeliveryRouter:
             from gateway.platforms.base import BasePlatformAdapter
             if BasePlatformAdapter._is_partial_delivery(result):
                 raise PartialDeliveryError(error, result)
+            not_dispatched = (result.get("not_dispatched") if isinstance(result, dict)
+                              else getattr(result, "not_dispatched", False))
+            if not_dispatched is True:
+                raise DeliveryNotDispatchedError(error or f"{target.platform.value} delivery rejected")
             raise RuntimeError(error or f"{target.platform.value} delivery failed")
         return result

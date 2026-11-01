@@ -2203,7 +2203,7 @@ class SlackAdapter(BasePlatformAdapter):
         if self._suppressed_ignored(chat_id, what):
             return SendResult(success=False, error="ignored_channel")
         if not self._app:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", not_dispatched=True)
         return None
 
     async def _call_with_block_fallback(

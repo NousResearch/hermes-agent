@@ -6,6 +6,7 @@ in that directory; read it before editing there. `python scripts/check` caps thi
 and every root-to-area chain at 30k, so it loads whole on 128k+ models: long form goes in the guide.
 
 **Never give up on the right solution.**
+## git 
 
 ## What Hermes Is
 

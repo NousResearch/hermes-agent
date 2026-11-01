@@ -1,0 +1,33 @@
+version: 2.1
+
+jobs:
+  neural-tests:
+    docker:
+      - image: cimg/python:3.13
+    working_directory: ~/hermes-agent
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Install uv
+          command: |
+            set -euo pipefail
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$BASH_ENV"
+            source "$BASH_ENV"
+            uv --version
+      - run:
+          name: Sync locked development environment
+          command: uv sync --extra dev --frozen
+      - run:
+          name: Run WIDDX neural foundation tests
+          command: |
+            mkdir -p test-results
+            uv run pytest tests/neural --junitxml=test-results/neural-junit.xml
+      - store_test_results:
+          path: test-results
+
+workflows:
+  widdx-neural-ci:
+    jobs:
+      - neural-tests

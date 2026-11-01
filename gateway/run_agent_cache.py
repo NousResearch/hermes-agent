@@ -523,7 +523,7 @@ class GatewayAgentCacheMixin:
                 target=copy_context().run,
                 args=(_reap_gateway_turn_processes, _process_task_id, _process_baseline),
                 kwargs={
-                    "source": "gateway_turn_interrupt",
+                    "source": "gateway_turn_reset" if invalidation_reason == "new_command" else "gateway_turn_interrupt",
                     "is_still_current": lambda: self._is_session_run_current(session_key, _generation_at_interrupt),
                 },
                 name=f"gateway-turn-reaper-{_process_task_id[:12]}",

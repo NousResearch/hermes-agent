@@ -11,9 +11,7 @@ and an ``__init__.py`` exposing ``register(ctx)``. Plugins register callbacks fo
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import importlib.metadata
-import inspect
 import json
 import logging
 import os
@@ -37,7 +35,7 @@ from hermes_cli.plugin_capabilities import plugin_capability_granted
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
 from hermes_cli.plugins_manifest import (
-    _CONFIG_SCHEMA_TYPES, SUPPORTED_MANIFEST_VERSION, PluginManifest, _portable_skill_namespace,
+    _CONFIG_SCHEMA_TYPES, SUPPORTED_MANIFEST_VERSION, PluginManifest, _portable_data_namespace,
     manifest_key, parse_manifest_file, resolve_module_origin, resolve_plugin_load_order,
     validate_config_schema,
 )
@@ -57,9 +55,11 @@ from hermes_cli.plugins_dispatch import (
     _HOOK_CALLBACK_TIMEOUT_SECS, _HOOK_TIMEOUT_SUPPRESSION_SECONDS, _MAX_HOOK_CALLBACK_TIMEOUT_SECS,
     _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE, PluginDispatchMixin, PluginSystemPromptSection,
     RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
-    is_valid_system_prompt_section_id,
+    is_valid_system_prompt_section_id, resolve_plugin_command_result,
 )
+from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
+from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
@@ -130,7 +130,7 @@ VALID_HOOKS: set[str] = {
     # Run-all-then-pick-first (see get_plugin_error_classification). Privacy: error_message/
     # error_body may be unredacted.
     "transform_api_error_classification", "on_session_start", "on_session_end",
-    "on_session_finalize", "on_session_reset",
+    "on_session_finalize", "on_session_reset", "on_session_delete",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
@@ -197,10 +197,10 @@ VALID_HOOKS: set[str] = {
     # returns IGNORED in v1. Deliberately NOT fired for the gateway's running-agent intercept path
     # (/stop, /approve, busy_policy) — a slow/hostile plugin must not touch the operator's escape
     # hatches. Kwargs: surface, command (canonical), alias_used, args_raw, session_key, platform.
-    # Slash-command dispatch observer (#64204, observer-first per #64182 ground rule 3). Return values are
-    # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
-    # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
+    # Observer-first (#64204, #64182 rule 3); a directive-shaped return gets a debug log so future
+    # block/rewrite adopters are discoverable once the middleware variant ships (#64231 taxonomy).
     "pre_command",
+    "post_compaction",  # once per committed compaction on every path; observer (hooks.md, #118382)
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
@@ -227,7 +227,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext:
+class PluginContext(PluginCapabilityCtxMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -282,7 +282,7 @@ class PluginContext:
     @cached_property
     def state(self) -> PluginState:
         """This plugin's profile-scoped durable JSON state facade."""
-        return PluginState(self.plugin_id, self.manifest.skill_namespace)
+        return PluginState(self.plugin_id, self.manifest.data_namespace)
 
     @cached_property
     def platform_actions(self):
@@ -390,6 +390,13 @@ class PluginContext:
         from agent.subagent_lifecycle import SubagentLifecycleService, get_active_subagent_parent
         return SubagentLifecycleService(get_active_subagent_parent)
 
+    @cached_property
+    def delegation_backends(self) -> Any:
+        """``agent.delegation_backends.DelegationBackends``: list delegation backends and save one, optionally
+        rebuilding the calling session's tools now (``/delegation``); a host remote facade on the owner process."""
+        from agent.delegation_backends import DelegationBackends
+        return DelegationBackends()
+
     @property
     def profile_name(self) -> str:
         """Active profile name (``"default"``, the ``~/.hermes/profiles/<name>`` id, or ``"custom"``),
@@ -461,12 +468,7 @@ class PluginContext:
         """Register a tool in the global registry and track it as plugin-provided. ``override=True``
         replaces a same-named built-in (without it a name claimed by another toolset is rejected) and
         needs operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override: true`` — otherwise
-        any enabled plugin could silently replace a privileged built-in like ``write_file``.
-
-        ``override=True`` against a built-in tool requires the operator to opt in via
-        ``plugins.entries.<plugin_id>.allow_tool_override: true`` in config.yaml — mirrors the trust gate
-        pattern used for ``ctx.llm`` provider/model overrides (#23194).
-        """
+        any enabled plugin could silently replace a privileged built-in like ``write_file`` (#23194)."""
         if override and not self._tool_override_allowed(name):
             raise PluginToolOverrideError(
                 f"Plugin {self.manifest.name!r} cannot override built-in tool {name!r}. Set "
@@ -496,15 +498,6 @@ class PluginContext:
         logger.debug("Plugin %s registered tool: %s%s", self.manifest.name, name,
                      " (override)" if override else "")
         return handle
-
-    # -- capability probing (#64228) -----------------------------------------
-    def has_capability(self, capability: str) -> bool:
-        """True when *capability* is live for this plugin (probe, then degrade gracefully). Bundled
-        plugins are trusted for ``tools.override``; otherwise granted_capabilities or the legacy
-        ``allow_*`` key decides. Unknown ids / unreadable consent -> False (fail closed)."""
-        if self.manifest.source == "bundled" and capability == "tools.override":
-            return True
-        return plugin_capability_granted(self.plugin_id, capability)
 
     def call_mcp(
         self, server: str, tool: str, arguments: Optional[dict[str, Any]] = None,
@@ -575,16 +568,8 @@ class PluginContext:
     def _tool_override_allowed(self, tool_name: str) -> bool:
         """Whether this plugin may override built-in tools: bundled plugins are trusted (a maintainer
         choice, not privilege escalation); others need ``tools.override`` via
-        :func:`plugin_capability_granted` (granted_capabilities OR legacy ``allow_tool_override: true``).
-
-        Bundled plugins (shipped with Hermes core) are trusted by default — an override there is a
-        deliberate maintainer choice, not a third-party plugin trying to elevate privilege. For every other
-        source, the canonical check is :func:`plugin_capability_granted` with the ``tools.override``
-        capability — satisfied by EITHER the consent-flow grant
-        (``plugins.entries.<plugin_id>.granted_capabilities``) OR the deprecated legacy key
-        ``allow_tool_override: true`` (still honored for backward compatibility; #64228 reference
-        migration).
-        """
+        :func:`plugin_capability_granted` (granted_capabilities OR legacy ``allow_tool_override: true``,
+        still honored for backward compatibility; #64228)."""
         if self.manifest.source == "bundled":
             return True
         try:
@@ -604,20 +589,37 @@ class PluginContext:
         self, content: str, role: str = "user", *, session_key: str | None = None,
         origin: Mapping[str, Any] | None = None,
     ) -> bool:
-        """Inject a message into a CLI, Ink TUI/desktop, or messaging-gateway conversation.
-
-        CLI uses the attached REPL queues. Ink TUI and desktop use a separate injector
-        from the messaging gateway and queue onto the live session named by ``session_key``
-        (the durable key, not the ephemeral UI session id). ``origin`` (a
-        ``SessionSource.to_dict()``-shaped mapping: platform, chat_id, chat_type, thread_id,
-        user_id, ...) instead names a messaging chat: the gateway starts (or continues) that
-        chat's session in THIS plugin's own profile and runs a turn there; the plugin cannot
-        target another profile. Non-CLI injection needs ``session_key`` or ``origin`` plus
-        ``plugins.entries.<plugin_id>.allow_gateway_injection`` in the plugin's profile config.
-        ``True`` means a host accepted the request, not that the turn completed.
-        """
+        """Queue *content* for a session (``session_key``) or a chat in this plugin's own profile
+        (``origin``); ``True`` means a host accepted it. Contract: plugins_injection.py, plugin docs."""
         from hermes_cli.plugins_injection import inject_plugin_message
         return inject_plugin_message(self, content, role, session_key=session_key, origin=origin)
+
+    def session_cwd(self) -> str:
+        """The calling session's recorded cwd, never the gateway's own (``plugin_session``)."""
+        from hermes_cli.plugin_session import context_cwd
+        return context_cwd(self._manager)
+
+    def session_surface(self) -> str:
+        """The calling session's client (``cli``/``tui``/``desktop``/``acp``) or messaging platform."""
+        from hermes_cli.plugin_session import context_surface
+        return context_surface(self._manager)
+
+    def post_message(self, text: str) -> Any:
+        """Post *text* into the session bound to this call; the handle's ``edit(text)`` updates it in
+        place. Never raises (``ok=False`` + ``error`` with no conversation): ``plugin_messages.py``."""
+        from hermes_cli.plugin_messages import post
+        return post(self, text)
+
+    async def apost_message(self, text: str) -> Any:
+        """``post_message`` for async code on the gateway loop (edit with ``await handle.aedit``)."""
+        from hermes_cli.plugin_messages import apost
+        return await apost(self, text)
+
+    def ask_choice(self, question: str, choices: list) -> Optional[str]:
+        """From a sync slash-command handler: ask its user to pick one of *choices* (``str`` or
+        ``{value, label?, description?}``); the value, or None if unanswerable: ``plugin_choices.py``."""
+        from hermes_cli.plugin_choices import ask_choice
+        return ask_choice(question, choices)
 
     def _gateway_injection_allowed(self) -> bool:
         """Return whether this plugin may trigger gateway session turns (read from the plugin's
@@ -649,7 +651,7 @@ class PluginContext:
         argument_mode: str | None = None,
     ) -> Optional[PluginRegistration]:
         """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
-        (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
+        (sync or async), plus the session-context keywords it declares (``plugin_command_dispatch``). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
         field; without it the command registers parameterless there but still accepts trailing text."""
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
@@ -930,9 +932,9 @@ class PluginContext:
                 logger.warning("Plugin '%s' locale file %s skipped: %s", self.manifest.name, file, exc)
         return handles
 
-    def register_hook(self, hook_name: str, callback: Callable) -> PluginRegistration:
-        """Register a lifecycle hook callback (unknown names warn but are still stored)."""
-        return self._track_callback("hook", hook_name, callback, self._manager._hooks, VALID_HOOKS)
+    def register_hook(self, hook_name: str, callback: Callable, *, hold_stream: bool = False) -> PluginRegistration:
+        """Register a lifecycle hook callback (``PluginDispatchMixin.track_hook``)."""
+        return self._manager.track_hook(self, hook_name, callback, hold_stream=hold_stream)
 
     def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:
         """Register behavior-changing middleware (request kinds rewrite the payload, execution kinds
@@ -1013,87 +1015,9 @@ class PluginContext:
     from hermes_cli.plugins_content import register_automation_blueprint, register_skill
 
 # -- scoped provider registrars ------------------------------------------------------------------
-# Every ``register_<category>_provider`` shares one body (:meth:`PluginContext._register_scoped_provider`):
-# type-check, register in the scope-keyed process-global registry, lease the slot so unload restores
-# the displaced entry. Rows: (method, kind, registry module, base-class module:attr, label, docstring,
-# options). ``normalize``: ``strip`` (default), ``lower`` (strip+lowercase) or ``None`` (raw name).
-_SCOPED_PROVIDER_REGISTRARS: tuple[tuple[str, str, str, str, str, str, dict[str, Any]], ...] = (
-    ("register_image_gen_provider", "image_gen_provider", "agent.image_gen_registry",
-     "agent.image_gen_provider:ImageGenProvider", "image_gen provider",
-     "Register an :class:`agent.image_gen_provider.ImageGenProvider`; "
-     "``provider.name`` is matched by ``image_gen.provider``.", {"article": "an"}),
-    ("register_video_gen_provider", "video_gen_provider", "agent.video_gen_registry",
-     "agent.video_gen_provider:VideoGenProvider", "video_gen provider",
-     "Register an :class:`agent.video_gen_provider.VideoGenProvider`; "
-     "``provider.name`` is matched by ``video_gen.provider``.", {}),
-    ("register_web_search_provider", "web_search_provider", "agent.web_search_registry",
-     "agent.web_search_provider:WebSearchProvider", "web provider",
-     "Register an :class:`agent.web_search_provider.WebSearchProvider`; "
-     "``provider.name`` is matched by ``web.search_backend`` / ``web.extract_backend`` / ``web.backend``.",
-     {}),
-    ("register_browser_provider", "browser_provider", "agent.browser_registry",
-     "agent.browser_provider:BrowserProvider", "browser provider",
-     "Register an :class:`agent.browser_provider.BrowserProvider`; "
-     "``provider.name`` is matched by ``browser.cloud_provider`` (consulted by "
-     "``tools.browser_tool_cloud._get_cloud_provider``).", {}),
-    ("register_terminal_environment_provider", "terminal_environment_provider",
-     "agent.terminal_env_registry", "agent.terminal_env_provider:TerminalEnvironmentProvider",
-     "terminal environment provider",
-     "Register a :class:`agent.terminal_env_provider.TerminalEnvironmentProvider`; ``provider.name`` "
-     "is matched by ``terminal.backend`` when no built-in backend has that name. Built-in names (local, "
-     "docker, singularity, modal, daytona, vercel_sandbox, ssh) are rejected — plugins never shadow "
-     "in-tree backends.",
-     {"normalize": "lower", "reject_message": "Plugin '%s' terminal environment provider rejected: %s"}),
-    ("register_secret_source", "secret_source", "agent.secret_sources.registry",
-     "agent.secret_sources.base:SecretSource", "secret source",
-     "Register a :class:`agent.secret_sources.base.SecretSource`, run by ``load_hermes_dotenv()`` "
-     "(after ``~/.hermes/.env``, before credentials are read) when ``secrets.<name>`` is enabled. The "
-     "orchestrator owns ordering/precedence/provenance; the source only fetches. Since dotenv usually "
-     "loads before discovery, the manager re-pulls enabled plugin sources afterwards.",
-     {"normalize": None, "register": "register_source", "param": "source"}),
-    ("register_tts_provider", "tts_provider", "agent.tts_registry",
-     "agent.tts_provider:TTSProvider", "TTS provider",
-     "Register an :class:`agent.tts_provider.TTSProvider`; ``provider.name`` is matched by "
-     "``tts.provider`` unless it is a built-in name (rejected with a warning) or a "
-     "``tts.providers.<name>: type: command`` entry shares it (command-providers win).",
-     {"normalize": "lower"}),
-    ("register_transcription_provider", "transcription_provider", "agent.transcription_registry",
-     "agent.transcription_provider:TranscriptionProvider", "transcription provider",
-     "Register an :class:`agent.transcription_provider.TranscriptionProvider`; ``provider.name`` is "
-     "matched by ``stt.provider`` unless it is a built-in name (rejected) or a ``stt.providers.<name>: "
-     "type: command`` entry shares it (command-providers win).", {"normalize": "lower"}),
-)
-
-_NAME_NORMALIZERS: dict[Optional[str], Optional[Callable[[str], str]]] = {
-    "strip": lambda n: n.strip(), "lower": lambda n: n.strip().lower(), None: None,
-}
-
-
-def _make_scoped_provider_registrar(method_name, kind, registry_mod, base_ref, label, doc, options):
-    """Build one ``register_<category>_provider`` method from a ``_SCOPED_PROVIDER_REGISTRARS`` row."""
-    base_mod, base_attr = base_ref.split(":")
-    normalize_fn = _NAME_NORMALIZERS[options.get("normalize", "strip")]
-    register_name = options.get("register")
-
-    def register(self, provider) -> Optional[PluginRegistration]:
-        registry = importlib.import_module(registry_mod)
-        return self._register_scoped_provider(
-            provider, kind=kind, base_class=getattr(importlib.import_module(base_mod), base_attr),
-            registry=registry, label=label, article=options.get("article", "a"), normalize=normalize_fn,
-            register=getattr(registry, register_name) if register_name else None,
-            reject_message=options.get("reject_message"),
-        )
-
-    def register_source(self, source) -> Optional[PluginRegistration]:  # secret sources: ``source``
-        return register(self, source)
-
-    method = register_source if options.get("param") == "source" else register
-    method.__name__, method.__qualname__, method.__doc__ = method_name, f"PluginContext.{method_name}", doc
-    return _serialized_replacement(method)
-
-
+# One generated ``register_<category>_provider`` method per row of plugins_registrars.py's table.
 for _row in _SCOPED_PROVIDER_REGISTRARS:
-    setattr(PluginContext, _row[0], _make_scoped_provider_registrar(*_row))
+    setattr(PluginContext, _row[0], make_scoped_provider_registrar(*_row))
 del _row
 
 
@@ -1279,8 +1203,12 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def discover_and_load(self, force: bool = False) -> None:
         """Scan all plugin sources and load each plugin found; ``force`` unloads first so config
         changes / new bundled backends become visible in long-lived sessions."""
-        if plugin_discovery_suppressed():
-            return  # a config-only read of a profile this process must not load plugins for
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled() or plugin_discovery_suppressed():
+            # Safe workers never discover; a config-only read of a profile this process must not
+            # load plugins for is suppressed too.
+            return
         if self._discovered and not force and in_plugin_load_worker():
             # A plugin whose register() re-enters discovery (importing model_tools does) runs on a
             # deadline worker that cannot re-acquire the sweep's RLock; the flag is already set for the
@@ -1501,7 +1429,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             try:  # lazy: this is a startup probe, keep agent_plugins unimported unless needed
                 from hermes_cli.agent_plugins import _discover_mcp
                 if _discover_mcp(Path(manifest.path), get_hermes_home() / "plugin-data"
-                                 / (manifest.skill_namespace or lookup_key), [], create_data=False):
+                                 / (manifest.data_namespace or lookup_key), [], create_data=False):
                     return True
             except (OSError, RuntimeError, ValueError):
                 continue  # fail closed on an unreadable package; full discovery reports it
@@ -1757,6 +1685,10 @@ def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
 def discover_plugins(force: bool = False) -> None:
     """Discover and load all plugins (idempotent; ``force=True`` rescans). Joins an in-flight
     background discovery instead of racing a second scan."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return
     _join_background_discovery()
     get_plugin_manager().discover_and_load(force=force)
 
@@ -1769,6 +1701,10 @@ def start_background_plugin_discovery() -> None:
     """Run discovery in a daemon thread to overlap the rest of CLI startup (~150ms). Every
     synchronous consumer joins it via :func:`discover_plugins`, so no one sees a half-loaded
     registry. No-op when already done or in flight."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return
     global _background_discovery_thread
     manager = get_plugin_manager()
     if manager._discovered:
@@ -2184,43 +2120,6 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
-
-
-_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
-
-
-def resolve_plugin_command_result(result: Any) -> Any:
-    """Resolve a plugin command result, awaiting async handlers: ``asyncio.run`` when no loop is
-    running, else a helper thread with its own loop (30s bound so a hung handler cannot wedge the
-    terminal)."""
-    if not inspect.isawaitable(result):
-        return result
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(result)
-    outcome: dict[str, Any] = {}
-    failure: dict[str, BaseException] = {}
-    done = threading.Event()
-
-    def _runner() -> None:
-        try:
-            outcome["value"] = asyncio.run(result)
-        except BaseException as exc:  # pragma: no cover - re-raised below
-            failure["exc"] = exc
-        finally:
-            done.set()
-
-    # copy_context: the helper thread must see the caller's profile/secret scope, else an
-    # async hook under a running loop reads the default HERMES_HOME and get_secret raises.
-    threading.Thread(target=contextvars.copy_context().run, args=(_runner,),
-                     name="hermes-plugin-command-await", daemon=True).start()
-    if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
-        raise TimeoutError("Plugin command async handler did not complete within "
-                           f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s")
-    if "exc" in failure:
-        raise failure["exc"]
-    return outcome.get("value")
 
 
 def get_plugin_commands() -> dict[str, dict]:

@@ -14,6 +14,11 @@ name: Blob Size Check
 
 on:
   workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -21,11 +26,12 @@ permissions:
 jobs:
   check-blob-size:
     name: Reject large binaries
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
+          ref: ${{ inputs.commit }}
           fetch-depth: 2 # the merge commit and its first parent (the base branch tip)
 
       - name: Judge files added or modified against the base branch tip

@@ -812,6 +812,34 @@ class TestSweepExpiredPastes:
         assert remaining == 1
         assert len(_load_pending()) == 1
 
+    def test_share_scheduled_during_sweep_deletes_is_kept(self, hermes_home):
+        """A paste scheduled while the sweep waits on network DELETEs must survive its save."""
+        import threading
+        import time
+
+        from hermes_cli.debug import _load_pending, _save_pending, _schedule_auto_delete, _sweep_expired_pastes
+
+        _save_pending([{"url": "https://paste.rs/old", "expire_at": time.time() - 100}])
+        in_delete = threading.Event()
+        share_done = threading.Event()
+
+        def blocking_delete(url):
+            in_delete.set()
+            assert share_done.wait(10)
+            return True
+
+        result = []
+        with patch("hermes_cli.debug.delete_paste", side_effect=blocking_delete):
+            sweeper = threading.Thread(target=lambda: result.append(_sweep_expired_pastes()))
+            sweeper.start()
+            assert in_delete.wait(10)
+            _schedule_auto_delete(["https://paste.rs/new"])
+            share_done.set()
+            sweeper.join(10)
+
+        assert result == [(1, 1)]
+        assert [e["url"] for e in _load_pending()] == ["https://paste.rs/new"]
+
 
 
 

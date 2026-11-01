@@ -2,6 +2,11 @@ name: E2E Desktop
 
 on:
   workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
     outputs:
       review_status:
         description: Screenshot and visual-diff status for the CI review comment.
@@ -11,8 +16,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: e2e-desktop-${{ github.ref }}
-  cancel-in-progress: true
+  group: e2e-desktop-${{ inputs.commit != '' && github.run_id || github.ref }}
+  # A stable run is on the default branch. It must not queue behind or cancel a push.
+  cancel-in-progress: ${{ inputs.commit == '' }}
 
 jobs:
   e2e:
@@ -20,12 +26,14 @@ jobs:
     # This job builds the renderer and the electron bundle, then drives a real
     # Electron app under xvfb. vite, tsc and the Playwright workers all scale
     # with the core count.
-    runs-on: ubuntu-latest-32-core
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 20
     outputs:
       review_status: ${{ steps.review-status.outputs.review_status }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
 
       # ── System deps for Electron on headless Ubuntu ───────────────────
       # Electron needs GTK, NSS,atk, etc. even under xvfb. Playwright's
@@ -47,12 +55,15 @@ jobs:
           test-environment: 'true'
           prune-python-cache: true
 
-      # Full npm ci (not --ignore-scripts): electron's postinstall
-      # downloads the binary we launch, and node-pty's native build is
-      # needed for the terminal pane.
+      # Full npm ci (not --ignore-scripts): native addons need lifecycle scripts;
+      # Electron's binary is prepared explicitly below.
+      # node-pty's native build is needed for the terminal pane.
       - uses: ./.github/actions/retry
         with:
           command: npm ci
+
+      - name: Prepare locked Electron runtime
+        run: node scripts/build/electron-runtime.mjs --source .
 
       # ── Build desktop app ─────────────────────────────────────────────
       # The Playwright step below runs `npm run build` before testing so
@@ -82,7 +93,8 @@ jobs:
       - name: Run Playwright E2E tests
         working-directory: apps/desktop
         run: |
-          if [ "${{ github.ref_name }}" = "main" ]; then
+          # A stable run is on main too, but it tests a candidate. It compares and never rewrites baselines.
+          if [ "${{ github.ref_name }}" = "main" ] && [ -z "${{ inputs.commit }}" ]; then
             echo "On main — generating/updating baseline screenshots"
             npm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
               npx playwright test --reporter=list --update-snapshots
@@ -100,7 +112,7 @@ jobs:
 
       # ── Save updated baselines to cache (main only) ───────────────────
       - name: Save updated baselines to cache
-        if: github.ref_name == 'main' && always()
+        if: github.ref_name == 'main' && inputs.commit == '' && always()
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/desktop/e2e/*-snapshots
@@ -131,7 +143,7 @@ jobs:
       # ── Upload just the visual diffs (small, fast to review) ──────────
       - name: Upload visual diffs
         id: upload-diffs
-        if: always() && github.ref_name != 'main'
+        if: always() && (github.ref_name != 'main' || inputs.commit != '')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: visual-diffs-${{ github.sha }}

@@ -85,3 +85,14 @@ def test_user_plugin_cannot_mark_a_core_platform_trusted_inbound():
         assert platform_registry.get("seameventbus").trusted_inbound is True
     finally:
         platform_registry.unregister("seameventbus", scope=platform_registry.current_scope_key())
+
+
+def test_core_hint_and_display_tables_hold_no_bundled_plugin_platform():
+    """A bundled platform's prompt hint and display defaults live on its PlatformEntry only, so the
+    plugin is the single source of truth (no core row silently shadowing what the plugin declares)."""
+    from agent.prompt_builder import PLATFORM_HINTS
+    from gateway.display_config import _PLATFORM_DEFAULTS
+
+    bundled = set(Platform._scan_bundled_plugin_platforms()[0])
+    assert bundled
+    assert not (set(PLATFORM_HINTS) | set(_PLATFORM_DEFAULTS)) & bundled

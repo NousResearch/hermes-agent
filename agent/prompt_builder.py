@@ -23,12 +23,13 @@ from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS,
-    TIER_LOCAL, extract_skill_conditions, extract_skill_description, get_disabled_skill_names, get_skill_search_roots,
+    TIER_LOCAL, clip_skill_description, extract_skill_conditions, extract_skill_description,
+    get_disabled_skill_names, get_skill_search_roots,
     iter_skill_index_files, parse_frontmatter, skill_matches_apps, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
-from utils import atomic_json_write, file_signature
+from utils import atomic_json_write, file_cache_version
 
 logger = logging.getLogger(__name__)
 
@@ -170,9 +171,11 @@ DEFAULT_AGENT_IDENTITY = (
 HERMES_AGENT_HELP_GUIDANCE = (
     # Injected only when skill_view exists AND the hermes-agent skill is installed (system_prompt.py slot
     # resolution). No "when the two differ" clause: docs-are-authoritative already carries the precedence.
-    "You run on Hermes Agent (by Nous Research). When the user needs help with Hermes itself — configuring, "
-    "setting up, using, extending, or troubleshooting it — or when you need to understand your own features, "
-    "tools, or capabilities, the documentation at https://hermes-agent.nousresearch.com/docs is your "
+    # Names Hermes Agent without restating identity: SOUL.md line 1 already says who you are, while a custom
+    # persona (no Hermes identity line) still learns from "Hermes Agent itself" + "your own features" what it runs on.
+    "For help with Hermes Agent itself — configuring, setting up, using, extending, or troubleshooting it — "
+    "or to understand your own features, tools, or capabilities, the documentation at "
+    "https://hermes-agent.nousresearch.com/docs is your "
     "authoritative reference and always holds the latest, most up-to-date information. The `hermes-agent` "
     "skill has the actual commands and proven workflows — load it with skill_view(name='hermes-agent') "
     "before configuring, modifying, or troubleshooting Hermes so you don't guess or invent workarounds."
@@ -180,9 +183,9 @@ HERMES_AGENT_HELP_GUIDANCE = (
 
 # Variant for sessions without the skills toolset (e.g. Blank Slate): naming skill_view() there would dangle.
 HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = (
-    "You run on Hermes Agent (by Nous Research). When the user needs help with Hermes itself — configuring, "
-    "setting up, using, extending, or troubleshooting it — or when you need to understand your own features, "
-    "tools, or capabilities, the documentation at https://hermes-agent.nousresearch.com/docs is the "
+    "For help with Hermes Agent itself — configuring, setting up, using, extending, or troubleshooting it — "
+    "or to understand your own features, tools, or capabilities, the documentation at "
+    "https://hermes-agent.nousresearch.com/docs is the "
     "authoritative reference and always holds the latest, most up-to-date information. Point the user there "
     "(or read it yourself if you have a way to fetch web content)."
 )
@@ -242,7 +245,7 @@ SESSION_SEARCH_GUIDANCE = (
 # The opening sentence is worded deliberately: Anthropic's server-side filter rejected the previous phrasing
 # ("After completing a complex task (5+ tool calls)... save the approach as a skill...") on subscription OAuth
 # credentials, surfacing as a billing-shaped HTTP 400. If you rewrite it, re-verify with a subscription OAuth
-# token — sk-ant-api keys do not hit the filter. The safety-rule heading is referenced by tests and compaction summaries.
+# token — sk-ant-api keys do not hit the filter.
 # Anthropic's server-side content filter rejects the previous phrasing ("After completing a complex task (5+
 # tool calls), fixing a tricky error, or discovering a non-trivial workflow, save the approach as a skill
 # with skill_manage so you can reuse it next time.") on subscription OAuth credentials, and surfaces that
@@ -252,16 +255,10 @@ SESSION_SEARCH_GUIDANCE = (
 # not understood — if you rewrite this sentence, re-verify against a subscription OAuth token, not an
 # sk-ant-api… key, which does not hit the filter. Dieted (#95681, maintainer-directed): the record-it /
 # patch-it coaching that used to open this block duplicated the ## Skills section (which teaches both "offer
-# to save as a skill" and "fix it with skill_manage(action='patch')") and skill_manage's own schema. Only
-# the compaction-pruning contract lives here — nothing else teaches it.
-SKILL_SAFETY_HEADING = "## Skill Safety Rule"
-SKILLS_GUIDANCE = (
-    "When you work out a non-trivial workflow, record it with skill_manage for future reuse.\n\n"
-    f"{SKILL_SAFETY_HEADING}\n"
-    "A skill placeholder containing `[SKILL_PRUNED]` lost its content in context compression and is inaccessible — "
-    "reload it with skill_view(name='...') before acting on anything that depends on it. After reloading, ignore any "
-    "remaining `[SKILL_PRUNED]` markers for that same skill; they are historical artifacts of earlier compactions."
-)
+# to save as a skill" and "fix it with skill_manage(action='patch')") and skill_manage's own schema. The
+# [SKILL_PRUNED] reload rule that followed moved to the compaction summary, the only place markers exist
+# (agent/context_compressor_tail.py::with_skill_safety_rule): fresh sessions no longer pay for it.
+SKILLS_GUIDANCE = "When you work out a non-trivial workflow, record it with skill_manage for future reuse."
 
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
@@ -358,6 +355,10 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # "muse" = Meta Muse Spark: on defaults it answers in prose with 0 tool calls and the turn closes on
 # finish_reason=stop (#96550).
+# "nemotron" is deliberately absent from this list and EXECUTION_GUIDANCE_MODELS. We ran Nemotron 3.5 Super VL 5 times
+# with the tool-use enforcement, execution guidance and Google operational guidance blocks forced on and 5 times with
+# them off: pass rate moved by under 1 point on SWE-bench Verified, SWE-bench Pro and GDPval, and by +3.7 points on
+# Terminal-Bench 2.1, which was not significant per task (p = 0.14).
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek", "muse")
 
 # Models that receive OPENAI_MODEL_EXECUTION_GUIDANCE when agent.execution_guidance is "auto" (agentic-eval
@@ -657,65 +658,9 @@ def hud_surface_note(valid_tool_names: set[str] | None = None,
 # swapped at the API boundary in _build_api_kwargs().
 DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
-_MEDIA_NATIVE = (
-    "You can send files natively: write MEDIA:/absolute/path/to/file in your response. "
-)
-
-_LOCAL_CRON_DELIVERY_NOTE = (
-    "Cron jobs scheduled from this session are LOCAL-ONLY: their output is saved (viewable via cronjob "
-    "action='list') but is NOT delivered back into this session — there is no live-delivery channel here. If "
-    "the user wants to be notified when a job runs, the job's `deliver` must target a gateway-connected "
-    "messaging platform (e.g. deliver='telegram' or 'all'). Do not promise that a deliver='origin' or "
-    "default-deliver cron job will message them in this session."
-)
-
+# Hints for core surfaces only. A messaging platform's hint ships with its plugin
+# (``PlatformEntry.platform_hint``, read by agent/system_prompt._default_platform_hint).
 PLATFORM_HINTS = {
-    "whatsapp": (
-        "You are on WhatsApp. Standard markdown auto-converts to WhatsApp syntax (*bold*, _italic_, ~strike~, "
-        "monospace) \u2014 write markdown freely, bullets included. No tables \u2014 use bullets or labeled lines. "
-        f"{_MEDIA_NATIVE}Images (.jpg, .png, .webp) send as photos, videos (.mp4, .mov) play "
-        "inline, other files arrive as documents; image URLs via ![alt](url) send as photos."
-    ),
-    "whatsapp_cloud": (
-        "You are on WhatsApp (Meta Business Cloud API). Standard markdown auto-converts to WhatsApp syntax "
-        "\u2014 write markdown freely. No tables \u2014 use bullets or labeled lines. "
-        f"{_MEDIA_NATIVE}Images (.jpg, .png) send as photos, videos (.mp4) inline, audio as voice/audio, other files as "
-        "documents; ![alt](url) works. NOTE: Meta refuses free-form replies when the user hasn't messaged in "
-        "24h (error 131047) \u2014 relevant only for delayed/scheduled sends."
-    ),
-    "telegram": (
-        "You are on Telegram. Standard Markdown auto-converts: **bold**, "
-        "*italic*, ~~strikethrough~~, ||spoiler||, `code`, ```blocks```, "
-        "[links](url), ## headers. Prefer bullets or labeled lines for structured data (no tables). "
-        f"{_MEDIA_NATIVE}Images (.png, .jpg, .webp) send as photos, videos (.mp4) play inline; image URLs via ![alt](url) send as "
-        "photos. Audio: add [[audio_as_voice]] on its own line to send ANY audio file as a native voice bubble "
-        "(non-Opus transcodes automatically); without it, .mp3/.m4a arrive as audio files, other formats as documents."
-    ),
-    "discord": (
-        "You are in a Discord server or group chat communicating with your user. Discord renders standard "
-        "markdown natively (bold, italic, code blocks, links); tables are NOT supported — use bullet lists "
-        "or labeled lines. You can send media files natively: include MEDIA:/absolute/path/to/file in your "
-        "response. Images (.png, .jpg, .webp) are sent as photo attachments, audio as file attachments. You "
-        "can also include image URLs in markdown format ![alt](url) and they will be sent as attachments."
-    ),
-    "slack": (
-        "You are in a Slack workspace communicating with your user. Standard markdown is auto-converted to Slack "
-        "formatting (bold, headers, links, code); tables are NOT supported — use bullet lists or labeled lines. You "
-        "can send media files natively: include MEDIA:/absolute/path/to/file in your response. Images (.png, .jpg, "
-        ".webp) are uploaded as photo attachments, audio as file attachments. You can also include image URLs in "
-        "markdown format ![alt](url) and they will be uploaded as attachments."
-    ),
-    "signal": (
-        "You are on Signal. Standard markdown (**bold**, *italic*, ~~strike~~, # headers, `code`) auto-converts to "
-        "Signal formatting; bullets render as \u2022. No tables \u2014 use bullets or labeled lines. "
-        f"{_MEDIA_NATIVE}Images (.png, .jpg, .webp) send as photos, other files as documents; ![alt](url) sends as photos."
-    ),
-    "email": (
-        "You are communicating via email. Write clear, well-structured responses suitable for email. Use "
-        "plain text formatting (no markdown). Keep responses concise but complete. You can send file "
-        "attachments — include MEDIA:/absolute/path/to/file in your response. The subject line is preserved "
-        "for threading. Do not include greetings or sign-offs unless contextually appropriate."
-    ),
     "cron": (
         "You are running as a scheduled cron job. There is no user present — you cannot ask questions, "
         "request clarification, or wait for follow-up. Execute the task fully and autonomously, making "
@@ -727,15 +672,15 @@ PLATFORM_HINTS = {
         "You are in a plain terminal (CLI). Markdown does NOT render — asterisks, headers, and fences appear as "
         "literal characters, so write plain text (indentation and blank lines are your only layout tools). Files: "
         "there is no attachment channel and MEDIA:/path tags are NOT intercepted here (they print as literal text) — "
-        "deliver a file by stating its absolute path or URL in plain text; the user opens it themselves. "
-        f"{_LOCAL_CRON_DELIVERY_NOTE}"
+        # The cron local-only delivery caveat lives in cronjob_manage's deliver description (deferred: paid
+        # only when the tool is loaded), not in every CLI/TUI prompt.
+        "deliver a file by stating its absolute path or URL in plain text; the user opens it themselves."
     ),
     "tui": (
         # Same file-delivery reality as the CLI: no MEDIA: interception in tui/.
         "You are in the Hermes terminal UI (TUI). Files: there is no attachment channel and MEDIA:/path tags "
         "are NOT intercepted here (they print as literal text) — deliver a file by stating its absolute path "
-        "or URL in plain text. "
-        f"{_LOCAL_CRON_DELIVERY_NOTE}"
+        "or URL in plain text."
     ),
     "desktop": (
         # Every claim verified against the shipping renderer (inline-preview-directive.tsx). Widget text is
@@ -755,69 +700,6 @@ PLATFORM_HINTS = {
         "or it measures full-bleed. Widgets talk back: data-hermes-send=\"prompt\" on any clickable element (or "
         "window.hermes.send(\"prompt\")) sends that prompt as a hidden user turn — answer it by updating the widget's "
         "file, not with prose."
-    ),
-    "sms": (
-        "You are communicating via SMS. Keep responses concise and use plain text only — no markdown, no "
-        "formatting. SMS messages are limited to ~1600 characters, so be brief and direct."
-    ),
-    "bluebubbles": (
-        # The adapter runs strip_markdown(keep_link_targets=True): markers vanish, the layout stays.
-        "You are texting via iMessage (BlueBubbles). Replies arrive as plain text bubbles, so write like a person "
-        "texting: short and conversational, answer first, no preamble or recap. Markdown does not render and is "
-        "stripped, so skip headers, tables, code fences and backticks; for a few items use short lines or a "
-        "sentence rather than nested bullets. Put a command or code snippet on its own line as plain text so it "
-        "can be copied. Write links as bare URLs (iMessage auto-links them). "
-        f"{_MEDIA_NATIVE}Images (.jpg, .png, .heic) appear as photos and other files arrive as attachments."
-    ),
-    "mattermost": (
-        "You are in a Mattermost workspace communicating with your user. Mattermost renders standard "
-        "Markdown — headings, bold, italic, code blocks, and tables all work. You can send media files "
-        "natively: include MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, .webp) are "
-        "uploaded as photo attachments, audio and video as file attachments. Image URLs in markdown format "
-        "![alt](url) are rendered as inline previews automatically."
-    ),
-    "matrix": (
-        "You are in a Matrix room. Your markdown converts to HTML \u2014 bold, italic, code, headings, lists, "
-        "blockquotes, and links render. Do NOT use tables (popular clients like Element X collapse them into run-on "
-        "text \u2014 use '**Label:** value' lines or bullets), and avoid ||spoilers||, ~~strikethrough~~, and "
-        "checkboxes (they appear as literal characters). Prefer [descriptive text](url) over bare URLs. "
-        f"{_MEDIA_NATIVE}Images send as inline photos, audio (.ogg, .mp3) as voice/audio "
-        "messages, video (.mp4) inline, other files as attachments."
-    ),
-    "feishu": (
-        "You are in a Feishu (Lark) workspace communicating with your user. Feishu renders Markdown in "
-        "messages — bold, italic, code blocks, and links are supported. You can send media files natively: "
-        "include MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, .webp) are uploaded and "
-        "displayed inline, audio files as native voice messages (non-Opus formats are transcoded "
-        "automatically; without ffmpeg they fall back to file attachments), and other files as attachments."
-    ),
-    "weixin": (
-        "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when it improves readability, "
-        "but keep the message compact and chat-friendly. You can send media files natively: include "
-        "MEDIA:/absolute/path/to/file in your response. Images are sent as native photos, videos play inline when "
-        "supported, and other files arrive as downloadable documents. You can also include image URLs in markdown "
-        "format ![alt](url) and they will be downloaded and sent as native media when possible."
-    ),
-    "wecom": (
-        "You are on WeCom (\u4f01\u4e1a\u5fae\u4fe1). Markdown is supported. "
-        f"{_MEDIA_NATIVE}Images (.jpg, .png, .webp) send as photos (\u226410 MB), other files as documents (\u226420 MB), videos "
-        "(.mp4) play inline. Voice messages must be AMR \u2014 other audio formats send as file attachments. Image "
-        "URLs via ![alt](url) are downloaded and sent as photos. Never claim you lack file-sending."
-    ),
-    "qqbot": (
-        "You are on QQ, a popular Chinese messaging platform. QQ supports markdown formatting "
-        "and emoji. You can send media files natively: include MEDIA:/absolute/path/to/file in "
-        "your response. Images are sent as native photos, and other files arrive as downloadable documents."
-    ),
-    "yuanbao": (
-        "You are on Yuanbao (\u817e\u8baf\u5143\u5b9d), a Chinese AI assistant "
-        "platform. Markdown renders (code blocks, tables, bold/italic). "
-        f"{_MEDIA_NATIVE}Images (.jpg, .png, .webp, .gif) send as photos, other files as downloadable documents (max 50 MB); "
-        "image URLs via ![alt](url) are downloaded and sent as photos. Never claim you lack file-sending. "
-        "Stickers (\u8d34\u7eb8/\u8868\u60c5\u5305): when the user sends one (you see '[emoji: "
-        "\u540d\u79f0]') or asks for one, use the sticker tools \u2014 yb_search_sticker with a Chinese "
-        "keyword, then yb_send_sticker with the chosen id \u2014 which send a real native sticker. Never "
-        "draw sticker-like PNGs and send them as images, and bare Unicode emoji is not a substitute."
     ),
     "api_server": (
         "You're responding through an API server. The rendering layer is unknown — assume plain text. No markdown "
@@ -863,12 +745,11 @@ WSL_ENVIRONMENT_HINT = (
 
 # Backends that run commands (and every file tool) in a separate container / remote host: host OS/$HOME/cwd
 # would mislead, so the agent only sees the machine it can touch.
-_REMOTE_TERMINAL_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "ssh", "vercel_sandbox", "managed_modal"})
+_REMOTE_TERMINAL_BACKENDS = frozenset({"docker", "modal", "daytona", "ssh", "vercel_sandbox", "managed_modal"})
 
 # Used when the live probe fails: only what the backend choice implies — never an invented cwd/user/$HOME.
 _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "docker": "a Docker container (Linux)",
-    "singularity": "a Singularity container (Linux)",
     "modal": "a Modal sandbox (Linux)",
     "managed_modal": "a managed Modal sandbox (Linux)",
     "daytona": "a Daytona workspace (Linux)",
@@ -942,7 +823,7 @@ def _tenv_read(name: str, default: str = "") -> str:
     return terminal_env(name, default)
 
 
-_BACKEND_IMAGE_KEYS = {b: f"{b}_image" for b in ("docker", "singularity", "modal", "daytona")}
+_BACKEND_IMAGE_KEYS = {b: f"{b}_image" for b in ("docker", "modal", "daytona")}
 # (config key, default) pairs forwarded to _create_environment's container_config.
 # Single-line POSIX probe; `2>/dev/null` keeps a missing binary from polluting output.
 # OS/kernel only: the sandbox's user, $HOME and cwd are user-identifying and nothing consumes
@@ -1197,8 +1078,8 @@ _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2 added org provenance fields (org_id/org_author); v4 adds ``rel`` (SKILL.md path relative to its root) for
-# duplicate-name resolution. Older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 4
+# duplicate-name resolution; v5 stores descriptions clipped at a word boundary. Older snapshots are rebuilt.
+_SKILLS_SNAPSHOT_VERSION = 5
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1229,7 +1110,7 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
             try:
                 if filename in files:
                     st = os.stat(path)
-                    manifest[path[prefix_len:]] = list(file_signature(st))
+                    manifest[path[prefix_len:]] = list(file_cache_version(path, st, always_digest=True))
             except OSError:
                 pass
     return manifest
@@ -1330,7 +1211,7 @@ def _plugin_skill_prompt_rows(
             if not _skill_should_show(extract_skill_conditions(frontmatter), available_tools,
                                       available_toolsets, session_platform):
                 continue
-            desc = str(meta.get("description") or "").strip() or extract_skill_description(frontmatter)
+            desc = clip_skill_description(str(meta.get("description") or "").strip()) or extract_skill_description(frontmatter)
             rows.append((name, desc))
     except Exception:
         logger.debug("Plugin skill prompt rows unavailable", exc_info=True)
@@ -1361,6 +1242,10 @@ def build_skills_system_prompt(
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return ""
     _home_token = None
     if skills_dir_override is not None:
         skills_dir = Path(skills_dir_override)
@@ -1382,20 +1267,6 @@ def build_skills_system_prompt(
 
 def _entry_name(entry: dict) -> str:
     return entry.get("frontmatter_name") or entry.get("skill_name") or ""
-
-
-def _read_category_descriptions(root: Path, log_fmt: str) -> dict[str, str]:
-    """``description`` from every DESCRIPTION.md under *root*, keyed by category path."""
-    found: dict[str, str] = {}
-    for desc_file in iter_skill_index_files(root, "DESCRIPTION.md"):
-        try:
-            cat_desc = parse_frontmatter(desc_file.read_text(encoding="utf-8-sig"))[0].get("description")
-            if cat_desc:
-                rel = desc_file.relative_to(root)
-                found["/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"] = str(cat_desc).strip().strip("'\"")
-        except Exception as e:
-            logger.debug(log_fmt, desc_file, e)
-    return found
 
 
 def _scan_extra_root(root: Path, skill_files, tier: int, log_fmt: str) -> list[tuple[dict, bool]]:
@@ -1422,7 +1293,7 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
 
 
 def _render_skills_index(
-    skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
+    skills_by_category: dict[str, list[tuple[str, str]]],
     compact_categories: frozenset[str] | None, available_tools: set[str] | None, unloadable: list[str] = (),
 ) -> str:
     """Render the ## Skills block; "" when there is nothing to list. *unloadable* names (different skills
@@ -1449,13 +1320,15 @@ def _render_skills_index(
         if category in demoted:
             index_lines.append(f"  {category} [names only]: {', '.join(sorted({n for n, _ in entries}))}")
             continue
-        cat_desc = category_descriptions.get(category, "")
-        index_lines.append(f"  {category}: {cat_desc}" if cat_desc else f"  {category}:")
-        seen = set()
+        rows: dict[str, str] = {}
         for name, desc in sorted(entries, key=lambda x: x[0]):  # stable: first entry per name wins
-            if name not in seen:
-                seen.add(name)
-                index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
+            rows.setdefault(name, desc)
+        # A one-skill category is a single top-level row: its header would only repeat what the row
+        # says (a skill at the top of the tree is its own category, so the name printed twice).
+        indent = "  " if len(rows) == 1 else "    "
+        if len(rows) > 1:
+            index_lines.append(f"  {category}:")
+        index_lines.extend(f"{indent}- {name}: {desc}" if desc else f"{indent}- {name}" for name, desc in rows.items())
     from agent.oneshot_footprint import ONESHOT_SKILLS_LOAD_GUIDANCE, is_single_query_session
     if is_single_query_session():
         return (
@@ -1530,14 +1403,12 @@ def _build_skills_system_prompt_inner(
                 or not _skill_should_show(conditions, available_tools, available_toolsets, _platform_hint or None))
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
-    category_descriptions: dict[str, str] = {}
     # Disk snapshot (fast path) vs. full scan: both yield (entry, is_compatible) pairs so labeling runs identically.
     if snapshot is not None:
         # Platforms and app presence are host facts that change without SKILL.md changing: re-evaluate both.
         candidates = [(entry, skill_matches_platform_list(entry.get("platforms") or [])
                        and skill_matches_apps({"requires_apps": entry.get("requires_apps") or []}))
                       for entry in snapshot.get("skills", []) if isinstance(entry, dict)]
-        category_descriptions = {str(k): str(v) for k, v in (snapshot.get("category_descriptions") or {}).items()}
     else:
         candidates = []
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
@@ -1554,8 +1425,6 @@ def _build_skills_system_prompt_inner(
     rows += [({**entry, "tier": TIER_LOCAL, "root": skills_dir}, ok) for entry, ok in candidates]
     for tier, root in ((t, d) for t, d in extra_roots if t != TIER_PROJECT and d.exists()):
         rows += _scan_extra_root(root, iter_skill_index_files(root, "SKILL.md"), tier, "Error reading external skill %s: %s")
-        for cat, cat_desc in _read_category_descriptions(root, "Could not read external skill description %s: %s").items():
-            category_descriptions.setdefault(cat, cat_desc)
     resolved = resolve_skill_catalog([
         {**entry, "name": _entry_name(entry), "path": entry["root"] / entry["rel"],
          "visible": ok and not hides(entry.get("skill_name") or "", entry.get("conditions") or {})}
@@ -1572,17 +1441,16 @@ def _build_skills_system_prompt_inner(
                 listed.add(name)
                 skills_by_category.setdefault("plugin", []).append((name, desc))
     if snapshot is None:  # persist for fast cold-start reuse (best-effort)
-        category_descriptions.update(_read_category_descriptions(skills_dir, "Could not read skill description %s: %s"))
         try:
             atomic_json_write(_skills_prompt_snapshot_path(), {
                 "version": _SKILLS_SNAPSHOT_VERSION, "manifest": _build_skills_manifest(skills_dir),
-                "skills": [entry for entry, _ in candidates], "category_descriptions": category_descriptions,
+                "skills": [entry for entry, _ in candidates],
             })
         except Exception as e:
             logger.debug("Could not write skills prompt snapshot: %s", e)
 
     unloadable = sorted({e["name"] for e in visible_entries if not e["load_name"]})
-    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools, unloadable)
+    result = _render_skills_index(skills_by_category, compact_categories, available_tools, unloadable)
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
@@ -1652,6 +1520,10 @@ def load_soul_md(context_length: Optional[int] = None, home_override: Path | Non
     ContextVar falls back to the launch home and reads the wrong profile's SOUL.md (#50233, same class as
     the skills-index leak fixed in #86313).
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return None
     try:
         from hermes_cli.config import ensure_hermes_home
         ensure_hermes_home()
@@ -1855,6 +1727,10 @@ def build_context_files_prompt(
     AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return ""
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
     if _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
         logger.warning(

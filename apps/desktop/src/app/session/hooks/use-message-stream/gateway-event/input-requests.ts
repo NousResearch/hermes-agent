@@ -48,6 +48,47 @@ const isConnectionRequestEvent = (event: GatewayEvent): event is ConnectionReque
 const isConnectionUpdateEvent = (event: GatewayEvent): event is ConnectionUpdateEvent =>
   event.type === 'connection.update' && event.payload !== undefined
 
+/** `approval.settled` / `clarify.settled {prompt_id}`: take down the card
+ *  parked under that server request id. Returns false for other events. */
+function handlePromptSettledEvent(ctx: GatewayEventContext): boolean {
+  const { deps, event, payload, sessionId } = ctx
+
+  if (event.type !== 'approval.settled' && event.type !== 'clarify.settled') {
+    return false
+  }
+
+  const promptId = (payload as { prompt_id?: unknown } | undefined)?.prompt_id
+
+  if (typeof promptId !== 'string' || !promptId) {
+    return true
+  }
+
+  forgetServerRequest(promptId)
+  const key = sessionId ?? ''
+
+  if (event.type === 'clarify.settled') {
+    if ($clarifyRequests.get()[key]?.requestId === promptId) {
+      clearClarifyRequest(promptId, sessionId)
+
+      if (sessionId) {
+        deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
+      }
+    }
+
+    return true
+  }
+
+  const approval = sessionApprovalRequests(sessionId ?? null)
+    .get()
+    .find(request => request.serverRequestId === promptId)
+
+  if (approval) {
+    clearApprovalRequest(sessionId, approval.requestId)
+  }
+
+  return true
+}
+
 // A display card has no targets to name.
 const connectionRequestNoticeBody = (request: ConnectionRequest): string =>
   request.targets.map(target => target.name).join(', ') || translateNow('connectors.title')
@@ -104,6 +145,15 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
       deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
     }
 
+    return true
+  }
+
+  // Canonical gateways settle a shared prompt with `approval.settled` /
+  // `clarify.settled {prompt_id}` once ANY attached viewer answered it (or the
+  // turn ended). The prompt id is the server request id this window parked the
+  // card under. Only the parked card comes down: the answer itself reaches the
+  // transcript through the tool's own completion, so no "skipped" projection.
+  if (handlePromptSettledEvent(ctx)) {
     return true
   }
 
@@ -181,7 +231,18 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         }
       })
     }
-  } else if ($sudoRequests.get()[key]?.requestId === id) {
+  } else {
+    cancelParkedCredentialRequest(ctx, key, id)
+  }
+
+  return true
+}
+
+/** Withdraw the sudo / secret / vault / setup card parked under `id`, first match wins. */
+function cancelParkedCredentialRequest(ctx: GatewayEventContext, key: string, id: string): void {
+  const { sessionId } = ctx
+
+  if ($sudoRequests.get()[key]?.requestId === id) {
     clearSudoRequest(sessionId, id)
   } else if ($sudoRequests.get()['']?.requestId === id) {
     clearSudoRequest(null, id) // the app-level Bot Screen install card: not owned by any chat
@@ -196,8 +257,6 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   } else {
     clearParkedCard(ctx, id)
   }
-
-  return true
 }
 
 function clearParkedCard({ deps, sessionId }: GatewayEventContext, requestId: string) {

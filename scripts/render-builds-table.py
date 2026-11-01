@@ -618,6 +618,10 @@ def main() -> int:
                         help="Actual workflow run URL for incomplete-build diagnostics")
     parser.add_argument("--r2-base-url", default=os.environ.get("CLOUDFLARE_R2_PUBLIC_URL"),
                         help="Public base URL of the R2 bucket (default: $CLOUDFLARE_R2_PUBLIC_URL)")
+    parser.add_argument("--no-channel-page", action="store_true",
+                        help="Render the attempt page and release table but leave the shared channel "
+                             "downloads page alone (a release that did not build every desktop package "
+                             "the channel serves)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the spliced body instead of editing the release "
                              "(writes nothing, including the channel page)")
@@ -731,7 +735,7 @@ def main() -> int:
         return 1
     release = json.loads(view.stdout)
     body = release.get("body") or ""
-    if not args.pending_run_url and not args.dry_run and not incomplete and names:
+    if not args.pending_run_url and not args.dry_run and not incomplete and names and not args.no_channel_page:
         write_channel_page(args.tag, assets, args.r2_base_url, repo=args.repo, smoke_results=smoke_results)
     if MARKER not in body:
         print("::warning::release body has no HERMES_BUILDS_TABLE marker; leaving it unchanged")

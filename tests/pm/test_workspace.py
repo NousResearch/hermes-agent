@@ -91,6 +91,34 @@ def test_plugin_workspace_trusts_core_lock_instead_of_rechecking_release_age(lay
     assert "member-dep" in locked
 
 
+def test_plugin_workspace_solves_only_for_the_installing_interpreter(layout):
+    """A platform the install never runs on must not fail its solve.
+
+    uv fails the whole lock when one fork lacks wheels (onnxruntime and torch ship none for
+    Android), so a desktop update evicted mnemosyne over Android (#143254, #143305, #144003).
+    Core's own environment bounds still apply on top.
+    """
+    import tomllib
+
+    from packaging.markers import Marker, default_environment
+
+    tmp, core, plug_a, _ = layout
+    manifest = core / "pyproject.toml"
+    manifest.write_text(manifest.read_text().replace("[tool.uv]\n", "[tool.uv]\nenvironments=[\"python_version >= '3.11'\"]\n", 1))
+    root = tmp / "workspace"
+    ws.lock_and_sync([plug_a], [], root=root, source=core, seed_lock=None,
+                     environment=managed_environment(tmp / "env"))
+
+    [solved] = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["uv"]["environments"]
+    host = default_environment()
+    platforms = [p for p in ("android", "win32", "linux") if p != host["sys_platform"]]
+    machine = next(m for m in ("riscv64", "s390x") if m != host["platform_machine"])
+    for environment, expected in ((host, True), *(({**host, "sys_platform": p}, False) for p in platforms),
+                                  ({**host, "platform_machine": machine}, False),
+                                  ({**host, "python_version": "3.10"}, False)):
+        assert Marker(solved).evaluate(environment) is expected, environment
+
+
 
 
 
@@ -112,7 +140,7 @@ def test_core_only_generation_carries_no_release_age_cutoff(layout):
     manifest = core / "pyproject.toml"
     manifest.write_text(manifest.read_text().replace("[tool.uv]\n", '[tool.uv]\nexclude-newer = "3 days"\n', 1))
     root = tmp / "workspace"
-    ws._generate_pyproject([], root, source=core)
+    ws._generate_pyproject([], root, source=core, python=Path(sys.executable))
     generated = (root / "pyproject.toml").read_text(encoding="utf-8")
     assert "exclude-newer" not in generated and "[tool.uv]" in generated
 

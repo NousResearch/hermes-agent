@@ -57,7 +57,7 @@ terminal.resize         clipboard.paste         image.attach
 
 `session.active_list`, `session.activate`, and `session.close` are the process-local live-session controls used by the TUI session switcher. Use `session.list` / `/resume` for saved transcript discovery; use the active-session methods only for sessions that are currently open in the TUI gateway process.
 
-Within one authenticated gateway, resuming or activating a live session attaches another event subscriber rather than replacing the previous connection. Streaming and terminal events go to all attached clients; disconnecting one client does not end a session another client is viewing. Existing submit exclusivity and configured busy-input policy remain in force. Attached clients can steer the session's subagents; browser-controller results still require the connection that registered that controller. This does not enable independent gateway processes to write the same session, nor does it imply durable prompt admission across an owner restart.
+Within one authenticated gateway, resuming or activating a live session attaches another event subscriber rather than replacing the previous connection. Streaming and terminal events go to all attached clients; disconnecting one client does not end a session another client is viewing. Existing submit exclusivity and configured busy-input policy remain in force. Attached clients can steer the session's subagents. This does not enable independent gateway processes to write the same session, nor does it imply durable prompt admission across an owner restart.
 
 ### Model overrides on `session.create`
 
@@ -138,10 +138,9 @@ GET  /v1/runs/{id}               Run status
 GET  /v1/runs/{id}/events        SSE stream of lifecycle events
 POST /v1/runs/{id}/approval      Resolve a pending approval
 POST /v1/runs/{id}/steer         Inject mid-run guidance at the next tool boundary
+POST /v1/runs/{id}/resolve-unknown Acknowledge an exact restart-unknown admission
 POST /v1/runs/{id}/stop          Interrupt the run
 GET  /v1/capabilities            Machine-readable feature flags
-POST /v1/browser-control/register Register a browser controller
-GET  /v1/browser-control/ws       Browser-controller WebSocket
 GET  /v1/models                  Lists hermes-agent
 GET  /api/model/options          Provider-aware picker inventory
 GET  /health, /health/detailed
@@ -149,10 +148,8 @@ GET  /health, /health/detailed
 
 Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wiring: [API Server](../user-guide/features/api-server).
 
-Browser extensions can opt into the disabled-by-default controller protocol to
-drive the exact browser session that opened the Hermes conversation. The API
-and dashboard transports share one principal-bound broker and one explicit
-capability allowlist; see [Browser-extension control](../user-guide/features/api-server#browser-extension-control).
+The browser-extension controller protocol has been removed; to let Hermes drive a browser you
+already run, use `browser.cdp_url` or `/browser connect` — see [Browser-extension control (removed)](../user-guide/features/api-server#browser-extension-control-removed).
 
 ### Model catalog surfaces
 
@@ -197,6 +194,27 @@ The terminal status of a run is derived from how the agent's turn actually ended
 | Ended without finishing (iteration budget, truncated or partial reply) | `failed` | `run.failed` | `completed: false`, `partial` when applicable, `turn_exit_reason` (e.g. `max_iterations_reached(60/60)`), `output` with any fallback text |
 
 A run is never reported as `completed` with `completed: false` or `partial: true` in the same payload. The same rule applies to `/api/sessions/{id}/chat/stream`, whose `assistant.completed` payload carries the real `completed` / `partial` / `interrupted` flags and whose terminal event is `run.completed`, `run.failed`, or `run.cancelled`.
+
+`POST /v1/runs/{id}/resolve-unknown` is a canonical-authority recovery
+operation, not a generic status mutation. Send exactly the `admission_id` and
+integer `execution_generation` projected by the run status. The server binds the
+authenticated owner, selected profile, path run, API principal, target session,
+admission, and generation before the authority performs its compare-and-set.
+Resolution settles the lost head as interrupted and releases the next FIFO item;
+it never requeues the head. Feature-detect
+`features.run_unknown_resolution` because legacy execution mode does not
+advertise this endpoint.
+
+New canonical API admissions retain an opaque owner scope in the admission row,
+so keyed and non-keyed runs can be authorized after an adapter restart for as
+long as that canonical admission remains available. This does not change
+non-keyed request semantics: identical submissions still create distinct runs.
+Pre-upgrade non-keyed admissions contain no owner scope and remain deliberately
+unresolvable after restart; there is no safe credential ownership to backfill.
+Existing keyed records retain their replay-ledger recovery path. Explicit
+session retirement removes the canonical payload and therefore ends this owner
+recovery path. Replay reservation and canonical admission still use separate
+databases, so this endpoint does not provide a global exactly-once guarantee.
 
 ---
 

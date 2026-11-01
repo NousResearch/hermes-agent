@@ -50,7 +50,7 @@ class TestSendSignalMediaFiles:
 
     def test_send_signal_with_missing_media_file(self):
         """Missing media files should generate warnings but not fail."""
-        from tools.send_message_tool import _send_signal
+        from plugins.platforms.signal.standalone import _send_signal
 
         extra = {"http_url": "http://localhost:8080", "account": "+155****4567"}
 

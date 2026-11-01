@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   connections: vi.fn(async () => [] as { id: string; label: string }[]),
   createCanonicalChat: vi.fn(async () => 'session-1'),
   deleteBot: vi.fn(async () => undefined),
+  dropLeftoverProfilePrefs: vi.fn(),
   /** Flipped off to model a desktop build that predates the live surface. */
   hasCapabilitiesView: { value: true },
   notify: vi.fn(),
@@ -59,6 +60,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     host: {
       ...original.host,
       connections: mocks.connections,
+      dropLeftoverProfilePrefs: mocks.dropLeftoverProfilePrefs,
       notify: mocks.notify,
       notifyError: mocks.notifyError,
       request: mocks.request,
@@ -207,6 +209,23 @@ describe('materializing the draft profile', () => {
     expect(createCalls()).toHaveLength(1)
   })
 
+  it('creates it once a name is typed AFTER the Capabilities tab was opened nameless', async () => {
+    await renderDialog(true)
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await screen.findByText(/Name the bot first/)
+
+    // Mid-word keystrokes must not each mint (and orphan) a draft.
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'late' } })
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'late-name' } })
+    // Edited during the debounce: the draft must carry it, not the value from the last name change.
+    fireEvent.change(screen.getByPlaceholderText('Inbox Triage'), { target: { value: 'Late Title' } })
+
+    await waitFor(() => expect(mocks.skillsView.at(-1)).toMatchObject({ fixedProfile: 'late-name' }), { timeout: 3000 })
+    expect(createCalls().map(([, params]) => params.name)).toEqual(['late-name'])
+    expect(createCalls()[0][1].description).toBe('Late Title')
+  })
+
   it('pins a remote-target draft to the TARGET machine, not the active gateway', async () => {
     mocks.connections.mockResolvedValue([
       { id: 'local', label: 'This Mac' },
@@ -292,6 +311,178 @@ describe('materializing the draft profile', () => {
         profile: 'inbox-triage'
       })
     )
+  })
+})
+
+// A create never lands on a live name, so a folder or startup profile stored
+// under the new bot's name was left by a deleted profile. Bot Mode creates
+// through its own RPC, so it has to drop them the way the profile dialog does.
+describe('leftover prefs under the new bot name', () => {
+  it('drops them once the create succeeded', async () => {
+    let created = false
+    const base = mocks.request.getMockImplementation()!
+    mocks.request.mockImplementation(async (method: string, params?: unknown) => {
+      if (method === 'profiles.create') {
+        created = true
+      }
+
+      return base(method, params)
+    })
+    mocks.dropLeftoverProfilePrefs.mockImplementationOnce(() => expect(created).toBe(true))
+
+    await renderDialog(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+    expect(mocks.dropLeftoverProfilePrefs.mock.calls).toEqual([['inbox-triage', null]])
+  })
+
+  it('names the machine a remote bot was created on', async () => {
+    mocks.connections.mockResolvedValue([
+      { id: 'local', label: 'This Mac' },
+      { id: 'studio', label: 'Studio' }
+    ])
+
+    await renderDialog(true)
+    await screen.findByText('Create on')
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(mocks.dropLeftoverProfilePrefs).toHaveBeenCalled())
+    expect(mocks.dropLeftoverProfilePrefs.mock.calls).toEqual([['inbox-triage', 'studio']])
+  })
+
+  it('keeps them when the create fails', async () => {
+    const base = mocks.request.getMockImplementation()!
+    mocks.request.mockImplementation(async (method: string, params?: unknown) => {
+      if (method === 'profiles.create') {
+        throw new Error('disk full')
+      }
+
+      return base(method, params)
+    })
+
+    await renderDialog(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(mocks.dropLeftoverProfilePrefs).not.toHaveBeenCalled()
+  })
+})
+
+// #141623: the draft profile is minted before the dialog finishes. Cancelling
+// must delete the draft THIS dialog created, on the machine it created it on,
+// including one whose create or configure is still in flight when the user
+// backs out — it used to survive as a bot.
+describe('cancelling New Bot discards its draft profile', () => {
+  it('deletes the draft whose profiles.create was still in flight at cancel', async () => {
+    const base = mocks.request.getMockImplementation()!
+    let finishCreate!: () => void
+    mocks.request.mockImplementation((method: string, params?: unknown) =>
+      method === 'profiles.create'
+        ? new Promise(resolve => {
+            finishCreate = () => resolve({})
+          })
+        : base(method, params)
+    )
+
+    await renderDialog(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    finishCreate()
+
+    await waitFor(() => expect(mocks.deleteBot).toHaveBeenCalledWith({ name: 'inbox-triage' }))
+    // The abandoned draft is not configured or adopted as a finished bot.
+    expect(mocks.saveBotMeta).not.toHaveBeenCalled()
+    expect(mocks.createCanonicalChat).not.toHaveBeenCalled()
+  })
+
+  // The draft lives where it was CREATED. Moving "Create on" afterwards must not
+  // send the delete to the newly picked machine, where a real bot of the same
+  // name may live, and must not leave the draft behind on its own machine.
+  it('discards a local draft locally when "Create on" moves to another machine', async () => {
+    mocks.connections.mockResolvedValue([
+      { id: 'local', label: 'This Mac' },
+      { id: 'studio', label: 'Studio' }
+    ])
+
+    await renderDialog(true)
+    await screen.findByText('Create on')
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() => expect(mocks.skillsView.at(-1)).toMatchObject({ fixedProfile: 'inbox-triage' }))
+
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(mocks.deleteBot).toHaveBeenCalledWith({ name: 'inbox-triage' }))
+    expect(mocks.requestProfile).not.toHaveBeenCalledWith(expect.anything(), 'cli.exec', expect.anything())
+  })
+
+  it('discards a remote draft on its own machine when "Create on" moves back', async () => {
+    mocks.connections.mockResolvedValue([
+      { id: 'local', label: 'This Mac' },
+      { id: 'studio', label: 'Studio' }
+    ])
+
+    await renderDialog(true)
+    await screen.findByText('Create on')
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() =>
+      expect(mocks.skillsView.at(-1)).toMatchObject({ fixedConnection: 'studio', fixedProfile: 'inbox-triage' })
+    )
+
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: /This Mac/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() =>
+      expect(mocks.requestProfile).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'studio' }), 'cli.exec', {
+        argv: ['profile', 'delete', 'inbox-triage', '--yes']
+      })
+    )
+    expect(mocks.deleteBot).not.toHaveBeenCalled()
+  })
+
+  // The draft exists once profiles.create returns, but the flight still awaits
+  // the capability configure. A Cancel (or the dialog going away) in that window
+  // deletes the draft; the flight must not then record bot meta for it.
+  it.each([
+    ['Cancel', () => fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))],
+    ['unmount', () => cleanup()]
+  ])('writes no bot meta for a draft abandoned (%s) while its configure is pending', async (_label, abandon) => {
+    const base = mocks.request.getMockImplementation()!
+    let finishConfigure!: () => void
+    mocks.request.mockImplementation((method: string, params?: unknown) =>
+      method === 'profiles.describe'
+        ? Promise.resolve({ mcp_servers: [], skills: [{ enabled: true, name: 'arxiv' }], toolsets: [] })
+        : method === 'profiles.configure'
+          ? new Promise(resolve => {
+              finishConfigure = () => resolve({})
+            })
+          : base(method, params)
+    )
+
+    // The staged tabs are where a capability pick (and so a configure) is made
+    // before the profile exists, and where MCP setup mints the draft.
+    await renderDialog(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills' }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'arxiv' }))
+    fireEvent.click(screen.getByRole('button', { name: 'MCP' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Set up/ }))
+    await waitFor(() => expect(mocks.request).toHaveBeenCalledWith('profiles.configure', expect.anything()))
+
+    abandon()
+    finishConfigure()
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    expect(mocks.saveBotMeta).not.toHaveBeenCalled()
   })
 })
 

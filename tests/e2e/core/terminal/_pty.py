@@ -102,15 +102,17 @@ def cmdline(pid: int) -> str:
 class PtyHermes:
     """One interactive ``hermes`` process on a PTY with an emulated screen."""
 
-    def __init__(self, root: Path, argv_tail: list[str], llm: FakeLLMServer, *, rows: int, cols: int,
+    def __init__(self, root: Path, argv_tail: list[str], llm: FakeLLMServer | None, *, rows: int, cols: int,
                  extra_config: str = "") -> None:
+        """``llm=None``: the caller already wrote ``root/home/.hermes`` (e.g. a native-runtime home)."""
         self.root = root
         self.home = root / "home"
         self.hermes_home = self.home / ".hermes"
         operator = (_operator_home() / ".hermes").resolve()
         assert operator not in (self.hermes_home.resolve(), *self.hermes_home.resolve().parents), (
             f"sandbox {self.hermes_home} sits inside the operator's Hermes home")
-        write_hermes_home(self.hermes_home, llm.base_url, extra_config=extra_config)
+        if llm is not None:
+            write_hermes_home(self.hermes_home, llm.base_url, extra_config=extra_config)
         self.llm = llm
         self.screen = Screen(rows, cols)
         self.raw = bytearray()
@@ -281,12 +283,18 @@ class PtyHermes:
         return self.proc.returncode
 
     def leftover_processes(self, timeout: float = 15.0) -> list[str]:
-        """Processes still alive in the child's session, or seen as its descendants, after exit."""
+        """Processes still alive in the child's session, or seen as its descendants, after exit.
+
+        The profile's ``gateway run`` is not a leftover: ``hermes chat`` attaches to it and it
+        keeps serving (cron, messaging, the next client) after the client exits; ``close()`` still
+        tears it down with the rest of this harness's tree."""
+        from gateway.status import looks_like_gateway_command_line
+
         def alive() -> list[int]:
             pids = set(session_members(self.sid))
             # Same pid AND same start time: a recycled pid is not our leftover.
             pids |= {pid for pid, started in self.seen_members if _start_time(pid) == started}
-            return sorted(pids)
+            return sorted(pid for pid in pids if not looks_like_gateway_command_line(cmdline(pid)))
         try:
             poll(lambda: not alive(), timeout=timeout, what="the PTY session to empty")
         except AssertionError:

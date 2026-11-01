@@ -352,10 +352,14 @@ def _build_from_sessions_db(platform_name: str) -> list[dict[str, str]]:
         from hermes_state_registry import acquire, release_or_close
         db = acquire()
         try:
-            lister = getattr(db, "list_gateway_sessions", None)
-            if not callable(lister):
-                return
-            rows = lister(platform=platform_name, active_only=False)
+            narrow = getattr(db, "list_gateway_session_origins", None)
+            if callable(narrow):
+                rows = narrow(platform=platform_name)
+            else:
+                lister = getattr(db, "list_gateway_sessions", None)
+                if not callable(lister):
+                    return
+                rows = lister(platform=platform_name, active_only=False)
         finally:
             release_or_close(db)
         for row in rows:

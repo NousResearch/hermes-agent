@@ -101,6 +101,46 @@ These have sensible defaults in the ABC. Override as needed:
 | `on_turn_complete(messages, usage=None, **kwargs)` | No-op | You ingest/index/observe the finished turn — see below |
 | `clone_for_agent()` | `copy.deepcopy(self)` | Your engine holds uncopyable state (locks, SQLite/DB connections) — see [Via general plugin system](#via-general-plugin-system) |
 
+## Optional host workflow state
+
+An engine can explicitly declare a `host_state` keyword parameter on `compress()`
+or `select_context()` to receive the current session's workflow state:
+
+```python
+def compress(self, messages, current_tokens=None, *, host_state=None):
+    todos = host_state["todos"]
+    goal = host_state["goal"]
+    # Use this state to decide what to preserve in the compacted messages.
+```
+
+The snapshot has this shape:
+
+```python
+{
+    "todos": [{"id": "1", "content": "Verify the result", "status": "pending"}],
+    "goal": {
+        "text": "Finish the migration",
+        "status": "active",  # active or paused
+        "contract": {"outcome": "", "verification": "Run the checks",
+                     "constraints": "", "boundaries": "", "stop_when": ""},
+        "subgoals": ["Keep existing data"],
+    },
+    "plan_path": None,
+}
+```
+
+Each call receives a fresh deep copy. Treat it as read-only input: changing it does
+not modify the host's todo list, persisted goal, or later snapshots. `goal` is `None`
+when there is no active or paused goal or its database is unavailable. `plan_path`
+remains `None` until the host tracks an active plan pointer. The snapshot comes from
+the owning agent's session database, with the active profile's goal loader used when
+the agent has no database handle.
+
+Only an explicitly named keyword opts in. A `compress(messages, **kwargs)` wrapper
+receives its existing kwargs so it can still forward to the built-in compressor.
+Legacy signatures and the built-in compressor keep their existing call and output
+contracts. This snapshot does not alter the system prompt or fold extra transcript rows.
+
 ## Per-turn context selection and observation
 
 `compress()` answers "context is too long → make it shorter". Two optional,

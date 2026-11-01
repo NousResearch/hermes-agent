@@ -237,9 +237,11 @@ hermes update
 hermes profile list           # 显示所有 profile 及其状态
 hermes profile show coder     # 显示某个 profile 的详细信息
 hermes profile rename coder dev-bot   # 重命名（更新别名；移除旧名称的网关服务）
-hermes profile export coder   # 导出为 coder.tar.gz
-hermes profile import coder.tar.gz   # 从归档文件导入
+hermes profile export coder   # 打印保存的归档路径
+hermes profile import /path/to/export.tar.gz --name coder-copy   # 使用打印的路径和新的 profile 名称
 ```
+
+不指定 `-o` 时，CLI 通常会将归档保存到默认 Hermes 主目录下的 `profile-exports/` 中，文件名包含时间戳。请使用命令打印的路径，不要假设文件位于 `./coder.tar.gz`；自定义主目录的备用位置见[导出和导入 profile 文件（英文）](https://hermes-agent.nousresearch.com/docs/user-guide/profile-distributions#export-and-import-a-profile-file)。
 
 ## 删除 profile
 

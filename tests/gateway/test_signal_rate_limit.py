@@ -1,11 +1,15 @@
 """Tests for the SignalAttachmentScheduler token-bucket simulator."""
 import asyncio
+import threading
+import time
 
 import pytest
 
+from plugins.platforms.signal import signal_rate_limit as rate_limit_module
 from plugins.platforms.signal.signal_rate_limit import (
     SignalAttachmentScheduler,
     _reset_scheduler,
+    get_scheduler,
 )
 
 @pytest.fixture(autouse=True)
@@ -123,3 +127,33 @@ class TestFifoAcquire:
         # A had a full bucket (no wait). B waited a full refill.
         assert results[0][1] == 0.0
         assert results[1][1] == pytest.approx(s.capacity / s.refill_rate)
+
+
+def test_concurrent_first_touch_returns_one_instance(monkeypatch):
+    """Regression for #24744: racing first touches must converge on one scheduler."""
+    workers = 16
+    gate = threading.Barrier(workers)
+    constructed: list = []
+    real_cls = rate_limit_module.SignalAttachmentScheduler
+
+    class SlowScheduler(real_cls):  # type: ignore[valid-type, misc]
+        def __init__(self, *args, **kwargs):
+            time.sleep(0.05)  # health: allow HX013 -- holding the check-then-act window open is the behaviour under test
+            super().__init__(*args, **kwargs)
+            constructed.append(1)
+
+    monkeypatch.setattr(rate_limit_module, "SignalAttachmentScheduler", SlowScheduler)
+    results: list = []
+
+    def worker():
+        gate.wait(timeout=10)  # release every thread into get_scheduler at once
+        results.append(get_scheduler())
+
+    threads = [threading.Thread(target=worker) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert len(constructed) == 1, f"built {len(constructed)} schedulers"
+    assert len({id(r) for r in results}) == 1

@@ -2869,6 +2869,8 @@ export interface Translations extends NoticeTranslations {
       deleted: string
       untitledChat: (id: string) => string
       messageCount: (count: number) => string
+      branchCount: (count: number) => string
+      toggleBranches: (open: boolean) => string
       todoProgress: string
       ageNow: string
       ageDay: string

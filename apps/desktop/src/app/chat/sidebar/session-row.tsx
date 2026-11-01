@@ -11,6 +11,7 @@ import { openSession } from '@/app/open-session'
 import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { RowButton } from '@/components/ui/row-button'
 import { OverflowTip, Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
@@ -82,6 +83,13 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
    *  model · size footer. The flat recents list opts in via the filter menu;
    *  dense tree surfaces (projects, messaging, pins) keep the one-line row. */
   card?: boolean
+  /** Number of branch children nested under this session — present on parent
+   *  rows that can fold their branches away. */
+  childCount?: number
+  /** Branch children are currently folded away (only meaningful with childCount). */
+  collapsed?: boolean
+  /** Toggle the branch fold (only meaningful with childCount). */
+  onToggleCollapse?: () => void
 }
 
 const AGE_KEY = { day: 'ageDay', hour: 'ageHour', minute: 'ageMin' } as const
@@ -142,6 +150,9 @@ function SidebarSessionRowImpl({
   dragHandleProps,
   showProfile = false,
   card = false,
+  childCount,
+  collapsed,
+  onToggleCollapse,
   className,
   style,
   ref,
@@ -292,6 +303,36 @@ function SidebarSessionRowImpl({
     <SidebarRowLeadGlyph className="text-(--ui-text-quaternary)">
       <Codicon name="archive" size="0.75rem" />
     </SidebarRowLeadGlyph>
+  ) : null
+
+  // Parent rows with branches trade the status dot for a fold caret. It's a
+  // span, not a button: the lead lives inside the row's own <button> body, and
+  // a nested button would be invalid. Clicks stop propagation so the caret
+  // never resumes the parent; `data-row-actions` keeps the shell's session-drag
+  // off it, while the reorderable lead's own dnd-kit handle still catches
+  // pointerdown (bubbled) so dragging a parent row keeps working.
+  const branchFold = childCount ? (
+    <span
+      aria-expanded={!collapsed}
+      aria-label={r.toggleBranches(!collapsed)}
+      className="grid size-3.5 shrink-0 place-items-center rounded-[4px] text-(--ui-text-tertiary) transition-colors hover:text-foreground"
+      data-row-actions
+      onClick={event => {
+        event.stopPropagation()
+        onToggleCollapse?.()
+      }}
+      onKeyDown={event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          event.stopPropagation()
+          onToggleCollapse?.()
+        }
+      }}
+      role="button"
+      tabIndex={0}
+    >
+      <DisclosureCaret open={!collapsed} size="0.625rem" />
+    </span>
   ) : null
 
   // The trailing metadata sits in normal flow and the kebab lifts out of it,
@@ -500,18 +541,19 @@ function SidebarSessionRowImpl({
           {(() => {
             const leadNode = reorderable ? (
               <SidebarRowGrab ariaLabel={handleLabel} dragging={dragging} dragHandleProps={dragHandleProps}>
-                {lead ?? (
-                  <SessionStatusDot
-                    branchStem={branchStem}
-                    className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
-                    session={session}
-                    storedSessionId={session.id}
-                  />
-                )}
+                {lead ??
+                  (branchFold ?? (
+                    <SessionStatusDot
+                      branchStem={branchStem}
+                      className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
+                      session={session}
+                      storedSessionId={session.id}
+                    />
+                  ))}
               </SidebarRowGrab>
             ) : (
               <SidebarRowLead className="overflow-hidden">
-                {lead ?? <SessionStatusDot branchStem={branchStem} session={session} storedSessionId={session.id} />}
+                {lead ?? (branchFold ?? <SessionStatusDot branchStem={branchStem} session={session} storedSessionId={session.id} />)}
               </SidebarRowLead>
             )
 
@@ -552,6 +594,16 @@ function SidebarSessionRowImpl({
                         </SidebarRowLabel>
                       </OverflowTip>
                     </RowButton>
+                    {collapsed && childCount ? (
+                      <span
+                        className={cn(
+                          'mt-0.5 block truncate text-[0.625rem] text-(--ui-text-tertiary)',
+                          SIDEBAR_TRUNCATED_LEADING
+                        )}
+                      >
+                        {r.branchCount(childCount)}
+                      </span>
+                    ) : null}
                     {/* Session-list density (#68119): comfortable adds one
                         deterministic metadata line; detailed adds the initial
                         request preview. Compact keeps today's one-line row. */}
@@ -623,6 +675,16 @@ function SidebarSessionRowImpl({
                       </SidebarRowLabel>
                     </OverflowTip>
                   </RowButton>
+                  {collapsed && childCount ? (
+                    <span
+                      className={cn(
+                        'min-w-0 truncate text-[0.625rem] text-(--ui-text-tertiary)',
+                        SIDEBAR_TRUNCATED_LEADING
+                      )}
+                    >
+                      {r.branchCount(childCount)}
+                    </span>
+                  ) : null}
                   {session.preview && rowMeta.includes('preview') ? (
                     <span
                       className={cn(
@@ -678,6 +740,8 @@ function rowPropsEqual(a: SidebarSessionRowProps, b: SidebarSessionRowProps): bo
     a.isSelected === b.isSelected &&
     a.unread === b.unread &&
     a.branchStem === b.branchStem &&
+    a.childCount === b.childCount &&
+    a.collapsed === b.collapsed &&
     a.reorderable === b.reorderable &&
     a.dragging === b.dragging &&
     a.showProfile === b.showProfile &&

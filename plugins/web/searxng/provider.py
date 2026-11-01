@@ -21,12 +21,15 @@ class SearXNGWebSearchProvider(BaseWebSearchProvider):
     DISPLAY_NAME = "SearXNG"
     KEY_ENV = "SEARXNG_URL"
 
-    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
+    def search(self, query: str, limit: int = 5, categories: list[str] | None = None) -> dict[str, Any]:
         base_url = provider_env("SEARXNG_URL").rstrip("/")
         if not base_url:
             return search_fail("SEARXNG_URL is not set")
+        params = {"q": query, "format": "json", "pageno": 1}
+        if categories:
+            params["categories"] = ",".join(categories)
         data, failure = http_get_json(
-            "SearXNG", f"{base_url}/search", params={"q": query, "format": "json", "pageno": 1},
+            "SearXNG", f"{base_url}/search", params=params,
             headers={"Accept": "application/json"}, timeout=15, logger=logger, reach_target=f"SearXNG at {base_url}",
         )
         if failure is not None:

@@ -149,6 +149,52 @@ def test_managed_scope_pins_host_isolation_over_the_profiles_own_config(tmp_path
             host.shutdown()
         managed_scope.invalidate_managed_cache()
 
+WORKER_PLUGIN = '''
+import json
+from threading import Event
+from hermes_constants import get_hermes_home
+
+def register(ctx):
+    scope = ctx.worker_scope(timeout=0.5)
+    seen, started = {}, Event()
+    def consume(stop):
+        seen["home"] = str(get_hermes_home())
+        started.set()
+        stop.wait()
+    scope.start_thread(consume, name="host-worker-probe")
+    assert started.wait(2)
+    assert scope.activate()
+    ctx.register_tool(name="worker_status", toolset="workerprobe",
+        schema={"name": "worker_status", "description": "Worker lifecycle probe",
+                "parameters": {"type": "object", "properties": {}}},
+        handler=lambda args, **kw: json.dumps({"id": scope.instance_id,
+                "active": scope.is_active(), "home": seen["home"]}))
+'''
+
+
+@pytest.mark.platforms("any")
+def test_host_worker_scope_survives_rpc_boundary_and_force_reload(tmp_path, monkeypatch):
+    from tools.registry import registry
+
+    home = _home_with_plugins(tmp_path, monkeypatch, {"workerprobe": WORKER_PLUGIN})
+    manager = PluginManager()
+    try:
+        manager.discover_and_load()
+        assert manager._plugins["workerprobe"].error is None
+        first = json.loads(registry.dispatch("worker_status", {}, scope=manager.scope_key))
+        assert first["active"] is True
+        assert first["home"] == str(home)
+        manager.discover_and_load(force=True)
+        assert manager._plugins["workerprobe"].error is None
+        second = json.loads(registry.dispatch("worker_status", {}, scope=manager.scope_key))
+        assert second["active"] is True
+        assert second["id"] != first["id"]
+        assert second["home"] == str(home)
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+
+
 MODEL_PROVIDER_PLUGIN = '''
 import os
 from providers import register_provider

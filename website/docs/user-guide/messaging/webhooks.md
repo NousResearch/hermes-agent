@@ -360,6 +360,13 @@ The `deliver` field controls where the agent's response goes after processing th
 
 For cross-platform delivery, the target platform must also be enabled and connected in the gateway. If no `chat_id` is provided in `deliver_extra`, the response is sent to that platform's configured home channel.
 
+For immediate agent runs, an invalid destination returns HTTP 422 with instructions to correct
+`deliver` and `deliver_extra`. Use `deliver: telegram` with `deliver_extra.chat_id`, not
+`deliver: telegram:123`. Correct the route before resending the delivery. Temporary admission
+failures still return HTTP 503. Coalesced requests have already received their HTTP 202 response;
+if destination validation later fails, the gateway logs the failure and releases the batch's
+delivery IDs so they can be resent after the route is corrected.
+
 ### Replying to a delivery {#replying-to-a-delivery}
 
 By default a delivery is fire-and-forget: each webhook event runs in its own session, so if you reply to the delivered message in that chat, the agent there has no record of what was sent. Set `mirror_to_session: true` on the route (or pass `--mirror-to-session` to `hermes webhook subscribe`) and the delivered text is also appended to the target chat's session as `[Webhook delivery: <route>]` followed by the message, so a follow-up ("so he's out?") has the context.

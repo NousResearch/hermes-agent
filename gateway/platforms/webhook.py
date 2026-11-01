@@ -753,6 +753,9 @@ class WebhookAdapter(BasePlatformAdapter):
                                               route_name=route_name, profile=profile, event_type=event_type)
         if outcome is None:
             return _json_error("Admission unavailable; retry this delivery", 503)
+        if outcome == "invalid_destination":
+            return _json_error("Invalid webhook destination; correct the route's deliver and deliver_extra settings. "
+                               "Use a bare platform name with deliver_extra.chat_id for chat delivery.", 422)
         if outcome == "duplicate":
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
         return web.json_response({"status": "accepted", "route": route_name, "event": event_type,
@@ -767,7 +770,7 @@ class WebhookAdapter(BasePlatformAdapter):
         async def _admit_or_log():
             outcome = await self._admit_agent_run(payload, prompt, delivery_id, now, route_config=route_config,
                                                   route_name=route_name, profile=profile, event_type=event_type)
-            if outcome is None:
+            if outcome in (None, "invalid_destination"):
                 logger.error("[webhook] Coalesced delivery %s on route %s was not admitted", delivery_id, route_name)
                 for released in (*superseded, delivery_id):
                     self._seen_deliveries.pop(_WebhookDeliveryIdentity.from_parts(profile, route_name, released), None)
@@ -794,7 +797,8 @@ class WebhookAdapter(BasePlatformAdapter):
     async def _admit_agent_run(self, payload: Any, prompt: str, delivery_id: str, now: float, *, route_config: dict,
                                route_name: str, profile, event_type: str) -> Optional[str]:
         """Record delivery info and admit the run through the durable producer (shared by the immediate
-        and coalesced paths). ``"accepted"`` / ``"duplicate"``, or None when admission failed."""
+        and coalesced paths). ``"accepted"`` / ``"duplicate"`` / ``"invalid_destination"``,
+        or None when admission is unavailable."""
         # (profile, route, delivery_id) in the session key → concurrent webhooks get independent runs.
         identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
         session_chat_id = identity.session_chat_id
@@ -812,8 +816,12 @@ class WebhookAdapter(BasePlatformAdapter):
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id, timestamp=datetime.fromtimestamp(0, UTC))
         from gateway.platforms.webhook_ingress import admit_producer
+        from gateway.platforms.webhook_delivery import InvalidWebhookDestination
         try:
             receipt = await admit_producer(self, event)
+        except InvalidWebhookDestination:
+            logger.warning("[webhook] Invalid destination for route %s; correct deliver and deliver_extra", route_name)
+            return "invalid_destination"
         except Exception:
             logger.exception("[webhook] Durable admission failed for %s", delivery_id)
             return None

@@ -1731,16 +1731,23 @@ class GatewayStartupMixin:
             connected_count, enabled_platform_count, startup_retryable_errors, startup_nonretryable_errors
         ):
             return True
+        # The drain watcher only starts after startup restore has admitted the queued inbound, so
+        # a marker already present must gate those turns and the first published state itself.
+        from gateway.drain_control import drain_requested
+        drain_at_start = await asyncio.to_thread(drain_requested)
         if await self._abort_startup_if_shutdown_requested():
             return True
         self.delivery_router.adapters = self.adapters
         self._wire_teams_pipeline_runtime()
         self._running = True
         self._install_plugin_message_injector()
-        # A boot that could not start every configured platform is not a normal run: stamp ``degraded``
-        # so ``gateway status`` / /api/status / the health snapshot surface it, instead of only a log
-        # line next to "Gateway running with N platform(s)".
-        self._update_runtime_status(self._serving_state())
+        if drain_at_start:
+            self._enter_external_drain()
+        else:
+            # A boot that could not start every configured platform is not a normal run: stamp ``degraded``
+            # so ``gateway status`` / /api/status / the health snapshot surface it, instead of only a log
+            # line next to "Gateway running with N platform(s)".
+            self._update_runtime_status(self._serving_state())
         await self._start_finish_wiring(connected_count)
         self._start_spawn_background_watchers()
         from hermes_cli.observability.shared_metrics_startup import record_process_ready

@@ -376,13 +376,9 @@ class HostRuntime:
 
     def op_config_schema(self, params: dict[str, Any]) -> Any:
         """A memory provider's ``config_schema.py`` ``CONFIG_SCHEMA`` (user code: it runs here)."""
-        path = Path(str(params["path"]))
-        spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_schema.{path.parent.name}", path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"cannot load {path}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return encode(getattr(module, "CONFIG_SCHEMA", None))
+        from plugins.memory.config_schema import load_config_schema_file
+
+        return encode(load_config_schema_file(Path(str(params["path"]))))
 
     def op_obj_setattr(self, params: dict[str, Any]) -> None:
         obj = self.refs.get(int(params["ref"]))

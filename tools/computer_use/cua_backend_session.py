@@ -167,6 +167,29 @@ def _is_ended_session_result(result: Any) -> bool:
             and ("has ended" in message or "session ended" in message))
 
 
+def _setup_error_detail(exc: BaseException) -> str:
+    """One-line root cause for a failed session setup.
+
+    The MCP session is opened inside an anyio TaskGroup, so ``_setup_error`` is usually a
+    ``(Base)ExceptionGroup``. Its ``str()`` is the useless ``"unhandled errors in a TaskGroup (1
+    sub-exception)"`` — which told the user and the model nothing while the driver had already
+    said exactly what was wrong (``incompatible daemon: contract version 0.8.0 does not match SDK
+    0.7.0``). Unwrap to the leaf, and name the fix when the leaf is a driver/SDK contract skew.
+    """
+    from tools.mcp_tool_errors import _unwrap_exception_group
+
+    # Deliberately not wrapped in try/except: the shared unwrapper re-raises a
+    # KeyboardInterrupt/SystemExit leaf rather than flattening it into an error string,
+    # and that contract should hold here too.
+    root = _unwrap_exception_group(exc)
+    detail = f"{type(root).__name__}: {root}".strip().rstrip(":")
+    low = detail.lower()
+    if "contract version" in low and "does not match" in low:
+        detail += (" — the cua-driver daemon and the SDK are on different contracts; run "
+                   "`cua-driver update`, then `hermes computer-use doctor`")
+    return detail
+
+
 class _CuaDriverSession:
     """Holds the mcp ClientSession. Spawned lazily; re-entered on drop. Lifecycle ownership: one long-running
     coroutine (`_lifecycle_coro`) opens the stdio_client + ClientSession contexts, populates capabilities, sets
@@ -309,7 +332,11 @@ class _CuaDriverSession:
                 f"{getattr(self, '_startup_phase', 'unknown')}). Run `hermes computer-use doctor` and check "
                 f"{display_hermes_home()}/logs/agent.log for the phase timings.")
         if self._setup_error is not None:
-            raise RuntimeError(f"cua-driver session setup failed: {self._setup_error}") from self._setup_error
+            raise RuntimeError(
+                f"cua-driver session setup failed (phase: "
+                f"{getattr(self, '_startup_phase', 'unknown')}): "
+                f"{_setup_error_detail(self._setup_error)}"
+            ) from self._setup_error
         self._transport_generation += 1
         if self._transport_generation > 1:
             self._notify_transport_reset()

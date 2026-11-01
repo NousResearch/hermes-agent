@@ -1,6 +1,7 @@
 """Toolset helpers: get/resolve/validate named tool groups (static TOOLSETS + registry-registered)."""
 
 from typing import Dict, List, Any, Set, Optional, Tuple
+from tools import jackson_toolset
 
 
 # Shared tool list for CLI and all messaging platform toolsets (edit once, all
@@ -166,6 +167,9 @@ TOOLSETS = {
     "yuanbao": _ts("Yuanbao platform tools - group info, member queries, DM, stickers", _YUANBAO_TOOLS),
     "feishu_doc": _ts("Read Feishu/Lark document content", ["feishu_doc_read"]),
     "feishu_drive": _ts("Feishu/Lark document comment operations (list, reply, add)", _FEISHU_TOOLS[1:]),
+
+    # OSM-specific custom toolsets
+    "jackson": jackson_toolset.get_jackson_toolset(),
 
     # Scenario-specific toolsets
     "debugging": _ts("Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file"]),

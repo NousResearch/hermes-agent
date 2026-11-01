@@ -411,6 +411,36 @@ class TestSubcommandCompletion:
         texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff ")}
         assert texts == {"telegram", "discord"}
 
+    def test_resume_completions(self, monkeypatch):
+        fake_sessions = [
+            {"id": "s1", "title": "Build Discord Bot", "last_active": 100, "message_count": 5},
+            {"id": "s2", "title": "Fix Auth Bug", "last_active": 200, "message_count": 2},
+        ]
+        class FakeDB:
+            def session_lifecycle_statuses(self, ids):
+                return {"s1": "complete", "s2": "error"}
+            def close(self):
+                pass
+        class FakeReader:
+            def list_sessions_rich(self, limit=25):
+                return fake_sessions
+
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: type("P", (), {"exists": lambda self: True, "__truediv__": lambda self, x: self})())
+        monkeypatch.setattr("hermes_state.SessionDB", lambda db_path, read_only=True: FakeDB())
+        monkeypatch.setattr("hermes_cli.sessions_cmd._surface_reader", lambda db: FakeReader())
+
+        completions = _completions(SlashCommandCompleter(), "/resume ")
+        assert len(completions) == 2
+        assert completions[0].text == '"Build Discord Bot"'
+        assert completions[0].display_text == "Build Discord Bot"
+        assert "5 msgs" in completions[0].display_meta_text
+
+        # Filter by sub-text
+        filtered = _completions(SlashCommandCompleter(), "/resume Auth")
+        assert len(filtered) == 1
+        assert filtered[0].text == '"Fix Auth Bug"'
+        assert filtered[0].display_text == "Fix Auth Bug"
+
 
 # ── Ghost text (SlashCommandAutoSuggest) ────────────────────────────────
 

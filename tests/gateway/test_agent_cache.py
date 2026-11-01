@@ -122,6 +122,40 @@ class TestAgentConfigSignature:
         )
         assert sig1 != sig2
 
+    @pytest.mark.parametrize("key,value", [
+        ("memory_char_limit", 15_000),
+        ("user_char_limit", 8_000),
+        ("memory_enabled", False),
+        ("user_profile_enabled", False),
+        ("nudge_interval", 20),
+    ])
+    def test_builtin_memory_config_change_busts_cache(self, key, value):
+        """A live session must rebuild the store after a memory config edit."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "provider": "p"}
+        before = GatewayRunner._extract_cache_busting_config({})
+        after = GatewayRunner._extract_cache_busting_config({"memory": {key: value}})
+        assert GatewayRunner._agent_config_signature("m", runtime, [], "", cache_keys=before) != (
+            GatewayRunner._agent_config_signature("m", runtime, [], "", cache_keys=after)
+        )
+
+    def test_gateway_config_edit_changes_memory_cache_signature(self, tmp_path):
+        """The next turn reads the edited config file before checking agent reuse."""
+        from gateway.run import GatewayRunner, _load_gateway_config
+
+        config_path = tmp_path / "config.yaml"
+
+        def signature():
+            config = _load_gateway_config(config_path)
+            keys = GatewayRunner._extract_cache_busting_config(config)
+            return GatewayRunner._agent_config_signature("m", {"api_key": "k"}, [], "", cache_keys=keys)
+
+        config_path.write_text("memory:\n  memory_char_limit: 10000\n", encoding="utf-8")
+        before = signature()
+        config_path.write_text("memory:\n  memory_char_limit: 15000\n", encoding="utf-8")
+        assert signature() != before
+
     def test_cache_keys_key_order_does_not_matter(self):
         """Signature must be stable regardless of dict key insertion order."""
         from gateway.run import GatewayRunner

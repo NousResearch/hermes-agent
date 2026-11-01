@@ -661,6 +661,42 @@ def _json_object(raw: Optional[str]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def pending_completions(*, limit: int = 50) -> list[dict[str, Any]]:
+    """Completions the parent never received, newest first, with their full results.
+
+    A detached child's result can fail to reach its parent: when the session route cannot be
+    resolved the delivery is deferred instead of failing, so the row stays pending forever and no
+    notification arrives. The durable row still holds the whole answer, and this is the way to read
+    it. ``redact_child_result`` is applied exactly as ``failed_delegations_for_session`` does.
+    """
+    if not _db_path().exists():
+        return []
+    with _DB_LOCK, _transaction() as conn:
+        rows = conn.execute(
+            """SELECT delegation_id, state, delivery_state, delivery_attempts, dispatched_at,
+                      completed_at, task_json, result_json FROM async_delegations
+               WHERE delivery_state IN ('pending', 'dropped') AND event_json IS NOT NULL
+               ORDER BY COALESCE(completed_at, dispatched_at) DESC LIMIT ?""", (limit,)).fetchall()
+    pending: list[dict[str, Any]] = []
+    for (delegation_id, state, delivery_state, attempts, dispatched_at,
+         completed_at, task_json, result_json) in rows:
+        task, result = _json_object(task_json), redact_child_result(_json_object(result_json))
+        goals = task.get("goals") if isinstance(task.get("goals"), list) and task["goals"] else [task.get("goal") or ""]
+        results = result.get("results") if isinstance(result.get("results"), list) else [result]
+        pending.append({
+            "delegation_id": delegation_id,
+            "state": state,
+            "delivery_state": delivery_state,
+            "delivery_attempts": attempts or 0,
+            "dispatched_at": dispatched_at,
+            "completed_at": completed_at,
+            "goals": goals,
+            "results": results,
+            "error": result.get("error"),
+        })
+    return pending
+
+
 def failed_delegations_for_session(
     origin_ui_session_id: str = "", parent_session_id: str = "", *, limit: int = 20, now: Optional[float] = None,
 ) -> list[dict[str, Any]]:

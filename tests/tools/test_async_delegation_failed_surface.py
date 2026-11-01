@@ -61,3 +61,45 @@ def test_other_sessions_and_old_failures_stay_out():
 
     assert ad.failed_delegations_for_session("ui-1", "agent-1") == []
     assert ad.failed_delegations_for_session() == []
+
+
+# ---------------------------------------------------------------------------
+# Undelivered completions
+# ---------------------------------------------------------------------------
+# When the session route cannot be resolved the delivery is deferred instead of failing, so the row
+# stays pending forever and no notification arrives. ``pending_completions`` reads those rows out.
+
+
+def test_a_completion_the_parent_never_received_is_listed_with_its_whole_result():
+    body = "finding " * 500
+    _delegation("d-stuck", status="completed", is_batch=True, goals=["scan api", "scan web"], task_indexes=[0, 1],
+                result={"results": [{"task_index": 0, "status": "completed", "summary": body},
+                                    {"task_index": 1, "status": "completed", "summary": "short"}]})
+
+    [row] = ad.pending_completions()
+    assert row["delegation_id"] == "d-stuck"
+    assert row["delivery_state"] == "pending" and row["delivery_attempts"] == 0
+    assert row["goals"] == ["scan api", "scan web"]
+    assert row["results"][0]["summary"] == body, "the whole answer, not an elided prefix"
+
+
+def test_a_claimed_and_delivered_completion_drops_off_the_list():
+    _delegation("d-gone", status="completed", goal="done", result={"status": "completed", "summary": "ok"})
+    assert ad.mark_completion_delivered("d-gone")
+
+    assert ad.pending_completions() == []
+
+
+def test_an_in_flight_claim_keeps_the_row_listed():
+    _delegation("d-flight", status="completed", goal="mid", result={"status": "completed", "summary": "x"})
+    assert ad.claim_completion_delivery("d-flight", "claim-1")
+
+    assert [r["delegation_id"] for r in ad.pending_completions()] == ["d-flight"]
+
+
+def test_pending_completions_redacts_like_the_failed_surface():
+    _delegation("d-secret", status="completed", goal="leak", result={
+        "status": "completed", "summary": "used key sk-ant-api03-" + "A" * 40})
+
+    [row] = ad.pending_completions()
+    assert "sk-ant-api03-" not in (row["results"][0].get("summary") or "")

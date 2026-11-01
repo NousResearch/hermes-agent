@@ -37,7 +37,19 @@ _CRON_THREAT_PATTERNS = [
 # Looser set for the assembled prompt: command-shape patterns are dropped because skill
 # markdown (postmortems, runbooks) legitimately *describes* those commands and skill bodies
 # are vetted at install time — only unambiguous injection directives remain.
-_CRON_SKILL_ASSEMBLED_PATTERNS = _CRON_THREAT_PATTERNS[:4]
+# `deception_hide` is additionally downgraded to WARN on this path (#105877): "do not tell
+# the user …" is also how skill authors PRESCRIBE honesty ("do not tell the user fruit
+# auto-lands" = never lie to the operator), so a blocklist cannot tell them apart and the
+# block killed real jobs on every tick. The hard block stays on user-authored text:
+# `_scan_cron_prompt` blocks it at create/update time, and the runtime loose path still
+# strict-scans the raw user prompt (see `_scan_assembled_cron_prompt`).
+_CRON_SKILL_ASSEMBLED_PATTERNS = [
+    (pattern, pid) for pattern, pid in _CRON_THREAT_PATTERNS[:4] if pid != "deception_hide"
+]
+# Matched but only logged on the assembled path (regex kept in lockstep with the strict set).
+_CRON_SKILL_WARN_PATTERNS = [
+    (pattern, pid) for pattern, pid in _CRON_THREAT_PATTERNS[:4] if pid == "deception_hide"
+]
 
 _CRON_SECRET_VAR_RE = r'\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)\w*\}?'
 # Obvious leak paths only: secret in the destination URL, in a POST/form body, or in an
@@ -133,7 +145,12 @@ def _scan_cron_prompt(prompt: str) -> str:
 def _scan_cron_skill_assembled(assembled: str) -> tuple[str, str]:
     """Loose scan of the ASSEMBLED prompt (skill content included). Invisible unicode is
     SANITIZED (stripped + logged), not blocked — the hard block stays on raw user prompts,
-    the actual injection surface. Returns ``(cleaned_prompt, error)``, error "" when passed."""
+    the actual injection surface. Returns ``(cleaned_prompt, error)``, error "" when passed.
+
+    `deception_hide` matches are logged as warnings instead of blocking (#105877): the
+    phrase is indistinguishable from an honesty rule in vetted skill prose, and a hard
+    block killed jobs on every tick. The strict `_scan_cron_prompt` still hard-blocks it
+    on user-authored text (create/update + runtime user-prompt re-scan)."""
     cleaned, removed = _strip_invisible_unicode(assembled)
     if removed:
         logger.warning(
@@ -141,4 +158,12 @@ def _scan_cron_skill_assembled(assembled: str) -> tuple[str, str]:
             "char(s) (%s) from vetted skill content",
             len(removed), ", ".join(removed),
         )
-    return cleaned, _first_pattern_error(_strip_cron_safe_constructs(cleaned), _CRON_SKILL_ASSEMBLED_PATTERNS)
+    scanned = _strip_cron_safe_constructs(cleaned)
+    for pattern, pid in _CRON_SKILL_WARN_PATTERNS:
+        if re.search(pattern, scanned, re.IGNORECASE):
+            logger.warning(
+                "Cron skill-assembled prompt: warn-only threat pattern '%s' matched in "
+                "vetted skill content (hard block applies to user-authored prompts only)",
+                pid,
+            )
+    return cleaned, _first_pattern_error(scanned, _CRON_SKILL_ASSEMBLED_PATTERNS)

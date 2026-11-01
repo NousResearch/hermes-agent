@@ -20,9 +20,11 @@ def _model(
     sizes: Optional[dict[str, Any]] = None, defaults: dict[str, Any], supports: set,
     edit_endpoint: Optional[str] = None, edit_supports: Optional[set] = None,
     max_reference_images: Optional[int] = None, edit_image_param: Optional[str] = None,
+    edit_prompt_param: Optional[str] = None,
 ) -> dict[str, Any]:
     """Build one catalog entry; edit keys are present only for edit-capable models. ``edit_image_param``
-    names the source-image key when the edit endpoint takes a singular ``image_url`` instead of ``image_urls``."""
+    names the source-image key when the edit endpoint takes a singular ``image_url`` instead of ``image_urls``;
+    ``edit_prompt_param`` names the text key when the edit endpoint does not call it ``prompt``."""
     entry: dict[str, Any] = {
         "display": display, "speed": speed, "strengths": strengths, "price": price,
         "size_style": style, "sizes": sizes if sizes is not None else _DEFAULT_SIZES[style],
@@ -34,6 +36,8 @@ def _model(
         entry["max_reference_images"] = max_reference_images
         if edit_image_param:
             entry["edit_image_param"] = edit_image_param
+        if edit_prompt_param:
+            entry["edit_prompt_param"] = edit_prompt_param
     return entry
 
 
@@ -376,6 +380,19 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
         edit_endpoint="meta/muse-image/edit",
         edit_supports={"prompt", "image_urls", "num_images", "output_format", "sync_mode"},
         max_reference_images=10,
+    ),
+    # Bria FIBO 2.0: trained only on licensed data (commercial rights), $0.04/image at ~1MP. The edit
+    # endpoint calls its text `instruction` (not `prompt`), takes 1-4 `image_urls` and keeps the first
+    # image's ratio when aspect_ratio is unset. Prompts are expanded server-side into a JSON "VGL" scene
+    # description that comes back alongside the image; `style` presets are left to the endpoint default.
+    "bria/fibo-2/generate": _model(
+        "Bria FIBO 2.0", "~5s", "Bria. Licensed-data training (commercial-safe), knowledge-heavy prompts", "$0.04/image",
+        style="aspect_ratio",
+        defaults={},
+        supports={"prompt", "aspect_ratio", "seed", "sync_mode"},
+        edit_endpoint="bria/fibo-2/edit",
+        edit_supports={"instruction", "image_urls", "seed", "sync_mode"},
+        max_reference_images=4, edit_prompt_param="instruction",
     ),
 }
 

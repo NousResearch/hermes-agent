@@ -354,6 +354,7 @@ def _init_session(
             # Async events go to the transport that created the session (stdio for Ink, WS for the dashboard).
             "transport": current_transport() or _stdio_transport,
             "auth_user_id": _transport_auth_user_id(current_transport()),
+            "auth_owner": _transport_owner_stamp(current_transport()),
         }
         _session_todo_state(_sessions[sid])
     _hydrate_session_cwd(sid, key, session_db, profile_home)
@@ -475,6 +476,7 @@ def _deferred_session_record(
         "tool_started_at": {}, "todo_state": todo_state,
         "transport": current_transport() or _stdio_transport,
         "auth_user_id": _transport_auth_user_id(current_transport()),
+        "auth_owner": _transport_owner_stamp(current_transport()),
     }
 
 

@@ -14,6 +14,7 @@ const SOURCE_LABELS: Record<string, string> = {
   local: 'Local',
   matrix: 'Matrix',
   mattermost: 'Mattermost',
+  onebot: 'QQ (OneBot)',
   oneshot: 'One-shot',
   photon: 'Photon',
   qqbot: 'QQ',
@@ -34,6 +35,7 @@ const SOURCE_ALIASES: Record<string, string[]> = {
   cli: ['terminal'],
   desktop: ['app', 'gui'],
   local: ['machine'],
+  onebot: ['qq', 'napcat'],
   qqbot: ['qq'],
   telegram: ['tg'],
   tui: ['terminal'],
@@ -80,6 +82,9 @@ export const MESSAGING_SESSION_SOURCE_IDS = [
   'weixin',
   'wecom',
   'qqbot',
+  // Plugin-registered gateway platforms are messaging platforms too: an OneBot v11
+  // adapter (kind: platform) gets its own self-managed sidebar section.
+  'onebot',
   'yuanbao',
   'dingtalk',
   'feishu'

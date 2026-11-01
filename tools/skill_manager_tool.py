@@ -12,6 +12,7 @@ import hashlib
 import json
 from contextlib import ExitStack, suppress
 import logging
+import os
 import re
 import shutil
 from pathlib import Path
@@ -124,10 +125,29 @@ def _check_identifier(value: str, label: str, invalid: str) -> Optional[str]:
 
 
 def _validate_name(name: str) -> Optional[str]:
-    if not name:
+    if not isinstance(name, str) or not name:
         return "Skill name is required."
     return _check_identifier(
         name, "Skill name", f"Invalid skill name '{name}'. {_NAME_RULE} Must start with a letter or digit.")
+
+
+def _validate_skill_reference(name: str) -> Optional[str]:
+    """Validate a bare name or the safe ``category/name`` lookup form.
+
+    Mutation hooks may hand ``name`` to another filesystem.  Validate every
+    path component before a callback sees it so a categorized lookup cannot
+    smuggle an absolute path or ``..`` through an otherwise-valid basename.
+    """
+    if not isinstance(name, str) or not name:
+        return "Skill name is required."
+    normalized = name.replace("\\", "/")
+    parts = normalized.split("/")
+    if normalized.startswith("/") or any(part in {"", ".", ".."} for part in parts):
+        return f"Invalid skill name '{name}'. Path traversal and absolute paths are not allowed."
+    for part in parts:
+        if err := _validate_name(part):
+            return err
+    return None
 
 
 def _validate_category(category: Optional[str]) -> Optional[str]:
@@ -405,13 +425,15 @@ def _locate_for_write(name: str, action: str, not_found_suffix: str = ""):
 
 
 def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label: str,
-                   content: str) -> Optional[dict[str, Any]]:
+                   content: str, *, read_guard_checked: bool = False) -> Optional[dict[str, Any]]:
     """Read-before-write guard (existing targets only), the description budget for the root SKILL.md
     (whichever action and file_path reach it), atomic write, then the security scan; a blocked scan
     restores the original (or unlinks a new file). Error dict or None."""
     original = None
     if target.exists():
-        if read_guard := _background_review_read_before_write_guard(name, target, action, label):
+        if (not read_guard_checked
+                and (read_guard := _background_review_read_before_write_guard(
+                    name, target, action, label))):
             return read_guard
         original = target.read_text(encoding="utf-8-sig")
     if target == skill_dir / "SKILL.md" and (err := _description_budget_error(content, before=original)):
@@ -427,6 +449,183 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     else:
         target.unlink(missing_ok=True)
     return _err(scan_error)
+
+
+def _run_pre_skill_hook(hook_name: str, *, allow_redirect: bool = False,
+                        require_handled_path: bool = False,
+                        **kwargs) -> Optional[Dict[str, Any]]:
+    """Resolve the first valid skill-hook directive; dispatch failures fail open.
+
+    Callback exceptions are already isolated by the plugin manager.  The outer
+    guard protects the discovery/dispatch layer itself so a broken plugin
+    runtime cannot turn a skill mutation into an unhandled tool exception.
+    """
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+        if not has_hook(hook_name):
+            return None
+        hook_results = invoke_hook(hook_name, **kwargs)
+    except Exception:
+        logger.warning("Skill hook dispatch failed for %s; continuing", hook_name, exc_info=True)
+        return None
+    for hook_result in hook_results:
+        if not isinstance(hook_result, dict):
+            continue
+        action = str(hook_result.get("action") or "").strip().lower()
+        if action == "block":
+            reason = hook_result.get("reason") or hook_result.get("message")
+            return {"action": "block", "reason": (
+                reason if isinstance(reason, str) and reason.strip()
+                else "Skill mutation blocked by plugin")}
+        if action == "handled":
+            if _skill_hook_batch_size.get() > 1:
+                return {"action": "block", "reason": (
+                    f"{hook_name} returned action='handled' inside a multi-operation atomic batch; "
+                    "plugin-owned effects cannot be rolled back")}
+            path = hook_result.get("path")
+            if require_handled_path:
+                if not isinstance(path, (str, os.PathLike)) or not str(path).strip():
+                    return {"action": "block", "reason": (
+                        f"{hook_name} returned action='handled' without a non-empty path")}
+                expanded = Path(os.path.expandvars(os.path.expanduser(str(path))))
+                if not expanded.is_absolute():
+                    return {"action": "block", "reason": (
+                        f"{hook_name} returned action='handled' with a non-absolute path")}
+                path = str(expanded.resolve(strict=False))
+            return {"action": "handled", **(
+                {"path": str(path)} if isinstance(path, (str, os.PathLike)) and str(path) else {})}
+        if action == "redirect" and allow_redirect:
+            path = hook_result.get("path")
+            if not isinstance(path, (str, os.PathLike)) or not str(path).strip():
+                return {"action": "block", "reason": (
+                    f"{hook_name} returned action='redirect' without a non-empty path")}
+            return {"action": "redirect", "path": str(path)}
+    return None
+
+
+def _skill_hook_short_circuit(directive: Optional[Dict[str, Any]], message: str):
+    """Normalize block/handled directives to a tool result; redirect continues."""
+    if not directive:
+        return None
+    if directive["action"] == "block":
+        return _err(directive["reason"])
+    if directive["action"] == "handled":
+        return {
+            "success": True,
+            "message": message,
+            "hook_handled": True,
+            **({"path": directive["path"]} if directive.get("path") else {}),
+        }
+    return None
+
+
+def _resolve_skill_redirect(name: str, category: Optional[str], raw_path: str):
+    """Return a safe, discoverable create target or ``(None, error)``.
+
+    Redirects remain useful for configured shared/external skill roots, but
+    never write to an arbitrary plugin-selected directory.  The target must be
+    absolute, end in the requested skill name, and stay under a root already
+    visible to skill discovery (or the configured create root).
+    """
+    expanded = Path(os.path.expandvars(os.path.expanduser(raw_path)))
+    if not expanded.is_absolute():
+        return None, "Skill create redirect path must be absolute."
+    try:
+        target = expanded.resolve(strict=False)
+    except OSError as exc:
+        return None, f"Could not resolve skill create redirect path: {exc}"
+    if target.name != name:
+        return None, f"Skill create redirect path must end with '/{name}'."
+    from agent.skill_utils import get_all_skills_dirs
+    roots = list(get_all_skills_dirs()) + [_resolve_skill_dir(name, category).parent]
+    allowed = False
+    for root in roots:
+        try:
+            resolved_root = Path(root).resolve(strict=False)
+            if target != resolved_root and target.is_relative_to(resolved_root):
+                allowed = True
+                break
+        except (OSError, RuntimeError, ValueError):
+            continue
+    if not allowed:
+        return None, (
+            "Skill create redirect must stay under a configured skills root "
+            "(skills.create_dir or skills.external_dirs).")
+    return target, None
+
+
+_skill_post_hook_buffer: "_ctxvars.ContextVar[Optional[List[Tuple[str, Dict[str, Any]]]]]" = (
+    _ctxvars.ContextVar("skill_post_hook_buffer", default=None))
+
+
+def _run_post_skill_hook(hook_name: str, **kwargs) -> None:
+    """Emit one post hook, or buffer it until an atomic batch commits/rolls back."""
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+        if not has_hook(hook_name):
+            return
+        buffered = _skill_post_hook_buffer.get()
+        if buffered is not None:
+            buffered.append((hook_name, dict(kwargs)))
+            return
+        invoke_hook(hook_name, **kwargs)
+    except Exception:
+        logger.warning("Skill post hook dispatch failed for %s", hook_name, exc_info=True)
+
+
+def _flush_skill_post_hooks(events, *, batch_error: Optional[str] = None) -> None:
+    """Flush deferred batch observers once; rolled-back attempts report failure."""
+    for hook_name, payload in events:
+        if batch_error is not None:
+            payload = {**payload, "success": False, "error": batch_error}
+        _run_post_skill_hook(hook_name, **payload)
+
+
+def _skill_post_hook_payload(action: str, name: str, args: Dict[str, Any],
+                             result: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the documented exact payload for one completion observer."""
+    payload: Dict[str, Any] = {
+        "name": name,
+        "success": bool(result.get("success")),
+        "error": None if result.get("success") else str(result.get("error") or "unknown error"),
+    }
+    builder = _SKILL_POST_PAYLOAD_BUILDERS.get(action)
+    if builder is not None:
+        payload.update(builder(args, result))
+    return payload
+
+
+def _create_post_payload(args: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    path = result.get("path", "") if result.get("hook_handled") else ""
+    if result.get("success") and not result.get("hook_handled") and result.get("skill_md"):
+        path = str(Path(result["skill_md"]).parent.resolve(strict=False))
+    return {"category": args.get("category"), "path": str(path or "")}
+
+
+def _edit_post_payload(_args: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    return {"path": str(result.get("path") or "")}
+
+
+def _patch_post_payload(args: Dict[str, Any], _result: Dict[str, Any]) -> Dict[str, Any]:
+    return {"file_path": args.get("file_path"), "replace_all": bool(args.get("replace_all"))}
+
+
+def _supporting_file_post_payload(args: Dict[str, Any], _result: Dict[str, Any]) -> Dict[str, Any]:
+    return {"file_path": args.get("file_path")}
+
+
+def _delete_post_payload(args: Dict[str, Any], _result: Dict[str, Any]) -> Dict[str, Any]:
+    return {"absorbed_into": args.get("absorbed_into")}
+
+
+_SKILL_POST_PAYLOAD_BUILDERS = {
+    "create": _create_post_payload,
+    "edit": _edit_post_payload,
+    "patch": _patch_post_payload,
+    "write_file": _supporting_file_post_payload,
+    "remove_file": _supporting_file_post_payload,
+    "delete": _delete_post_payload,
+}
 
 
 def _add_description_prompt_preview(result: dict[str, Any], content: str) -> dict[str, Any]:
@@ -469,11 +668,39 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
     if err := (_validate_name(name) or _validate_category(category)
                or _validate_frontmatter(content) or _validate_content_size(content)):
         return _err(err)
+    directive = _run_pre_skill_hook(
+        "pre_skill_create:guard", allow_redirect=True, require_handled_path=True,
+        name=name, content=content, category=category)
+    if result := _skill_hook_short_circuit(
+            directive, f"Skill '{name}' created by plugin."):
+        return result
+    redirect_path = directive.get("path") if directive and directive["action"] == "redirect" else None
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
-    skill_dir = _resolve_skill_dir(name, category)
+
+    directive = _run_pre_skill_hook(
+        "pre_skill_create", allow_redirect=True, require_handled_path=True,
+        name=name, content=content, category=category)
+    if result := _skill_hook_short_circuit(
+            directive, f"Skill '{name}' created by plugin."):
+        return result
+    if directive and directive["action"] == "redirect":
+        redirect_path = directive["path"]
+
+    redirected = redirect_path is not None
+    if redirected:
+        skill_dir, redirect_error = _resolve_skill_redirect(name, category, redirect_path)
+        if redirect_error:
+            return _err(redirect_error)
+        assert skill_dir is not None
+    else:
+        skill_dir = _resolve_skill_dir(name, category)
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(skill_dir.parent)
+    if redirected and (skill_dir.exists() or skill_dir.is_symlink() or _is_path_redirect(skill_dir)):
+        return _err(
+            f"Cannot redirect skill '{name}' to {skill_dir}: the target already exists. "
+            "Redirect targets must be new so create and atomic rollback never remove pre-existing content.")
     try:
         skill_dir.mkdir(exist_ok=False)
     except FileExistsError:
@@ -508,11 +735,33 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
 
 def _edit_skill(name: str, content: str) -> dict[str, Any]:
     """Replace the SKILL.md of any existing skill (full rewrite)."""
-    if err := _validate_frontmatter(content) or _validate_content_size(content):
+    if err := (_validate_skill_reference(name) or _validate_frontmatter(content)
+               or _validate_content_size(content)):
         return _err(err)
+    directive = _run_pre_skill_hook(
+        "pre_skill_edit:guard", name=name, content=content)
+    if result := _skill_hook_short_circuit(
+            directive, f"Skill '{name}' edited by plugin."):
+        return result
     skill_dir, guard = _locate_for_write(name, "edit")
+    if guard:
+        return guard
+    assert skill_dir is not None
+    skill_md = skill_dir / "SKILL.md"
+    if read_guard := _background_review_read_before_write_guard(
+            name, skill_md, "edit", "SKILL.md"):
+        return read_guard
+    old_content = skill_md.read_text(encoding="utf-8-sig")
+    directive = _run_pre_skill_hook(
+        "pre_skill_edit", name=name, content=content, old_content=old_content)
+    if result := _skill_hook_short_circuit(
+            directive, f"Skill '{name}' edited by plugin."):
+        return result
+
     # SKILL.md always exists here (_find_skill requires it), so a blocked scan restores it.
-    if guard := guard or _guarded_write(name, skill_dir, skill_dir / "SKILL.md", "edit", "SKILL.md", content):
+    if guard := _guarded_write(
+            name, skill_dir, skill_md, "edit", "SKILL.md", content,
+            read_guard_checked=True):
         return guard
     result = {
         "success": True, "message": f"Skill '{name}' updated (full rewrite).",
@@ -523,15 +772,24 @@ def _edit_skill(name: str, content: str) -> dict[str, Any]:
 def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | None = None,
                  replace_all: bool = False) -> dict[str, Any]:
     """Targeted find-and-replace in SKILL.md (default) or a supporting file; unique match unless replace_all."""
+    if err := _validate_skill_reference(name):
+        return _err(err)
     if not old_string:
         return _err(_PATCH_NEEDS_OLD_STRING)
     if new_string is None:
         return _err(_PATCH_NEEDS_NEW_STRING)
     # No old_string == new_string guard here: fuzzy_find_and_replace rejects that with a
     # richer error (file_preview) this layer cannot produce.
+    directive = _run_pre_skill_hook(
+        "pre_skill_patch:guard", name=name, old_string=old_string, new_string=new_string,
+        file_path=file_path, replace_all=replace_all)
+    if result := _skill_hook_short_circuit(
+            directive, f"Skill '{name}' patched by plugin."):
+        return result
     skill_dir, guard = _locate_for_write(name, "patch")
     if guard:
         return guard
+    assert skill_dir is not None
     target_label = file_path or "SKILL.md"
     if file_path:
         target, err = _resolve_supporting_file(skill_dir, file_path)
@@ -539,6 +797,7 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
             return err
     else:
         target = skill_dir / "SKILL.md"
+    assert target is not None
     if not target.exists():
         return _err(f"File not found: {target.relative_to(skill_dir)}")
     if read_guard := _background_review_read_before_write_guard(name, target, "patch", target_label):
@@ -559,7 +818,15 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
         return _err(err)
     if not file_path and (err := _validate_frontmatter(new_content)):
         return _err(f"Patch would break SKILL.md structure: {err}")
-    if guard := _guarded_write(name, skill_dir, target, "patch", target_label, new_content):
+    directive = _run_pre_skill_hook(
+        "pre_skill_patch", name=name, old_string=old_string, new_string=new_string,
+        file_path=file_path, replace_all=replace_all)
+    if result := _skill_hook_short_circuit(
+            directive, f"Skill '{name}' patched by plugin."):
+        return result
+    if guard := _guarded_write(
+            name, skill_dir, target, "patch", target_label, new_content,
+            read_guard_checked=True):
         return guard
     result = {
         "success": True,
@@ -577,9 +844,17 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
 def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, Any]:
     """Delete a skill. ``absorbed_into``: None = undeclared (legacy, accepted); "" = explicit prune;
     "<skill>" = absorbed into that umbrella, which must exist (so the model can't claim one)."""
+    if err := _validate_skill_reference(name):
+        return _err(err)
+    directive = _run_pre_skill_hook(
+        "pre_skill_delete:guard", name=name, absorbed_into=absorbed_into)
+    if result := _skill_hook_short_circuit(
+            directive, f"Skill '{name}' deleted by plugin."):
+        return result
     skill_dir, guard = _locate_for_write(name, "delete")
     if guard := guard or _curator_consolidation_delete_guard(name, absorbed_into):
         return guard
+    assert skill_dir is not None
     if pinned_err := _pinned_guard(name):
         return _err(pinned_err)
     absorbed_target = absorbed_into.strip() if isinstance(absorbed_into, str) else ""
@@ -592,6 +867,11 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, A
     skills_root = _containing_skills_root(skill_dir)
     if unsafe := _validate_delete_target(skill_dir):  # defense-in-depth before rmtree
         return _err(unsafe)
+    directive = _run_pre_skill_hook(
+        "pre_skill_delete", name=name, absorbed_into=absorbed_into)
+    if result := _skill_hook_short_circuit(
+            directive, f"Skill '{name}' deleted by plugin."):
+        return result
     # Curator consolidations must be RECOVERABLE (`hermes curator restore`): archive instead
     # of rmtree. Foreground deletes keep hard-delete semantics.
     absorbed_note = f" Content absorbed into '{absorbed_target}'." if absorbed_target else ""
@@ -618,7 +898,7 @@ def _rmdir_if_empty(parent: Path, stop: Path) -> None:
 
 def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
     """Add or overwrite a supporting file within any skill directory."""
-    if err := _validate_file_path(file_path):
+    if err := _validate_skill_reference(name) or _validate_file_path(file_path):
         return _err(err)
     if not file_content and file_content != "":
         return _err("file_content is required.")
@@ -627,11 +907,33 @@ def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
                     f"bytes / 1 MiB). Consider splitting into smaller files.")
     if err := _validate_content_size(file_content, label=file_path):
         return _err(err)
+    directive = _run_pre_skill_hook(
+        "pre_skill_write_file:guard", name=name,
+        file_path=file_path, file_content=file_content)
+    if result := _skill_hook_short_circuit(
+            directive, f"File '{file_path}' written to skill '{name}' by plugin."):
+        return result
     skill_dir, guard = _locate_for_write(name, "write_file", " Create it first with action='create'.")
     if guard:
         return guard
+    assert skill_dir is not None
     target, err = _resolve_supporting_file(skill_dir, file_path)
-    if guard := err or _guarded_write(name, skill_dir, target, "write_file", file_path, file_content):
+    if err:
+        return err
+    assert target is not None
+    target_exists = target.exists()
+    if (target_exists and (read_guard := _background_review_read_before_write_guard(
+            name, target, "write_file", file_path))):
+        return read_guard
+    directive = _run_pre_skill_hook(
+        "pre_skill_write_file", name=name,
+        file_path=file_path, file_content=file_content)
+    if result := _skill_hook_short_circuit(
+            directive, f"File '{file_path}' written to skill '{name}' by plugin."):
+        return result
+    if guard := _guarded_write(
+            name, skill_dir, target, "write_file", file_path, file_content,
+            read_guard_checked=target_exists):
         return guard
     result = {"success": True, "message": f"File '{file_path}' written to skill '{name}'.", "path": str(target)}
     # references/ is where per-session hoarding shows up; surface the sprawl finding on the write
@@ -643,20 +945,32 @@ def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
 
 def _remove_file(name: str, file_path: str) -> dict[str, Any]:
     """Remove a supporting file from any skill directory."""
-    if err := _validate_file_path(file_path):
+    if err := _validate_skill_reference(name) or _validate_file_path(file_path):
         return _err(err)
+    directive = _run_pre_skill_hook(
+        "pre_skill_remove_file:guard", name=name, file_path=file_path)
+    if result := _skill_hook_short_circuit(
+            directive, f"File '{file_path}' removed from skill '{name}' by plugin."):
+        return result
     skill_dir, guard = _locate_for_write(name, "remove_file")
     if guard:
         return guard
+    assert skill_dir is not None
     target, err = _resolve_supporting_file(skill_dir, file_path)
     if err:
         return err
+    assert target is not None
     if not target.exists():  # list what IS there so the model can pick the right path
         available = [str(f.relative_to(skill_dir)) for subdir in ALLOWED_SUBDIRS
                      if (skill_dir / subdir).exists() for f in (skill_dir / subdir).rglob("*") if f.is_file()]
         return _err(f"File '{file_path}' not found in skill '{name}'.", available_files=available or None)
     if read_guard := _background_review_read_before_write_guard(name, target, "remove_file", file_path):
         return read_guard
+    directive = _run_pre_skill_hook(
+        "pre_skill_remove_file", name=name, file_path=file_path)
+    if result := _skill_hook_short_circuit(
+            directive, f"File '{file_path}' removed from skill '{name}' by plugin."):
+        return result
     target.unlink()
     _rmdir_if_empty(target.parent, skill_dir)
     return {"success": True, "message": f"File '{file_path}' removed from skill '{name}'."}
@@ -667,6 +981,188 @@ def _remove_file(name: str, file_path: str) -> dict[str, Any]:
 # Set while replaying an approved staged skill write so skill_manage() does not re-gate it.
 _skill_gate_bypass: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar(
     "skill_gate_bypass", default=False)
+
+# A plugin-owned ``handled`` mutation has no generic rollback primitive. Single-op
+# calls may use it, but the directive resolver fail-closes it in a multi-op batch.
+_skill_hook_batch_size: "_ctxvars.ContextVar[int]" = _ctxvars.ContextVar(
+    "skill_hook_batch_size", default=0)
+
+# The whole-batch decision point: one ``pre_skill_batch`` dispatch per operations[]
+# call, BEFORE any mutation (write gate, snapshot, locks). Orthogonal to the 18
+# per-operation hooks: those keep firing per op with unchanged semantics.
+SKILL_BATCH_HOOK_NAME = "pre_skill_batch"
+
+
+def _skill_batch_payload_digest(operations: List[Dict[str, Any]]) -> str:
+    """Stable digest of the exact batch payload a policy approves.
+
+    Canonical JSON (sorted keys, no whitespace) over the ordered operations list —
+    order, action, target and full replacement/patch text all feed the digest, so
+    a modified batch, a reordered batch or a subset hashes differently and can
+    never reuse an approval minted for another payload.
+    """
+    import hashlib
+    canonical = json.dumps(operations, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _required_skill_policy_hook() -> Optional[str]:
+    """``skill_policy.required`` (a hook name) or None. Unset/blank keeps the optional,
+    fail-open behavior; a set value names the policy hook that must decide."""
+    try:
+        from hermes_cli.config import load_config
+        value = cfg_get(load_config(), "skill_policy", "required", default=None)
+    except Exception:
+        return None
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _skill_batch_gate_error(kind: str, detail: str) -> Dict[str, Any]:
+    """A distinguishable batch-gate refusal: ``policy unavailable`` (the required policy
+    could not decide) vs ``policy denied`` (it decided no) prefixes the error."""
+    return _err(f"Skill batch {kind}: {detail}")
+
+
+def _gate_skill_batch(operations: List[Dict[str, Any]]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Run the whole-batch decision point. Returns ``(refusal_or_None, digest_or_None)``.
+
+    A refusal is a tool-result dict (batch must not proceed); the digest is the payload
+    binding to carry into the staged record when the batch continues (``None`` when no
+    plugin approved — the unchanged default path). Fail modes:
+      - no policy configured AND no hook registered -> ``(None, None)`` (exact current behavior)
+      - optional hook (no ``skill_policy.required``): block still blocks; any other outcome
+        (no decision, crash, invalid return) fails OPEN — optional plugins stay observers
+      - required hook (``skill_policy.required`` set): absent, crashed, timed out, or no
+        valid decision -> refusal with the ``policy unavailable`` prefix (fail closed);
+        an explicit block -> refusal with the ``policy denied`` prefix; a valid approval
+        (echoing the payload digest) -> ``(None, digest)``
+    """
+    required_hook = _required_skill_policy_hook()
+    # Invariant (see test_traversal_name_never_reaches_a_skill_hook): a name that
+    # fails validation NEVER reaches a skill hook. An invalid name's call is rejected
+    # by the normal validation path moments later — the write never happens — so the
+    # policy is not consulted for it either.
+    for op in operations:
+        if not isinstance(op, dict):
+            continue
+        nm, act = op.get("name"), op.get("action")
+        if not isinstance(nm, str) or not isinstance(act, str):
+            continue
+        name_err = _validate_name(nm) if act == "create" else _validate_skill_reference(nm)
+        if name_err is not None:
+            return None, None
+    digest = _skill_batch_payload_digest(operations)
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_policy_hook
+        registered = has_hook(SKILL_BATCH_HOOK_NAME)
+    except Exception:
+        logger.warning("Skill batch policy gate could not inspect plugins; continuing", exc_info=True)
+        if required_hook is None:
+            return None, None
+        return _skill_batch_gate_error(
+            "policy unavailable",
+            f"required policy hook '{required_hook}' could not be inspected"), None
+
+    if not registered:
+        if required_hook is None:
+            return None, None  # no consumer, no policy: exact current behavior
+        return _skill_batch_gate_error(
+            "policy unavailable",
+            f"required policy hook '{required_hook}' is not registered by any loaded plugin"), None
+
+    try:
+        hook_results, failed = invoke_policy_hook(
+            SKILL_BATCH_HOOK_NAME, operations=operations, payload_digest=digest)
+    except Exception as exc:
+        logger.warning("Skill batch policy dispatch failed", exc_info=True)
+        if required_hook is None:
+            return None, None  # optional hook: fail open (same contract as _run_pre_skill_hook)
+        return _skill_batch_gate_error(
+            "policy unavailable",
+            f"required policy hook '{required_hook}' dispatch failed: {type(exc).__name__}: {exc}"), None
+
+    block: Optional[str] = None
+    approval: Optional[str] = None  # digest echoed back by a valid approve directive
+    for hook_result in hook_results:
+        if not isinstance(hook_result, dict):
+            continue
+        action = str(hook_result.get("action") or "").strip().lower()
+        if action == "block":
+            reason = hook_result.get("reason") or hook_result.get("message")
+            block = (reason if isinstance(reason, str) and reason.strip()
+                     else "Skill batch blocked by plugin policy")
+            break  # an explicit veto wins over everything scanned so far
+        if action == "approve":
+            echoed = hook_result.get("payload_digest") or hook_result.get("payload_hash")
+            if isinstance(echoed, str) and echoed and echoed == digest:
+                approval = echoed
+            # a mismatched/missing echo is an invalid decision, not an approval
+
+    if block is not None:
+        # A block with NO failed callbacks is the policy deciding no. With failures
+        # present the injected fail-closed timeout block is indistinguishable from a
+        # real veto, but for a REQUIRED policy both mean "no valid decision arrived"
+        # — treat a failure-accompanied block as unavailable, the stricter reading.
+        if required_hook is not None and failed:
+            return _skill_batch_gate_error(
+                "policy unavailable",
+                f"required policy hook '{required_hook}' produced no valid decision "
+                f"({len(failed)} callback(s) raised or timed out)"), None
+        return _skill_batch_gate_error("policy denied", block), None
+
+    if required_hook is not None and approval is None:
+        # Registered but never decided: no decision, only invalid returns, or every
+        # callback crashed/timed out (their injected block was handled above only if
+        # one existed — a crash also lands here via failed without results).
+        detail = (f"required policy hook '{required_hook}' returned no valid decision"
+                  + (f" ({len(failed)} callback(s) raised or timed out)" if failed else ""))
+        return _skill_batch_gate_error("policy unavailable", detail), None
+
+    # Optional hook with no veto: continue unchanged (approval digest still recorded
+    # when one echoed correctly, so staging can bind it).
+    return None, approval
+
+
+def _verify_staged_batch_digest(payload: Dict[str, Any]) -> Optional[str]:
+    """Replay-side payload binding: a staged batch carrying ``payload_digest`` must be
+    re-hashed to the same value before the approved write replays. Returns an error
+    message when the staged payload was modified or trimmed after approval, else None."""
+    recorded = payload.get("payload_digest")
+    operations = payload.get("operations")
+    if not isinstance(recorded, str) or not recorded:
+        return None  # not a digest-bound record: legacy staged writes replay unchanged
+    if operations is None:
+        # A digest-bound staged FLAT single op: rebuild the equivalent operation from
+        # the flat fields with the same construction rule used at stage time.
+        action = payload.get("action")
+        name = payload.get("name")
+        if not isinstance(action, str) or not isinstance(name, str):
+            return None
+        operations = [_flat_gate_operation(action, name, {
+            k: payload.get(k) for k in _FLAT_GATE_KEYS})]
+    if not isinstance(operations, list):
+        return None
+    if _skill_batch_payload_digest(operations) != recorded:
+        return ("Staged skill batch failed its payload binding check: the operations differ "
+                "from what was staged (modified or subset). The approval does not cover this "
+                "payload; stage it again for a fresh decision.")
+    return None
+
+
+# The flat-call fields that feed a digest-bound staged record. ``replace_all`` always
+# serializes (False included) exactly like _apply_skill_write_gate's staging payload.
+_FLAT_GATE_KEYS = ("content", "category", "file_path", "file_content", "old_string",
+                   "new_string", "replace_all", "absorbed_into")
+
+
+def _flat_gate_operation(action: str, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """The operations[]-shaped equivalent of one flat skill_manage call — the ONE
+    construction rule, shared by stage time and replay time, so both hash the same
+    payload bytes for the digest binding."""
+    return {"name": name, "action": action,
+            **{k: v for k, v in args.items() if v is not None}}
 
 
 def _run_write_gate(build_staging):
@@ -688,13 +1184,17 @@ def _run_write_gate(build_staging):
                        "gist": gist, "message": decision.message}, ensure_ascii=False)
 
 
-def _apply_skill_write_gate(action, name, **payload_kwargs):
-    """Flat-shape gate: stage the full kwargs so approval can replay them; bypassed during replay."""
+def _apply_skill_write_gate(action, name, approved_digest=None, **payload_kwargs):
+    """Flat-shape gate: stage the full kwargs so approval can replay them; bypassed during replay.
+    ``approved_digest`` (a payload-bound pre_skill_batch approval) rides into the staged
+    record so the replay-side binding check can verify it."""
     if action not in _ACTION_HANDLERS or _skill_gate_bypass.get():
         return None
     def _staging(wa):
         payload = {"action": action, "name": name,
                    **{k: v for k, v in payload_kwargs.items() if v is not None}}
+        if approved_digest is not None:
+            payload["payload_digest"] = approved_digest
         gist_kw = {k: payload_kwargs.get(k) or ""
                    for k in ("content", "file_path", "old_string", "new_string")}
         return payload, wa.skill_gist(action, name, **gist_kw)
@@ -714,7 +1214,15 @@ def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
 
 
 def apply_skill_pending(payload: dict[str, Any]) -> str:
-    """Replay a staged skill write, bypassing the gate (the /skills approve handler)."""
+    """Replay a staged skill write, bypassing the gate (the /skills approve handler).
+
+    A digest-bound staged batch (``payload_digest`` recorded at stage time, when a
+    pre_skill_batch policy approved it) is re-verified against the exact operations
+    being replayed: a payload that was modified or trimmed to a subset after approval
+    no longer matches the decision and is refused, not replayed.
+    """
+    if (bind_err := _verify_staged_batch_digest(payload)) is not None:
+        return tool_error(bind_err, success=False)
     token = _skill_gate_bypass.set(True)
     try:
         return _skill_manage_from(payload)
@@ -741,6 +1249,13 @@ _ACTION_HANDLERS = {
     "delete": lambda a: _delete_skill(a["name"], absorbed_into=a["absorbed_into"]),
     "write_file": lambda a: _write_file(a["name"], a["file_path"], a["file_content"]),
     "remove_file": lambda a: _remove_file(a["name"], a["file_path"])}
+
+
+def _skill_hook_action(action: str, args: Dict[str, Any]) -> Optional[str]:
+    """Map the legacy/public dispatch shape to the lifecycle operation that ran."""
+    if action == "patch" and args.get("content"):
+        return "edit"
+    return action if action in {"create", "edit", "patch", "delete", "write_file", "remove_file"} else None
 
 
 def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
@@ -792,22 +1307,37 @@ def skill_manage(
             operations, default_name=name or None, task_id=task_id, session_id=session_id)
     if (preflight := _background_review_preflight(action, name)) is not None:
         return json.dumps(preflight, ensure_ascii=False)
-    # Approval gate: skills are too large to review inline, so they always stage regardless
-    # of origin; bypassed when replaying an approved staged write.
     args = dict(content=content, category=category, file_path=file_path, file_content=file_content,
                 old_string=old_string, new_string=new_string, replace_all=replace_all,
                 absorbed_into=absorbed_into)
-    if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
+    # Whole-batch decision point for the flat shape too (contract 2: a REQUIRED policy
+    # must gate every skill write, not only operations[] calls): one pre_skill_batch
+    # dispatch over the equivalent single-op payload, before the write gate. Only real
+    # mutation actions are gated (same condition as the write gate); an unknown action
+    # is rejected below and never reaches a hook. Default (no hook, no
+    # skill_policy.required) returns (None, None) and nothing changes.
+    if action in _ACTION_HANDLERS and not _skill_gate_bypass.get():
+        refusal, approved_digest = _gate_skill_batch(
+            [_flat_gate_operation(action, name, args)])
+        if refusal is not None:
+            return json.dumps(refusal, ensure_ascii=False)
+    else:
+        approved_digest = None
+    # Approval gate: skills are too large to review inline, so they always stage regardless
+    # of origin; bypassed when replaying an approved staged write.
+    if (gate_result := _apply_skill_write_gate(action, name, approved_digest, **args)) is not None:
         return gate_result
     if (shape_err := _op_shape_error(action, args)) is not None:
         return tool_error(shape_err, success=False)
     # Validate before the lock is keyed on the name, so a rejected name never touches .locks/
     # (create takes a bare name; the other actions also accept ``category/name``).
-    if (name_err := _validate_name(name if action == "create" or not name else Path(name).name)) is not None:
+    name_err = _validate_name(name) if action == "create" else _validate_skill_reference(name)
+    if name_err is not None:
         return json.dumps(_err(name_err), ensure_ascii=False)
     # A mutation is read-modify-write even when its action eventually delegates
     # to a helper: guards, ledger capture, patch matching, validation, rollback,
     # and the atomic replacement all belong to the same ownership window.
+    post_event = None
     with _skill_mutation_lock(name):
         # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
         # destroys the whole package (consolidation may have re-homed support files first), so
@@ -822,13 +1352,26 @@ def skill_manage(
                 _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
         handler = _ACTION_HANDLERS.get(action, lambda a: _err(
             f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
-        result = handler({"name": name, **args})
+        try:
+            result = handler({"name": name, **args})
+        except Exception as exc:  # fail as a tool result, while still notifying the post observer
+            logger.exception("Skill mutation %s failed unexpectedly for %s", action, name)
+            result = _err(f"Skill mutation failed: {type(exc).__name__}: {exc}")
         if isinstance(result, str):
             return result  # tool_error JSON for argument-shape problems (patch)
         if result.get("success"):
             _record_success(
                 action, name, result, file_path=file_path, absorbed_into=absorbed_into,
                 task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
+        if hook_action := _skill_hook_action(action, args):
+            post_event = (
+                f"post_skill_{hook_action}",
+                _skill_post_hook_payload(hook_action, name, args, result),
+            )
+    # Successful mutation bookkeeping (including prompt-cache invalidation) is
+    # complete before observers run, and callbacks never hold the mutation lock.
+    if post_event is not None:
+        _run_post_skill_hook(post_event[0], **post_event[1])
     return json.dumps(result, ensure_ascii=False)
 
 

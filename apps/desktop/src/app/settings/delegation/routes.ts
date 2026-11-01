@@ -83,11 +83,11 @@ export function routeFromDraft(draft: ModelRouteDraft, previous?: DelegationMode
   return next as DelegationModelRoute
 }
 
-/** A default route always exists while routes do, so the subagent model below is plainly unused. */
+/** An absent default means unrouted tasks inherit the main agent, even while named routes exist. */
 function withDefault(options: DelegationModelRoute[], preferred: null | string): DelegationModelMap {
   const names = options.map(option => option.name)
 
-  return { options, default: preferred && names.includes(preferred) ? preferred : (names[0] ?? null) }
+  return { options, default: preferred && names.includes(preferred) ? preferred : null }
 }
 
 /** Insert (`original` null) or replace the route called `original`; a rename carries the default along. */
@@ -105,7 +105,7 @@ export const removeRoute = (map: DelegationModelMap, name: string) =>
     map.default === name ? null : map.default
   )
 
-export const setDefaultRoute = (map: DelegationModelMap, name: string) => withDefault(map.options, name)
+export const setDefaultRoute = (map: DelegationModelMap, name: null | string) => withDefault(map.options, name)
 
 /** Check or uncheck a profile; the first checked profile becomes the default when none is. */
 export function toggleProfileRoute(

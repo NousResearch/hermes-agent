@@ -498,25 +498,45 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     return json.dumps(result_dict, ensure_ascii=False)
 
 
+def _read_continuation(result_dict: dict, offset: int, end_line: int) -> dict | None:
+    """Where a truncated read stopped (``None`` when it reached the end), in the
+    fields a refusal of a repeat must carry so the model can page on."""
+    if not result_dict.get("truncated"):
+        return None
+    return {"truncated": True, "next_offset": end_line + 1,
+            "total_lines": result_dict.get("total_lines"), "shown_lines": f"{offset}-{end_line}"}
+
+
+def _continuation_note(cont: dict) -> str:
+    return (f" That read was truncated after lines {cont['shown_lines']} of "
+            f"{cont['total_lines']}: call read_file with offset={cont['next_offset']} "
+            "to read the rest.")
+
+
 def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
     """Return the "unchanged" stub for a repeated identical read, escalating to a
-    hard BLOCK after 2 stubs so weak tool-followers don't loop forever."""
+    hard BLOCK after 2 stubs so weak tool-followers don't loop forever. A repeat of
+    a TRUNCATED read names its ``next_offset`` in both, or "still current" strands
+    the model on the first page with no way to the rest."""
     with _read_tracker_lock:
         hits = task_data["dedup_hits"].get(dedup_key, 0) + 1
         task_data["dedup_hits"][dedup_key] = hits
+        cont = task_data.get("dedup_continuations", {}).get(dedup_key)
         _cap_read_tracker_data(task_data)
+    note = _continuation_note(cont) if cont else ""
 
     if hits >= 2:
         return tool_error(
             f"BLOCKED: You have called read_file on this "
             f"exact region {hits + 1} times and the file "
             "has NOT changed. STOP calling read_file for "
-            "this path — the content from your earlier "
+            "this range — the content from your earlier "
             "read_file result in this conversation is "
             "still current. Proceed with your task using "
-            "the information you already have.",
+            "the information you already have." + note,
             path=path,
             already_read=hits + 1,
+            **(cont or {}),
             # A REFUSAL the harness chose, not a failure the tool hit: without the
             # marker the failure classifiers count the block and a repeated read
             # escalates to `repeated_exact_failure_block` over calls that never failed.
@@ -524,17 +544,19 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
 
     return json.dumps({
         "status": "unchanged",
-        "message": _READ_DEDUP_STATUS_MESSAGE,
+        "message": _READ_DEDUP_STATUS_MESSAGE + note,
         "path": path,
         "dedup": True,
         "content_returned": False,
+        **(cont or {}),
     }, ensure_ascii=False)
 
 
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
                             offset: int, limit: int, dedup_key: tuple, *, partial: bool,
                             redacted: bool = False, end_line: int | None = None,
-                            total_lines=None, version_before=None, snapshot=None) -> int:
+                            total_lines=None, version_before=None, snapshot=None,
+                            continuation: dict | None = None) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
     Per-task tracker under the lock (stub counter, history, consecutive count,
@@ -553,6 +575,10 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     with _read_tracker_lock:
         task_data["dedup_hits"].pop(dedup_key, None)
         task_data["dedup_generation_reads"].add(dedup_key)
+        if continuation:
+            task_data["dedup_continuations"][dedup_key] = continuation
+        else:
+            task_data["dedup_continuations"].pop(dedup_key, None)
         task_data["read_history"].add((path, offset, limit))
         count = _bump_consecutive(task_data, ("read", path, offset, limit))
         try:
@@ -733,19 +759,22 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             end_line = offset + limit - 1
             if isinstance(total_lines, int) and total_lines > 0:
                 end_line = min(end_line, total_lines)
+        cont = _read_continuation(result_dict, offset, end_line)
         count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
                                         dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
                                         redacted=redacted or bool(result_dict.get("truncated_lines")),
                                         end_line=end_line, total_lines=total_lines,
                                         version_before=version_before,
-                                        snapshot=getattr(result, "_snapshot", None))
+                                        snapshot=getattr(result, "_snapshot", None),
+                                        continuation=cont)
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
                 "The content has NOT changed. You already have this information. "
-                "STOP re-reading and proceed with your task.",
+                "STOP re-reading and proceed with your task." + (_continuation_note(cont) if cont else ""),
                 path=path,
                 already_read=count,
+                **(cont or {}),
                 **{GUARDRAIL_REFUSAL_KEY: True})
         if count >= 3:
             result_dict["_warning"] = (

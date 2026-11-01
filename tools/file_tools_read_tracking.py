@@ -6,7 +6,8 @@ stores: ``last_key``/``consecutive`` (loop detection; reset by any OTHER tool
 call), ``read_history`` (diagnostics), ``dedup`` (key -> file metadata; survives context
 compression), ``dedup_generation_reads`` (keys whose full content was served since
 the last compaction boundary; cleared on compression so one recovery read returns
-full content), ``dedup_hits`` (stub-loop breaker), ``read_timestamps``
+full content), ``dedup_continuations`` (key -> where a truncated read stopped, so its
+stub names the ``next_offset``), ``dedup_hits`` (stub-loop breaker), ``read_timestamps``
 (staleness warnings), ``read_coverage`` (per resolved path: the line ranges the
 task has paged through at one file version — contiguous pages that reach the last line
 count as a whole-file read), ``full_write_baselines`` (resolved paths whose
@@ -54,8 +55,8 @@ def _task_data(task_id: str) -> dict:
     (search_tool / tests create partial entries). Lock must be held."""
     task_data = _read_tracker.setdefault(task_id, {
         "last_key": None, "consecutive": 0, "read_history": set()})
-    for key in ("dedup", "dedup_hits", "read_timestamps", "read_coverage", "full_write_baselines",
-                "blind_patches"):
+    for key in ("dedup", "dedup_continuations", "dedup_hits", "read_timestamps", "read_coverage",
+                "full_write_baselines", "blind_patches"):
         task_data.setdefault(key, {})
     task_data.setdefault("dedup_generation_reads", set())
     return task_data
@@ -98,6 +99,13 @@ def _cap_read_tracker_data(task_data: dict) -> None:
         container = task_data.get(key)
         if container is not None and len(container) > cap:
             _evict_oldest(container, cap)
+    # Continuations are trimmed to the keys ``dedup`` still holds, never FIFO on their
+    # own: a write leaves a stale one behind and a re-read keeps its old position, so
+    # independent eviction could drop the hint of a read that still stubs.
+    conts, dedup = task_data.get("dedup_continuations"), task_data.get("dedup") or {}
+    if conts and len(conts) > _DEDUP_CAP:
+        for key in [k for k in conts if k not in dedup]:
+            del conts[key]
 
 
 def _resolved_or_none(filepath: str, task_id: str) -> str | None:

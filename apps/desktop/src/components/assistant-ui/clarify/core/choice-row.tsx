@@ -1,14 +1,18 @@
 'use client'
 
 import { Kbd } from '@/components/ui/kbd'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { bareChoice, RECOMMENDED_LABEL } from '@/store/clarify'
+import { bareChoice } from '@/store/clarify'
 
 export const letterFor = (index: number): string => String.fromCharCode(65 + index)
 
-// The backend tags the agent's preferred option (`mark_recommended`); the card
-// renders the label in tertiary text so the option itself still reads first.
+// The backend tags the agent's preferred option by embedding an English marker
+// in the wire string (`mark_recommended`); `bareChoice` strips it and the card
+// re-renders the marker from the active locale, so non-English users see a
+// translated label instead of the embedded English (#139344).
 export function ChoiceLabel({ choice }: { choice: string }) {
+  const { t } = useI18n()
   const bare = bareChoice(choice)
 
   if (bare === choice) {
@@ -17,7 +21,7 @@ export function ChoiceLabel({ choice }: { choice: string }) {
 
   return (
     <>
-      {bare} <span className="text-(--ui-text-tertiary)">{RECOMMENDED_LABEL}</span>
+      {bare} <span className="text-(--ui-text-tertiary)">{t.assistant.clarify.recommended}</span>
     </>
   )
 }

@@ -18,6 +18,7 @@ import pytest
 pytestmark = pytest.mark.platforms("posix")
 
 
+@unittest.skipIf(os.name == "nt", "POSIX mode bits not enforced on Windows")
 class TestCronFilePermissions(unittest.TestCase):
     """Verify cron files get secure permissions."""
 
@@ -84,6 +85,7 @@ class TestCronFilePermissions(unittest.TestCase):
             self.assertEqual(dir_mode, 0o700)
 
 
+@unittest.skipIf(os.name == "nt", "POSIX mode bits not enforced on Windows")
 class TestConfigFilePermissions(unittest.TestCase):
     """Verify config files get secure permissions."""
 

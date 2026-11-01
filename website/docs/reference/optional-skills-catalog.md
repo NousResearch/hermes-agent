@@ -36,6 +36,7 @@ hermes skills uninstall <skill-name>
 | [**blackbox**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox.md) | Delegate coding tasks to the Blackbox AI multi-model CLI. |
 | [**dynamic-workflow**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-dynamic-workflow.md) | Plan-in-code fan-outs, adversarial verification, waves. |
 | [**grok**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok.md) | Delegate coding to xAI Grok Build CLI (features, PRs). |
+| [**hands-free**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-hands-free.md) | Use when delivering multi-step machine tasks. |
 | [**honcho**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-honcho.md) | Configure and troubleshoot Honcho memory for Hermes. |
 | [**opencode**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-opencode.md) | Delegate coding to OpenCode CLI (features, PR review). |
 | [**openhands**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands.md) | Delegate coding to OpenHands CLI (model-agnostic, LiteLLM). |

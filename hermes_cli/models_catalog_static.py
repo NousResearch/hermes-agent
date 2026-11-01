@@ -463,6 +463,9 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan, Token Plan & Qwen CLI OAuth", ["alibaba", "alibaba-cn", "alibaba-coding-plan", "alibaba-coding-plan-cn", "alibaba-token-plan", "alibaba-token-plan-cn", "qwen-oauth"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription", ["opencode-zen", "opencode-go"]),
     "tencent":  ("Tencent Hy",      "Hy4 / Hy3 via TokenHub & TokenPlan", ["tencent-tokenhub", "tencent-tokenplan"]),
+    # Same split-vendor shape as MiniMax / Kimi / Qwen: one global API, one China
+    # API. Display-only -- both slugs stay individually addressable.
+    "siliconflow": ("SiliconFlow",  "Global API & mainland-China endpoints (硅基流动)", ["siliconflow", "siliconflow-cn"]),
 }
 
 # Reverse index: member slug -> group_id.

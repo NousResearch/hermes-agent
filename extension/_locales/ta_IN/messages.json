@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "mastodon பின்பு 1-கிளிக் பின்புறம், விருப்பத்தேர்வு, மற்றும் புத்தக குறியீடு Mastodon, நீங்கள் வீட்டை அழைக்க என்ன விஷயம் இல்லை.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "உங்கள் Mastodon உதாரணம்",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "உதவி தேவையா?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "கணக்கு இணை",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "கணக்குகளுக்கு பின்",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "Mastodon இன்னும் இல்லை?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "இந்த நிகழ்வை கண்டுபிடுக்க முடியவில்லை, தயவு செய்து முகவரி சரிபார்க்கவும்.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "கணக்குகள்"
+  },
+  "add_account": {
+    "message": "+ சேர் கணக்கு",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "அறிவிப்புகளை காட்டு",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "நவர்மனி",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "கணக்கை நீக்கு",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "மூலம்"
+  },
+  "or": {
+    "message": "அல்லது"
+  },
+  "send_feedback": {
+    "message": "செலுத்தி அனுப்பு",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "வழு அறிக்கை",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "ஆதரவு பெறவும்",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "நன்கொடை",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "மாஸ்டோடனுக்கான கிரேஸ் பயன்படுத்த தயாராக உள்ளது!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "இந்த தத்தல் மூடும்",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "நொடிகள்",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "எ. கா",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "பின்பு",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "உன்னை பின்பற்றுங்கள்",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "பின்புறம்",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "கவனிக்கவும்",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "நேரடி செய்தி",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "கால்சியம்",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "அமைதி",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "நிறுத்து",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "அறிக்கை",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "பிளாக் களம்",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "மூல பக்கத்தை திற",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "இணைப்பை பதவிக்கு நகலெடு",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "உட்பொருள்",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "பண்பாடு",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "மொழிப்பெயர்களை மாற்று",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "புத்தகத்தை மறை",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "பட்டியலில் சேர் அல்லது நீக்கு",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "மணி",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "கீழ்",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "நீங்கள் இந்த விடை வாக்களித்தார்",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "அமைப்புகள்",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "தலைப்பு"
+  },
+  "graze_theme_p": {
+    "message": "தானாகவே நீங்கள் விரும்பினால் உங்களால் மேலேற்ற முடியும்.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "Mastodon Dark",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "Mastodon Light",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "Mastodon Theme ஏற்றுமதி வண்ணம்",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "மொழி"
+  },
+  "Afrikaans": {
+    "message": "அஃப்ரிகான்ஸ்"
+  },
+  "Arabic": {
+    "message": "அரேபி"
+  },
+  "Bengali": {
+    "message": "வங்காள"
+  },
+  "Bulgarian": {
+    "message": "பல்கேரியன்Name"
+  },
+  "Chinese_Simplified": {
+    "message": "சீனம் சிம்பித்தப்பட்டது"
+  },
+  "Chinese_Traditional": {
+    "message": "சீன மரபு"
+  },
+  "Czech": {
+    "message": "செக்Name"
+  },
+  "Danish": {
+    "message": "டேனிஷ்Name"
+  },
+  "Dutch": {
+    "message": "டச்சு"
+  },
+  "English": {
+    "message": "ஆங்கிலம்"
+  },
+  "Finnish": {
+    "message": "ஃபினிஷ்Name"
+  },
+  "French": {
+    "message": "பிரெஞ்சு"
+  },
+  "German": {
+    "message": "ஜெர்மன்"
+  },
+  "Greek": {
+    "message": "கிரேக்க"
+  },
+  "Hawaiian": {
+    "message": "ஹவாய்"
+  },
+  "Hebrew": {
+    "message": "ஹப்ரேப்Name"
+  },
+  "Hindi": {
+    "message": "இந்தி"
+  },
+  "Hungarian": {
+    "message": "ஹங்கேரியன்Name"
+  },
+  "Icelandic": {
+    "message": "ஐஸ்லாண்ட்Name"
+  },
+  "Indonesian": {
+    "message": "இந்தோனேசிய"
+  },
+  "Italian": {
+    "message": "இத்தாலியன்"
+  },
+  "Japanese": {
+    "message": "ஜப்பானியர்Name"
+  },
+  "Korean": {
+    "message": "கொரிய"
+  },
+  "Malay": {
+    "message": "மலாய்"
+  },
+  "Maori": {
+    "message": "மோரி"
+  },
+  "Norwegian": {
+    "message": "நார்வேயின்"
+  },
+  "Polish": {
+    "message": "போலிஷ்"
+  },
+  "Portuguese": {
+    "message": "போர்த்துகீஸ்"
+  },
+  "Portuguese_Brazilian": {
+    "message": "போர்த்துகீசியம்Name"
+  },
+  "Romanian": {
+    "message": "ருமேனியன்Name"
+  },
+  "Russian": {
+    "message": "ரஷ்யா"
+  },
+  "Serbian_Cyrillic": {
+    "message": "செர்பியன் (Cyrillic)"
+  },
+  "Spanish_Modern": {
+    "message": "ஸ்பானிஷ் (நவீன)"
+  },
+  "Swedish": {
+    "message": "ஸ்விடிஷ்"
+  },
+  "Tamil": {
+    "message": "தமிழ்"
+  },
+  "Thai": {
+    "message": "தாய்"
+  },
+  "Turkish": {
+    "message": "துருக்கியம்"
+  },
+  "Ukrainian": {
+    "message": "உக்ரேனியன்"
+  },
+  "Urdu_India": {
+    "message": "உருது (இந்தியா)"
+  },
+  "Vietnamese": {
+    "message": "வியட்நாமிஸ்Name"
+  },
+  "Welsh": {
+    "message": "வெல்ஷ்Name"
+  },
+  "convenience": {
+    "message": "வசதி"
+  },
+  "graze_convenience_p": {
+    "message": "கிரேஸ் (Graze) வலைப்பதிவுகளைச் சுற்றி இணைப்புக்களில் mastodon பயனர் பெயரை செய்ய முடியும்.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "மாஸ்டோடன் பயனர் பெயர்களை இணை",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "கிரேஸ் (Graze) வலைப்பதிவுகளைச் சுற்றி இணைப்புக்களில் mastodon பயனர் பெயரை செய்ய முடியும்.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "Hovercards காட்டு",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "ஹாக்கார்ட்ஸ் (Hovercards) பயனர் பற்றி விரைவான தகவல்களை காட்ட முடியும்.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "நீங்கள் இணைக்கப்படாத நிகழ்வுகளுக்கான பாப்அப்பைக் காட்டு",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "செல்லும்போது செயற்பாடு செய்யும் நிகழ்வுகளுக்குச் செல்வாக்கு",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "கணக்கு சேர்க்கப்படாத கணக்கில் பதிவு செய்யப்பட்ட பொழுது காட்டு",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "சேர் கணக்கு விரைவு நுழைவு",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "வரைபடத்தில் தானியங்கி மொழியை மீட்கவும்",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "நீங்கள் ஒரு தொலைதூர சேவையகத்தில் பதில் க்ளிக் செய்யும்போது அல்லது \"தூட் இந்த பக்கம்\" கிராஜ்ஸ் ஒரு விரைவான பதிலை திறக்க முடியும் அல்லது உங்கள் வீட்டு நிகழ்வுக்கு எடுக்க முடியும்.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "புத்தகத்திலிருந்து பதில்",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "வீட்டு நிகழ்விலிருந்து பதில்",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "தொலைதூர உதாரணத்தில் உள்ளூர் காலக்கெடுப்பு பயனர்கள் மற்றும் அந்த நிகழ்வுகளின் உள்ளடக்கத்தை பிரதிபடுத்துகிறது.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "Redirect <strong>Explore</strong> to <strong>Local</strong> timeline",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "உள்ளடக்கம்",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "தொலைதூர நிகழ்வு உள்ளடக்க காட்சியை உங்கள் தங்களது, அல்லது அழுத்தவும்.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "உள்ளடக்கத்துக்கு பின்னால் உள்ளடக்கத்தை காட்டு (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "GIFs தானாகவே விளையாடு",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "NSFW/Sensitive பிம்பங்களை காட்டு",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "செயலில் உள்ள கணக்கை அமை",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "மறுபடியும் இழுக்கவும்",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "{username}",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "{username} அறிவிப்புகள்",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "இந்த கணக்கில் இருந்து செயல்களை எடுக்கவும்",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "{username} என செயல்படுகிறது",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "சுற்றுப்பெயர் படங்களைக் காட்டு",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "இணைப்பு, பிம்பம், மற்றும் உரை நுழைவுகளைக் காட்டு",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "கிரேஸ் சூழல் பட்டியலை காட்டு",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "Redirect empty (unfederated) profiles to home instances to safe you a click",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "தானாகவே நேரடியாக",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "உங்களின் நேரத்தில் Mastodon பதவிகளுக்கு இணைப்புகள்",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "காட்சி புத்தகத்தில் விரிவாக்கப்பட்டதுName",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Dedupe பதவி பிம்பங்கள் மற்றும் இணைப்பு முன்னேற்றங்கள்",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "முன்னிருப்பு இணைப்பு முழு பிம்பங்களுடன் மறுபெயரிடு மற்றும் முழு நுழைவு உரை",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "பணக்கார இணைப்பு முன்னோடிகளை காட்டு",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "எளிமையான படிக்குவதற்கு ஒரு கருவிப்பொருட்களை விட உருவத்தின் கீழே \"Alt Text\" (Alt Text) \"Alt Text\" (Alt Text)",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "பிம்பங்களை கீழே காட்டு",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "கிரேஸ் மட்டுமே Mastodon பதிப்பு 4.0.0 அல்லது அதற்கு மேலே இயங்கும் நிகழ்வுகளுடன் ஒத்திருக்கும்",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "இந்த நிகழ்வை கண்டுபிடவில்லை, தயவு செய்து முகவரி சரிபார்க்கவும் மீண்டும் முயற்சிக்கவும்.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "பிழை ஏற்பட்டது. தயவு செய்து பின்னர் மீண்டும் முயற்சிக்கவும்.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "பக்கங்கள்",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "பின்தொடர்பவர்கள்",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "பின்பற்றுகிறது",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "இல்லை, நன்றி",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "விவரக்குறிப்பு அடைவுக்கு செல்",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "உள்ளூர் காலவரிக்கு செல்லவும்",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "உள்ளடக்கத்திலிருந்து ஒரு கணக்கை பின்பற்றவும் உங்கள் வீட்டில் உள்ளடக்கத்தை பார்க்கவும்.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "நீங்கள் $username$ உடன் இணைக்கப்படவில்லை",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "எந்த நிறுவனத்தில் இந்த கணக்கில் இருந்து செயல்களை எடுக்க முடியும்.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "$display_name$ க்ராஜைக்கு சேர்?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "பெரிதாக்கு சேர்",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

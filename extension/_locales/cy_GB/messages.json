@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "a yw 1-cliciwch yn dilyn, ffefryn, hwb, a nod tudalen i Mastodon, waeth beth yr ydych yn ei alw'n gartref.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "Name",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "Angen Cymorth?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "Cyfrif cyswllt",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "Nôl I ' r Cyfrifon",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "Ddim eto ar Mastodon?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "Methu canfod yr achos hwn, gwiriwch y cyfeiriad a cheisio eto.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "Cyfrifon"
+  },
+  "add_account": {
+    "message": "+ YCHWANEGU CYFRIF",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "Dangos hysbysiadau",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "Nmeddwl",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "Tynnu Cyfrif",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "gan"
+  },
+  "or": {
+    "message": "neu"
+  },
+  "send_feedback": {
+    "message": "Anfon Adborth",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "Adroddiad Nam",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "Estyn Cefnogaeth",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "Cyfrannu",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Mae Graze for Mastodon yn barod i'w ddefnyddio!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "Bydd y tab yn cau i mewn",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "eiliad",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "e.e.",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "Dilyn",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "Yn eich dilyn",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "Dad-ddilyn",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "Crybwyll",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "Neges uniongyrchol",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "Rhannu",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "Tewi",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "Bloc",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "Adroddiad",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "Parth Bloc",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "Agor y dudalen wreiddiol",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "Copïo dolen i'r cofnod",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "Mewnblannu",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "Nodwedd ar y proffil",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "Newid ieithoedd tanysgrifiwyd",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "Cuddio ' r rhestr",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "Ychwanegu neu Tynnu o'r rhestrau",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "awr",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "o dan",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "Gwnaethoch bleidleisio dros yr ateb hwn",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "Gosodiadau",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "thema"
+  },
+  "graze_theme_p": {
+    "message": "Mae pori yn cydweddu eich thema yn awtomatig, gallwch ei ddiystyru os hoffech chi.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "Mastodon tywyll",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "Mastodon Golau",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "Dangos Lliw Mastodon Thema Thema",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "iaith"
+  },
+  "Afrikaans": {
+    "message": "Afrikaans"
+  },
+  "Arabic": {
+    "message": "Arabaidd"
+  },
+  "Bengali": {
+    "message": "Bengali"
+  },
+  "Bulgarian": {
+    "message": "Bwlgareg"
+  },
+  "Chinese_Simplified": {
+    "message": "Tsieinëeg Symledig"
+  },
+  "Chinese_Traditional": {
+    "message": "Tsieinëeg Traddodiadol"
+  },
+  "Czech": {
+    "message": "Tsiec"
+  },
+  "Danish": {
+    "message": "Daneg"
+  },
+  "Dutch": {
+    "message": "Yr Iseldiroedd"
+  },
+  "English": {
+    "message": "Saesneg"
+  },
+  "Finnish": {
+    "message": "Ffinneg"
+  },
+  "French": {
+    "message": "Ffrangeg"
+  },
+  "German": {
+    "message": "Almaeneg"
+  },
+  "Greek": {
+    "message": "Groeg"
+  },
+  "Hawaiian": {
+    "message": "Hawaiian"
+  },
+  "Hebrew": {
+    "message": "Hebraeg"
+  },
+  "Hindi": {
+    "message": "Hindi"
+  },
+  "Hungarian": {
+    "message": "Hwngaraidd"
+  },
+  "Icelandic": {
+    "message": "Islandeg"
+  },
+  "Indonesian": {
+    "message": "Indonesieg"
+  },
+  "Italian": {
+    "message": "Eidaleg"
+  },
+  "Japanese": {
+    "message": "Siapaneg"
+  },
+  "Korean": {
+    "message": "Corëeg"
+  },
+  "Malay": {
+    "message": "Malay"
+  },
+  "Maori": {
+    "message": "Maori"
+  },
+  "Norwegian": {
+    "message": "Norwyeg"
+  },
+  "Polish": {
+    "message": "Pwyleg"
+  },
+  "Portuguese": {
+    "message": "Portiwgaleg"
+  },
+  "Portuguese_Brazilian": {
+    "message": "Portiwgaleg, Brasil"
+  },
+  "Romanian": {
+    "message": "Romaneg"
+  },
+  "Russian": {
+    "message": "Rwsieg"
+  },
+  "Serbian_Cyrillic": {
+    "message": "Serbeg (Cyrilig)"
+  },
+  "Spanish_Modern": {
+    "message": "Sbaeneg (Modern)"
+  },
+  "Swedish": {
+    "message": "Swedeg"
+  },
+  "Tamil": {
+    "message": "Tamil"
+  },
+  "Thai": {
+    "message": "Thai"
+  },
+  "Turkish": {
+    "message": "Twrcaidd"
+  },
+  "Ukrainian": {
+    "message": "Wcraneg"
+  },
+  "Urdu_India": {
+    "message": "Urdu (India)"
+  },
+  "Vietnamese": {
+    "message": "Fietnameg"
+  },
+  "Welsh": {
+    "message": "Cymraeg"
+  },
+  "convenience": {
+    "message": "cyfleustra"
+  },
+  "graze_convenience_p": {
+    "message": "Gall pori wneud enw mastodon defnyddiwr i mewn i gysylltiadau o amgylch y we.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "Linkify enwau defnyddwyr Mastodon",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "Gall pori wneud enw mastodon defnyddiwr i mewn i gysylltiadau o amgylch y we.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "Dangos Horgardiau",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "Mae hofran yn gallu dangos gwybodaeth gyflym am y defnyddiwr pan fyddwch chi'n hofran dros eu henw.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "Dangos naidlen i 'r Enghreifftiau dydych chi ddim wedi' i ffedereiddio iddo",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "Awgrymu enghreifftiau i ffedereiddio wrth ymweld",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "Dangos naidlen pan nad yw wedi mewngofnodi i gyfrif yn cael ei ychwanegu at Gruze",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "Dangos nod mewngofnodi cyflym i gyfrif",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "Gwrthwneud iaith awtomatig mewn Graig",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "Pan fyddwch yn clicio ateb ar weinydd pell neu \" tot y dudalen hon, gall y dudalen hon agor ateb cyflym neu ewch â chi i'ch achos cartref.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "Ateb o Graig",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "Ateb o achos cartref",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "Ar yr achos pell, mae'r amserlen leol yn adlewyrchu'n fwy manwl ar ddefnyddwyr a chynnwys yr achos hwnnw.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "Ailgyfeirio <strong>Archwilio</strong> i linell amser <strong>Lleol</strong>",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "cynnwys",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "Gwnewch yn siŵr fod y cynnwys yn dangos yn cydweddu eich hun, neu ei gymysgu.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "Dangos cynnwys y tu ôl i Drhybuddion Cynnwys (Gwasanaethau Iechyd Arbenigol)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "Chwarae GIFs yn awtomatig",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "Dangos Delweddau NSW/Delweddau Sensitif",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "gosod cyfrif gweithredol",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "Llusgo i ail-orchymyn",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "Negeseuon ar gyfer {username}",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "Hysbysiadau am {username}",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "CYMRYD CAMAU O ' R CYFRIF HWN",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "Cymryd camau fel {username}",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "Dangos delweddau",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "Dangos dolen, delwedd, a rhannu testun testun o'r ddewislen cyd-destun ar draws y we",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "Dangos y ddewislen gyd-destun",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "Ailgyfeirio proffiliau gwag (heb ei ffedereiddio) i achosion cartref er mwyn sicrhau clic",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "Ailgyfeirio yn Awtomatig",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "Ehangu cysylltiadau i Mastodon cofnodion yn eich amserlenni",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "Dangos cofnodion mewn llinellau llinell",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Daddupio delweddau post a rhagolygon cyswllt",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "Amnewid rhagolygon cyswllt rhagosodedig gyda delweddau mwy a thestun testun llawn",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "Dangos rhagolygon cyswllt cyfoethog",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "Mae pori yn gallu dangos y disgrifyddion delwedd \"Testun Alt\" islaw delweddau ratrir na dim ond mewn brysgymorth ar gyfer ei ddarllen yn haws",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "Dangos disgrifiadau delwedd islaw delweddau",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "Mae pori ond yn cydweddu ag achosion sy'n rhedeg Mathodon fersiwn 4.0.0 neu uwch",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "Methu canfod yr achos hwn, gwiriwch y cyfeiriad a cheisio eto.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "Digwyddodd gwall. Ceisiwch eto yn nes ymlaen.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "Postiau",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "Dilynwyr",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "Dilyn",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "Dim Diolch",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "Mynd i ' r Cyfeiriadur Proffil",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "Mynd i Amserydd Lleol",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "Dilyn cyfrif o'r bwyd lleol i ddechrau gweld cynnwys yn eich Llif Cartref.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "Nid ydych wedi ei ffedereiddio i $username$",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "Byddwch yn gallu cymryd camau o'r cyfrif hwn ar unrhyw enghraifft.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "Ychwanegu $display_name$ i Graze?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "Ychwanegu at Graze",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

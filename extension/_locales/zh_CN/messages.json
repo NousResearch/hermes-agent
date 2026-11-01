@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "无论你在哪个地方，都可以一键关注、收藏、提升和收藏Mastodon。",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "你的Mastodon实例名称",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "需要帮助吗？",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "连接账户",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "回到账户",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "还不知道Mastodon的情况？",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "找不到这个实例，请检查地址并重试。",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "帐户"
+  },
+  "add_account": {
+    "message": "+ 添加账户",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "显示通知",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "内蒙",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "删除账户",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "由"
+  },
+  "or": {
+    "message": "或"
+  },
+  "send_feedback": {
+    "message": "发送反馈",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "报告错误",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "获取支持",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "捐赠",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "玛斯托登的墓地准备好用了",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "此选项卡将关闭",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "秒",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "例如：",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "跟随",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "跟着你",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "翁鲁",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "提及",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "直接留言",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "分享",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "静音",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "布块",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "报告",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "块域",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "打开原始页面",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "复制到帖子",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "嵌入",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "概要文件上的功能部件",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "更改预订的语言",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "隐藏来自",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "从列表中添加或除去",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "小时",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "下",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "你投了这个答案",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "设置",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "主题"
+  },
+  "graze_theme_p": {
+    "message": "Graze 自动匹配您的主题，您可以将其覆盖。",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "黑暗按摩师",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "马斯托东灯",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "覆盖 mastodon 主题口音颜色",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "语言"
+  },
+  "Afrikaans": {
+    "message": "阿夫里卡安斯"
+  },
+  "Arabic": {
+    "message": "阿拉伯语"
+  },
+  "Bengali": {
+    "message": "本加利"
+  },
+  "Bulgarian": {
+    "message": "保加利亚"
+  },
+  "Chinese_Simplified": {
+    "message": "简体中文"
+  },
+  "Chinese_Traditional": {
+    "message": "繁体中文"
+  },
+  "Czech": {
+    "message": "捷克"
+  },
+  "Danish": {
+    "message": "丹麦语"
+  },
+  "Dutch": {
+    "message": "荷兰语"
+  },
+  "English": {
+    "message": "英语"
+  },
+  "Finnish": {
+    "message": "芬兰语"
+  },
+  "French": {
+    "message": "弗伦奇"
+  },
+  "German": {
+    "message": "德语"
+  },
+  "Greek": {
+    "message": "希腊语"
+  },
+  "Hawaiian": {
+    "message": "夏威夷"
+  },
+  "Hebrew": {
+    "message": "希伯来语"
+  },
+  "Hindi": {
+    "message": "欣迪"
+  },
+  "Hungarian": {
+    "message": "匈牙利"
+  },
+  "Icelandic": {
+    "message": "冰岛"
+  },
+  "Indonesian": {
+    "message": "印度尼西亚"
+  },
+  "Italian": {
+    "message": "意大利"
+  },
+  "Japanese": {
+    "message": "日本"
+  },
+  "Korean": {
+    "message": "韩语"
+  },
+  "Malay": {
+    "message": "马莱"
+  },
+  "Maori": {
+    "message": "毛利人"
+  },
+  "Norwegian": {
+    "message": "挪威语"
+  },
+  "Polish": {
+    "message": "波兰"
+  },
+  "Portuguese": {
+    "message": "葡萄牙语"
+  },
+  "Portuguese_Brazilian": {
+    "message": "葡萄牙语，巴西葡萄牙语"
+  },
+  "Romanian": {
+    "message": "罗马尼亚语"
+  },
+  "Russian": {
+    "message": "俄语"
+  },
+  "Serbian_Cyrillic": {
+    "message": "塞尔维亚语 (西里尔文 )"
+  },
+  "Spanish_Modern": {
+    "message": "西班牙语 (现代)"
+  },
+  "Swedish": {
+    "message": "瑞典语"
+  },
+  "Tamil": {
+    "message": "泰米尔语"
+  },
+  "Thai": {
+    "message": "泰国语"
+  },
+  "Turkish": {
+    "message": "土耳其语"
+  },
+  "Ukrainian": {
+    "message": "乌克兰"
+  },
+  "Urdu_India": {
+    "message": "乌尔都语 ( 印度)"
+  },
+  "Vietnamese": {
+    "message": "越南语"
+  },
+  "Welsh": {
+    "message": "韦尔什"
+  },
+  "convenience": {
+    "message": "便利"
+  },
+  "graze_convenience_p": {
+    "message": "Graze可以将乳牛的用户名变成网络上的链接。",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "链接 Mastodon 用户名",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "Graze可以将乳牛的用户名变成网络上的链接。",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "显示悬浮卡",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "悬浮卡可以在您将鼠标指针悬停在其名称上时显示有关用户的快速信息。",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "为您未加入联邦的实例显示弹出窗口",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "在访问时建议联盟实例",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "登录到未添加到格拉泽的帐户时显示弹出窗口",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "显示添加帐户快速登录弹出窗口",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "覆盖 Graze 中的自动语言",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "当您单击远程服务器上的回复或 \"toot 此页面 \" 时， Graze 可以打开快速回复或将您带至您的主实例。",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "来自 Graze 的回复",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "来自家庭实例的回复",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "在远程实例上， \" 本地时间线 \" 更紧密地反映该实例的用户和内容。",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "重定向 <strong>探索</strong> 到 <strong>本地</strong> 时间线",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "内容",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "使远程实例内容显示与您自己匹配，或将其混合。",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "显示内容警告 (CW) 后面的内容",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "自动播放 GIF",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "显示 NSFW / 敏感图像",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "设置活动帐户",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "拖动以重新排序",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "{username} 的消息",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "{username} 的通知",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "从这个账户采取行动",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "将操作作为 {username}",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "显示头像图像",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "显示来自 Web 的上下文菜单的链接，图像和文本片段共享",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "显示 Graze 上下文菜单",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "将空 (未联合) 概要文件重定向到家庭实例以安全单击",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "自动重定向",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "在时间线中扩展至 Mastodon 帖子的链接",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "显示扩展的在线帖子",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Dedupe 发布图片和链接预览",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "将缺省链接预览替换为较大的图像和完整片段文本",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "显示富链接预览",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "Graze 可以在图像下方显示图像描述 \"Alt Text\" ，比在工具提示中更容易阅读",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "在图像下方显示图像描述",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "Graze只兼容正在运行 Mastodon 4.0.0 或更高版本的实例",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "找不到此实例，请检查地址，然后重试。",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "发生错误。请稍后再试。",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "员额",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "关注者",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "关注",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "不，谢谢！",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "转到配置文件目录",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "转到本地时间线",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "从本地种子中关注一个帐户，开始在您的主页中查看内容。",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "您没有联邦 $username$",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "您将能够在任何实例上从此帐户采取行动。",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "将 $display_name$ 添加到 Graze？",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "添加到评分中",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

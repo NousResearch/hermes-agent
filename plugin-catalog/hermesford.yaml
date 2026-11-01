@@ -1,0 +1,29 @@
+name: hermesford
+repo: https://github.com/XpycT/hermesford
+sha: 23c69be7107e91a963cf959a2fbd083ca82f6224
+title: HermesFord
+description: 'An HD-2D pixel-art village page for Hermes Desktop: every chat is a villager who walks to the
+  forge, library, woods or town hall depending on the tool its agent is running, waits at the town hall
+  when the chat needs you, and goes home to sleep when the chat is not active. Click a villager to open
+  its chat. Built on the Luminati engine (MIT). Desktop-only (desktop/plugin.js inside the plugin SDK
+  surface, read-only session.list / session.active_list polling every 3 s); no agent tools, hooks,
+  middleware, env vars or network calls.'
+maintainer: XpycT
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+version: "1.0.0"
+docs_url: https://github.com/XpycT/hermesford
+image: https://raw.githubusercontent.com/XpycT/hermesford/23c69be7107e91a963cf959a2fbd083ca82f6224/assets/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/XpycT/hermesford/23c69be7107e91a963cf959a2fbd083ca82f6224/assets/square.jpg
+  - https://raw.githubusercontent.com/XpycT/hermesford/23c69be7107e91a963cf959a2fbd083ca82f6224/assets/night.jpg
+  - https://raw.githubusercontent.com/XpycT/hermesford/23c69be7107e91a963cf959a2fbd083ca82f6224/assets/hover.jpg
+  - https://raw.githubusercontent.com/XpycT/hermesford/23c69be7107e91a963cf959a2fbd083ca82f6224/assets/eastbank.jpg
+  - https://raw.githubusercontent.com/XpycT/hermesford/23c69be7107e91a963cf959a2fbd083ca82f6224/assets/hayhill.jpg
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -88,6 +88,9 @@ def _screen_install(args) -> int:
     if rc == install.NO_SUDO:
         print("Bot Desktop: this host has no sudo. Run as root on the host:\n  " + cmd.removeprefix("sudo "))
         return 1
+    if rc == install.PREFLIGHT_UNAVAILABLE:
+        print("Bot Desktop: install aborted before any package-manager run; see the preflight lines above.")
+        return 1
     if rc != 0:
         print(f"Bot Desktop: installer exited {rc}")
         return rc or 1

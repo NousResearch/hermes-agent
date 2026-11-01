@@ -687,17 +687,17 @@ def reapply_tool_filters(servers: dict[str, dict]) -> int:
             managed = native_names | {item.registry_name for item in utility}
             # Only mutate registrations owned by THIS profile, never a global
             # fallback or another profile's same-named server.
-            current = {
-                tool_name for tool_name in registry.get_tool_names_for_toolset(f"mcp-{name}")
-                if registry.snapshot_registration(tool_name, scope=scope) is not None
+            current_entries = {
+                tool_name: entry
+                for tool_name in registry.get_tool_names_for_toolset(f"mcp-{name}")
+                if (entry := registry.snapshot_registration(tool_name, scope=scope)) is not None
             }
             remove = sorted(
-                tool_name for tool_name in current & managed
+                tool_name for tool_name in current_entries.keys() & managed
                 if (tool_name not in desired
-                    or registry.snapshot_registration(tool_name, scope=scope).schema
-                    != desired[tool_name].schema)
+                    or current_entries[tool_name].schema != desired[tool_name].schema)
             )
-            missing = desired.keys() - current
+            missing = desired.keys() - current_entries.keys()
             if not remove and not missing:
                 continue
             additions = [item for item in candidates

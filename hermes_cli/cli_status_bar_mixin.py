@@ -538,10 +538,20 @@ class CLIStatusBarMixin:
         return max(32, int(width or 80))
 
     def _agent_spacer_height(self, width: Optional[int] = None) -> int:
-        """Spacer height above the status bar while the agent runs."""
+        """Spacer rows above the status bar while the agent runs.
+
+        Mutually exclusive with the spinner: the spacer holds the row only while the
+        spinner is not showing one. Both were independent before, so on the transition
+        frames where the spinner text appeared (or went away) the two could sum to 0 or
+        2, which changed the chrome's height and made the input block jump a row.
+        """
         if not getattr(self, "_agent_running", False) or getattr(self, "_modern_layout", False):
             return 0
-        return 0 if self._use_minimal_tui_chrome(width=width) else 1
+        if self._use_minimal_tui_chrome(width=width):
+            return 0
+        # The spacer keeps exactly one row whenever the spinner shows nothing; a
+        # multi-row spinner already reserves its own space, so no spare row is added.
+        return 0 if self._spinner_widget_height(width=width) else 1
 
     def _spinner_widget_height(self, width: Optional[int] = None) -> int:
         """Visible height of the spinner/status line above the status bar."""

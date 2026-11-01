@@ -5,6 +5,7 @@ import { KbdCombo } from '@/components/ui/kbd'
 import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import type { WorkspaceExecutionOwner } from '@/store/workspace-execution-owner'
 
 import { createTerminal, reportTerminalShell } from './terminals'
 import { useAgentTerminal } from './use-agent-terminal'
@@ -27,6 +28,7 @@ interface TerminalInstanceProps {
   onAddSelectionToChat: (text: string, label?: string) => void
   restoreCwd?: string
   reviveBuffer?: string
+  executionOwner?: WorkspaceExecutionOwner | null
 }
 
 /** One persistent xterm+PTY. Every open tab stays mounted (so its shell and
@@ -37,7 +39,8 @@ export function TerminalInstance({
   cwd,
   onAddSelectionToChat,
   restoreCwd,
-  reviveBuffer
+  reviveBuffer,
+  executionOwner
 }: TerminalInstanceProps) {
   const { t } = useI18n()
 
@@ -48,6 +51,7 @@ export function TerminalInstance({
     onAddSelectionToChat,
     restoreCwd,
     reviveBuffer,
+    executionOwner,
     onShell: shell => reportTerminalShell(id, shell)
   })
 

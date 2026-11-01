@@ -9,6 +9,8 @@ import type { CSSProperties } from 'react'
 import { triggerHaptic } from '@/lib/haptics'
 import { isComposerChord } from '@/lib/keybinds/chords'
 import { $previewTarget } from '@/store/preview'
+import type { WorkspaceExecutionOwner } from '@/store/workspace-execution-owner'
+import { workspaceExecutionOwnerMatchesActiveBackend } from '@/store/workspace-execution-owner'
 import { useTheme } from '@/themes/context'
 
 import { $terminalInjection } from '../store'
@@ -58,6 +60,8 @@ interface UseTerminalSessionOptions {
   restoreCwd?: string
   /** Serialized scrollback from the previous session, replayed once on mount. */
   reviveBuffer?: string
+  /** Backend identity captured by the terminal tab when it was created. */
+  executionOwner?: WorkspaceExecutionOwner | null
   /** Reports the resolved shell name once the PTY is live (for the tab label). */
   onShell?: (shell: string) => void
 }
@@ -77,6 +81,7 @@ export function useTerminalSession({
   onAddSelectionToChat,
   restoreCwd,
   reviveBuffer,
+  executionOwner,
   onShell
 }: UseTerminalSessionOptions) {
   // Key off renderedMode (the painted surface type), not resolvedMode (the
@@ -120,6 +125,11 @@ export function useTerminalSession({
   const [selection, setSelection] = useState('')
   const [selectionStyle, setSelectionStyle] = useState<CSSProperties | null>(null)
   const [shellName, setShellName] = useState('shell')
+
+  const canUseTerminalBackend = useCallback(
+    () => workspaceExecutionOwnerMatchesActiveBackend(executionOwner),
+    [executionOwner]
+  )
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -265,6 +275,7 @@ export function useTerminalSession({
     // is server-persistent; its callbacks only run once start() is called.
     const session = createSessionAttemptController(id, {
       isDisposed: () => disposed,
+      isExecutionOwnerActive: canUseTerminalBackend,
       isReplayingHistory: () => history.isReplaying(),
       onStarted: started => {
         lastSentSize = { cols: term.cols, rows: term.rows }
@@ -299,6 +310,7 @@ export function useTerminalSession({
     }
 
     const cwdTracker = trackTerminalCwd(id, {
+      canUseBackend: canUseTerminalBackend,
       getSessionId: () => sessionIdRef.current,
       lastObservedCwdRef,
       term,
@@ -324,6 +336,7 @@ export function useTerminalSession({
 
     cleanup.push(
       bindTerminalDrop(host, {
+        canUseBackend: canUseTerminalBackend,
         getSessionId: () => sessionIdRef.current,
         getShellName: () => shellNameRef.current,
         markActivity,
@@ -344,7 +357,11 @@ export function useTerminalSession({
 
       const sessionId = sessionIdRef.current
 
-      if (sessionId && (lastSentSize?.cols !== term.cols || lastSentSize?.rows !== term.rows)) {
+      if (
+        canUseTerminalBackend() &&
+        sessionId &&
+        (lastSentSize?.cols !== term.cols || lastSentSize?.rows !== term.rows)
+      ) {
         lastSentSize = { cols: term.cols, rows: term.rows }
         void terminalApi.resize(sessionId, { cols: term.cols, rows: term.rows })
       }
@@ -383,7 +400,11 @@ export function useTerminalSession({
 
     cleanup.push(bindTerminalActivity(term, host, markActivity))
 
-    const dataDisposable = term.onData(session.input)
+    const dataDisposable = term.onData(data => {
+      if (canUseTerminalBackend()) {
+        session.input(data)
+      }
+    })
 
     cleanup.push(() => dataDisposable.dispose())
 
@@ -401,7 +422,19 @@ export function useTerminalSession({
 
     cleanup.push(() => selectionDisposable.dispose())
 
-    cleanup.push(bindTerminalClipboard(term, host, markActivity, session.input, () => Boolean(sessionIdRef.current)))
+    cleanup.push(
+      bindTerminalClipboard(
+        term,
+        host,
+        markActivity,
+        data => {
+          if (canUseTerminalBackend()) {
+            session.input(data)
+          }
+        },
+        () => canUseTerminalBackend() && Boolean(sessionIdRef.current)
+      )
+    )
 
     // Open + fit + start only once webfonts settle. Fitting with fallback metrics
     // picks the wrong row count, the shell boots at that size, then the real font
@@ -525,7 +558,7 @@ export function useTerminalSession({
     // `id` is stable for the instance's life (keyed by tab id), so listing it
     // doesn't re-create the shell — it just satisfies the deps check for the
     // store writes keyed by it.
-  }, [addSelectionToChat, cwd, id, latestFontFamilyRef, mountedRef])
+  }, [addSelectionToChat, canUseTerminalBackend, cwd, id, latestFontFamilyRef, mountedRef])
 
   useEffect(() => {
     const term = termRef.current
@@ -600,7 +633,7 @@ export function useTerminalSession({
     return $terminalInjection.subscribe(command => {
       const sessionId = sessionIdRef.current
 
-      if (!command || !sessionId) {
+      if (!command || !sessionId || !canUseTerminalBackend()) {
         return
       }
 
@@ -609,7 +642,7 @@ export function useTerminalSession({
       $terminalInjection.set(null)
       termRef.current?.focus()
     })
-  }, [active, status])
+  }, [active, canUseTerminalBackend, status])
 
   return {
     addSelectionToChat,

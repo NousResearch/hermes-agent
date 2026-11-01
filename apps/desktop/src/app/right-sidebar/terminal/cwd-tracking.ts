@@ -48,6 +48,7 @@ export function parseOscCwd(code: 7 | 9, payload: string): string | null {
 }
 
 interface TerminalCwdTrackerOptions {
+  canUseBackend?: () => boolean
   getSessionId: () => string | null
   /** Latest cwd seen this session; de-dupes redundant store writes and seeds
    *  the cwd a retried shell starts in. */
@@ -63,7 +64,7 @@ interface TerminalCwdTrackerOptions {
 // updater de-dupes, so both feeding it is harmless.
 export function trackTerminalCwd(
   id: string,
-  { getSessionId, lastObservedCwdRef, term, terminalApi }: TerminalCwdTrackerOptions
+  { canUseBackend = () => true, getSessionId, lastObservedCwdRef, term, terminalApi }: TerminalCwdTrackerOptions
 ): { dispose: () => void; probe: () => void } {
   const recordCwd = (next: string | null | undefined) => {
     const value = (next ?? '').trim()
@@ -89,14 +90,18 @@ export function trackTerminalCwd(
   const probeCwd = () => {
     const sessionId = getSessionId()
 
-    if (!sessionId || !terminalApi.cwd || Date.now() - cwdProbeAt < CWD_PROBE_THROTTLE_MS) {
+    if (!canUseBackend() || !sessionId || !terminalApi.cwd || Date.now() - cwdProbeAt < CWD_PROBE_THROTTLE_MS) {
       return
     }
 
     cwdProbeAt = Date.now()
     void terminalApi
       .cwd(sessionId)
-      .then(recordCwd)
+      .then(cwd => {
+        if (canUseBackend() && getSessionId() === sessionId) {
+          recordCwd(cwd)
+        }
+      })
       .catch(() => {
         // Best-effort: no cwd probe on this platform (e.g. Windows).
       })

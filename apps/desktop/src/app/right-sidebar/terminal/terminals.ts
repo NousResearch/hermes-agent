@@ -5,7 +5,9 @@ import { atom, computed } from 'nanostores'
 
 import { readKey, writeKey } from '@/lib/storage'
 import { notifyError } from '@/store/notifications'
-import { $currentCwd } from '@/store/session'
+import { $focusedWorkspaceCwd } from '@/store/session-states'
+import type { WorkspaceExecutionOwner } from '@/store/workspace-execution-owner'
+import { focusedWorkspaceExecutionOwner, parseWorkspaceExecutionOwner, workspaceExecutionOwnerMatchesActiveBackend } from '@/store/workspace-execution-owner'
 
 import { setTerminalTakeover } from '../store'
 
@@ -110,6 +112,8 @@ if (typeof window !== 'undefined') {
  *  PTY session id the main process mints); each instance owns its own shell. */
 export interface TerminalEntry {
   id: string
+  /** Backend that owns this PTY; a saved id must never be sent to another gateway. */
+  executionOwner?: WorkspaceExecutionOwner | null
   /** Display label. `auto` adopts the resolved shell name until the user renames. */
   title: string
   auto: boolean
@@ -117,7 +121,7 @@ export interface TerminalEntry {
    *  session/project state — the only thing they inherit is this initial cwd
    *  (the project root if opened in one, else the backend's default). Switching
    *  sessions never moves or recreates a terminal; at most it re-SELECTS a tab
-   *  already pointed at the session's cwd (see the $currentCwd listener). */
+   *  already pointed at the focused chat's cwd (see the listener below). */
   cwd: string
   /** Last observed working directory of the live shell (tracked via the PTY
    *  cwd probe / OSC 7). Used to reopen the tab where the user last `cd`'d
@@ -140,6 +144,7 @@ interface PersistedTerminalEntry {
   auto: boolean
   cwd: string
   id: string
+  executionOwner?: WorkspaceExecutionOwner | null
   restoreCwd?: string
   reviveBuffer?: string
   /** A server shell was created for this tab; restoration must never respawn it. */
@@ -170,6 +175,7 @@ function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | nul
   const cwd = typeof record.cwd === 'string' ? record.cwd : ''
   const restoreCwd = typeof record.restoreCwd === 'string' && record.restoreCwd ? record.restoreCwd : undefined
   const reviveBuffer = typeof record.reviveBuffer === 'string' ? record.reviveBuffer : undefined
+  const executionOwner = parseWorkspaceExecutionOwner(record.executionOwner)
 
   if (!id) {
     return null
@@ -179,6 +185,7 @@ function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | nul
     auto: typeof record.auto === 'boolean' ? record.auto : true,
     cwd,
     id,
+    ...(executionOwner !== undefined ? { executionOwner } : {}),
     ...(restoreCwd ? { restoreCwd } : {}),
     ...(reviveBuffer ? { reviveBuffer } : {}),
     ...(record.persistent === true ? { persistent: true } : {}),
@@ -228,6 +235,7 @@ function persistTerminals(list: readonly TerminalEntry[], activeTerminalId: null
       auto: term.auto,
       cwd: term.cwd,
       id: term.id,
+      ...(term.executionOwner !== undefined ? { executionOwner: term.executionOwner } : {}),
       ...(term.restoreCwd ? { restoreCwd: term.restoreCwd } : {}),
       ...(term.reviveBuffer ? { reviveBuffer: term.reviveBuffer } : {}),
       ...(term.persistent ? { persistent: true } : {}),
@@ -263,9 +271,12 @@ const newId = () => randomUuid()
 
 /** Append a fresh terminal and focus it. Captures the current cwd once (its only
  *  tie to session/project state); pass an explicit cwd to override. Returns the id. */
-export function createTerminal(cwd: string = $currentCwd.get()): string {
+export function createTerminal(
+  cwd: string = $focusedWorkspaceCwd.get(),
+  executionOwner: WorkspaceExecutionOwner | null = focusedWorkspaceExecutionOwner()
+): string {
   const id = newId()
-  $terminals.set([...$terminals.get(), { id, title: 'Terminal', auto: true, cwd, kind: 'user' }])
+  $terminals.set([...$terminals.get(), { id, executionOwner, title: 'Terminal', auto: true, cwd, kind: 'user' }])
   $activeTerminalId.set(id)
 
   return id
@@ -346,7 +357,7 @@ const terminalCwd = (term: TerminalEntry) => normalizePath(term.restoreCwd || te
 // one, and never reveals the pane; a detached session (empty cwd) or a cwd no
 // tab lives in leaves the tabs exactly where they were. `listen` (not
 // `subscribe`) so boot keeps the persisted active tab.
-$currentCwd.listen(cwd => {
+$focusedWorkspaceCwd.listen(cwd => {
   const target = normalizePath(cwd)
 
   if (!target) {
@@ -393,6 +404,12 @@ export function closeTerminal(id: string): void {
 
   if (entry?.kind !== 'user' || !closeSaved) {
     removeExitedTerminal(id)
+
+    return
+  }
+
+  if (!workspaceExecutionOwnerMatchesActiveBackend(entry.executionOwner)) {
+    notifyError(new Error('Switch to the connection that owns this terminal before closing its shell.'), 'Could not close terminal')
 
     return
   }

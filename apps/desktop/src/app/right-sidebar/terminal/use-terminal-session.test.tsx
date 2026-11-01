@@ -4,7 +4,10 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { $desktopBoot } from '@/store/boot'
+import { $connection } from '@/store/session'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
+
+import { $terminalInjection } from '../store'
 
 import { $terminals, closeAllTerminals, closeOtherTerminals, createTerminal, updateTerminalReviveBuffer } from './terminals'
 import { useTerminalSession } from './use-terminal-session'
@@ -133,11 +136,12 @@ class Socket {
 // Real scrollback (a command and its output): main's idle-prompt heuristic would clear a lone line.
 const SAVED_HISTORY = '$ echo saved history\r\nsaved history'
 
-function Harness({ id }: { id: string }) {
+function Harness({ id, active = false }: { id: string; active?: boolean }) {
   const { hostRef, status } = useTerminalSession({
     id,
     cwd: '/work',
-    active: false,
+    active,
+    executionOwner: $terminals.get().find(tab => tab.id === id)?.executionOwner,
     reviveBuffer: SAVED_HISTORY,
     onAddSelectionToChat: () => {}
   })
@@ -171,6 +175,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $connection.set(null)
   window.dispatchEvent(new Event('beforeunload'))
   Reflect.deleteProperty(window, 'hermesDesktop')
   clearWebappSession()
@@ -181,6 +186,66 @@ afterEach(() => {
   emulator.output = ''
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
+})
+
+it('refuses a foreign shell, then revokes input and close when its owning profile changes', async () => {
+  seedWebappSession('test-token')
+  vi.stubGlobal('WebSocket', Socket)
+  installBrowserDesktopBridge()
+  const owner = { connectionId: 'gateway-b', mode: 'remote' as const, profile: 'default', endpoint: 'url:https://gateway-b.test' }
+  const connection = { ...owner, remoteKind: 'url', baseUrl: 'https://gateway-b.test' }
+  $connection.set({ ...connection, connectionId: 'gateway-a', baseUrl: 'https://gateway-a.test' } as never)
+  const api = window.hermesDesktop!.terminal!
+  const start = vi.spyOn(api, 'start')
+  const write = vi.spyOn(api, 'write')
+  const close = vi.spyOn(api, 'closeSaved')
+  const id = createTerminal('/work', owner)
+  render(<Harness active id={id} />)
+  await waitFor(() => expect(emulator.output).toContain('another gateway'))
+  expect(start).not.toHaveBeenCalled()
+
+  act(() => {
+    $connection.set(connection as never)
+    emulator.input('\r')
+  })
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+  write.mockClear()
+
+  act(() => {
+    $connection.set({ ...connection, profile: 'worker' } as never)
+    emulator.input('echo wrong-profile\r')
+    $terminalInjection.set('echo wrong-profile')
+    closeAllTerminals()
+  })
+  expect(write).not.toHaveBeenCalled()
+  expect(close).not.toHaveBeenCalled()
+  expect($terminals.get().some(tab => tab.id === id)).toBe(true)
+  $terminalInjection.set(null)
+})
+
+it('does not attach a late shell response through a newly selected gateway', async () => {
+  seedWebappSession('test-token')
+  vi.stubGlobal('WebSocket', Socket)
+  installBrowserDesktopBridge()
+  const owner = { connectionId: 'gateway-a', mode: 'remote' as const, profile: 'default', endpoint: 'url:https://gateway-a.test' }
+  const connection = { ...owner, remoteKind: 'url', baseUrl: 'https://gateway-a.test' }
+  $connection.set(connection as never)
+  const api = window.hermesDesktop!.terminal!
+  let finish!: (session: Awaited<ReturnType<typeof api.start>>) => void
+  const start = vi.spyOn(api, 'start').mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+  const attach = vi.spyOn(api, 'attach')
+  const dispose = vi.spyOn(api, 'dispose')
+  const id = createTerminal('/work', owner)
+  render(<Harness id={id} />)
+  await waitFor(() => expect(start).toHaveBeenCalledOnce())
+
+  await act(async () => {
+    $connection.set({ ...connection, connectionId: 'gateway-b', baseUrl: 'https://gateway-b.test' } as never)
+    finish({ id: 'old-gateway-shell', cwd: '/work', shell: 'bash' })
+  })
+  expect(attach).not.toHaveBeenCalled()
+  expect(dispose).not.toHaveBeenCalled()
+  expect(emulator.output).toContain('another gateway')
 })
 
 it.each([1006, 1000])('retains the saved tab on transport loss (%s) and lets Enter recover in the same scrollback', async code => {

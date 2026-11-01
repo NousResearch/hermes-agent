@@ -1788,6 +1788,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return await self._send_interactive_card(
                 prompt.chat_id, card, prompt.metadata, "send_exec_approval failed",
                 state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,
+                extra_state={"body": prompt.text.replace(self._ea_deadline_line(), "")},  # deadline is moot once resolved
             )
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
@@ -1795,9 +1796,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _send_interactive_card(
         self, chat_id: str, card: dict[str, Any], metadata: Optional[dict[str, Any]], failure_message: str, *,
-        state_map: dict[int, dict[str, str]], state_id: int, session_key: str,
+        state_map: dict[int, dict[str, str]], state_id: int, session_key: str, extra_state: Optional[dict[str, str]] = None,
     ) -> SendResult:
-        """Send a button card and, on success, remember where it went so a click can be validated."""
+        """Send a button card and, on success, remember where it went (plus *extra_state*) so a click can be validated."""
         response = await self._feishu_send_with_retry(
             chat_id=chat_id, msg_type="interactive", payload=json.dumps(card, ensure_ascii=False),
             reply_to=None, metadata=metadata,
@@ -1808,6 +1809,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "session_key": session_key,
                 "message_id": result.message_id or "",
                 "chat_id": chat_id,
+                **(extra_state or {}),
             }
         return result
 
@@ -1841,13 +1843,12 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     @staticmethod
-    def _build_resolved_approval_card(*, choice: str, user_name: str) -> dict[str, Any]:
-        """Raw card JSON shown in place of the buttons once an approval is resolved."""
+    def _build_resolved_approval_card(*, choice: str, user_name: str, body: str | None = None) -> dict[str, Any]:
+        """Raw card JSON shown in place of the buttons once an approval is resolved; the request (*body*) stays."""
         icon = "❌" if choice == "deny" else "✅"
-        key = _APPROVAL_LABEL_KEYS.get(choice, "platform.feishu.approval.resolved_fallback")
-        label = t(key)
-        return _card(f"{icon} {label}", "red" if choice == "deny" else "green",
-                     t("platform.feishu.approval.resolved_by_user", icon=icon, label=label, user=user_name))
+        label = t(_APPROVAL_LABEL_KEYS.get(choice, "platform.feishu.approval.resolved_fallback"))
+        decided = t("platform.feishu.approval.resolved_by_user", icon=icon, label=label, user=user_name)
+        return _card(f"{icon} {label}", "red" if choice == "deny" else "green", f"{body}\n\n{decided}" if body else decided)
 
     @staticmethod
     def _build_resolved_update_prompt_card(*, answer: str, user_name: str) -> dict[str, Any]:
@@ -2317,7 +2318,7 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         if not self._submit_on_loop(loop, coro):
             return self._card_response()
-        return self._card_response(self._build_resolved_approval_card(choice=choice, user_name=user_name))
+        return self._card_response(self._build_resolved_approval_card(choice=choice, user_name=user_name, body=state.get("body")))
 
     def _handle_update_prompt_card_action(self, *, event: Any, action_value: dict[str, Any], loop: Any) -> Any:
         """Schedule update prompt resolution and build the synchronous callback response."""

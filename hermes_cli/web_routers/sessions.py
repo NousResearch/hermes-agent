@@ -684,6 +684,7 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     from agent.context_compressor import is_compaction_summary_message
     from agent.conversation_compression import _extract_steer_text_from_message
     from agent.history_commentary import project_history_commentary
+    from agent.message_metadata import withheld_prompt_text
     from agent.prompt_builder import STEER_DISPLAY_KIND
     from agent.turn_failure_copy import untyped_failed_turn_display_kind
 
@@ -718,6 +719,9 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
         if message.get("role") == "user" and message.get("display_kind") == STEER_DISPLAY_KIND and (
                 steer_text := _extract_steer_text_from_message(message)):
             message = {**message, "display_content": steer_text}
+        # A pre_llm_call veto stores a placeholder; the transcript shows what the user typed.
+        if message.get("role") == "user" and (typed := withheld_prompt_text(message)) is not None:
+            message = {**message, "display_content": typed}
         if not is_compaction_summary_message(message):
             projected_messages.append(message)
             continue

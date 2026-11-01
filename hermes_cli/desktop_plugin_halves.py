@@ -26,6 +26,7 @@ import tempfile
 import threading
 from pathlib import Path
 
+from pm.filesystem import is_junction
 from utils import rmtree_readonly
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,12 @@ _GIT_ORIGIN = re.compile(r'\[remote "origin"\][^[]*?url\s*=\s*(\S+)')
 #: Public: ``desktop_plugin_install`` takes it too, so a clone-publish never interleaves with a
 #: reconcile pass copying the same package's folder.
 ROOT_WRITER = threading.Lock()
+
+
+def _is_link(path: Path) -> bool:
+    """A symlink or a Windows junction: Node's ``lstat`` reports both as a link, and Electron's
+    checks of the same folder go by that. ``Path.is_symlink()`` alone misses a junction."""
+    return path.is_symlink() or is_junction(path)
 
 
 def _list_dirs(folder: Path, *, follow_links: bool = False) -> list[str]:
@@ -135,13 +142,13 @@ def check_desktop_tree(source: Path, base: Path, *, linked_root: bool = False,
     *linked_root* accepts *source* itself being a link (a dev checkout linked into ``plugins/``);
     every entry inside it is still held to the rule. Folders named in *skip* are left out of the
     copy (:func:`root_layout_ignore`), so they are not walked."""
-    if source.is_symlink() and not linked_root:
+    if _is_link(source) and not linked_root:
         return f"The desktop plugin contains a link ({source.relative_to(base)}); links are not installed."
     total = 0
     for folder, dirs, files in os.walk(source):
         dirs[:] = [n for n in dirs if n not in skip]
         for entry in (Path(folder) / n for n in dirs + files):
-            if entry.is_symlink():
+            if _is_link(entry):
                 return f"The desktop plugin contains a link ({entry.relative_to(base)}); links are not installed."
         total += sum((Path(folder) / n).stat().st_size for n in files)
         if total > TREE_MAX_BYTES:
@@ -165,7 +172,7 @@ def publish_desktop_tree(source_dir: Path, target: Path, marker: dict | None, ig
             (staged / PACKAGE_MARKER).unlink(missing_ok=True)
         else:
             _write_marker(staged, marker)
-        if target.is_symlink():
+        if _is_link(target):
             target.unlink()
         elif target.exists():
             rmtree_readonly(target)
@@ -206,11 +213,11 @@ def materialize_desktop_half(package_dir: Path, app_root: Path, name: str) -> Pa
 
     target = app_root / name
     existing = read_package_marker(target)
-    linked = package_dir.is_symlink()
+    linked = _is_link(package_dir)
     # A link at ``<app_root>/<name>`` is never a copy this pass may keep or stamp: a marker-less one is
     # the user's own linked plugin, and one carrying a marker is an earlier copy of a linked checkout
     # that kept the link instead of the files (Electron's ``cp`` did), its marker inside the checkout.
-    target_is_link = target.is_symlink()
+    target_is_link = _is_link(target)
     if target_is_link and existing is None:
         return None
     marker = {
@@ -307,7 +314,7 @@ def reconcile_desktop_halves_report(hermes_root: Path, app_root: Path) -> dict:
             folder = app_root / name
             marker = read_package_marker(folder)
             if marker and _source_gone(name, Path(marker["source"]) / "plugin.js"):
-                if folder.is_symlink():
+                if _is_link(folder):
                     folder.unlink(missing_ok=True)
                 else:
                     shutil.rmtree(folder, ignore_errors=True)

@@ -133,7 +133,7 @@ def install_desktop_plugin(identifier: str, *, ref: Optional[str], catalog_name:
                       "sourceMtimeMs": halves.mtime_ms((source_dir / "plugin.js").stat())} if package_name else None
             # The exists check and the publish must not interleave with a reconcile pass.
             with halves.ROOT_WRITER:
-                if (target.is_symlink() or target.exists()) and not force:
+                if (halves._is_link(target) or target.exists()) and not force:
                     return _failure(f"Desktop plugin '{folder}' already exists. Enable force reinstall to replace it.")
                 halves.publish_desktop_tree(source_dir, target, marker)
     except pc.PluginOperationError as exc:
@@ -167,7 +167,7 @@ def remove_desktop_plugin(name: str, *, force: bool = False) -> dict[str, Any]:
     except _pc().PluginOperationError as exc:
         return _failure(str(exc))
     target = desktop_plugins_root() / folder
-    if target.is_symlink():
+    if halves._is_link(target):
         return _failure(
             f"'{folder}' is linked from somewhere else on this host; remove that link where it lives."
         )

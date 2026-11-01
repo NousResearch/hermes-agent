@@ -563,13 +563,23 @@ def resolve_persist_behavior(
 MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL = "once_with_global"
 MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET = "once_requires_target"
 MODEL_SWITCH_ERR_BAD_REASONING = "bad_reasoning"
+MODEL_SWITCH_ERR_RESET_WITH_FLAGS = "reset_with_flags"
 
 # Canonical (surface-neutral) error copy. Surfaces prepend their own decoration ("  ✗ " in the
 # CLI, "❌ " in the gateway) but MUST NOT change the core sentence — it is shared user-visible copy.
 MODEL_SWITCH_ERROR_TEXT = {
     MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL: "/model --once cannot be combined with --global",
     MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET: "/model --once requires a model or provider.",
-    MODEL_SWITCH_ERR_BAD_REASONING: "/model --reasoning takes none, minimal, low, medium, high, xhigh, max or ultra."}
+    MODEL_SWITCH_ERR_BAD_REASONING: "/model --reasoning takes none, minimal, low, medium, high, xhigh, max or ultra.",
+    MODEL_SWITCH_ERR_RESET_WITH_FLAGS: (
+        "/model reset takes no flags — it clears this session's model override so the "
+        "configured default applies again.")}
+
+# ``/model reset`` clears the session's /model override instead of switching to a model named
+# "reset". Deliberately NOT aliased to "default": MoA's default preset is literally named
+# "default", so ``/model default`` keeps resolving through exact_moa_preset_name(). A model whose
+# bare id is "reset" stays reachable by its qualified slug (``vendor/reset``, ``vendor:reset``).
+MODEL_SWITCH_RESET_TOKEN = "reset"
 
 
 @dataclass(frozen=True)
@@ -600,13 +610,19 @@ class ModelSwitchRequest:
         """Canonical (undercorated) error strings for this request."""
         return [MODEL_SWITCH_ERROR_TEXT[code] for code in self.errors]
 
+    @property
+    def is_reset(self) -> bool:
+        """``/model reset`` with no flags: clear the session override, keep the conversation."""
+        return self.target.strip().lower() == MODEL_SWITCH_RESET_TOKEN and not self.errors
+
 
 def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
     """The ONE parser for every /model surface: tokenization plus flag-conflict validation.
 
     ``--once`` + ``--global`` -> ``MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL``; ``--once`` with neither
     a model nor ``--provider`` -> ``MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET``; an unknown
-    ``--reasoning`` level -> ``MODEL_SWITCH_ERR_BAD_REASONING``. Targets pass through
+    ``--reasoning`` level -> ``MODEL_SWITCH_ERR_BAD_REASONING``; ``reset`` with any flag ->
+    ``MODEL_SWITCH_ERR_RESET_WITH_FLAGS`` (see :attr:`ModelSwitchRequest.is_reset`). Targets pass through
     untouched (bare names, ``vendor/model``, ``vendor:model``) for :func:`switch_model`."""
     raw = str(raw or "")
     parsed = parse_model_flags_detailed(raw)
@@ -620,6 +636,10 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
         from hermes_constants import parse_reasoning_effort
         if parse_reasoning_effort(parsed.reasoning_effort) is None:
             errors.append(MODEL_SWITCH_ERR_BAD_REASONING)
+    if parsed.model_input.strip().lower() == MODEL_SWITCH_RESET_TOKEN and (
+            parsed.explicit_provider or parsed.reasoning_effort or parsed.is_global
+            or parsed.is_session or parsed.is_once):
+        errors.append(MODEL_SWITCH_ERR_RESET_WITH_FLAGS)
     # First matching flag wins: once > session > global > default.
     scope = next((name for name, on in (("once", parsed.is_once), ("session", parsed.is_session),
                                         ("global", parsed.is_global)) if on), "default")

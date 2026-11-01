@@ -253,11 +253,11 @@ DEFAULT_CONFIG = {
         # message isn't served with a skeleton system prompt. On timeout the gate opens and warm-up
         # finishes in the background. 0 = disable warm-up (lazy init).
         "gateway_startup_warmup_timeout": 20,
-        # Stale-stream ceiling (seconds) for local providers (Ollama, oMLX, llama-cpp). Applied when
-        # the base stale timeout is at its 180s default and a local endpoint is detected, so a
-        # wedged local server eventually trips the detector instead of hanging forever. Env
-        # HERMES_LOCAL_STREAM_STALE_TIMEOUT overrides.
+        # Stale-stream ceiling (s) for local providers (Ollama, oMLX, llama-cpp) when the base stale
+        # timeout is at its 180s default, so a wedged local server eventually trips the detector
+        # instead of hanging forever. Env HERMES_LOCAL_STREAM_STALE_TIMEOUT overrides.
         "local_stream_stale_timeout": 900,
+        "stream_max_lifetime": 0,  # opt-in whole-stream cap in s, 0 = off (agent/stream_max_lifetime.py)
         # How user-attached images reach the main model (gateway, TUI, CLI /attach). "auto" = native
         # when the model reports supports_vision=True AND auxiliary.vision.provider is not
         # explicitly set, else text; "native" = always attach (non-vision models error at the

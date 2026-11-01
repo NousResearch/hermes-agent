@@ -1795,10 +1795,7 @@ export const jaOverrides = {
     fleet: {
       localDevice:
         'このデバイス（ローカルバックエンド — Hermes が無ければインストールし、あれば新しいセッションを開きます）',
-      switchDeviceTitle: 'このデバイスに切り替えますか？',
-      switchDeviceDesc: 'このコンピュータで新しいセッションを開きます。今の会話は別のゲートウェイに残ります。',
-      switchDeviceConfirm: '切り替える',
-      installDeviceTitle: 'このデバイスに切り替えますか？',
+      installDeviceTitle: 'このデバイスに Hermes をインストールしますか？',
       installDeviceDesc:
         'Hermes をローカルにインストールしてから、このコンピュータで新しいセッションを開きます。確認するまでインストールは始まりません。',
       installDeviceConfirm: 'ローカルにインストール',

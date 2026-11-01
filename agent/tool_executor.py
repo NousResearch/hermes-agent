@@ -812,6 +812,7 @@ def _run_agent_tool_execution_middleware(
         request_result = apply_tool_request_middleware(
             function_name,
             relay_args,
+            original_args=function_args,
             skip_relay=True,
             **tool_hook_ids(agent, effective_task_id, tool_call_id),
         )

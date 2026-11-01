@@ -1,7 +1,9 @@
 """A stalled ``docker exec`` is one failed poll attempt, never the poll's verdict.
 
 Driven without Docker: ``docker_exec_sh`` is replaced by a scripted stand-in and the poll's clock
-is fake, so the timeout branches run on every host (DOCKER_DAEMON_REQUIRED opts out of the skip).
+is fake, so the timeout branches run on every host. The module lives outside ``tests/docker/`` on
+purpose: default discovery skips that directory (it needs a daemon and an image), and these
+stand-in tests need neither.
 """
 
 from __future__ import annotations
@@ -13,8 +15,6 @@ import pytest
 
 from tests.docker import conftest as docker_conftest
 from tests.docker import test_dashboard
-
-DOCKER_DAEMON_REQUIRED = False
 
 
 class _Clock:
@@ -79,8 +79,9 @@ def test_fail_closed_dashboard_guard_needs_a_completed_probe(monkeypatch):
         (0, "rc=0\n", "must NOT serve"),
         (1, "", "refusal"),  # docker exec into a container that already exited
         (127, "rc=127\n", "refusal"),  # curl missing
+        (126, "", "refusal"),  # docker exec could not start the probe (exec user missing)
     ],
-    ids=["refused", "served", "container-gone", "curl-missing"],
+    ids=["refused", "served", "container-gone", "curl-missing", "exec-user-missing"],
 )
 def test_fail_closed_dashboard_guard_needs_an_observed_refusal(monkeypatch, returncode, stdout, failure):
     """A completed probe that never reached the port proves nothing either: only a refusal passes."""
@@ -103,3 +104,18 @@ def test_stall_after_a_completed_probe_keeps_its_output(monkeypatch):
     failed = SimpleNamespace(returncode=1, stdout="HOME=/root", stderr="")
     monkeypatch.setattr(docker_conftest, "docker_exec_sh", _scripted_exec(clock, [failed, "stall"]))
     assert docker_conftest.poll_container("c", "probe", deadline_s=12.0) == (False, "HOME=/root")
+
+
+@pytest.mark.parametrize("module", [docker_conftest, test_dashboard], ids=["poll_container", "_http_probe"])
+def test_sleep_between_failed_probes_stops_at_the_deadline(monkeypatch, module):
+    """The pause after a failed probe never runs past the deadline the caller gave."""
+    clock = _Clock()
+    monkeypatch.setattr(module, "time", clock)
+    failed = SimpleNamespace(returncode=1, stdout="", stderr="")
+    monkeypatch.setattr(module, "docker_exec_sh", _scripted_exec(clock, [failed]))
+    if module is docker_conftest:
+        assert module.poll_container("c", "probe", deadline_s=1.0) == (False, "")
+    else:
+        with pytest.raises(AssertionError, match="never returned HTTP"):
+            module._http_probe("c", "/api/status", deadline_s=1.0)
+    assert clock.now <= 1.0

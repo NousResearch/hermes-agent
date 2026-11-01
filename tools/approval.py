@@ -813,7 +813,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     owner override reduces every surface to once/deny and persists nothing. ``pending_body`` is a thunk, built only once a human is
     actually asked, so a smart APPROVE never pays for redacting a large script.
     """
-    from agent.redact import redact_sensitive_text
+    from agent.redact import redact_approval_display
 
     smart_denied = False
     if smart:
@@ -862,8 +862,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     if is_gateway or is_ask:
         # Redacted copies for user-visible rendering only (the gateway paints them into Discord/Slack); the raw
         # command still executes after approval and persistence keys off pattern_key.
-        display_command = redact_sensitive_text(command)
-        display_description = redact_sensitive_text(description)
+        display_command = redact_approval_display(command)
+        display_description = redact_approval_display(description)
         notify_cb = _gateway_notify_cb(session_key)
         if notify_cb is not None:
             # Smart DENY overrides are one-operation decisions, so the UI must not offer a
@@ -916,8 +916,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.
     prompt_command, prompt_description = command, description
     if spec.redact_cli:
-        prompt_command = redact_sensitive_text(command)
-        prompt_description = redact_sensitive_text(description)
+        prompt_command = redact_approval_display(command)
+        prompt_description = redact_approval_display(description)
     hook_kwargs = dict(command=prompt_command, description=prompt_description, pattern_key=pattern_key,
                        pattern_keys=list(pattern_keys), session_key=session_key, surface="cli")
     approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
@@ -1286,13 +1286,13 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # Smart mode: an APPROVE only suppresses the redundant whole-script prompt; the per-call terminal() guards still
     # run independently. The gateway renders the pending payload to Discord/Slack, so the script body is redacted for
     # display; the raw code is what gets assessed and run.
-    from agent.redact import redact_sensitive_text
+    from agent.redact import redact_approval_display
     return _human_decision(
         _EXECUTE_CODE_GATE, command=command, description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
         smart=approval_mode == "smart",
-        pending_body=lambda: f"**Code:**\n```python\n{redact_sensitive_text(code)}\n```",
+        pending_body=lambda: f"**Code:**\n```python\n{redact_approval_display(code)}\n```",
     )
 
 

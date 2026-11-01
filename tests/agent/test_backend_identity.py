@@ -55,6 +55,20 @@ class TestSameDeployment:
             assert not same_deployment(a, b)
             assert not should_skip_candidate(a, b, FailureScope.MODEL)
 
+    def test_named_custom_providers_same_url_are_distinct_deployments(self):
+        """Saved custom entries may use separate API keys at one endpoint."""
+        failed = _id("custom", "gpt-5.6-terra", "https://hezubus.cc/v1")
+        fallback = _id(
+            "custom:hezubus-pro", "gpt-5.6-terra", "https://hezubus.cc/v1"
+        )
+        assert not same_deployment(fallback, failed)
+        assert not should_skip_candidate(fallback, failed, FailureScope.MODEL)
+
+    def test_two_named_custom_providers_same_url_are_distinct(self):
+        a = _id("custom:primary", "model", "https://proxy.example/v1")
+        b = _id("custom:backup", "model", "https://proxy.example/v1")
+        assert not same_deployment(a, b)
+
 
 class TestSameCredentialSurface:
     def test_same_provider_label_shares_credential(self):

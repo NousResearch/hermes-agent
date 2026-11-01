@@ -3405,11 +3405,11 @@ def _finish_compaction_boundary(
                 agent.session_id or "", parent_session_id=_boundary_parent, reset=False, reason="compression"
             )
 
-    # Route via _emit_status so the warning reaches gateway platforms; store it on
-    # _compression_warning so a late-bound status_callback can replay it.
+    # Gateway-visible warning, stored for a late status_callback. 0 disables.
     compressor = agent.context_compressor
     _cc = compressor.compression_count
-    if _cc >= 2:
+    _warn_after = getattr(agent, "compression_warn_after_compressions", 2)
+    if _cc >= _warn_after > 0:
         _cc_msg = (
             f"{agent.log_prefix}⚠️  Session compressed {_cc} times — accuracy may degrade. Consider /new to start fresh."
         )

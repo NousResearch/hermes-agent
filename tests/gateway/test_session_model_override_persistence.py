@@ -15,6 +15,7 @@ Covers:
   - api_key is NEVER serialized to sessions.json
 """
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -160,6 +161,61 @@ def test_rehydrate_llamacpp_override_follows_live_managed_port(store_factory):
     override = runner._session_model_overrides[session_key]
     assert override["base_url"] == "http://127.0.0.1:18434/v1"
     assert override["api_key"] == "local-key"
+
+
+@pytest.mark.parametrize("source", ["persisted", "in_memory"])
+def test_rehydrate_custom_override_replaces_stale_builtin_endpoint(store_factory, source):
+    """A custom route that retained OpenRouter's URL must return to its current local endpoint,
+    including when the bad route is already loaded in this process."""
+    store = store_factory()
+    session_key = store.get_or_create_session(_make_source()).session_key
+    stale_override = {
+        "model": "primary", "provider": "custom", "base_url": "https://openrouter.ai/api/v1",
+    }
+    if source == "persisted":
+        store.set_model_override(session_key, stale_override)
+
+    runner = _make_runner(store_factory())
+    if source == "in_memory":
+        runner._session_state(session_key).conversation.model_override = {
+            **stale_override, "api_key": "stale-key", "api_mode": "chat_completions",
+        }
+
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        return_value={
+            "api_key": "local-key", "api_mode": "chat_completions",
+            "base_url": "http://127.0.0.1:8080/v1", "provider": "custom",
+        },
+    ):
+        runner._rehydrate_session_model_override(session_key)
+
+    override = runner._session_model_override(session_key)
+    assert override["model"] == "primary"
+    assert override["provider"] == "custom"
+    assert override["base_url"] == "http://127.0.0.1:8080/v1"
+    assert override["api_key"] == "local-key"
+
+
+def test_rehydrate_custom_override_keeps_explicit_alias_endpoint(store_factory, monkeypatch):
+    """A custom alias explicitly configured for OpenRouter is not a leaked previous route."""
+    store = store_factory()
+    session_key = store.get_or_create_session(_make_source()).session_key
+    runner = _make_runner(store)
+    alias_route = {
+        "model": "primary", "provider": "custom", "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "alias-key", "api_mode": "chat_completions",
+    }
+    runner._session_state(session_key).conversation.model_override = dict(alias_route)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch._load_direct_aliases",
+        lambda: {"primary": SimpleNamespace(model="primary", provider="custom", base_url=alias_route["base_url"])},
+    )
+
+    with patch("gateway.run._resolve_runtime_agent_kwargs_for_provider", side_effect=AssertionError("unexpected re-resolve")):
+        runner._rehydrate_session_model_override(session_key)
+
+    assert runner._session_model_override(session_key) == alias_route
 
 
 def test_rehydrate_opencode_override_heals_relay_url_for_rederived_wire(store_factory):

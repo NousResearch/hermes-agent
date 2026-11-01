@@ -1,10 +1,12 @@
 from decimal import Decimal
+import re
 from types import SimpleNamespace
 
 import pytest
 
 from agent.usage_pricing import (
     _OFFICIAL_DOCS_PRICING,
+    COST_COMPONENTS,
     CanonicalUsage,
     format_cost_label,
     estimate_usage_cost,
@@ -924,3 +926,540 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+def test_anthropic_dated_alias_resolves_to_its_base_pricing():
+    """A dated Anthropic id must price identically to its undated base.
+
+    Anthropic publishes each model under both a rolling alias
+    (``claude-haiku-4-5``) and a dated alias pinning a specific release
+    (``claude-haiku-4-5-20251001``).  They are the same SKU at the same rate,
+    but only the rolling form is a pricing-table key, so a session pinned to
+    the dated id recorded ``cost_usd`` NULL for every turn.
+
+    Asserted as a relation to the base entry rather than as literal dollar
+    figures, so the guard survives a rate update.
+    """
+    for dated, base in (
+        ("claude-haiku-4-5-20251001", "claude-haiku-4-5"),
+        ("claude-sonnet-4-5-20250929", "claude-sonnet-4-5"),
+        ("claude-opus-4-5-20251101", "claude-opus-4-5"),
+    ):
+        base_entry = get_pricing_entry(base, provider="anthropic")
+        assert base_entry is not None, base
+        dated_entry = get_pricing_entry(dated, provider="anthropic")
+        assert dated_entry is not None, dated
+        for field in (
+            "input_cost_per_million",
+            "output_cost_per_million",
+            "cache_read_cost_per_million",
+            "cache_write_cost_per_million",
+        ):
+            assert getattr(dated_entry, field) == getattr(base_entry, field), (
+                f"{dated} must price as {base} on {field}"
+            )
+
+
+def test_anthropic_old_scheme_dated_ids_keep_their_own_pricing():
+    """Old-scheme ids whose date is part of the name must NOT be rewritten.
+
+    ``claude-3-5-haiku-20241022`` is the model's actual id, not an alias of a
+    ``claude-3-5-haiku`` that does not exist.  Stripping its date would either
+    miss (best case) or, worse, collide with an unrelated family entry — so
+    these must continue to resolve on their own key at their own rate.
+    """
+    haiku_35 = get_pricing_entry("claude-3-5-haiku-20241022", provider="anthropic")
+    sonnet_35 = get_pricing_entry("claude-3-5-sonnet-20241022", provider="anthropic")
+
+    assert haiku_35 is not None
+    assert sonnet_35 is not None
+    # Distinct models must not have been collapsed onto one entry.
+    assert haiku_35.input_cost_per_million != sonnet_35.input_cost_per_million
+
+
+def test_anthropic_dated_fallback_never_overrides_an_explicit_entry():
+    """A dated id that HAS its own table key must resolve on that key.
+
+    The date-stripping fallback runs last, after the direct and dot-normalized
+    lookups, so a deliberately priced dated entry always wins over its base.
+    """
+    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+
+    explicitly_dated = [
+        model
+        for (provider, model) in _OFFICIAL_DOCS_PRICING
+        if provider == "anthropic" and re.search(r"-\d{8}$", model)
+    ]
+    assert explicitly_dated, "expected the snapshot to carry some dated keys"
+
+    for model in explicitly_dated:
+        resolved = get_pricing_entry(model, provider="anthropic")
+        assert resolved is not None, model
+        assert resolved is _OFFICIAL_DOCS_PRICING[("anthropic", model)], model
+
+
+def test_every_shipped_dated_anthropic_id_is_priceable():
+    """Invariant: every dated Anthropic id this repo ships in its own catalog
+    resolves to pricing.
+
+    ``hermes_cli/models.py`` is what the picker offers users, so a dated id
+    listed there that the pricing table cannot resolve is a guaranteed
+    unpriced session.  Asserting the relation between the two structures
+    (rather than freezing either list) keeps this correct as models are added
+    — a newly listed dated model that nobody adds a rate for turns this red.
+
+    Scoped to dated ids on purpose: undated catalog entries include
+    subscription-bridge slugs (e.g. ``claude-code``) that are priced by a
+    different mechanism and are out of scope here.
+    """
+    from hermes_cli import models as catalog
+
+    def _walk(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from _walk(item)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                yield from _walk(item)
+
+    shipped_dated = {
+        model
+        for value in vars(catalog).values()
+        for model in _walk(value)
+        if model.startswith("claude-") and re.search(r"-\d{8}$", model)
+    }
+    assert shipped_dated, "expected the catalog to list some dated claude-* ids"
+
+    unpriced = sorted(
+        model
+        for model in shipped_dated
+        if get_pricing_entry(model, provider="anthropic") is None
+    )
+    assert not unpriced, f"catalog models with no resolvable pricing: {unpriced}"
+
+
+def test_anthropic_dated_snapshot_ids_price_as_family_alias():
+    """Dated snapshot ids must price field-equal to their family alias.
+
+    Contributed by @Parker-Fawcett on #71441 (salvaged from closed #92749);
+    pins the table layer of the dated-suffix fallback.
+    """
+    for alias, dated in (
+        ("claude-haiku-4-5", "claude-haiku-4-5-20251001"),
+        ("claude-sonnet-4-5", "claude-sonnet-4-5-20250929"),
+    ):
+        ref = get_pricing_entry(alias, provider="anthropic")
+        assert ref is not None, alias
+        entry = get_pricing_entry(dated, provider="anthropic")
+        assert entry is not None, dated
+        assert entry.input_cost_per_million == ref.input_cost_per_million, dated
+        assert entry.output_cost_per_million == ref.output_cost_per_million, dated
+
+
+def test_anthropic_dated_snapshot_session_estimates_cost_not_unknown():
+    """Pinned snapshot ids must yield status='estimated', not unknown.
+
+    Contributed by @Parker-Fawcett on #71441; mirrors the Bedrock
+    estimate-level regression shape and pins the estimate layer that
+    empty_response_guard's cost-aware retry throttle depends on
+    (@vszgdcn8cj-ctrl's consumer report on the same PR).
+    """
+    usage = CanonicalUsage(
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+    )
+    for model in ("claude-haiku-4-5-20251001", "claude-sonnet-4-5-20250929"):
+        result = estimate_usage_cost(model, usage, provider="anthropic")
+        assert result.status == "estimated", model
+        assert result.amount_usd is not None, model
+
+
+def test_cache_write_falls_back_to_input_rate_when_no_premium_published(monkeypatch):
+    """A provider that publishes no separate cache-write rate must still price
+    the turn. Cache-write tokens are prompt tokens billed as ordinary input
+    when there is no write premium, so a missing rate means "no premium", not
+    "unpriceable". Contract: the turn costs exactly the same as one where those
+    tokens had arrived as plain input tokens."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {
+            "no-write-premium-model": {
+                "pricing": {
+                    "prompt": "0.000005",
+                    "completion": "0.00003",
+                    "input_cache_read": "0.0000005",
+                    # no cache_write / input_cache_write key — the real-world gap
+                }
+            }
+        },
+    )
+    kwargs = dict(provider="openrouter", base_url="https://openrouter.ai/api/v1")
+
+    with_cache_write = estimate_usage_cost(
+        "no-write-premium-model",
+        CanonicalUsage(
+            input_tokens=6,
+            output_tokens=3104,
+            cache_read_tokens=206366,
+            cache_write_tokens=114435,
+        ),
+        **kwargs,
+    )
+    # Same prompt-token budget, but the cache-write tokens arrive as plain input.
+    as_plain_input = estimate_usage_cost(
+        "no-write-premium-model",
+        CanonicalUsage(
+            input_tokens=6 + 114435,
+            output_tokens=3104,
+            cache_read_tokens=206366,
+            cache_write_tokens=0,
+        ),
+        **kwargs,
+    )
+
+    assert as_plain_input.status == "estimated"  # control: this always worked
+    assert with_cache_write.status == "estimated"
+    assert with_cache_write.amount_usd == as_plain_input.amount_usd
+    assert any("input rate" in note for note in with_cache_write.notes)
+
+
+def test_published_cache_write_premium_is_never_replaced_by_the_input_rate(monkeypatch):
+    """The fallback may only fill a gap. When a cache-write rate IS published
+    it must be used verbatim — including a $0 rate, which is a real published
+    value and must not be mistaken for "missing" and inflated to input."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {
+            "premium-model": {
+                "pricing": {
+                    "prompt": "0.000005",
+                    "completion": "0.00003",
+                    "input_cache_write": "0.00000625",  # 1.25x input, Anthropic-style
+                }
+            },
+            "free-write-model": {
+                "pricing": {
+                    "prompt": "0.000005",
+                    "completion": "0.00003",
+                    "input_cache_write": "0",  # published as free
+                }
+            },
+        },
+    )
+    kwargs = dict(provider="openrouter", base_url="https://openrouter.ai/api/v1")
+    usage = CanonicalUsage(input_tokens=0, output_tokens=0, cache_write_tokens=1_000_000)
+
+    premium = estimate_usage_cost("premium-model", usage, **kwargs)
+    free = estimate_usage_cost("free-write-model", usage, **kwargs)
+    premium_entry = get_pricing_entry("premium-model", **kwargs)
+    input_rate = premium_entry.input_cost_per_million
+
+    # Published premium honoured, and it is strictly above the input rate —
+    # so it demonstrably was not overwritten by the fallback.
+    assert premium.amount_usd == premium_entry.cache_write_cost_per_million
+    assert premium.amount_usd > input_rate
+    # A published zero stays zero rather than being read as "missing".
+    assert free.amount_usd == 0
+    # Neither annotates the fallback.
+    assert not any("input rate" in n for n in premium.notes)
+    assert not any("input rate" in n for n in free.notes)
+
+
+def test_cache_write_still_unknown_when_input_rate_is_also_missing(monkeypatch):
+    """Guard on the bail-out: with neither a cache-write nor an input rate the
+    route is genuinely unpriceable and must stay unknown. The fallback must not
+    paper over a truly absent price."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {"output-only-model": {"pricing": {"completion": "0.00001"}}},
+    )
+
+    result = estimate_usage_cost(
+        "output-only-model",
+        CanonicalUsage(input_tokens=0, output_tokens=10, cache_write_tokens=5000),
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert result.status == "unknown"
+    assert result.amount_usd is None
+
+
+def test_cache_read_does_not_fall_back_to_the_input_rate(monkeypatch):
+    """The cache-read/cache-write asymmetry is deliberate and must hold: a
+    cache READ is discounted, so substituting the input rate would over-bill
+    rather than fill a gap. A missing cache-read rate stays unknown even
+    though the input rate is known."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {
+            "no-read-rate-model": {
+                "pricing": {"prompt": "0.000005", "completion": "0.00003"}
+            }
+        },
+    )
+
+    result = estimate_usage_cost(
+        "no-read-rate-model",
+        CanonicalUsage(input_tokens=10, output_tokens=10, cache_read_tokens=5000),
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert result.status == "unknown"
+
+
+def test_no_shipped_route_is_unpriceable_solely_because_of_cache_write():
+    """Invariant over the shipped pricing snapshot: for every entry that can
+    price a plain input+output turn, adding cache-write tokens must not turn
+    the turn unpriceable. This is the bug class — on the pre-fix code every
+    snapshot entry lacking a cache-write premium (OpenAI, DeepSeek, Google,
+    Bedrock Nova, ...) dropped the whole turn to status=unknown."""
+    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+
+    regressed = []
+    for (provider, model), entry in _OFFICIAL_DOCS_PRICING.items():
+        if entry.input_cost_per_million is None or entry.output_cost_per_million is None:
+            continue
+        baseline = estimate_usage_cost(
+            model,
+            CanonicalUsage(input_tokens=1000, output_tokens=500),
+            provider=provider,
+        )
+        if baseline.status != "estimated":
+            continue  # not priceable for unrelated reasons; not our contract
+        with_write = estimate_usage_cost(
+            model,
+            CanonicalUsage(input_tokens=1000, output_tokens=500, cache_write_tokens=50_000),
+            provider=provider,
+        )
+        if with_write.status != "estimated" or with_write.amount_usd is None:
+            regressed.append(f"{provider}/{model}")
+        elif with_write.amount_usd <= baseline.amount_usd:
+            regressed.append(f"{provider}/{model} (cache-write billed as free)")
+
+    assert not regressed, (
+        "shipped routes made unpriceable by cache-write tokens alone: "
+        f"{sorted(regressed)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# CostResult.components — per-class dollar breakdown
+#
+# Behaviour contracts, not snapshots: every assertion below relates the
+# breakdown to the total or to the pricing entry it was derived from, so a
+# rate change keeps them green while a decomposition bug turns them red.
+# ---------------------------------------------------------------------------
+
+
+def _openrouter_metadata(pricing):
+    return {"vendor/probe-model": {"pricing": pricing}}
+
+
+def _estimate_openrouter(monkeypatch, pricing, usage):
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: _openrouter_metadata(pricing),
+    )
+    return estimate_usage_cost(
+        "vendor/probe-model",
+        usage,
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+
+def test_cost_components_sum_exactly_to_total(monkeypatch):
+    """The breakdown must reconstruct amount_usd with no residue.
+
+    This is the invariant that makes the breakdown safe to display alongside
+    the total: a consumer rendering per-class dollars and a consumer rendering
+    the total can never disagree.
+    """
+    result = _estimate_openrouter(
+        monkeypatch,
+        {
+            "prompt": "0.000003",
+            "completion": "0.000015",
+            "cache_read": "0.0000003",
+            "cache_write": "0.00000375",
+        },
+        CanonicalUsage(
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read_tokens=2000,
+            cache_write_tokens=300,
+        ),
+    )
+
+    assert result.amount_usd is not None
+    assert set(result.components) == {"input", "output", "cache_read", "cache_write"}
+    assert sum(result.components.values()) == result.amount_usd
+
+
+def test_cost_components_include_flat_per_request_fee(monkeypatch):
+    """A per-request fee is a billable class and must appear in the breakdown.
+
+    ``_pricing_entry_from_metadata`` maps a models-API ``pricing.request``
+    field onto ``PricingEntry.request_cost``, and ``estimate_usage_cost``
+    already folds it into the total. A consumer that decomposes cost by
+    per-token class alone silently drops it, so the total it reconstructs is
+    short by exactly the fee.
+    """
+    result = _estimate_openrouter(
+        monkeypatch,
+        {
+            "prompt": "0.000003",
+            "completion": "0.000015",
+            "request": "0.01",
+        },
+        CanonicalUsage(input_tokens=1000, output_tokens=500, request_count=1),
+    )
+
+    assert result.components["request"] == Decimal("0.01")
+    # The fee is a real share of the bill, not a rounding artefact: per-token
+    # classes alone under-report the total.
+    per_token_only = sum(
+        v for k, v in result.components.items() if k != "request"
+    )
+    assert per_token_only < result.amount_usd
+    assert sum(result.components.values()) == result.amount_usd
+
+
+def test_cost_components_scale_with_request_count(monkeypatch):
+    """The request fee multiplies by request_count, matching the total."""
+    usage = CanonicalUsage(input_tokens=1000, output_tokens=500, request_count=4)
+    result = _estimate_openrouter(
+        monkeypatch,
+        {"prompt": "0.000003", "completion": "0.000015", "request": "0.01"},
+        usage,
+    )
+
+    assert result.components["request"] == Decimal("0.01") * usage.request_count
+    assert sum(result.components.values()) == result.amount_usd
+
+
+def test_cost_components_omit_classes_with_no_tokens(monkeypatch):
+    """Classes that contributed nothing are absent, not zero-valued.
+
+    Presence of a key means "this class was billed", so a consumer can
+    distinguish "no cache reads happened" from "cache reads cost $0".
+    """
+    result = _estimate_openrouter(
+        monkeypatch,
+        {
+            "prompt": "0.000003",
+            "completion": "0.000015",
+            "cache_read": "0.0000003",
+            "cache_write": "0.00000375",
+        },
+        CanonicalUsage(input_tokens=1000, output_tokens=500),
+    )
+
+    assert set(result.components) == {"input", "output"}
+    assert result.component("cache_read") == Decimal("0")
+    assert sum(result.components.values()) == result.amount_usd
+
+
+def test_cost_components_empty_when_total_is_unknown(monkeypatch):
+    """No total ⇒ no breakdown.
+
+    When a token class is used but unpriced, the whole estimate is refused
+    (status "unknown", amount None). The breakdown must not offer a partial
+    figure that looks like a complete cost — that is precisely the blind spot
+    a consumer decomposing cost by hand falls into.
+    """
+    result = _estimate_openrouter(
+        monkeypatch,
+        {"prompt": "0.000003", "completion": "0.000015"},
+        CanonicalUsage(input_tokens=1000, output_tokens=500, cache_read_tokens=900_000),
+    )
+
+    assert result.status == "unknown"
+    assert result.amount_usd is None
+    assert result.components == {}
+
+
+def test_cost_components_keys_are_declared_vocabulary(monkeypatch):
+    """Every emitted key is in COST_COMPONENTS.
+
+    Guards the contract consumers key off; adding a new billable class must
+    extend the declared vocabulary rather than silently widen the dict.
+    """
+    result = _estimate_openrouter(
+        monkeypatch,
+        {
+            "prompt": "0.000003",
+            "completion": "0.000015",
+            "cache_read": "0.0000003",
+            "cache_write": "0.00000375",
+            "request": "0.01",
+        },
+        CanonicalUsage(
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read_tokens=2000,
+            cache_write_tokens=300,
+            request_count=2,
+        ),
+    )
+
+    assert set(result.components) <= set(COST_COMPONENTS)
+    assert set(result.components) == set(COST_COMPONENTS)
+    assert sum(result.components.values()) == result.amount_usd
+
+
+def test_cost_components_match_entry_rates(monkeypatch):
+    """Each component equals tokens x that class's published rate.
+
+    Relates the breakdown to the pricing entry rather than to frozen dollar
+    literals, so a rate change keeps this green.
+    """
+    usage = CanonicalUsage(
+        input_tokens=1234,
+        output_tokens=567,
+        cache_read_tokens=8901,
+        cache_write_tokens=234,
+    )
+    pricing = {
+        "prompt": "0.000003",
+        "completion": "0.000015",
+        "cache_read": "0.0000003",
+        "cache_write": "0.00000375",
+    }
+    result = _estimate_openrouter(monkeypatch, pricing, usage)
+    entry = get_pricing_entry(
+        "vendor/probe-model",
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    one_m = Decimal("1000000")
+    assert result.components["input"] == Decimal(usage.input_tokens) * entry.input_cost_per_million / one_m
+    assert result.components["output"] == Decimal(usage.output_tokens) * entry.output_cost_per_million / one_m
+    assert (
+        result.components["cache_read"]
+        == Decimal(usage.cache_read_tokens) * entry.cache_read_cost_per_million / one_m
+    )
+    assert (
+        result.components["cache_write"]
+        == Decimal(usage.cache_write_tokens) * entry.cache_write_cost_per_million / one_m
+    )
+
+
+def test_cost_components_for_subscription_route_is_empty():
+    """A subscription-included route has a zero total and nothing to split."""
+    result = estimate_usage_cost(
+        "gpt-5.3-codex",
+        CanonicalUsage(input_tokens=1000, output_tokens=500),
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+
+    assert result.status == "included"
+    assert result.components == {}

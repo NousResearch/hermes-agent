@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 import { $goalsBySession, type SessionGoal } from '@/store/goals'
+import { $statusSectionCollapsedByKey } from '@/store/status-section-collapse'
 
 import { ComposerStatusStack } from './index'
 
@@ -43,6 +44,7 @@ describe('ComposerStatusStack goal indicator', () => {
   afterEach(() => {
     cleanup()
     $goalsBySession.set({})
+    $statusSectionCollapsedByKey.set({})
   })
 
   it('shows an active goal with its title', () => {

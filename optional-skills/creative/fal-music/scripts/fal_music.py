@@ -21,15 +21,15 @@ import json
 import os
 import sys
 import urllib.request
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Optional
 
 # ── Model catalog ────────────────────────────────────────────────────────────
 # ``build`` maps the generic CLI knobs onto the endpoint's declared input schema.
 # ``duration`` is (min, max) seconds or None when the endpoint has no length knob.
 
 
-def _elevenlabs_music(a: argparse.Namespace) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"prompt": a.prompt, "output_format": "mp3_44100_128"}
+def _elevenlabs_music(a: argparse.Namespace) -> dict[str, Any]:
+    payload: dict[str, Any] = {"prompt": a.prompt, "output_format": "mp3_44100_128"}
     if a.duration is not None:
         payload["music_length_ms"] = int(a.duration * 1000)
     if a.instrumental:
@@ -37,9 +37,9 @@ def _elevenlabs_music(a: argparse.Namespace) -> Dict[str, Any]:
     return payload
 
 
-def _minimax_music_3(a: argparse.Namespace) -> Dict[str, Any]:
+def _minimax_music_3(a: argparse.Namespace) -> dict[str, Any]:
     # ``lyrics`` is required; an instrumental track is expressed as an [inst] body.
-    payload: Dict[str, Any] = {"prompt": a.prompt, "lyrics": a.lyrics or "[inst]"}
+    payload: dict[str, Any] = {"prompt": a.prompt, "lyrics": a.lyrics or "[inst]"}
     if a.duration is not None:
         payload["duration"] = a.duration
     if a.seed is not None:
@@ -47,8 +47,8 @@ def _minimax_music_3(a: argparse.Namespace) -> Dict[str, Any]:
     return payload
 
 
-def _minimax_music_26(a: argparse.Namespace) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"prompt": a.prompt}
+def _minimax_music_26(a: argparse.Namespace) -> dict[str, Any]:
+    payload: dict[str, Any] = {"prompt": a.prompt}
     if a.lyrics:
         payload["lyrics"] = a.lyrics
     if a.instrumental:
@@ -56,12 +56,12 @@ def _minimax_music_26(a: argparse.Namespace) -> Dict[str, Any]:
     return payload
 
 
-def _lyria3(a: argparse.Namespace) -> Dict[str, Any]:
+def _lyria3(a: argparse.Namespace) -> dict[str, Any]:
     return {"prompt": a.prompt}  # ~30s fixed-length clips; no duration/seed/negative knobs
 
 
-def _stable_audio_3(a: argparse.Namespace) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"prompt": a.prompt, "output_format": "mp3"}
+def _stable_audio_3(a: argparse.Namespace) -> dict[str, Any]:
+    payload: dict[str, Any] = {"prompt": a.prompt, "output_format": "mp3"}
     if a.duration is not None:
         payload["duration"] = a.duration
     if a.seed is not None:
@@ -71,9 +71,9 @@ def _stable_audio_3(a: argparse.Namespace) -> Dict[str, Any]:
     return payload
 
 
-def _ace_step(a: argparse.Namespace) -> Dict[str, Any]:
+def _ace_step(a: argparse.Namespace) -> dict[str, Any]:
     # ``tags`` carries the style prompt; lyrics default to instrumental.
-    payload: Dict[str, Any] = {"tags": a.prompt, "lyrics": a.lyrics or "[inst]"}
+    payload: dict[str, Any] = {"tags": a.prompt, "lyrics": a.lyrics or "[inst]"}
     if a.duration is not None:
         payload["duration"] = a.duration
     if a.seed is not None:
@@ -81,9 +81,9 @@ def _ace_step(a: argparse.Namespace) -> Dict[str, Any]:
     return payload
 
 
-def _mureka_song(a: argparse.Namespace) -> Dict[str, Any]:
+def _mureka_song(a: argparse.Namespace) -> dict[str, Any]:
     # Lyrics-to-song when lyrics are given (the prompt then steers style); prompt-to-song otherwise.
-    payload: Dict[str, Any] = {"prompt": a.prompt}
+    payload: dict[str, Any] = {"prompt": a.prompt}
     if a.lyrics:
         payload["lyrics"] = a.lyrics
     if a.duration is not None:
@@ -91,14 +91,14 @@ def _mureka_song(a: argparse.Namespace) -> Dict[str, Any]:
     return payload
 
 
-def _mureka_song_v9(a: argparse.Namespace) -> Dict[str, Any]:
+def _mureka_song_v9(a: argparse.Namespace) -> dict[str, Any]:
     payload = _mureka_song(a)
     payload.pop("duration", None)  # v9 song declares no duration knob
     return payload
 
 
-def _elevenlabs_sfx(a: argparse.Namespace) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"text": a.prompt}
+def _elevenlabs_sfx(a: argparse.Namespace) -> dict[str, Any]:
+    payload: dict[str, Any] = {"text": a.prompt}
     if a.duration is not None:
         payload["duration_seconds"] = a.duration
     if a.loop:
@@ -106,7 +106,7 @@ def _elevenlabs_sfx(a: argparse.Namespace) -> Dict[str, Any]:
     return payload
 
 
-MODELS: Dict[str, Dict[str, Any]] = {
+MODELS: dict[str, dict[str, Any]] = {
     "elevenlabs-music": {
         "endpoint": "elevenlabs/music/v2.5", "build": _elevenlabs_music, "duration": (10, 300), "ext": "mp3",
         "kind": "music (vocals or instrumental)", "lyrics": False,
@@ -181,7 +181,7 @@ def clamp_duration(model: str, duration: Optional[float]) -> Optional[float]:
     return max(lo, min(hi, duration))
 
 
-def build_payload(model: str, args: argparse.Namespace) -> Dict[str, Any]:
+def build_payload(model: str, args: argparse.Namespace) -> dict[str, Any]:
     meta = MODELS[model]
     requested = args.duration
     args.duration = clamp_duration(model, args.duration)
@@ -199,7 +199,7 @@ def build_payload(model: str, args: argparse.Namespace) -> Dict[str, Any]:
     return payload
 
 
-def _audio_url(result: Dict[str, Any]) -> str:
+def _audio_url(result: dict[str, Any]) -> str:
     audio = result.get("audio") or result.get("audio_file") or {}
     if isinstance(audio, dict) and audio.get("url"):
         return audio["url"]
@@ -208,7 +208,7 @@ def _audio_url(result: Dict[str, Any]) -> str:
     raise SystemExit(f"No audio URL in result: {json.dumps(result)[:400]}")
 
 
-def generate(model: str, payload: Dict[str, Any], output: str) -> Dict[str, Any]:
+def generate(model: str, payload: dict[str, Any], output: str) -> dict[str, Any]:
     try:
         import fal_client
     except ImportError:

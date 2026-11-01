@@ -9,7 +9,7 @@ import pytest
 SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "optional-skills" / "creative" / "fal-music" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-import fal_music  # noqa: E402
+import fal_music
 
 # Keys each endpoint's fal OpenAPI schema declares (captured 2026-09-14). A payload key
 # outside this set would be forwarded to an endpoint that never declared it.

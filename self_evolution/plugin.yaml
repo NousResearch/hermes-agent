@@ -1,0 +1,7 @@
+name: self_evolution
+version: "1.0.0"
+description: "Agent self-optimization and continuous evolution — dream consolidation at 1:00, Feishu approval at 19:00"
+provides_hooks:
+  - post_tool_call
+  - on_session_end
+  - pre_llm_call

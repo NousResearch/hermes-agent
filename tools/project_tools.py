@@ -144,11 +144,30 @@ def project_switch(project: str, task_id: Optional[str] = None) -> str:
     return _activated(proj, task_id)
 
 
+def project_switch_to_folder(path: str, task_id: Optional[str] = None) -> str:
+    """Move THIS chat into an existing folder, such as a worktree the agent just added, without creating a project.
+    The desktop's branch chip and sidebar lane follow this (or the user's own move), never the shell's cwd."""
+    folder = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isdir(folder):
+        return json.dumps({"success": False, "error": f"no such directory: {folder}"})
+    if not _moves_session(task_id, folder):
+        return json.dumps({"success": False, "error": "only a live desktop or TUI chat has a workspace to move"})
+    _apply_workspace(task_id, folder, "")
+    return json.dumps({"success": True, "path": folder})
+
+
+def _switch(args: dict, task_id: Optional[str]) -> str:
+    name, path = (args.get("name") or "").strip(), (args.get("path") or "").strip()
+    if name and path:
+        return json.dumps({"success": False, "error": "switch takes a project name or a path, not both"})
+    return project_switch_to_folder(path, task_id) if path else project_switch(project=name, task_id=task_id)
+
+
 _ACTIONS = {
     "list": lambda args, tid: project_list(task_id=tid),
     "create": lambda args, tid: project_create(
         name=args.get("name", ""), path=args.get("path"), task_id=tid),
-    "switch": lambda args, tid: project_switch(project=args.get("name", ""), task_id=tid)}
+    "switch": _switch}
 
 
 def _handle_project(args, **kw):
@@ -170,15 +189,16 @@ registry.register(
             "Create or switch desktop Projects (named workspaces). create: one and switch "
             "this chat into it — pass path to anchor it to a repo/folder (the "
             "chat's workspace moves there, the sidebar follows). switch: move "
-            "this chat into an existing project by name/slug/id — the "
-            "intentional way to move the session, not `cd`. list: all projects + which one this chat is in."
+            "this chat into an existing project by name/slug/id, or into an existing folder or "
+            "worktree by path (e.g. after `git worktree add`) — the intentional way to move the "
+            "session, not `cd`. list: all projects + which one this chat is in."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": ["create", "switch", "list"]},
                 "name": {"type": "string", "description": "create: human name. switch: name, slug, or id."},
-                "path": {"type": "string", "description": "create: repo/folder to anchor to."},
+                "path": {"type": "string", "description": "create: repo/folder to anchor to. switch: folder/worktree to move this chat into."},
             },
             "required": ["action"],
         },

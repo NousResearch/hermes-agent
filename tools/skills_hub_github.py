@@ -198,6 +198,8 @@ def _tree_members(entries: list[dict], prefix: str):
     symlink instead of silently following it."""
     for item in entries:
         item_path = item.get("path", "")
+        if item.get("type") == "tree":
+            continue   # directories are not files: a SKILL.md mention of ``scripts/calculators`` is prose, not an escape
         if item_path.startswith(prefix):
             yield item_path[len(prefix):], item_path, item.get("type") == "blob" and item.get("mode") != "120000"
 

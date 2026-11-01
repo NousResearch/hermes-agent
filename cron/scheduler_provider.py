@@ -541,7 +541,7 @@ class InProcessCronScheduler(CronScheduler):
         from cron.scheduler import tick as cron_tick
         from cron.scheduler import CronTickYielded, _is_fd_exhaustion
         from cron.scheduler_preflight import (
-            SharedRouteAdapters, _primary_profile_routes_for_current_home,
+            _primary_profile_routes_for_current_home, satellite_route_adapters,
         )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
         from cron.scheduler_ownership import register_ticked_homes
@@ -559,12 +559,16 @@ class InProcessCronScheduler(CronScheduler):
             # Deliver via the profile's OWN adapters; NEVER fall back to the default profile's
             # (wrong bot). A credentialless satellite may ride the PRIMARY adapter only for targets
             # an exact enabled route maps here; else fail closed (delivery skipped this tick).
+            # The satellite map is never empty in practice (the gateway gives every served profile a
+            # Desktop ``local`` adapter), so the fallback is composed rather than gated on emptiness —
+            # own adapters win, the primary serves only platforms the satellite does not run (#139825).
             if profile_name is None or profile_name == default_profile:
                 return adapters
             tick_adapters = (profile_adapters or {}).get(profile_name) or {}
-            if not tick_adapters and adapters:
-                return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
-            return tick_adapters
+            if not adapters:
+                return tick_adapters
+            return satellite_route_adapters(
+                tick_adapters, adapters, _primary_profile_routes_for_current_home())
 
         # Recovery + heartbeat per profile; one broken store must not abort startup for the others.
         # A profile may have been deleted since this snapshot was taken; never recreate a deleted home's

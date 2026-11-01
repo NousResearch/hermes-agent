@@ -4486,12 +4486,17 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
         else:
             profile_adapters = getattr(runner, "_profile_adapters", {}).get(profile_name)
         if profile_adapters is None:
-            continue
+            if profile_name is None:
+                continue
+            # A satellite with no adapter map of its own can still deliver through the primary's
+            # routed adapters — see the tick_adapters_for composition (#139825).
+            profile_adapters = {}
         with _profile_runtime_scope(profile_home or get_hermes_home()):
-            if profile_name is not None and not profile_adapters and adapters:
+            if profile_name is not None and adapters:
                 routes = sched_preflight._primary_profile_routes_for_current_home()
                 if routes:
-                    profile_adapters = sched_preflight.SharedRouteAdapters(adapters, routes)
+                    profile_adapters = sched_preflight.satellite_route_adapters(
+                        profile_adapters, adapters, routes)
             cron_scheduler.drain_delivery_queue(profile_adapters, loop)
 
 

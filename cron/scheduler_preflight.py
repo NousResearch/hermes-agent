@@ -233,6 +233,42 @@ class SharedRouteAdapters:
         return default
 
 
+class SatelliteRouteAdapters(SharedRouteAdapters):
+    """A served satellite's OWN live adapters, with the primary's route-scoped adapter as a
+    fallback for platforms the satellite does not run itself.
+
+    A satellite is credentialless for *messaging* platforms, but the gateway still gives it a
+    Desktop ``local`` adapter (Bot Chat). Gating the shared fallback on "this profile has no
+    adapters at all" therefore never fired once that LOCAL adapter appeared, and every routed
+    satellite cron target failed closed with "platform '<p>' not configured/enabled" (#139825,
+    #141910). Precedence is unchanged for what the satellite genuinely owns: its own adapter is
+    returned without a route gate (it is its own bot), and the primary's adapter is used only
+    for a platform it does not own AND an exact enabled route authorizes the target.
+
+    See #101113 for the credentialless case this extends.
+    """
+
+    def __init__(self, own_adapters, primary_adapters, routes) -> None:
+        super().__init__(primary_adapters, routes)
+        self._own = dict(own_adapters or {})
+
+    def __bool__(self) -> bool:
+        return bool(self._own) or super().__bool__()
+
+    def get(self, platform, target=None, default=None):
+        if platform in self._own:
+            return self._own.get(platform)
+        return super().get(platform, target, default)
+
+
+def satellite_route_adapters(own_adapters, primary_adapters, routes):
+    """Adapter map for a satellite tick: own adapters first, primary's routed adapter as the
+    fallback. Without a primary map (single-profile gateway) the own map is returned as-is."""
+    if not primary_adapters:
+        return dict(own_adapters or {})
+    return SatelliteRouteAdapters(own_adapters, primary_adapters, routes)
+
+
 def _preflight_check_delivery(job: dict) -> Optional[str]:
     """Check delivery targets resolve to configured platforms. ``local``/``origin``/``all`` are
     never checked (no gateway-config load). Unknown platform always blocks; known platform blocks

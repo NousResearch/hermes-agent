@@ -13,7 +13,9 @@ from unittest.mock import MagicMock, patch
 import hermes_yaml as yaml
 
 from cron.scheduler import _deliver_result
-from cron.scheduler_preflight import SharedRouteAdapters, _primary_profile_routes_for_current_home
+from cron.scheduler_preflight import (
+    SharedRouteAdapters, _primary_profile_routes_for_current_home, satellite_route_adapters,
+)
 from gateway.config import Platform, PlatformConfig
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -160,3 +162,65 @@ def test_live_native_adapter_without_platform_block_is_not_treated_as_disabled()
         {"id": "j"}, Platform.DISCORD, "discord", {"platform": "discord", "chat_id": "C1"},
         {Platform.DISCORD: adapter}, config)
     assert resolved is None and "not configured/enabled" in err
+
+
+def test_satellite_local_adapter_no_longer_suppresses_the_shared_route_fallback(
+    tmp_path, monkeypatch,
+):
+    """#139825 / #141910: every served satellite gets a Desktop ``local`` adapter, so gating the
+    shared-route fallback on "this profile has no adapters" made it dead code — a routed satellite
+    cron target then failed closed with "platform 'discord' not configured/enabled" even though an
+    exact enabled route authorized the primary's adapter. The composed map must keep the satellite's
+    own adapter for its own platforms and still reach the primary for a routed one."""
+    root = tmp_path / "root"
+    fitness_home = root / "profiles" / "fitness"
+    fitness_home.mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump(PRIMARY_YAML), encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    primary = _primary_adapter()
+    local = _primary_adapter()  # the satellite's own (non-messaging) adapter
+
+    token = set_hermes_home_override(str(fitness_home))
+    try:
+        composed = satellite_route_adapters(
+            {Platform.LOCAL: local}, {Platform.DISCORD: primary},
+            _primary_profile_routes_for_current_home(),
+        )
+        # Pre-fix effective input: the satellite's own map alone (what the ticker passed once a
+        # LOCAL adapter existed). The primary's routed adapter is never consulted, so the send
+        # falls to the satellite's own (credentialless) lane and fails — in production the exact
+        # message is "platform '<p>' not configured/enabled" (no platforms.<p> block there).
+        error, _ = _run(_job("1543065293755256852"), {Platform.LOCAL: local})
+        assert error is not None and primary.sent == []
+
+        # routed target → the primary's bot delivers
+        error, standalone = _run(_job("1543065293755256852"), composed)
+        assert error is None, error
+        assert primary.sent == ["1543065293755256852"] and standalone == []
+
+        # an unrouted target still fails closed — the LOCAL adapter's presence authorizes nothing
+        primary.sent.clear()
+        error, standalone = _run(_job("424242"), composed)
+        assert error is not None and "DISCORD_BOT_TOKEN" in error
+        assert primary.sent == []
+
+        # what the satellite genuinely owns is never route-gated, and needs no target
+        assert composed.get(Platform.LOCAL) is local
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_satellite_own_messaging_adapter_wins_over_the_primary_route():
+    """A satellite that runs its own bot for a platform keeps it: the primary's routed adapter is
+    only a fallback for platforms the satellite does not run."""
+    own = object()
+    composed = satellite_route_adapters(
+        {Platform.DISCORD: own}, {Platform.DISCORD: object()}, routes=[])
+    assert composed.get(Platform.DISCORD, {"chat_id": "C1"}) is own
+
+
+def test_satellite_route_adapters_without_a_primary_map_returns_the_own_map():
+    """Single-profile gateways hand the satellite's own map straight through (no routes to consult)."""
+    own = {Platform.LOCAL: object()}
+    assert satellite_route_adapters(own, {}, []) == own
+

@@ -33,6 +33,7 @@ _PROVIDER_MAX_BYTES = {
     "mistral": 500 * _MB,  # docs.mistral.ai/resources/known-limitations: 500 MB, 60 minutes
     "xai": 500 * _MB,  # docs.x.ai speech-to-text: "Max 500 MB" (413 above it)
     "elevenlabs": 5 * 1024 * _MB - 1,  # elevenlabs.io speech-to-text convert: "must be less than 5.0GB"
+    "mittwald": 25 * _MB,  # developer.mittwald.de aihosting models: 25 MB for every STT model
 }
 _PROVIDER_MAX_SECONDS = {"mistral": 3600.0}
 # OpenAI per-model duration caps, all measured live (the vendor docs give none in seconds):
@@ -43,6 +44,10 @@ _PROVIDER_MAX_SECONDS = {"mistral": 3600.0}
 #   finish well inside the default 60 s ``stt.openai.timeout``.
 # - gpt-transcribe returned 1322 s complete in 16.7 s and accepted 1558 s, so it gets no cap.
 _OPENAI_MODEL_MAX_SECONDS = {"gpt-4o-transcribe": 450.0, "gpt-4o-mini-transcribe": 450.0, "whisper-1": 600.0}
+# mittwald documents per-model caps (developer.mittwald.de aihosting models): 1800 s for Whisper,
+# 95 min for Cohere Transcribe; over them the request fails instead of being cut.
+_MITTWALD_MODEL_MAX_SECONDS = {"whisper-large-v3-turbo": 1800.0, "cohere-transcribe-03-2026": 5700.0}
+_MODEL_MAX_SECONDS = {"openai": _OPENAI_MODEL_MAX_SECONDS, "mittwald": _MITTWALD_MODEL_MAX_SECONDS}
 # Margin under each cap so container overhead and duration rounding never tip a segment over.
 _SEGMENT_HEADROOM = 0.9
 # How far back from the ideal cut a silence may sit and still be used as the cut point.
@@ -52,8 +57,8 @@ _MAX_SILENCE_LOOKBACK_SECONDS = 60.0
 def upload_limit(provider: str, model: Optional[str]) -> tuple[int, Optional[float]]:
     """``(max_bytes, max_seconds or None)`` for one request to *provider* with *model*."""
     max_seconds = _PROVIDER_MAX_SECONDS.get(provider)
-    if provider == "openai":
-        max_seconds = _OPENAI_MODEL_MAX_SECONDS.get(model or "")
+    if provider in _MODEL_MAX_SECONDS:
+        max_seconds = _MODEL_MAX_SECONDS[provider].get(model or "")
     return _PROVIDER_MAX_BYTES.get(provider, MAX_FILE_SIZE), max_seconds
 
 

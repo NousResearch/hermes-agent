@@ -55,6 +55,27 @@ def _walk_up(start: Path) -> Iterator[Path]:
         cur = parent
 
 
+def _is_dangling_gitfile(marker: Path) -> bool:
+    """True for a ``.git`` *file* whose ``gitdir:`` target does not exist.
+
+    git stops at such a marker with "not a git repository" instead of walking further up
+    (a linked worktree whose main repo was deleted or moved, or a deliberate "not a repo"
+    marker). A live linked worktree / submodule gitfile points at an existing directory.
+    """
+    if not marker.is_file():
+        return False
+    try:
+        first = marker.read_text(encoding="utf-8", errors="replace").splitlines()[0]
+    except (OSError, IndexError):
+        return True
+    if not first.startswith("gitdir:"):
+        return True
+    target = Path(first[len("gitdir:"):].strip())
+    if not target.is_absolute():
+        target = marker.parent / target
+    return not target.exists()
+
+
 def find_git_worktree(start: str) -> Optional[str]:
     """Return the nearest ancestor dir containing ``.git`` (file or dir — worktrees count), else ``None``."""
     start_path = _start_dir(start)
@@ -66,7 +87,10 @@ def find_git_worktree(start: str) -> Optional[str]:
     resolved = None
     for cur in _walk_up(start_path):
         try:
-            if (cur / ".git").exists():
+            marker = cur / ".git"
+            if _is_dangling_gitfile(marker):
+                break  # git reports "not a git repository" here; so do we (no root, no climbing past)
+            if marker.exists():
                 resolved = str(cur)
                 break
         except OSError:

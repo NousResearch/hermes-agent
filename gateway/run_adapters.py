@@ -28,6 +28,7 @@ from gateway.config import (
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.helpers import carry_inbound_dedup, hand_over_held_inbound
 from gateway.restart import is_global_startup_conflict
+from gateway.run_adapter_credentials import _platform_has_bot_credential
 from gateway.run_shutdown import _log_suppressed
 from gateway.session import SessionSource
 from hermes_cli.observability.shared_metrics_gateway import record_platform_connect, record_platform_disconnect
@@ -786,7 +787,7 @@ class GatewayAdapterLifecycleMixin:
         change: retrying it re-warns forever at the backoff cap (#5196 fleet nodes). Shared by startup and
         the reconnect watcher so both classify the same platform the same way."""
         from gateway.platform_registry import platform_registry
-        from gateway.run import _BUILTIN_ADAPTERS, _platform_has_bot_credential
+        from gateway.run import _BUILTIN_ADAPTERS
         return (
             platform not in _BUILTIN_ADAPTERS
             and not platform_registry.is_registered(platform.value)
@@ -795,7 +796,7 @@ class GatewayAdapterLifecycleMixin:
 
     async def _reconnect_failed_platform(self, platform, now: float) -> None:
         """One watcher pass for a queued platform: gate, attempt, and record the outcome."""
-        from gateway.run import _dispose_unused_adapter, _platform_has_bot_credential
+        from gateway.run import _dispose_unused_adapter
         info = self._failed_platforms.get(platform)
         # None: removed concurrently since the caller's snapshot. Paused needs /platform resume.
         if info is None or info.get("paused"):
@@ -1255,7 +1256,7 @@ class GatewayAdapterLifecycleMixin:
         self, profile_name: str, profile_home: Path, claimed: dict[tuple, str]
     ) -> int:
         """Create+connect one profile's adapters under its runtime scope."""
-        from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
+        from gateway.run import _profile_runtime_scope
         profile_cfg = await self._load_secondary_profile_config(profile_name, profile_home)
         # Keep the served profile's config: host-wide passes (planned-restart notices) must reach
         # every served profile's home channels, and this is the only place it is loaded.
@@ -1431,7 +1432,7 @@ class GatewayAdapterLifecycleMixin:
         """One scoped attempt to rebuild+connect a secondary adapter → ``(adapter, success)``;
         ``(None, None)`` = give up for good (disabled, credential removed, adapter unavailable). Caller
         tears down a RETURNED adapter; one whose configure/connect raised is torn down here."""
-        from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
+        from gateway.run import _profile_runtime_scope
         # Lazy + per-attempt: keeps test monkeypatches on these modules live.
         from hermes_cli.profiles import get_profile_dir
         from hermes_cli.env_loader import hydrate_profile_secret_sources

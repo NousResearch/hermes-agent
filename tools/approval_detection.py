@@ -883,6 +883,169 @@ def _shell_segment_tokens(segment: str, start: int) -> list[str] | None:
         return None
 
 
+_GIT_CONFIG_WRITE_DESCRIPTION = "git config write (modifies identity or repository configuration)"
+_GIT_GLOBAL_FLAGS = frozenset({
+    "--bare", "--glob-pathspecs", "--html-path", "--icase-pathspecs", "--info-path",
+    "--literal-pathspecs", "--man-path", "--no-advice", "--no-lazy-fetch",
+    "--no-optional-locks", "--no-pager", "--no-replace-objects", "--noglob-pathspecs",
+    "--paginate", "-P", "-p",
+})
+_GIT_GLOBAL_OPTIONS_WITH_ARG = frozenset({
+    "--attr-source", "--config-env", "--git-dir", "--namespace", "--super-prefix",
+    "--work-tree", "-C", "-c",
+})
+_GIT_CONFIG_MUTATING_ACTIONS = frozenset({
+    "--add", "--edit", "--remove-section", "--rename-section", "--replace-all", "--set",
+    "--unset", "--unset-all", "-e", "set", "unset", "remove-section", "rename-section",
+    "edit",
+})
+_GIT_CONFIG_READ_ACTIONS = {
+    "--get": (1, 2),
+    "--get-all": (1, 2),
+    "--get-color": (1, 2),
+    "--get-colorbool": (1, 2),
+    "--get-regexp": (1, 2),
+    "--get-urlmatch": (2, 2),
+    "--list": (0, 0),
+    "-l": (0, 0),
+    "get": (1, 1),
+    "list": (0, 0),
+}
+_GIT_CONFIG_FLAGS = frozenset({
+    "--all", "--bool", "--bool-or-int", "--bool-or-str", "--color", "--expiry-date",
+    "--fixed-value", "--global", "--includes", "--int", "--local", "--name-only",
+    "--no-all", "--no-blob", "--no-default", "--no-file", "--no-fixed-value",
+    "--no-global", "--no-includes", "--no-local", "--no-name-only", "--no-null",
+    "--no-regexp", "--no-show-names", "--no-show-origin", "--no-show-scope",
+    "--no-system", "--no-type", "--no-url", "--no-value", "--no-worktree", "--null",
+    "--path", "--regexp", "--show-names", "--show-origin", "--show-scope", "--system",
+    "--worktree", "-z",
+})
+_GIT_CONFIG_OPTIONS_WITH_ARG = frozenset({
+    "--blob", "--default", "--file", "--type", "--url", "--value", "-f", "-t",
+})
+
+
+def _git_config_args(tokens: list[str]) -> tuple[list[str] | None, bool]:
+    """Return git-config argv plus whether the global-option prefix was ambiguous."""
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "config":
+            return tokens[index + 1:], False
+        if token == "--":
+            if index + 1 < len(tokens) and tokens[index + 1] == "config":
+                return tokens[index + 2:], False
+            return None, False
+        option, equals, _ = token.partition("=")
+        if token in _GIT_GLOBAL_FLAGS or token == "--exec-path" or (option == "--exec-path" and equals):
+            index += 1
+            continue
+        if option in _GIT_GLOBAL_OPTIONS_WITH_ARG:
+            attached = bool(equals)
+            if not attached and index + 1 >= len(tokens):
+                return None, False
+            index += 1 if attached else 2
+            continue
+        # Unknown global syntax followed by `config` is not proven read-only.
+        try:
+            config_index = tokens.index("config", index + 1)
+        except ValueError:
+            return None, False
+        return tokens[config_index + 1:], True
+    return None, False
+
+
+def _git_config_is_mutating(args: list[str], *, ambiguous_prefix: bool = False) -> bool:
+    """Classify git-config argv, approving only structurally proven read-only forms.
+
+    Mirrors git's parse-options ``STOP_AT_NON_OPTION`` behavior (verified against git 2.53):
+    option parsing stops at the first operand, and every later token — even an option-looking
+    one — is a positional VALUE. ``git config user.name --global`` therefore WRITES
+    ``name = --global``, so a trailing option-looking token after the key is a value operand,
+    not a scope flag. The subcommand spellings (``set``/``get``/``list``/...) are dispatched
+    before operand parsing, so options may legally follow them (``git config list --no-global``
+    is a read); only a later operand re-arms the stop.
+    """
+    if ambiguous_prefix:
+        return True
+    read_action: str | None = None
+    positionals: list[str] = []
+    stopped = False
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if stopped:
+            positionals.append(token)
+            index += 1
+            continue
+        if token == "--":
+            positionals.extend(args[index + 1:])
+            break
+        if token in _GIT_CONFIG_MUTATING_ACTIONS or token == "--comment" or token.startswith("--comment="):
+            return True
+        if token in _GIT_CONFIG_READ_ACTIONS:
+            if read_action is not None and read_action != token:
+                return True
+            read_action = token
+            index += 1
+            continue
+        option, equals, _ = token.partition("=")
+        short_option = next(
+            (short for short in ("-f", "-t") if token.startswith(short) and len(token) > 2),
+            None,
+        )
+        if token in _GIT_CONFIG_FLAGS:
+            index += 1
+            continue
+        if option in _GIT_CONFIG_OPTIONS_WITH_ARG or short_option is not None:
+            attached = bool(equals) or short_option is not None
+            if not attached and index + 1 >= len(args):
+                return True
+            index += 1 if attached else 2
+            continue
+        if token.startswith("-"):
+            return True
+        # First operand: git stops parsing options here; everything after is a value.
+        positionals.append(token)
+        stopped = True
+        index += 1
+
+    if read_action is not None:
+        minimum, maximum = _GIT_CONFIG_READ_ACTIONS[read_action]
+        return not minimum <= len(positionals) <= maximum
+    # The only implicit read is one bare key; two or more positionals assign a value (a
+    # trailing option-looking token counts — `git config user.name --global` writes it).
+    return len(positionals) != 1
+
+
+def _contains_mutating_git_config(command: str) -> bool:
+    """Find executable git-config invocations without treating quoted prose as commands.
+
+    Classification consumes the segment's raw quote state (via ``shlex``), where ``''`` is a
+    distinct EMPTY-VALUE operand — an empty string literal writes an empty value in git
+    (``git config user.name ''``), so it must count as a positional before any later
+    normalization (which deletes empty literals) could hide it.
+    """
+    for top_level_segment in _iter_top_level_shell_segments(command):
+        for start, _, word in _iter_shell_command_word_spans(top_level_segment):
+            executable = _deobfuscate_shell_word_for_detection(word)
+            if os.path.basename(executable).lower() != "git":
+                continue
+            segment = _shell_command_segment(top_level_segment, start)
+            tokens = _shell_segment_tokens(segment, 0)
+            if tokens is None:
+                if re.search(r"(?:^|\s)config(?:\s|$)", segment):
+                    return True
+                continue
+            config_args, ambiguous_prefix = _git_config_args(tokens)
+            if config_args is not None and _git_config_is_mutating(
+                config_args, ambiguous_prefix=ambiguous_prefix
+            ):
+                return True
+    return False
+
+
 def _iter_top_level_shell_segments(command: str):
     """Yield top-level command segments in one left-to-right pass."""
     start = 0
@@ -1551,7 +1714,16 @@ def detect_dangerous_command(command: str) -> tuple:
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
+    # Raw quote state first: normalization deletes empty-string literals (``''``), which are
+    # distinct empty-VALUE operands for git config (``git config user.name ''`` writes), and
+    # would otherwise be indistinguishable from a bare read-only key lookup.
+    if _contains_mutating_git_config(command):
+        return (True, _GIT_CONFIG_WRITE_DESCRIPTION, _GIT_CONFIG_WRITE_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
+        if command_variant is None:
+            continue
+        if _contains_mutating_git_config(command_variant):
+            return (True, _GIT_CONFIG_WRITE_DESCRIPTION, _GIT_CONFIG_WRITE_DESCRIPTION)
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:

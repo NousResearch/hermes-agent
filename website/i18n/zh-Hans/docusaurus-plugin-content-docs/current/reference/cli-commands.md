@@ -693,7 +693,7 @@ hermes import ~/hermes-backup-20260423.zip --force   # 不提示直接覆盖
 hermes logs [log_name] [options]
 ```
 
-查看、跟踪和过滤 Hermes 日志文件。所有日志存储在 `~/.hermes/logs/`（非默认 profile 存储在 `<profile>/logs/`）。
+查看、跟踪和过滤 Hermes 日志文件。普通日志存储在当前 profile 的 `logs/` 目录（默认 profile 为 `~/.hermes/logs/`）。即使选择了命名 profile，`update.log` 和 `desktop-update-handoff.log` 也始终保存在根 Hermes 主目录的 `logs/` 下。对于自定义布局 `<root>/profiles/<name>`，这两个文件仍位于 `<root>/logs/`。例如，`hermes -p coder logs update` 读取的是共享根目录中的更新日志。
 
 ### 日志文件
 
@@ -702,12 +702,14 @@ hermes logs [log_name] [options]
 | `agent`（默认） | `agent.log` | 所有 agent 活动——API 调用、工具调度、会话生命周期（INFO 及以上） |
 | `errors` | `errors.log` | 仅警告和错误——agent.log 的过滤子集 |
 | `gateway` | `gateway.log` | 消息 gateway 活动——平台连接、消息调度、webhook 事件 |
+| `update` | `update.log` | `hermes update` 运行的完整 stdout/stderr 镜像（仅追加）——位于根 Hermes 主目录 |
+| `handoff` | `desktop-update-handoff.log` | Desktop 驱动的更新交接阶段，包括 Desktop 重建重试输出——位于根 Hermes 主目录 |
 
 ### 选项
 
 | 选项 | 说明 |
 |--------|-------------|
-| `log_name` | 要查看的日志：`agent`（默认）、`errors`、`gateway`，或 `list` 以显示可用文件及大小。 |
+| `log_name` | 要查看的日志：`agent`（默认）、`errors`、`gateway`、`update`、`handoff`，或 `list` 以显示可用文件及大小。 |
 | `-n`, `--lines <N>` | 显示的行数（默认：50）。 |
 | `-f`, `--follow` | 实时跟踪日志，类似 `tail -f`。按 Ctrl+C 停止。 |
 | `--level <LEVEL>` | 显示的最低日志级别：`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL`。 |
@@ -738,6 +740,13 @@ hermes logs errors --since 30m -f
 
 # 列出所有日志文件及其大小
 hermes logs list
+
+# 假设已有名为 "coder" 的 profile：读取根目录的 update 和 handoff 日志
+hermes -p coder logs update
+hermes -p coder logs handoff
+
+# 在命名 profile 下，list 会把根主目录的日志标记为 "(root)"
+hermes -p coder logs list
 ```
 
 ### 过滤

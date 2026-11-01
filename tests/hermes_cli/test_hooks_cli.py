@@ -133,6 +133,108 @@ class TestHooksTest:
         assert '"message": "nope"' in out
 
 
+# ── accept ────────────────────────────────────────────────────────────────
+
+
+class TestHooksAccept:
+    """`hermes hooks accept` records consent with no TTY (#138413).
+
+    Non-TTY runs cannot answer the first-use prompt, and `--accept-hooks` /
+    `HERMES_ACCEPT_HOOKS` are only resolved during a start-up registration pass.
+    This subcommand writes the same allowlist entry the prompt writes, so an
+    operator never has to hand-edit shell-hooks-allowlist.json.
+    """
+
+    def _approve(self, cfg, command=()):
+        # stdin is NOT a tty: no prompt may be reachable on this path.
+        with patch("sys.stdin") as mock_stdin, patch(
+            "builtins.input", side_effect=AssertionError("must not prompt"),
+        ), patch("hermes_cli.config.load_config", return_value=cfg):
+            mock_stdin.isatty.return_value = False
+            return _run(SimpleNamespace(
+                hooks_action="accept", hook_command=list(command)))
+
+    def test_non_tty_records_entry_matching_the_prompt_shape(self, tmp_path):
+        script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\\\n'\n")
+        cfg = {"hooks": {"post_llm_call": [{"command": str(script)}]}}
+
+        out = self._approve(cfg)
+
+        assert "✓ approved" in out
+        entry = shell_hooks.allowlist_entry_for("post_llm_call", str(script))
+        assert entry is not None
+        assert entry["event"] == "post_llm_call"
+        assert entry["command"] == str(script)
+        # Same keys the interactive prompt records via _record_approval.
+        assert set(entry) == {
+            "event", "command", "approved_at", "script_mtime_at_approval",
+        }
+
+    def test_accepts_every_not_yet_allowlisted_hook(self, tmp_path):
+        a = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\\\n'\n", name="a.sh")
+        b = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\\\n'\n", name="b.sh")
+        cfg = {
+            "hooks": {
+                "post_llm_call": [{"command": str(a)}],
+                "on_session_start": [{"command": str(b)}],
+            }
+        }
+
+        out = self._approve(cfg)
+
+        assert "2 new approval(s)" in out
+        assert shell_hooks.allowlist_entry_for("post_llm_call", str(a)) is not None
+        assert shell_hooks.allowlist_entry_for("on_session_start", str(b)) is not None
+
+    def test_specific_command_approves_only_that_hook(self, tmp_path):
+        a = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\\\n'\n", name="a.sh")
+        b = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\\\n'\n", name="b.sh")
+        cfg = {
+            "hooks": {
+                "post_llm_call": [{"command": str(a)}],
+                "on_session_start": [{"command": str(b)}],
+            }
+        }
+
+        self._approve(cfg, command=[str(a)])
+
+        assert shell_hooks.allowlist_entry_for("post_llm_call", str(a)) is not None
+        assert shell_hooks.allowlist_entry_for("on_session_start", str(b)) is None
+
+    def test_reports_already_allowlisted_without_duplicating(self, tmp_path):
+        script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\\\n'\n")
+        cfg = {"hooks": {"post_llm_call": [{"command": str(script)}]}}
+        shell_hooks._record_approval("post_llm_call", str(script))
+
+        out = self._approve(cfg)
+
+        assert "already allowlisted" in out
+        assert "0 new approval(s)" in out
+        approvals = shell_hooks.load_allowlist()["approvals"]
+        assert len([e for e in approvals if e.get("command") == str(script)]) == 1
+
+
+def test_hooks_parser_exposes_accept_subcommand():
+    """The `accept` action must be reachable from the real `hermes hooks` parser."""
+    import argparse
+
+    from hermes_cli.subcommands.hooks import build_hooks_parser
+
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_hooks_parser(sub, cmd_hooks=lambda _a: None)
+
+    args = parser.parse_args(["hooks", "accept", "/tmp/hook.sh"])
+    # Regression guard: the accept positional must not clobber the top-level
+    # subcommand name (a clobbering list breaks `hermes` dispatch).
+    assert args.command == "hooks"
+    assert args.hooks_action == "accept"
+    assert args.hook_command == ["/tmp/hook.sh"]
+
+    # Bare `accept` (no command) approves every configured hook.
+    assert parser.parse_args(["hooks", "accept"]).hook_command == []
+
+
 # ── revoke ────────────────────────────────────────────────────────────────
 
 

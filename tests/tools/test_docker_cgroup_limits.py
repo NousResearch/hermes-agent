@@ -7,6 +7,7 @@ to ``docker run`` fails every container start with OCI runtime error / exit 126.
 so the sandbox degrades gracefully instead of failing.
 """
 import subprocess
+from itertools import pairwise
 
 import pytest
 
@@ -23,6 +24,8 @@ def _reset_cgroup_cache():
     docker_env._storage_opt_ok = None
 
 
+# What DockerEnvironment hands the probe for a root sandbox: that sandbox's own security args.
+_ROOT_POSTURE = docker_env._build_security_args(False)
 
 
 def test_probe_returns_true_when_container_starts(monkeypatch):
@@ -34,7 +37,7 @@ def test_probe_returns_true_when_container_starts(monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
-    assert docker_env._cgroup_limits_available("hermes-agent:latest") is True
+    assert docker_env._cgroup_limits_available("hermes-agent:latest", _ROOT_POSTURE) is True
     # Probes all three controllers together against the real sandbox image.
     assert "--cpus" in captured["cmd"]
     assert "--memory" in captured["cmd"]
@@ -51,9 +54,9 @@ def test_probe_result_is_cached(monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
-    docker_env._cgroup_limits_available("img")
-    docker_env._cgroup_limits_available("img")
-    docker_env._cgroup_limits_available("img")
+    docker_env._cgroup_limits_available("img", _ROOT_POSTURE)
+    docker_env._cgroup_limits_available("img", _ROOT_POSTURE)
+    docker_env._cgroup_limits_available("img", _ROOT_POSTURE)
     assert len(calls) == 1  # probe runs once, then cached
 
 
@@ -72,8 +75,8 @@ def test_probe_definitive_cgroup_failure_is_cached(monkeypatch):
             "config for procHooks process: permission denied")
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
-    assert docker_env._cgroup_limits_available("img") is False
-    assert docker_env._cgroup_limits_available("img") is False
+    assert docker_env._cgroup_limits_available("img", _ROOT_POSTURE) is False
+    assert docker_env._cgroup_limits_available("img", _ROOT_POSTURE) is False
     assert len(calls) == 1
 
 
@@ -137,3 +140,73 @@ def test_transient_probe_failure_recovers_on_next_spawn(monkeypatch):
     assert "--memory" in run_argvs[1] and "512m" in run_argvs[1]
     assert "--pids-limit" in run_argvs[1]
     assert len(probe_calls) == 2  # re-probed, not latched off the timeout
+
+
+# ── Probe hardening ───────────────────────────────────────────────
+# The probe is a container from the sandbox image that comes up BEFORE the sandbox. It
+# must not be the one container that escapes the sandbox's hardening.
+
+
+def _pairs(argv):
+    """``(flag, value)`` pairs of a ``docker run`` argv, ``--flag=value`` read as ``--flag value``."""
+    tokens = [t for a in argv for t in (a.split("=", 1) if a.startswith("--") else (a,))]
+    return set(pairwise(tokens))
+
+
+def _posture(argv):
+    """The cap / no-new-privileges / user pairs of a ``docker run`` argv."""
+    return {(f, v) for f, v in _pairs(argv) if f in ("--cap-drop", "--cap-add", "--security-opt", "--user")}
+
+
+def _tmpfs_specs(argv):
+    return {v for f, v in _pairs(argv) if f == "--tmpfs"}
+
+
+# docker_extra_args carrying a host mount and a host env name (``--flag=value`` spelling).
+_EXTRA_ARGS = ["--volume=/srv/extra:/extra", "--env=EXTRA_TOKEN"]
+# Flags that hand a container something of the host: a mount or an env value.
+_MOUNT_ENV_FLAGS = ("-v", "--volume", "--mount", "--volumes-from", "-e", "--env", "--env-file")
+
+
+@pytest.mark.parametrize("mode", [{}, {"run_as_host_user": True}, {"snap_compat": True}],
+                         ids=["root", "host-user", "snap-compat"])
+def test_probe_carries_the_sandbox_posture_and_nothing_of_the_host(monkeypatch, mode):
+    """E2e through DockerEnvironment, per privilege mode, for a persistent sandbox (the one with
+    the most host mounts). The probe carries exactly the cap / no-new-privileges / ``--user`` pairs
+    of the sandbox's ``run -d`` and its nosuid/noexec tmpfs for /tmp and /var/tmp. On top, it is
+    air-gapped although the sandbox is networked, read-only, runs from ``/`` with the image
+    entrypoint cleared (``sleep 0`` needs none of it), and none of the sandbox's mounts, env or
+    docker_extra_args reach it."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env.os, "getuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(docker_env.os, "getgid", lambda: 1000, raising=False)
+    monkeypatch.setattr(docker_env.DockerEnvironment, "init_session", lambda self: None)  # no docker exec
+    calls = []
+
+    def _run(cmd, *a, **k):
+        calls.append(cmd)
+        if cmd[1] == "version":
+            return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+        if cmd[1] == "run" and "-d" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="fake-container-id\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    docker_env.DockerEnvironment(image="img", task_id="t", volumes=["/srv/data:/data"], env={"TOKEN": "x"},
+                                 extra_args=_EXTRA_ARGS, persistent_filesystem=True, **mode)
+
+    runs = [c for c in calls if isinstance(c, list) and len(c) > 1 and c[1] == "run"]
+    probe = next(c for c in runs if c[-2:] == ["sleep", "0"])
+    sandbox = next(c for c in runs if "-d" in c)
+    assert ("--cap-drop", "ALL") in _posture(probe)  # so the equality below is not vacuous
+    assert _posture(probe) == _posture(sandbox)
+    assert {s for s in _tmpfs_specs(sandbox) if s.startswith(("/tmp:", "/var/tmp:"))} <= _tmpfs_specs(probe)
+    assert docker_env._extra_args_network_mode(probe) == "none"
+    assert docker_env._extra_args_network_mode(sandbox) != "none"
+    assert "--read-only" in probe and {("-w", "/"), ("--entrypoint", "")} <= _pairs(probe)
+    assert probe[-3:] == ["img", "sleep", "0"]  # every flag precedes the image
+    assert any(t in _MOUNT_ENV_FLAGS for t in sandbox)  # sandbox, skills/cache and user mounts, env
+    assert not [t for t in probe if t.split("=", 1)[0] in _MOUNT_ENV_FLAGS]
+    host_data = ("/srv/", "TOKEN")  # what the fixture mounts and forwards
+    assert all(any(h in t for t in sandbox) for h in host_data) and set(_EXTRA_ARGS) <= set(sandbox)
+    assert not [t for t in probe if any(h in t for h in host_data)]

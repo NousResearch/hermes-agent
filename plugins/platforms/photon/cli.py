@@ -180,12 +180,17 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         registered_user_id = user.get("id")
         # The number to text the agent is the user's assigned line ("TEXTS ON"); shared-number
         # plans have no dedicated /lines entry.
-        agent_number = photon_auth.user_assigned_line(user)
+        agent_number = photon_auth.user_assigned_line(user) or _lookup_imessage_line(token, dashboard_id)
         # Opt-in gate: Photon only routes a number whose user row carries meta.opt_in, which the
         # service sets once the human texts the assigned line from their phone (the API cannot
         # set it). Name the line and wait for the opt-in; a re-run on an opted-in row passes.
         if photon_auth.user_opted_in(user):
             print("  ✓ number is opted in — routing is live")
+        elif not agent_number:  # nothing to text yet, so a wait could never end in an opt-in
+            routing_live = False
+            print(f"      ⚠ No iMessage line is assigned to {phone} yet — skipping the opt-in wait.\n"
+                  f"        Once the Photon dashboard shows your line, text it once from {phone},\n"
+                  "        then check with `hermes photon status`.")
         else:
             opted = _wait_for_opt_in(dashboard_id, secret, phone, agent_number)
             routing_live = opted is not None
@@ -193,13 +198,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         # Otherwise the gateway denies the operator's own inbound and has no cron home space.
         _autoconfigure_access(phone)
     # 5. Surface the agent's iMessage number.
-    if not agent_number:
-        try:
-            line = photon_auth.get_imessage_line(token, dashboard_id)
-            if line:
-                agent_number = line.get("phoneNumber")
-        except Exception as e:
-            print(f"      (could not fetch the assigned line: {e})", file=sys.stderr)
+    if not agent_number and not phone:  # the phone path already looked the line up
+        agent_number = _lookup_imessage_line(token, dashboard_id)
     if agent_number:
         print("\n" + "\n".join((
             color("┌─ Your agent's iMessage number ───────────────────────────────", Colors.GREEN),
@@ -236,6 +236,16 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         return 0
     print("\n✓ Photon setup complete.\n  Start the gateway:  hermes gateway start")
     return 0
+
+
+def _lookup_imessage_line(token: str, dashboard_id: str) -> Optional[str]:
+    """The project's dedicated iMessage line (fallback when the user row names none)."""
+    try:
+        line = photon_auth.get_imessage_line(token, dashboard_id)
+    except (photon_auth.httpx.HTTPError, RuntimeError, ValueError) as e:  # transport / status / bad JSON
+        print(f"      (could not fetch the assigned line: {e})", file=sys.stderr)
+        return None
+    return line.get("phoneNumber") if line else None
 
 
 _OPT_IN_WAIT_S = 300

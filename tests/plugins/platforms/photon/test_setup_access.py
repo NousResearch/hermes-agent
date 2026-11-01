@@ -173,3 +173,35 @@ def test_setup_without_opt_in_does_not_report_complete(
     assert rc == 0
     assert "setup complete" not in out
     assert "routing is NOT live" in out and "+16282679185" in out
+
+
+@pytest.mark.parametrize("dedicated_line", ["+16282679185", None])
+def test_opt_in_wait_always_names_a_line_to_text(
+    monkeypatch: pytest.MonkeyPatch, capsys, dedicated_line,
+) -> None:
+    """A row with no assignedPhoneNumber: the project-line lookup runs BEFORE the wait, and
+    with no line at all the wait is skipped (the user would have nothing to text)."""
+    monkeypatch.setattr(cli.photon_auth, "load_photon_token", lambda: "token")
+    monkeypatch.setattr(cli.photon_auth, "check_photon_token_valid", lambda token: True)
+    monkeypatch.setattr(cli.photon_auth, "load_dashboard_project_id", lambda: "dashboard")
+    monkeypatch.setattr(cli.photon_auth, "load_project_credentials", lambda: ("dashboard", "s"))
+    monkeypatch.setattr(cli.photon_auth, "list_users", lambda pid, secret: [])
+    monkeypatch.setattr(cli.photon_auth, "store_project_credentials", lambda **kwargs: None)
+    monkeypatch.setattr(cli.photon_auth, "register_user_if_absent", lambda *a, **k: (
+        {"id": "u1", "phoneNumber": "+15551234567", "meta": {}}, True))
+    monkeypatch.setattr(cli.photon_auth, "get_imessage_line", lambda token, pid: (
+        {"phoneNumber": dedicated_line} if dedicated_line else None))
+    monkeypatch.setattr(cli.photon_auth, "store_user_numbers", lambda **kwargs: None)
+    waited: list = []
+    monkeypatch.setattr(cli, "_wait_for_opt_in", lambda d, s, phone, line: waited.append(line))
+
+    rc = cli._cmd_setup(argparse.Namespace(
+        project_name=None, phone="+15551234567", first_name=None, last_name=None,
+        email=None, no_browser=True, skip_sidecar_install=True))
+
+    out = capsys.readouterr().out
+    assert rc == 0 and "setup complete" not in out
+    if dedicated_line:
+        assert waited == [dedicated_line]
+    else:
+        assert waited == [] and "skipping the opt-in wait" in out and "hermes photon status" in out

@@ -4,6 +4,7 @@ Topic mode makes the root Telegram DM a system lobby while user-created
 Telegram topics act as independent Hermes session lanes.
 """
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -764,6 +765,76 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
         thread_id="42",
         name="Build Telegram Topic UX",
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("topic_mode", [False, True])
+async def test_auto_title_callback_renames_client_created_dm_topic(tmp_path, topic_mode):
+    """Exercise the callback setup extracted from gateway.run, through the rename transport."""
+    from gateway.run_turn_runner import TurnRunner
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("sess-topic", source="telegram", user_id="208214988")
+        if topic_mode:
+            db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+        runner = _make_runner(session_db=db)
+        runner._gateway_loop = asyncio.get_running_loop()
+        source = _make_source(thread_id="42")
+        assert runner._is_telegram_topic_lane(source) is topic_mode
+        ctx = SimpleNamespace(source=source, session_key=build_session_key(source))
+        turn = TurnRunner(runner, ctx)
+        agent = SimpleNamespace(session_id="sess-topic", _on_session_title=None)
+        renamed = asyncio.Event()
+        adapter = runner.adapters[Platform.TELEGRAM]
+        adapter.rename_dm_topic.side_effect = lambda **kwargs: renamed.set()
+
+        turn._attach_session_title_callback(agent, ctx)
+
+        assert callable(agent._on_session_title)
+        await asyncio.to_thread(agent._on_session_title, "First words", "derived")
+        adapter.rename_dm_topic.assert_not_awaited()
+        await asyncio.to_thread(agent._on_session_title, "Recovered Topic Title", "llm")
+        await asyncio.wait_for(renamed.wait(), timeout=5)
+        adapter.rename_dm_topic.assert_awaited_once_with(
+            chat_id=source.chat_id, thread_id=source.thread_id, name="Recovered Topic Title",
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("topic_mode", [False, True])
+@pytest.mark.parametrize("platform,chat_type,thread_id,detached_route", [
+    (Platform.TELEGRAM, "dm", None, None),
+    (Platform.TELEGRAM, "dm", "", None),
+    (Platform.TELEGRAM, "dm", "1", None),
+    (Platform.TELEGRAM, "group", "42", None),
+    (Platform.DISCORD, "dm", "42", None),
+    (Platform.TELEGRAM, "dm", "42", "agent:main:detached:sess-topic"),
+])
+def test_auto_title_callback_excludes_non_dm_topics(
+    tmp_path, topic_mode, platform, chat_type, thread_id, detached_route,
+):
+    from gateway.run_turn_runner import TurnRunner
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        if topic_mode:
+            db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+        runner = _make_runner(session_db=db)
+        source = SessionSource(
+            platform=platform, chat_id="208214988", user_id="208214988",
+            chat_type=chat_type, thread_id=thread_id, detached_route=detached_route,
+        )
+        ctx = SimpleNamespace(source=source, session_key=build_session_key(source))
+        turn = TurnRunner(runner, ctx)
+        agent = SimpleNamespace(session_id="sess-topic", _on_session_title=None)
+
+        turn._attach_session_title_callback(agent, ctx)
+
+        assert agent._on_session_title is None
+    finally:
+        db.close()
 
 
 @pytest.mark.asyncio

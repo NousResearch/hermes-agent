@@ -1208,3 +1208,47 @@ class TestDiscoverySessionExclusion:
         excluded = json.loads(session_search(
             query="unique lineage token alpha", limit=5, exclude_session_ids=["s_child"], db=db))
         assert not {r["session_id"] for r in excluded["results"]} & {"s_root", "s_child"}
+
+class TestBrowseResultCap:
+    """A no-argument call browses; it must not inherit discovery's three-hit cap."""
+
+    @staticmethod
+    def _seed_sessions(db, count=12):
+        for i in range(count):
+            sid = f"s_browse_{i:02d}"
+            db.create_session(sid, source="cli")
+            db.append_message(sid, role="user", content=f"browse seed {i}")
+
+    def test_no_args_browse_defaults_to_ten_sessions(self, db):
+        self._seed_sessions(db)
+
+        result = json.loads(session_search(db=db))
+
+        assert result["success"] is True
+        assert result["mode"] == "browse"
+        assert len(result["results"]) == 10
+
+    def test_explicit_limit_still_wins(self, db):
+        self._seed_sessions(db)
+
+        result = json.loads(session_search(db=db, limit=4))
+
+        assert result["mode"] == "browse"
+        assert len(result["results"]) == 4
+
+    def test_no_args_browse_keeps_ten_through_the_inline_executor(self, db):
+        """The inline dispatcher maps schema args explicitly, so a default baked into its
+        arg spec would narrow browse before the tool ever sees the call."""
+        from types import SimpleNamespace
+
+        from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+
+        self._seed_sessions(db)
+        agent = SimpleNamespace(_get_session_db_for_recall=lambda: db, session_id="current")
+        ctx = InlineToolContext(effective_task_id="task-1", tool_call_id="call-1")
+
+        result = json.loads(INLINE_TOOL_EXECUTORS["session_search"](agent, {}, ctx))
+
+        assert result["success"] is True
+        assert result["mode"] == "browse"
+        assert len(result["results"]) == 10

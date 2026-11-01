@@ -129,7 +129,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
     return _call_tool(
         "tools.session_search_tool", "session_search", args,
         (
-            ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit", 3),
+            ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit"),
             ("session_id", "session_id"), ("around_message_id", "around_message_id"),
             ("window", "window", 5), ("sort", "sort"), ("profile", "profile"),
             ("detail", "detail", "adaptive"), ("after", "after"), ("before", "before"),

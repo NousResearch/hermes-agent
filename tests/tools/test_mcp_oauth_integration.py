@@ -17,6 +17,11 @@ import pytest
 
 pytest.importorskip("mcp.client.auth.oauth2", reason="MCP SDK 1.26.0+ required")
 
+# With no platforms() gate no OS lane ever imported this file, so the
+# Windows-only fake-TTY failure it pins (GetConsoleMode vs MagicMock stdin)
+# could regress unseen. "any" adds the Windows lane; Linux/macOS keep it.
+pytestmark = pytest.mark.platforms("any")
+
 
 def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
     from unittest.mock import MagicMock
@@ -24,6 +29,10 @@ def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
     mock_stdin = MagicMock()
     mock_stdin.isatty.return_value = is_tty
     monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+    # On Windows interactivity is confirmed by GetConsoleMode on the real
+    # stdin handle, which a MagicMock can never satisfy — pin the console
+    # check to agree with the faked TTY.
+    monkeypatch.setattr("tools.mcp_oauth._stdin_is_console", lambda: is_tty)
 
 
 @pytest.mark.asyncio

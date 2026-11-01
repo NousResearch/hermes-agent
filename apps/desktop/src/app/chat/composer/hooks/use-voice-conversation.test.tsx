@@ -2,6 +2,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { BargeMonitorCallbacks } from '@/lib/voice-barge-in'
+import { notify } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
 import { $autoSpeakReplies, $bargeInEnabled } from '@/store/voice-prefs'
 
@@ -63,6 +64,7 @@ vi.mock('@/i18n', () => ({
         voice: {
           configureSpeechToText: 'configure STT',
           couldNotStartSession: 'could not start',
+          echoDropped: 'Playback echo ignored. Please try speaking again.',
           microphoneFailed: 'mic failed',
           playbackFailed: 'playback failed',
           transcriptionFailed: 'transcription failed',
@@ -368,9 +370,9 @@ describe('useVoiceConversation TTS echo guard (#126708)', () => {
     const monitor = monitorCalls.at(-1)
 
     replyReady = true
-    $voicePlayback.set({ ...$voicePlayback.get(), status: playing ? 'speaking' : 'idle' })
 
     act(() => {
+      $voicePlayback.set({ ...$voicePlayback.get(), status: playing ? 'speaking' : 'idle' })
       monitor?.onSpeech()
     })
     // The barged reply is consumed (settleAfterSpeech) and the turn ends.
@@ -399,6 +401,29 @@ describe('useVoiceConversation TTS echo guard (#126708)', () => {
     expect(onSubmit).not.toHaveBeenCalledWith('the build failed because of a missing dependency')
     // The "user interrupted" latch is cleared so a later genuine turn isn't annotated.
     expect(takeVoicePlaybackInterrupted).toHaveBeenCalledTimes(1)
+  })
+
+  it('explains a rejected echo capture while keeping genuine and generation-phase interruptions quiet', async () => {
+    const echo = await bargeWith('the build failed because of a missing dependency', { playing: true })
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'info',
+        icon: 'mic',
+        message: 'Playback echo ignored. Please try speaking again.'
+      })
+    )
+    expect(echo.onSubmit).toHaveBeenCalledTimes(1)
+    echo.hook.unmount()
+    vi.mocked(notify).mockClear()
+
+    const realSpeech = await bargeWith('actually can you also check my calendar for tomorrow', { playing: true })
+    expect(realSpeech.onSubmit).toHaveBeenCalledWith('actually can you also check my calendar for tomorrow')
+    expect(notify).not.toHaveBeenCalled()
+    realSpeech.hook.unmount()
+
+    const thinking = await bargeWith('the build failed because of a missing dependency', { playing: false })
+    expect(thinking.onSubmit).toHaveBeenCalledWith('the build failed because of a missing dependency')
+    expect(notify).not.toHaveBeenCalled()
   })
 
   it('still submits a genuine interjection captured during playback', async () => {
